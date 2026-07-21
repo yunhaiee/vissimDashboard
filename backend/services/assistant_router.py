@@ -2136,17 +2136,6 @@ def sanitize_context_for_english(value: Any, key: str = "") -> Any:
     return value
 
 
-def classify_intent(message: str) -> str:
-    lowered = message.lower()
-    if contains_any(lowered, ["오류", "에러", "실패", "진단", "문제", "안됨", "error", "fail", "diagnose"]):
-        return "diagnostic"
-    if contains_any(lowered, ["변경", "바꿔", "수정", "설정", "offset", "cycle", "signal", "vehicle input", "change", "set "]):
-        return "settings"
-    if contains_any(lowered, ["상태", "현황", "진행", "실행 중", "시뮬레이션", "status", "running", "job", "com"]):
-        return "status"
-    return "general"
-
-
 def contains_any(text: str, needles: list[str]) -> bool:
     return any(needle in text for needle in needles)
 

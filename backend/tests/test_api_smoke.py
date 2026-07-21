@@ -34,6 +34,8 @@ def scenario_with_results(client: TestClient, scenarios: list[dict]) -> str:
 @pytest.fixture(scope="module")
 def runtime_job_id() -> str:
     runtime_root = Path(__file__).resolve().parents[2] / "runtime" / "simulations"
+    if not runtime_root.is_dir():
+        pytest.skip("No runtime simulation result database was found")
     for candidate in sorted(runtime_root.iterdir()):
         if candidate.is_dir() and list(candidate.rglob("*.db")):
             return candidate.name

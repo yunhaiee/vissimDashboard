@@ -48,7 +48,7 @@ Dochak Prism은 VISSIM 교통 시뮬레이션 파일과 결과를 웹에서 조�
 # 터미널 1: 백엔드
 cd backend
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8001
 ```
 
 ```powershell
@@ -59,7 +59,7 @@ npm run dev
 ```
 
 - 웹 대시보드: `http://localhost:3000`
-- 백엔드 API 문서: `http://localhost:8000/docs`
+- 백엔드 API 문서: `http://localhost:8001/docs`
 
 ## 참고
 

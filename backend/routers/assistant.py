@@ -123,7 +123,26 @@ def stream_assistant(payload: AssistantQueryRequest):
 
         response = holder.get("response")
         if response is None:
-            response = run_assistant_query(message, payload, stream_id=stream_id)
+            # Never re-run the query here: with allow_tool_execution=True a
+            # retry could start the same simulation job twice. Surface an
+            # error response instead.
+            error_id = uuid.uuid4().hex[:10]
+            logger.error(
+                "Assistant stream worker produced no response stream_id=%s error_id=%s",
+                stream_id,
+                error_id,
+            )
+            try:
+                model_status = assistant_router.status()
+            except Exception:
+                model_status = minimal_assistant_status(error_id)
+            response = build_assistant_exception_response(
+                message=message,
+                response_language=payload.response_language,
+                exc=RuntimeError("Assistant worker thread produced no response."),
+                error_id=error_id,
+                model_status=model_status,
+            )
 
         response_without_answer = {**response, "answer": ""}
         runtime_mode = str((response.get("runtime") or {}).get("mode") or "")
