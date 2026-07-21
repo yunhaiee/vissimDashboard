@@ -4,6 +4,7 @@
 !.env.example
 
 # Python
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -16,9 +17,10 @@ frontend/.next/
 frontend/.next-dev-log
 *.tsbuildinfo
 
-# Runtime data (uploads, simulation outputs, licenses)
-backend/runtime/
-backend/data/
+# Runtime data (uploads, simulation outputs, licenses) and Vissim project data
+# (config.py resolves both at repo root; regenerate demo data with backend/tools/make_demo_data.py)
+runtime/
+data/
 
 # AI-tool session caches
 .omc/
