@@ -687,6 +687,56 @@ export async function askAssistant(payload: AssistantQueryRequest, signal?: Abor
   throw new Error(firstError);
 }
 
+export interface DashboardCurationRequest {
+  message: string;
+  selected_scenario_ids: string[];
+  selected_node_ids?: string[];
+  response_language?: string;
+  audience?: "plain" | "expert";
+}
+
+export interface DashboardInsightCard {
+  title: string;
+  body: string;
+  tone: "info" | "success" | "warning";
+  related_chart: string | null;
+}
+
+export interface DashboardCurationSpec {
+  headline: string;
+  charts: string[];
+  insight_cards: DashboardInsightCard[];
+  fallback: boolean;
+  error?: string;
+  model?: string;
+  audience?: string;
+}
+
+export async function curateDashboard(
+  payload: DashboardCurationRequest,
+  signal?: AbortSignal,
+): Promise<DashboardCurationSpec> {
+  const init: RequestInit = {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  };
+  const r = await apiDirectMutationFetch("/api/assistant/curate", init);
+  if (r.ok) return r.json();
+
+  const firstError = await readApiError(r);
+  if (r.status >= 500 && !signal?.aborted) {
+    await sleepForRetry(700);
+    const retry = await apiDirectMutationFetch("/api/assistant/curate", init, { sameOrigin: false });
+    if (retry.ok) return retry.json();
+    throw new Error(await readApiError(retry));
+  }
+
+  throw new Error(firstError);
+}
+
 export async function streamAssistant(
   payload: AssistantQueryRequest,
   handlers: AssistantStreamHandlers = {},

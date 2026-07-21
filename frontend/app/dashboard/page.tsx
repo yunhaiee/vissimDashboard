@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import CurationBar from "@/components/dashboard/CurationBar";
 import NodeFlowPanel from "@/components/NodeFlowPanel";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import {
@@ -14,6 +15,7 @@ import {
   fetchScenarios,
   type ActiveDataset,
   type CompareSummaryResponse,
+  type DashboardCurationSpec,
   type NodeRealCounts,
   type ScenarioMeta,
   type ScenarioResults,
@@ -104,9 +106,16 @@ export default function DashboardPage() {
   const [nodeNamesById, setNodeNamesById] = useState<Record<string, string>>({});
   const [realCounts, setRealCounts] = useState<NodeRealCounts[]>([]);
   const [datasetRevision, setDatasetRevision] = useState("default");
+  const [curationSpec, setCurationSpec] = useState<DashboardCurationSpec | null>(null);
   const requestSerial = useRef(0);
   const loadSerial = useRef(0);
   const hasUploadedDataset = activeDataset?.source === "uploaded";
+  // Focus mode: with no curation spec every section is visible; with one,
+  // only the LLM-chosen sections render (the header and curation bar always stay).
+  const sectionVisible = useCallback(
+    (sectionId: string) => curationSpec == null || curationSpec.charts.includes(sectionId),
+    [curationSpec],
+  );
 
   const clearDashboardData = useCallback(() => {
     requestSerial.current += 1;
@@ -375,8 +384,18 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {hasUploadedDataset ? (
-        <section>
+      {hasUploadedDataset && (
+        <CurationBar
+          selectedScenarioIds={selected}
+          selectedNodeIds={selectedNodeIds}
+          disabled={!hasData}
+          spec={curationSpec}
+          onSpecChange={setCurationSpec}
+        />
+      )}
+
+      {hasUploadedDataset && !sectionVisible("map-selection") ? null : hasUploadedDataset ? (
+        <section id="map-selection" className="scroll-mt-6">
           <SectionHeader
             title={t("지도 기반 교차로 선택", "Map-Based Intersection Selection")}
             subtitle={t("기존 대시보드 지도를 그대로 사용해 비교할 교차로를 최대 6개까지 선택합니다.", "Use the existing dashboard map to select up to six intersections for comparison.")}
@@ -434,7 +453,7 @@ export default function DashboardPage() {
         <DashboardUploadRequiredPanel />
       )}
 
-      {hasData && (
+      {hasData && sectionVisible("intersection-performance") && (
         <section id="intersection-performance" className="scroll-mt-6">
           <SectionHeader
             title={t("교차로 성능평가", "Intersection Performance Evaluation")}
@@ -444,7 +463,7 @@ export default function DashboardPage() {
         </section>
       )}
 
-      {hasData && (
+      {hasData && sectionVisible("travel-time-comparison") && (
         <section id="travel-time-comparison" className="scroll-mt-6">
           <SectionHeader
             title={t("통행시간 비교분석", "Travel Time Comparison")}
@@ -454,7 +473,7 @@ export default function DashboardPage() {
         </section>
       )}
 
-      {hasData && (
+      {hasData && sectionVisible("network-kpi-comparison") && (
         <section id="network-kpi-comparison" className="scroll-mt-6">
           <SectionHeader
             title={t("네트워크 KPI 비교", "Network KPI Comparison")}
@@ -477,7 +496,7 @@ export default function DashboardPage() {
         </section>
       )}
 
-      {hasData && (
+      {hasData && sectionVisible("overall-results-analysis") && (
         <section id="overall-results-analysis" className="scroll-mt-6">
           <SectionHeader
             title={t("종합 결과 분석", "Overall Results Analysis")}
@@ -496,7 +515,7 @@ export default function DashboardPage() {
         </section>
       )}
 
-      {realCounts.length > 0 && hasData && (
+      {realCounts.length > 0 && hasData && sectionVisible("field-count-validation") && (
         <section id="field-count-validation" className="scroll-mt-6">
           <SectionHeader
             title={t("현장 계수 검증", "Validation Against Field Counts")}
