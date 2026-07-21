@@ -1,0 +1,369 @@
+@import "tailwindcss";
+
+:root {
+  --bg-base: #e7ebf1;
+  --bg-tint: #f4f7fb;
+  --surface: rgba(255, 255, 255, 0.9);
+  --surface-strong: #ffffff;
+  --surface-muted: #eef2f7;
+  --text-strong: #0f172a;
+  --text-muted: #4f5f78;
+  --border-subtle: rgba(15, 23, 42, 0.1);
+  --border-soft: rgba(148, 163, 184, 0.36);
+  --shadow-soft: 0 10px 28px rgba(15, 23, 42, 0.09);
+  --shadow-mid: 0 18px 42px rgba(15, 23, 42, 0.14);
+  --accent: #5a7a9f;
+  --accent-hover: #456487;
+  --accent-soft: #e6edf5;
+  --font-ui: "Pretendard Variable", "Pretendard", "Segoe UI", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
+}
+
+@theme inline {
+  --color-background: var(--bg-base);
+  --color-foreground: var(--text-strong);
+  --font-sans: var(--font-ui);
+  --font-mono: "JetBrains Mono", "Fira Code", "SFMono-Regular", "Consolas", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--text-strong);
+  font-family: var(--font-ui);
+  background:
+    radial-gradient(1100px 640px at 4% -12%, #dce5f1 0%, transparent 48%),
+    radial-gradient(900px 560px at 105% -14%, #d7e2ef 0%, transparent 42%),
+    linear-gradient(180deg, var(--bg-tint) 0%, var(--bg-base) 48%, #e2e8ef 100%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgba(90, 122, 159, 0.22);
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2600;
+  border-bottom: 1px solid var(--border-subtle);
+  backdrop-filter: blur(14px);
+  background: color-mix(in oklab, var(--surface-strong) 85%, #eef4fa 15%);
+}
+
+.app-topbar-inner {
+  margin: 0 auto;
+  display: flex;
+  max-width: 80rem;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.95rem 1.5rem;
+}
+
+.app-brand {
+  margin-right: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #25405e;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.app-brand-mark {
+  height: 0.66rem;
+  width: 0.66rem;
+  border-radius: 9999px;
+  background: linear-gradient(130deg, #4d6f95 10%, #6a8cae 100%);
+  box-shadow: 0 0 0 4px rgba(90, 122, 159, 0.14);
+}
+
+.app-link {
+  position: relative;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: color 180ms ease;
+}
+
+.app-link:hover {
+  color: var(--accent-hover);
+}
+
+.app-link::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -0.25rem;
+  height: 2px;
+  width: 100%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: linear-gradient(90deg, #4d6f95 0%, #6a8cae 100%);
+  transition: transform 180ms ease;
+}
+
+.app-link:hover::after {
+  transform: scaleX(1);
+}
+
+.app-link-active {
+  color: var(--accent-hover);
+}
+
+.app-link-active::after {
+  transform: scaleX(1);
+}
+
+.app-lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 9999px;
+  background: color-mix(in oklab, var(--surface-strong) 88%, transparent);
+}
+
+.app-lang-btn {
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.32rem 0.62rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.app-lang-btn:hover {
+  color: var(--accent-hover);
+}
+
+.app-lang-btn-active {
+  background: linear-gradient(135deg, #4f7198 0%, #6b8bae 100%);
+  color: #ffffff;
+}
+
+.app-lang-in-topbar {
+  position: absolute;
+  right: max(0.75rem, env(safe-area-inset-right));
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  width: max-content;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.14);
+}
+
+.app-content {
+  margin: 0 auto;
+  max-width: 80rem;
+  padding: 5.75rem 1.5rem 2rem;
+}
+
+.ui-surface {
+  border: 1px solid var(--border-soft);
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.ui-surface-strong {
+  border: 1px solid var(--border-soft);
+  border-radius: 1rem;
+  background: var(--surface-strong);
+  box-shadow: var(--shadow-mid);
+}
+
+.ui-input,
+.ui-select {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 0.75rem;
+  background: #ffffff;
+  color: var(--text-strong);
+  padding: 0.6rem 0.8rem;
+  font-size: 0.875rem;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.ui-input:focus-visible,
+.ui-select:focus-visible {
+  outline: none;
+  border-color: color-mix(in oklab, var(--accent) 64%, white);
+  box-shadow: 0 0 0 4px rgba(90, 122, 159, 0.18);
+}
+
+.ui-button-primary {
+  border: 1px solid transparent;
+  border-radius: 0.8rem;
+  background: linear-gradient(135deg, #4f7198 0%, #6889ac 100%);
+  color: #ffffff;
+  font-weight: 600;
+  transition: transform 150ms ease, filter 150ms ease, box-shadow 150ms ease;
+  box-shadow: 0 10px 20px rgba(79, 113, 152, 0.28);
+}
+
+.ui-button-primary:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.02);
+}
+
+.ui-button-primary:disabled {
+  transform: none;
+  filter: grayscale(10%);
+  opacity: 0.55;
+  box-shadow: none;
+}
+
+.ui-button-ghost {
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 0.8rem;
+  background: color-mix(in oklab, var(--surface-strong) 80%, transparent);
+  color: #334155;
+  font-weight: 600;
+  transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease;
+}
+
+.ui-button-ghost:hover {
+  border-color: rgba(71, 85, 105, 0.4);
+  color: #0f172a;
+}
+
+.ui-button-danger {
+  border: 1px solid rgba(244, 63, 94, 0.35);
+  border-radius: 0.8rem;
+  background: rgba(255, 241, 242, 0.85);
+  color: #be123c;
+  font-weight: 600;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.ui-button-danger:hover {
+  border-color: rgba(244, 63, 94, 0.5);
+  background: rgba(255, 228, 233, 0.95);
+}
+
+.leaflet-tooltip.map-link-tooltip,
+.leaflet-tooltip.map-node-tooltip {
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 0.75rem;
+  background: rgba(10, 20, 36, 0.94);
+  color: #dbe7f8;
+  box-shadow: 0 12px 28px rgba(2, 6, 23, 0.45);
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 0.45rem 0.55rem;
+}
+
+.leaflet-tooltip.map-link-tooltip strong,
+.leaflet-tooltip.map-node-tooltip strong {
+  color: #f8fbff;
+}
+
+.map-node-callout-anchor {
+  background: transparent;
+  border: 0;
+}
+
+.map-node-callout-chip {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  height: 24px;
+  padding: 0 8px 0 7px;
+  border-radius: 7px;
+  border: 1px solid #c8d4e1;
+  background: rgba(249, 251, 253, 0.96);
+  color: #334155;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0;
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.1);
+}
+
+.map-node-callout-chip em {
+  font-style: normal;
+}
+
+.map-node-callout-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 9999px;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+}
+
+.simulation-map-viewer .leaflet-top.leaflet-left {
+  top: auto;
+  left: auto;
+  right: 10px;
+  bottom: 64px;
+}
+
+.simulation-map-viewer .leaflet-control-zoom {
+  margin: 0;
+}
+
+@keyframes ux-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ux-fade-up {
+    animation: ux-fade-up 460ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+
+  .ux-fade-up-delay {
+    animation-delay: 130ms;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-topbar-inner {
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+  }
+
+  .app-brand {
+    margin-right: 0.25rem;
+  }
+
+  .app-lang-in-topbar {
+    right: max(0.5rem, env(safe-area-inset-right));
+    top: 50%;
+  }
+
+  .app-content {
+    padding-top: 6.2rem;
+  }
+}

@@ -1,0 +1,108 @@
+[
+  {
+    "id": "signal_program_number_error",
+    "query": "Signal Controller Program number has neither a signal program nor daily signal program list",
+    "top_k": 5,
+    "must_match_any": [
+      "error_cases/signal_controller_program_number_error.md"
+    ]
+  },
+  {
+    "id": "pedestrian_no_path_error",
+    "query": "Vissim pedestrian route no path Static Pedestrian Routing Decision Route location",
+    "top_k": 5,
+    "must_match_any": [
+      "error_cases/pedestrian_no_path_error.md"
+    ]
+  },
+  {
+    "id": "connector_route_error",
+    "query": "Vissim connector route error vehicle route connector path cannot be found",
+    "top_k": 5,
+    "must_match_any": [
+      "error_cases/connector_route_error.md",
+      "vissim_manual/links_connectors.md"
+    ]
+  },
+  {
+    "id": "simulation_run_error",
+    "query": "Vissim simulation run error COM RunContinuous simulation failed",
+    "top_k": 5,
+    "must_match_any": [
+      "error_cases/simulation_run_error.md",
+      "com_examples/run_simulation.md"
+    ]
+  },
+  {
+    "id": "vehicle_input_setting",
+    "query": "How to set Vissim vehicle input volume using COM AttValue",
+    "top_k": 5,
+    "must_match_any": [
+      "com_examples/set_vehicle_input.md",
+      "vissim_manual/vehicle_input.md"
+    ]
+  },
+  {
+    "id": "read_signal_controller_com",
+    "query": "Read Signal Controller Program number Signal Groups Signal Programs with Vissim COM",
+    "top_k": 5,
+    "must_match_any": [
+      "com_examples/read_signal_controller.md",
+      "vissim_manual/signal_controller.md"
+    ]
+  },
+  {
+    "id": "links_connectors_routes",
+    "query": "Vissim links connectors routes vehicle path lane connection",
+    "top_k": 5,
+    "must_match_any": [
+      "vissim_manual/links_connectors.md",
+      "links_connectors_routes"
+    ]
+  },
+  {
+    "id": "evaluation_results_delay_queue",
+    "query": "Vissim evaluation results delay queue travel time network performance",
+    "top_k": 5,
+    "must_match_any": [
+      "vissim_manual/evaluation_results.md",
+      "evaluation_results"
+    ]
+  },
+  {
+    "id": "mesoscopic_hybrid_modelling",
+    "query": "mesoscopic hybrid modelling guidelines corridor calibration assignment assessment",
+    "top_k": 5,
+    "must_match_any": [
+      "mesoscopic_and_hybrid_modelling_guidelines",
+      "mesoscopic_hybrid"
+    ]
+  },
+  {
+    "id": "scatsim_signal_control",
+    "query": "SCATSIM guide signal control detector controller simulation",
+    "top_k": 5,
+    "must_match_any": [
+      "scatsim_guide_draft_tk",
+      "signal_control"
+    ]
+  },
+  {
+    "id": "operational_modelling_demand",
+    "query": "operational modelling traffic demand vehicle inputs growth factor model calibration",
+    "top_k": 5,
+    "must_match_any": [
+      "operational_modelling",
+      "vehicle_inputs_demand"
+    ]
+  },
+  {
+    "id": "first_steps_vissim",
+    "query": "Vissim - First Steps",
+    "top_k": 5,
+    "must_match_any": [
+      "vissim_first_steps",
+      "Vissim - First Steps"
+    ]
+  }
+]

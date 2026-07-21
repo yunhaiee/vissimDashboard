@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/tests/.tmp_*
+backend/tests/pytest-cache-files-*
+
+# Node / Next.js
+node_modules/
+frontend/.next/
+frontend/.next-dev-log
+*.tsbuildinfo
+
+# Runtime data (uploads, simulation outputs, licenses)
+backend/runtime/
+backend/data/
+
+# AI-tool session caches
+.omc/
+.codex/
+.vercel/
+
+# OS
+Thumbs.db
+.DS_Store
