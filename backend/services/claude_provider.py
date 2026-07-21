@@ -68,9 +68,9 @@ class ClaudeProvider:
         if client is None:
             return None, {"mode": "fallback", "error": self._client_error or "Anthropic client unavailable."}
 
-        max_tokens = int(os.getenv("ANTHROPIC_MAX_TOKENS", "1024"))
+        max_tokens = int(os.getenv("ANTHROPIC_MAX_TOKENS", "2048"))
         if think:
-            max_tokens = max(max_tokens, 2048)
+            max_tokens = max(max_tokens, 3072)
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens,

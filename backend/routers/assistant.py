@@ -13,6 +13,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from services.assistant_router import AssistantRequestContext, VissimAssistantRouter, build_assistant_exception_response, minimal_assistant_status
+from services.dashboard_curator import curate_dashboard
+from services.results_reader import get_compare_summary, get_selected_node_details
 from services.vissim_tool import get_vissim_status
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,46 @@ class AssistantQueryRequest(BaseModel):
     selected_node_ids: list[str] = Field(default_factory=list)
     allow_tool_execution: bool = False
     response_language: str = "auto"
+
+
+class CurateRequest(BaseModel):
+    message: str = Field(min_length=1)
+    selected_scenario_ids: list[str] = Field(default_factory=list)
+    selected_node_ids: list[str] = Field(default_factory=list)
+    response_language: str = "ko"
+    audience: str = "plain"
+
+
+@router.post("/curate")
+def curate(payload: CurateRequest):
+    """LLM dashboard curation: which charts answer the question + insight cards."""
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    context: dict[str, Any] = {}
+    try:
+        context["compare_summary"] = get_compare_summary(payload.selected_scenario_ids)
+    except Exception:
+        logger.exception("Curation context: compare summary failed")
+        context["compare_summary"] = {}
+    if payload.selected_node_ids:
+        try:
+            context["selected_nodes"] = get_selected_node_details(
+                payload.selected_scenario_ids, payload.selected_node_ids
+            )
+        except Exception:
+            logger.exception("Curation context: node details failed")
+
+    result = curate_dashboard(
+        provider=assistant_router.provider,
+        message=message,
+        context=context,
+        response_language=payload.response_language,
+        audience=payload.audience,
+    )
+    result["model"] = assistant_router.provider.status().get("model")
+    return result
 
 
 @router.get("/status")
