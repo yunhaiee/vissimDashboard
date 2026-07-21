@@ -1,6 +1,13 @@
 import os
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 

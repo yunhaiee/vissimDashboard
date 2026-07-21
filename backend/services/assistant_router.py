@@ -542,14 +542,35 @@ def _load_qwen_in_process(model_dir: str):
     return processor, model, torch
 
 
+def _default_provider() -> Any:
+    """Pick the assistant LLM backend.
+
+    ``ASSISTANT_PROVIDER=claude|qwen`` forces a backend; otherwise Claude is
+    used whenever an API key is configured, keeping local Qwen as the
+    no-key/on-premise fallback.
+    """
+    choice = os.getenv("ASSISTANT_PROVIDER", "").strip().lower()
+    if choice != "qwen" and (choice == "claude" or os.getenv("ANTHROPIC_API_KEY", "").strip()):
+        from services.claude_provider import ClaudeProvider
+
+        return ClaudeProvider(system_prompt=OLLAMA_SYSTEM_PROMPT)
+    return LocalQwenProvider()
+
+
 class VissimAssistantRouter:
     def __init__(
         self,
-        provider: LocalQwenProvider | None = None,
+        provider: Any | None = None,
         com_status_reader: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
-        self.provider = provider or LocalQwenProvider()
+        self.provider = provider or _default_provider()
         self.com_status_reader = com_status_reader or get_vissim_status
+
+    def _model_label(self) -> str:
+        try:
+            return str(self.provider.status().get("model") or DEFAULT_MODEL_LABEL)
+        except Exception:
+            return DEFAULT_MODEL_LABEL
 
     def warmup(self) -> None:
         """Preload the local model so the first chat request isn't a cold start."""
@@ -600,7 +621,7 @@ class VissimAssistantRouter:
             return {
                 "intent": intent,
                 "answer": build_greeting_answer(context.get("response_language") or "ko"),
-                "model": DEFAULT_MODEL_LABEL,
+                "model": self._model_label(),
                 "model_status": self.status(),
                 "runtime": {"mode": "dashboard-context"},
                 "sources": [],
@@ -624,7 +645,7 @@ class VissimAssistantRouter:
         return {
             "intent": intent,
             "answer": answer,
-            "model": DEFAULT_MODEL_LABEL,
+            "model": self._model_label(),
             "model_status": self.status(),
             "runtime": runtime,
             "sources": context["sources"],
@@ -644,7 +665,7 @@ class VissimAssistantRouter:
         return {
             "intent": intent,
             "answer": answer,
-            "model": DEFAULT_MODEL_LABEL,
+            "model": self._model_label(),
             "model_status": self.status(),
             "runtime": {"mode": "dashboard-context"},
             "sources": [],
