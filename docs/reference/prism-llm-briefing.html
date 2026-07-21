@@ -1,0 +1,758 @@
+<title>Prism × LLM — Meeting Briefing</title>
+<style>
+  :root {
+    --paper: #f7f8f7;
+    --ink: #21262b;
+    --ink-soft: #4d565e;
+    --ink-faint: #78828b;
+    --line: #d9dedf;
+    --card: #ffffff;
+    --card-edge: #e3e7e8;
+    --accent: #b57e0a;          /* road-marking amber, darkened for light ground */
+    --accent-strong: #8f6206;
+    --accent-wash: #faf3e0;
+    --go: #2c7a4b;
+    --go-wash: #e8f3ec;
+    --stop: #b3403a;
+    --stop-wash: #f9ecea;
+    --code-bg: #eef0f0;
+    --mono: "Cascadia Code", Consolas, "SF Mono", ui-monospace, monospace;
+    --sans: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #191c1f;
+      --ink: #e8e6e0;
+      --ink-soft: #b0aea6;
+      --ink-faint: #7d7c75;
+      --line: #33383c;
+      --card: #202428;
+      --card-edge: #2e3337;
+      --accent: #e0a921;
+      --accent-strong: #edbc45;
+      --accent-wash: #2a2415;
+      --go: #5cb884;
+      --go-wash: #1c2b22;
+      --stop: #d97b74;
+      --stop-wash: #33211f;
+      --code-bg: #272b2f;
+    }
+  }
+  :root[data-theme="light"] {
+    --paper: #f7f8f7; --ink: #21262b; --ink-soft: #4d565e; --ink-faint: #78828b;
+    --line: #d9dedf; --card: #ffffff; --card-edge: #e3e7e8;
+    --accent: #b57e0a; --accent-strong: #8f6206; --accent-wash: #faf3e0;
+    --go: #2c7a4b; --go-wash: #e8f3ec; --stop: #b3403a; --stop-wash: #f9ecea;
+    --code-bg: #eef0f0;
+  }
+  :root[data-theme="dark"] {
+    --paper: #191c1f; --ink: #e8e6e0; --ink-soft: #b0aea6; --ink-faint: #7d7c75;
+    --line: #33383c; --card: #202428; --card-edge: #2e3337;
+    --accent: #e0a921; --accent-strong: #edbc45; --accent-wash: #2a2415;
+    --go: #5cb884; --go-wash: #1c2b22; --stop: #d97b74; --stop-wash: #33211f;
+    --code-bg: #272b2f;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.65;
+  }
+  .wrap { max-width: 1020px; margin: 0 auto; padding: 0 24px 96px; }
+  .prose { max-width: 720px; }
+
+  /* ---------- header ---------- */
+  header { padding: 56px 0 36px; border-bottom: 3px solid var(--ink); margin-bottom: 8px; }
+  .kicker {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--accent); font-weight: 600;
+  }
+  h1 {
+    font-size: clamp(30px, 5vw, 44px); line-height: 1.12; margin: 10px 0 14px;
+    font-weight: 750; letter-spacing: -0.02em; text-wrap: balance;
+  }
+  .standfirst { font-size: 18px; color: var(--ink-soft); max-width: 640px; margin: 0; }
+  .meta { font-family: var(--mono); font-size: 12.5px; color: var(--ink-faint); margin-top: 20px; }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 64px; }
+  .eyebrow {
+    display: flex; align-items: baseline; gap: 12px;
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px;
+  }
+  .eyebrow .n { color: var(--accent); font-weight: 700; }
+  h2 { font-size: 26px; margin: 0 0 16px; letter-spacing: -0.015em; font-weight: 700; text-wrap: balance; }
+  h3 { font-size: 18.5px; margin: 30px 0 10px; font-weight: 650; }
+  h4 { font-size: 15px; margin: 22px 0 8px; font-weight: 650; font-family: var(--mono); letter-spacing: -0.01em; }
+  .analogy {
+    border-left: 2px solid var(--line); padding: 2px 0 2px 16px;
+    color: var(--ink-soft); font-style: italic;
+  }
+  .hazard {
+    background: var(--stop-wash); border: 1px solid var(--stop);
+    border-radius: 10px; padding: 16px 20px; margin: 22px 0;
+  }
+  .hazard p { margin: 0; font-size: 14.5px; }
+  .hazard .hlabel {
+    display: block; font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: 0.1em; font-weight: 700; color: var(--stop); margin-bottom: 6px;
+  }
+  p { margin: 0 0 14px; }
+  a { color: var(--accent-strong); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  strong { font-weight: 650; }
+  code { font-family: var(--mono); font-size: 0.88em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 7px; }
+  li::marker { color: var(--ink-faint); }
+
+  /* ---------- summary answers ---------- */
+  .answers { display: grid; gap: 14px; margin: 26px 0 6px; }
+  .answer {
+    background: var(--card); border: 1px solid var(--card-edge); border-radius: 10px;
+    padding: 18px 20px; display: grid; grid-template-columns: 130px 1fr; gap: 16px;
+  }
+  .answer .q {
+    font-family: var(--mono); font-size: 11.5px; text-transform: uppercase;
+    letter-spacing: 0.1em; color: var(--accent); font-weight: 700; padding-top: 3px;
+  }
+  .answer .a { font-size: 15.5px; }
+  .answer .a p { margin-bottom: 6px; }
+  .answer .a p:last-child { margin-bottom: 0; }
+  @media (max-width: 620px) { .answer { grid-template-columns: 1fr; gap: 6px; } }
+
+  /* ---------- loop diagram ---------- */
+  .loopbox {
+    border: 1px solid var(--card-edge); background: var(--card); border-radius: 10px;
+    padding: 22px 22px 18px; margin: 22px 0; overflow-x: auto;
+  }
+  .loopbox .steps { display: flex; gap: 0; align-items: stretch; min-width: 640px; }
+  .lstep { flex: 1; padding: 0 14px; position: relative; }
+  .lstep + .lstep { border-left: 1px dashed var(--line); }
+  .lstep .ln { font-family: var(--mono); font-size: 11px; color: var(--accent); font-weight: 700; }
+  .lstep .lt { font-weight: 650; font-size: 14.5px; margin: 3px 0 4px; }
+  .lstep .ld { font-size: 13px; color: var(--ink-soft); line-height: 1.5; }
+  .loopnote {
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line);
+    font-size: 13.5px; color: var(--ink-soft);
+  }
+
+  /* ---------- tables ---------- */
+  .tablewrap { overflow-x: auto; margin: 20px 0; border: 1px solid var(--card-edge); border-radius: 10px; background: var(--card); }
+  table { border-collapse: collapse; width: 100%; min-width: 780px; font-size: 14px; }
+  th {
+    text-align: left; font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--ink-faint); font-weight: 650;
+    padding: 12px 14px; border-bottom: 2px solid var(--line); white-space: nowrap;
+  }
+  td { padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; line-height: 1.5; }
+  tr:last-child td { border-bottom: none; }
+  td.who { font-weight: 650; white-space: nowrap; }
+  td.who .sub { display: block; font-weight: 400; font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); margin-top: 2px; }
+  .chip {
+    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 650;
+    padding: 2px 8px; border-radius: 20px; white-space: nowrap;
+  }
+  .chip.mcp { background: var(--accent-wash); color: var(--accent-strong); }
+  .chip.native { background: var(--go-wash); color: var(--go); }
+  .chip.pipe { background: var(--code-bg); color: var(--ink-soft); }
+
+  /* ---------- paper cards ---------- */
+  .papers { display: grid; gap: 16px; margin-top: 22px; }
+  .paper { background: var(--card); border: 1px solid var(--card-edge); border-radius: 10px; padding: 20px 22px; }
+  .paper .top { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; margin-bottom: 4px; }
+  .paper h3 { margin: 0; font-size: 17px; }
+  .paper .venue { font-family: var(--mono); font-size: 11.5px; color: var(--accent-strong); font-weight: 650; }
+  .paper .authors { font-size: 13px; color: var(--ink-faint); margin-bottom: 10px; }
+  .paper .links { font-size: 13.5px; margin-bottom: 12px; }
+  .paper .links a { margin-right: 14px; }
+  .paper p { font-size: 14.5px; margin-bottom: 10px; }
+  .notice {
+    border-left: 3px solid var(--accent); background: var(--accent-wash);
+    padding: 10px 14px; border-radius: 0 8px 8px 0; font-size: 14px;
+  }
+  .notice .nlabel {
+    font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: 0.1em; font-weight: 700; color: var(--accent-strong); display: block; margin-bottom: 3px;
+  }
+  .notice ul { margin: 4px 0 0; padding-left: 18px; }
+  .notice li { margin-bottom: 4px; }
+
+  /* ---------- UI mock ---------- */
+  .mock {
+    border: 1px solid var(--card-edge); border-radius: 12px; overflow: hidden;
+    background: var(--card); margin: 24px 0 10px;
+  }
+  .mock-titlebar {
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12px; color: var(--ink-faint);
+  }
+  .mock-titlebar .dots { display: flex; gap: 5px; }
+  .mock-titlebar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+  .mock-body { display: grid; grid-template-columns: 1.5fr 1fr; min-height: 420px; }
+  @media (max-width: 720px) { .mock-body { grid-template-columns: 1fr; } }
+  .mock-map { position: relative; border-right: 1px solid var(--line); background:
+    linear-gradient(var(--code-bg) 1px, transparent 1px) 0 0 / 100% 28px,
+    linear-gradient(90deg, var(--code-bg) 1px, transparent 1px) 0 0 / 28px 100%;
+  }
+  .mock-map svg { display: block; width: 100%; height: 100%; position: absolute; inset: 0; }
+  .mock-map .maplabel {
+    position: absolute; top: 12px; left: 14px; font-family: var(--mono); font-size: 11px;
+    color: var(--ink-faint); background: var(--card); border: 1px solid var(--line);
+    padding: 3px 9px; border-radius: 6px;
+  }
+  .mock-map .selchip {
+    position: absolute; top: 12px; right: 14px; font-family: var(--mono); font-size: 11px;
+    color: var(--go); background: var(--go-wash); border: 1px solid var(--go);
+    padding: 3px 9px; border-radius: 6px; font-weight: 650;
+  }
+  .mock-map .kpis { position: absolute; bottom: 12px; left: 14px; display: flex; gap: 8px; }
+  .kpi {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 11px; font-size: 11px; color: var(--ink-faint); font-family: var(--mono);
+  }
+  .kpi b { display: block; font-size: 15px; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .kpi .delta { color: var(--go); font-weight: 700; }
+  .mock-chat { display: flex; flex-direction: column; }
+  .chat-log { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 92%; border-radius: 10px; padding: 9px 13px; font-size: 13px; line-height: 1.5; }
+  .msg.user { align-self: flex-end; background: var(--ink); color: var(--paper); }
+  .msg.ai { align-self: flex-start; background: var(--code-bg); }
+  .msg .tag { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.65; display: block; margin-bottom: 3px; }
+  .diffcard { border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; background: var(--card); overflow: hidden; }
+  .diffcard .drow { display: flex; justify-content: space-between; gap: 10px; padding: 6px 11px; font-family: var(--mono); font-size: 11.5px; border-bottom: 1px solid var(--line); }
+  .diffcard .drow:last-of-type { border-bottom: none; }
+  .diffcard .old { color: var(--stop); text-decoration: line-through; }
+  .diffcard .new { color: var(--go); font-weight: 700; }
+  .diffcard .actions { display: flex; gap: 8px; padding: 8px 11px; border-top: 1px solid var(--line); background: var(--code-bg); }
+  .btn { font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 4px 12px; border-radius: 6px; border: 1px solid transparent; }
+  .btn.approve { background: var(--go); color: #fff; }
+  .btn.cancel { background: transparent; color: var(--ink-faint); border-color: var(--line); }
+  .progress { margin-top: 8px; }
+  .progress .pbar { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .progress .pfill { width: 64%; height: 100%; background: var(--accent); }
+  .progress .plabel { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); margin-top: 4px; }
+  .chat-input { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); }
+  .chat-input .field {
+    flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px;
+    font-size: 13px; color: var(--ink-faint); background: var(--paper);
+  }
+  .caption { font-size: 13px; color: var(--ink-faint); margin: 8px 4px 0; }
+
+  /* ---------- tiers ---------- */
+  .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 20px 0; }
+  @media (max-width: 760px) { .tiers { grid-template-columns: 1fr; } }
+  .tier { background: var(--card); border: 1px solid var(--card-edge); border-radius: 10px; padding: 16px 18px; }
+  .tier .tn { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--accent); letter-spacing: 0.08em; }
+  .tier h4 { margin: 4px 0 8px; font-size: 15px; }
+  .tier p { font-size: 13.5px; color: var(--ink-soft); margin-bottom: 0; }
+  .tier .effort { margin-top: 10px; font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+
+  /* ---------- mermaid ---------- */
+  .diagram { background: var(--card); border: 1px solid var(--card-edge); border-radius: 10px; padding: 18px; margin: 22px 0; overflow-x: auto; }
+  .diagram pre.mermaid { margin: 0; }
+
+  /* ---------- verdict table ---------- */
+  .verdict td:first-child { font-weight: 650; }
+  .v-yes { color: var(--go); font-weight: 700; }
+  .v-no { color: var(--stop); font-weight: 700; }
+  .v-later { color: var(--accent-strong); font-weight: 700; }
+
+  /* ---------- questions ---------- */
+  .qlist { counter-reset: q; list-style: none; padding: 0; margin-top: 20px; }
+  .qlist li {
+    counter-increment: q; position: relative; padding: 14px 18px 14px 58px;
+    background: var(--card); border: 1px solid var(--card-edge); border-radius: 10px; margin-bottom: 10px;
+  }
+  .qlist li::before {
+    content: "Q" counter(q); position: absolute; left: 16px; top: 15px;
+    font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--accent);
+  }
+  .qlist .why { display: block; font-size: 13px; color: var(--ink-faint); margin-top: 3px; }
+
+  .footer { margin-top: 72px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--ink-faint); font-family: var(--mono); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="kicker">Dochak · Prism · internal briefing</div>
+    <h1>Putting an LLM inside the Vissim dashboard</h1>
+    <p class="standfirst">How LLM↔simulation integration actually works, how research teams and companies have built it, what Prism should do — and the papers to know, prepared for the discussion with Prof. Inhi Kim.</p>
+    <div class="meta">Prepared 2026-07-20 · researched &amp; verified from primary sources · all links live</div>
+  </header>
+
+  <!-- ============ 1. ANSWERS ============ -->
+  <section>
+    <div class="eyebrow"><span class="n">01</span><span>The short answers</span></div>
+    <h2>Three things to walk in knowing</h2>
+    <div class="answers">
+      <div class="answer">
+        <div class="q">Is chat-next-to-sim possible?</div>
+        <div class="a">
+          <p><strong>Yes — and it is the correct design.</strong> The user never opens Vissim. Vissim runs headless on Dochak's Windows servers; the dashboard <em>re-renders Vissim's data</em> (network geometry, vehicle positions, KPIs) on the web page, with the chat panel beside it. Nobody needs a local Vissim install. Dochak's own <strong>Vista</strong> product already streams live Vissim vehicle trajectories out of the app — proof the hard part is solved in-house.</p>
+        </div>
+      </div>
+      <div class="answer">
+        <div class="q">How is this built?</div>
+        <div class="a">
+          <p>Every serious integration works the same way: the LLM emits <strong>structured tool calls</strong> (JSON like <code>set_lane_count(link=12, lanes=4)</code>), and ordinary backend code executes them against the app's scripting API — for Vissim, the <strong>COM API</strong>. MCP is a <em>standard plug format</em> for exposing such tools to third-party AI apps. Since Prism owns both the chat and the simulation servers, plain tool calling is the right layer; MCP can be added later as an external interface.</p>
+        </div>
+      </div>
+      <div class="answer">
+        <div class="q">Which paper did he mean?</div>
+        <div class="a">
+          <p>Almost certainly <strong>ChatSUMO Agent</strong> (<em>Transportation Research Part C</em>, 2026 — the field's top journal) or <strong>AgentSUMO</strong> (KAIST, from his own graduate school, submitted to the same journal). Both let non-experts create and edit traffic simulations by chatting. Both use SUMO. <strong>Nobody has published the Vissim version — that space is open for Dochak.</strong></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 2. HOW IT WORKS ============ -->
+  <section>
+    <div class="eyebrow"><span class="n">02</span><span>Mechanics</span></div>
+    <h2>How an LLM "edits" a simulation — the agent loop</h2>
+    <div class="prose">
+      <p>The most common misconception: the AI does not see the screen or click buttons in Vissim. What actually happens is a text-only negotiation called <strong>tool calling</strong> (or function calling). You describe a menu of allowed operations to the model in JSON Schema; the model replies with which operation to run and with what arguments; <em>your own code</em> performs it and reports back. The model is a planner — your backend is the hands.</p>
+    </div>
+    <div class="loopbox">
+      <div class="steps">
+        <div class="lstep"><div class="ln">1 · PROMPT</div><div class="lt">User asks</div><div class="ld">"What happens with 4 lanes instead of 3?"</div></div>
+        <div class="lstep"><div class="ln">2 · PLAN</div><div class="lt">LLM picks tools</div><div class="ld">Emits <code>clone_scenario()</code>, <code>set_lane_count(link, 4)</code>, <code>run_simulation(seeds=3)</code></div></div>
+        <div class="lstep"><div class="ln">3 · EXECUTE</div><div class="lt">Backend runs them</div><div class="ld">Python drives Vissim through COM; results come back as data</div></div>
+        <div class="lstep"><div class="ln">4 · OBSERVE</div><div class="lt">LLM reads results</div><div class="ld">Delay, queue length, throughput per scenario</div></div>
+        <div class="lstep"><div class="ln">5 · ANSWER</div><div class="lt">Plain-language reply</div><div class="ld">"Average delay drops 18%; the bottleneck moves to the next junction."</div></div>
+      </div>
+      <div class="loopnote">Steps 2–4 repeat in a loop until the task is done — that loop is what makes it an "agent." Both the Anthropic Messages API and the OpenAI Responses API run this natively. (Note: the older OpenAI <em>Assistants API</em> is deprecated, sunset 2026-08-26 — don't build on it.)</div>
+    </div>
+    <div class="prose">
+      <h3>So where does MCP fit?</h3>
+      <p><strong>MCP (Model Context Protocol)</strong> standardizes the <em>packaging</em> of those tools so that any AI client — Claude, ChatGPT, Copilot, Cursor — can discover and call them without custom code. Originally from Anthropic, it was donated to the Linux Foundation's Agentic AI Foundation in Dec 2025 (backed by OpenAI, Google, Microsoft, AWS) and is now the industry standard, with ~10,000+ public servers. It has two transports: <code>stdio</code> for a server running on the user's own machine (the Blender/Fusion desktop pattern) and <code>Streamable HTTP</code> for hosted remote servers (the Figma pattern).</p>
+      <p>The key judgment call, and the practitioner consensus in 2026: <strong>MCP solves the "many clients × many tools" interoperability problem. A product that owns both its chat UI and its tools — like Prism — doesn't have that problem</strong>, and plain tool calling against an internal API is simpler, faster, and easier to secure. You expose an MCP endpoint later if customers want to drive Prism from their own AI assistants.</p>
+    </div>
+  </section>
+
+  <!-- ============ 3. HOW OTHERS DID IT ============ -->
+  <section>
+    <div class="eyebrow"><span class="n">03</span><span>Landscape</span></div>
+    <h2>How research teams and companies each built it</h2>
+    <div class="prose">
+      <p>Two worlds to compare: research systems that edit <em>traffic simulations</em> from natural language (all SUMO-based, because SUMO is free and open), and commercial products that put AI inside <em>professional desktop software</em> (Premiere, Fusion 360, Figma, Blender). The pattern that repeats across both is the useful thing to cite tomorrow.</p>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>System</th><th>Integration method</th><th>What it does</th><th>Lesson for Prism</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="who">ChatSUMO <span class="sub">IEEE OJVT · 2024</span></td>
+            <td><span class="chip pipe">LLM → Python scripts</span></td>
+            <td>Turns text into SUMO scenarios: builds networks from OpenStreetMap, customizes edges/lanes, runs, reports.</td>
+            <td>The v1 pattern — a fixed pipeline, no loop. Good for scoped tasks, brittle beyond them.</td>
+          </tr>
+          <tr>
+            <td class="who">ChatSUMO Agent <span class="sub">TR Part C · 2026</span></td>
+            <td><span class="chip native">agent loop + tools</span></td>
+            <td>Closed-loop agent: plans, calls tools (network / demand / run / analyze / modify), reads results, iterates.</td>
+            <td>The architecture Prism should mirror — published in the field's top journal.</td>
+          </tr>
+          <tr>
+            <td class="who">AgentSUMO <span class="sub">KAIST · arXiv 2025</span></td>
+            <td><span class="chip mcp">MCP</span> <span class="chip native">+ planning layer</span></td>
+            <td>Asks clarifying questions before executing; infers missing parameters from vague goals ("reduce congestion").</td>
+            <td>The UX insight: non-experts under-specify. Clarify-before-execute is a design requirement.</td>
+          </tr>
+          <tr>
+            <td class="who">SUMO-MCP <span class="sub">arXiv · 2025</span></td>
+            <td><span class="chip mcp">MCP</span></td>
+            <td>Wraps SUMO's whole toolchain as an MCP server; batch scenario generation and signal optimization.</td>
+            <td>What a "Vissim-MCP" would look like. Nobody has built one — open territory.</td>
+          </tr>
+          <tr>
+            <td class="who">TrafficSimAgent <span class="sub">arXiv · 2025</span></td>
+            <td><span class="chip mcp">MCP</span> <span class="chip native">multi-agent</span></td>
+            <td>Hierarchical orchestrator → executor sub-agents over simulator APIs as MCP tools.</td>
+            <td>Over-engineered for v1; relevant if Prism later spans multiple simulators.</td>
+          </tr>
+          <tr>
+            <td class="who">Adobe Premiere / Photoshop <span class="sub">first-party AI · 2025</span></td>
+            <td><span class="chip native">native agent, internal APIs</span></td>
+            <td>Firefly AI Assistant executes multi-step edits; Adobe runs the LLM loop against internal command APIs. Not MCP.</td>
+            <td>The strongest precedent for Prism: vendor product → native agent, not MCP.</td>
+          </tr>
+          <tr>
+            <td class="who">Autodesk Fusion 360 <span class="sub">official · 2025–26</span></td>
+            <td><span class="chip mcp">MCP (local + remote)</span></td>
+            <td>MCP server ships inside Fusion (localhost) for live modeling; a separate cloud MCP for design data.</td>
+            <td>MCP as the <em>third-party access</em> surface. Also: every implementation needed a job queue because the app API is single-threaded — exactly like Vissim COM.</td>
+          </tr>
+          <tr>
+            <td class="who">Figma <span class="sub">official · 2025</span></td>
+            <td><span class="chip mcp">MCP (remote)</span></td>
+            <td>Hosted server at mcp.figma.com; any AI client reads/writes designs.</td>
+            <td>Same trajectory: product first, hosted MCP as an extra door later.</td>
+          </tr>
+          <tr>
+            <td class="who">Blender / Unity <span class="sub">community</span></td>
+            <td><span class="chip mcp">MCP + sidecar plugin</span></td>
+            <td>A plugin inside the app opens a local socket; an external MCP server translates tool calls to the app's scripting API.</td>
+            <td>The desktop pattern — only needed when the app runs on the <em>user's</em> machine. Prism's Vissim doesn't.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="prose">
+      <p>The repeating pattern: <strong>curated, bounded tools beat "run any script."</strong> Every mature integration (Adobe's, Fusion's, Unity's ~47 tools) converged on a fixed menu of well-described operations, because agents are dramatically more reliable when the action space is explicit — and because you can validate each operation before it touches the model.</p>
+    </div>
+  </section>
+
+  <!-- ============ 4. PAPERS ============ -->
+  <section>
+    <div class="eyebrow"><span class="n">04</span><span>Reading list</span></div>
+    <h2>The papers, and what to take from each</h2>
+    <div class="papers">
+
+      <div class="paper">
+        <div class="top"><h3>ChatSUMO Agent: An LLM-Based Agent for Conversational Traffic Simulation in SUMO</h3><span class="venue">Transportation Research Part C · 2026</span></div>
+        <div class="authors">Shuyang Li, Talha Azfar, Ruimin Ke — Rensselaer Polytechnic Institute</div>
+        <div class="links"><a href="https://www.sciencedirect.com/science/article/abs/pii/S0968090X26002470">Paper</a><a href="https://github.com/ChrisLi1221/ChatSUMO-Agent">Code (MIT)</a></div>
+        <p>The closest published system to the Prism vision, in the field's most prestigious journal — the likely "top journal paper." A closed-loop agent takes natural language through the full workflow: network generation, demand creation, simulation execution, KPI analysis, and <em>iterative modification</em> of scenarios.</p>
+        <div class="notice"><span class="nlabel">Notice for your development</span>
+          <ul>
+            <li>How they decompose the work into <strong>tool modules</strong> (network / routing / simulate / analyze / modify) — this is the tool menu design problem you'll face for Vissim.</li>
+            <li>The agent updates its <strong>internal state</strong> after each tool result — that's what makes multi-turn "now also change X" conversations work.</li>
+            <li>The repo is small, Python + Streamlit + OpenAI API. Read it end-to-end; it's the cheapest way to understand the whole loop.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="paper">
+        <div class="top"><h3>AgentSUMO: An Agentic Framework for Interactive Simulation Scenario Generation in SUMO via LLMs</h3><span class="venue">arXiv 2511.06804 · KAIST · under review at TR Part C</span></div>
+        <div class="authors">Minwoo Jeong, Jeeyun Chang, Yoonjin Yoon — KAIST Cho Chun Shik Graduate School of Mobility (Prof. Kim's school)</div>
+        <div class="links"><a href="https://arxiv.org/abs/2511.06804">Paper</a></div>
+        <p>From colleagues in Prof. Kim's own graduate school — he very likely knows this work directly. Targets non-expert users (planners, officials): an <strong>Interactive Planning Protocol</strong> interprets vague goals, assesses task complexity, asks clarifying questions, and fills in missing parameters before running anything; MCP handles tool orchestration underneath. Demonstrated on Seoul and Manhattan networks.</p>
+        <div class="notice"><span class="nlabel">Notice for your development</span>
+          <ul>
+            <li>Their central finding is a <strong>UX finding</strong>: non-experts write under-specified prompts, so the agent must clarify before executing. That dialogue design is squarely your job as the UX owner.</li>
+            <li>The complexity-assessment step (simple edit vs. multi-step study) maps directly to how Prism should decide between "just apply it" and "propose a plan first."</li>
+            <li>Citing this tomorrow signals you did your homework — it's the in-house reference point.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="paper">
+        <div class="top"><h3>ChatSUMO: LLM for Automating Traffic Scenario Generation</h3><span class="venue">IEEE Open Journal of Vehicular Technology · 2024</span></div>
+        <div class="authors">arXiv 2409.09040</div>
+        <div class="links"><a href="https://arxiv.org/abs/2409.09040">Paper</a></div>
+        <p>The first mover. A simpler pipeline (not a loop): user text → keyword extraction → Python scripts build a SUMO network from OpenStreetMap → run → report. Handles edge edits, lane changes, and traffic-light adjustment for a real city (Albany).</p>
+        <div class="notice"><span class="nlabel">Notice for your development</span>
+          <ul>
+            <li>Read it for the <strong>limits</strong>: a fixed pipeline can't recover from errors or handle follow-ups — the reason the field moved to agent loops within a year.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="paper">
+        <div class="top"><h3>SUMO-MCP: Leveraging the Model Context Protocol for Autonomous Traffic Simulation</h3><span class="venue">arXiv 2506.03548 · 2025</span></div>
+        <div class="links"><a href="https://arxiv.org/pdf/2506.03548">Paper</a></div>
+        <p>Wraps SUMO's utility toolchain into a single MCP server so a general-purpose AI client can generate scenario batches, run them, and optimize signal timing from chat.</p>
+        <div class="notice"><span class="nlabel">Notice for your development</span>
+          <ul>
+            <li>This is the template for a future <strong>"Vissim-MCP"</strong> — which does not exist publicly anywhere. If Dochak wants a paper of its own, this gap is the opening.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="paper">
+        <div class="top"><h3>TrafficSimAgent: Hierarchical multi-agent orchestration over simulator MCP tools</h3><span class="venue">arXiv 2512.20996 · 2025</span></div>
+        <div class="links"><a href="https://arxiv.org/html/2512.20996v1">Paper</a></div>
+        <p>An orchestrator agent decomposes the task and delegates to executor sub-agents, with simulator API functions exposed as MCP tools. Aims at simulator-agnostic automation.</p>
+        <div class="notice"><span class="nlabel">Notice for your development</span>
+          <ul>
+            <li>Skim only. Multi-agent hierarchies are v3 territory; its motivation section is a good survey of the space.</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ 5. THE EMBED QUESTION ============ -->
+  <section>
+    <div class="eyebrow"><span class="n">05</span><span>Your question</span></div>
+    <h2>Can the simulation live on the page, with chat beside it?</h2>
+    <div class="prose">
+      <p>Yes. The mental shift: <strong>you never embed Vissim itself — you embed a view of Vissim's data.</strong> Vissim is a Windows desktop program with no web version, but when driven through COM it runs headless on a server and everything it knows is readable as data: network geometry from the <code>.inpx</code> file (it's XML), vehicle positions every timestep, and all evaluation results. The dashboard re-draws that data in the browser — which Prism already does for validation views. The alternative you worried about (each user opening a locally installed Vissim with some AI bolted on) is the <em>desktop-app pattern</em> from Blender/Fusion — it's only necessary when the software runs on the customer's machine. Prism hosts Vissim, so it isn't.</p>
+    </div>
+
+    <div class="mock" aria-label="Proposed Prism dashboard layout mockup">
+      <div class="mock-titlebar"><span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span> prism.dochak — Scenario: Gangnam-daero AM peak</div>
+      <div class="mock-body">
+        <div class="mock-map">
+          <svg viewBox="0 0 560 420" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Stylized network map with vehicle dots">
+            <g stroke-linecap="round" fill="none">
+              <path d="M40 300 C 160 290, 300 280, 540 250" stroke="var(--line)" stroke-width="26"/>
+              <path d="M40 300 C 160 290, 300 280, 540 250" stroke="var(--accent)" stroke-width="2" stroke-dasharray="14 12" opacity="0.7"/>
+              <path d="M300 30 C 295 140, 300 280, 310 410" stroke="var(--line)" stroke-width="20"/>
+              <path d="M60 80 C 180 110, 260 200, 302 276" stroke="var(--line)" stroke-width="12"/>
+            </g>
+            <g fill="var(--ink)">
+              <circle cx="120" cy="296" r="5"/><circle cx="175" cy="292" r="5"/><circle cx="230" cy="287" r="5"/>
+              <circle cx="405" cy="266" r="5"/><circle cx="475" cy="258" r="5"/>
+              <circle cx="298" cy="120" r="5"/><circle cx="301" cy="200" r="5"/><circle cx="306" cy="340" r="5"/>
+            </g>
+            <g fill="var(--accent)">
+              <circle cx="285" cy="283" r="6"/><circle cx="330" cy="277" r="6"/>
+            </g>
+            <circle cx="303" cy="279" r="12" fill="none" stroke="var(--go)" stroke-width="3"/>
+            <path d="M40 300 C 160 290, 300 280, 540 250" stroke="var(--go)" stroke-width="30" fill="none" opacity="0.16"/>
+            <rect x="34" y="238" width="512" height="76" fill="none" stroke="var(--go)" stroke-width="1.5" stroke-dasharray="6 5" rx="6"/>
+          </svg>
+          <span class="maplabel">LIVE · run 2 of 3 · sim-time 07:42</span>
+          <span class="selchip">SELECTED · Link 12 · 3 lanes · 240 m</span>
+          <div class="kpis">
+            <div class="kpi">avg delay<b>31.2s <span class="delta">−18%</span></b></div>
+            <div class="kpi">queue max<b>84m <span class="delta">−22%</span></b></div>
+            <div class="kpi">throughput<b>1,940/h</b></div>
+          </div>
+        </div>
+        <div class="mock-chat">
+          <div class="chat-log">
+            <div class="msg user"><span class="tag">You · with Link 12 selected</span>What happens with 4 lanes here instead of 3, at 70&nbsp;km/h?</div>
+            <div class="msg ai"><span class="tag">Prism AI</span>I'll clone the scenario and change two things:
+              <div class="diffcard">
+                <div class="drow"><span>Link 12 · lanes</span><span><span class="old">3</span> → <span class="new">4</span></span></div>
+                <div class="drow"><span>Desired speed</span><span><span class="old">60 km/h</span> → <span class="new">70 km/h</span></span></div>
+                <div class="actions"><span class="btn approve">Approve &amp; run</span><span class="btn cancel">Edit</span></div>
+              </div>
+              <div class="progress"><div class="pbar"><div class="pfill"></div></div><div class="plabel">Running 3 seeds · 2/3 complete</div></div>
+            </div>
+          </div>
+          <div class="chat-input"><span class="field">Ask about this scenario…</span></div>
+        </div>
+      </div>
+    </div>
+    <p class="caption">Proposed layout: simulation view left, AI chat right, with the map doubling as the input device. The approve-before-run card is the safety and trust mechanism — the agent proposes a concrete diff, the user confirms, progress streams back live.</p>
+
+    <h3>Select first, then ask — the map as an input device</h3>
+    <div class="prose">
+      <p>The mockup shows the user having clicked a road before typing, so the prompt says "here" rather than naming a street. This is worth building early, because it dissolves the hardest problem in the system: <strong>working out which objects the user means.</strong> A Vissim network is hundreds of numbered links with no useful names, so "widen the main road" forces the agent to search, guess, and often guess wrong. A selection removes the guess entirely.</p>
+      <p>Three things fall out of it at once. <strong>Grounding:</strong> on selection you hand the model a factual summary — link 12, three lanes, 240 metres, signalised junction with a 90-second cycle, node evaluation armed — so it reads rather than infers. <strong>Fewer steps:</strong> the agent goes straight to the edit instead of burning turns on discovery, which matters most for the weaker models an on-premise deployment would use. <strong>A visible scope:</strong> what's highlighted is what can change, so the blast radius is on screen before anything runs.</p>
+      <p>That last point converges with the reference registry the architecture already needs: selection → enumerate everything attached → highlight it. <em>The selection interface and the safety mechanism are the same machinery</em>, which is the strongest argument for building it in v1 rather than treating it as polish.</p>
+      <p><strong>Design the selection types around what the tools can do, not around geometry.</strong> Selecting an <em>intersection</em> offers signal timing and turn restrictions; a <em>corridor</em> offers speed limits, lane counts and coordination; an <em>area</em> offers read-only questions and demand scaling. Narrowing the menu to what the selection supports is itself a reliability gain — the model chooses among four relevant tools instead of twenty.</p>
+      <p><strong>Two cautions.</strong> Selection is not the same as the affected set: changing a link's lane count also touches its connectors, routes, conflict areas and signal heads, so the interface must show what it will reach beyond the highlight, or it promises a containment it can't deliver. And some changes are inherently wider than any selection — signal cycle time is a corridor property, so selecting one junction and changing it has to escalate to every coordinated intersection or be refused. The system needs to be able to say "you selected one junction; this affects five."</p>
+      <p>On 2D versus 3D: make the 2D map the working surface and Vista the review surface. Topology is legible in plan view and picking a specific lane in a perspective 3D scene is fiddly — but 3D is where a non-expert recognises a place, and it is far better for showing a stakeholder the before-and-after. Sync the selection between them. One integration requirement to raise early with whoever owns Vista: the rendered geometry must carry Vissim object IDs through to the client, or clicking a road in 3D can't resolve to a link.</p>
+    </div>
+
+    <h3>Three tiers of "watching the simulation," in build order</h3>
+    <div class="tiers">
+      <div class="tier"><div class="tn">TIER 1 · STATIC</div><h4>Network + results on the map</h4><p>Draw links/lanes from the <code>.inpx</code> geometry; color them by delay or volume after each run. Prism's existing map view is most of this already.</p><div class="effort">effort: low — mostly done</div></div>
+      <div class="tier"><div class="tn">TIER 2 · PLAYBACK</div><h4>Animated replay after the run</h4><p>Vissim exports vehicle trajectories (<code>.fzp</code>). Animate them on the web map like a video scrubber. Feels "live" to users without live infrastructure.</p><div class="effort">effort: medium — recommended v1</div></div>
+      <div class="tier"><div class="tn">TIER 3 · LIVE</div><h4>Streaming during the run</h4><p>COM reads every vehicle's position each timestep; push over WebSocket to the browser. Dochak's <strong>Vista</strong> already does exactly this into Unity — reuse that bridge.</p><div class="effort">effort: higher — v2, reuse Vista</div></div>
+    </div>
+  </section>
+
+  <!-- ============ 6. ARCHITECTURE ============ -->
+  <section>
+    <div class="eyebrow"><span class="n">06</span><span>Proposal</span></div>
+    <h2>Recommended architecture</h2>
+    <div class="prose">
+      <p>Three layers. The middle one — a curated simulation API — is the load-bearing decision: it serves the normal UI buttons <em>and</em> the AI agent, it's where edits get validated before touching Vissim, and it's the thing you'd wrap in MCP later if third-party access is ever wanted.</p>
+    </div>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  subgraph B["Browser — Prism dashboard"]
+    UI["Map + playback + KPIs"]
+    CH["AI chat panel"]
+  end
+  subgraph BE["Dochak backend"]
+    AG["Agent loop<br/>(Claude / GPT tool calling)"]
+    API["Simulation API<br/>curated verbs + validation"]
+    JQ["Job queue"]
+    ST["Results store"]
+  end
+  subgraph WS["Windows sim servers"]
+    V1["Vissim worker<br/>COM + Python, session A"]
+    V2["Vissim worker<br/>COM + Python, session B"]
+  end
+  CH -- "prompt" --> AG
+  AG -- "tool calls" --> API
+  UI -- "buttons use the same API" --> API
+  API --> JQ
+  JQ --> V1
+  JQ --> V2
+  V1 -- "trajectories + KPIs" --> ST
+  ST --> API
+  API -- "progress via WebSocket" --> UI
+  AG -- "plain-language answer" --> CH
+</pre>
+    </div>
+    <div class="prose">
+      <ul>
+        <li><strong>Vissim workers:</strong> one Vissim process per active session, driven by Python over COM (Python has shipped embedded in Vissim since the 2023 version). COM is effectively single-threaded per instance, so commands go through a per-session queue — the identical constraint every Fusion 360 integration hit.</li>
+        <li><strong>Copy-on-write scenarios:</strong> never edit the user's model in place. Clone the <code>.inpx</code>, apply the change, run, keep the original for the comparison view. This makes "what if" free and undo trivial.</li>
+        <li><strong>Curated verbs, not scripts:</strong> <code>get_network_summary</code>, <code>set_lane_count</code>, <code>set_desired_speed</code>, <code>set_vehicle_input</code>, <code>set_signal_timing</code>, <code>run_simulation → job_id</code>, <code>get_results</code>, <code>compare_scenarios</code>. Each validates its inputs and returns a structured diff.</li>
+        <li><strong>Approve-before-run:</strong> the agent proposes; the dashboard renders the diff; the human clicks. This is both the safety story and — per AgentSUMO — what non-expert users actually need.</li>
+      </ul>
+    </div>
+    <div class="tablewrap">
+      <table class="verdict">
+        <thead><tr><th>Option</th><th>Verdict</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Tool calling vs. internal API</td><td class="v-yes">Build now</td><td>One client, one vendor; simplest, fastest, fully auditable; provider-independent if tool schemas are clean.</td></tr>
+          <tr><td>Remote MCP server (Streamable HTTP)</td><td class="v-later">Add later</td><td>Thin adapter over the same API when customers want Claude/ChatGPT to drive Prism. The Figma/Autodesk trajectory.</td></tr>
+          <tr><td>Local MCP (stdio) + user's desktop Vissim</td><td class="v-no">Skip</td><td>That's for software on the customer's machine. Prism hosts Vissim.</td></tr>
+          <tr><td>Screen-control / computer-use agent</td><td class="v-no">Skip</td><td>Slow and brittle (~56–87% success on far easier tasks); pointless when a full COM API exists.</td></tr>
+          <tr><td>OpenAI Assistants API</td><td class="v-no">Skip</td><td>Deprecated; sunset 2026-08-26. Use the Responses API or Anthropic Messages API.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 7. TECHNICAL DETAILS ============ -->
+  <section>
+    <div class="eyebrow"><span class="n">07</span><span>Details that matter</span></div>
+    <h2>Technical facts to have ready</h2>
+    <div class="prose">
+      <ul>
+        <li><strong>The COM API is the official automation surface.</strong> It can load models, set vehicle inputs (demand), desired-speed decisions and distributions, signal timings, run simulations with or without the GUI, and read every evaluation result. <a href="https://support.ptvgroup.com/en-US/knowledgebase/category/?id=CAT-01013">PTV's COM knowledge base</a> and the <a href="https://github.com/bmetrafficlab/Vissim-COM-Matlab-and-Python">BME Traffic Lab COM manual</a> are the starting points.</li>
+        <li><strong>Open question to verify once you have the code: lane edits.</strong> Changing speeds/demand/signals via COM is routine; <em>adding a lane</em> may require editing the <code>.inpx</code> file directly and reloading. Since <code>.inpx</code> is plain XML, this is very doable either way — but it decides your v1 scope. Suggested phasing: v1 = parameter edits (speed, demand, signals), v2 = geometry edits (lanes).</li>
+        <li><strong>Licensing is the hidden cost driver.</strong> Each concurrent Vissim instance consumes a license seat. Worker pooling and queueing aren't just engineering hygiene — they're what caps license spend.</li>
+        <li><strong>One run is not an answer.</strong> Microsimulation is stochastic; a scenario comparison needs several runs with different random seeds, averaged. Build "3 seeds by default" into <code>run_simulation</code> and show the spread — this is also what makes the AI's claims defensible to engineers.</li>
+        <li><strong>Runs take minutes, so everything is async.</strong> <code>run_simulation</code> returns a job id; the dashboard subscribes to progress over WebSocket. (MCP's new "tasks" feature imitates exactly this — you get it for free with your own job queue.)</li>
+        <li><strong>Guardrails live in the API layer, not the prompt.</strong> Range-check every value (no 200 km/h streets), whitelist editable objects, and log every mutation with who/what/when. The LLM proposes; validated code disposes.</li>
+        <li><strong>On-premise LLM may come up.</strong> Dochak markets Nexus as "100% on-premise" for a reason — Korean public agencies often can't send data to foreign clouds. Keep the agent loop provider-agnostic (clean tool schemas work with Claude, GPT, or a local open-weights model) so an on-prem variant stays possible.</li>
+        <li><strong>The AI is the cheap part.</strong> Model APIs bill per token and development traffic is tiny — a scenario-editing turn is a few thousand tokens, so hundreds of test runs cost single-digit dollars. Two levers cut it further in production: <em>prompt caching</em> (the tool definitions are a fixed prefix, so repeat calls read them at roughly a tenth of normal input cost) and the <em>batch API</em> (half price for overnight evaluation runs). Vissim licences and GPU hardware are the real cost lines, not the model.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ 8. HARD PROBLEMS ============ -->
+  <section>
+    <div class="eyebrow"><span class="n">08</span><span>Where the difficulty actually is</span></div>
+    <h2>The two hard problems, explained from scratch</h2>
+    <div class="prose">
+      <p>Neither adapter is the hard part, and neither is the AI. The difficulty sits in the shared core library, in two places: <strong>changing road geometry</strong> and <strong>knowing what a user's words should change</strong>. Both are worth understanding in plain terms, because both are as much design problems as engineering ones.</p>
+    </div>
+
+    <h3>Problem one — a lane is not a number you can set</h3>
+    <div class="prose">
+      <p>The intuitive mental model is that a road in Vissim has a property called "lanes" that holds <code>3</code>, and you change it to <code>4</code>. That is not how the file works. A Vissim network is a <strong>graph assembled from pieces</strong>: short stretches of road called <em>links</em>, stitched end-to-end and corner-to-corner by <em>connectors</em>. Lane count is fixed when a link is <em>built</em> — the COM method <code>AddLink</code> takes a <code>LaneWidths</code> array with one entry per lane. Four lanes means an array of four widths, decided at construction.</p>
+      <p class="analogy">A designer's analogy: it's less like changing a text layer's font size and more like changing an artboard's column count in a layout where every element is pinned to specific columns. You can't nudge the number — you rebuild the grid, and everything anchored to the old one comes loose.</p>
+      <p>And a great deal is anchored to a link. Changing it means finding and re-attaching all of it:</p>
+    </div>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart TD
+  L["LINK 12<br/>3 lanes"]
+  C1["Connectors<br/>attached to specific lane numbers"] --> L
+  C2["Routing decisions<br/>placed at a distance along the link"] --> L
+  C3["Signal heads &amp; detectors<br/>pinned to lane + position"] --> L
+  C4["Conflict areas &amp; priority rules<br/>derived from overlapping geometry"] --> L
+  C5["Speed objects<br/>decisions &amp; reduced-speed areas, per lane"] --> L
+  C6["Vehicle inputs &amp; measurement points<br/>flows, data collection, travel times"] --> L
+</pre>
+    </div>
+    <div class="prose">
+      <p>So <code>set_lane_count</code> is really: read the whole neighbourhood around the link, rebuild the link with a new lane array, re-attach every referencing object to the right lane and position, and re-derive the things Vissim normally computes for you. That's an algorithm to design, not a wrapper to write.</p>
+      <p>It also isn't fully specified by the user's request. "Make it 4 lanes" leaves open: which side does the new lane go on, does it run the full length or taper, and what happens where the link ends — does the next link get a lane too, or does this become a merge? A human engineer answers these from context in seconds. Software has to either ask or decide.</p>
+    </div>
+
+    <div class="hazard">
+      <span class="hlabel">The failure mode that matters most</span>
+      <p><strong>A broken network still runs.</strong> If the rebuild silently drops a connector, Vissim doesn't crash — vehicles just quietly stop being able to reach part of the network, and the simulation finishes and reports confident-looking numbers that are wrong. A traffic engineer might notice the throughput looks off. Prism's target user — a non-expert who came here precisely because they can't read Vissim — cannot. Every safeguard below exists to catch this class of error before a number reaches the screen.</p>
+    </div>
+
+    <div class="prose">
+      <h4>How to get through it</h4>
+      <ul>
+        <li><strong>Check whether the lane already exists.</strong> Many production models already contain the extra lane and restrict it (bus-only, closed, vehicle-class limited). <em>Opening</em> an existing lane is an attribute change — easy and safe. Detect that case first; it may cover a real share of "add a lane" requests without any geometry work.</li>
+        <li><strong>Build a reference registry.</strong> Before editing, enumerate every object pointing at the link and store it. After editing, assert every one landed somewhere valid. This registry <em>is</em> the core algorithm — write it once, and it also powers your undo, your diff view, and your "what will this affect?" preview.</li>
+        <li><strong>Refuse gracefully, don't fail silently.</strong> Support the simple topology first (a mid-block link, uniform lane widths, straightforward connectors). When the model doesn't match, say so plainly: "This junction is too complex for me to modify safely — here's what I can change instead."</li>
+        <li><strong>Smoke-test every edit.</strong> Run 30 seconds of simulation before the real runs and check invariants: vehicles entering ≈ vehicles arriving, nothing stranded, no link that used to carry flow now carrying zero. Cheap, and it catches the silent-breakage class directly.</li>
+        <li><strong>Keep golden models.</strong> A handful of small test networks in the repo, with a known-correct result for each edit. Every change to the core library runs against them. This is the difference between a library people trust and one they don't.</li>
+        <li><strong>Show the change visually.</strong> Copy-on-write means the original is always intact, so you can render before/after geometry side by side on the map. A human spotting "wait, that lane goes the wrong way" is your last and best line of defence.</li>
+      </ul>
+    </div>
+
+    <h3>Problem two — "70 km/h" doesn't name one thing</h3>
+    <div class="prose">
+      <p>This one looks easy and isn't. Vissim models speed with several distinct concepts, and a plain request maps to more than one of them:</p>
+      <ul>
+        <li><strong>Desired speed distribution</strong> — a <em>curve</em>, not a number. Real drivers don't all drive the limit, so Vissim stores a spread. Each vehicle draws a percentile when it enters and keeps that percentile for its whole trip: a "40th-percentile driver" stays a 40th-percentile driver everywhere.</li>
+        <li><strong>Desired speed decision</strong> — a marker placed at a point on a lane. Crossing it assigns the vehicle a new distribution, and the speed changes <em>from there on</em>. This is how a speed-limit change is modelled.</li>
+        <li><strong>Reduced speed area</strong> — a zone, where vehicles slow down <em>in advance</em> so they're already at the lower speed on entry, then resume afterwards. This is how curves and turns are modelled — not speed limits.</li>
+      </ul>
+      <p>So "the simulation ran at 60, what about 70?" could mean: swap the distribution at an existing decision point, add a decision point that doesn't exist yet, change the network's default, or adjust a reduced-speed area. Each produces different numbers. All of them produce <em>plausible</em> numbers. And going from 60 to 70 is not "add 10" — a real engineer substitutes a differently-shaped distribution, because the spread of driver behaviour changes with the limit too.</p>
+      <p>The deeper difficulty: <strong>this knowledge is tacit</strong>. Your engineers apply it by habit and have never had to write it down, so it doesn't exist as a document you can read — it has to be extracted from people. And the LLM will not flag its own uncertainty here; it will pattern-match to the most common-looking option and state the result with total confidence.</p>
+    </div>
+    <div class="prose">
+      <h4>How to get through it</h4>
+      <ul>
+        <li><strong>Run elicitation sessions, time-boxed.</strong> Sit with Dr. Chun or Dr. Oh and screen-record them performing ten real edits while narrating why. Each one becomes a validation rule plus a test case. Three sessions will get you most of the way; it's far cheaper than discovering the rules through wrong results months later.</li>
+        <li><strong>Encode the rules as code, not prompt text.</strong> A prompt is a suggestion the model may ignore; a check in the API layer is enforcement. Anything that must always hold belongs in the validation layer.</li>
+        <li><strong>Introspect each model on upload, then constrain what's offered.</strong> Scan what the model actually contains and only expose edits that make sense for it. If a link has no desired speed decision, don't offer to change one — offer to add one, explicitly.</li>
+        <li><strong>Make ambiguity a conversation, not a guess.</strong> When a request maps to more than one object, the agent asks: "the whole corridor, or just this approach?" This is exactly AgentSUMO's published finding — and it is a UX design problem, which puts it in your hands.</li>
+        <li><strong>Name the object in the confirmation.</strong> Not "changing speed to 70" but "Desired speed decision #14 (northbound, lanes 1–3): distribution <em>60 urban</em> → <em>70 urban</em>." An engineer reviewing can catch an error instantly; a non-expert at minimum sees that something specific and checkable happened.</li>
+        <li><strong>Log every mutation.</strong> When a client disputes a result six months later, the audit trail of exactly which objects changed is what settles it — and it doubles as your evaluation data if this becomes a paper.</li>
+      </ul>
+    </div>
+
+    <div class="notice"><span class="nlabel">The pattern behind both problems</span>
+      <p style="margin:0">In both cases the technical difficulty and the UX difficulty are the same difficulty. The system has to <strong>know what it doesn't know</strong> — that a geometry edit is too complex to do safely, or that a request could mean three things — and then <strong>say so usefully</strong> instead of guessing. Confident wrong answers are the one outcome that would sink a product aimed at people who can't check the work.</p>
+    </div>
+  </section>
+
+  <!-- ============ 9. ON-PREM ============ -->
+  <section>
+    <div class="eyebrow"><span class="n">09</span><span>Deployment variant</span></div>
+    <h2>If customers require on-premise LLMs</h2>
+    <div class="prose">
+      <p>Realistic for Korean public agencies, and Dochak already markets Nexus as fully on-premise. The good news: <strong>the architecture doesn't change shape.</strong> Layers 1 and 2 are untouched — Vissim already runs on servers you control, so "on-premise" means shipping the whole appliance to the customer's data centre rather than redesigning it. The tool definitions, the validation rules, the job queue, the approve-before-run flow: all identical.</p>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Layer</th><th>Cloud tier</th><th>On-premise tier</th></tr></thead>
+        <tbody>
+          <tr><td class="who">Vissim workers</td><td colspan="2" style="color:var(--go);font-weight:650">Unchanged — and licences become the customer's, which simplifies your seat problem</td></tr>
+          <tr><td class="who">Simulation API</td><td colspan="2" style="color:var(--go);font-weight:650">Unchanged — same verbs, same validation, same guardrails</td></tr>
+          <tr><td class="who">Agent loop</td><td>Claude / GPT over the network</td><td>Local model served by vLLM behind an OpenAI-compatible endpoint</td></tr>
+          <tr><td class="who">Hardware</td><td>Windows sim servers only</td><td>Two boxes: Windows for Vissim, Linux + GPU for inference</td></tr>
+          <tr><td class="who">Observability</td><td>Central telemetry</td><td>Local logs only, exported with customer consent</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="prose">
+      <p>The single code change is a <strong>provider interface</strong> — keep the agent loop behind a thin abstraction and avoid coupling to vendor-specific features, and switching backends is a base-URL and model-name change. This is the practical reason not to build on provider-proprietary extras.</p>
+      <h4>What genuinely gets harder</h4>
+      <ul>
+        <li><strong>Tool-calling reliability drops — but far less than it used to.</strong> Top open-weight models now sit within a few points of frontier APIs on function-calling benchmarks. The gap that remains shows up where it hurts most here: long multi-step loops, choosing among similar-looking tools, and recovering after a failed step.</li>
+        <li><strong>So move agency from the model into code.</strong> Fewer and more distinct verbs; classify the user's intent and run a templated plan rather than letting the model free-form its way through ten steps; use grammar-constrained decoding so the JSON is always structurally valid. Less improvisation, more deterministic orchestration.</li>
+        <li><strong>Evaluation stops being optional.</strong> Two backends mean two behaviour profiles, and the only way to know the on-prem tier works is a test suite of prompts mapped to expected tool calls. Build it from day one — it is also, conveniently, the evaluation a paper needs.</li>
+        <li><strong>Ops becomes a product surface:</strong> GPU sizing, weight distribution and updates, quantisation choices, and checking each model's licence actually permits commercial redistribution.</li>
+        <li><strong>Korean matters for model choice.</strong> Agency users will prompt in Korean, and Korea's sovereign-AI push means some procurements may favour or mandate a domestic model. Supporting one is a competitive advantage, not just a constraint.</li>
+      </ul>
+      <div class="notice"><span class="nlabel">The design already hedges this</span>
+        <p style="margin:0">Two earlier decisions pay off precisely here. <strong>Bounded curated verbs</strong> matter more with a weaker model, because a small clean action space is what such models handle well. And <strong>approve-before-run</strong> means every mutation passes a human before executing — so a less reliable model produces a rejected proposal rather than a wrong result. The safety design absorbs most of the capability drop.</p>
+      </div>
+      <p>One reframe rather than a change: an air-gapped deployment removes the "external AI clients call our hosted MCP" story — but a <em>local</em> MCP endpoint on the appliance becomes the natural way a customer's own internal AI platform talks to Prism. Same adapter, different door.</p>
+      <p><strong>Recommendation:</strong> build cloud-first, but put the provider interface and the evaluation suite in from the start. Then on-premise is a deployment variant and a pricing tier, not a rewrite.</p>
+    </div>
+  </section>
+
+  <!-- ============ 10. QUESTIONS ============ -->
+  <section>
+    <div class="eyebrow"><span class="n">10</span><span>For the meeting</span></div>
+    <h2>Questions worth asking tomorrow</h2>
+    <ol class="qlist">
+      <li>Was the paper you mentioned the <strong>ChatSUMO Agent</strong> paper in TR Part C, or <strong>AgentSUMO</strong> from Prof. Yoon's group here at KAIST?<span class="why">Pins the reference — and both are worth discussing either way.</span></li>
+      <li>Is a <strong>publication</strong> a goal for us too? Nobody has published the Vissim version of this.<span class="why">If yes, the architecture should be built with an evaluation plan (task success rate, non-expert user study) from day one.</span></li>
+      <li>Can the AI use the <strong>same COM/Python layer Prism already uses</strong> for validation runs — and can I get access to the dashboard repo?<span class="why">You still need the code; this frames the ask productively.</span></li>
+      <li>Do we scope v1 to <strong>parameter edits</strong> (speed, demand, signal timing) and treat <strong>lane/geometry edits</strong> as v2?<span class="why">Cleanly separates the certain COM path from the .inpx-editing spike.</span></li>
+      <li>Can we reuse the <strong>Vista</strong> streaming bridge for a live view in the browser?<span class="why">Turns an existing Dochak asset into the wow-feature of the AI experience.</span></li>
+      <li>Can I book a few sessions with <strong>Dr. Chun or Dr. Oh</strong> to record how they actually make these edits by hand?<span class="why">The validation rules only exist in their heads. Three recorded sessions turn tacit expertise into code and test cases — the cheapest risk reduction available.</span></li>
+      <li>How many <strong>Vissim license seats</strong> can we dedicate to the service, and do target customers require <strong>on-premise LLMs</strong>?<span class="why">The two constraints that shape the whole deployment design.</span></li>
+    </ol>
+  </section>
+
+  <div class="footer">Sources: PTV knowledge base · ScienceDirect · arXiv · IEEE Xplore · Adobe/Autodesk/Figma engineering blogs · modelcontextprotocol.io · dochak.com — verified 2026-07-20. Prepared with Claude Code.</div>
+</div>

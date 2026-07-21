@@ -1,0 +1,466 @@
+<title>Vissim Constraint Catalog — Prism</title>
+<style>
+  :root {
+    --paper: #f6f7f7;
+    --ink: #1e2328;
+    --ink-soft: #4a545c;
+    --ink-faint: #7b858d;
+    --line: #d7dcdd;
+    --card: #ffffff;
+    --edge: #e2e6e7;
+    --code-bg: #edf0f0;
+    --accent: #a8730a;
+    --accent-str: #855a05;
+    --accent-wash: #f9f2e2;
+    --silent: #a8352e;
+    --silent-wash: #f9eceb;
+    --loud: #2b6b8f;
+    --loud-wash: #e9f1f6;
+    --domain: #2c6b4a;
+    --domain-wash: #e8f2ec;
+    --mono: "Cascadia Code", Consolas, "SF Mono", ui-monospace, monospace;
+    --sans: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #17191c; --ink: #e7e5df; --ink-soft: #aeaca4; --ink-faint: #7a7972;
+      --line: #31363a; --card: #1e2125; --edge: #2c3135; --code-bg: #262a2e;
+      --accent: #dda627; --accent-str: #ecbb49; --accent-wash: #29230f;
+      --silent: #dd8079; --silent-wash: #32201f;
+      --loud: #79b2d4; --loud-wash: #1b262d;
+      --domain: #6cb98d; --domain-wash: #1a2921;
+    }
+  }
+  :root[data-theme="light"] {
+    --paper: #f6f7f7; --ink: #1e2328; --ink-soft: #4a545c; --ink-faint: #7b858d;
+    --line: #d7dcdd; --card: #ffffff; --edge: #e2e6e7; --code-bg: #edf0f0;
+    --accent: #a8730a; --accent-str: #855a05; --accent-wash: #f9f2e2;
+    --silent: #a8352e; --silent-wash: #f9eceb;
+    --loud: #2b6b8f; --loud-wash: #e9f1f6;
+    --domain: #2c6b4a; --domain-wash: #e8f2ec;
+  }
+  :root[data-theme="dark"] {
+    --paper: #17191c; --ink: #e7e5df; --ink-soft: #aeaca4; --ink-faint: #7a7972;
+    --line: #31363a; --card: #1e2125; --edge: #2c3135; --code-bg: #262a2e;
+    --accent: #dda627; --accent-str: #ecbb49; --accent-wash: #29230f;
+    --silent: #dd8079; --silent-wash: #32201f;
+    --loud: #79b2d4; --loud-wash: #1b262d;
+    --domain: #6cb98d; --domain-wash: #1a2921;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--sans); font-size: 15.5px; line-height: 1.6; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 22px 90px; }
+  a { color: var(--accent-str); text-underline-offset: 2px; }
+  code { font-family: var(--mono); font-size: 0.87em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  p { margin: 0 0 13px; }
+
+  header { padding: 52px 0 30px; border-bottom: 3px solid var(--ink); }
+  .kicker { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  h1 { font-size: clamp(28px, 4.6vw, 40px); line-height: 1.13; margin: 9px 0 12px; font-weight: 750; letter-spacing: -0.02em; text-wrap: balance; }
+  .standfirst { font-size: 17px; color: var(--ink-soft); max-width: 640px; margin: 0; }
+  .meta { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); margin-top: 18px; }
+
+  /* thesis */
+  .thesis { background: var(--silent-wash); border: 1px solid var(--silent); border-radius: 11px; padding: 20px 24px; margin: 30px 0 10px; }
+  .thesis .tl { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 700; color: var(--silent); display: block; margin-bottom: 7px; }
+  .thesis p { font-size: 15.5px; margin-bottom: 9px; }
+  .thesis p:last-child { margin-bottom: 0; }
+
+  /* legend */
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 26px 0 0; }
+  .lg { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); background: var(--card); border: 1px solid var(--edge); border-radius: 8px; padding: 7px 12px; }
+
+  .chip { display: inline-block; font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 20px; white-space: nowrap; text-transform: uppercase; }
+  .chip.silent { background: var(--silent-wash); color: var(--silent); }
+  .chip.loud { background: var(--loud-wash); color: var(--loud); }
+  .chip.domain { background: var(--domain-wash); color: var(--domain); }
+
+  /* sections */
+  section { margin-top: 54px; }
+  .eyebrow { display: flex; align-items: baseline; gap: 11px; font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 5px; }
+  .eyebrow .n { color: var(--accent); font-weight: 700; }
+  h2 { font-size: 24px; margin: 0 0 10px; letter-spacing: -0.015em; font-weight: 700; text-wrap: balance; }
+  .lede { color: var(--ink-soft); max-width: 700px; margin-bottom: 22px; }
+
+  /* entries */
+  .entry { background: var(--card); border: 1px solid var(--edge); border-radius: 11px; padding: 17px 20px; margin-bottom: 13px; }
+  .entry.crit { border-left: 3px solid var(--silent); }
+  .ehead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 9px; margin-bottom: 7px; }
+  .ehead h3 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  .entry p { font-size: 14.5px; margin-bottom: 8px; color: var(--ink-soft); }
+  .entry p:last-child { margin-bottom: 0; }
+  .entry strong { color: var(--ink); font-weight: 650; }
+  .do { display: block; font-size: 14px; margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--line); color: var(--ink); }
+  .do b { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-str); font-weight: 700; margin-right: 7px; }
+
+  /* closing spec */
+  .spec { background: var(--card); border: 1px solid var(--edge); border-radius: 11px; padding: 4px 22px 18px; margin-top: 22px; }
+  .spec ol { padding-left: 20px; margin: 16px 0 0; }
+  .spec li { margin-bottom: 12px; font-size: 14.5px; }
+  .spec li::marker { color: var(--accent); font-weight: 700; font-family: var(--mono); }
+  .spec li b { font-weight: 650; }
+
+  .note { background: var(--accent-wash); border-left: 3px solid var(--accent); border-radius: 0 9px 9px 0; padding: 13px 17px; margin: 20px 0; font-size: 14.5px; }
+  .note .nl { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 700; color: var(--accent-str); margin-bottom: 5px; }
+  .note p:last-child { margin-bottom: 0; }
+
+  .footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--ink-faint); font-family: var(--mono); line-height: 1.7; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="kicker">Dochak · Prism · engineering reference</div>
+    <h1>What Vissim will let you break without telling you</h1>
+    <p class="standfirst">Every constraint, hidden coupling, and domain rule an automated editing layer has to respect — catalogued from PTV's documentation, its COM reference, and eight state DOT modeling manuals.</p>
+    <div class="meta">Compiled 2026-07-21 · attribute names verified against the PTV Vissim COM reference</div>
+  </header>
+
+  <div class="thesis">
+    <span class="tl">The one thing that shapes the whole design</span>
+    <p><strong>Vissim almost never refuses a bad edit. It runs, finishes, and reports confident numbers.</strong> A missing right-of-way rule lets cars drive through each other. A signal plan with conflicting greens produces <em>better</em> delay. Vehicles that can't merge are deleted after 60 seconds and the demand silently disappears. Demand that exceeds capacity waits outside the network and never arrives.</p>
+    <p>Almost nothing in this catalogue throws an error. That means <strong>the validation layer isn't a nice-to-have around the edges of the product — it is the product.</strong> Anyone can wire an LLM to the COM API in a week. Knowing which edits are lies is the part that takes real work, and it's the part a competitor can't copy from a blog post.</p>
+  </div>
+
+  <div class="legend">
+    <span class="lg"><span class="chip silent">silent</span> wrong results, no error — the dangerous class</span>
+    <span class="lg"><span class="chip loud">blocks</span> fails or hangs visibly</span>
+    <span class="lg"><span class="chip domain">domain</span> needs an engineer's judgement to get right</span>
+  </div>
+
+  <!-- ========== 1 ========== -->
+  <section>
+    <div class="eyebrow"><span class="n">01</span><span>Silent failure</span></div>
+    <h2>Edits that produce confident, wrong answers</h2>
+    <p class="lede">Read this section first. Each of these degrades results without any warning, and several of them make the numbers look <em>better</em>, which means an optimising agent will actively seek them out.</p>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Conflict areas default to inactive</h3><span class="chip silent">silent</span></div>
+      <p>Vissim auto-detects where two links overlap and creates a "conflict area" — but its default status is <strong>Passive, meaning no right-of-way control at all</strong>. Vehicles drive straight through one another. Virginia DOT lists this under "Common Coding Errors": check that vehicles are not running over each other where links cross. In PTV's own shipped example networks, roughly 78% of all conflict areas are Passive.</p>
+      <p>Worse for an editing tool: <strong>conflict areas cannot be created or deleted through the COM API</strong> — the container has no add or remove method. They are derived from geometry, and any geometry edit destroys their configuration silently. PTV states that on network re-import, "conflict areas are not retained."</p>
+      <span class="do"><b>Do</b>Snapshot every conflict area's settings keyed on the <em>link pair</em> (never on its number — see §3), re-apply after any geometry edit, and make "count of Passive conflict areas" a regression metric that must not increase.</span>
+    </div>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Conflicting greens are allowed, and score well</h3><span class="chip silent">silent</span></div>
+      <p>Intergreen matrices (the clearance time required between one movement ending and a conflicting one starting) are <strong>checked and highlighted, but never enforced</strong>. PTV states plainly that intergreens "cannot be calculated, they can only be entered," and that no validity checks are performed. A plan that gives two conflicting movements green simultaneously will simulate — and because the vehicles pass through each other rather than colliding, <strong>the reported delay improves</strong>.</p>
+      <p>This is the single most dangerous interaction in the whole system: an agent asked to "reduce delay at this intersection" has a physically lethal solution available to it that its objective function rewards.</p>
+      <span class="do"><b>Do</b>Validate every proposed signal plan against the intergreen matrix in your own code before it ever reaches Vissim. Treat a delay improvement larger than expected as a signal to check for a safety violation, not a success.</span>
+    </div>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Vehicles that can't change lanes are deleted</h3><span class="chip silent">silent</span></div>
+      <p>A vehicle that needs to change lanes to follow its route, and reaches the last possible point without finding a gap, waits — and after <code>DiffusTm</code> seconds (default 60) <strong>Vissim removes it from the network entirely</strong>. This is deliberate, to stop one stuck vehicle gridlocking everything, but it means demand quietly evaporates and downstream volumes fall.</p>
+      <p>Maryland's DOT is blunt about the consequence of tuning this down: if reviewers see frequent vehicle removals, <strong>"the reviewers will likely reject the model."</strong> Both Maryland and Washington State raise the default to 200 seconds specifically so that removals become visible rather than routine.</p>
+      <span class="do"><b>Do</b>Never lower this value automatically. Parse the <code>.err</code> file after every run and surface removal counts as a first-class result, not a log line.</span>
+    </div>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Demand that never enters the network</h3><span class="chip silent">silent</span></div>
+      <p>If you raise traffic beyond what a link can accept, the extra vehicles don't error — they queue <em>outside</em> the network waiting for space. Vissim tracks this as <strong>latent demand</strong>. A user who asks for "20% more traffic" may get 8% more traffic and a result that looks like the road copes fine.</p>
+      <span class="do"><b>Do</b>Read the network-wide latent demand measure after every run. If it rose above zero, the requested scenario did not actually happen and the comparison is invalid — say so rather than reporting the numbers.</span>
+    </div>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>A gridlocked movement can report the best possible grade</h3><span class="chip silent">silent</span></div>
+      <p>Vissim's level-of-service grade A covers the case of <strong>"no volume, as no vehicle is moving, also due to traffic jam."</strong> A movement so blocked that nothing gets through reports the same grade as a movement with no delay at all.</p>
+      <span class="do"><b>Do</b>Never report a level-of-service letter without the throughput next to it. Flag any grade A with near-zero volume as a probable failure, not a success.</span>
+    </div>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Broken routes stay broken even after you fix the road</h3><span class="chip silent">silent</span></div>
+      <p>Routes are stored as fixed sequences of links. PTV: when you split or delete links that a route runs across, those routes become disconnected — <strong>"even if you subsequently insert new links or connectors there, these routes remain disconnected."</strong> There is a "check and repair all routes" function, but it <em>finds new paths</em> rather than restoring the original ones, so a repaired route may take a completely different course.</p>
+      <span class="do"><b>Do</b>Snapshot the link sequence of every affected route before a geometry edit, and after repair diff the new sequence against the old. Present any changed route to the user as a change requiring approval.</span>
+    </div>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Deleting a route silently bans a turn</h3><span class="chip silent">silent</span></div>
+      <p>In Vissim a banned movement is expressed by <em>absence</em> — a turn is prohibited when no route covers it, provided routes exist for at least one other movement at that point. So removing the last route through a movement doesn't just remove traffic, it makes that turn illegal.</p>
+      <span class="do"><b>Do</b>Before deleting any route, check whether it is the last one covering its movement, and warn explicitly that the turn will close.</span>
+    </div>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Stale route files reused without complaint</h3><span class="chip silent">silent</span></div>
+      <p>Models using dynamic assignment (where drivers choose routes rather than following fixed ones) store converged paths in external files. After a network edit, those files are stale — but Vissim only checks them <strong>if a "check edges" option is enabled</strong>. Leave it off and it silently reuses paths that no longer match the network.</p>
+      <span class="do"><b>Do</b>Detect dynamic assignment on model upload. After any geometry edit, regenerate the node-edge graph and delete the path and cost files rather than trusting them.</span>
+    </div>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Writing a parameter the active model ignores</h3><span class="chip silent">silent</span></div>
+      <p>Every driving-behaviour set stores parameters for <em>both</em> car-following models (Wiedemann 74 and 99) regardless of which is active. Urban behaviour uses model 74; freeway uses 99. Writing a model-99 parameter on an urban behaviour <strong>changes nothing at all</strong> — and nothing reports the no-op, so the agent will confidently announce a change that didn't happen.</p>
+      <span class="do"><b>Do</b>Check which car-following model a behaviour uses before writing any of its parameters, and reject mismatched writes as an error rather than letting them pass.</span>
+    </div>
+  </section>
+
+  <!-- ========== 2 ========== -->
+  <section>
+    <div class="eyebrow"><span class="n">02</span><span>Not editable how you'd expect</span></div>
+    <h2>Where the obvious operation doesn't exist</h2>
+    <p class="lede">These are the cases where the natural mental model — "find the property, set the value" — has no corresponding operation in Vissim at all.</p>
+
+    <div class="entry">
+      <div class="ehead"><h3>There is no lane-count property</h3><span class="chip domain">domain</span></div>
+      <p>Lane count is fixed when a link is <em>constructed</em> — the creation call takes an array of lane widths, one entry per lane. To change it you rebuild the link and re-attach everything anchored to it. Compounding this: a link's geometry is <strong>read-only</strong>, and you cannot add or remove its shape points, so any non-trivial reshape becomes delete-and-recreate too.</p>
+      <span class="do"><b>Do</b>Check first whether the extra lane already exists but is restricted (bus-only, closed to a vehicle class) — <em>opening</em> a lane is a simple, safe attribute change and may cover a real share of requests.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>There is no speed limit</h3><span class="chip domain">domain</span></div>
+      <p>Links have no speed attribute of any kind. Speed comes from a <strong>desired speed distribution</strong> — a spread of free-flow speeds from which each vehicle draws a percentile on entry and keeps it for its whole trip. Three different objects can change it, and picking the wrong one gives plausible but wrong numbers:</p>
+      <p>Changing the <em>composition's</em> distribution changes the speed vehicles enter the network with. A <em>desired speed decision</em> is a marker at a point that changes speed from there onward. A <em>reduced speed area</em> is a zone where vehicles slow in advance and then resume — for curves and turns, not speed limits.</p>
+      <span class="do"><b>Do</b>Treat any speed request as ambiguous until resolved with the user. Never guess between the three.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>A speed decision is permanent unless you undo it</h3><span class="chip silent">silent</span></div>
+      <p>PTV is explicit: to model a temporary speed change with decisions "you must define a second desired speed decision immediately after this, so that the vehicles are given their original desired speed." <strong>A tool that adds one marker to model a 30 km/h zone slows vehicles for the entire rest of the network.</strong></p>
+      <span class="do"><b>Do</b>Always create speed decisions in pairs, or use a reduced speed area where the change should be bounded.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>The main calibration parameter isn't a number</h3><span class="chip loud">blocks</span></div>
+      <p>CC1 — the headway parameter that dominates capacity in the freeway car-following model — is <strong>a reference to a separate distribution object</strong>, not a scalar. Writing a number to it fails. You either point it at a different distribution or edit that distribution's mean, and distributions are shared, so editing one changes everything referencing it.</p>
+      <span class="do"><b>Do</b>Create a new distribution rather than mutating a shared one, and treat every reference-typed attribute as a pointer, not a value.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Signal timings may be outside the API entirely</h3><span class="chip loud">blocks</span></div>
+      <p>How reachable a signal plan is depends entirely on the controller type. Fixed-time plans store cycle time, offsets and green windows in an <strong>opaque blob attribute</strong> on the controller with no documented per-field access. Ring-Barrier controllers keep theirs in an external <code>.prbc</code> file; VAP controllers in a separate text program; Econolite controllers in a vendor database edited through the vendor's own tool. <strong>For those, the signal logic is genuinely outside anything the COM API can reach.</strong></p>
+      <p>Signal <em>heads</em> and <em>detectors</em>, by contrast, are ordinary network objects and fully editable for every controller type.</p>
+      <span class="do"><b>Do</b>Detect controller type on model upload and set expectations accordingly. A practical v1: pre-build alternative signal programs in the editor and let the agent switch between them, rather than authoring timings.</span>
+    </div>
+  </section>
+
+  <!-- ========== 3 ========== -->
+  <section>
+    <div class="eyebrow"><span class="n">03</span><span>Fragile references</span></div>
+    <h2>Identifiers that don't mean what they look like</h2>
+    <p class="lede">Vissim's object graph is held together by numbers, positions and ports — several of which move, get reused, or point at things outside the model file.</p>
+
+    <div class="entry">
+      <div class="ehead"><h3>Conflict area numbers are not stable identity</h3><span class="chip silent">silent</span></div>
+      <p>Numbers come from a counter as overlaps are discovered and are never reissued when one is destroyed. PTV's own shipped roundabout example has 55 conflict areas numbered up to 71 — sixteen permanent gaps from its editing history.</p>
+      <span class="do"><b>Do</b>Key on the unordered pair of link numbers, never on the conflict area's own number.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Positions are measured from the link's start</h3><span class="chip silent">silent</span></div>
+      <p>Signal heads, detectors, routing decisions, speed decisions and priority rules are all anchored by a distance from the beginning of their link. <strong>Extending a link upstream moves every one of them relative to the intersection</strong> — the stop line stays put in the data and slides in the world. The detector-to-stopline distance that governs actuated signal timing is <em>computed</em>, not stored, so it changes with no attribute changing.</p>
+      <span class="do"><b>Do</b>Treat any edit to a link's start point as invalidating every positioned object on it; recompute and present the resulting shifts.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Splitting a link renumbers it and inserts a gap</h3><span class="chip silent">silent</span></div>
+      <p>The split produces a new link with a new number for the second half, breaking every route that referenced the original. It also <strong>physically inserts a gap</strong> centred on the split point — the geometry actually changes, not just the data structure.</p>
+      <span class="do"><b>Do</b>Avoid splits where possible; where unavoidable, treat them as a full snapshot-and-reconcile operation.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Port numbers bind detectors to external controllers</h3><span class="chip silent">silent</span></div>
+      <p>Actuated controllers address detectors by <strong>port number, not by the detector's object number</strong>. Renumbering ports silently rewires which detector calls which movement — the model runs, the signals respond to the wrong loops.</p>
+      <span class="do"><b>Do</b>Treat port numbers as immutable. Same for signal group numbers, which are the join key to external controller files — PTV warns explicitly that changing them can make the model incompatible with its controller files.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Deletes cascade, and the documentation is vague about how far</h3><span class="chip silent">silent</span></div>
+      <p>PTV says only that deleting an object means other objects positioned on it "may also be deleted," without enumerating which. Deleting a routing decision definitively takes all its routes with it.</p>
+      <span class="do"><b>Do</b>Enumerate everything attached to an object before deleting it, and show the user the full blast radius. Copy-on-write scenarios make this recoverable.</span>
+    </div>
+  </section>
+
+  <!-- ========== 4 ========== -->
+  <section>
+    <div class="eyebrow"><span class="n">04</span><span>Domain semantics</span></div>
+    <h2>Rules an algorithm has to encode</h2>
+    <p class="lede">These aren't bugs or fragility — they're the domain's actual logic. Getting them wrong produces answers that are wrong in ways only a traffic engineer would catch.</p>
+
+    <div class="entry">
+      <div class="ehead"><h3>Volume is always per hour, whatever the interval</h3><span class="chip domain">domain</span></div>
+      <p>PTV: "You must always enter the number of vehicles per hour, even if the time interval is shorter." A user asking for 300 vehicles in a 15-minute peak needs the value <strong>1200</strong> written.</p>
+      <span class="do"><b>Do</b>Also remember demand is defined <em>per time interval</em> — a model with a four-interval morning peak has four values per input, and scaling traffic means scaling all of them.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>"More trucks" redistributes rather than adds</h3><span class="chip domain">domain</span></div>
+      <p>Vehicle mixes are stored as <strong>relative shares normalised to 100%</strong>. Raising the truck share lowers the car share — the total stays the same. If the user means "more trucks <em>and</em> the same number of cars," the total volume must rise too.</p>
+      <span class="do"><b>Do</b>Ask which they mean. Both are legitimate and they produce very different results.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Scaling demand automatically scales routes — don't do it twice</h3><span class="chip domain">domain</span></div>
+      <p>Route volumes are relative shares of what arrives, so raising input volume by 20% automatically carries through to every downstream route. An agent that also scales the route flows corrupts the turning proportions.</p>
+      <span class="do"><b>Do</b>Scale inputs only. Leave relative flows alone.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Cycle time is a corridor property, not an intersection one</h3><span class="chip domain">domain</span></div>
+      <p>Coordinated signals stay in step only while they share a cycle length — Vissim derives each controller's position in its cycle from an absolute clock. Change one intersection from 90 to 100 seconds and the green wave along the whole corridor dissolves within a few cycles. Nothing in Vissim flags this; there is no corridor-level object that would notice.</p>
+      <span class="do"><b>Do</b>Treat cycle time as a network-scope edit affecting every coordinated controller, never as a single-intersection change.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Splits must sum to the cycle, and include the clearance</h3><span class="chip domain">domain</span></div>
+      <p>In ring-barrier controllers, <strong>the splits in each ring must add up to the cycle length</strong> — lengthening one without shortening another is arithmetically invalid. And a split covers green <em>plus</em> yellow <em>plus</em> red clearance, so an agent treating a split as green time systematically over-allocates.</p>
+      <span class="do"><b>Do</b>Encode the sum constraint and the minimum-green floors as hard checks before submitting any timing change.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Restrictions apply per vehicle class, not per type</h3><span class="chip domain">domain</span></div>
+      <p>Vissim has three levels: category (a fixed built-in list), type (technical characteristics), and class (a grouping used for restrictions, speed assignment and evaluations). Speed decisions, lane closures and route validity are all defined <strong>per class</strong> — and any class not listed keeps its original behaviour, so a partial specification silently exempts everyone else.</p>
+      <span class="do"><b>Do</b>Enumerate the classes present in the model and require an explicit answer about which ones an edit applies to.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Units and percentages come back unmarked</h3><span class="chip silent">silent</span></div>
+      <p>Whether speeds are km/h or mph is a <strong>network-level setting stored in the model file</strong>, and values come across the API in whatever the model uses, with nothing in the value to say which. Separately, percentages arrive as 0–1 rather than 0–100 — writing 45 where 0.45 was meant produces silent nonsense.</p>
+      <span class="do"><b>Do</b>Read the unit settings once on upload and stamp them onto every value that reaches the dashboard. Never compare numbers across models without normalising.</span>
+    </div>
+  </section>
+
+  <!-- ========== 5 ========== -->
+  <section>
+    <div class="eyebrow"><span class="n">05</span><span>Results</span></div>
+    <h2>You can only answer what was armed before the run</h2>
+    <p class="lede">This is the hardest constraint on a conversational dashboard, because it limits what the assistant can answer at all — not how it answers.</p>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Evaluations are not retroactive</h3><span class="chip loud">blocks</span></div>
+      <p>Vissim keeps no general simulation history. It records only into the measurements you switched on <em>before</em> starting. If nobody configured an evaluation at the intersection the user is asking about, <strong>that number does not exist and cannot be recovered</strong> — you must configure it and re-run.</p>
+      <span class="do"><b>Do</b>Parse the model's evaluation configuration on upload and build a manifest of what it can answer. Sort every question into answerable / answerable-with-caveats / requires-a-re-run, and say plainly which.</span>
+    </div>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Adding an evaluation deletes the results you already have</h3><span class="chip loud">blocks</span></div>
+      <p>Vissim discards previous simulation results when the evaluation configuration changes <em>or</em> when the network objects an evaluation depends on are edited. Setting up to answer a new question therefore <strong>destroys the answers to the old ones</strong> — potentially a multi-hour batch of runs.</p>
+      <span class="do"><b>Do</b>Guard this path explicitly in the UI. Never let an agent add an evaluation without warning what it will erase.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Warm-up is not a setting — it's a field on every evaluation</h3><span class="chip silent">silent</span></div>
+      <p>Simulations start with an <strong>empty network</strong>, so early results are meaningless. There is no warm-up checkbox: you exclude it by setting a start time on each evaluation individually, and <strong>the default is zero</strong>. It's entirely possible for one evaluation to be correctly windowed and another left contaminated. DOT minimums range from 10 to 30 minutes.</p>
+      <span class="do"><b>Do</b>Read every evaluation's start time and warn on any that begins at zero.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>"Queue length" is not a portable number</h3><span class="chip domain">domain</span></div>
+      <p>What counts as queued is defined by configurable speed thresholds and a maximum gap between vehicles — and the reported value is also truncated by wherever the next counter upstream sits. Two models of the same junction with different settings produce genuinely different queue numbers. The reported average also <strong>includes the zeros</strong>, so a movement that queues badly for a tenth of the interval averages out to nearly nothing.</p>
+      <span class="do"><b>Do</b>Attach the queue definition and counter location to every queue answer, and refuse to compare queues across models configured differently.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Delay is only counted from a fixed distance upstream</h3><span class="chip silent">silent</span></div>
+      <p>Intersection delay is measured from a configurable point upstream of the junction, <strong>default 100 metres</strong>. When queues stretch further back than that, the excess delay simply isn't counted — so the most congested intersections are the ones whose delay is most under-reported.</p>
+      <span class="do"><b>Do</b>Compare queue length against the delay-segment start and flag results where the queue exceeds it.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>The averaging interval changes the answer</h3><span class="chip domain">domain</span></div>
+      <p>Results are aggregated into intervals fixed at configuration time. Hourly and two-minute averages of the same run are different numbers, and peaks vanish into long intervals. Washington State adds a subtle one: the interval <strong>should not be a multiple of the signal cycle length</strong>, or you sample the same point in the cycle every time.</p>
+      <span class="do"><b>Do</b>Report the interval alongside every number.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>One run is not an answer</h3><span class="chip domain">domain</span></div>
+      <p>Microsimulation is stochastic; a single run is one draw from a distribution. DOT minimums: Maryland 5 runs, Oregon 10, Washington State 11. Vissim can run and average multiple seeds natively.</p>
+      <span class="do"><b>Do</b>Default to multiple seeds, report the mean with its spread and the run count, and flag any single-run result as provisional.</span>
+    </div>
+
+    <div class="note">
+      <span class="nl">The one escape hatch worth building around</span>
+      <p>Vissim can write a full vehicle trajectory record — every vehicle's position and speed at every timestep. It is the only output from which other measurements can be reconstructed <em>after</em> the fact: delay, queues, travel time, density, anywhere in the network, at any interval, under any queue definition. Vissim won't backfill its own evaluations from it, but <strong>your own post-processor can</strong>. A model instrumented this way is retroactively queryable; one without it is not. The cost is file size, so it needs an attribute subset and sensible filters — but this single decision converts a large class of "I'd have to re-run" answers into ordinary ones, and it is the strongest architectural lever available for the conversational experience.</p>
+    </div>
+  </section>
+
+  <!-- ========== 6 ========== -->
+  <section>
+    <div class="eyebrow"><span class="n">06</span><span>Calibration</span></div>
+    <h2>Editing a signed engineering deliverable</h2>
+    <p class="lede">A calibrated model is a tuple — geometry, demand, control, behaviour parameters, seed count and warm-up — that jointly reproduces observed traffic within agency tolerances, documented in an approved report. PTV's own warning: change driving behaviour parameters "only if you are a very experienced user."</p>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Driving behaviours are global objects</h3><span class="chip silent">silent</span></div>
+      <p>A behaviour parameter set isn't attached to a link — it's a shared object that many links point at. <strong>Editing one to fix a single ramp changes every link in the network using it.</strong> There is no per-link containment. This is why Maryland's DOT ships fourteen separately-named behaviour sets rather than editing shared ones.</p>
+      <span class="do"><b>Do</b>Never edit a shared behaviour in place. Duplicate it, edit the copy, and retarget only the intended links — the same rule human modellers are given.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Capacity is many-to-one in the parameters</h3><span class="chip domain">domain</span></div>
+      <p>Published sensitivity work found multiple distinct parameter combinations producing identical capacity. So "restore this parameter to its default" doesn't restore the model — it moves it to a different point where the engineer's compensating adjustments no longer make sense. <strong>Parameter-level diffs aren't semantically meaningful in isolation.</strong></p>
+      <span class="do"><b>Do</b>Recompute the calibration statistic after any change and refuse to persist an edit that moves the model outside its agency criteria without explicit sign-off.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Some parameters are off-limits by agency policy</h3><span class="chip domain">domain</span></div>
+      <p>Washington State and Maryland both publish tables of which parameters may be adjusted and within what range — and both say of the deeper car-following parameters simply <strong>"use default."</strong> Washington State requires written justification and approval for anything outside the suggested ranges.</p>
+      <span class="do"><b>Do</b>Encode these as hard blocks, not warnings. An AI has no field data justifying a change an agency requires evidence for.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>A version upgrade alone can change results</h3><span class="chip silent">silent</span></div>
+      <p>PTV's release notes state directly that lane-change behaviour, merging and conflict-area handling changed in the 2024 version and that "simulation results can differ to those of previous versions." A merging option that some models had switched off <strong>no longer exists and is now always on</strong>. A calibration can therefore break without anyone editing anything.</p>
+      <span class="do"><b>Do</b>Pin the Vissim version per deployment, record it with every result, and re-validate calibrations on any upgrade.</span>
+    </div>
+  </section>
+
+  <!-- ========== 7 ========== -->
+  <section>
+    <div class="eyebrow"><span class="n">07</span><span>Operations</span></div>
+    <h2>Running Vissim on a server, unattended</h2>
+    <p class="lede">Vissim is a desktop application being asked to behave like a service. Most of these are solvable, but they need designing for rather than discovering.</p>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Dialogs will hang a worker forever</h3><span class="chip loud">blocks</span></div>
+      <p>The single biggest automation risk, and mostly undocumented. An empty file path <strong>opens a file browser</strong> and blocks the call indefinitely. Saving a model authored in an older Vissim version <strong>prompts about format conversion</strong>. Saving where a results folder exists prompts again. Runtime warnings pop a message window. There is no global "suppress all dialogs" switch.</p>
+      <span class="do"><b>Do</b>Validate every path before use, pre-set the format-conversion preference on the server image, enable quick mode (which suppresses the message window), and run every job in a child process under a wall-clock watchdog that kills and relaunches.</span>
+    </div>
+
+    <div class="entry crit">
+      <div class="ehead"><h3>Vissim cannot run as a Windows service</h3><span class="chip loud">blocks</span></div>
+      <p>PTV states it "always uses a window handle and needs to run in a user session." It also needs a <strong>floating network licence</strong> — single-user licences fail over remote desktop on server operating systems. Concurrency is capped at roughly <strong>four instances per session</strong>, each consuming licence capacity.</p>
+      <span class="do"><b>Do</b>Plan for a persistent logged-on interactive session that is disconnected but never logged off, and size the fleet around four workers per session. This is a licence-cost and capacity-planning input, not just an engineering detail.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>The naive loop is the slow one</h3><span class="chip domain">domain</span></div>
+      <p>The API is an out-of-process server, so every property read crosses a process boundary. Reading five attributes from a thousand vehicles one at a time is five thousand round trips; the batch methods do it in one. Quick mode and suspending the interface redraw are separate, complementary wins.</p>
+      <span class="do"><b>Do</b>Use the batch attribute methods from the start, and read bulk results out of the results database rather than through the API at all.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>The error file is overwritten between runs</h3><span class="chip silent">silent</span></div>
+      <p>With a single run configured, each new simulation <strong>overwrites the previous error file</strong> — the record of removed vehicles and unmet demand from the last run disappears when you start the next.</p>
+      <span class="do"><b>Do</b>Sweep and archive the error file per job before the next run starts.</span>
+    </div>
+
+    <div class="entry">
+      <div class="ehead"><h3>Simulation resolution changes results, not just runtime</h3><span class="chip silent">silent</span></div>
+      <p>PTV: "simulations using different simulation resolutions produce different results." Values below 5 steps per second are explicitly unsuitable for final results.</p>
+      <span class="do"><b>Do</b>Lock resolution across any set of scenarios intended for comparison, and never let it be tuned for speed on a run whose numbers will be reported.</span>
+    </div>
+  </section>
+
+  <!-- ========== closing ========== -->
+  <section>
+    <div class="eyebrow"><span class="n">08</span><span>What this means to build</span></div>
+    <h2>The validation layer, specified</h2>
+    <p class="lede">Nearly every item above resolves into the same small set of mechanisms. Build these and the catalogue is mostly handled; skip them and each entry becomes a separate bug found by a customer.</p>
+    <div class="spec">
+      <ol>
+        <li><b>A model manifest, built on upload.</b> Parse the model once and record: Vissim version, unit settings, controller type per intersection, which evaluations are armed and with what windows and intervals, whether dynamic assignment is in use, which driving behaviours exist and which links use them. This manifest is what the assistant is allowed to promise.</li>
+        <li><b>A reference registry around every mutation.</b> Before an edit, enumerate everything attached to the objects being touched; after, assert each one landed somewhere valid. This is the same mechanism that powers undo, the diff view, and the "what will this affect?" preview.</li>
+        <li><b>A rule table that lives in code, not in the prompt.</b> Range checks, the splits-sum-to-cycle constraint, intergreen validation, off-limits parameters, model-type matching. A prompt is a suggestion; a check is enforcement.</li>
+        <li><b>Post-run assertions on every result.</b> Latent demand still zero, removed-vehicle count unchanged, no passive conflict areas added, throughput conserved, no previously-flowing link now at zero. Run a short smoke simulation before committing to the full multi-seed batch.</li>
+        <li><b>Golden test models in the repo.</b> Small networks with known-correct outcomes for each supported edit, run on every change to the core library. This is the difference between a library people trust and one they don't.</li>
+        <li><b>An answerability router.</b> Every question sorted into answerable now, answerable with caveats, or needs a re-run — with the caveats attached to the number rather than buried.</li>
+        <li><b>Provenance on every figure.</b> Interval, warm-up window, seed count, units, queue definition. Not decoration: it is what lets an engineer trust a number the AI produced, and what settles a dispute six months later.</li>
+      </ol>
+    </div>
+
+    <div class="note">
+      <span class="nl">The strategic read</span>
+      <p>This catalogue is why the Vissim version of conversational simulation hasn't been published while the SUMO versions have. SUMO's file formats are open, documented, and forgiving; Vissim is a closed commercial product whose data model actively hides these couplings. That makes the work harder — and it also means <strong>the validation layer, not the AI, is the defensible asset</strong>. It is the encoded expertise of Dochak's traffic engineers, and it is exactly the thing that cannot be reproduced by someone who has only read the API documentation.</p>
+    </div>
+  </section>
+
+  <div class="footer">Sources: PTV Vissim online help and COM API reference · PTV knowledge base · PTV release notes · state DOT modeling manuals (Washington State, Oregon, Maryland SHA, Virginia, Massachusetts, Wisconsin, Kentucky, Georgia) · FHWA Traffic Analysis Toolbox · published sensitivity research. Compiled 2026-07-21. Items marked as engineering judgement rather than documented behaviour should be confirmed against a licensed Vissim instance before being relied on.</div>
+</div>
