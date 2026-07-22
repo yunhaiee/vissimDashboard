@@ -20,8 +20,22 @@ class VissimController:
         self.vissim = None
         self._owns_instance = False
         self.prog_id: str | None = None
+        self._max_sim_sec = 0.0
+        self._sim_run_ended = False
 
-    def connect(self, visible: bool = False, launch_if_missing: bool = True) -> None:
+    def connect(
+        self,
+        visible: bool = False,
+        launch_if_missing: bool = True,
+        attach_to_running: bool = True,
+    ) -> None:
+        """Attach to a running Vissim or launch a new one.
+
+        Pass ``attach_to_running=False`` for automation that must own its
+        instance: GetActiveObject grabs an arbitrary registered instance, which
+        may be a human's interactive session — LoadNet into it would destroy
+        their open work.
+        """
         import win32com.client
 
         progids = [
@@ -34,15 +48,16 @@ class VissimController:
             "VISSIM.Vissim",
         ]
 
-        for prog_id in progids:
-            try:
-                self.vissim = win32com.client.GetActiveObject(prog_id)
-                self._owns_instance = False
-                self.prog_id = prog_id
-                logger.info("Attached to running VISSIM via %s", prog_id)
-                break
-            except Exception:
-                continue
+        if attach_to_running:
+            for prog_id in progids:
+                try:
+                    self.vissim = win32com.client.GetActiveObject(prog_id)
+                    self._owns_instance = False
+                    self.prog_id = prog_id
+                    logger.info("Attached to running VISSIM via %s", prog_id)
+                    break
+                except Exception:
+                    continue
 
         if self.vissim is None and launch_if_missing:
             for prog_id in progids:
@@ -66,6 +81,7 @@ class VissimController:
 
     def load_network(self, inpx_path: str) -> None:
         self.vissim.LoadNet(str(inpx_path), False)
+        self._reset_run_tracking()
         try:
             self.vissim.Net.SetAttValue("ScenManagmt", 0)
             logger.info("Scenario management disabled")
@@ -86,6 +102,7 @@ class VissimController:
 
     def set_sim_duration(self, seconds: int) -> None:
         self.vissim.Simulation.SetAttValue("SimPeriod", seconds)
+        self._reset_run_tracking()
 
     def set_random_seed(self, seed: int) -> None:
         self.vissim.Simulation.SetAttValue("RandSeed", seed)
@@ -120,9 +137,17 @@ class VissimController:
 
     def get_sim_sec(self) -> float:
         try:
-            return float(self.vissim.Simulation.AttValue("SimSec"))
+            value = float(self.vissim.Simulation.AttValue("SimSec"))
         except Exception:
             return 0.0
+        if value < self._max_sim_sec:
+            # Vissim resets SimSec to 0 after the final step (even with NumRuns=1);
+            # a backwards jump is the only reliable end-of-run signal over COM.
+            # One more RunSingleStep after that would silently start a new run.
+            self._sim_run_ended = True
+        else:
+            self._max_sim_sec = value
+        return value
 
     def get_sim_period(self) -> float:
         try:
@@ -134,7 +159,14 @@ class VissimController:
         self.vissim.Simulation.RunSingleStep()
 
     def is_sim_finished(self) -> bool:
-        return self.get_sim_sec() >= self.get_sim_period()
+        if self._sim_run_ended:
+            return True
+        period = self.get_sim_period()
+        return period > 0 and self.get_sim_sec() >= period
+
+    def _reset_run_tracking(self) -> None:
+        self._max_sim_sec = 0.0
+        self._sim_run_ended = False
 
     def available_vehicle_input_nos(self) -> list[int]:
         return self._collection_nos(self.vissim.Net.VehicleInputs)
