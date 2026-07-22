@@ -89,6 +89,16 @@ class ToolRegistry:
         """Registered :class:`ToolSpec` values, in registration order."""
         return tuple(self._tools.values())
 
+    def unregister(self, name: str) -> None:
+        """Remove a tool by name. No-op if not registered.
+
+        Production code never needs this (registration is one-way by
+        design); it exists so tests that register into ``default_registry``
+        (by omitting ``registry=``) can clean up without reaching into
+        ``ToolRegistry`` internals.
+        """
+        self._tools.pop(name, None)
+
 
 # The single production registry. M1.2/M2.3 tools register here by default;
 # tests build isolated `ToolRegistry()` instances via the `registry=` kwarg
@@ -198,6 +208,25 @@ def _format_validation_errors(exc: ValidationError) -> str:
     return "; ".join(parts)
 
 
+_MAX_EXCEPTION_SUMMARY_LEN = 300
+
+
+def _sanitize_exception_text(text: str) -> str:
+    """Collapse an exception's text to a single-line, length-capped summary.
+
+    A tool's exception message is arbitrary text we don't control — it may
+    span multiple lines or be arbitrarily long. This is a structural
+    sanitizer (not a "keep it short" convention): it collapses every run of
+    whitespace (including newlines) to a single space and truncates past
+    :data:`_MAX_EXCEPTION_SUMMARY_LEN` chars, so the envelope's ``message``
+    can never smuggle in a multi-line blob (traceback-shaped or otherwise).
+    """
+    collapsed = " ".join(text.split())
+    if len(collapsed) > _MAX_EXCEPTION_SUMMARY_LEN:
+        collapsed = collapsed[: _MAX_EXCEPTION_SUMMARY_LEN - 3].rstrip() + "..."
+    return collapsed
+
+
 def _build_success_envelope(result: dict[str, Any]) -> dict[str, Any]:
     leftover = {
         key: value for key, value in result.items() if key not in _PASSTHROUGH_RESULT_KEYS
@@ -252,14 +281,19 @@ def dispatch(
         result = spec.fn(validated_params)
     except Exception as exc:  # noqa: BLE001 - a tool's failure must not crash dispatch
         logger.exception("Tool %r raised during execution", name)
+        summary = _sanitize_exception_text(str(exc))
         return _envelope(
             status="error",
             error_type="tool_execution_error",
-            message=f"Tool {name!r} raised {type(exc).__name__}: {exc}",
+            message=f"Tool {name!r} raised {type(exc).__name__}: {summary}",
         )
 
     if not isinstance(result, dict):
-        result = {"data": result}
+        # A non-dict return is itself the "unrecognized result data" — put it
+        # straight under `data` rather than routing it through
+        # _build_success_envelope (which would wrap it a second time, since
+        # that helper's job is splitting a *dict* result's own keys apart).
+        return _envelope(status="ok", error_type=None, data=result)
 
     return _build_success_envelope(result)
 
@@ -273,12 +307,27 @@ def _prune_schema_noise(schema: Any) -> Any:
     """Recursively strip pydantic schema keys that only bloat the prompt.
 
     Currently just ``"title"`` (pydantic emits one per model and per field;
-    none of it is needed for a planner to construct valid params).
+    none of it is needed for a planner to construct valid params) — but
+    ``"title"`` is ALSO a legal field name, and a field literally named
+    ``title`` shows up as a key of a ``"properties"`` mapping (i.e. as data,
+    not as schema noise). So ``"properties"`` gets special handling: its
+    value is a field-name -> schema map whose keys are never filtered by
+    name, no matter what they're called; only the *values* (each field's own
+    schema) are recursed into and pruned normally.
     """
     if isinstance(schema, dict):
-        return {
-            key: _prune_schema_noise(value) for key, value in schema.items() if key != "title"
-        }
+        pruned: dict[str, Any] = {}
+        for key, value in schema.items():
+            if key == "title":
+                continue
+            if key == "properties" and isinstance(value, dict):
+                pruned[key] = {
+                    field_name: _prune_schema_noise(field_schema)
+                    for field_name, field_schema in value.items()
+                }
+                continue
+            pruned[key] = _prune_schema_noise(value)
+        return pruned
     if isinstance(schema, list):
         return [_prune_schema_noise(item) for item in schema]
     return schema

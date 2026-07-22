@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -139,7 +140,17 @@ def test_tool_without_registry_kwarg_registers_into_default_registry():
         assert "__test_ping__" in default_registry.names()
         assert set(default_registry.names()) - before == {"__test_ping__"}
     finally:
-        default_registry._tools.pop("__test_ping__", None)
+        default_registry.unregister("__test_ping__")
+
+
+def test_unregister_removes_a_tool_and_is_a_noop_for_unknown_names():
+    registry = _fresh_registry_with_tools()
+
+    registry.unregister("get_link_volume")
+
+    assert registry.get("get_link_volume") is None
+    assert "get_link_volume" not in registry.names()
+    registry.unregister("never_registered")  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -227,15 +238,20 @@ def test_dispatch_success_pulls_named_envelope_keys_out_of_data():
 
 
 def test_dispatch_tool_exception_is_caught_and_reported_without_traceback(caplog):
+    """Multi-line and long on purpose: the sanitization must be structural
+    (collapse + truncate), not an artifact of picking a short, single-line
+    exception message that would pass "\\n not in message" by construction."""
     registry = ToolRegistry()
 
     class NoopParams(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
+    raw_message = "\n".join(f"line {i}: {'x' * 40}" for i in range(12))  # ~588 chars, 12 lines
+
     @tool(name="boom", tier="run", provider="vissim", params=NoopParams, registry=registry)
     def _boom(params: NoopParams) -> dict[str, Any]:
         """Always fails."""
-        raise RuntimeError("simulated failure, no secrets here")
+        raise RuntimeError(raw_message)
 
     with caplog.at_level(logging.ERROR, logger="services.agent.toolkit"):
         envelope = dispatch("boom", {}, registry=registry)
@@ -246,8 +262,32 @@ def test_dispatch_tool_exception_is_caught_and_reported_without_traceback(caplog
     assert "Traceback" not in envelope["message"]
     assert "\n" not in envelope["message"]
     assert "RuntimeError" in envelope["message"]
-    # the exception was logged via stdlib logging, not swallowed silently
+    # sanitized + capped, nowhere near the raw ~600-char multi-line message
+    assert len(envelope["message"]) <= 350
+    # truncated form still carries the start of the original text, not garbled
+    assert "line 0" in envelope["message"]
+    # the raw (unsanitized, full) exception was logged via stdlib logging,
+    # not swallowed silently and not printed
     assert any("boom" in record.message for record in caplog.records)
+
+
+def test_dispatch_tool_returning_non_dict_is_wrapped_into_data_without_double_wrapping():
+    registry = ToolRegistry()
+
+    class NoopParams(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+    @tool(name="raw_value_tool", tier="read", provider="vissim", params=NoopParams, registry=registry)
+    def _raw(params: NoopParams) -> Any:
+        """Returns a bare value instead of a dict."""
+        return 42
+
+    envelope = dispatch("raw_value_tool", {}, registry=registry)
+
+    _assert_well_formed_envelope(envelope)
+    assert envelope["status"] == "ok"
+    assert envelope["error_type"] is None
+    assert envelope["data"] == 42  # not {"data": 42} — no double-wrapping
 
 
 def test_dispatch_raw_params_not_a_dict_returns_invalid_params():
@@ -310,3 +350,32 @@ def test_render_contract_empty_registry_returns_empty_string():
     registry = ToolRegistry()
 
     assert render_contract(registry=registry) == ""
+
+
+def test_render_contract_preserves_a_params_field_literally_named_title():
+    """title-pruning must strip pydantic's schema-noise "title" annotations
+    without deleting a real field that happens to be named "title" — that
+    field is a KEY of the "properties" mapping, not schema noise, and must
+    survive intact and stay listed in "required" (self-consistent schema)."""
+    registry = ToolRegistry()
+
+    class ParamsWithTitleField(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        title: str
+        other: int = 1
+
+    @tool(name="titled_tool", tier="read", provider="vissim", params=ParamsWithTitleField, registry=registry)
+    def _titled(params: ParamsWithTitleField) -> dict[str, Any]:
+        """Tool whose params include a field literally named title."""
+        return {}
+
+    contract = render_contract(registry=registry)
+    match = re.search(r"params: (\{.*\})", contract)
+    assert match is not None
+    schema = json.loads(match.group(1))
+
+    assert "title" in schema["properties"]
+    required = set(schema.get("required", []))
+    assert required <= set(schema["properties"].keys())  # schema stays self-consistent
+    assert "title" in required
