@@ -182,9 +182,9 @@ test("intersection comparison is merged into the main dashboard", () => {
   assert.match(page, /VolumeByIntersectionChart/, "expected volume composition chart by selected intersection");
   assert.match(page, /QLENMAX_MEAN/, "expected queue charts to consume aggregated VISSIM queue metrics");
   assert.match(page, /useSectionLabels/, "expected travel-time charts to use section labels when intervals collapse");
-  assert.match(page, /stabilizeTravelTimeProfile/, "expected travel-time chart values to avoid mid-series downward or flat sections");
-  assert.match(page, /TRAVEL_TIME_PROFILE_START_SHARE/, "expected travel-time smoothing to create a visible early climb");
-  assert.match(page, /Math\.pow\(progress, 1\.18\)/, "expected travel-time smoothing to use an accelerated display profile");
+  // Travel-time chart must plot the real measured values, not a synthesized curve.
+  assert.doesNotMatch(page, /stabilizeTravelTimeProfile/, "expected the fabricated travel-time easing to be removed");
+  assert.doesNotMatch(page, /Math\.pow\(progress, 1\.18\)/, "expected no synthetic accelerated display profile on travel time");
   assert.match(page, /SectionJumpIndex/, "expected section shortcut index");
   assert.match(page, /xl:grid-cols-\[minmax\(0,1fr\)_380px\]/, "expected map grid to keep its original width");
   assert.doesNotMatch(

@@ -34,8 +34,6 @@ const KPI_METRICS = [
 ] as const;
 
 const MAX_SELECTED_NODES = 6;
-const TRAVEL_TIME_PROFILE_MIN_STEP_SECONDS = 0.5;
-const TRAVEL_TIME_PROFILE_START_SHARE = 0.16;
 
 type NodeDirectionRow = NonNullable<ScenarioResults["node_directions"]>[number];
 type DirectionKey = "north" | "east" | "south" | "west";
@@ -832,8 +830,14 @@ function DirectionDelayChart({
     <div className="min-h-[190px] rounded-xl border border-slate-200 bg-slate-50/70 p-3">
       <div className="flex items-center justify-between gap-2">
         <p className="truncate text-[12px] font-bold text-slate-800">{t("방향별 지체", "Delay by Direction")}</p>
-        <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500">
-          LOS
+        <span
+          className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700"
+          title={t(
+            "교차로 평균 지체를 방향별 통행량 비율로 배분한 추정값입니다. 실제 방향별 측정값이 아닙니다.",
+            "Estimated by distributing the intersection average delay across directions by volume share — not a per-direction measurement.",
+          )}
+        >
+          {t("추정 · LOS", "Est. · LOS")}
         </span>
       </div>
 
@@ -1814,46 +1818,19 @@ function buildTravelTimeSeries(
       grouped.set(label, current);
     });
 
-    const points = stabilizeTravelTimeProfile(
-      Array.from(grouped.entries())
-        .sort(([a], [b]) => numericAwareCompare(a, b))
-        .map(([label, aggregate]) => ({
-          label,
-          value: aggregate.sum / aggregate.count,
-        }))
-        .slice(0, 18),
-    );
+    // Plot the real per-interval (or per-section) travel-time averages as-is.
+    // An earlier version reshaped these into a synthetic monotonically-rising
+    // eased curve; that fabricated the shape and is disqualifying for reporting
+    // or LLM narration, so the measured values are now shown directly.
+    const points = Array.from(grouped.entries())
+      .sort(([a], [b]) => numericAwareCompare(a, b))
+      .map(([label, aggregate]) => ({
+        label,
+        value: roundChartValue(aggregate.sum / aggregate.count),
+      }))
+      .slice(0, 18);
 
     return { scenario, points };
-  });
-}
-
-function stabilizeTravelTimeProfile(points: TravelTimeSeries["points"]): TravelTimeSeries["points"] {
-  if (points.length < 2) return points;
-
-  const values = points.map((point) => point.value);
-  const sourceMin = Math.min(...values);
-  const sourceMax = Math.max(...values);
-  const sourceSpan = Math.max(sourceMax - sourceMin, points.length * TRAVEL_TIME_PROFILE_MIN_STEP_SECONDS);
-  const baseline = Math.max(points[0].value, sourceMin);
-  const displayStart = Math.max(0, Math.min(baseline, sourceMax - sourceSpan * 0.62));
-  const firstJump = Math.max(sourceSpan * TRAVEL_TIME_PROFILE_START_SHARE, TRAVEL_TIME_PROFILE_MIN_STEP_SECONDS);
-  const remainingSpan = Math.max(sourceMax - displayStart - firstJump, TRAVEL_TIME_PROFILE_MIN_STEP_SECONDS * Math.max(points.length - 1, 1));
-
-  return points.map((point, index) => {
-    if (index === 0) {
-      return {
-        ...point,
-        value: roundChartValue(displayStart),
-      };
-    }
-
-    const progress = index / Math.max(points.length - 1, 1);
-    const easedProgress = Math.pow(progress, 1.18);
-    return {
-      ...point,
-      value: roundChartValue(displayStart + firstJump + remainingSpan * easedProgress),
-    };
   });
 }
 
