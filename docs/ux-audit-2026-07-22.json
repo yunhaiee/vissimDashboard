@@ -1,0 +1,459 @@
+﻿{
+    "ranked_findings":  [
+                            {
+                                "rank":  1,
+                                "severity":  "P0",
+                                "issue":  "Uploading a new dataset or clicking \u0027ê¸°ë³¸ê°’ ë³µì›\u0027 irreversibly rmtree\u0027s the previous upload with zero confirmation, and every prior simulation result silently vanishes from the dashboard.",
+                                "evidence":  "VERIFIED: backend/services/datasets.py:83-86 (reset_active_dataset) and :165-168 (_prepare_upload_dir) both shutil.rmtree(UPLOAD_DIR); frontend/components/VissimDatasetBanner.tsx:67-87 uploads immediately from the file picker with no confirm step, and :132-141 fires reset on a single click (the banner button is at least danger-styled and guarded by source===\u0027uploaded\u0027; per the flows reviewer the simulation-page copy at app/simulation/page.tsx:635-637 is ghost-styled and unguarded). backend/services/simulation_runs.py:84,108 then filters out all completed runs whose dataset_revision differs, and simulation/page.tsx:227 clearDraft() discards queued edits.",
+                                "recommendation":  "Intercept both actions with a confirmation dialog stating the concrete consequence (\u0027í˜„ìž¬ ë°ì´í„°ì…‹(íŒŒì¼ëª…)ê³¼ ì‹œë®¬ë ˆì´ì…˜ ê²°ê³¼ Nê±´ì´ ì‚¬ë¼ì§‘ë‹ˆë‹¤. ê³„ì†í• ê¹Œìš”?\u0027), fetching the affected job count from /api/simulations. Apply the banner\u0027s source===\u0027uploaded\u0027 guard and destructive styling to the simulation-page reset. Longer term, version prior uploads instead of rmtree.",
+                                "audience_impact":  "Both â€” an official loses an afternoon of runs by selecting a file; an engineer loses calibration runs that cost real VISSIM compute. Invisible until they look for their results; single biggest trust breaker and a catastrophic live-demo risk.",
+                                "flagged_by":  [
+                                                   "flows-and-errors"
+                                               ]
+                            },
+                            {
+                                "rank":  2,
+                                "severity":  "P0",
+                                "issue":  "The same node/scenario pair produces conflicting GEH and % error numbers across three surfaces â€” the dashboard matrix silently rescales simulated volumes by a hard-coded S000001-pegged factor, the exported report uses raw unscaled volumes, and /base-model computes per-movement GEH from the workbook â€” with no disclosure of the scaling and no statement of which is authoritative.",
+                                "evidence":  "VERIFIED: frontend/app/dashboard/page.tsx:1425-1440 scaledSim() multiplies raw volume by (total_sim_basam / dbVols[\u0027S000001\u0027]) before pctErr/gehStat; the report path uses calculateScenarioNodeVolume (raw node_directions/movement sums, :2204 and :2253-2268); the only scaling hint appears when S000001 is NOT selected (:1465-1468, leaking the internal ID into user copy); sim totals come only from summary.top_congested_nodes (:1416-1421) so nodes outside that list render \u0027-\u0027. base-model/page.tsx:644 is a third pipeline (per-movement workbook GEH).",
+                                "recommendation":  "Compute the on-screen matrix and report rows through one shared function on raw modelled volumes; if base-scenario scaling must stay, show the applied factor as a visible footnote and mark scaled cells as estimates; make /base-model the canonical validation surface with the dashboard showing a summary card linking to it; replace \u0027S000001\u0027 with the resolved base-scenario name; source sim totals from the full compare results.",
+                                "audience_impact":  "Both â€” GEH is the engineer\u0027s formal acceptance criterion, and dashboard-vs-report disagreement can invalidate a submission; an official who sees green here and red on ë² ì´ìŠ¤ëª¨ë¸ ê²€ì¦ quotes whichever number they saw first in a briefing. Directly undermines the TR-C-facing calibration story.",
+                                "flagged_by":  [
+                                                   "information-architecture",
+                                                   "dataviz-honesty",
+                                                   "novice-audience"
+                                               ]
+                            },
+                            {
+                                "rank":  3,
+                                "severity":  "P0",
+                                "issue":  "The human-approval loop for AI-run simulations does not exist: execution consent is decided by an invisible client-side keyword match on the user\u0027s sentence (the dashboard\u0027s own suggested starter chips trigger it), and the backend\u0027s requires_confirmation response is a dead end with no confirm control.",
+                                "evidence":  "VERIFIED: FloatingAssistant.tsx:308 sends allow_tool_execution: shouldAllowPromptExecution(text); that function (:1228-1261) is substring matching (ì‹¤í–‰/run/simulate Ã— vissim/signal/volume...), so starter #2 (:1056, \u0027ìµœê·¼ VISSIM ì‹¤í–‰ì´ ì™œ ì‹¤íŒ¨í–ˆëŠ”ì§€â€¦\u0027) silently authorizes execution for a diagnostic question and starter #3 (:1057) triggers a real COM run with no confirmation UI. When the backend returns requires_confirmation (assistant_router.py:1737), the frontend renders only the reason as small gray text (:808) â€” no confirm button exists anywhere.",
+                                "recommendation":  "Delete the keyword heuristic; always send allow_tool_execution=false on first pass; when the response returns recognized+requires_confirmation, render result.changes as a diff card with explicit \u0027Run simulation\u0027 / \u0027Cancel\u0027 buttons that re-submit with allow_tool_execution=true.",
+                                "audience_impact":  "Both, in opposite directions â€” officials can unknowingly launch a simulation from a suggested chip (page.tsx:228 even auto-reloads their dashboard when it completes), while engineers without the magic keywords hit a dead end with no way to grant permission. Breaks the product\u0027s headline capability and its safety story simultaneously.",
+                                "flagged_by":  [
+                                                   "ai-interaction"
+                                               ]
+                            },
+                            {
+                                "rank":  4,
+                                "severity":  "P0",
+                                "issue":  "An AI curation result (headline + insight cards with concrete numbers) survives scenario and dataset changes, so cards computed from old data sit on top of charts showing new data.",
+                                "evidence":  "VERIFIED: app/dashboard/page.tsx:107 stores curationSpec; clearDashboardData (:118-128) resets scenarios/results/nodes/summary but never curationSpec; handleDatasetChange (:285-297) calls clearDashboardData and never clears it; the scenario picker (:348) wires setSelected directly. The only clear path is the user-pressed reset in CurationBar.tsx:67-72. Card numbers come from the compare-summary context captured at ask time (dashboard_curator.py:71).",
+                                "recommendation":  "Call setCurationSpec(null) inside clearDashboardData and whenever `selected` or the dataset revision changes; or stamp the spec with ask-time scenario names and render a visible \u0027answered for scenarios A, B â€” re-ask?\u0027 stale banner when the selection differs.",
+                                "audience_impact":  "Both, worst for officials â€” they treat the green/amber cards as the conclusion and will quote numbers belonging to a different scenario set than the charts on screen. This is the flagship differentiator lying about the current view; near-certain to occur in a live demo.",
+                                "flagged_by":  [
+                                                   "ai-interaction"
+                                               ]
+                            },
+                            {
+                                "rank":  5,
+                                "severity":  "P0",
+                                "issue":  "The travel-time comparison chart positions points by array index with no x-axis tick labels ever rendered; each scenario independently picks its grouping mode (section vs interval) and is silently truncated to 18 points â€” so vertically aligned points can represent different measurement sections or time intervals across scenarios.",
+                                "evidence":  "VERIFIED: page.tsx:964-967 pointToSvg uses index/(maxPointCount-1); the point.label built in buildTravelTimeSeries (:1810-1814) is never rendered (only the static caption at :1004-1006); useSectionLabels (:1798-1803) is computed per scenario inside the per-result map so modes can differ on the same axes; .slice(0,18) at :1831 drops data with no notice; series with fewer points span less width than others.",
+                                "recommendation":  "Build a shared x-domain (union of labels across selected scenarios), position by label, render tick labels, force one grouping mode per chart, and show \u0027showing first 18 of N\u0027 when truncating.",
+                                "audience_impact":  "Both â€” an official reads crossing lines as \u0027B gets faster later in the peak\u0027 when x positions are not comparable; an engineer cannot tell which section/interval any point belongs to, making the chart unusable for precision work.",
+                                "flagged_by":  [
+                                                   "dataviz-honesty"
+                                               ]
+                            },
+                            {
+                                "rank":  6,
+                                "severity":  "P0",
+                                "issue":  "The dashboard\u0027s \u0027ë³´ê³ ì„œ ìƒì„±\u0027 always emits an English-only \u0027Base Model Calibration \u0026 Validation\u0027 document with fabricated provenance (\u0027Owner: OMV Team\u0027, \u0027Prepared By: AI-assisted report generator\u0027 â€” no AI is involved), and it is one of three disconnected report pipelines (dashboard client-built doc, /report backend .docx, /downloads Word exports) that never reference each other.",
+                                "evidence":  "VERIFIED: page.tsx:1929-1944 hardcodes the English title and Document Control table including \u0027Owner: Operational Modelling and Visualisation (OMV) Team\u0027 and \u0027Prepared By: AI-assisted report generator\u0027; en-AU dates at :2484-2486 per reviewer; the Korean button copy (:1147-1150) never says the output is English or a calibration template. report/page.tsx:12-65 and downloads/page.tsx:81-98 are separate pipelines with near-identical Korean names.",
+                                "recommendation":  "Pick the backend .docx builder at /report as canonical and make the dashboard button a shortcut that pre-fills it with the current selection; localize output or label the language before generation; replace fabricated Owner/Prepared By with the dataset filename and \u0027Generated by Prism from dashboard data\u0027; group the /downloads Word items under a \u0027ë³´ê³ ì„œ\u0027 section linking to /report.",
+                                "audience_impact":  "Both â€” an official pressing a Korean button circulates an unreadable English document claiming a fictional owner and AI authorship; an engineer cannot tell which of four Word artifacts is the deliverable of record.",
+                                "flagged_by":  [
+                                                   "novice-audience",
+                                                   "information-architecture"
+                                               ]
+                            },
+                            {
+                                "rank":  7,
+                                "severity":  "P1",
+                                "issue":  "Per-direction delay values and LOS letter grades are synthesized by multiplying intersection-average delay by an invented 0.75-1.25 volume factor; disclosure is a hover-only badge whose tooltip describes a different method than the code, \u0027LOS\u0027 is never defined anywhere in the UI, and the synthetic letters are exported into the formal report as \u0027Estimated LOS\u0027.",
+                                "evidence":  "VERIFIED: page.tsx:1655-1663 volumeFactor = 0.75 + (dirVolume/maxVolume)*0.5 applied to averageDelay â€” not the \u0027distributed by volume share\u0027 the title-only tooltip (:835-838) claims; when no direction row exists all four directions get the identical average but still receive LOS letters (:1637-1653); buildDirectionReportRows (:2225-2251, verified) exports the letters into the report. The codebase\u0027s own comment at :1821-1824 declares fabricated chart shapes \u0027disqualifying\u0027 â€” this is the same class of fabrication still live.",
+                                "recommendation":  "Derive real per-approach delay from movement VEHDELAY rows (already used at :1757-1764) or show intersection-level delay/LOS only. If the heuristic must stay: always-visible caption with correct wording plus a LOS legend (\u0027LOS: ì„œë¹„ìŠ¤ìˆ˜ì¤€ A(ì›í™œ)~F(ì‹¬ê°), í‰ê·  ì§€ì²´ ê¸°ì¤€ ì¶”ì •ê°’\u0027), and drop per-direction LOS from the report export.",
+                                "audience_impact":  "Officials read \u0027ë¶ / E\u0027 as a measured fact and may direct budget at a specific approach based on an invented number; engineers who inspect the formula will distrust every other chart. Exporting it to the report makes it a paper-trail liability for the TR-C submission.",
+                                "flagged_by":  [
+                                                   "dataviz-honesty",
+                                                   "novice-audience"
+                                               ]
+                            },
+                            {
+                                "rank":  8,
+                                "severity":  "P1",
+                                "issue":  "Errors across the product are raw and untranslated â€” most API helpers throw the literal HTTP body or a developer-oriented English URL-list message rendered verbatim â€” and the curation parse-failure fallback claims \u0027showing the default view\u0027 while actually hiding the field-count-validation section that was visible before the question.",
+                                "evidence":  "VERIFIED: CurationBar.tsx:58 sets error to err.message verbatim, rendered at :133; fallback_spec (dashboard_curator.py:170-177) sets charts=DEFAULT_VISIBLE_IDS which excludes field-count-validation (chart_catalog.py:79 default_visible: False), so a non-null spec hides a previously visible section while the amber message (CurationBar.tsx:141-148) says the default view is shown. Reviewer-cited: lib/api.ts throws await r.text() at :839/:855/:874/:892+, apiMutationFetch fallback (:193-201) emits the internal-URL English message rendered in VissimDatasetBanner.tsx:177; the ja curation placeholder also drops the example question ko/en include (CurationBar.tsx:88, verified).",
+                                "recommendation":  "Route every non-ok response through readApiError then a shared localized formatter with a retry button (mirroring FloatingAssistant\u0027s formatAssistantError); on client, treat spec.fallback as onSpecChange(null) so a failed parse genuinely restores the pre-question view; keep technical detail behind a \u0027ìžì„¸ížˆ\u0027 disclosure; add the ja example question.",
+                                "audience_impact":  "Officials hit English fetch/500 text in an otherwise Korean UI â€” in the signature AI feature â€” with no recovery path; engineers who loaded field counts watch a failed AI call quietly remove their validation matrix while being told nothing changed.",
+                                "flagged_by":  [
+                                                   "flows-and-errors",
+                                                   "ai-interaction",
+                                                   "novice-audience"
+                                               ]
+                            },
+                            {
+                                "rank":  9,
+                                "severity":  "P1",
+                                "issue":  "When the backend is down the dashboard dead-ends with the wrong diagnosis: the banner shows \u0027í˜„ìž¬ ë°ì´í„° í™•ì¸ ì¤‘\u0027 forever, the page tells the user to upload a file (which will also fail), and no retry affordance exists anywhere.",
+                                "evidence":  "VERIFIED: VissimDatasetBanner.tsx:49-61 swallows the initial fetch failure into setActiveDataset(null), leaving the permanent \u0027checking\u0027 label at :121; page.tsx:176-183 sets a one-shot error with no retry, then the \u0027íŒŒì¼ ì—…ë¡œë“œ í•„ìš”\u0027 pill and DashboardUploadRequiredPanel (:361-364, :451) prescribe an upload. Reviewer-cited: apiFetch retries 3 bases at 5s each so the user first stares at a spinner ~15s.",
+                                "recommendation":  "Distinguish \u0027backend unreachable\u0027 from \u0027no dataset uploaded\u0027 as separate states: a red \u0027ì„œë²„ì— ì—°ê²°í•  ìˆ˜ ì—†ìŠµë‹ˆë‹¤\u0027 banner with a ë‹¤ì‹œ ì‹œë„ button re-running fetchActiveDataset, and suppress the upload-required panel in that state.",
+                                "audience_impact":  "Fatal for officials running the local backend themselves â€” nothing says a server process must be running, and the UI steers them into the raw English network error. Also the likeliest failure state at the start of a demo.",
+                                "flagged_by":  [
+                                                   "flows-and-errors"
+                                               ]
+                            },
+                            {
+                                "rank":  10,
+                                "severity":  "P1",
+                                "issue":  "Validation cell color is driven solely by % error while GEH is tiny untinted grey text, so a high-volume node can fail the \u0027GEH \u003c 5\u0027 criterion the chart\u0027s own legend cites while its cell reads green.",
+                                "evidence":  "VERIFIED: page.tsx:1452-1458 errorColor() uses pct only with hardcoded 5/15 thresholds; GEH renders at :1524-1527 in text-[10px] text-slate-500; legend at :1553 cites GEH\u003c5/10. Concrete: obs 20,000 vs sim 20,900 â†’ +4.5% green, GEH 6.3 fail. The existing lib/validationThresholds.ts helpers (errorTone/gehTone) are unused here.",
+                                "recommendation":  "Tint each cell by the worse of errorTone(pct) and gehTone(geh) using the existing helpers, and render GEH in its own toned chip. Small, contained fix.",
+                                "audience_impact":  "Officials equate green with \u0027validated\u0027 and will present a model that fails the industry GEH criterion; engineers must mentally recompute pass/fail for every cell.",
+                                "flagged_by":  [
+                                                   "dataviz-honesty"
+                                               ]
+                            },
+                            {
+                                "rank":  11,
+                                "severity":  "P1",
+                                "issue":  "The backend computes run_count and per-metric STDEV (the Excel exporter already prints Â±sd) but the dashboard shows only point values and awards \u0027Best\u0027 tags on differences that may be entirely within stochastic run-to-run noise, printed to 0.01 precision.",
+                                "evidence":  "Reviewer-cited with strong specificity: backend/services/results_reader.py:319-336 produces _STDEV aggregates; exporters.py:281 consumes them; frontend grep for _STDEV returns zero usages; KpiCard tags \u0027Best\u0027 at page.tsx:1234/1253 with \u0027(diff 8577.00)\u0027-style precision at :1291.",
+                                "recommendation":  "When run_count \u003e 1, render \u002745.2 Â±1.8 s\u0027 from existing _STDEV fields with an \u0027N runs\u0027 badge; suppress or soften \u0027Best\u0027 when the margin is smaller than combined STDEV; show a \u00271 run â€” ì°¸ê³ ìš©\u0027 caveat for single runs.",
+                                "audience_impact":  "Officials choose an alternative because of a \u0027Best\u0027 tag a re-seeded run could flip; engineers know Vissim is stochastic and will reject single-number rankings outright â€” a likely professor challenge.",
+                                "flagged_by":  [
+                                                   "dataviz-honesty"
+                                               ]
+                            },
+                            {
+                                "rank":  12,
+                                "severity":  "P1",
+                                "issue":  "Scenario colors are assigned by scenario-id-number mod 7, so two simultaneously selected scenarios can render identically (S000001 and S000008 both #7a6b94), that hex doubles as the \u0027West\u0027 direction and intersection color #4 on the same screen, and the travel-time chart distinguishes series by stroke color alone.",
+                                "evidence":  "VERIFIED: lib/scenarioPalette.ts:30-35 uses SCENARIO_PALETTE[numericPart % 7] â€” S000001â†’1 and S000008â†’8%7=1 collide. Reviewer-cited: DIRECTION_COLORS.west = #7a6b94 = INTERSECTION_COLORS[3] (page.tsx:77-83); near-twin hues (#5f7fa4/#6c89ab); backend ScenarioMeta.color ignored; color-only series encoding at :990-1002 (verified â€” polylines and dots only).",
+                                "recommendation":  "Assign colors by position in the current selection so up to 7 concurrent scenarios are guaranteed distinct; separate direction hues from the scenario palette; add marker shapes or direct end-of-line labels as a non-color channel.",
+                                "audience_impact":  "Everyone â€” identical-colored lines are unreadable for all users and worse for ~5% with CVD; an official attributing the good line to the wrong alternative is the single worst outcome for a decision tool.",
+                                "flagged_by":  [
+                                                   "dataviz-honesty"
+                                               ]
+                            },
+                            {
+                                "rank":  13,
+                                "severity":  "P1",
+                                "issue":  "The curation request (10-20s LLM call) silently auto-retries once on any 5xx so a failing query takes ~40s with no \u0027retrying\u0027 feedback, and the first-ever request cannot be cancelled because the only aborting control renders only when a previous spec exists while input and button are disabled.",
+                                "evidence":  "VERIFIED: CurationBar.tsx:38/:90/:115 disable input and submit during loading, and the abort-capable \u0027ì „ì²´ ë³´ê¸°\u0027 button is gated on `spec` (:120), so on the cold-start ask there is no exit. Reviewer-cited: lib/api.ts:726-737 curateDashboard sleeps 700ms and re-issues on 5xx; FloatingAssistant.tsx:970 admits the first request is the slow case.",
+                                "recommendation":  "Swap Ask for a Cancel button whenever loading is true (reset() already aborts); add a status line (\u0027AIê°€ ê´€ë ¨ ì§€í‘œë¥¼ ê³ ë¥´ê³  ìžˆìŠµë‹ˆë‹¤ â€” ë³´í†µ 10~20ì´ˆ\u0027) and surface the retry when it fires; consider a skeleton over the sections.",
+                                "audience_impact":  "Both audiences sit through a hung \u0027ë¶„ì„ ì¤‘â€¦\u0027 with no exit on the very first use of the differentiator â€” the moment first impressions form, and the most likely on-stage hiccup with a cold local Qwen worker.",
+                                "flagged_by":  [
+                                                   "flows-and-errors",
+                                                   "ai-interaction"
+                                               ]
+                            },
+                            {
+                                "rank":  14,
+                                "severity":  "P1",
+                                "issue":  "The LLM can select charts that data-gating then suppresses â€” most likely field-count-validation for the exact \u0027can I trust this model?\u0027 question the catalog advertises it for â€” so the headline and cards reference a view that never appears, with no explanation.",
+                                "evidence":  "VERIFIED: chart_catalog.py:71-79 advertises field-count-validation as answering \u0027Is the model calibrated / trustworthy\u0027 and validate_spec (dashboard_curator.py:128-167) never filters by data availability; page.tsx ANDs sectionVisible with hasData and realCounts.length \u003e 0 (:516 per reviewer), so without an observed-counts workbook the chosen section silently never renders.",
+                                "recommendation":  "Pass data-availability flags (has_real_counts, has_data) into the curation context and filter chosen ids server-side; client-side, render a stub for suppressed ids: \u0027í˜„ìž¥ ê³„ìˆ˜ ë°ì´í„°ê°€ ì—†ì–´ ì´ ê²€ì¦ ì°¨íŠ¸ë¥¼ í‘œì‹œí•  ìˆ˜ ì—†ìŠµë‹ˆë‹¤\u0027 with an upload link.",
+                                "audience_impact":  "An official asking the trust question gets a headline pointing at a section that never renders â€” the worst possible answer to a trust question; engineers lose the cue that observed counts are simply missing.",
+                                "flagged_by":  [
+                                                   "ai-interaction"
+                                               ]
+                            },
+                            {
+                                "rank":  15,
+                                "severity":  "P1",
+                                "issue":  "Focus mode unmounts dashboard sections with no trace â€” no count of hidden sections, no placeholder stubs, no persistent indicator once the user scrolls past the curation bar, and no screen-reader announcement.",
+                                "evidence":  "VERIFIED: sectionVisible (page.tsx:113-116) gates whole sections to null; the only recovery affordance is \u0027ì „ì²´ ë³´ê¸°\u0027 inside CurationBar (:120-128, verified) at the top of the page. No aria-live region; removal is an instant unmount.",
+                                "recommendation":  "When a spec is active, render a slim sticky bar or per-hidden-section stub (\u0027ì§ˆë¬¸ì— ë§žì¶° 3ê°œ ì„¹ì…˜ì„ ìˆ¨ê²¼ìŠµë‹ˆë‹¤ â€” ì „ì²´ ë³´ê¸°\u0027) with the reset action, and wrap the headline area in aria-live=\"polite\".",
+                                "audience_impact":  "Officials who missed the causal link conclude data was lost and distrust the tool; engineers presenting on a shared screen scroll to a section that is not there with no explanation.",
+                                "flagged_by":  [
+                                                   "ai-interaction"
+                                               ]
+                            },
+                            {
+                                "rank":  16,
+                                "severity":  "P1",
+                                "issue":  "The section jump index â€” the only in-page navigation on a 6-section page â€” is an unlabeled hover-reveal control absolutely positioned inside the map section: it scrolls away with the map, can be unreachable on touch, vanishes entirely if focus mode hides the map, and keeps offering dead links to sections focus mode has unmounted.",
+                                "evidence":  "Reviewer-cited consistently across two dimensions: page.tsx:403 renders it only inside map-selection, `absolute left-0 top-24` (:548), group-hover/focus-within reveal with no onClick or aria-expanded (:551-562); items are static (:537-543) and ignore sectionVisible, so links to LLM-hidden sections silently no-op.",
+                                "recommendation":  "Promote it to a page-owned sticky rail or sub-header tab bar, toggle with a real onClick + aria-expanded, and filter items through sectionVisible() so focus mode and the index never disagree.",
+                                "audience_impact":  "Officials never discover it (it reads as a map layers button); engineers on tablets cannot open it; anyone using focus mode gets links that do nothing â€” reads as a broken app.",
+                                "flagged_by":  [
+                                                   "information-architecture",
+                                                   "ai-interaction"
+                                               ]
+                            },
+                            {
+                                "rank":  17,
+                                "severity":  "P1",
+                                "issue":  "Two AI entry points coexist on the dashboard with overlapping invitations, disjoint capabilities, and no handoff or mutual awareness â€” curation cannot run changes, the chat cannot focus the dashboard, and the page-context event omits curation state so the chat cannot explain why sections are hidden.",
+                                "evidence":  "VERIFIED: CurationBar placeholder \u0027ê¶ê¸ˆí•œ ì ì„ ë¬¼ì–´ë³´ì„¸ìš”â€¦\u0027 (CurationBar.tsx:85-89) and the chat\u0027s execution-inviting placeholder (FloatingAssistant.tsx:504 per reviewer) both invite arbitrary questions; the vissim:page-context payload (page.tsx:299-332, verified) contains scenarios/nodes/dataset but no curationSpec.",
+                                "recommendation":  "Give each surface a distinct verb (\u0027ì´ í™”ë©´ ìš”ì•½/í•„í„°\u0027 vs \u0027ë„ìš°ë¯¸ì™€ ëŒ€í™”Â·ì‹¤í–‰\u0027); cross-handoff execution-intent curation questions to the chat with the prompt prefilled; include curationSpec (active question + hidden section ids) in the page-context event.",
+                                "audience_impact":  "Officials cannot form a mental model of which box to type into, and the first wrong guess returns a plausible but wrong-shaped response; engineers waste time re-asking in the other surface.",
+                                "flagged_by":  [
+                                                   "ai-interaction"
+                                               ]
+                            },
+                            {
+                                "rank":  18,
+                                "severity":  "P1",
+                                "issue":  "The dashboard\u0027s decision-relevant content is last: the \u0027ì¢…í•© ê²°ê³¼ ë¶„ì„\u0027 narrative and report generation sit in section 5 of 6, below a 520px map requiring manual clicks and two sections that render empty states until intersections are selected.",
+                                "evidence":  "Reviewer-cited: page.tsx:395-530 section order (map â†’ intersection-performance â†’ travel-time â†’ network-kpi â†’ overall-results â†’ validation); IntersectionPerformanceGrid empty state at :703; the narrative (:1880) even instructs reviewing sections that sit above it.",
+                                "recommendation":  "Hoist the overall narrative + scenario ranking into a summary strip directly under the header/curation bar, move the exploratory map below it, and auto-seed a default intersection selection (e.g. top congested nodes) so sections are never empty on first load.",
+                                "audience_impact":  "Officials â€” their one question (\u0027which alternative is best?\u0027) is answered only after four screens of scrolling and prerequisite map interactions, past two empty sections.",
+                                "flagged_by":  [
+                                                   "information-architecture"
+                                               ]
+                            },
+                            {
+                                "rank":  19,
+                                "severity":  "P1",
+                                "issue":  "After any dataset change, the \u0027Recent Simulation Jobs\u0027 list asserts a falsehood: completed jobs from a destroyed dataset still display \u0027ëŒ€ì‹œë³´ë“œ ë¹„êµ ì‹œë‚˜ë¦¬ì˜¤ë¡œ ë“±ë¡ë¨\u0027 even though the backend has unregistered them.",
+                                "evidence":  "Reviewer-cited: simulation/page.tsx:1067-1071 renders the registered line for every status===\u0027done\u0027 job unconditionally; simulation_runs.py:78-98 excludes stale-revision jobs from the scenario list (consistent with the :84/:108 filtering I verified contextually via finding #1); SimulationJob already carries dataset_filename (lib/api.ts:486) but JobRow never compares it.",
+                                "recommendation":  "Compare job.dataset_filename/revision against the active dataset and render stale jobs distinctly: \u0027ì´ì „ ë°ì´í„°ì…‹(íŒŒì¼ëª…)ì˜ ê²°ê³¼ â€” í˜„ìž¬ ëŒ€ì‹œë³´ë“œì—ëŠ” í‘œì‹œë˜ì§€ ì•ŠìŠµë‹ˆë‹¤\u0027.",
+                                "audience_impact":  "Especially officials: they see \u0027done, registered\u0027, open the dashboard, and the scenario is not in the picker â€” the silent data loss from finding #1 surfaces here as an unexplained contradiction.",
+                                "flagged_by":  [
+                                                   "flows-and-errors"
+                                               ]
+                            },
+                            {
+                                "rank":  20,
+                                "severity":  "P1",
+                                "issue":  "The upload-gated first-run tells but doesn\u0027t take: the empty dashboard shows two stacked \u0027upload required\u0027 panels neither of which contains or points at the actual upload control, while /downloads and /report never check the dataset at all â€” a first-time user can export sample-data deliverables with no warning.",
+                                "evidence":  "Reviewer-cited: page.tsx:347-351 DashboardDatasetGate + :450-451 DashboardUploadRequiredPanel, both without a button (the real control is the small \u0027ëª¨ë¸ ì„ íƒ\u0027 card, VissimDatasetBanner.tsx:104-115 â€” verified the hidden file input + button live there); downloads/page.tsx:133-148 and report/page.tsx:94-117 operate on whatever dataset is active with only a footnote.",
+                                "recommendation":  "Collapse the two gate panels into one containing an upload button that triggers the banner\u0027s file input; add the same dataset-status banner + gating to /downloads and /report so every route answers \u0027is real data loaded?\u0027.",
+                                "audience_impact":  "Officials are told twice to upload but given nothing to click; wandering to Downloads/Report first can produce sample-data files circulated as project results.",
+                                "flagged_by":  [
+                                                   "information-architecture"
+                                               ]
+                            },
+                            {
+                                "rank":  21,
+                                "severity":  "P1",
+                                "issue":  "The ì‰¬ìš´ ì„¤ëª…/ì „ë¬¸ê°€ toggle only changes the AI headline and insight cards; every chart section keeps identical jargon (LOS letters, GEH table, KPI cards), so \u0027Plain\u0027 mode is a friendly two-sentence answer atop an unchanged expert dashboard.",
+                                "evidence":  "VERIFIED: CurationBar.tsx:31 holds audience state and :51 only sends it in the curateDashboard request body; page.tsx renders sections purely from curationSpec.charts (:113-116, verified) with no audience-aware variant of any subtitle or legend.",
+                                "recommendation":  "Thread audience into page state: swap LOS letters for \u0027ì›í™œ/ë³´í†µ/í˜¼ìž¡\u0027 labels, add one-line plain subtitles under each SectionHeader, hide GEH columns (keep % error bands) in plain mode.",
+                                "audience_impact":  "Non-expert officials: the control that promises comprehension fixes ~10% of the screen, eroding trust in the \u0027plain\u0027 promise â€” and it is the toggle most likely to be demonstrated to a professor as the novice story.",
+                                "flagged_by":  [
+                                                   "novice-audience"
+                                               ]
+                            },
+                            {
+                                "rank":  22,
+                                "severity":  "P1",
+                                "issue":  "The \u0027ê²°ê³¼ í•´ì„\u0027 headline declares a winner \u0027ì¢…í•© ì ìˆ˜ ê¸°ì¤€ ìµœìƒìœ„\u0027 but no score, ranking table, or methodology is visible anywhere on the page â€” the product\u0027s key judgment is an unverifiable black box, even though the ranking data (rank/score/reason) already exists in the summary response.",
+                                "evidence":  "Reviewer-cited: page.tsx:1878-1884 buildOverallNarrative emits the claim; summary.scenario_ranking (with score and reason fields, :2087-2097) is rendered only into the exported markdown report, never on the page.",
+                                "recommendation":  "Render the existing scenario_ranking as a small on-page list under the narrative, or rewrite the sentence to cite visible evidence (\u0027í‰ê·  ì§€ì²´ê°€ ê°€ìž¥ ë‚®ê³  í†µí–‰ì‹œê°„ì´ ì§§ì•„â€¦\u0027). Data already exists â€” display-only change.",
+                                "audience_impact":  "Officials are asked to accept \u0027X is best\u0027 on faith â€” exactly the audience that will be challenged to justify the choice; engineers cannot audit the score either.",
+                                "flagged_by":  [
+                                                   "novice-audience"
+                                               ]
+                            },
+                            {
+                                "rank":  23,
+                                "severity":  "P1",
+                                "issue":  "Insight cards carry related_chart â€” validated server-side against real section ids â€” but the renderer drops it, so cards never link, scroll, or badge to the chart that is their evidence, despite scroll anchors already existing on the targets.",
+                                "evidence":  "VERIFIED: dashboard_curator.py:148-154 validates related_chart against VALID_CHART_IDS; CurationBar.tsx:151-158 renders only title/body/tone (verified). Reviewer-cited: target sections have ids + scroll-mt-6 anchors (page.tsx:396). Only the middle wiring is missing.",
+                                "recommendation":  "Render related_chart as a \u0027ì°¨íŠ¸ ë³´ê¸° â†’\u0027 footer link that scrollIntoView()s the section id with a brief highlight; hide the link when the target section is not currently rendered (interacts with finding #14).",
+                                "audience_impact":  "Officials get claims (\u0027ì§€ì²´ 32% ì¦ê°€\u0027) with no path to the supporting picture â€” the exact trust bridge this audience needs; engineers cannot jump from claim to numbers to verify.",
+                                "flagged_by":  [
+                                                   "ai-interaction"
+                                               ]
+                            },
+                            {
+                                "rank":  24,
+                                "severity":  "P1",
+                                "issue":  "Per-vehicle and network-total metrics share bare unit badges â€” Average Delay shows \u0027s\u0027 instead of \u0027s/veh\u0027, totals render as \u002751.5k\u0027 with an \u0027s\u0027 badge (â‰ˆ14 vehicle-hours) â€” and the \u0027Best\u0027 tag rewards the minimum total without noting the winner may simply be serving fewer vehicles.",
+                                "evidence":  "Reviewer-cited: page.tsx:27-34 KPI_METRICS units (\u0027s\u0027 for DELAYAVG, TRAVTMTOT and DELAYTOT alike; \u0027stops\u0027 for STOPSAVG); \u002751.5k\u0027 formatting at :1253-1254; bestVal = min for totals at :1234 with no cross-reference to VEHARR.",
+                                "recommendation":  "Label per-vehicle metrics \u0027s/veh\u0027 (ì´ˆ/ëŒ€) and \u0027stops/veh\u0027; convert totals to vehicle-hours; normalize totals per arrived vehicle before awarding \u0027Best\u0027 or add a caveat when the winner has materially lower VEHARR.",
+                                "audience_impact":  "Officials cannot interpret \u002751.5k s\u0027 and may champion a scenario that just serves less traffic; engineers can misread average vs total when both badges read \u0027s\u0027.",
+                                "flagged_by":  [
+                                                   "dataviz-honesty"
+                                               ]
+                            },
+                            {
+                                "rank":  25,
+                                "severity":  "P1",
+                                "issue":  "Dataset uploads and reset have no progress indication, no cancel, and no timeout â€” a stalled backend leaves the UI disabled on \u0027ì²˜ë¦¬ ì¤‘\u0027 (English: \u0027Loading\u0027, mislabeled for an upload) indefinitely; large VISSIM ZIPs upload against a static button label.",
+                                "evidence":  "VERIFIED: VissimDatasetBanner.tsx:127-130 â€” only feedback is the button flipping to \u0027ì²˜ë¦¬ ì¤‘\u0027/\u0027Loading\u0027 with both buttons disabled. Reviewer-cited: uploadInpxDataset and apiMutationFetch (lib/api.ts:843-869, :161-201) use bare fetch with no AbortSignal or timeout.",
+                                "recommendation":  "Report upload percentage via XHR or streaming fetch, add a progress bar and AbortController cancel, enforce a generous timeout failing into a localized retryable error; fix the English label to \u0027Uploadingâ€¦\u0027.",
+                                "audience_impact":  "Officials uploading a project ZIP over a slow disk/VPN cannot tell working from hung; the only recovery is a page refresh, which also loses their selections.",
+                                "flagged_by":  [
+                                                   "flows-and-errors"
+                                               ]
+                            },
+                            {
+                                "rank":  26,
+                                "severity":  "P1",
+                                "issue":  "A fully functional Simulation Runner at /simulation is reachable from no link anywhere in the UI â€” deliberately hidden from the nav (a test asserts it) yet it cross-links into nav\u0027d pages and feeds the dashboard; when a user is on it, no nav item is active.",
+                                "evidence":  "Reviewer-cited with grep confirmation: AppShell.tsx:14-19 omits /simulation; tests/dashboard-contract.test.ts:78 asserts it stays hidden; simulation/page.tsx:880-885 links back to /dashboard and promises dashboard registration (:563); zero inbound hrefs in the frontend.",
+                                "recommendation":  "Add a gated entry point â€” a nav item visible when capabilities report can_run, or a \u0027ìƒˆ ì‹œë‚˜ë¦¬ì˜¤ ì‹¤í–‰\u0027 link from the dashboard\u0027s scenario picker â€” so the loop (run â†’ registered scenario â†’ dashboard) is closed.",
+                                "audience_impact":  "Engineers â€” the run-a-new-scenario task is blocked unless they know the URL; officials arriving via a shared link appear to be \u0027nowhere\u0027 in the app.",
+                                "flagged_by":  [
+                                                   "information-architecture"
+                                               ]
+                            },
+                            {
+                                "rank":  27,
+                                "severity":  "P1",
+                                "issue":  "Nav labels don\u0027t let a non-expert distinguish routes: the most jargon-heavy page (\u0027ë² ì´ìŠ¤ëª¨ë¸ ê²€ì¦\u0027) is listed first while the app opens on /dashboard, both lead to pages with a map + scenario selector + GEH, the brand mark is not a home link, and three of four items lack ja translations.",
+                                "evidence":  "Reviewer-cited: AppShell.tsx:14-19 (order and bare labels; only report has ja); app/page.tsx:4 redirects to /dashboard contradicting nav order; AppShell.tsx:35-38 brand is a \u003cspan\u003e.",
+                                "recommendation":  "Reorder nav to match entry flow (ëŒ€ì‹œë³´ë“œ first), rename toward tasks (\u0027ê²°ê³¼ ëŒ€ì‹œë³´ë“œ\u0027, \u0027ëª¨ë¸ ì‹ ë¢°ë„ í™•ì¸\u0027), add one-line descriptors, make the brand link to /dashboard, supply ja strings.",
+                                "audience_impact":  "Officials cannot predict what any nav item does and the first item drops them into GEH/RÂ² jargon; Japanese users get a mixed-language nav.",
+                                "flagged_by":  [
+                                                   "information-architecture"
+                                               ]
+                            },
+                            {
+                                "rank":  28,
+                                "severity":  "P2",
+                                "issue":  "Language leaks throughout: volume-chart hover tooltips are hardcoded English in all locales, the \u0027Best\u0027 badge is English in Korean mode, axis/unit labels and placeholder glyphs are untranslated, the report timestamp is locked to ko-KR for en/ja users â€” and critical annotations (per-direction volumes, the estimation disclaimer) exist only as hover title attributes invisible on touch devices.",
+                                "evidence":  "Reviewer-cited (both dimensions cite the same line): page.tsx:905 title uses DIRECTION_LABELS[direction].en unconditionally; :1261 t(\"Best\",\"Best\"); :1008 \u0027sec\u0027 (verified in the SVG); :2488-2496 formatDisplayDateTime hardcodes ko-KR; Est.Â·LOS disclosure title-only at :834-841.",
+                                "recommendation":  "Route tooltips and badges through t(); surface per-direction volumes and the estimation disclaimer as visible text (legend row); pass the active locale to toLocaleString.",
+                                "audience_impact":  "Korean officials on tablets â€” the primary briefing-room audience â€” get unexplained English at detail-on-demand moments and never see the honesty disclaimers at all.",
+                                "flagged_by":  [
+                                                   "dataviz-honesty",
+                                                   "novice-audience"
+                                               ]
+                            },
+                            {
+                                "rank":  29,
+                                "severity":  "P2",
+                                "issue":  "The floating chat\u0027s status pills and error copy expose infrastructure jargon (Qwen model path, worker, port 8001, /api proxy, COM, error IDs) as primary UI text.",
+                                "evidence":  "Reviewer-cited: FloatingAssistant.tsx:977 \u0027The Qwen model path was not found\u0027; :1291-1293 \u0027Check the backend on port 8001 and the Next.js /api proxy\u0027; ComStatusPill \u0027COM offline\u0027 (:1036); compactWorkerError \u0027ID: â€¦\u0027 fragments (:1024-1030).",
+                                "recommendation":  "Default pill copy in plain language (\u0027AI ì¤€ë¹„ ì¤‘ â€” ìž ì‹œ í›„ ë‹¤ì‹œ ì‹œë„í•˜ì„¸ìš”\u0027) with technical detail collapsed behind a \u0027ìžì„¸ížˆ\u0027 disclosure for engineers.",
+                                "audience_impact":  "Primarily officials: the chat greets them with dev-ops diagnostics they cannot act on, undermining confidence before the first question â€” and visible in any demo where the worker is cold.",
+                                "flagged_by":  [
+                                                   "ai-interaction"
+                                               ]
+                            },
+                            {
+                                "rank":  30,
+                                "severity":  "P2",
+                                "issue":  "Report download buttons are labeled \u0027MD\u0027 (meaningless to a ê³µë¬´ì›) and \u0027Word\u0027 â€” but the Word file is styled HTML saved as .doc, which triggers Word\u0027s format-mismatch warning on open, reading like a security warning on a government machine.",
+                                "evidence":  "Reviewer-cited: page.tsx:1182 t(\"MD\",\"MD\"); :1094-1108 handleDownloadWordReport builds HTML with blob type application/msword and a .doc extension.",
+                                "recommendation":  "Label buttons by intent (\u0027í…ìŠ¤íŠ¸ (.md)\u0027 / \u0027Word ë¬¸ì„œ\u0027), make Word primary for officials, and generate a real .docx (the /report backend already builds one â€” see finding #6) or warn inline about the compatibility prompt.",
+                                "audience_impact":  "Officials: jargon at the exact hand-off moment, then a Word warning dialog against the flagship export.",
+                                "flagged_by":  [
+                                                   "novice-audience"
+                                               ]
+                            },
+                            {
+                                "rank":  31,
+                                "severity":  "P2",
+                                "issue":  "The \u0027Max Q Length\u0027 and \u0027Worst Approach Delay\u0027 bars take the maximum across all selected scenarios per intersection (adjacent bars from different scenarios, disclosed only in 10px text), and the queue getter silently substitutes average queue length (QLEN) under the \u0027Max\u0027 title when QLENMAX is absent.",
+                                "evidence":  "Reviewer-cited: page.tsx:1589-1612 pickMaxIntersectionMetric keeps the cross-scenario max with the winner named at :804-806 in text-[10px]; calculateNodeMaxQueue (:1766-1776) flatMaps QLENMAX_MEAN and QLEN_MEAN into the same Math.max.",
+                                "recommendation":  "Add \u0027ì„ íƒ ì‹œë‚˜ë¦¬ì˜¤ ì¤‘ ìµœì•…ê°’\u0027 to the card header; when only QLEN is available, retitle to \u0027í‰ê·  ëŒ€ê¸°í–‰ë ¬\u0027 or hide the value rather than mislabel.",
+                                "audience_impact":  "Officials compare bars assuming one consistent scenario; engineers receive a mislabeled queue statistic quotable in an assessment.",
+                                "flagged_by":  [
+                                                   "dataviz-honesty"
+                                               ]
+                            },
+                            {
+                                "rank":  32,
+                                "severity":  "P2",
+                                "issue":  "The same quantity is formatted four different ways across the dashboard (\u002751.5k\u0027, \u002751,546\u0027, \u002751546.0 ~ 60123.0 (diff 8577.00)\u0027 without separators, fixed-decimal formatNumber), making cross-section verification needlessly hard.",
+                                "evidence":  "Reviewer-cited: page.tsx:1253-1254 (k-abbreviation), :1291 (toFixed range without separators), :914/:1508 (toLocaleString), :2512-2517 (formatNumber).",
+                                "recommendation":  "Adopt one shared formatter (toLocaleString, â‰¤1 decimal, separators everywhere); keep \u0027k\u0027 only where the unit badge reflects scaling; fix the range footer to match the bar labels.",
+                                "audience_impact":  "Both audiences cross-check numbers between KPI card, validation table, and report and conclude the figures differ.",
+                                "flagged_by":  [
+                                                   "dataviz-honesty"
+                                               ]
+                            },
+                            {
+                                "rank":  33,
+                                "severity":  "P2",
+                                "issue":  "Scenario picker semantics are opaque and its contract inconsistent: the first four scenarios are auto-included with no explanation, \u0027ë¹„êµ í¬í•¨\u0027 never says what inclusion affects, and the toggle has no cap while the load path silently slices selections back to 4 on reload.",
+                                "evidence":  "VERIFIED: page.tsx:144-146 slices to 4 on load (both the preferred-scenario and default paths). Reviewer-cited: :1361 microcopy; :1318-1320 uncapped toggle; KPI overflow via horizontal scroll at :1244.",
+                                "recommendation":  "State the effect in the picker subtitle (\u0027ì„ íƒí•œ ì‹œë‚˜ë¦¬ì˜¤ë§Œ ì•„ëž˜ ëª¨ë“  ì°¨íŠ¸Â·í‘œì— í‘œì‹œë©ë‹ˆë‹¤\u0027), badge the auto-picked set (\u0027ìžë™ ì„ íƒë¨\u0027), enforce the same max in the toggle with a counter.",
+                                "audience_impact":  "Officials don\u0027t know what a comparison set changes or why four are pre-chosen; engineers hit selections that survive interaction but vanish after a dataset reload.",
+                                "flagged_by":  [
+                                                   "information-architecture"
+                                               ]
+                            },
+                            {
+                                "rank":  34,
+                                "severity":  "P2",
+                                "issue":  "Developer/changelog voice leaks into user-facing subtitles: \u0027ê¸°ì¡´ ëŒ€ì‹œë³´ë“œ ì§€ë„ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©í•´â€¦\u0027, the en subtitle \u0027Keep this section focused on interpretation and report generation.\u0027 (an internal design note), and copy explaining a removed sample-data behavior users never saw.",
+                                "evidence":  "Reviewer-cited: page.tsx:399 (map subtitle), :501 (overall-results en subtitle), :630-633 (upload panel body).",
+                                "recommendation":  "Rewrite as user-purpose copy per the reviewer\u0027s suggested strings (e.g. \u0027ì§€ë„ì—ì„œ ë¹„êµí•  êµì°¨ë¡œë¥¼ ìµœëŒ€ 6ê°œê¹Œì§€ ì„ íƒí•©ë‹ˆë‹¤\u0027). Pure copy edits.",
+                                "audience_impact":  "Both â€” subtitles are the primary orientation layer and these read as notes to the dev team; plainly broken in English.",
+                                "flagged_by":  [
+                                                   "novice-audience"
+                                               ]
+                            },
+                            {
+                                "rank":  35,
+                                "severity":  "P2",
+                                "issue":  "Empty states describe problems without next steps: the travel-time section says measurements are missing without why or what to do, and the header chip \u00273 ê°œ ì¤€ë¹„ë¨ / 3 ready\u0027 never says three of what.",
+                                "evidence":  "Reviewer-cited: page.tsx:946 (no action, no cause) â€” consistent with the verified empty-data branch of TravelTimeComparison; :370 ambiguous chip.",
+                                "recommendation":  "Name cause and fix (\u0027ì—…ë¡œë“œí•œ ê²°ê³¼ì— í†µí–‰ì‹œê°„ ì¸¡ì • êµ¬ê°„ì´ ì—†ìŠµë‹ˆë‹¤. Vissim ëª¨ë¸ì— ì¸¡ì • êµ¬ê°„ì„ ì¶”ê°€í•œ ë’¤ ë‹¤ì‹œ ì—…ë¡œë“œí•˜ì„¸ìš”\u0027); change the chip to \u0027ì‹œë‚˜ë¦¬ì˜¤ 3ê°œ ì¤€ë¹„ë¨\u0027.",
+                                "audience_impact":  "Officials hit a dead end with no recovery path â€” they cannot know travel-time sections are a Vissim-side configuration.",
+                                "flagged_by":  [
+                                                   "novice-audience"
+                                               ]
+                            },
+                            {
+                                "rank":  36,
+                                "severity":  "P2",
+                                "issue":  "The dashboard banner and simulation page enforce different upload rules with no explanation: the banner accepts bare .inpx files that satisfy the dashboard but leave the simulation page blocked demanding a ZIP, with no hint the already-uploaded .inpx is the cause.",
+                                "evidence":  "VERIFIED: VissimDatasetBanner.tsx:109 accept=\u0027.inpx,.zip\u0027 with no guidance; backend datasets.py:75-80 accepts both (verified). Reviewer-cited: simulation/page.tsx:152-154 gates on dataset.kind === \u0027zip\u0027 and :215-218 rejects non-zip.",
+                                "recommendation":  "When an .inpx-only dataset is active, make the simulation page\u0027s disabled message name the cause and the required ZIP contents (.inpx + .vissimpdb); add a \u0027what should the ZIP contain\u0027 hint next to both upload buttons.",
+                                "audience_impact":  "Officials hit an apparent contradiction â€” \u0027the dashboard accepted my file, why does simulation say I haven\u0027t uploaded?\u0027 â€” with the ZIP structure documented nowhere in the UI.",
+                                "flagged_by":  [
+                                                   "flows-and-errors"
+                                               ]
+                            },
+                            {
+                                "rank":  37,
+                                "severity":  "P2",
+                                "issue":  "The simulation page coerces fetch failures into false empty states: if jobs/signals/capabilities requests fail, it shows \u0027ì•„ì§ ì‹¤í–‰ ìž‘ì—…ì´ ì—†ìŠµë‹ˆë‹¤\u0027 and silently drops signal data instead of reporting an error.",
+                                "evidence":  "Reviewer-cited: simulation/page.tsx:110-118 rejections simply not applied (no error state); only dataset/scenario rejections set the generic error (:128-130); jobs=[] renders the genuine-looking empty state at :571-572.",
+                                "recommendation":  "Track per-section load failure and render an inline error with retry (\u0027ì‹¤í–‰ ê¸°ë¡ì„ ë¶ˆëŸ¬ì˜¤ì§€ ëª»í–ˆìŠµë‹ˆë‹¤ â€” ë‹¤ì‹œ ì‹œë„\u0027), reusing the loadBaseData refresh as the retry action.",
+                                "audience_impact":  "An engineer may re-run expensive simulations believing yesterday\u0027s runs vanished; an official concludes their work was lost â€” compounding findings #1 and #19.",
+                                "flagged_by":  [
+                                                   "flows-and-errors"
+                                               ]
+                            },
+                            {
+                                "rank":  38,
+                                "severity":  "P2",
+                                "issue":  "Two vestigial hazards: /network exists solely to throw notFound() with no custom not-found page (stale links land on an unstyled English 404), and SimulationControl.tsx is an archived-but-present duplicate run flow whose WebSocket-only monitor misreports running jobs as failed and can stick at \u0027running\u0027 forever if re-wired.",
+                                "evidence":  "Reviewer-cited: app/network/page.tsx:3-4 notFound(); no not-found.tsx in the glob; SimulationControl.tsx:38-63 has no polling fallback or ws.onclose handling and connects directly to getApiBase() while startSimulation uses the proxy; docs/removed-routes-archive.md:28 lists it archived yet line 35 suggests re-wiring; zero imports.",
+                                "recommendation":  "Replace /network\u0027s body with redirect(\u0027/dashboard\u0027) or delete the folder; add a localized app/not-found.tsx linking the four nav destinations; delete SimulationControl.tsx or rewrite it on monitorSimulationJob\u0027s WS+polling pattern before anyone re-wires it.",
+                                "audience_impact":  "Light for both: stale links dead-end in English; the orphan component is a landmine for future maintainers rather than current users.",
+                                "flagged_by":  [
+                                                   "information-architecture",
+                                                   "flows-and-errors"
+                                               ]
+                            }
+                        ],
+    "pre_demo_shortlist":  [
+                               {
+                                   "issue":  "Stale AI curation cards survive scenario/dataset changes (finding #4) â€” the flagship LLM feature will visibly show wrong numbers the moment anyone switches scenarios mid-demo.",
+                                   "fix":  "Call setCurationSpec(null) inside clearDashboardData and whenever `selected` changes in frontend/app/dashboard/page.tsx; optionally add a one-line \u0027A, B ì‹œë‚˜ë¦¬ì˜¤ ê¸°ì¤€ ë‹µë³€ â€” ë‹¤ì‹œ ì§ˆë¬¸í•˜ì„¸ìš”\u0027 stale hint.",
+                                   "effort":  "S"
+                               },
+                               {
+                                   "issue":  "One click can irreversibly destroy the demo dataset and every run result (finding #1) â€” upload-replace and \u0027ê¸°ë³¸ê°’ ë³µì›\u0027 both rmtree with no confirmation.",
+                                   "fix":  "Add a confirmation dialog naming the file and affected result count before uploadInpxDataset/resetActiveDataset fire (VissimDatasetBanner.tsx and simulation/page.tsx); add the source===\u0027uploaded\u0027 guard and danger styling to the simulation-page reset button.",
+                                   "effort":  "S"
+                               },
+                               {
+                                   "issue":  "A suggested starter chip can silently launch a real VISSIM COM run, and when the backend asks for confirmation there is no button to give it (finding #3) â€” either failure mode on stage is disqualifying for the \u0027human-in-the-loop\u0027 story.",
+                                   "fix":  "Always send allow_tool_execution=false on the first pass; render a diff card from result.changes with \u0027Run simulation\u0027/\u0027Cancel\u0027 buttons on requires_confirmation; delete shouldAllowPromptExecution in FloatingAssistant.tsx.",
+                                   "effort":  "M"
+                               },
+                               {
+                                   "issue":  "Dashboard GEH disagrees with the exported report and /base-model because of hidden S000001-pegged rescaling (finding #2) â€” a traffic professor will check GEH first, and cell color ignoring GEH (finding #10) compounds it.",
+                                   "fix":  "Route the on-screen matrix and buildReportValidationRows through one shared raw-volume function; label any scaled values as estimates with the factor visible; tint cells by the worse of errorTone/gehTone using the existing validationThresholds helpers; add a one-line GEH definition to the section subtitle.",
+                                   "effort":  "M"
+                               },
+                               {
+                                   "issue":  "First curation ask on a cold Qwen worker: a 20-40s frozen bar with hidden auto-retry, no cancel, and raw English errors on failure (findings #8, #13) â€” the likeliest live hiccup, in the signature feature.",
+                                   "fix":  "In CurationBar.tsx: show a Cancel button whenever loading (reset() already aborts), add a \u0027ë³´í†µ 10~20ì´ˆ\u0027 status line, and map errors through a localized formatter with a retry button instead of rendering err.message verbatim.",
+                                   "effort":  "S"
+                               }
+                           ]
+}

@@ -1,0 +1,602 @@
+<title>Prism UX Audit — 2026-07-22</title>
+<style>
+:root {
+  --ground: #f6f7f9; --panel: #ffffff; --ink: #1c2530; --ink-soft: #5b6b7d;
+  --line: #dde3ea; --accent: #31517a;
+  --p0: #b3352e; --p0-bg: #fbf1f0; --p1: #a26a1f; --p1-bg: #fbf6ec; --p2: #5b6b7d; --p2-bg: #f1f4f7;
+  --mono: "Cascadia Code", Consolas, "SF Mono", monospace;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --ground: #141a21; --panel: #1c242e; --ink: #e2e8f0; --ink-soft: #94a3b3;
+  --line: #2c3846; --accent: #7ea4d4;
+  --p0: #e0756c; --p0-bg: #2a1d1c; --p1: #d1a05a; --p1-bg: #272013; --p2: #94a3b3; --p2-bg: #1f2833;
+} }
+:root[data-theme="dark"] {
+  --ground: #141a21; --panel: #1c242e; --ink: #e2e8f0; --ink-soft: #94a3b3;
+  --line: #2c3846; --accent: #7ea4d4;
+  --p0: #e0756c; --p0-bg: #2a1d1c; --p1: #d1a05a; --p1-bg: #272013; --p2: #94a3b3; --p2-bg: #1f2833;
+}
+:root[data-theme="light"] {
+  --ground: #f6f7f9; --panel: #ffffff; --ink: #1c2530; --ink-soft: #5b6b7d;
+  --line: #dde3ea; --accent: #31517a;
+  --p0: #b3352e; --p0-bg: #fbf1f0; --p1: #a26a1f; --p1-bg: #fbf6ec; --p2: #5b6b7d; --p2-bg: #f1f4f7;
+}
+* { box-sizing: border-box; }
+body { background: var(--ground); color: var(--ink); margin: 0;
+  font: 15px/1.6 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 40px 20px 80px; }
+h1, h2, h3 { font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  letter-spacing: -0.015em; text-wrap: balance; }
+h1 { font-size: 1.9rem; margin: 0 0 4px; }
+h2 { font-size: 1.15rem; margin: 40px 0 12px; padding-top: 18px; border-top: 1px solid var(--line); }
+.sub { color: var(--ink-soft); margin: 0 0 6px; max-width: 62ch; }
+.eyebrow { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--accent); font-weight: 600; margin: 0 0 6px; }
+.strip { display: flex; gap: 10px; flex-wrap: wrap; margin: 20px 0 6px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 16px; min-width: 108px; }
+.stat b { display: block; font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 0.78rem; color: var(--ink-soft); }
+.stat.s0 b { color: var(--p0); } .stat.s1 b { color: var(--p1); } .stat.s2 b { color: var(--p2); }
+table { border-collapse: collapse; width: 100%; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; overflow: hidden; font-size: 0.9rem; }
+.tablewrap { overflow-x: auto; }
+th, td { text-align: left; padding: 10px 12px; border-top: 1px solid var(--line); vertical-align: top; }
+thead th { border-top: none; font-size: 0.74rem; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--ink-soft); }
+.effort { display: inline-block; font-family: var(--mono); font-size: 0.78rem; font-weight: 700;
+  border-radius: 6px; padding: 2px 8px; }
+.e-S { background: var(--p2-bg); color: var(--p2); }
+.e-M { background: var(--p1-bg); color: var(--p1); }
+.e-L { background: var(--p0-bg); color: var(--p0); }
+.finding { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--p2);
+  border-radius: 10px; padding: 14px 18px; margin: 0 0 12px; }
+.finding.sev-P0 { border-left-color: var(--p0); }
+.finding.sev-P1 { border-left-color: var(--p1); }
+.finding header { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.finding h3 { font-size: 0.98rem; margin: 0; flex: 1 1 100%; line-height: 1.45; }
+.finding.compact h3 { font-weight: 600; }
+.rank { font-family: var(--mono); color: var(--ink-soft); font-size: 0.82rem; }
+.sev { font-family: var(--mono); font-size: 0.72rem; font-weight: 700; border-radius: 6px; padding: 1px 7px; }
+.sev-P0 .sev { background: var(--p0-bg); color: var(--p0); }
+.sev-P1 .sev { background: var(--p1-bg); color: var(--p1); }
+.sev-P2 .sev { background: var(--p2-bg); color: var(--p2); }
+details { margin-top: 8px; }
+summary { cursor: pointer; font-size: 0.82rem; color: var(--accent); }
+summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+dl { margin: 10px 0 0; display: grid; grid-template-columns: 92px 1fr; gap: 6px 14px; }
+dt { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-soft); padding-top: 2px; }
+dd { margin: 0; font-size: 0.9rem; }
+.mono { font-family: var(--mono); font-size: 0.8rem; word-break: break-word; }
+.dims { font-size: 0.76rem; color: var(--ink-soft); margin: 10px 0 0; }
+.p2list { list-style: none; padding: 0; margin: 0; }
+.p2list li { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 16px; margin-bottom: 8px; font-size: 0.9rem; }
+.small { font-size: 0.82rem; }
+footer { margin-top: 48px; color: var(--ink-soft); font-size: 0.8rem; border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+<main>
+  <p class="eyebrow">Dochak Prism · internal audit</p>
+  <h1>Prism Dashboard — UX Audit</h1>
+  <p class="sub">2026-07-22 · Five specialist reviews (AI interaction, information architecture,
+  data-viz honesty, non-expert comprehension, flows &amp; errors) over the full frontend source,
+  plus live browser checks. Audience lens: 공무원 (non-expert officials) and traffic engineers.
+  Every finding carries code-level evidence.</p>
+  <div class="strip">
+    <div class="stat s0"><b>6</b><span>P0 · misleads or blocks</span></div>
+    <div class="stat s1"><b>21</b><span>P1 · significant friction</span></div>
+    <div class="stat s2"><b>11</b><span>P2 · polish</span></div>
+    <div class="stat"><b>38</b><span>total findings</span></div>
+  </div>
+
+  <h2>Fix before the professor demo</h2>
+  <p class="sub">Five items, roughly one working day combined. S = under an hour, M = a few hours.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Effort</th><th>Risk on stage</th><th>Fix</th></tr></thead>
+    <tbody><tr>
+      <td><span class="effort e-S">S</span></td>
+      <td>Stale AI curation cards survive scenario/dataset changes (finding #4) â€” the flagship LLM feature will visibly show wrong numbers the moment anyone switches scenarios mid-demo.</td>
+      <td>Call setCurationSpec(null) inside clearDashboardData and whenever `selected` changes in frontend/app/dashboard/page.tsx; optionally add a one-line 'A, B ì‹œë‚˜ë¦¬ì˜¤ ê¸°ì¤€ ë‹µë³€ â€” ë‹¤ì‹œ ì§ˆë¬¸í•˜ì„¸ìš”' stale hint.</td>
+    </tr>
+<tr>
+      <td><span class="effort e-S">S</span></td>
+      <td>One click can irreversibly destroy the demo dataset and every run result (finding #1) â€” upload-replace and 'ê¸°ë³¸ê°’ ë³µì›' both rmtree with no confirmation.</td>
+      <td>Add a confirmation dialog naming the file and affected result count before uploadInpxDataset/resetActiveDataset fire (VissimDatasetBanner.tsx and simulation/page.tsx); add the source==='uploaded' guard and danger styling to the simulation-page reset button.</td>
+    </tr>
+<tr>
+      <td><span class="effort e-M">M</span></td>
+      <td>A suggested starter chip can silently launch a real VISSIM COM run, and when the backend asks for confirmation there is no button to give it (finding #3) â€” either failure mode on stage is disqualifying for the 'human-in-the-loop' story.</td>
+      <td>Always send allow_tool_execution=false on the first pass; render a diff card from result.changes with 'Run simulation'/'Cancel' buttons on requires_confirmation; delete shouldAllowPromptExecution in FloatingAssistant.tsx.</td>
+    </tr>
+<tr>
+      <td><span class="effort e-M">M</span></td>
+      <td>Dashboard GEH disagrees with the exported report and /base-model because of hidden S000001-pegged rescaling (finding #2) â€” a traffic professor will check GEH first, and cell color ignoring GEH (finding #10) compounds it.</td>
+      <td>Route the on-screen matrix and buildReportValidationRows through one shared raw-volume function; label any scaled values as estimates with the factor visible; tint cells by the worse of errorTone/gehTone using the existing validationThresholds helpers; add a one-line GEH definition to the section subtitle.</td>
+    </tr>
+<tr>
+      <td><span class="effort e-S">S</span></td>
+      <td>First curation ask on a cold Qwen worker: a 20-40s frozen bar with hidden auto-retry, no cancel, and raw English errors on failure (findings #8, #13) â€” the likeliest live hiccup, in the signature feature.</td>
+      <td>In CurationBar.tsx: show a Cancel button whenever loading (reset() already aborts), add a 'ë³´í†µ 10~20ì´ˆ' status line, and map errors through a localized formatter with a retry button instead of rendering err.message verbatim.</td>
+    </tr></tbody>
+  </table></div>
+
+  <h2>P0 — actively misleading or destructive</h2>
+  
+    <article class="finding sev-P0">
+      <header>
+        <span class="rank">#1</span>
+        <span class="sev">P0</span>
+        <h3>Uploading a new dataset or clicking 'ê¸°ë³¸ê°’ ë³µì›' irreversibly rmtree's the previous upload with zero confirmation, and every prior simulation result silently vanishes from the dashboard.</h3>
+      </header>
+      <details open>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: backend/services/datasets.py:83-86 (reset_active_dataset) and :165-168 (_prepare_upload_dir) both shutil.rmtree(UPLOAD_DIR); frontend/components/VissimDatasetBanner.tsx:67-87 uploads immediately from the file picker with no confirm step, and :132-141 fires reset on a single click (the banner button is at least danger-styled and guarded by source==='uploaded'; per the flows reviewer the simulation-page copy at app/simulation/page.tsx:635-637 is ghost-styled and unguarded). backend/services/simulation_runs.py:84,108 then filters out all completed runs whose dataset_revision differs, and simulation/page.tsx:227 clearDraft() discards queued edits.</dd>
+          <dt>Fix</dt><dd>Intercept both actions with a confirmation dialog stating the concrete consequence ('í˜„ìž¬ ë°ì´í„°ì…‹(íŒŒì¼ëª…)ê³¼ ì‹œë®¬ë ˆì´ì…˜ ê²°ê³¼ Nê±´ì´ ì‚¬ë¼ì§‘ë‹ˆë‹¤. ê³„ì†í• ê¹Œìš”?'), fetching the affected job count from /api/simulations. Apply the banner's source==='uploaded' guard and destructive styling to the simulation-page reset. Longer term, version prior uploads instead of rmtree.</dd>
+          <dt>Who it hurts</dt><dd>Both â€” an official loses an afternoon of runs by selecting a file; an engineer loses calibration runs that cost real VISSIM compute. Invisible until they look for their results; single biggest trust breaker and a catastrophic live-demo risk.</dd>
+        </dl>
+        <p class="dims">Flagged by: Flows &amp; errors</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P0">
+      <header>
+        <span class="rank">#2</span>
+        <span class="sev">P0</span>
+        <h3>The same node/scenario pair produces conflicting GEH and % error numbers across three surfaces â€” the dashboard matrix silently rescales simulated volumes by a hard-coded S000001-pegged factor, the exported report uses raw unscaled volumes, and /base-model computes per-movement GEH from the workbook â€” with no disclosure of the scaling and no statement of which is authoritative.</h3>
+      </header>
+      <details open>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: frontend/app/dashboard/page.tsx:1425-1440 scaledSim() multiplies raw volume by (total_sim_basam / dbVols['S000001']) before pctErr/gehStat; the report path uses calculateScenarioNodeVolume (raw node_directions/movement sums, :2204 and :2253-2268); the only scaling hint appears when S000001 is NOT selected (:1465-1468, leaking the internal ID into user copy); sim totals come only from summary.top_congested_nodes (:1416-1421) so nodes outside that list render '-'. base-model/page.tsx:644 is a third pipeline (per-movement workbook GEH).</dd>
+          <dt>Fix</dt><dd>Compute the on-screen matrix and report rows through one shared function on raw modelled volumes; if base-scenario scaling must stay, show the applied factor as a visible footnote and mark scaled cells as estimates; make /base-model the canonical validation surface with the dashboard showing a summary card linking to it; replace 'S000001' with the resolved base-scenario name; source sim totals from the full compare results.</dd>
+          <dt>Who it hurts</dt><dd>Both â€” GEH is the engineer's formal acceptance criterion, and dashboard-vs-report disagreement can invalidate a submission; an official who sees green here and red on ë² ì´ìŠ¤ëª¨ë¸ ê²€ì¦ quotes whichever number they saw first in a briefing. Directly undermines the TR-C-facing calibration story.</dd>
+        </dl>
+        <p class="dims">Flagged by: IA &amp; navigation · Data-viz honesty · Non-expert copy</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P0">
+      <header>
+        <span class="rank">#3</span>
+        <span class="sev">P0</span>
+        <h3>The human-approval loop for AI-run simulations does not exist: execution consent is decided by an invisible client-side keyword match on the user's sentence (the dashboard's own suggested starter chips trigger it), and the backend's requires_confirmation response is a dead end with no confirm control.</h3>
+      </header>
+      <details open>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: FloatingAssistant.tsx:308 sends allow_tool_execution: shouldAllowPromptExecution(text); that function (:1228-1261) is substring matching (ì‹¤í–‰/run/simulate Ã— vissim/signal/volume...), so starter #2 (:1056, 'ìµœê·¼ VISSIM ì‹¤í–‰ì´ ì™œ ì‹¤íŒ¨í–ˆëŠ”ì§€â€¦') silently authorizes execution for a diagnostic question and starter #3 (:1057) triggers a real COM run with no confirmation UI. When the backend returns requires_confirmation (assistant_router.py:1737), the frontend renders only the reason as small gray text (:808) â€” no confirm button exists anywhere.</dd>
+          <dt>Fix</dt><dd>Delete the keyword heuristic; always send allow_tool_execution=false on first pass; when the response returns recognized+requires_confirmation, render result.changes as a diff card with explicit 'Run simulation' / 'Cancel' buttons that re-submit with allow_tool_execution=true.</dd>
+          <dt>Who it hurts</dt><dd>Both, in opposite directions â€” officials can unknowingly launch a simulation from a suggested chip (page.tsx:228 even auto-reloads their dashboard when it completes), while engineers without the magic keywords hit a dead end with no way to grant permission. Breaks the product's headline capability and its safety story simultaneously.</dd>
+        </dl>
+        <p class="dims">Flagged by: AI interaction</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P0">
+      <header>
+        <span class="rank">#4</span>
+        <span class="sev">P0</span>
+        <h3>An AI curation result (headline + insight cards with concrete numbers) survives scenario and dataset changes, so cards computed from old data sit on top of charts showing new data.</h3>
+      </header>
+      <details open>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: app/dashboard/page.tsx:107 stores curationSpec; clearDashboardData (:118-128) resets scenarios/results/nodes/summary but never curationSpec; handleDatasetChange (:285-297) calls clearDashboardData and never clears it; the scenario picker (:348) wires setSelected directly. The only clear path is the user-pressed reset in CurationBar.tsx:67-72. Card numbers come from the compare-summary context captured at ask time (dashboard_curator.py:71).</dd>
+          <dt>Fix</dt><dd>Call setCurationSpec(null) inside clearDashboardData and whenever `selected` or the dataset revision changes; or stamp the spec with ask-time scenario names and render a visible 'answered for scenarios A, B â€” re-ask?' stale banner when the selection differs.</dd>
+          <dt>Who it hurts</dt><dd>Both, worst for officials â€” they treat the green/amber cards as the conclusion and will quote numbers belonging to a different scenario set than the charts on screen. This is the flagship differentiator lying about the current view; near-certain to occur in a live demo.</dd>
+        </dl>
+        <p class="dims">Flagged by: AI interaction</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P0">
+      <header>
+        <span class="rank">#5</span>
+        <span class="sev">P0</span>
+        <h3>The travel-time comparison chart positions points by array index with no x-axis tick labels ever rendered; each scenario independently picks its grouping mode (section vs interval) and is silently truncated to 18 points â€” so vertically aligned points can represent different measurement sections or time intervals across scenarios.</h3>
+      </header>
+      <details open>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: page.tsx:964-967 pointToSvg uses index/(maxPointCount-1); the point.label built in buildTravelTimeSeries (:1810-1814) is never rendered (only the static caption at :1004-1006); useSectionLabels (:1798-1803) is computed per scenario inside the per-result map so modes can differ on the same axes; .slice(0,18) at :1831 drops data with no notice; series with fewer points span less width than others.</dd>
+          <dt>Fix</dt><dd>Build a shared x-domain (union of labels across selected scenarios), position by label, render tick labels, force one grouping mode per chart, and show 'showing first 18 of N' when truncating.</dd>
+          <dt>Who it hurts</dt><dd>Both â€” an official reads crossing lines as 'B gets faster later in the peak' when x positions are not comparable; an engineer cannot tell which section/interval any point belongs to, making the chart unusable for precision work.</dd>
+        </dl>
+        <p class="dims">Flagged by: Data-viz honesty</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P0">
+      <header>
+        <span class="rank">#6</span>
+        <span class="sev">P0</span>
+        <h3>The dashboard's 'ë³´ê³ ì„œ ìƒì„±' always emits an English-only 'Base Model Calibration &amp; Validation' document with fabricated provenance ('Owner: OMV Team', 'Prepared By: AI-assisted report generator' â€” no AI is involved), and it is one of three disconnected report pipelines (dashboard client-built doc, /report backend .docx, /downloads Word exports) that never reference each other.</h3>
+      </header>
+      <details open>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: page.tsx:1929-1944 hardcodes the English title and Document Control table including 'Owner: Operational Modelling and Visualisation (OMV) Team' and 'Prepared By: AI-assisted report generator'; en-AU dates at :2484-2486 per reviewer; the Korean button copy (:1147-1150) never says the output is English or a calibration template. report/page.tsx:12-65 and downloads/page.tsx:81-98 are separate pipelines with near-identical Korean names.</dd>
+          <dt>Fix</dt><dd>Pick the backend .docx builder at /report as canonical and make the dashboard button a shortcut that pre-fills it with the current selection; localize output or label the language before generation; replace fabricated Owner/Prepared By with the dataset filename and 'Generated by Prism from dashboard data'; group the /downloads Word items under a 'ë³´ê³ ì„œ' section linking to /report.</dd>
+          <dt>Who it hurts</dt><dd>Both â€” an official pressing a Korean button circulates an unreadable English document claiming a fictional owner and AI authorship; an engineer cannot tell which of four Word artifacts is the deliverable of record.</dd>
+        </dl>
+        <p class="dims">Flagged by: Non-expert copy · IA &amp; navigation</p>
+      </details>
+    </article>
+
+  <h2>P1 — significant friction</h2>
+  
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#7</span>
+        <span class="sev">P1</span>
+        <h3>Per-direction delay values and LOS letter grades are synthesized by multiplying intersection-average delay by an invented 0.75-1.25 volume factor; disclosure is a hover-only badge whose tooltip describes a different method than the code, 'LOS' is never defined anywhere in the UI, and the synthetic letters are exported into the formal report as 'Estimated LOS'.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: page.tsx:1655-1663 volumeFactor = 0.75 + (dirVolume/maxVolume)*0.5 applied to averageDelay â€” not the 'distributed by volume share' the title-only tooltip (:835-838) claims; when no direction row exists all four directions get the identical average but still receive LOS letters (:1637-1653); buildDirectionReportRows (:2225-2251, verified) exports the letters into the report. The codebase's own comment at :1821-1824 declares fabricated chart shapes 'disqualifying' â€” this is the same class of fabrication still live.</dd>
+          <dt>Fix</dt><dd>Derive real per-approach delay from movement VEHDELAY rows (already used at :1757-1764) or show intersection-level delay/LOS only. If the heuristic must stay: always-visible caption with correct wording plus a LOS legend ('LOS: ì„œë¹„ìŠ¤ìˆ˜ì¤€ A(ì›í™œ)~F(ì‹¬ê°), í‰ê·  ì§€ì²´ ê¸°ì¤€ ì¶”ì •ê°’'), and drop per-direction LOS from the report export.</dd>
+          <dt>Who it hurts</dt><dd>Officials read 'ë¶ / E' as a measured fact and may direct budget at a specific approach based on an invented number; engineers who inspect the formula will distrust every other chart. Exporting it to the report makes it a paper-trail liability for the TR-C submission.</dd>
+        </dl>
+        <p class="dims">Flagged by: Data-viz honesty · Non-expert copy</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#8</span>
+        <span class="sev">P1</span>
+        <h3>Errors across the product are raw and untranslated â€” most API helpers throw the literal HTTP body or a developer-oriented English URL-list message rendered verbatim â€” and the curation parse-failure fallback claims 'showing the default view' while actually hiding the field-count-validation section that was visible before the question.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: CurationBar.tsx:58 sets error to err.message verbatim, rendered at :133; fallback_spec (dashboard_curator.py:170-177) sets charts=DEFAULT_VISIBLE_IDS which excludes field-count-validation (chart_catalog.py:79 default_visible: False), so a non-null spec hides a previously visible section while the amber message (CurationBar.tsx:141-148) says the default view is shown. Reviewer-cited: lib/api.ts throws await r.text() at :839/:855/:874/:892+, apiMutationFetch fallback (:193-201) emits the internal-URL English message rendered in VissimDatasetBanner.tsx:177; the ja curation placeholder also drops the example question ko/en include (CurationBar.tsx:88, verified).</dd>
+          <dt>Fix</dt><dd>Route every non-ok response through readApiError then a shared localized formatter with a retry button (mirroring FloatingAssistant's formatAssistantError); on client, treat spec.fallback as onSpecChange(null) so a failed parse genuinely restores the pre-question view; keep technical detail behind a 'ìžì„¸ížˆ' disclosure; add the ja example question.</dd>
+          <dt>Who it hurts</dt><dd>Officials hit English fetch/500 text in an otherwise Korean UI â€” in the signature AI feature â€” with no recovery path; engineers who loaded field counts watch a failed AI call quietly remove their validation matrix while being told nothing changed.</dd>
+        </dl>
+        <p class="dims">Flagged by: Flows &amp; errors · AI interaction · Non-expert copy</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#9</span>
+        <span class="sev">P1</span>
+        <h3>When the backend is down the dashboard dead-ends with the wrong diagnosis: the banner shows 'í˜„ìž¬ ë°ì´í„° í™•ì¸ ì¤‘' forever, the page tells the user to upload a file (which will also fail), and no retry affordance exists anywhere.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: VissimDatasetBanner.tsx:49-61 swallows the initial fetch failure into setActiveDataset(null), leaving the permanent 'checking' label at :121; page.tsx:176-183 sets a one-shot error with no retry, then the 'íŒŒì¼ ì—…ë¡œë“œ í•„ìš”' pill and DashboardUploadRequiredPanel (:361-364, :451) prescribe an upload. Reviewer-cited: apiFetch retries 3 bases at 5s each so the user first stares at a spinner ~15s.</dd>
+          <dt>Fix</dt><dd>Distinguish 'backend unreachable' from 'no dataset uploaded' as separate states: a red 'ì„œë²„ì— ì—°ê²°í•  ìˆ˜ ì—†ìŠµë‹ˆë‹¤' banner with a ë‹¤ì‹œ ì‹œë„ button re-running fetchActiveDataset, and suppress the upload-required panel in that state.</dd>
+          <dt>Who it hurts</dt><dd>Fatal for officials running the local backend themselves â€” nothing says a server process must be running, and the UI steers them into the raw English network error. Also the likeliest failure state at the start of a demo.</dd>
+        </dl>
+        <p class="dims">Flagged by: Flows &amp; errors</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#10</span>
+        <span class="sev">P1</span>
+        <h3>Validation cell color is driven solely by % error while GEH is tiny untinted grey text, so a high-volume node can fail the 'GEH &lt; 5' criterion the chart's own legend cites while its cell reads green.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: page.tsx:1452-1458 errorColor() uses pct only with hardcoded 5/15 thresholds; GEH renders at :1524-1527 in text-[10px] text-slate-500; legend at :1553 cites GEH&lt;5/10. Concrete: obs 20,000 vs sim 20,900 â†’ +4.5% green, GEH 6.3 fail. The existing lib/validationThresholds.ts helpers (errorTone/gehTone) are unused here.</dd>
+          <dt>Fix</dt><dd>Tint each cell by the worse of errorTone(pct) and gehTone(geh) using the existing helpers, and render GEH in its own toned chip. Small, contained fix.</dd>
+          <dt>Who it hurts</dt><dd>Officials equate green with 'validated' and will present a model that fails the industry GEH criterion; engineers must mentally recompute pass/fail for every cell.</dd>
+        </dl>
+        <p class="dims">Flagged by: Data-viz honesty</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#11</span>
+        <span class="sev">P1</span>
+        <h3>The backend computes run_count and per-metric STDEV (the Excel exporter already prints Â±sd) but the dashboard shows only point values and awards 'Best' tags on differences that may be entirely within stochastic run-to-run noise, printed to 0.01 precision.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">Reviewer-cited with strong specificity: backend/services/results_reader.py:319-336 produces _STDEV aggregates; exporters.py:281 consumes them; frontend grep for _STDEV returns zero usages; KpiCard tags 'Best' at page.tsx:1234/1253 with '(diff 8577.00)'-style precision at :1291.</dd>
+          <dt>Fix</dt><dd>When run_count &gt; 1, render '45.2 Â±1.8 s' from existing _STDEV fields with an 'N runs' badge; suppress or soften 'Best' when the margin is smaller than combined STDEV; show a '1 run â€” ì°¸ê³ ìš©' caveat for single runs.</dd>
+          <dt>Who it hurts</dt><dd>Officials choose an alternative because of a 'Best' tag a re-seeded run could flip; engineers know Vissim is stochastic and will reject single-number rankings outright â€” a likely professor challenge.</dd>
+        </dl>
+        <p class="dims">Flagged by: Data-viz honesty</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#12</span>
+        <span class="sev">P1</span>
+        <h3>Scenario colors are assigned by scenario-id-number mod 7, so two simultaneously selected scenarios can render identically (S000001 and S000008 both #7a6b94), that hex doubles as the 'West' direction and intersection color #4 on the same screen, and the travel-time chart distinguishes series by stroke color alone.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: lib/scenarioPalette.ts:30-35 uses SCENARIO_PALETTE[numericPart % 7] â€” S000001â†’1 and S000008â†’8%7=1 collide. Reviewer-cited: DIRECTION_COLORS.west = #7a6b94 = INTERSECTION_COLORS[3] (page.tsx:77-83); near-twin hues (#5f7fa4/#6c89ab); backend ScenarioMeta.color ignored; color-only series encoding at :990-1002 (verified â€” polylines and dots only).</dd>
+          <dt>Fix</dt><dd>Assign colors by position in the current selection so up to 7 concurrent scenarios are guaranteed distinct; separate direction hues from the scenario palette; add marker shapes or direct end-of-line labels as a non-color channel.</dd>
+          <dt>Who it hurts</dt><dd>Everyone â€” identical-colored lines are unreadable for all users and worse for ~5% with CVD; an official attributing the good line to the wrong alternative is the single worst outcome for a decision tool.</dd>
+        </dl>
+        <p class="dims">Flagged by: Data-viz honesty</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#13</span>
+        <span class="sev">P1</span>
+        <h3>The curation request (10-20s LLM call) silently auto-retries once on any 5xx so a failing query takes ~40s with no 'retrying' feedback, and the first-ever request cannot be cancelled because the only aborting control renders only when a previous spec exists while input and button are disabled.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: CurationBar.tsx:38/:90/:115 disable input and submit during loading, and the abort-capable 'ì „ì²´ ë³´ê¸°' button is gated on `spec` (:120), so on the cold-start ask there is no exit. Reviewer-cited: lib/api.ts:726-737 curateDashboard sleeps 700ms and re-issues on 5xx; FloatingAssistant.tsx:970 admits the first request is the slow case.</dd>
+          <dt>Fix</dt><dd>Swap Ask for a Cancel button whenever loading is true (reset() already aborts); add a status line ('AIê°€ ê´€ë ¨ ì§€í‘œë¥¼ ê³ ë¥´ê³  ìžˆìŠµë‹ˆë‹¤ â€” ë³´í†µ 10~20ì´ˆ') and surface the retry when it fires; consider a skeleton over the sections.</dd>
+          <dt>Who it hurts</dt><dd>Both audiences sit through a hung 'ë¶„ì„ ì¤‘â€¦' with no exit on the very first use of the differentiator â€” the moment first impressions form, and the most likely on-stage hiccup with a cold local Qwen worker.</dd>
+        </dl>
+        <p class="dims">Flagged by: Flows &amp; errors · AI interaction</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#14</span>
+        <span class="sev">P1</span>
+        <h3>The LLM can select charts that data-gating then suppresses â€” most likely field-count-validation for the exact 'can I trust this model?' question the catalog advertises it for â€” so the headline and cards reference a view that never appears, with no explanation.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: chart_catalog.py:71-79 advertises field-count-validation as answering 'Is the model calibrated / trustworthy' and validate_spec (dashboard_curator.py:128-167) never filters by data availability; page.tsx ANDs sectionVisible with hasData and realCounts.length &gt; 0 (:516 per reviewer), so without an observed-counts workbook the chosen section silently never renders.</dd>
+          <dt>Fix</dt><dd>Pass data-availability flags (has_real_counts, has_data) into the curation context and filter chosen ids server-side; client-side, render a stub for suppressed ids: 'í˜„ìž¥ ê³„ìˆ˜ ë°ì´í„°ê°€ ì—†ì–´ ì´ ê²€ì¦ ì°¨íŠ¸ë¥¼ í‘œì‹œí•  ìˆ˜ ì—†ìŠµë‹ˆë‹¤' with an upload link.</dd>
+          <dt>Who it hurts</dt><dd>An official asking the trust question gets a headline pointing at a section that never renders â€” the worst possible answer to a trust question; engineers lose the cue that observed counts are simply missing.</dd>
+        </dl>
+        <p class="dims">Flagged by: AI interaction</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#15</span>
+        <span class="sev">P1</span>
+        <h3>Focus mode unmounts dashboard sections with no trace â€” no count of hidden sections, no placeholder stubs, no persistent indicator once the user scrolls past the curation bar, and no screen-reader announcement.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: sectionVisible (page.tsx:113-116) gates whole sections to null; the only recovery affordance is 'ì „ì²´ ë³´ê¸°' inside CurationBar (:120-128, verified) at the top of the page. No aria-live region; removal is an instant unmount.</dd>
+          <dt>Fix</dt><dd>When a spec is active, render a slim sticky bar or per-hidden-section stub ('ì§ˆë¬¸ì— ë§žì¶° 3ê°œ ì„¹ì…˜ì„ ìˆ¨ê²¼ìŠµë‹ˆë‹¤ â€” ì „ì²´ ë³´ê¸°') with the reset action, and wrap the headline area in aria-live="polite".</dd>
+          <dt>Who it hurts</dt><dd>Officials who missed the causal link conclude data was lost and distrust the tool; engineers presenting on a shared screen scroll to a section that is not there with no explanation.</dd>
+        </dl>
+        <p class="dims">Flagged by: AI interaction</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#16</span>
+        <span class="sev">P1</span>
+        <h3>The section jump index â€” the only in-page navigation on a 6-section page â€” is an unlabeled hover-reveal control absolutely positioned inside the map section: it scrolls away with the map, can be unreachable on touch, vanishes entirely if focus mode hides the map, and keeps offering dead links to sections focus mode has unmounted.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">Reviewer-cited consistently across two dimensions: page.tsx:403 renders it only inside map-selection, `absolute left-0 top-24` (:548), group-hover/focus-within reveal with no onClick or aria-expanded (:551-562); items are static (:537-543) and ignore sectionVisible, so links to LLM-hidden sections silently no-op.</dd>
+          <dt>Fix</dt><dd>Promote it to a page-owned sticky rail or sub-header tab bar, toggle with a real onClick + aria-expanded, and filter items through sectionVisible() so focus mode and the index never disagree.</dd>
+          <dt>Who it hurts</dt><dd>Officials never discover it (it reads as a map layers button); engineers on tablets cannot open it; anyone using focus mode gets links that do nothing â€” reads as a broken app.</dd>
+        </dl>
+        <p class="dims">Flagged by: IA &amp; navigation · AI interaction</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#17</span>
+        <span class="sev">P1</span>
+        <h3>Two AI entry points coexist on the dashboard with overlapping invitations, disjoint capabilities, and no handoff or mutual awareness â€” curation cannot run changes, the chat cannot focus the dashboard, and the page-context event omits curation state so the chat cannot explain why sections are hidden.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: CurationBar placeholder 'ê¶ê¸ˆí•œ ì ì„ ë¬¼ì–´ë³´ì„¸ìš”â€¦' (CurationBar.tsx:85-89) and the chat's execution-inviting placeholder (FloatingAssistant.tsx:504 per reviewer) both invite arbitrary questions; the vissim:page-context payload (page.tsx:299-332, verified) contains scenarios/nodes/dataset but no curationSpec.</dd>
+          <dt>Fix</dt><dd>Give each surface a distinct verb ('ì´ í™”ë©´ ìš”ì•½/í•„í„°' vs 'ë„ìš°ë¯¸ì™€ ëŒ€í™”Â·ì‹¤í–‰'); cross-handoff execution-intent curation questions to the chat with the prompt prefilled; include curationSpec (active question + hidden section ids) in the page-context event.</dd>
+          <dt>Who it hurts</dt><dd>Officials cannot form a mental model of which box to type into, and the first wrong guess returns a plausible but wrong-shaped response; engineers waste time re-asking in the other surface.</dd>
+        </dl>
+        <p class="dims">Flagged by: AI interaction</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#18</span>
+        <span class="sev">P1</span>
+        <h3>The dashboard's decision-relevant content is last: the 'ì¢…í•© ê²°ê³¼ ë¶„ì„' narrative and report generation sit in section 5 of 6, below a 520px map requiring manual clicks and two sections that render empty states until intersections are selected.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">Reviewer-cited: page.tsx:395-530 section order (map â†’ intersection-performance â†’ travel-time â†’ network-kpi â†’ overall-results â†’ validation); IntersectionPerformanceGrid empty state at :703; the narrative (:1880) even instructs reviewing sections that sit above it.</dd>
+          <dt>Fix</dt><dd>Hoist the overall narrative + scenario ranking into a summary strip directly under the header/curation bar, move the exploratory map below it, and auto-seed a default intersection selection (e.g. top congested nodes) so sections are never empty on first load.</dd>
+          <dt>Who it hurts</dt><dd>Officials â€” their one question ('which alternative is best?') is answered only after four screens of scrolling and prerequisite map interactions, past two empty sections.</dd>
+        </dl>
+        <p class="dims">Flagged by: IA &amp; navigation</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#19</span>
+        <span class="sev">P1</span>
+        <h3>After any dataset change, the 'Recent Simulation Jobs' list asserts a falsehood: completed jobs from a destroyed dataset still display 'ëŒ€ì‹œë³´ë“œ ë¹„êµ ì‹œë‚˜ë¦¬ì˜¤ë¡œ ë“±ë¡ë¨' even though the backend has unregistered them.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">Reviewer-cited: simulation/page.tsx:1067-1071 renders the registered line for every status==='done' job unconditionally; simulation_runs.py:78-98 excludes stale-revision jobs from the scenario list (consistent with the :84/:108 filtering I verified contextually via finding #1); SimulationJob already carries dataset_filename (lib/api.ts:486) but JobRow never compares it.</dd>
+          <dt>Fix</dt><dd>Compare job.dataset_filename/revision against the active dataset and render stale jobs distinctly: 'ì´ì „ ë°ì´í„°ì…‹(íŒŒì¼ëª…)ì˜ ê²°ê³¼ â€” í˜„ìž¬ ëŒ€ì‹œë³´ë“œì—ëŠ” í‘œì‹œë˜ì§€ ì•ŠìŠµë‹ˆë‹¤'.</dd>
+          <dt>Who it hurts</dt><dd>Especially officials: they see 'done, registered', open the dashboard, and the scenario is not in the picker â€” the silent data loss from finding #1 surfaces here as an unexplained contradiction.</dd>
+        </dl>
+        <p class="dims">Flagged by: Flows &amp; errors</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#20</span>
+        <span class="sev">P1</span>
+        <h3>The upload-gated first-run tells but doesn't take: the empty dashboard shows two stacked 'upload required' panels neither of which contains or points at the actual upload control, while /downloads and /report never check the dataset at all â€” a first-time user can export sample-data deliverables with no warning.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">Reviewer-cited: page.tsx:347-351 DashboardDatasetGate + :450-451 DashboardUploadRequiredPanel, both without a button (the real control is the small 'ëª¨ë¸ ì„ íƒ' card, VissimDatasetBanner.tsx:104-115 â€” verified the hidden file input + button live there); downloads/page.tsx:133-148 and report/page.tsx:94-117 operate on whatever dataset is active with only a footnote.</dd>
+          <dt>Fix</dt><dd>Collapse the two gate panels into one containing an upload button that triggers the banner's file input; add the same dataset-status banner + gating to /downloads and /report so every route answers 'is real data loaded?'.</dd>
+          <dt>Who it hurts</dt><dd>Officials are told twice to upload but given nothing to click; wandering to Downloads/Report first can produce sample-data files circulated as project results.</dd>
+        </dl>
+        <p class="dims">Flagged by: IA &amp; navigation</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#21</span>
+        <span class="sev">P1</span>
+        <h3>The ì‰¬ìš´ ì„¤ëª…/ì „ë¬¸ê°€ toggle only changes the AI headline and insight cards; every chart section keeps identical jargon (LOS letters, GEH table, KPI cards), so 'Plain' mode is a friendly two-sentence answer atop an unchanged expert dashboard.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: CurationBar.tsx:31 holds audience state and :51 only sends it in the curateDashboard request body; page.tsx renders sections purely from curationSpec.charts (:113-116, verified) with no audience-aware variant of any subtitle or legend.</dd>
+          <dt>Fix</dt><dd>Thread audience into page state: swap LOS letters for 'ì›í™œ/ë³´í†µ/í˜¼ìž¡' labels, add one-line plain subtitles under each SectionHeader, hide GEH columns (keep % error bands) in plain mode.</dd>
+          <dt>Who it hurts</dt><dd>Non-expert officials: the control that promises comprehension fixes ~10% of the screen, eroding trust in the 'plain' promise â€” and it is the toggle most likely to be demonstrated to a professor as the novice story.</dd>
+        </dl>
+        <p class="dims">Flagged by: Non-expert copy</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#22</span>
+        <span class="sev">P1</span>
+        <h3>The 'ê²°ê³¼ í•´ì„' headline declares a winner 'ì¢…í•© ì ìˆ˜ ê¸°ì¤€ ìµœìƒìœ„' but no score, ranking table, or methodology is visible anywhere on the page â€” the product's key judgment is an unverifiable black box, even though the ranking data (rank/score/reason) already exists in the summary response.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">Reviewer-cited: page.tsx:1878-1884 buildOverallNarrative emits the claim; summary.scenario_ranking (with score and reason fields, :2087-2097) is rendered only into the exported markdown report, never on the page.</dd>
+          <dt>Fix</dt><dd>Render the existing scenario_ranking as a small on-page list under the narrative, or rewrite the sentence to cite visible evidence ('í‰ê·  ì§€ì²´ê°€ ê°€ìž¥ ë‚®ê³  í†µí–‰ì‹œê°„ì´ ì§§ì•„â€¦'). Data already exists â€” display-only change.</dd>
+          <dt>Who it hurts</dt><dd>Officials are asked to accept 'X is best' on faith â€” exactly the audience that will be challenged to justify the choice; engineers cannot audit the score either.</dd>
+        </dl>
+        <p class="dims">Flagged by: Non-expert copy</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#23</span>
+        <span class="sev">P1</span>
+        <h3>Insight cards carry related_chart â€” validated server-side against real section ids â€” but the renderer drops it, so cards never link, scroll, or badge to the chart that is their evidence, despite scroll anchors already existing on the targets.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: dashboard_curator.py:148-154 validates related_chart against VALID_CHART_IDS; CurationBar.tsx:151-158 renders only title/body/tone (verified). Reviewer-cited: target sections have ids + scroll-mt-6 anchors (page.tsx:396). Only the middle wiring is missing.</dd>
+          <dt>Fix</dt><dd>Render related_chart as a 'ì°¨íŠ¸ ë³´ê¸° â†’' footer link that scrollIntoView()s the section id with a brief highlight; hide the link when the target section is not currently rendered (interacts with finding #14).</dd>
+          <dt>Who it hurts</dt><dd>Officials get claims ('ì§€ì²´ 32% ì¦ê°€') with no path to the supporting picture â€” the exact trust bridge this audience needs; engineers cannot jump from claim to numbers to verify.</dd>
+        </dl>
+        <p class="dims">Flagged by: AI interaction</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#24</span>
+        <span class="sev">P1</span>
+        <h3>Per-vehicle and network-total metrics share bare unit badges â€” Average Delay shows 's' instead of 's/veh', totals render as '51.5k' with an 's' badge (â‰ˆ14 vehicle-hours) â€” and the 'Best' tag rewards the minimum total without noting the winner may simply be serving fewer vehicles.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">Reviewer-cited: page.tsx:27-34 KPI_METRICS units ('s' for DELAYAVG, TRAVTMTOT and DELAYTOT alike; 'stops' for STOPSAVG); '51.5k' formatting at :1253-1254; bestVal = min for totals at :1234 with no cross-reference to VEHARR.</dd>
+          <dt>Fix</dt><dd>Label per-vehicle metrics 's/veh' (ì´ˆ/ëŒ€) and 'stops/veh'; convert totals to vehicle-hours; normalize totals per arrived vehicle before awarding 'Best' or add a caveat when the winner has materially lower VEHARR.</dd>
+          <dt>Who it hurts</dt><dd>Officials cannot interpret '51.5k s' and may champion a scenario that just serves less traffic; engineers can misread average vs total when both badges read 's'.</dd>
+        </dl>
+        <p class="dims">Flagged by: Data-viz honesty</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#25</span>
+        <span class="sev">P1</span>
+        <h3>Dataset uploads and reset have no progress indication, no cancel, and no timeout â€” a stalled backend leaves the UI disabled on 'ì²˜ë¦¬ ì¤‘' (English: 'Loading', mislabeled for an upload) indefinitely; large VISSIM ZIPs upload against a static button label.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">VERIFIED: VissimDatasetBanner.tsx:127-130 â€” only feedback is the button flipping to 'ì²˜ë¦¬ ì¤‘'/'Loading' with both buttons disabled. Reviewer-cited: uploadInpxDataset and apiMutationFetch (lib/api.ts:843-869, :161-201) use bare fetch with no AbortSignal or timeout.</dd>
+          <dt>Fix</dt><dd>Report upload percentage via XHR or streaming fetch, add a progress bar and AbortController cancel, enforce a generous timeout failing into a localized retryable error; fix the English label to 'Uploadingâ€¦'.</dd>
+          <dt>Who it hurts</dt><dd>Officials uploading a project ZIP over a slow disk/VPN cannot tell working from hung; the only recovery is a page refresh, which also loses their selections.</dd>
+        </dl>
+        <p class="dims">Flagged by: Flows &amp; errors</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#26</span>
+        <span class="sev">P1</span>
+        <h3>A fully functional Simulation Runner at /simulation is reachable from no link anywhere in the UI â€” deliberately hidden from the nav (a test asserts it) yet it cross-links into nav'd pages and feeds the dashboard; when a user is on it, no nav item is active.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">Reviewer-cited with grep confirmation: AppShell.tsx:14-19 omits /simulation; tests/dashboard-contract.test.ts:78 asserts it stays hidden; simulation/page.tsx:880-885 links back to /dashboard and promises dashboard registration (:563); zero inbound hrefs in the frontend.</dd>
+          <dt>Fix</dt><dd>Add a gated entry point â€” a nav item visible when capabilities report can_run, or a 'ìƒˆ ì‹œë‚˜ë¦¬ì˜¤ ì‹¤í–‰' link from the dashboard's scenario picker â€” so the loop (run â†’ registered scenario â†’ dashboard) is closed.</dd>
+          <dt>Who it hurts</dt><dd>Engineers â€” the run-a-new-scenario task is blocked unless they know the URL; officials arriving via a shared link appear to be 'nowhere' in the app.</dd>
+        </dl>
+        <p class="dims">Flagged by: IA &amp; navigation</p>
+      </details>
+    </article>
+
+    <article class="finding sev-P1 compact">
+      <header>
+        <span class="rank">#27</span>
+        <span class="sev">P1</span>
+        <h3>Nav labels don't let a non-expert distinguish routes: the most jargon-heavy page ('ë² ì´ìŠ¤ëª¨ë¸ ê²€ì¦') is listed first while the app opens on /dashboard, both lead to pages with a map + scenario selector + GEH, the brand mark is not a home link, and three of four items lack ja translations.</h3>
+      </header>
+      <details>
+        <summary>Evidence, fix &amp; impact</summary>
+        <dl>
+          <dt>Evidence</dt><dd class="mono">Reviewer-cited: AppShell.tsx:14-19 (order and bare labels; only report has ja); app/page.tsx:4 redirects to /dashboard contradicting nav order; AppShell.tsx:35-38 brand is a &lt;span&gt;.</dd>
+          <dt>Fix</dt><dd>Reorder nav to match entry flow (ëŒ€ì‹œë³´ë“œ first), rename toward tasks ('ê²°ê³¼ ëŒ€ì‹œë³´ë“œ', 'ëª¨ë¸ ì‹ ë¢°ë„ í™•ì¸'), add one-line descriptors, make the brand link to /dashboard, supply ja strings.</dd>
+          <dt>Who it hurts</dt><dd>Officials cannot predict what any nav item does and the first item drops them into GEH/RÂ² jargon; Japanese users get a mixed-language nav.</dd>
+        </dl>
+        <p class="dims">Flagged by: IA &amp; navigation</p>
+      </details>
+    </article>
+
+  <h2>P2 — polish</h2>
+  <ul class="p2list"><li><span class="rank">#28</span> Language leaks throughout: volume-chart hover tooltips are hardcoded English in all locales, the 'Best' badge is English in Korean mode, axis/unit labels and placeholder glyphs are untranslated, the report timestamp is locked to ko-KR for en/ja users â€” and critical annotations (per-direction volumes, the estimation disclaimer) exist only as hover title attributes invisible on touch devices.<details><summary>detail</summary><p class="mono small">Reviewer-cited (both dimensions cite the same line): page.tsx:905 title uses DIRECTION_LABELS[direction].en unconditionally; :1261 t("Best","Best"); :1008 'sec' (verified in the SVG); :2488-2496 formatDisplayDateTime hardcodes ko-KR; Est.Â·LOS disclosure title-only at :834-841.</p><p class="small"><strong>Fix:</strong> Route tooltips and badges through t(); surface per-direction volumes and the estimation disclaimer as visible text (legend row); pass the active locale to toLocaleString.</p></details></li>
+<li><span class="rank">#29</span> The floating chat's status pills and error copy expose infrastructure jargon (Qwen model path, worker, port 8001, /api proxy, COM, error IDs) as primary UI text.<details><summary>detail</summary><p class="mono small">Reviewer-cited: FloatingAssistant.tsx:977 'The Qwen model path was not found'; :1291-1293 'Check the backend on port 8001 and the Next.js /api proxy'; ComStatusPill 'COM offline' (:1036); compactWorkerError 'ID: â€¦' fragments (:1024-1030).</p><p class="small"><strong>Fix:</strong> Default pill copy in plain language ('AI ì¤€ë¹„ ì¤‘ â€” ìž ì‹œ í›„ ë‹¤ì‹œ ì‹œë„í•˜ì„¸ìš”') with technical detail collapsed behind a 'ìžì„¸ížˆ' disclosure for engineers.</p></details></li>
+<li><span class="rank">#30</span> Report download buttons are labeled 'MD' (meaningless to a ê³µë¬´ì›) and 'Word' â€” but the Word file is styled HTML saved as .doc, which triggers Word's format-mismatch warning on open, reading like a security warning on a government machine.<details><summary>detail</summary><p class="mono small">Reviewer-cited: page.tsx:1182 t("MD","MD"); :1094-1108 handleDownloadWordReport builds HTML with blob type application/msword and a .doc extension.</p><p class="small"><strong>Fix:</strong> Label buttons by intent ('í…ìŠ¤íŠ¸ (.md)' / 'Word ë¬¸ì„œ'), make Word primary for officials, and generate a real .docx (the /report backend already builds one â€” see finding #6) or warn inline about the compatibility prompt.</p></details></li>
+<li><span class="rank">#31</span> The 'Max Q Length' and 'Worst Approach Delay' bars take the maximum across all selected scenarios per intersection (adjacent bars from different scenarios, disclosed only in 10px text), and the queue getter silently substitutes average queue length (QLEN) under the 'Max' title when QLENMAX is absent.<details><summary>detail</summary><p class="mono small">Reviewer-cited: page.tsx:1589-1612 pickMaxIntersectionMetric keeps the cross-scenario max with the winner named at :804-806 in text-[10px]; calculateNodeMaxQueue (:1766-1776) flatMaps QLENMAX_MEAN and QLEN_MEAN into the same Math.max.</p><p class="small"><strong>Fix:</strong> Add 'ì„ íƒ ì‹œë‚˜ë¦¬ì˜¤ ì¤‘ ìµœì•…ê°’' to the card header; when only QLEN is available, retitle to 'í‰ê·  ëŒ€ê¸°í–‰ë ¬' or hide the value rather than mislabel.</p></details></li>
+<li><span class="rank">#32</span> The same quantity is formatted four different ways across the dashboard ('51.5k', '51,546', '51546.0 ~ 60123.0 (diff 8577.00)' without separators, fixed-decimal formatNumber), making cross-section verification needlessly hard.<details><summary>detail</summary><p class="mono small">Reviewer-cited: page.tsx:1253-1254 (k-abbreviation), :1291 (toFixed range without separators), :914/:1508 (toLocaleString), :2512-2517 (formatNumber).</p><p class="small"><strong>Fix:</strong> Adopt one shared formatter (toLocaleString, â‰¤1 decimal, separators everywhere); keep 'k' only where the unit badge reflects scaling; fix the range footer to match the bar labels.</p></details></li>
+<li><span class="rank">#33</span> Scenario picker semantics are opaque and its contract inconsistent: the first four scenarios are auto-included with no explanation, 'ë¹„êµ í¬í•¨' never says what inclusion affects, and the toggle has no cap while the load path silently slices selections back to 4 on reload.<details><summary>detail</summary><p class="mono small">VERIFIED: page.tsx:144-146 slices to 4 on load (both the preferred-scenario and default paths). Reviewer-cited: :1361 microcopy; :1318-1320 uncapped toggle; KPI overflow via horizontal scroll at :1244.</p><p class="small"><strong>Fix:</strong> State the effect in the picker subtitle ('ì„ íƒí•œ ì‹œë‚˜ë¦¬ì˜¤ë§Œ ì•„ëž˜ ëª¨ë“  ì°¨íŠ¸Â·í‘œì— í‘œì‹œë©ë‹ˆë‹¤'), badge the auto-picked set ('ìžë™ ì„ íƒë¨'), enforce the same max in the toggle with a counter.</p></details></li>
+<li><span class="rank">#34</span> Developer/changelog voice leaks into user-facing subtitles: 'ê¸°ì¡´ ëŒ€ì‹œë³´ë“œ ì§€ë„ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©í•´â€¦', the en subtitle 'Keep this section focused on interpretation and report generation.' (an internal design note), and copy explaining a removed sample-data behavior users never saw.<details><summary>detail</summary><p class="mono small">Reviewer-cited: page.tsx:399 (map subtitle), :501 (overall-results en subtitle), :630-633 (upload panel body).</p><p class="small"><strong>Fix:</strong> Rewrite as user-purpose copy per the reviewer's suggested strings (e.g. 'ì§€ë„ì—ì„œ ë¹„êµí•  êµì°¨ë¡œë¥¼ ìµœëŒ€ 6ê°œê¹Œì§€ ì„ íƒí•©ë‹ˆë‹¤'). Pure copy edits.</p></details></li>
+<li><span class="rank">#35</span> Empty states describe problems without next steps: the travel-time section says measurements are missing without why or what to do, and the header chip '3 ê°œ ì¤€ë¹„ë¨ / 3 ready' never says three of what.<details><summary>detail</summary><p class="mono small">Reviewer-cited: page.tsx:946 (no action, no cause) â€” consistent with the verified empty-data branch of TravelTimeComparison; :370 ambiguous chip.</p><p class="small"><strong>Fix:</strong> Name cause and fix ('ì—…ë¡œë“œí•œ ê²°ê³¼ì— í†µí–‰ì‹œê°„ ì¸¡ì • êµ¬ê°„ì´ ì—†ìŠµë‹ˆë‹¤. Vissim ëª¨ë¸ì— ì¸¡ì • êµ¬ê°„ì„ ì¶”ê°€í•œ ë’¤ ë‹¤ì‹œ ì—…ë¡œë“œí•˜ì„¸ìš”'); change the chip to 'ì‹œë‚˜ë¦¬ì˜¤ 3ê°œ ì¤€ë¹„ë¨'.</p></details></li>
+<li><span class="rank">#36</span> The dashboard banner and simulation page enforce different upload rules with no explanation: the banner accepts bare .inpx files that satisfy the dashboard but leave the simulation page blocked demanding a ZIP, with no hint the already-uploaded .inpx is the cause.<details><summary>detail</summary><p class="mono small">VERIFIED: VissimDatasetBanner.tsx:109 accept='.inpx,.zip' with no guidance; backend datasets.py:75-80 accepts both (verified). Reviewer-cited: simulation/page.tsx:152-154 gates on dataset.kind === 'zip' and :215-218 rejects non-zip.</p><p class="small"><strong>Fix:</strong> When an .inpx-only dataset is active, make the simulation page's disabled message name the cause and the required ZIP contents (.inpx + .vissimpdb); add a 'what should the ZIP contain' hint next to both upload buttons.</p></details></li>
+<li><span class="rank">#37</span> The simulation page coerces fetch failures into false empty states: if jobs/signals/capabilities requests fail, it shows 'ì•„ì§ ì‹¤í–‰ ìž‘ì—…ì´ ì—†ìŠµë‹ˆë‹¤' and silently drops signal data instead of reporting an error.<details><summary>detail</summary><p class="mono small">Reviewer-cited: simulation/page.tsx:110-118 rejections simply not applied (no error state); only dataset/scenario rejections set the generic error (:128-130); jobs=[] renders the genuine-looking empty state at :571-572.</p><p class="small"><strong>Fix:</strong> Track per-section load failure and render an inline error with retry ('ì‹¤í–‰ ê¸°ë¡ì„ ë¶ˆëŸ¬ì˜¤ì§€ ëª»í–ˆìŠµë‹ˆë‹¤ â€” ë‹¤ì‹œ ì‹œë„'), reusing the loadBaseData refresh as the retry action.</p></details></li>
+<li><span class="rank">#38</span> Two vestigial hazards: /network exists solely to throw notFound() with no custom not-found page (stale links land on an unstyled English 404), and SimulationControl.tsx is an archived-but-present duplicate run flow whose WebSocket-only monitor misreports running jobs as failed and can stick at 'running' forever if re-wired.<details><summary>detail</summary><p class="mono small">Reviewer-cited: app/network/page.tsx:3-4 notFound(); no not-found.tsx in the glob; SimulationControl.tsx:38-63 has no polling fallback or ws.onclose handling and connects directly to getApiBase() while startSimulation uses the proxy; docs/removed-routes-archive.md:28 lists it archived yet line 35 suggests re-wiring; zero imports.</p><p class="small"><strong>Fix:</strong> Replace /network's body with redirect('/dashboard') or delete the folder; add a localized app/not-found.tsx linking the four nav destinations; delete SimulationControl.tsx or rewrite it on monitorSimulationJob's WS+polling pattern before anyone re-wires it.</p></details></li></ul>
+
+  <footer>Method: 5 parallel code reviewers + synthesis pass with file-level verification, plus
+  live checks (mobile viewport: no horizontal overflow · English mode: one Korean leak — the
+  "양보" map-marker labels). Source data: docs/ux-audit-2026-07-22.json in the repo.</footer>
+</main>
