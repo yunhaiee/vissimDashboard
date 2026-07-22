@@ -46,22 +46,36 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
   const [error, setError] = useState<string | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [checkFailed, setCheckFailed] = useState(false);
   const hasCustomBackground = /\bbg-/.test(className);
   const hasCustomShadow = /\bshadow/.test(className);
 
-  useEffect(() => {
+  const loadActiveDataset = useCallback(() => {
     let mounted = true;
+    setChecking(true);
+    setCheckFailed(false);
     fetchActiveDataset()
       .then((dataset) => {
-        if (mounted) setActiveDataset(dataset);
+        if (!mounted) return;
+        setActiveDataset(dataset);
+        setChecking(false);
       })
       .catch(() => {
-        if (mounted) setActiveDataset(null);
+        if (!mounted) return;
+        // Previously this silently left the dataset unset, so the label
+        // below read "checking current dataset" forever with no way to
+        // retell the user the backend is unreachable or try again.
+        setActiveDataset(null);
+        setChecking(false);
+        setCheckFailed(true);
       });
     return () => {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => loadActiveDataset(), [loadActiveDataset]);
 
   const handleSelectFile = useCallback(() => {
     fileInputRef.current?.click();
@@ -136,13 +150,24 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
           ? activeDataset.source === "uploaded"
             ? t(`업로드됨: ${activeDataset.filename}`, `Uploaded: ${activeDataset.filename}`, `アップロード済み: ${activeDataset.filename}`)
             : t(`기본 데이터: ${activeDataset.filename}`, `Default data: ${activeDataset.filename}`, `デフォルトデータ: ${activeDataset.filename}`)
-          : t("현재 데이터 확인 중", "Checking current dataset")}
+          : checkFailed
+            ? t("서버에 연결할 수 없습니다", "Could not reach the server")
+            : t("현재 데이터 확인 중", "Checking current dataset")}
       </p>
+      {checkFailed && (
+        <button
+          type="button"
+          onClick={() => loadActiveDataset()}
+          className="mt-1 text-[11px] font-semibold text-[#31517a] underline decoration-dotted underline-offset-2 hover:text-[#1f3a5f]"
+        >
+          {t("다시 시도", "Retry")}
+        </button>
+      )}
       <div className="mt-3 flex flex-wrap gap-2">
         <button
           type="button"
           onClick={handleSelectFile}
-          disabled={uploading}
+          disabled={uploading || checking}
           className="ui-button-primary inline-flex items-center px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
         >
           {uploading ? t("처리 중", "Loading") : t("파일/ZIP 업로드", "Load File / ZIP")}

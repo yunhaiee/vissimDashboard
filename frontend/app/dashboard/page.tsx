@@ -26,12 +26,16 @@ import { errorTone, gehTone, toneBadgeClass, type ValidationTone } from "@/lib/v
 const DashboardMap = dynamic(() => import("@/components/DashboardMap"), { ssr: false });
 
 const KPI_METRICS = [
-  { key: "DELAYAVG", label: "Average Delay", unit: "s", higherIsBetter: false },
-  { key: "SPEEDAVG", label: "Average Speed", unit: "km/h", higherIsBetter: true },
-  { key: "TRAVTMTOT", label: "Total Travel Time", unit: "s", higherIsBetter: false },
-  { key: "DELAYTOT", label: "Total Delay", unit: "s", higherIsBetter: false },
-  { key: "VEHARR", label: "Arrived Vehicles", unit: "veh", higherIsBetter: true },
-  { key: "STOPSAVG", label: "Average Stops", unit: "stops", higherIsBetter: false },
+  // isTotal metrics (whole-network sums) scale with vehicle count, so their
+  // "Best" (typically the lowest) can simply mean fewer vehicles were
+  // served, not a better outcome — KpiCard caveats those instead of a bare
+  // "Best" tag.
+  { key: "DELAYAVG", label: "Average Delay", unit: "s/veh", higherIsBetter: false, isTotal: false },
+  { key: "SPEEDAVG", label: "Average Speed", unit: "km/h", higherIsBetter: true, isTotal: false },
+  { key: "TRAVTMTOT", label: "Total Travel Time", unit: "s", higherIsBetter: false, isTotal: true },
+  { key: "DELAYTOT", label: "Total Delay", unit: "s", higherIsBetter: false, isTotal: true },
+  { key: "VEHARR", label: "Arrived Vehicles", unit: "veh", higherIsBetter: true, isTotal: false },
+  { key: "STOPSAVG", label: "Average Stops", unit: "stops/veh", higherIsBetter: false, isTotal: false },
 ] as const;
 
 const MAX_SELECTED_NODES = 6;
@@ -96,6 +100,16 @@ const LOS_COLORS: Record<LosGrade, string> = {
   E: "#ef4444",
   F: "#7f1d1d",
 };
+// Delay-second bands behind resolveLosGrade(), spelled out for the legend so
+// "LOS" isn't shown as an unexplained letter anywhere it appears.
+const LOS_GRADE_THRESHOLDS: Array<{ grade: LosGrade; label: string }> = [
+  { grade: "A", label: "≤10s" },
+  { grade: "B", label: "≤20s" },
+  { grade: "C", label: "≤35s" },
+  { grade: "D", label: "≤55s" },
+  { grade: "E", label: "≤80s" },
+  { grade: "F", label: ">80s" },
+];
 
 export default function DashboardPage() {
   const { t, lang } = useLanguage();
@@ -121,7 +135,6 @@ export default function DashboardPage() {
     (sectionId: string) => curationSpec == null || curationSpec.charts.includes(sectionId),
     [curationSpec],
   );
-
   const clearDashboardData = useCallback(() => {
     requestSerial.current += 1;
     loadSerial.current += 1;
@@ -166,8 +179,9 @@ export default function DashboardPage() {
     });
   }, [t]);
 
-  useEffect(() => {
+  const loadActiveDataset = useCallback(() => {
     let cancelled = false;
+    setDatasetLoading(true);
 
     fetchActiveDataset()
       .then((dataset) => {
@@ -175,6 +189,7 @@ export default function DashboardPage() {
         setActiveDataset(dataset);
         setDatasetRevision(dataset.revision ?? "default");
         setDatasetLoading(false);
+        setError(null);
 
         if (dataset.source === "uploaded") {
           reloadScenariosAndValidation();
@@ -189,13 +204,17 @@ export default function DashboardPage() {
         setDatasetLoading(false);
         clearDashboardData();
         setLoading(false);
-        setError(t("데이터셋 상태를 확인하지 못했습니다.", "Failed to check dataset status."));
+        // Previously this dead-ended with no way to retry short of a full
+        // page reload once the backend was briefly unreachable.
+        setError(t("데이터셋 상태를 확인하지 못했습니다. 백엔드 서버가 실행 중인지 확인하세요.", "Failed to check dataset status. Make sure the backend server is running."));
       });
 
     return () => {
       cancelled = true;
     };
   }, [clearDashboardData, reloadScenariosAndValidation, t]);
+
+  useEffect(() => loadActiveDataset(), [loadActiveDataset]);
 
   // The AI curation answer (headline + insight cards + focus mode) is only
   // valid for the scenario set it was computed against; changing which
@@ -270,6 +289,20 @@ export default function DashboardPage() {
     () => activeScenarios.some((scenario) => results[scenario.id]),
     [activeScenarios, results],
   );
+  // Section ids that pass their OWN data gates right now, independent of any
+  // curation answer — lets CurationBar report how many it hid and explain
+  // when it picked a section whose data (e.g. field counts) isn't loaded.
+  const applicableSectionIds = useMemo(() => {
+    const ids = ["map-selection"];
+    if (hasData) ids.push("network-kpi-comparison", "intersection-performance", "travel-time-comparison", "overall-results-analysis");
+    if (hasData && realCounts.length > 0) ids.push("field-count-validation");
+    return ids;
+  }, [hasData, realCounts.length]);
+
+  const minRunCount = useMemo(() => {
+    const counts = activeScenarios.map((scenario) => results[scenario.id]?.run_count ?? 1).filter((count) => count > 0);
+    return counts.length ? Math.min(...counts) : 1;
+  }, [activeScenarios, results]);
 
   const activeNodeId = selectedNodeIds[selectedNodeIds.length - 1] ?? null;
   const activeNodeName = activeNodeId ? nodeNamesById[activeNodeId] ?? `Node ${activeNodeId}` : "";
@@ -400,8 +433,15 @@ export default function DashboardPage() {
       </section>
 
       {error && (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
-          {error}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => loadActiveDataset()}
+            className="shrink-0 rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
+          >
+            {t("다시 시도", "Retry")}
+          </button>
         </div>
       )}
 
@@ -412,6 +452,7 @@ export default function DashboardPage() {
           disabled={!hasData}
           spec={curationSpec}
           onSpecChange={setCurationSpec}
+          applicableSectionIds={applicableSectionIds}
         />
       )}
 
@@ -423,7 +464,7 @@ export default function DashboardPage() {
           />
           <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
             <div className="relative">
-              {hasData && <SectionJumpIndex showValidation={realCounts.length > 0} />}
+              {hasData && <SectionJumpIndex showValidation={realCounts.length > 0} sectionVisible={sectionVisible} />}
 
               <div className="relative h-[520px] overflow-hidden rounded-2xl border border-slate-300/70 bg-[#eef3f8] shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[60vh]">
                 <DashboardMap
@@ -474,6 +515,46 @@ export default function DashboardPage() {
         <DashboardUploadRequiredPanel />
       )}
 
+      {/*
+        Network KPI is shown FIRST among the results sections: unlike
+        intersection performance and travel time, it never needs an
+        intersection to be clicked first, so it is the fastest path to a
+        decision-relevant number after the map (previously it sat behind two
+        sections that render an empty state until the user picks a node).
+      */}
+      {hasData && sectionVisible("network-kpi-comparison") && (
+        <section id="network-kpi-comparison" className="scroll-mt-6">
+          <SectionHeader
+            title={t("네트워크 KPI 비교", "Network KPI Comparison")}
+            subtitle={t("선택한 시나리오의 주요 네트워크 지표를 상대 막대로 비교합니다.", "Compare key network indicators across selected scenarios using relative bars.")}
+          />
+          {minRunCount === 1 && (
+            <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800">
+              {t(
+                "일부 시나리오가 단일 실행(1회) 결과입니다. 무작위 변동(시드 효과) 때문에 값 차이가 시나리오 효과가 아닐 수 있습니다.",
+                "Some scenarios are based on a single run. Differences may reflect random seed variation rather than the scenario itself.",
+              )}
+            </p>
+          )}
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {KPI_METRICS.map((metric) => (
+              <KpiCard
+                key={metric.key}
+                label={translateKpiMetricLabel(metric.key, t)}
+                unit={metric.unit}
+                higherIsBetter={metric.higherIsBetter}
+                isTotal={metric.isTotal}
+                values={activeScenarios.map((scenario) => ({
+                  scenario,
+                  value: results[scenario.id]?.network?.[metric.key] ?? null,
+                  stdev: toFiniteNumber(results[scenario.id]?.network?.[`${metric.key}_STDEV`]),
+                }))}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       {hasData && sectionVisible("intersection-performance") && (
         <section id="intersection-performance" className="scroll-mt-6">
           <SectionHeader
@@ -491,29 +572,6 @@ export default function DashboardPage() {
             subtitle={t("Vissim 통행시간 결과를 시나리오별 선형 추세로 비교합니다.", "Compare Vissim travel-time outputs as scenario-level trend lines.")}
           />
           <TravelTimeComparison chart={travelTimeSeries} />
-        </section>
-      )}
-
-      {hasData && sectionVisible("network-kpi-comparison") && (
-        <section id="network-kpi-comparison" className="scroll-mt-6">
-          <SectionHeader
-            title={t("네트워크 KPI 비교", "Network KPI Comparison")}
-            subtitle={t("선택한 시나리오의 주요 네트워크 지표를 상대 막대로 비교합니다.", "Compare key network indicators across selected scenarios using relative bars.")}
-          />
-          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {KPI_METRICS.map((metric) => (
-              <KpiCard
-                key={metric.key}
-                label={translateKpiMetricLabel(metric.key, t)}
-                unit={metric.unit}
-                higherIsBetter={metric.higherIsBetter}
-                values={activeScenarios.map((scenario) => ({
-                  scenario,
-                  value: results[scenario.id]?.network?.[metric.key] ?? null,
-                }))}
-              />
-            ))}
-          </div>
         </section>
       )}
 
@@ -558,15 +616,24 @@ export default function DashboardPage() {
   );
 }
 
-function SectionJumpIndex({ showValidation }: { showValidation: boolean }) {
+function SectionJumpIndex({
+  showValidation,
+  sectionVisible,
+}: {
+  showValidation: boolean;
+  sectionVisible: (sectionId: string) => boolean;
+}) {
   const { t } = useLanguage();
   const items = [
-    { href: "#intersection-performance", label: t("성능평가", "Performance") },
-    { href: "#travel-time-comparison", label: t("통행시간", "Travel Time") },
-    { href: "#network-kpi-comparison", label: t("KPI", "KPI") },
-    { href: "#overall-results-analysis", label: t("종합결과", "Overall") },
-    ...(showValidation ? [{ href: "#field-count-validation", label: t("현장검증", "Validation") }] : []),
-  ];
+    { id: "network-kpi-comparison", href: "#network-kpi-comparison", label: t("KPI", "KPI") },
+    { id: "intersection-performance", href: "#intersection-performance", label: t("성능평가", "Performance") },
+    { id: "travel-time-comparison", href: "#travel-time-comparison", label: t("통행시간", "Travel Time") },
+    { id: "overall-results-analysis", href: "#overall-results-analysis", label: t("종합결과", "Overall") },
+    ...(showValidation ? [{ id: "field-count-validation", href: "#field-count-validation", label: t("현장검증", "Validation") }] : []),
+    // A section hidden by the current AI focus-mode answer has no anchor on
+    // the page right now, so its jump link is filtered out instead of
+    // scrolling to nothing when clicked.
+  ].filter((item) => sectionVisible(item.id));
 
   return (
     <nav
@@ -892,10 +959,10 @@ function DirectionDelayChart({
       </div>
 
       <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-slate-500">
-        {(["A", "B", "C", "D", "E", "F"] as LosGrade[]).map((grade) => (
-          <span key={grade} className="inline-flex items-center gap-1">
+        {LOS_GRADE_THRESHOLDS.map(({ grade, label }) => (
+          <span key={grade} className="inline-flex items-center gap-1" title={t(`지체 ${label}`, `Delay ${label}`)}>
             <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: LOS_COLORS[grade] }} />
-            {grade}
+            {grade} <span className="text-slate-400">({label})</span>
           </span>
         ))}
       </div>
@@ -1212,6 +1279,42 @@ function OverallResultsSection({
 
         <p className="mt-4 max-w-3xl text-[15px] leading-7 text-slate-700">{narrative}</p>
 
+        {(() => {
+          const ranking = summary?.scenario_ranking ?? summary?.scenarioRanking ?? [];
+          if (!ranking.length) return null;
+          // The narrative above names a "top" scenario by score — show the
+          // actual scores and per-scenario reason instead of asking the
+          // reader to trust an unverifiable one-line claim.
+          return (
+            <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100 bg-slate-50 text-left text-[10px] font-semibold uppercase text-slate-500">
+                    <th className="px-3 py-2">{t("순위", "Rank")}</th>
+                    <th className="px-3 py-2">{t("시나리오", "Scenario")}</th>
+                    <th className="px-3 py-2 text-right">{t("점수", "Score")}</th>
+                    <th className="px-3 py-2">{t("근거", "Reason")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...ranking]
+                    .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
+                    .map((item) => (
+                      <tr key={item.scenario_id} className="border-b border-slate-50 last:border-0">
+                        <td className="px-3 py-2 font-bold tabular-nums text-slate-700">{item.rank ?? "-"}</td>
+                        <td className="px-3 py-2 font-semibold text-slate-800">{item.scenario_name ?? item.scenario_id}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-700">
+                          {item.score != null ? item.score.toFixed(1) : "-"}
+                        </td>
+                        <td className="px-3 py-2 text-slate-500">{item.reason ?? "-"}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
+
         <div className="mt-5 flex flex-wrap gap-2 text-[11px] font-semibold text-slate-600">
           <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1">
             {t("시나리오", "Scenarios")} {activeScenarios.length}
@@ -1267,19 +1370,23 @@ function OverallResultsSection({
                   : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
               }`}
             >
-              {t("MD", "MD")}
+              {t("텍스트 (.md)", "Text (.md)")}
             </button>
             <button
               type="button"
               onClick={handleDownloadWordReport}
               disabled={!reportMarkdown}
+              title={t(
+                "Word에서 열 때 '파일 형식이 확장자와 다릅니다'라는 확인 창이 뜰 수 있습니다 — 정상이며 그대로 여세요.",
+                "Word may show a \"file format doesn't match extension\" prompt when opening this — that's expected, open it anyway.",
+              )}
               className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${
                 reportMarkdown
                   ? "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
                   : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
               }`}
             >
-              {t("Word", "Word")}
+              {t("Word (.doc)", "Word (.doc)")}
             </button>
           </div>
         </div>
@@ -1287,8 +1394,8 @@ function OverallResultsSection({
         <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
           {reportGeneratedAt
             ? t(
-                `${formatDisplayDateTime(reportGeneratedAt)} 생성됨`,
-                `Generated ${formatDisplayDateTime(reportGeneratedAt)}`,
+                `${formatDisplayDateTime(reportGeneratedAt)} 생성됨. Word 파일을 열 때 형식 확인 창이 뜨면 그대로 열면 됩니다.`,
+                `Generated ${formatDisplayDateTime(reportGeneratedAt)}. If Word shows a format-mismatch prompt, open it anyway.`,
                 `${formatDisplayDateTime(reportGeneratedAt)} 生成済み`,
               )
             : canGenerateReport
@@ -1304,12 +1411,14 @@ function KpiCard({
   label,
   unit,
   higherIsBetter,
+  isTotal,
   values,
 }: {
   label: string;
   unit: string;
   higherIsBetter: boolean;
-  values: { scenario: ScenarioMeta; value: number | null }[];
+  isTotal: boolean;
+  values: { scenario: ScenarioMeta; value: number | null; stdev: number | null }[];
 }) {
   const { t } = useLanguage();
   const present = values.filter((item) => item.value != null);
@@ -1320,6 +1429,14 @@ function KpiCard({
   const maxVal = Math.max(...nums);
   const spread = maxVal - minVal;
   const bestVal = higherIsBetter ? maxVal : minVal;
+  // "Best" is only meaningful if the gap to the runner-up exceeds run-to-run
+  // noise; without that check a single-seed difference smaller than its own
+  // standard deviation was labeled "Best" as if it were a real effect.
+  const sortedNums = [...nums].sort((a, b) => (higherIsBetter ? b - a : a - b));
+  const runnerUpGap = sortedNums.length > 1 ? Math.abs(sortedNums[0] - sortedNums[1]) : null;
+  const bestEntryStdev = present.find((item) => item.value === bestVal)?.stdev ?? null;
+  const bestIsWithinNoise =
+    runnerUpGap != null && bestEntryStdev != null && runnerUpGap < bestEntryStdev;
 
   return (
     <div className="rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
@@ -1331,7 +1448,7 @@ function KpiCard({
       </div>
       <div className="overflow-x-auto pb-1">
         <div className="flex min-w-max items-end gap-3">
-        {values.map(({ scenario, value }, index) => {
+        {values.map(({ scenario, value, stdev }, index) => {
           if (value == null) return null;
           const scenarioColor = getScenarioDisplayColor(scenario, index);
 
@@ -1345,11 +1462,17 @@ function KpiCard({
             <div key={scenario.id} className="flex w-[76px] flex-col items-center gap-1.5">
               <div className="flex h-9 flex-col items-center justify-end gap-0.5">
                 {isBest && (
-                  <span className="rounded-full bg-[#dce8df] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-[#3f6651]">
-                    {t("Best", "Best")}
+                  <span
+                    className="rounded-full bg-[#dce8df] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-[#3f6651]"
+                    title={bestIsWithinNoise ? t("2위와의 차이가 표준편차보다 작습니다.", "The gap to the runner-up is smaller than the standard deviation.") : undefined}
+                  >
+                    {t("Best", "Best")}{bestIsWithinNoise ? "*" : ""}
                   </span>
                 )}
-                <div className="text-[11px] font-semibold tabular-nums text-slate-900">{displayVal}</div>
+                <div className="text-[11px] font-semibold tabular-nums text-slate-900">
+                  {displayVal}
+                  {stdev != null && <span className="ml-0.5 text-slate-400">±{stdev >= 10 ? Math.round(stdev) : stdev.toFixed(1)}</span>}
+                </div>
               </div>
               <div className="relative flex h-24 w-7 items-end overflow-hidden rounded-md border border-slate-200 bg-slate-100/80">
                 <div
@@ -1364,18 +1487,23 @@ function KpiCard({
                 />
                 <span className="max-w-[56px] truncate text-slate-700">{scenario.name}</span>
               </div>
-              {false && isBest && (
-                <span className="rounded-full bg-[#dce8df] px-1.5 py-0.5 text-[10px] font-semibold text-[#3f6651]">
-                  {t("최적", "Best")}
-                </span>
-              )}
             </div>
           );
         })}
         </div>
       </div>
+      {bestIsWithinNoise && (
+        <p className="mt-2 text-[10px] text-amber-700">
+          * {t("최상위 값과 2위의 차이가 실행 간 변동(표준편차)보다 작아 확정적 차이로 보기 어렵습니다.", "The gap between the top value and the runner-up is smaller than run-to-run variation, so it may not be a real difference.")}
+        </p>
+      )}
+      {isTotal && (
+        <p className="mt-1 text-[10px] text-slate-400">
+          {t("네트워크 전체 합계이며 차량 수에 비례합니다 — 값이 작다고 항상 더 좋은 것은 아닙니다.", "A network-wide total that scales with vehicle count — a lower value isn't always a better outcome.")}
+        </p>
+      )}
       {spread > 0 && (
-        <p className="mt-3 text-[10px] text-slate-500">
+        <p className="mt-1 text-[10px] text-slate-500">
           {t("범위", "Range")} {minVal.toFixed(1)} ~ {maxVal.toFixed(1)} ({t("차이", "diff")} {spread.toFixed(2)})
         </p>
       )}
