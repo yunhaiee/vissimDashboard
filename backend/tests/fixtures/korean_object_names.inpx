@@ -23,6 +23,30 @@
         <lane width="3.5" />
       </lanes>
     </link>
+    <!-- Deliberately identical names on 503/504: a genuine score tie for the
+         resolve_object tie-break test (must resolve to id ascending). -->
+    <link no="504" name="테스트 동일링크">
+      <geometry>
+        <linkPolyPts>
+          <linkPolyPoint x="0" y="100" zOffset="0" />
+          <linkPolyPoint x="100" y="100" zOffset="0" />
+        </linkPolyPts>
+      </geometry>
+      <lanes>
+        <lane width="3.5" />
+      </lanes>
+    </link>
+    <link no="503" name="테스트 동일링크">
+      <geometry>
+        <linkPolyPts>
+          <linkPolyPoint x="0" y="150" zOffset="0" />
+          <linkPolyPoint x="100" y="150" zOffset="0" />
+        </linkPolyPts>
+      </geometry>
+      <lanes>
+        <lane width="3.5" />
+      </lanes>
+    </link>
   </links>
   <nodes>
   </nodes>

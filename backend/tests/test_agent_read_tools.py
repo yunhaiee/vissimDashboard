@@ -137,6 +137,33 @@ def test_resolve_object_korean_query_filtered_by_object_type_link():
     assert all(c["object_type"] == "link" for c in data["candidates"])
 
 
+def test_resolve_object_ties_broken_by_object_id_ascending():
+    """Two links (503, 504 — deliberately out of document order in the
+    fixture) share an identical name, so both score an identical exact
+    match (3.0). The tie must resolve to id ascending, not document/
+    registration order."""
+    tools_network.set_active_inpx(KOREAN_FIXTURE_INPX)
+
+    envelope = _dispatch("resolve_object", query="테스트 동일링크", object_type="link")
+
+    data = envelope["data"]
+    assert data["found"] is True
+    assert [c["id"] for c in data["candidates"]] == ["503", "504"]
+    assert [c["score"] for c in data["candidates"]] == [3.0, 3.0]  # genuine tie, not a fluke
+
+
+def test_resolve_object_whitespace_only_query_is_a_graceful_miss():
+    """A whitespace-only query scores zero on every tier (nothing to match)
+    and must come back as a well-formed miss, never raise."""
+    envelope = _dispatch("resolve_object", query="   ", object_type=None)
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["found"] is False
+    assert data["error_type"] == "object_not_found"
+    assert isinstance(data["candidates"], list)
+
+
 # ---------------------------------------------------------------------------
 # resolve_object — English resolution + object_not_found miss (real demo data)
 # ---------------------------------------------------------------------------
@@ -287,9 +314,13 @@ def test_get_run_kpis_unknown_scenario_returns_structured_not_found():
     assert "S000001" in data["candidates"]
 
 
-def test_get_run_kpis_strips_injected_path_like_values(monkeypatch):
-    """Defense-in-depth: even if results_reader ever started leaking a path
-    (it doesn't today), get_run_kpis must never let it through."""
+def test_get_run_kpis_never_forwards_raw_result_fields_like_db_path(monkeypatch):
+    """get_run_kpis hand-picks its output fields (scenario_id, scenario_name,
+    run_count, metrics) from get_scenario_results' return value — a raw key
+    like 'db_path' living alongside 'network'/'run_count' in that dict is
+    simply never read, regardless of the sanitizer. This documents that
+    behavior directly rather than exercising the sanitizer (see the test
+    below for that)."""
     import services.agent.tools_metrics as tools_metrics_module
 
     def fake_get_scenario_results(scenario_id):
@@ -305,9 +336,31 @@ def test_get_run_kpis_strips_injected_path_like_values(monkeypatch):
 
     envelope = _dispatch("get_run_kpis", scenario_id="S000001")
 
-    rendered = str(envelope["data"])
-    assert "run.db" not in rendered
-    assert "/Users" not in rendered
+    assert "db_path" not in envelope["data"]
+    assert "run.db" not in str(envelope["data"])
+
+
+def test_get_run_kpis_sanitizer_strips_a_path_like_value_in_a_forwarded_field(monkeypatch):
+    """Unlike the test above, this exercises the sanitizer for real: inject a
+    genuine path into scenario_name — a field get_run_kpis DOES forward —
+    via a patched list_scenarios(), and confirm _strip_path_like removes it
+    rather than letting it reach the planner."""
+    import services.agent.tools_metrics as tools_metrics_module
+
+    poisoned_name = "/Users/someone/data/Scenarios/S000001/run1.db"
+
+    def fake_list_scenarios():
+        return [{"id": "S000001", "name": poisoned_name, "color": "#000000"}]
+
+    monkeypatch.setattr(tools_metrics_module.results_reader, "list_scenarios", fake_list_scenarios)
+
+    envelope = _dispatch("get_run_kpis", scenario_id="S000001")
+
+    data = envelope["data"]
+    assert data["found"] is True
+    # the path-like scenario_name was dropped entirely by the sanitizer
+    assert data.get("scenario_name") != poisoned_name
+    assert poisoned_name not in str(data)
 
 
 # ---------------------------------------------------------------------------
@@ -341,10 +394,84 @@ def test_compare_scenarios_reports_invalid_ids_without_raising():
 def test_compare_scenarios_never_leaks_db_paths():
     envelope = _dispatch("compare_scenarios", scenario_ids=["S000001", "S000002"])
 
-    rendered = str(envelope["data"])
-    assert ".db" not in rendered
-    assert "/" not in rendered
-    assert "\\" not in rendered
+    assert ".db" not in str(envelope["data"])
+
+
+def test_compare_scenarios_keeps_km_h_unit_text_and_ranking_reasons_intact_on_real_data():
+    """The IMPORTANT-1 regression: a naive path filter that flags any string
+    containing '/' would silently delete key_insights' message/unit fields
+    and scenario_ranking's reason field, since normal traffic units
+    ('km/h', 'veh/h') contain a slash. Assert the actual text, not just
+    field presence, so a re-introduced over-broad filter fails loudly."""
+    envelope = _dispatch("compare_scenarios", scenario_ids=["S000001", "S000002", "S000003"])
+
+    data = envelope["data"]
+    insights_by_id = {insight["id"]: insight for insight in data["key_insights"]}
+
+    speed_leader = insights_by_id["speed-leader"]
+    assert speed_leader["message"] == "Signal Optimization leads average network speed at 51.0 km/h."
+    assert speed_leader["unit"] == "km/h"
+
+    speed_spread = insights_by_id["speed-spread"]
+    assert speed_spread["message"] == "Network average speed varies by 25.4 km/h across compared scenarios."
+    assert speed_spread["unit"] == "km/h"
+
+    reasons = {entry["scenario_id"]: entry["reason"] for entry in data["scenario_ranking"]}
+    assert reasons == {
+        "S000002": "Best normalized delay result at 23.7 s.",
+        "S000001": "Lowest normalized total travel time at 51546.0 s.",
+        "S000003": "Best normalized delay result at 47.8 s.",
+    }
+
+
+def test_compare_scenarios_strips_a_genuine_db_path_from_synthetic_payload(monkeypatch):
+    """The sanitizer must still catch a real path when one does show up,
+    proving IMPORTANT-1's fix narrowed the filter rather than disabling it."""
+    import services.agent.tools_metrics as tools_metrics_module
+
+    poisoned_path = "/Users/someone/data/Scenarios/S000001/run1.db"
+
+    def fake_get_compare_summary(ids):
+        return {
+            "requested_ids": ids,
+            "scenario_ids": ids,
+            "invalid_ids": [],
+            "missing_result_ids": [],
+            "network_metrics": {},
+            "metric_leaders": {},
+            "health_scores": [],
+            "scenario_ranking": [
+                {
+                    "scenario_id": "S000001",
+                    "reason": "Fastest at 38.5 km/h.",  # legitimate unit text alongside the path
+                    "evidence_path": poisoned_path,
+                }
+            ],
+            "top_congested_nodes": [],
+            "key_insights": [],
+            "status_band": {},
+        }
+
+    monkeypatch.setattr(
+        tools_metrics_module.results_reader, "get_compare_summary", fake_get_compare_summary
+    )
+
+    envelope = _dispatch("compare_scenarios", scenario_ids=["S000001"])
+
+    ranking_entry = envelope["data"]["scenario_ranking"][0]
+    assert "evidence_path" not in ranking_entry  # the path-like field was dropped
+    assert ranking_entry["reason"] == "Fastest at 38.5 km/h."  # the unit text survived intact
+    assert poisoned_path not in str(envelope["data"])
+
+
+def test_compare_scenarios_empty_scenario_ids_is_graceful_not_a_crash():
+    envelope = _dispatch("compare_scenarios", scenario_ids=[])
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["requested_ids"] == []
+    assert data["scenario_ids"] == []
+    assert data["status_band"]["tone"] == "error"  # "no comparison ready", not a crash
 
 
 def test_compare_scenarios_rejects_unexpected_params():

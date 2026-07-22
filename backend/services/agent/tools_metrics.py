@@ -34,11 +34,33 @@ _NETWORK_METRIC_KEYS: dict[str, str] = {
 # Defense-in-depth only: results_reader's aggregates never carry path strings
 # today, but this module feeds an LLM prompt directly and must never leak a
 # local .db path even if that assumption changes upstream.
-_PATH_LIKE_RE = re.compile(r"[\\/]|\.db$", re.IGNORECASE)
+#
+# This must match genuine filesystem paths ONLY — natural-language content
+# like "38.5 km/h" or "1,200 veh/h" (a single "/") is exactly what the
+# planner needs and must survive. A single stray separator is not enough
+# evidence of a path; require one of:
+#   - a ".db" suffix (case-insensitive), anywhere a raw db path would end
+#   - an absolute path: leading "/", a Windows drive ("C:\" or "C:/"), or a
+#     UNC prefix ("\\\\host\...")
+#   - a relative path with 2+ separators AND a trailing file extension
+#     (a lone "unit/unit" pair never has an extension, so this can't catch
+#     "km/h" no matter how it's phrased)
+_ENDS_WITH_DB_RE = re.compile(r"\.db$", re.IGNORECASE)
+_ABSOLUTE_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/]|\\\\)")
+_MULTI_SEGMENT_PATH_WITH_EXTENSION_RE = re.compile(r"(?:[^/\\]+[/\\]){2,}[^/\\]+\.[A-Za-z0-9]{1,8}$")
 
 
 def _looks_like_path(value: Any) -> bool:
-    return isinstance(value, str) and bool(_PATH_LIKE_RE.search(value))
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    return bool(
+        _ENDS_WITH_DB_RE.search(text)
+        or _ABSOLUTE_PATH_RE.match(text)
+        or _MULTI_SEGMENT_PATH_WITH_EXTENSION_RE.search(text)
+    )
 
 
 def _strip_path_like(value: Any) -> Any:
