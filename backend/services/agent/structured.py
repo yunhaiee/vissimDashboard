@@ -108,13 +108,12 @@ def validate_action(
 # iteration 1, fallback_rung 0 — i.e. this reached the user un-retried).
 # ---------------------------------------------------------------------------
 
-# `<parameter name="X">VALUE`, VALUE running to the next `</parameter>`, the
-# next `<parameter name="...">`, or end of string (re.DOTALL so VALUE may
-# span newlines, as the observed case does).
-_PARAMETER_TAG_RE = re.compile(
-    r'<parameter\s+name="([^"]+)">(.*?)(?=</parameter>|<parameter\s+name="|\Z)',
-    re.DOTALL,
-)
+# The opening half of a serialized fragment: `<parameter name="X">`. VALUE
+# (the rest of a fragment) is resolved manually in `_decompose_salvage_tail`
+# below, since it must track exactly how much of the tail it consumed.
+_PARAM_OPEN_RE = re.compile(r'<parameter\s+name="([^"]+)">')
+_PARAM_CLOSE = "</parameter>"
+_WHITESPACE_RE = re.compile(r"\s+")
 
 # A bare trailing `</parameter>` or a dangling, never-closed `<parameter
 # name="...">` remnant right at the end of a string. Anchored to the literal
@@ -130,24 +129,85 @@ def _tool_input_schema(tool_name: Any, tools: list[dict[str, Any]]) -> dict[str,
     return {}
 
 
+def _decompose_salvage_tail(remainder: str) -> list[tuple[str, str]] | None:
+    """If ``remainder`` (the text after a param's own LAST closing tag)
+    consists ENTIRELY of whitespace interleaved with valid
+    ``<parameter name="X">VALUE`` fragments (each optionally closed by
+    ``</parameter>``), running all the way to the end of the string, return
+    the ``(name, value)`` fragments found (value stripped).
+
+    Returns ``None`` — meaning "this is not contamination, do not truncate
+    anything" — when the remainder is empty, contains no fragment at all, or
+    contains ANY leftover content that isn't whitespace or part of a
+    fragment. A bare closing tag with nothing real after it is exactly the
+    "presence of the substring alone" case that must NOT be treated as
+    evidence of contamination (a mid-string or trailing mention of the tag in
+    ordinary prose is far more likely than an actual salvage artifact).
+    """
+    pos = 0
+    length = len(remainder)
+    fragments: list[tuple[str, str]] = []
+
+    while pos < length:
+        whitespace_match = _WHITESPACE_RE.match(remainder, pos)
+        if whitespace_match:
+            pos = whitespace_match.end()
+            continue
+
+        open_match = _PARAM_OPEN_RE.match(remainder, pos)
+        if open_match is None:
+            return None  # leftover real content -> not contamination, reject entirely
+
+        name = open_match.group(1)
+        value_start = open_match.end()
+        close_index = remainder.find(_PARAM_CLOSE, value_start)
+        next_open_match = _PARAM_OPEN_RE.search(remainder, value_start)
+        end_candidates = [length]
+        if close_index != -1:
+            end_candidates.append(close_index)
+        if next_open_match is not None:
+            end_candidates.append(next_open_match.start())
+        value_end = min(end_candidates)
+
+        fragments.append((name, remainder[value_start:value_end].strip()))
+        pos = value_end
+        if remainder.startswith(_PARAM_CLOSE, pos):
+            pos += len(_PARAM_CLOSE)
+
+    return fragments or None
+
+
 def salvage_tool_params(action: dict[str, Any], tools: list[dict[str, Any]]) -> dict[str, Any]:
     """Repair XML-tool-syntax contamination in a tool_use action's string params.
 
     Conservative by construction: a param's value is only ever touched when
-    one of the literal artifact markers below is actually present in it —
-    plain prose that happens to contain angle brackets (e.g. quoting HTML) is
-    returned completely unchanged. For each string param value:
+    the LITERAL artifact markers below are actually present AND shaped
+    exactly like a salvage artifact — plain prose that happens to contain
+    angle brackets (e.g. quoting HTML, or even mentioning a bare
+    ``</param_name>``-shaped tag with nothing real after it) is returned
+    completely unchanged. For each string param value:
 
-    1. If it contains ``</{param_name}>`` (that param's OWN closing tag),
-       truncate the value there, keeping only the clean prefix.
-    2. Parse everything after that truncation point for
-       ``<parameter name="X">VALUE`` fragments. For each ``X`` that both
-       names a declared property of the tool's ``input_schema`` and is
-       currently absent or empty (falsy) in ``params``, recover ``VALUE``
-       (stripped) into ``params[X]``. A non-empty existing param is never
-       overwritten.
-    3. Independently, strip a bare trailing ``</parameter>`` or dangling
-       ``<parameter name="...">`` remnant from any string param.
+    1. Find the LAST occurrence of ``</{param_name}>`` (that param's OWN
+       closing tag) — ``rfind``, not ``find``, so an earlier, legitimate
+       mid-text mention of the same tag substring is never mistaken for the
+       artifact and is preserved verbatim in the kept prefix.
+    2. Tail-anchor the check: everything AFTER that last occurrence must
+       decompose ENTIRELY into whitespace and/or ``<parameter name="X">VALUE``
+       fragments (see :func:`_decompose_salvage_tail`), with at least one
+       fragment present. If the remainder is empty, or contains any other
+       real prose, this is NOT treated as contamination — the value is left
+       completely untouched (a bare closing-tag substring alone is never
+       sufficient evidence). Only when the tail-anchor check passes is the
+       value truncated at that last occurrence.
+    3. For each recovered ``X`` that both names a declared property of the
+       tool's ``input_schema`` and is currently absent or empty (falsy) in
+       ``params``, fill ``params[X]`` with the recovered, stripped value. A
+       non-empty existing param is never overwritten.
+    4. Independently, strip a bare trailing ``</parameter>`` or dangling
+       ``<parameter name="...">`` remnant from any string param — but only
+       when that pattern is actually found; a clean value (including one
+       with ordinary trailing whitespace) is never touched, so nothing about
+       it changes at all.
 
     Returns a NEW action dict when anything was salvaged; returns the exact
     same ``action`` object, untouched, when nothing needed it (so callers get
@@ -169,18 +229,20 @@ def salvage_tool_params(action: dict[str, Any], tools: list[dict[str, Any]]) -> 
             continue
 
         close_tag = f"</{name}>"
-        index = value.find(close_tag)
-        if index != -1:
-            remainder = value[index + len(close_tag) :]
-            value = value[:index]
-            changed = True
-            for recovered_name, recovered_value in _PARAMETER_TAG_RE.findall(remainder):
-                if recovered_name in properties and recovered_name not in recovered:
-                    recovered[recovered_name] = recovered_value.strip()
+        tail_index = value.rfind(close_tag)
+        if tail_index != -1:
+            remainder = value[tail_index + len(close_tag) :]
+            fragments = _decompose_salvage_tail(remainder)
+            if fragments is not None:
+                value = value[:tail_index]
+                changed = True
+                for recovered_name, recovered_value in fragments:
+                    if recovered_name in properties and recovered_name not in recovered:
+                        recovered[recovered_name] = recovered_value
 
-        stripped = _DANGLING_TAG_RE.sub("", value).rstrip()
-        if stripped != value:
-            value = stripped
+        after_dangling_strip = _DANGLING_TAG_RE.sub("", value)
+        if after_dangling_strip != value:
+            value = after_dangling_strip.rstrip()
             changed = True
 
         cleaned_params[name] = value

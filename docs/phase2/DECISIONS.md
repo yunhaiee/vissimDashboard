@@ -175,3 +175,43 @@ agent behind an explicit, clearly-labeled beta toggle avoids that regression whi
 the read-only agent reachable for evaluation. This toggle is expected to flip to on-by-default
 (or be removed in favor of the agent being the single seam) once M2/M3 give the agent write
 capability behind the same approval flow the existing simulation path already has.
+
+---
+
+## 2026-07-22 — `salvage_tool_params` tightened to tail-anchored detection (reviewer fix)
+
+**Context:** a reviewer stress-tested the XML-tool-syntax salvage pass added earlier the same
+day (see the M1.1 fix entry above) and found the "conservative by construction" guarantee
+failed in three reproducible ways, all in `backend/services/agent/structured.py`:
+
+1. Using `value.find(close_tag)` (first occurrence) instead of the last: given an `answer`
+   containing an earlier, legitimate mid-sentence mention of `</answer>` followed later by the
+   real tail artifact, the function truncated at the FIRST occurrence, discarding real prose
+   between the two.
+2. Treating the bare presence of the `</{param_name}>` substring as sufficient evidence: an
+   `answer` that merely mentions the tag once with nothing real after it (e.g. quoting it in
+   prose) was truncated anyway, even though no `<parameter>` fragment followed to recover.
+3. `_DANGLING_TAG_RE.sub(...).rstrip()` applied `.rstrip()` unconditionally, so a value with
+   ordinary trailing whitespace and no artifact at all came back as a new, mutated string
+   object — breaking the documented byte-identical-passthrough guarantee for a clean action.
+
+**Decision:** tightened the detection to be tail-anchored rather than substring-anchored.
+`salvage_tool_params` now: (a) finds the LAST occurrence of `</{param_name}>` via `rfind`, never
+`find`, so an earlier legitimate mention is preserved untouched in the kept prefix; (b) requires
+everything AFTER that last occurrence to decompose ENTIRELY into whitespace and/or valid
+`<parameter name="X">VALUE` fragments (new `_decompose_salvage_tail` helper) with at least one
+fragment actually present — an empty remainder, a whitespace-only remainder, or any leftover
+real prose means "not contamination," and the value is left completely untouched; only a
+full, unambiguous tail match triggers truncation; (c) only applies `.rstrip()` after the
+dangling-tag regex actually matched something (checked via `after != before` first), so a clean
+value's trailing whitespace is never touched. All three reviewer repros were added as regression
+tests in `backend/tests/test_agent_structured.py` and independently verified as RED against the
+prior version (reverted to `HEAD` and re-run) before being fixed.
+
+**Consequence:** the salvage pass is now strictly more conservative — it will decline to salvage
+a small number of genuine artifacts that don't perfectly tail-anchor (e.g. a model that emits
+real prose *after* the serialized parameter fragment, or an artifact with no recoverable
+fragment following it, such as a lone stray `</answer>`), preferring a false negative (leaving
+a benign-looking tag in the answer) over a false positive (eating real user-facing content).
+This trade-off is intentional per the guardrail doctrine's general bias toward "verify before
+acting" — the same reasoning already applied to constraint checks in this file.

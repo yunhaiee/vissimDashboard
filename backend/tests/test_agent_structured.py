@@ -352,6 +352,64 @@ def test_salvage_tool_params_leaves_benign_angle_brackets_untouched() -> None:
     assert cleaned["params"]["answer"] == "Use <b>bold</b> tags here."
 
 
+# ---------------------------------------------------------------------------
+# Reviewer stress-test regressions: tail-anchored detection (rfind + full
+# remainder decomposition, not first-occurrence `find`) and rstrip-only-on-
+# actual-change (byte-identical passthrough even with trailing whitespace).
+# ---------------------------------------------------------------------------
+
+
+def test_salvage_tool_params_multi_occurrence_keeps_prefix_and_recovers_tail() -> None:
+    # IMPORTANT-1 repro: a legitimate mid-sentence mention of the closing tag
+    # substring, PLUS the real tail artifact. Only the tail artifact must be
+    # stripped; the mid-sentence mention and all the real prose around it
+    # must survive untouched, and the tail's summary must still be recovered.
+    answer = (
+        "Quoting: the tag looks like <foo></answer> mid-sentence. "
+        'Real content continues here.</answer>\n<parameter name="summary">the real summary'
+    )
+    action = {"tool": "respond", "params": {"answer": answer, "summary": ""}}
+
+    cleaned = salvage_tool_params(action, [RESPOND_TOOL])
+
+    assert "<foo></answer> mid-sentence." in cleaned["params"]["answer"]
+    assert "Real content continues here." in cleaned["params"]["answer"]
+    assert cleaned["params"]["answer"].endswith("Real content continues here.")
+    assert "<parameter" not in cleaned["params"]["answer"]
+    assert cleaned["params"]["summary"] == "the real summary"
+
+
+def test_salvage_tool_params_bare_substring_with_nothing_after_is_untouched() -> None:
+    # IMPORTANT-2 repro: a single occurrence of the closing-tag substring with
+    # NOTHING real after it (empty remainder) is not sufficient evidence of
+    # contamination on its own -> byte-identical passthrough.
+    action = {
+        "tool": "respond",
+        "params": {
+            "answer": "Some legit text discussing the tag: <answer>foo</answer>",
+            "summary": "ok",
+        },
+    }
+
+    cleaned = salvage_tool_params(action, [RESPOND_TOOL])
+
+    assert cleaned is action
+
+
+def test_salvage_tool_params_trailing_whitespace_only_is_untouched() -> None:
+    # MINOR-1 repro: a clean value with ordinary trailing whitespace and no
+    # artifact markers at all must come back as the identical object -- the
+    # dangling-tag rstrip must never fire when its regex found no match.
+    action = {
+        "tool": "respond",
+        "params": {"answer": "A perfectly clean answer.   \n", "summary": "ok"},
+    }
+
+    cleaned = salvage_tool_params(action, [RESPOND_TOOL])
+
+    assert cleaned is action
+
+
 def test_claude_generate_structured_salvages_contaminated_tool_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
