@@ -176,6 +176,14 @@ def _find_by_field(objects: list[dict[str, Any]], field_name: str, value: str) -
     return None
 
 
+def _coerce_number(raw: Any, cast: Callable[[Any], Any] = float) -> Any | None:
+    """Cast ``raw`` via ``cast`` (``float`` or ``int``), or ``None`` on failure."""
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # #1 object_not_found (refuse, preflight)
 # ---------------------------------------------------------------------------
@@ -196,9 +204,32 @@ def _check_object_not_found(
     if _find_by_field(objects, spec["id_field"], target_id) is not None:
         return None
 
-    ids = [str(obj.get(spec["id_field"], "")) for obj in objects]
-    names = [str(obj.get(spec["name_field"], "")) for obj in objects if obj.get(spec["name_field"])]
-    candidates = difflib.get_close_matches(target_id, ids + names, n=5)
+    # Fuzzy-match target_id against both ids and names, but always resolve
+    # back to the owning object's id: suggested_fix is machine-usable (a
+    # caller retries with suggested_fix[0] as input_no/sc_no), so a name
+    # string leaking through would break that retry.
+    owner_id_by_string: dict[str, str] = {}
+    match_pool: list[str] = []
+    for obj in objects:
+        obj_id = str(obj.get(spec["id_field"], ""))
+        if obj_id and obj_id not in owner_id_by_string:
+            match_pool.append(obj_id)
+            owner_id_by_string[obj_id] = obj_id
+        name = obj.get(spec["name_field"])
+        if name:
+            name_str = str(name)
+            if name_str not in owner_id_by_string:
+                match_pool.append(name_str)
+                owner_id_by_string[name_str] = obj_id
+
+    candidates: list[str] = []
+    seen_ids: set[str] = set()
+    for match in difflib.get_close_matches(target_id, match_pool, n=5):
+        owner_id = owner_id_by_string[match]
+        if owner_id in seen_ids:
+            continue
+        seen_ids.add(owner_id)
+        candidates.append(owner_id)
 
     labels = _OBJECT_CLASS_LABELS[spec["object_class"]]
     return Finding(
@@ -249,9 +280,8 @@ def _check_volume_out_of_range(
     raw_volume = params.get("volume")
     if raw_volume is None:
         return None
-    try:
-        volume = float(raw_volume)
-    except (TypeError, ValueError):
+    volume = _coerce_number(raw_volume)
+    if volume is None:
         return None
 
     if 0 <= volume <= 20000:
@@ -301,9 +331,8 @@ def _check_latent_demand_overflow(
     raw_volume = params.get("volume")
     if raw_volume is None:
         return None
-    try:
-        volume = float(raw_volume)
-    except (TypeError, ValueError):
+    volume = _coerce_number(raw_volume)
+    if volume is None:
         return None
 
     vehicle_input = _find_by_field(shadow_model.get("vehicle_inputs", []), "no", input_no)
@@ -450,10 +479,9 @@ def _check_cycle_below_intergreen_sum(
     if raw_min_sum is None:
         return None  # datum unavailable until M3.1 — see DECISIONS.md
 
-    try:
-        cycle = float(raw_cycle)
-        min_sum = float(raw_min_sum)
-    except (TypeError, ValueError):
+    cycle = _coerce_number(raw_cycle)
+    min_sum = _coerce_number(raw_min_sum)
+    if cycle is None or min_sum is None:
         return None
 
     if cycle >= min_sum:
@@ -478,10 +506,10 @@ register(
         phase="preflight",
         tier="refuse",
         check=_check_cycle_below_intergreen_sum,
-        message_ko="제안된 주기 {cycle}초가 신호제어기 '{sc_no}'의 최소 녹색시간+중간녹색시간 합계 "
+        message_ko="제안된 주기 {cycle}초가 신호제어기 '{sc_no}'의 최소 녹색시간+인터그린 시간 합계 "
         "{min_sum}초보다 짧습니다.",
-        message_en="Proposed cycle {cycle}s is shorter than signal controller '{sc_no}''s "
-        "minimum green + intergreen time sum of {min_sum}s.",
+        message_en="Proposed cycle {cycle}s is shorter than the minimum green + intergreen "
+        "time sum of {min_sum}s for signal controller '{sc_no}'.",
         message_ja="提案されたサイクル {cycle}秒 は信号制御機 '{sc_no}' の最小青時間+インター"
         "グリーン時間の合計 {min_sum}秒 より短くなっています。",
     )
@@ -598,9 +626,8 @@ def _check_vehicles_deleted_in_run(
     raw_deleted = run_result.get("deleted_vehicles")
     if raw_deleted is None:
         return None
-    try:
-        deleted = int(raw_deleted)
-    except (TypeError, ValueError):
+    deleted = _coerce_number(raw_deleted, cast=int)
+    if deleted is None:
         return None
     if deleted <= 0:
         return None

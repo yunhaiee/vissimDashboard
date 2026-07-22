@@ -117,6 +117,28 @@ def test_object_not_found_fires_for_missing_vehicle_input():
     assert set(finding.suggested_fix) & {"101", "102"}
 
 
+def test_object_not_found_suggested_fix_resolves_name_match_to_owning_id():
+    # reviewer repro: a typo'd NAME as the target must yield the owning
+    # object's id, not the raw name string (suggested_fix is machine-usable
+    # — a caller retries with suggested_fix[0] as input_no/sc_no).
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "1", "name": "Main Street EB", "link": "101", "volume": 900.0},
+        ]
+    )
+    action = _action(
+        "set_vehicle_input_volume", input_no="Main Street EB approach", volume=600
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert "1" in finding.suggested_fix
+    assert "Main Street EB" not in finding.suggested_fix
+
+
 def test_object_not_found_fires_for_missing_signal():
     shadow = _shadow_model()
     action = _action("set_signal_cycle", sc_no="99", cycle=90)
@@ -284,7 +306,11 @@ def test_signal_controller_type_unsupported_fires_when_type_is_unknown():
 
     findings = run_checks("preflight", action, shadow, {})
 
-    assert any(f.constraint_id == "signal_controller_type_unsupported" for f in findings)
+    matches = [f for f in findings if f.constraint_id == "signal_controller_type_unsupported"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    _assert_well_formed_messages(finding, must_contain_ko="unknown")
 
 
 def test_signal_controller_type_unsupported_fires_for_non_fixed_time_controller():
