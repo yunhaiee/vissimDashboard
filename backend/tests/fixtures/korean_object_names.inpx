@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<network version="2400">
+  <links>
+    <link no="501" name="중앙로 교차로">
+      <geometry>
+        <linkPolyPts>
+          <linkPolyPoint x="0" y="0" zOffset="0" />
+          <linkPolyPoint x="100" y="0" zOffset="0" />
+        </linkPolyPts>
+      </geometry>
+      <lanes>
+        <lane width="3.5" />
+      </lanes>
+    </link>
+    <link no="502" name="중앙로 남측 접근로">
+      <geometry>
+        <linkPolyPts>
+          <linkPolyPoint x="0" y="50" zOffset="0" />
+          <linkPolyPoint x="100" y="50" zOffset="0" />
+        </linkPolyPts>
+      </geometry>
+      <lanes>
+        <lane width="3.5" />
+      </lanes>
+    </link>
+  </links>
+  <nodes>
+  </nodes>
+</network>
