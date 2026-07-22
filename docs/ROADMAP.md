@@ -63,6 +63,15 @@ Decisions locked in (2026-07-21):
 
 ## Reference documents
 
+- **`docs/phase2/` — the Phase 2 master plan (2026-07-22).** Executor-ready:
+  [00-EXECUTION-GUIDE](phase2/00-EXECUTION-GUIDE.md) (rules + landmines) →
+  [01-ARCHITECTURE](phase2/01-ARCHITECTURE.md) → [02-ROADMAP](phase2/02-ROADMAP.md)
+  (milestones M0–M5 with acceptance criteria) →
+  [03-RESEARCH-DIGEST](phase2/03-RESEARCH-DIGEST.md) (ChatSUMO-Agent paper+repo,
+  AgentSUMO — the study-papers-first prerequisite, fulfilled) →
+  [04-EVAL-PLAN](phase2/04-EVAL-PLAN.md) (TR-C evaluation design). Any Phase 2
+  work starts by reading these in order.
+- `docs/ux-backlog.md` — deferred UX gaps from the 2026-07-22 audit gap-check.
 - `docs/reference/prism-llm-briefing.html` — meeting briefing: landscape,
   papers (ChatSUMO Agent TR-C 2026 = the paper prof cited; AgentSUMO KAIST),
   architecture, on-prem, select-then-prompt UX.
