@@ -79,3 +79,33 @@ exists to kill per docs/phase2/01-ARCHITECTURE.md §1. The cost is that any legi
 not-yet-modeled param addition to a tool must update that tool's params model in lockstep, or
 every call carrying it will be rejected; this is treated as a feature (registry is the single
 source of truth), not a workaround-worthy limitation.
+
+---
+
+## 2026-07-22 — `generate_structured` shared logic lives in a new module, not in assistant_router.py
+
+**Context:** M1.1 (`backend/services/claude_provider.py`, `backend/services/assistant_router.py`).
+docs/phase2/02-ROADMAP.md's M1.1 task text says both "give `LocalQwenProvider` the same method"
+(`generate_structured`) AND "assistant_router untouched except provider selection reuse" — but
+`LocalQwenProvider` is defined *inside* `assistant_router.py`, so both cannot hold literally:
+adding a method to that class is necessarily a touch to the file.
+
+**Decision:** controller-adjudicated resolution — add only a thin `generate_structured` method
+to the `LocalQwenProvider` class in `assistant_router.py` (co-located with the class it
+extends, matching how `status()`/`generate()` already live there), while ALL shared logic
+(the strict-JSON prompt builder, action-envelope validation, and the fallback-rung/meta
+bookkeeping both providers report identically) lives in a new module
+`backend/services/agent/structured.py`. Both `ClaudeProvider.generate_structured` and
+`LocalQwenProvider.generate_structured` import `services.agent.structured` lazily inside the
+method body, mirroring `claude_provider.py`'s existing lazy `import anthropic` pattern in
+`_get_client()`; `backend/services/agent/__init__.py` is empty, so this introduces no import
+cycle between `assistant_router.py` and `agent/`. The roadmap's "don't grow the monolith"
+concern is read as being about new *logic* accumulating in `assistant_router.py`, not about
+the file gaining zero new lines ever — a thin, delegating method satisfies both stated
+constraints as closely as reality allows.
+
+**Consequence:** `assistant_router.py` gains exactly one new method (no new imports at module
+level beyond the two lazy ones inside it, no changes to routing/selection logic), while the
+actual structured-generation behavior — prompt construction, `validate_action`, `build_meta` —
+is centralized in `services/agent/structured.py` where M1.3's planner and any future provider
+can reuse it without touching `assistant_router.py` again.

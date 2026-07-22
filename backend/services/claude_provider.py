@@ -98,3 +98,90 @@ class ClaudeProvider:
         if not answer:
             return None, {"mode": "fallback", "error": "Claude returned an empty answer."}
         return answer, {"mode": "claude-api", "model": self.model, "think": think}
+
+    def generate_structured(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        schema: dict[str, Any] | None = None,
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        """Native tool-use structured generation: one action dict, or None + why.
+
+        Uses Anthropic's native tool-use (``tool_choice: {"type": "any"}`` forces
+        a ``tool_use`` block) with prompt caching on the system and tools blocks,
+        per docs/phase2/02-ROADMAP.md M1.1. On a missing/invalid tool_use block,
+        retries once with an appended assistant+user turn stating the validation
+        error (``fallback_rung`` 1); giving up after that returns ``(None, meta)``
+        with the error (``fallback_rung`` 2). No streaming. See
+        :mod:`services.agent.structured` for the shared validation/meta-building
+        both providers use.
+        """
+        from services.agent.structured import build_meta, validate_action
+
+        if not self._api_key_present():
+            return None, build_meta(
+                mode="fallback", fallback_rung=2, error="ANTHROPIC_API_KEY is not set."
+            )
+        client = self._get_client()
+        if client is None:
+            return None, build_meta(
+                mode="fallback",
+                fallback_rung=2,
+                error=self._client_error or "Anthropic client unavailable.",
+            )
+
+        tokens = max_tokens or int(os.getenv("ANTHROPIC_MAX_TOKENS", "2048"))
+        request_tools = [dict(t) for t in tools]
+        if request_tools:
+            request_tools[-1] = {**request_tools[-1], "cache_control": {"type": "ephemeral"}}
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": tokens,
+            "tools": request_tools,
+            "tool_choice": {"type": "any"},
+            "messages": list(messages),
+        }
+        if system:
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
+
+        last_error = "Claude did not return a valid action."
+        for rung in (0, 1):
+            try:
+                response = client.messages.create(**kwargs)
+            except Exception as exc:
+                return None, build_meta(
+                    mode="claude-api", fallback_rung=2, model=self.model, error=str(exc)
+                )
+
+            tool_use_block = next(
+                (block for block in response.content if getattr(block, "type", "") == "tool_use"),
+                None,
+            )
+            if tool_use_block is not None:
+                action = {"tool": tool_use_block.name, "params": tool_use_block.input}
+                reason = validate_action(action, tools, schema)
+                if reason is None:
+                    return action, build_meta(mode="claude-api", fallback_rung=rung, model=self.model)
+                last_error = reason
+            else:
+                last_error = "Claude response contained no tool_use block."
+
+            if rung == 0:
+                kwargs["messages"] = kwargs["messages"] + [
+                    {"role": "assistant", "content": response.content},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"That response was invalid: {last_error}. "
+                            "Reply again with exactly one valid tool call."
+                        ),
+                    },
+                ]
+
+        return None, build_meta(mode="claude-api", fallback_rung=2, model=self.model, error=last_error)

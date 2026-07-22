@@ -519,6 +519,58 @@ class LocalQwenProvider:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+    def generate_structured(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        schema: dict[str, Any] | None = None,
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        """Strict-JSON structured generation for a model with no native tool-use.
+
+        Deliberately thin (see docs/phase2/DECISIONS.md, dated entry for this
+        method): all prompt-building, action validation, and fallback-rung
+        bookkeeping live in ``services.agent.structured``, imported lazily here
+        (matching ``claude_provider.py``'s lazy ``import anthropic`` pattern) so
+        this module carries no module-load-time dependency on ``agent/``.
+        Never routes the reply through ``clean_generated_answer`` (it strips
+        JSON). ``max_tokens`` is accepted for signature parity with
+        ``ClaudeProvider`` but is not forwarded — the underlying ``generate``
+        path sizing is controlled by the existing ``QWEN_MAX_NEW_TOKENS`` env var.
+        """
+        from services.agent.structured import build_meta, build_strict_json_prompt, validate_action
+        from services.dashboard_curator import extract_json_object
+
+        prompt = build_strict_json_prompt(messages, tools, schema, system)
+        reply, generate_meta = self.generate(prompt)
+        mode = generate_meta.get("mode", "fallback")
+        if not reply:
+            return None, build_meta(
+                mode=mode,
+                fallback_rung=2,
+                error=generate_meta.get("error") or "Qwen returned no reply.",
+            )
+
+        try:
+            action = json.loads(reply)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            action = None
+        if isinstance(action, dict) and validate_action(action, tools, schema) is None:
+            return action, build_meta(mode=mode, fallback_rung=0)
+
+        rescued = extract_json_object(reply)
+        if isinstance(rescued, dict):
+            reason = validate_action(rescued, tools, schema)
+            if reason is None:
+                return rescued, build_meta(mode=mode, fallback_rung=1)
+            return None, build_meta(mode=mode, fallback_rung=2, error=reason)
+
+        return None, build_meta(
+            mode=mode, fallback_rung=2, error="Qwen reply was not valid JSON."
+        )
+
 
 @lru_cache(maxsize=1)
 def _load_qwen_in_process(model_dir: str):
