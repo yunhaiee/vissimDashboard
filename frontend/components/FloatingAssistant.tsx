@@ -440,11 +440,13 @@ export default function FloatingAssistant() {
     const controller = new AbortController();
     requestAbortRef.current = controller;
     let streamedContent = "";
+    let hasAgentSteps = false;
     try {
       const response = await streamAgentQuery(
         { message: text, response_language: lang },
         {
           onStep: (event) => {
+            hasAgentSteps = true;
             setRequestPhase("streaming");
             setMessages((prev) =>
               prev.map((message) =>
@@ -480,7 +482,11 @@ export default function FloatingAssistant() {
         ),
       );
     } catch (caught) {
-      if (!streamedContent.trim()) {
+      // A stream that dies after emitting step narration but before any
+      // answer content must keep the message — the step log the user
+      // already watched is real work, not noise, so only drop the bubble
+      // when there's neither content nor steps to show for it.
+      if (!streamedContent.trim() && !hasAgentSteps) {
         setMessages((prev) => prev.filter((message) => message.id !== assistantMessageId));
       }
       if (isAbortError(caught)) {

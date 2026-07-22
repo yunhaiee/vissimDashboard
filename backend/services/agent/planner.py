@@ -258,18 +258,27 @@ class Planner:
         tool_name = action.get("tool")
 
         if tool_name == "respond":
+            answer = str(params.get("answer", ""))
+            if not answer.strip():
+                # An empty/whitespace terminal answer would render as a
+                # blank bubble in the UI; treat it the same as a provider
+                # failure and fall through to the deterministic ladder.
+                return self._rule_fallback(state, language, meta)
             return PlannerDecision(
                 kind="respond",
                 summary=summary,
                 meta=meta,
-                params={"answer": str(params.get("answer", ""))},
+                params={"answer": answer},
             )
         if tool_name == "ask_user":
+            question = str(params.get("question", ""))
+            if not question.strip():
+                return self._rule_fallback(state, language, meta)
             return PlannerDecision(
                 kind="ask_user",
                 summary=summary,
                 meta=meta,
-                params={"question": str(params.get("question", ""))},
+                params={"question": question},
             )
         return PlannerDecision(
             kind="tool", summary=summary, meta=meta, tool=tool_name, params=params

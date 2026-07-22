@@ -215,3 +215,27 @@ fragment following it, such as a lone stray `</answer>`), preferring a false neg
 a benign-looking tag in the answer) over a false positive (eating real user-facing content).
 This trade-off is intentional per the guardrail doctrine's general bias toward "verify before
 acting" — the same reasoning already applied to constraint checks in this file.
+
+---
+
+## Deferred findings from the M0+M1 whole-branch review (2026-07-22)
+
+**Context:** the whole-branch pre-merge review of M0+M1 surfaced findings that are out of scope
+for the review's own fix pass but must not get lost before the M2/M3 executor picks the work
+back up. Recorded here, each tagged with its target milestone, so the executor inherits them by
+name instead of relying on tribal memory.
+
+- **M2.3 (BLOCKING for that task):** `claude_provider`'s retry rung must add a `tool_result`
+  (`is_error`) block for a failed `tool_use` id — the current assistant-content echo becomes an
+  API 400 once schema validation can reject a present `tool_use` block.
+- **M2 ops:** `runtime/agent_sessions` has no cleanup/TTL and turns keep running after client
+  disconnect — add a startup sweep plus a cancellation check between loop iterations.
+- **M3.3 (BLOCKING for that task):** `trace.py`'s `session_id` must be sanitized before
+  state-reload-by-session-id ships; also note payload-by-reference and no file-locking as known
+  single-writer assumptions.
+- **M2.2:** `ArtifactManager` wiring must add the clone-precondition-guard test and decide on
+  `shadow_model` defensive copying; the version counter is single-instance by design.
+- **M1.1 test debt:** the two-tool `cache_control` placement test (last-block-only) is still
+  missing.
+- **Future multi-dataset work:** `tools_network`'s module-global active-inpx becomes a real
+  concurrency bug once per-session dataset selection lands.

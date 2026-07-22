@@ -466,3 +466,107 @@ def test_on_step_raising_does_not_break_the_turn(tmp_path):
     assert result.kind == "answer"
     assert [step["tool"] for step in result.steps] == ["get_network_overview", "respond"]
     assert "확인을 마쳤습니다" in result.answer
+
+
+# ---------------------------------------------------------------------------
+# Scenario 9 — an empty terminal payload is never surfaced as a real answer
+# (pre-merge review fix: a blank respond/ask_user used to reach the UI as an
+# empty bubble; the planner now routes it through the same rule-fallback
+# ladder as a provider failure).
+# ---------------------------------------------------------------------------
+
+
+def test_respond_with_empty_answer_falls_back_to_grounding_tool_on_empty_history(tmp_path):
+    provider = FakeStructuredProvider(
+        [
+            _action("respond", summary="답변합니다", answer="   "),  # whitespace-only
+            _action("respond", summary="정리했습니다", answer="실제 답변입니다."),
+        ]
+    )
+
+    result = run_agent_turn(
+        "이 네트워크에 뭐가 있어?",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-empty-respond-a",
+        language="ko",
+    )
+
+    # The empty-answer decision never became a terminal "answer" — the
+    # fallback ladder dispatched the safe grounding read instead.
+    assert [step["tool"] for step in result.steps] == ["get_network_overview", "respond"]
+    assert result.kind == "answer"
+    assert result.answer == "실제 답변입니다."
+
+    fallback_records = [
+        record for record in read_trace(result.trace_path) if record["kind"] == "fallback_rung"
+    ]
+    assert len(fallback_records) == 1
+    assert fallback_records[0]["payload"]["rung"] == 3
+
+
+def test_respond_with_empty_answer_falls_back_to_ask_user_on_nonempty_history(tmp_path):
+    provider = FakeStructuredProvider(
+        [
+            _action("get_network_overview", summary="개요를 확인합니다"),
+            _action("respond", summary="정리했습니다", answer=""),  # empty string
+        ]
+    )
+
+    result = run_agent_turn(
+        "이 네트워크에 뭐가 있어?",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-empty-respond-b",
+        language="ko",
+    )
+
+    # Never a blank "answer" bubble: with prior history the ladder's second
+    # rung is ask_user, so the turn ends as a clarification instead.
+    assert result.kind == "clarification"
+    assert result.answer.strip()
+    assert [step["tool"] for step in result.steps] == ["get_network_overview", "ask_user"]
+
+
+def test_ask_user_with_empty_question_falls_back_to_grounding_tool_on_empty_history(tmp_path):
+    provider = FakeStructuredProvider(
+        [
+            _action("ask_user", summary="질문합니다", question="   "),  # whitespace-only
+            _action("respond", summary="정리했습니다", answer="완료된 답변입니다."),
+        ]
+    )
+
+    result = run_agent_turn(
+        "이 네트워크에 뭐가 있어?",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-empty-ask-a",
+        language="ko",
+    )
+
+    assert [step["tool"] for step in result.steps] == ["get_network_overview", "respond"]
+    assert result.kind == "answer"
+    assert result.answer == "완료된 답변입니다."
+
+
+def test_ask_user_with_empty_question_falls_back_to_ask_user_on_nonempty_history(tmp_path):
+    provider = FakeStructuredProvider(
+        [
+            _action("get_network_overview", summary="개요를 확인합니다"),
+            _action("ask_user", summary="질문합니다", question=""),  # empty string
+        ]
+    )
+
+    result = run_agent_turn(
+        "이 네트워크에 뭐가 있어?",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-empty-ask-b",
+        language="ko",
+    )
+
+    # Still never an empty terminal payload — the rule fallback's own
+    # deterministic clarification question is used instead of the blank one.
+    assert result.kind == "clarification"
+    assert result.answer.strip()
+    assert [step["tool"] for step in result.steps] == ["get_network_overview", "ask_user"]
