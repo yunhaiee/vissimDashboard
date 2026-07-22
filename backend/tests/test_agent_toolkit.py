@@ -12,6 +12,7 @@ from services.agent.toolkit import (
     ToolRegistry,
     default_registry,
     dispatch,
+    native_tool_defs,
     render_contract,
     tool,
 )
@@ -350,6 +351,32 @@ def test_render_contract_empty_registry_returns_empty_string():
     registry = ToolRegistry()
 
     assert render_contract(registry=registry) == ""
+
+
+def test_native_tool_defs_match_registry_order_with_pruned_schemas():
+    """native_tool_defs is the same single source of truth as render_contract,
+    rendered as Anthropic-native tool definitions: name, one-line docstring
+    description, and the pruned params schema as input_schema (M1.3's planner
+    feeds these to generate_structured)."""
+    registry = _fresh_registry_with_tools()
+
+    defs = native_tool_defs(registry=registry)
+
+    assert [tool_def["name"] for tool_def in defs] == list(registry.names())
+    for tool_def in defs:
+        assert set(tool_def.keys()) == {"name", "description", "input_schema"}
+
+    get_def = next(d for d in defs if d["name"] == "get_link_volume")
+    assert get_def["description"] == "Fetch the current volume for a link."
+    schema = get_def["input_schema"]
+    assert schema["type"] == "object"
+    assert "link_id" in schema["properties"]
+    # same "title"-noise pruning render_contract applies
+    assert '"title"' not in json.dumps(schema)
+
+
+def test_native_tool_defs_empty_registry_returns_empty_list():
+    assert native_tool_defs(registry=ToolRegistry()) == []
 
 
 def test_render_contract_preserves_a_params_field_literally_named_title():

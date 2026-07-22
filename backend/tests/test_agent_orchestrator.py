@@ -1,0 +1,411 @@
+"""Tests for M1.3's orchestrator + planner: the read-only agent loop.
+
+Scripted conversations use ``FakeStructuredProvider`` — a canned-queue
+stand-in for the providers' ``generate_structured`` seam — so every test is
+deterministic and makes NO paid API calls. Tool dispatches hit the REAL demo
+network (``data/practice.inpx`` via ``config.SIMULATION_INPX_PATH``),
+matching the M1.3 acceptance criteria in docs/phase2/02-ROADMAP.md: answers
+must be grounded in actual tool envelopes, the full trace JSONL must be
+written, and no write/run tool may be reachable (tier gate).
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict
+
+import pytest
+
+import services.agent.tools_network as tools_network
+from services.agent.orchestrator import run_agent_turn
+from services.agent.toolkit import ToolRegistry, tool
+from services.agent.trace import read_trace
+
+EXPECTED_READ_TOOLS = {
+    "get_network_overview",
+    "resolve_object",
+    "get_vehicle_inputs",
+    "get_signal_controllers",
+    "get_run_kpis",
+    "compare_scenarios",
+}
+
+
+@pytest.fixture(autouse=True)
+def _reset_active_inpx():
+    """Every test runs against the real demo default (data/practice.inpx)
+    and restores it after, so no override can leak between tests."""
+    tools_network.set_active_inpx(None)
+    yield
+    tools_network.set_active_inpx(None)
+
+
+class FakeStructuredProvider:
+    """Canned (action, meta) queue implementing the ``generate_structured`` seam.
+
+    Records every call's (messages, tools, schema, system) so tests can
+    assert what the planner actually offered and showed the provider. With
+    ``repeat_last=True`` the final queue entry repeats forever — for the
+    "provider never recovers" and "K-cap" scenarios.
+    """
+
+    def __init__(
+        self,
+        queue: list[tuple[dict[str, Any] | None, dict[str, Any]]],
+        *,
+        repeat_last: bool = False,
+    ) -> None:
+        self._queue = list(queue)
+        self._repeat_last = repeat_last
+        self.calls: list[dict[str, Any]] = []
+
+    def generate_structured(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        schema: dict[str, Any] | None = None,
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        self.calls.append(
+            {"messages": messages, "tools": tools, "schema": schema, "system": system}
+        )
+        if not self._queue:
+            raise AssertionError("FakeStructuredProvider queue exhausted unexpectedly")
+        if self._repeat_last and len(self._queue) == 1:
+            return self._queue[0]
+        return self._queue.pop(0)
+
+
+def _action(
+    tool_name: str, *, summary: str = "확인합니다", **params: Any
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A canned clean-path (action, meta) pair, summary included per contract."""
+    params["summary"] = summary
+    return {"tool": tool_name, "params": params}, {"mode": "fake", "fallback_rung": 0}
+
+
+# ---------------------------------------------------------------------------
+# Scenario 1 — "이 네트워크에 뭐가 있어?" → overview via tools → grounded answer
+# ---------------------------------------------------------------------------
+
+
+def test_overview_conversation_answers_from_tools_and_writes_trace(tmp_path):
+    provider = FakeStructuredProvider(
+        [
+            _action("get_network_overview", summary="네트워크 개요를 확인합니다"),
+            _action(
+                "respond",
+                summary="확인한 내용을 정리했습니다",
+                answer="이 네트워크에는 링크 14개, 노드 2개, 차량 입력 6개, 신호기 0개가 있습니다.",
+            ),
+        ]
+    )
+
+    result = run_agent_turn(
+        "이 네트워크에 뭐가 있어?",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-overview",
+        language="ko",
+    )
+
+    assert result.kind == "answer"
+    assert "링크 14개" in result.answer
+
+    # The answer's facts are grounded in the ACTUAL envelope from demo data:
+    # the dispatched overview really counted 14 links.
+    overview = result.state.history[0].observation
+    assert overview["status"] == "ok"
+    assert overview["data"]["links"]["count"] == 14
+
+    # Steps narrated, in the user's language, in order.
+    assert [step["tool"] for step in result.steps] == ["get_network_overview", "respond"]
+    assert result.steps[0] == {
+        "summary": "네트워크 개요를 확인합니다",
+        "tool": "get_network_overview",
+        "status": "ok",
+    }
+
+    # The planner offered exactly the read tools + the two terminals, every
+    # def carrying the required `summary` param.
+    offered = provider.calls[0]["tools"]
+    assert {tool_def["name"] for tool_def in offered} == (
+        EXPECTED_READ_TOOLS | {"respond", "ask_user"}
+    )
+    for tool_def in offered:
+        assert "summary" in tool_def["input_schema"]["properties"]
+        assert "summary" in tool_def["input_schema"]["required"]
+
+    # The system prompt reached the provider with the contract injected.
+    system = provider.calls[0]["system"]
+    assert "{TOOL_CONTRACT}" not in system
+    assert "## get_network_overview" in system
+    assert "## respond" in system
+
+    # The second planner call saw the first envelope via the state block.
+    assert "get_network_overview" in provider.calls[1]["messages"][0]["content"]
+
+    # Trace: plan / action_start / action_end / plan, monotonic ts, and
+    # read_trace round-trips the JSONL cleanly.
+    records = read_trace(result.trace_path)
+    assert [record["kind"] for record in records] == [
+        "plan",
+        "action_start",
+        "action_end",
+        "plan",
+    ]
+    timestamps = [record["ts"] for record in records]
+    assert timestamps == sorted(timestamps)
+    assert all(record["session_id"] == "s-overview" for record in records)
+
+
+# ---------------------------------------------------------------------------
+# Scenario 2 — "107번 입력 교통량 알려줘" → resolve + read → answer
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_then_read_conversation_carries_both_envelopes(tmp_path):
+    provider = FakeStructuredProvider(
+        [
+            _action("resolve_object", summary="107번 객체를 찾습니다", query="107"),
+            _action("get_vehicle_inputs", summary="차량 입력 목록을 읽습니다"),
+            _action(
+                "respond",
+                summary="교통량 정보를 정리했습니다",
+                answer=(
+                    "107번 객체는 네트워크에 없습니다. 차량 입력은 1~6번 6개이고, "
+                    "데모 데이터에는 교통량 값이 들어 있지 않습니다."
+                ),
+            ),
+        ]
+    )
+
+    result = run_agent_turn(
+        "107번 입력 교통량 알려줘",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-resolve",
+        language="ko",
+    )
+
+    assert result.kind == "answer"
+    assert result.answer
+
+    # History carries BOTH envelopes, in dispatch order.
+    assert [record.action for record in result.state.history] == [
+        "resolve_object",
+        "get_vehicle_inputs",
+    ]
+    resolve_env, inputs_env = (record.observation for record in result.state.history)
+    assert resolve_env["status"] == "ok"
+    # Real demo behavior: no object "107" exists — a structured miss with
+    # difflib candidates, proving the dispatch ran against real data.
+    assert resolve_env["data"]["found"] is False
+    assert resolve_env["data"]["error_type"] == "object_not_found"
+    assert isinstance(resolve_env["data"]["candidates"], list)
+    assert inputs_env["status"] == "ok"
+    assert inputs_env["data"]["count"] == 6
+
+
+# ---------------------------------------------------------------------------
+# Scenario 3 — nonsense request → clarification, not hallucination
+# ---------------------------------------------------------------------------
+
+
+def test_nonsense_request_yields_clarification_after_one_iteration(tmp_path):
+    provider = FakeStructuredProvider(
+        [
+            _action(
+                "ask_user",
+                summary="요청의 의도를 확인합니다",
+                question="어떤 네트워크 객체나 지표를 확인하고 싶으신가요? 예: '107번 입력 교통량'",
+            ),
+        ]
+    )
+
+    result = run_agent_turn(
+        "바나나 우주선을 발사해줘",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-nonsense",
+        language="ko",
+    )
+
+    assert result.kind == "clarification"
+    assert "어떤 네트워크 객체" in result.answer  # the question IS the surfaced answer
+    assert len(provider.calls) == 1  # loop ended after exactly one iteration
+    assert result.state.history == []  # no tool was dispatched
+    assert [step["tool"] for step in result.steps] == ["ask_user"]
+
+    records = read_trace(result.trace_path)
+    assert [record["kind"] for record in records] == ["plan"]
+
+
+# ---------------------------------------------------------------------------
+# Scenario 4 — tier gate: write tools are structurally unreachable in M1
+# ---------------------------------------------------------------------------
+
+
+def test_tier_gate_blocks_write_tool_and_planner_offers_only_read_tools(tmp_path):
+    executed = {"write": False}
+    registry = ToolRegistry()
+
+    class PeekParams(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+    class SetVolumeParams(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+    @tool(name="peek_network", tier="read", provider="inspect", params=PeekParams, registry=registry)
+    def _peek(params: PeekParams) -> dict[str, Any]:
+        """Peek at the network."""
+        return {"value": 1}
+
+    @tool(
+        name="set_vehicle_input_volume",
+        tier="write",
+        provider="edit",
+        params=SetVolumeParams,
+        registry=registry,
+    )
+    def _set_volume(params: SetVolumeParams) -> dict[str, Any]:
+        """Set a vehicle input volume."""
+        executed["write"] = True
+        return {"message": "wrote"}
+
+    provider = FakeStructuredProvider(
+        [
+            _action("set_vehicle_input_volume", summary="교통량을 수정합니다"),
+            _action(
+                "respond",
+                summary="수정이 불가함을 안내합니다",
+                answer="지금 단계에서는 읽기 작업만 가능해서 교통량을 수정할 수 없습니다.",
+            ),
+        ]
+    )
+
+    result = run_agent_turn(
+        "입력 교통량을 600으로 바꿔줘",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-tier",
+        language="ko",
+        registry=registry,
+    )
+
+    # The write tool's function was NEVER executed.
+    assert executed["write"] is False
+
+    # A structured refusal was traced, and nothing was dispatched.
+    records = read_trace(result.trace_path)
+    refusals = [record for record in records if record["kind"] == "refusal"]
+    assert len(refusals) == 1
+    assert refusals[0]["payload"]["error_type"] == "tool_tier_forbidden"
+    assert not any(record["kind"] == "action_start" for record in records)
+
+    # The refusal envelope entered history, so the planner's SECOND canned
+    # decision was still consumed and the turn ended with a real answer.
+    assert result.state.history[0].observation["error_type"] == "tool_tier_forbidden"
+    assert result.kind == "answer"
+    assert "수정할 수 없습니다" in result.answer
+
+    # The "not reachable" acceptance: native tool defs offered to the
+    # provider contain ONLY read-tier tools + respond/ask_user.
+    offered = {tool_def["name"] for tool_def in provider.calls[0]["tools"]}
+    assert offered == {"peek_network", "respond", "ask_user"}
+
+
+# ---------------------------------------------------------------------------
+# Scenario 5 — rule-based fallback ladder: the loop can never wedge
+# ---------------------------------------------------------------------------
+
+
+def test_rule_fallback_ladder_never_wedges(tmp_path):
+    give_up = (None, {"mode": "fake", "fallback_rung": 2, "error": "provider gave up"})
+    provider = FakeStructuredProvider([give_up], repeat_last=True)
+
+    result = run_agent_turn(
+        "음... 그거 있잖아",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-fallback",
+        language="ko",
+    )
+
+    # First fallback grounds itself with the safe overview read; the second
+    # asks the user — the turn ends cleanly instead of wedging.
+    assert result.kind == "clarification"
+    assert result.answer  # a real clarification question, not empty text
+    assert [step["tool"] for step in result.steps] == ["get_network_overview", "ask_user"]
+    assert result.state.history[0].action == "get_network_overview"
+    assert result.state.history[0].observation["status"] == "ok"
+
+    records = read_trace(result.trace_path)
+    fallback_records = [record for record in records if record["kind"] == "fallback_rung"]
+    assert len(fallback_records) == 2
+    for record in fallback_records:
+        assert record["payload"]["provider_meta"]["fallback_rung"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Scenario 6 — K=6 iteration cap: forced deterministic completion
+# ---------------------------------------------------------------------------
+
+
+def test_iteration_cap_forces_deterministic_completion(tmp_path):
+    provider = FakeStructuredProvider(
+        [_action("get_network_overview", summary="개요를 확인합니다")], repeat_last=True
+    )
+
+    result = run_agent_turn(
+        "이 네트워크에 뭐가 있어?",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-cap",
+        language="ko",
+    )
+
+    # Exactly 6 planner calls and 6 dispatches — never a 7th, no exception.
+    assert len(provider.calls) == 6
+    records = read_trace(result.trace_path)
+    assert sum(1 for record in records if record["kind"] == "action_start") == 6
+    assert len(result.state.history) == 6
+
+    # Forced completion: an apologetic deterministic answer listing what was
+    # gathered (assembled without any LLM call).
+    assert result.kind == "answer"
+    assert result.answer
+    assert "get_network_overview" in result.answer
+
+
+# ---------------------------------------------------------------------------
+# Scenario 7 — summary is defensively truncated to 80 chars in the planner
+# ---------------------------------------------------------------------------
+
+
+def test_planner_truncates_overlong_summary_to_80_chars(tmp_path):
+    long_summary = "요약" * 100  # 200 chars, far past the 80-char contract
+    provider = FakeStructuredProvider(
+        [
+            _action("get_network_overview", summary=long_summary),
+            _action("respond", summary="정리했습니다", answer="확인을 마쳤습니다."),
+        ]
+    )
+
+    result = run_agent_turn(
+        "이 네트워크에 뭐가 있어?",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-summary",
+        language="ko",
+    )
+
+    assert len(result.steps[0]["summary"]) == 80
+    assert result.steps[0]["summary"] == long_summary[:80]
+
+    plan_records = [
+        record for record in read_trace(result.trace_path) if record["kind"] == "plan"
+    ]
+    assert len(plan_records[0]["payload"]["summary"]) == 80

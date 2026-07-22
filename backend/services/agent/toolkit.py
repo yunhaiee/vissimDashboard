@@ -333,6 +333,27 @@ def _prune_schema_noise(schema: Any) -> Any:
     return schema
 
 
+def native_tool_defs(*, registry: ToolRegistry | None = None) -> list[dict[str, Any]]:
+    """Render the registry as Anthropic-native tool definitions.
+
+    The same single source of truth as :func:`render_contract`, in the shape
+    ``generate_structured`` providers consume: ``name``, the one-line
+    docstring ``description``, and the pruned params JSON schema as
+    ``input_schema``. Deterministic: tools appear in registration order.
+    M1.3's planner builds its provider tool list from this (plus its own
+    planner-terminal actions, which are not registry tools).
+    """
+    target_registry = registry if registry is not None else default_registry
+    return [
+        {
+            "name": spec.name,
+            "description": spec.description,
+            "input_schema": _prune_schema_noise(spec.params_model.model_json_schema()),
+        }
+        for spec in target_registry.specs()
+    ]
+
+
 def render_contract(*, registry: ToolRegistry | None = None) -> str:
     """Render the registry as the planner prompt's tool contract.
 
