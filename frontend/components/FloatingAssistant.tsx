@@ -1358,6 +1358,10 @@ function formatAssistantError(error: unknown, t: Translate): string {
     return t("\uc694\uccad\uc744 \ucde8\uc18c\ud588\uc2b5\ub2c8\ub2e4.", "Request cancelled.");
   }
 
+  // Lead with a plain sentence the user can actually act on ("try again",
+  // "wait", "shorten your question") instead of infrastructure names (port
+  // numbers, proxy paths, "worker") a non-technical user cannot do anything
+  // with. The raw backend message is no longer appended to the primary text.
   const raw = error instanceof Error ? error.message : String(error);
   const lowered = raw.toLowerCase();
 
@@ -1367,34 +1371,34 @@ function formatAssistantError(error: unknown, t: Translate): string {
     lowered.includes("networkerror") ||
     lowered.includes("remote server")
   ) {
-    return `${t(
-      "AI \uc11c\ubc84\uc5d0 \uc5f0\uacb0\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4. \ubc31\uc5d4\ub4dc 8001\ubc88 \ud3ec\ud2b8\uc640 Next.js /api \ud504\ub85d\uc2dc\ub97c \ud655\uc778\ud574\uc8fc\uc138\uc694.",
-      "Could not reach the AI server. Check the backend on port 8001 and the Next.js /api proxy.",
-    )} ${raw}`;
+    return t(
+      "AI \uc11c\ubc84\uc5d0 \uc5f0\uacb0\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4. \uc7a0\uc2dc \ud6c4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574\uc8fc\uc138\uc694. \uacc4\uc18d\ub418\uba74 \uad00\ub9ac\uc790\uc5d0\uac8c \ubb38\uc758\ud558\uc138\uc694.",
+      "Could not reach the AI server. Please try again in a moment. Contact an administrator if this continues.",
+    );
   }
 
   if (lowered.includes("timed out") || lowered.includes("timeout")) {
-    return `${t(
-      "AI \ubaa8\ub378 \uc751\ub2f5 \uc2dc\uac04\uc774 \uae38\uc5b4\uc9c0\uace0 \uc788\uc2b5\ub2c8\ub2e4. \uc694\uccad\uc744 \ucde8\uc18c\ud558\uace0 \ub354 \uc9e7\uac8c \ub2e4\uc2dc \ubb3c\uc5b4\ubcf4\uac70\ub098, worker \uc0c1\ud0dc\ub97c \ud655\uc778\ud574\uc8fc\uc138\uc694.",
-      "The AI model response is taking too long. Cancel and retry with a shorter request, or check the worker status.",
-    )} ${raw}`;
+    return t(
+      "AI \uc751\ub2f5 \uc2dc\uac04\uc774 \ub108\ubb34 \uc624\ub798 \uac78\ub9ac\uace0 \uc788\uc2b5\ub2c8\ub2e4. \uc694\uccad\uc744 \ucde8\uc18c\ud558\uace0 \ub354 \uc9e7\uac8c \ub2e4\uc2dc \ubb3c\uc5b4\ubcf4\uc138\uc694.",
+      "The AI is taking too long to respond. Cancel and try a shorter question.",
+    );
   }
 
   if (lowered.includes("assistant query failed")) {
-    return `${t(
-      "AI \ub77c\uc6b0\ud130\uac00 \uc9c8\ubb38 \ucc98\ub9ac \uc911 \uc624\ub958\ub97c \ubc18\ud658\ud588\uc2b5\ub2c8\ub2e4.",
-      "The AI router returned an error while handling the question.",
-    )} ${raw}`;
+    return t(
+      "\uc9c8\ubb38\uc744 \ucc98\ub9ac\ud558\ub294 \uc911 \uc624\ub958\uac00 \ubc1c\uc0dd\ud588\uc2b5\ub2c8\ub2e4. \ub2e4\uc2dc \uc2dc\ub3c4\ud574\uc8fc\uc138\uc694.",
+      "Something went wrong while processing the question. Please try again.",
+    );
   }
 
   if (lowered.includes("internal server error")) {
     return t(
-      "AI \ubc31\uc5d4\ub4dc\uac00 \uc9c8\ubb38 \ucc98\ub9ac \uc911 500 \uc624\ub958\ub97c \ubc18\ud658\ud588\uc2b5\ub2c8\ub2e4. \uc0c1\ud0dc \uc0c8\ub85c\uace0\uce68 \ud6c4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574\uc8fc\uc138\uc694.",
-      "The AI backend returned a 500 error while handling the question. Refresh status and try again.",
+      "\uc11c\ubc84 \uc624\ub958\uac00 \ubc1c\uc0dd\ud588\uc2b5\ub2c8\ub2e4. \uc7a0\uc2dc \ud6c4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574\uc8fc\uc138\uc694.",
+      "A server error occurred. Please try again in a moment.",
     );
   }
 
-  return raw;
+  return t("\ubb38\uc81c\uac00 \ubc1c\uc0dd\ud588\uc2b5\ub2c8\ub2e4. \ub2e4\uc2dc \uc2dc\ub3c4\ud574\uc8fc\uc138\uc694.", "Something went wrong. Please try again.");
 }
 
 function handleComposerKeyDown(

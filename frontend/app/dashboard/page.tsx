@@ -183,7 +183,12 @@ export default function DashboardPage() {
 
   const loadActiveDataset = useCallback(() => {
     let cancelled = false;
-    setDatasetLoading(true);
+    // Deferred one microtask so this can be called directly from a useEffect
+    // body without React flagging a synchronous setState-in-effect (same
+    // pattern already used below for the compare-results fetch effect).
+    Promise.resolve().then(() => {
+      if (!cancelled) setDatasetLoading(true);
+    });
 
     fetchActiveDataset()
       .then((dataset) => {
@@ -395,7 +400,7 @@ export default function DashboardPage() {
     return () => {
       window.removeEventListener("vissim:assistant-context-request", publishAssistantContext);
     };
-  }, [activeDataset, activeScenarios, hasData, hasUploadedDataset, nodeNamesById, selected, selectedNodeIds]);
+  }, [activeDataset, activeScenarios, curationSpec, hasData, hasUploadedDataset, nodeNamesById, selected, selectedNodeIds]);
 
   return (
     <div className="space-y-5 pb-12">
@@ -433,7 +438,7 @@ export default function DashboardPage() {
               {!datasetLoading && !loading && hasData && (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-[#edf4ee] px-3 py-1 text-xs font-medium text-[#456b52]">
                   <span className="h-1.5 w-1.5 rounded-full bg-[#5f8b6f]" />
-                  {activeScenarios.filter((scenario) => results[scenario.id]).length} {t("개 준비됨", "ready")}
+                  {activeScenarios.filter((scenario) => results[scenario.id]).length}/{activeScenarios.length} {t("시나리오 준비됨", "scenarios ready")}
                 </span>
               )}
             </div>
@@ -572,7 +577,10 @@ export default function DashboardPage() {
         <section id="intersection-performance" className="scroll-mt-6">
           <SectionHeader
             title={t("교차로 성능평가", "Intersection Performance Evaluation")}
-            subtitle={t("선택 교차로의 방향별 지체와 교차로별 대기행렬, 최악 접근로 지체, 통행량을 비교합니다.", "Compare directional delay plus intersection-level queue length, worst approach delay, and volume.")}
+            subtitle={t(
+              "선택 교차로의 방향별 지체와 교차로별 대기행렬, 최악 접근로 지체, 통행량을 비교합니다. 각 막대는 해당 교차로에서 시나리오 중 최악값이며, 막대 아래 작은 글씨가 그 시나리오입니다.",
+              "Compare directional delay plus intersection-level queue length, worst approach delay, and volume. Each bar is the worst value across scenarios for that intersection — the small text under it names which scenario.",
+            )}
           />
           <IntersectionPerformanceGrid cards={intersectionCards} />
         </section>
@@ -592,7 +600,7 @@ export default function DashboardPage() {
         <section id="overall-results-analysis" className="scroll-mt-6">
           <SectionHeader
             title={t("종합 결과 분석", "Overall Results Analysis")}
-            subtitle={t("결과 해석과 보고서 생성만 간단하게 제공합니다.", "Keep this section focused on interpretation and report generation.")}
+            subtitle={t("결과 해석과 보고서 생성만 간단하게 제공합니다.", "A short interpretation of the results, plus report generation.")}
           />
           <OverallResultsSection
             summary={summary}
@@ -1033,7 +1041,7 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
                       <span
                         key={direction}
                         className="h-full"
-                        title={`${DIRECTION_LABELS[direction].en}: ${Math.round(value).toLocaleString()}`}
+                        title={`${t(DIRECTION_LABELS[direction].ko, DIRECTION_LABELS[direction].en)}: ${Math.round(value).toLocaleString()}`}
                         style={{ width: `${width}%`, backgroundColor: DIRECTION_COLORS[direction] }}
                       />
                     );
@@ -1075,7 +1083,18 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
   if (!populated.length || !allValues.length || !labels.length) {
     return (
       <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-white/85 px-6 py-10 text-center text-sm text-slate-500">
-        {t("통행시간 측정 결과가 없어 그래프를 표시할 수 없습니다.", "No travel-time measurements are available for the chart.")}
+        <p>
+          {t(
+            "통행시간 측정 결과가 없어 그래프를 표시할 수 없습니다.",
+            "No travel-time measurements are available for the chart.",
+          )}
+        </p>
+        <p className="mt-1 text-xs text-slate-400">
+          {t(
+            "VISSIM 네트워크에 통행시간 측정 구간(Vehicle Travel Time Measurement)이 정의되어 있고 시뮬레이션이 완료됐는지 확인하세요.",
+            "Check that the VISSIM network defines Vehicle Travel Time Measurement sections and that the simulation run has finished.",
+          )}
+        </p>
       </div>
     );
   }
@@ -1432,9 +1451,9 @@ function OverallResultsSection({
         <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
           {reportGeneratedAt
             ? t(
-                `${formatDisplayDateTime(reportGeneratedAt)} 생성됨. Word 파일을 열 때 형식 확인 창이 뜨면 그대로 열면 됩니다.`,
-                `Generated ${formatDisplayDateTime(reportGeneratedAt)}. If Word shows a format-mismatch prompt, open it anyway.`,
-                `${formatDisplayDateTime(reportGeneratedAt)} 生成済み`,
+                `${formatDisplayDateTime(reportGeneratedAt, "ko")} 생성됨. Word 파일을 열 때 형식 확인 창이 뜨면 그대로 열면 됩니다.`,
+                `Generated ${formatDisplayDateTime(reportGeneratedAt, "en")}. If Word shows a format-mismatch prompt, open it anyway.`,
+                `${formatDisplayDateTime(reportGeneratedAt, "ja")} 生成済み`,
               )
             : canGenerateReport
               ? t("먼저 생성한 뒤 원하는 형식으로 내려받으세요.", "Generate first, then download the preferred format.")
@@ -1514,7 +1533,7 @@ function KpiCard({
                     className="rounded-full bg-[#dce8df] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-[#3f6651]"
                     title={bestIsWithinNoise ? t("2위와의 차이가 표준편차보다 작습니다.", "The gap to the runner-up is smaller than the standard deviation.") : undefined}
                   >
-                    {t("Best", "Best")}{showTechnicalDetail && bestIsWithinNoise ? "*" : ""}
+                    {t("최적", "Best", "最良")}{showTechnicalDetail && bestIsWithinNoise ? "*" : ""}
                   </span>
                 )}
                 <div className="text-[11px] font-semibold tabular-nums text-slate-900">
@@ -1554,7 +1573,7 @@ function KpiCard({
       )}
       {spread > 0 && (
         <p className="mt-1 text-[10px] text-slate-500">
-          {t("범위", "Range")} {minVal.toFixed(1)} ~ {maxVal.toFixed(1)} ({t("차이", "diff")} {spread.toFixed(2)})
+          {t("범위", "Range")} {formatNumber(minVal, 1)} ~ {formatNumber(maxVal, 1)} ({t("차이", "diff")} {formatNumber(spread, 1)})
         </p>
       )}
     </div>
@@ -1591,7 +1610,10 @@ function DashboardScenarioPicker({
         <div>
           <p className="text-xs font-semibold text-slate-800">{t("시나리오 비교 세트", "Scenario Comparison Set")}</p>
           <p className="text-[11px] text-slate-500">
-            {t("KPI, 지도, 교차로 비교에 포함할 시나리오를 선택합니다.", "Choose scenarios to include in KPI, map, and node comparisons.")}
+            {t(
+              "KPI, 지도, 교차로 비교에 포함할 시나리오를 선택합니다. 새로고침하면 최대 4개까지만 자동으로 다시 선택됩니다.",
+              "Choose scenarios to include in KPI, map, and node comparisons. On reload, only up to 4 are automatically reselected.",
+            )}
           </p>
         </div>
         <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">
@@ -2043,15 +2065,21 @@ function calculateWorstApproachDelay(result: ScenarioResults, nodeId: string): n
 }
 
 function calculateNodeMaxQueue(result: ScenarioResults, nodeId: string): number | null {
-  const queueValues = result.queues
-    .filter((row) => objectBelongsToNode(row.OBJECT_ID, nodeId))
-    .flatMap((row) => [
-      toFiniteNumber(row["QLENMAX_MEAN"] ?? row["QLENMAX"]),
-      toFiniteNumber(row["QLEN_MEAN"] ?? row["QLEN"]),
-    ])
+  // QLENMAX (peak queue) and QLEN (average queue) must never be pooled into
+  // one Math.max — mixing them let an average value from one row silently
+  // win over a max value from another under a single "Max Q Length" label.
+  // Prefer QLENMAX across every row for this node; only fall back to QLEN
+  // (network-wide, not per-row) when QLENMAX is absent everywhere.
+  const rows = result.queues.filter((row) => objectBelongsToNode(row.OBJECT_ID, nodeId));
+  const maxValues = rows
+    .map((row) => toFiniteNumber(row["QLENMAX_MEAN"] ?? row["QLENMAX"]))
     .filter((value): value is number => value != null);
+  if (maxValues.length) return Math.max(...maxValues);
 
-  return queueValues.length ? Math.max(...queueValues) : null;
+  const avgValues = rows
+    .map((row) => toFiniteNumber(row["QLEN_MEAN"] ?? row["QLEN"]))
+    .filter((value): value is number => value != null);
+  return avgValues.length ? Math.max(...avgValues) : null;
 }
 
 function sumDirectionMap(values: Record<string, number> | undefined): number {
@@ -2798,8 +2826,9 @@ function formatReportDate(date: Date): string {
   return date.toLocaleDateString("en-AU", { year: "numeric", month: "short", day: "2-digit" });
 }
 
-function formatDisplayDateTime(date: Date): string {
-  return date.toLocaleString("ko-KR", {
+function formatDisplayDateTime(date: Date, lang: "ko" | "en" | "ja" = "ko"): string {
+  const locale = lang === "en" ? "en-US" : lang === "ja" ? "ja-JP" : "ko-KR";
+  return date.toLocaleString(locale, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

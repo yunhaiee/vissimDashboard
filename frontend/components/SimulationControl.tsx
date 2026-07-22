@@ -1,5 +1,14 @@
 "use client";
 
+// ARCHIVED, currently unreferenced by any route (kept per
+// docs/removed-routes-archive.md for future restoration of /simulate).
+// KNOWN BUG before re-wiring this into a page: the WebSocket-only progress
+// monitor below has no fallback if the socket drops or never confirms
+// completion — a run that finished (or failed) can misreport as stuck on
+// "running" indefinitely, and a dropped connection reads as a failure even
+// when the underlying job succeeded. Give it a polling fallback (same
+// pattern as FloatingAssistant's PromptSimulationStatus, which polls
+// fetchSimulationJob on an interval) before wiring this back into a page.
 import { useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
 

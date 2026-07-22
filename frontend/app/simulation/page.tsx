@@ -111,9 +111,14 @@ export default function SimulationPage() {
     if (signalResult.status === "fulfilled") {
       setSignals(signalResult.value);
     }
+    // Previously a failed signal/job fetch silently left these empty, which
+    // rendered indistinguishably from "no signals in this network" / "no
+    // runs yet" — a real backend error must not look identical to that.
+    const signalsFailed = signalResult.status === "rejected";
     if (jobResult.status === "fulfilled") {
       setJobs(jobResult.value);
     }
+    const jobsFailed = jobResult.status === "rejected";
     if (capabilityResult.status === "fulfilled") {
       setCapabilities(capabilityResult.value);
     } else {
@@ -128,6 +133,13 @@ export default function SimulationPage() {
 
     if (datasetResult.status === "rejected" || scenarioResult.status === "rejected") {
       setError(t("시뮬레이션 기본 데이터를 불러오지 못했습니다.", "Failed to load simulation setup data."));
+    } else if (signalsFailed || jobsFailed) {
+      setError(
+        t(
+          `${signalsFailed ? "신호 데이터" : ""}${signalsFailed && jobsFailed ? " / " : ""}${jobsFailed ? "실행 작업 목록" : ""}을(를) 불러오지 못했습니다. 목록이 비어 보이지만 실제로는 서버 오류일 수 있습니다.`,
+          `Failed to load ${[signalsFailed && "signal data", jobsFailed && "the job list"].filter(Boolean).join(" / ")}. The list may look empty, but this is a server error, not "nothing here".`,
+        ),
+      );
     }
     setLoading(false);
   }, [t]);
@@ -367,7 +379,7 @@ export default function SimulationPage() {
     if (!canRunSimulation) {
       setActiveStatus("idle");
       setActiveProgress(0);
-      setError(buildRunDisabledMessage({ capabilities, datasetReady, hasUploadedZip, scenarios, t }));
+      setError(buildRunDisabledMessage({ capabilities, datasetReady, hasUploadedZip, datasetKind: dataset?.kind, scenarios, t }));
       return;
     }
 
@@ -480,7 +492,7 @@ export default function SimulationPage() {
           activeJobId={activeJobId}
           activeStatus={activeStatus}
           activeProgress={activeProgress}
-          disabledMessage={buildRunDisabledMessage({ capabilities, datasetReady, hasUploadedZip, scenarios, t })}
+          disabledMessage={buildRunDisabledMessage({ capabilities, datasetReady, hasUploadedZip, datasetKind: dataset?.kind, scenarios, t })}
           onRun={() => void handleRun()}
           onClearDraft={clearDraft}
         />
@@ -1218,16 +1230,27 @@ function buildRunDisabledMessage({
   capabilities,
   datasetReady,
   hasUploadedZip,
+  datasetKind,
   scenarios,
   t,
 }: {
   capabilities: SimulationCapabilities | null;
   datasetReady: boolean;
   hasUploadedZip: boolean;
+  datasetKind?: string;
   scenarios: ScenarioMeta[];
   t: (ko: string, en: string, ja?: string) => string;
 }) {
   if (!datasetReady && !hasUploadedZip) {
+    // A bare .inpx uploaded on the dashboard satisfies THAT page but not
+    // this one — name the actual cause instead of implying nothing was
+    // uploaded at all.
+    if (datasetKind && datasetKind !== "zip") {
+      return t(
+        `현재 ${datasetKind.toUpperCase()} 파일만 업로드되어 있습니다. 시뮬레이션 실행에는 시나리오(.vissimpdb) 정보를 포함한 프로젝트 ZIP이 필요합니다.`,
+        `Only a ${datasetKind.toUpperCase()} file is currently uploaded. Running a simulation here needs a full project ZIP with scenario (.vissimpdb) data.`,
+      );
+    }
     return t("실행하려면 VISSIM 프로젝트 ZIP을 먼저 업로드해야 합니다.", "Upload a VISSIM project ZIP before running.");
   }
   if (scenarios.length === 0) {
