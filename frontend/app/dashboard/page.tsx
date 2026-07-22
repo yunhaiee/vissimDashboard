@@ -21,6 +21,7 @@ import {
   type ScenarioResults,
 } from "@/lib/api";
 import { getScenarioDisplayColor } from "@/lib/scenarioPalette";
+import { errorTone, gehTone, toneBadgeClass, type ValidationTone } from "@/lib/validationThresholds";
 
 const DashboardMap = dynamic(() => import("@/components/DashboardMap"), { ssr: false });
 
@@ -59,7 +60,13 @@ type IntersectionPerformanceCard = {
 
 type TravelTimeSeries = {
   scenario: ScenarioMeta;
-  points: Array<{ label: string; value: number }>;
+  points: Array<{ label: string; value: number | null }>;
+};
+type TravelTimeChart = {
+  series: TravelTimeSeries[];
+  labels: string[];
+  truncated: boolean;
+  useSectionLabels: boolean;
 };
 type AssistantSimulationCompleteDetail = {
   jobId?: string;
@@ -125,6 +132,9 @@ export default function DashboardPage() {
     setSelectedNodeIds([]);
     setNodeNamesById({});
     setRealCounts([]);
+    // An AI curation answer is only valid for the scenarios/data it was
+    // computed against; a dataset change invalidates it immediately.
+    setCurationSpec(null);
   }, []);
 
   const reloadScenariosAndValidation = useCallback((preferredScenarioId?: string | null) => {
@@ -186,6 +196,19 @@ export default function DashboardPage() {
       cancelled = true;
     };
   }, [clearDashboardData, reloadScenariosAndValidation, t]);
+
+  // The AI curation answer (headline + insight cards + focus mode) is only
+  // valid for the scenario set it was computed against; changing which
+  // scenarios are compared must not leave stale numbers on screen.
+  const selectedKey = selected.join(",");
+  const isFirstSelectionRender = useRef(true);
+  useEffect(() => {
+    if (isFirstSelectionRender.current) {
+      isFirstSelectionRender.current = false;
+      return;
+    }
+    setCurationSpec(null);
+  }, [selectedKey]);
 
   useEffect(() => {
     const reqId = ++requestSerial.current;
@@ -467,7 +490,7 @@ export default function DashboardPage() {
             title={t("통행시간 비교분석", "Travel Time Comparison")}
             subtitle={t("Vissim 통행시간 결과를 시나리오별 선형 추세로 비교합니다.", "Compare Vissim travel-time outputs as scenario-level trend lines.")}
           />
-          <TravelTimeComparison series={travelTimeSeries} />
+          <TravelTimeComparison chart={travelTimeSeries} />
         </section>
       )}
 
@@ -517,7 +540,10 @@ export default function DashboardPage() {
         <section id="field-count-validation" className="scroll-mt-6">
           <SectionHeader
             title={t("현장 계수 검증", "Validation Against Field Counts")}
-            subtitle={t("선택한 시나리오의 노드별 오차율과 GEH 값을 확인합니다.", "Review per-node percentage error and GEH values for selected scenarios.")}
+            subtitle={t(
+              "선택한 시나리오의 노드별 오차율과 GEH 값을 확인합니다. GEH = √(2×(모델-관측)² / (모델+관측)), 5 미만이면 우수, 10 이상이면 재검토가 필요합니다.",
+              "Review per-node percentage error and GEH values for selected scenarios. GEH = √(2×(model−observed)² / (model+observed)); under 5 is good, 10 or over needs review.",
+            )}
           />
           <ValidationMatrix
             realCounts={realCounts}
@@ -935,12 +961,13 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
   );
 }
 
-function TravelTimeComparison({ series }: { series: TravelTimeSeries[] }) {
+function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
   const { t } = useLanguage();
-  const populated = series.filter((item) => item.points.length > 0);
-  const allValues = populated.flatMap((item) => item.points.map((point) => point.value));
+  const { series, labels, truncated, useSectionLabels } = chart;
+  const populated = series.filter((item) => item.points.some((point) => point.value != null));
+  const allValues = populated.flatMap((item) => item.points.map((point) => point.value)).filter((value): value is number => value != null);
 
-  if (!populated.length || !allValues.length) {
+  if (!populated.length || !allValues.length || !labels.length) {
     return (
       <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-white/85 px-6 py-10 text-center text-sm text-slate-500">
         {t("통행시간 측정 결과가 없어 그래프를 표시할 수 없습니다.", "No travel-time measurements are available for the chart.")}
@@ -951,26 +978,52 @@ function TravelTimeComparison({ series }: { series: TravelTimeSeries[] }) {
   const minValue = Math.min(...allValues);
   const maxValue = Math.max(...allValues);
   const valueSpan = Math.max(maxValue - minValue, 1);
-  const maxPointCount = Math.max(...populated.map((item) => item.points.length), 2);
-  const width = 760;
-  const height = 260;
   const left = 48;
   const right = 24;
   const top = 28;
-  const bottom = 42;
+  const bottom = 58;
+  const height = 260;
+  // Give every label its own ~46px of horizontal room so tick text doesn't
+  // collide, instead of squeezing an arbitrary point count into a fixed width.
+  const width = Math.max(760, left + right + labels.length * 46);
   const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
 
-  const pointToSvg = (value: number, index: number) => {
-    const x = left + (index / Math.max(maxPointCount - 1, 1)) * plotWidth;
-    const y = top + ((maxValue - value) / valueSpan) * plotHeight;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  };
+  const xForIndex = (index: number) => left + (index / Math.max(labels.length - 1, 1)) * plotWidth;
+  const yForValue = (value: number) => top + ((maxValue - value) / valueSpan) * plotHeight;
+
+  // Break the line at gaps (a scenario missing a label its peers have)
+  // instead of interpolating across missing measurements.
+  function buildSegments(points: TravelTimeSeries["points"]): Array<Array<[number, number]>> {
+    const segments: Array<Array<[number, number]>> = [];
+    let current: Array<[number, number]> = [];
+    points.forEach((point, index) => {
+      if (point.value == null) {
+        if (current.length) segments.push(current);
+        current = [];
+        return;
+      }
+      current.push([xForIndex(index), yForValue(point.value)]);
+    });
+    if (current.length) segments.push(current);
+    return segments;
+  }
+
+  // Thin tick labels out when there isn't room to show every one legibly.
+  const tickStride = labels.length > 14 ? Math.ceil(labels.length / 14) : 1;
 
   return (
     <div className="mt-4 rounded-2xl border border-slate-300/70 bg-white/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+      {truncated && (
+        <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800">
+          {t(
+            `표시 구간이 많아 처음 ${TRAVEL_TIME_MAX_POINTS}개만 표시합니다.`,
+            `Showing the first ${TRAVEL_TIME_MAX_POINTS} of more available sections/intervals.`,
+          )}
+        </p>
+      )}
       <div className="overflow-x-auto">
-        <svg viewBox={`0 0 ${width} ${height}`} className="min-w-[720px]">
+        <svg viewBox={`0 0 ${width} ${height}`} style={{ minWidth: `${width}px` }}>
           {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
             const y = top + ratio * plotHeight;
             const labelValue = maxValue - ratio * valueSpan;
@@ -987,22 +1040,57 @@ function TravelTimeComparison({ series }: { series: TravelTimeSeries[] }) {
           <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} stroke="#cbd5e1" />
           <line x1={left} x2={left} y1={top} y2={height - bottom} stroke="#cbd5e1" />
 
-          {populated.map((item, index) => {
-            const color = getScenarioDisplayColor(item.scenario, index);
-            const points = item.points.map((point, pointIndex) => pointToSvg(point.value, pointIndex)).join(" ");
+          {labels.map((label, index) =>
+            index % tickStride === 0 ? (
+              <text
+                key={label}
+                x={xForIndex(index)}
+                y={height - bottom + 16}
+                textAnchor="end"
+                fontSize="9.5"
+                fill="#64748b"
+                transform={`rotate(-38 ${xForIndex(index)} ${height - bottom + 16})`}
+              >
+                {label.length > 12 ? `${label.slice(0, 11)}…` : label}
+              </text>
+            ) : null,
+          )}
+
+          {populated.map((item, seriesIndex) => {
+            const color = getScenarioDisplayColor(item.scenario, seriesIndex);
+            const segments = buildSegments(item.points);
             return (
               <g key={item.scenario.id}>
-                <polyline points={points} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                {item.points.map((point, pointIndex) => {
-                  const [x, y] = pointToSvg(point.value, pointIndex).split(",").map(Number);
-                  return <circle key={`${item.scenario.id}-${pointIndex}`} cx={x} cy={y} r="3.5" fill={color} />;
-                })}
+                {segments.map((segment, segmentIndex) => (
+                  <polyline
+                    key={segmentIndex}
+                    points={segment.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ")}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                ))}
+                {item.points.map((point, pointIndex) =>
+                  point.value == null ? null : (
+                    <circle
+                      key={`${item.scenario.id}-${pointIndex}`}
+                      cx={xForIndex(pointIndex)}
+                      cy={yForValue(point.value)}
+                      r="3.5"
+                      fill={color}
+                    />
+                  ),
+                )}
               </g>
             );
           })}
 
-          <text x={left} y={height - 12} fontSize="10" fill="#64748b">
-            {t("통행시간 측정 구간 / 시간 간격", "Travel-time section / interval")}
+          <text x={left} y={20} fontSize="10" fill="#64748b">
+            {useSectionLabels
+              ? t("측정 구간별 통행시간", "Travel time by measurement section")
+              : t("시간 간격별 통행시간", "Travel time by time interval")}
           </text>
           <text x={left - 34} y={top - 8} fontSize="10" fill="#64748b">
             sec
@@ -1398,6 +1486,49 @@ function translateKpiMetricLabel(
   }
 }
 
+interface ScaledVolumeResult {
+  value: number | null;
+  rawValue: number | null;
+  /** Non-null when a base-scenario scaling factor was applied (excelBasam / dbBasam). */
+  scaleFactor: number | null;
+}
+
+// The ONE place that turns a raw simulated node volume into the "modelled"
+// number used for validation. Both the on-screen matrix (ValidationMatrix)
+// and the exported report (buildReportValidationRows) call this so the two
+// surfaces can never silently disagree about a GEH/percent-error figure.
+function computeScaledSimVolume(
+  nodeId: string,
+  scenarioId: string,
+  summary: CompareSummaryResponse | null,
+  realCounts: NodeRealCounts[],
+): ScaledVolumeResult {
+  const node = summary?.top_congested_nodes?.find((item) => String(item.node_id) === String(nodeId));
+  const raw = node?.scenario_totals?.[scenarioId] ?? null;
+  if (raw == null) return { value: null, rawValue: null, scaleFactor: null };
+
+  const dbBasam = node?.scenario_totals?.["S000001"] ?? null;
+  const excelBasam = realCounts.find((row) => String(row.node_id) === String(nodeId))?.total_sim_basam ?? null;
+
+  if (dbBasam != null && dbBasam > 0 && excelBasam != null) {
+    const factor = excelBasam / dbBasam;
+    return { value: raw * factor, rawValue: raw, scaleFactor: factor };
+  }
+
+  return { value: raw, rawValue: raw, scaleFactor: null };
+}
+
+const TONE_SEVERITY: Record<ValidationTone, number> = { neutral: 0, success: 1, warning: 2, danger: 3 };
+
+// Cell color must reflect whichever criterion is worse — a node can pass the
+// %-error band while failing "GEH < 5", and coloring by %-error alone (the
+// previous behavior) hid that failure in a green cell.
+function combinedValidationTone(pct: number | null, geh: number | null): ValidationTone {
+  const pctTone = errorTone(pct);
+  const gehTone_ = gehTone(geh);
+  return TONE_SEVERITY[gehTone_] >= TONE_SEVERITY[pctTone] ? gehTone_ : pctTone;
+}
+
 function ValidationMatrix({
   realCounts,
   scenarios,
@@ -1412,50 +1543,6 @@ function ValidationMatrix({
   selectedNodeId: string | null;
 }) {
   const { t } = useLanguage();
-  const dbVolumes: Record<string, Record<string, number | null>> = {};
-  for (const node of summary?.top_congested_nodes ?? []) {
-    dbVolumes[String(node.node_id)] = {};
-    for (const [scenarioId, vol] of Object.entries(node.scenario_totals ?? {})) {
-      dbVolumes[String(node.node_id)][scenarioId] = vol;
-    }
-  }
-
-  const realByNode = Object.fromEntries(realCounts.map((row) => [row.node_id, row]));
-
-  function scaledSim(nodeId: string, scenarioId: string): number | null {
-    const dbVols = dbVolumes[nodeId];
-    if (!dbVols) return null;
-
-    const raw = dbVols[scenarioId] ?? null;
-    if (raw == null) return null;
-
-    const dbBasam = dbVols["S000001"] ?? null;
-    const excelBasam = realByNode[nodeId]?.total_sim_basam ?? null;
-
-    if (dbBasam != null && dbBasam > 0 && excelBasam != null) {
-      return raw * (excelBasam / dbBasam);
-    }
-
-    return raw;
-  }
-
-  function gehStat(sim: number | null, obs: number | null): number | null {
-    if (sim == null || obs == null || sim + obs <= 0) return null;
-    return Math.sqrt((2 * (sim - obs) ** 2) / (sim + obs));
-  }
-
-  function pctErr(sim: number | null, obs: number | null): number | null {
-    if (sim == null || obs == null || obs === 0) return null;
-    return ((sim - obs) / obs) * 100;
-  }
-
-  function errorColor(pct: number | null): { bg: string; text: string } {
-    if (pct == null) return { bg: "bg-slate-50", text: "text-slate-500" };
-    const abs = Math.abs(pct);
-    if (abs <= 5) return { bg: "bg-emerald-50", text: "text-emerald-700" };
-    if (abs <= 15) return { bg: "bg-amber-50", text: "text-amber-700" };
-    return { bg: "bg-rose-50", text: "text-rose-700" };
-  }
 
   const hasBasam = scenarios.some((scenario) => scenario.id === "S000001");
   const nodes = [...realCounts].sort((a, b) => parseInt(a.node_id) - parseInt(b.node_id));
@@ -1509,22 +1596,36 @@ function ValidationMatrix({
                   </td>
 
                   {scenarios.map((scenario) => {
-                    const sim = scaledSim(node.node_id, scenario.id);
-                    const pct = pctErr(sim, obs);
-                    const geh = gehStat(sim, obs);
-                    const { bg, text } = errorColor(pct);
+                    // Same computation the exported report uses (computeScaledSimVolume)
+                    // so the on-screen cell and the report row never disagree.
+                    const scaled = computeScaledSimVolume(node.node_id, scenario.id, summary, realCounts);
+                    const sim = scaled.value;
+                    const pct = calculatePercentError(sim, obs);
+                    const geh = calculateGeh(sim, obs);
+                    const tone = combinedValidationTone(pct, geh);
 
                     return (
                       <td key={scenario.id} className="px-3 py-2 text-center">
                         {sim != null ? (
-                          <div className={`inline-block rounded-lg px-2.5 py-1.5 ${bg}`}>
-                            <div className={`text-xs font-bold tabular-nums ${text}`}>
+                          <div className={`inline-block rounded-lg px-2.5 py-1.5 ${toneBadgeClass(tone)}`}>
+                            <div className="text-xs font-bold tabular-nums">
                               {pct != null ? `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%` : "-"}
                             </div>
-                            <div className="mt-0.5 text-[10px] text-slate-500 tabular-nums">
+                            <div className="mt-0.5 text-[10px] opacity-80 tabular-nums">
                               {Math.round(sim).toLocaleString()} {t("대", "veh")}
                               {geh != null && <span className="ml-1">GEH {geh.toFixed(1)}</span>}
                             </div>
+                            {scaled.scaleFactor != null && (
+                              <div
+                                className="mt-0.5 text-[9px] font-semibold opacity-70"
+                                title={t(
+                                  `실측 기준 시나리오 대비 배율(${scaled.scaleFactor.toFixed(3)}x)이 적용된 추정값입니다. 원본 시뮬레이션 값: ${scaled.rawValue != null ? Math.round(scaled.rawValue).toLocaleString() : "-"}대`,
+                                  `Estimated: scaled ${scaled.scaleFactor.toFixed(3)}x against the base scenario. Raw simulated value: ${scaled.rawValue != null ? Math.round(scaled.rawValue).toLocaleString() : "-"} veh`,
+                                )}
+                              >
+                                ×{scaled.scaleFactor.toFixed(2)} {t("배율 적용", "scaled")}
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <span className="text-xs text-slate-400">-</span>
@@ -1785,53 +1886,77 @@ function objectBelongsToNode(objectId: unknown, nodeId: string): boolean {
   return text === normalizedNodeId || text.startsWith(`${normalizedNodeId}-`) || text.startsWith(`${normalizedNodeId}:`);
 }
 
+const TRAVEL_TIME_MAX_POINTS = 18;
+
 function buildTravelTimeSeries(
   scenarios: ScenarioMeta[],
   results: Record<string, ScenarioResults>,
-): TravelTimeSeries[] {
-  return scenarios.map((scenario) => {
+): TravelTimeChart {
+  // The grouping mode (per-section vs per-interval) is decided ONCE from the
+  // union of all scenarios' rows, not independently per scenario — otherwise
+  // two scenarios could plot different kinds of measurements at the same x
+  // position with no way to tell them apart.
+  const allObjectIds = new Set<string>();
+  for (const scenario of scenarios) {
     const result = results[scenario.id];
-    if (!result) return { scenario, points: [] };
+    if (!result) continue;
+    const rows = result.traveltime_interval_class?.length ? result.traveltime_interval_class : result.traveltime ?? [];
+    for (const row of rows) {
+      const id = String(row["OBJECT_ID"] ?? "").trim();
+      if (id) allObjectIds.add(id);
+    }
+  }
+  const useSectionLabels = allObjectIds.size > 1;
 
-    const intervalRows = result.traveltime_interval_class ?? [];
-    const rows = intervalRows.length > 0 ? intervalRows : result.traveltime;
-    const uniqueObjectIds = new Set(
-      rows
-        .map((row) => String(row["OBJECT_ID"] ?? "").trim())
-        .filter(Boolean),
-    );
-    const useSectionLabels = uniqueObjectIds.size > 1;
+  const labelFor = (row: Record<string, unknown>, index: number): string => {
+    const sectionLabel = String(row["OBJECT_ID"] ?? "").trim();
+    const intervalLabel = String(row["ARG_INTERVAL"] ?? "").trim();
+    return useSectionLabels
+      ? sectionLabel || intervalLabel || `${index + 1}`
+      : intervalLabel || sectionLabel || `${index + 1}`;
+  };
+
+  const perScenario = scenarios.map((scenario) => {
+    const result = results[scenario.id];
     const grouped = new Map<string, { sum: number; count: number }>();
-
-    rows.forEach((row, index) => {
-      const value = toFiniteNumber(row["TRAVTM_MEAN"] ?? row["TRAVTM"]);
-      if (value == null) return;
-
-      const sectionLabel = String(row["OBJECT_ID"] ?? "").trim();
-      const intervalLabel = String(row["ARG_INTERVAL"] ?? "").trim();
-      const label = useSectionLabels
-        ? sectionLabel || intervalLabel || `${index + 1}`
-        : intervalLabel || sectionLabel || `${index + 1}`;
-      const current = grouped.get(label) ?? { sum: 0, count: 0 };
-      current.sum += value;
-      current.count += 1;
-      grouped.set(label, current);
-    });
-
-    // Plot the real per-interval (or per-section) travel-time averages as-is.
-    // An earlier version reshaped these into a synthetic monotonically-rising
-    // eased curve; that fabricated the shape and is disqualifying for reporting
-    // or LLM narration, so the measured values are now shown directly.
-    const points = Array.from(grouped.entries())
-      .sort(([a], [b]) => numericAwareCompare(a, b))
-      .map(([label, aggregate]) => ({
-        label,
-        value: roundChartValue(aggregate.sum / aggregate.count),
-      }))
-      .slice(0, 18);
-
-    return { scenario, points };
+    if (result) {
+      const intervalRows = result.traveltime_interval_class ?? [];
+      const rows = intervalRows.length > 0 ? intervalRows : result.traveltime;
+      rows.forEach((row, index) => {
+        // Plot the real per-interval (or per-section) travel-time averages
+        // as-is — an earlier version reshaped these into a synthetic
+        // monotonically-rising eased curve, which fabricated the shape.
+        const value = toFiniteNumber(row["TRAVTM_MEAN"] ?? row["TRAVTM"]);
+        if (value == null) return;
+        const label = labelFor(row, index);
+        const current = grouped.get(label) ?? { sum: 0, count: 0 };
+        current.sum += value;
+        current.count += 1;
+        grouped.set(label, current);
+      });
+    }
+    return { scenario, grouped };
   });
+
+  // Shared x-domain: every label seen in ANY scenario, so a given x position
+  // means the same section/interval for every plotted line.
+  const allLabels = new Set<string>();
+  for (const { grouped } of perScenario) {
+    for (const label of grouped.keys()) allLabels.add(label);
+  }
+  const sortedLabels = Array.from(allLabels).sort(numericAwareCompare);
+  const truncated = sortedLabels.length > TRAVEL_TIME_MAX_POINTS;
+  const labels = sortedLabels.slice(0, TRAVEL_TIME_MAX_POINTS);
+
+  const series = perScenario.map(({ scenario, grouped }) => ({
+    scenario,
+    points: labels.map((label) => {
+      const aggregate = grouped.get(label);
+      return { label, value: aggregate ? roundChartValue(aggregate.sum / aggregate.count) : null };
+    }),
+  }));
+
+  return { series, labels, truncated, useSectionLabels };
 }
 
 function roundChartValue(value: number): number {
@@ -1933,13 +2058,13 @@ function buildCalibrationReportMarkdown({
   lines.push(markdownTable(
     ["Field", "Details"],
     [
-      ["Owner", "Operational Modelling and Visualisation (OMV) Team"],
-      ["Custodian", "Traffic Modelling Lead"],
-      ["Approved", "To be confirmed"],
+      ["Owner", "To be assigned"],
+      ["Custodian", "To be assigned"],
+      ["Approved", "Not yet reviewed or approved"],
       ["Document Number", "VISSIM-BASE-CALVAL-DRAFT"],
       ["Issue Date", formatReportDate(generatedAt)],
       ["Project", "Vissim Platform Scenario and Intersection Comparison"],
-      ["Prepared By", "AI-assisted report generator"],
+      ["Prepared By", "Auto-generated draft from Prism dashboard data (not reviewed by an engineer)"],
     ],
   ));
   lines.push("");
@@ -2041,7 +2166,7 @@ function buildCalibrationReportMarkdown({
             row.nodeName,
             row.scenarioName,
             formatReportNumber(row.observed),
-            formatReportNumber(row.modelled),
+            `${formatReportNumber(row.modelled)}${row.modelledIsScaled ? "*" : ""}`,
             formatReportPercent(row.percentError),
             row.geh == null ? "N/A" : row.geh.toFixed(2),
             row.geh != null && row.geh < 5 ? "Pass" : "Review",
@@ -2049,6 +2174,12 @@ function buildCalibrationReportMarkdown({
         )
       : "_Observed traffic count data was not available for the selected intersections. GEH calibration evidence should be added when survey counts are confirmed._",
   );
+  if (validationRows.some((row) => row.modelledIsScaled)) {
+    lines.push("");
+    lines.push(
+      "_* Modelled volume is scaled against the base scenario (S000001) using the ratio between the observed base-scenario count and the simulated base-scenario volume. This is an estimate, not a direct simulation output._",
+    );
+  }
   lines.push("");
   lines.push("#### Selected Intersection Performance Summary");
   lines.push("");
@@ -2182,6 +2313,7 @@ function buildReportValidationRows({
   scenarioName: string;
   observed: number | null;
   modelled: number | null;
+  modelledIsScaled: boolean;
   percentError: number | null;
   geh: number | null;
 }> {
@@ -2192,6 +2324,7 @@ function buildReportValidationRows({
     scenarioName: string;
     observed: number | null;
     modelled: number | null;
+    modelledIsScaled: boolean;
     percentError: number | null;
     geh: number | null;
   }> = [];
@@ -2201,11 +2334,12 @@ function buildReportValidationRows({
     if (observed == null) continue;
 
     for (const scenario of scenarios) {
-      const modelled = calculateScenarioNodeVolume(results[scenario.id], card.nodeId)
-        ?? summary?.top_congested_nodes
-          ?.find((node) => String(node.node_id) === String(card.nodeId))
-          ?.scenario_totals?.[scenario.id]
-        ?? null;
+      // Same computeScaledSimVolume the dashboard's ValidationMatrix cell
+      // uses, so this report can never report a different GEH for the same
+      // node/scenario than what the user saw on screen. Falls back to raw
+      // per-node movement volume only when compare-summary data is absent.
+      const scaled = computeScaledSimVolume(card.nodeId, scenario.id, summary, realCounts);
+      const modelled = scaled.value ?? calculateScenarioNodeVolume(results[scenario.id], card.nodeId);
 
       rows.push({
         nodeId: card.nodeId,
@@ -2213,6 +2347,7 @@ function buildReportValidationRows({
         scenarioName: scenario.name,
         observed,
         modelled,
+        modelledIsScaled: scaled.scaleFactor != null,
         percentError: calculatePercentError(modelled, observed),
         geh: calculateGeh(modelled, observed),
       });

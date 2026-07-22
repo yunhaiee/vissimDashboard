@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { useLanguage } from "@/components/LanguageProvider";
 import MapViewer, {
   type Incident as MapIncident,
@@ -235,6 +236,8 @@ export default function SimulationPage() {
     }
   }, [canUploadZip, clearDraft, loadBaseData, t]);
 
+  const [confirmClearDataset, setConfirmClearDataset] = useState(false);
+
   const handleClearUploadedZip = useCallback(async () => {
     setUploadingZip(true);
     setUploadError(null);
@@ -406,6 +409,22 @@ export default function SimulationPage() {
         }}
       />
 
+      <ConfirmDialog
+        open={confirmClearDataset}
+        title={t("기본값으로 복원할까요?", "Restore the default dataset?")}
+        message={t(
+          `현재 데이터셋("${dataset?.filename}")과 그에 연결된 모든 시뮬레이션 결과가 사라집니다. 이 작업은 되돌릴 수 없습니다.`,
+          `The current dataset ("${dataset?.filename}") and every simulation result tied to it will be removed. This cannot be undone.`,
+        )}
+        confirmLabel={t("복원", "Restore")}
+        cancelLabel={t("취소", "Cancel")}
+        busy={uploadingZip}
+        onConfirm={() => {
+          void handleClearUploadedZip().then(() => setConfirmClearDataset(false));
+        }}
+        onCancel={() => setConfirmClearDataset(false)}
+      />
+
       <section className="rounded-2xl border border-slate-300/70 bg-white/92 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -439,7 +458,7 @@ export default function SimulationPage() {
           canUploadZip={canUploadZip}
           hasUploadedZip={hasUploadedZip}
           onSelectZip={() => zipInputRef.current?.click()}
-          onClearDataset={handleClearUploadedZip}
+          onClearDataset={() => setConfirmClearDataset(true)}
           onApiBaseDraftChange={setApiBaseDraft}
           onApplyApiBase={() => void applyApiBase(apiBaseDraft)}
           onUseDefaultApiBase={() => void applyApiBase("http://127.0.0.1:8001")}
@@ -632,7 +651,12 @@ function DataAndRuntimePanel({
             <button type="button" className="ui-button-primary px-3 py-2 text-xs" disabled={uploading || !canUploadZip} onClick={onSelectZip}>
               {uploading ? t("업로드 중", "Uploading") : t("ZIP 업로드", "Upload ZIP")}
             </button>
-            <button type="button" className="ui-button-ghost px-3 py-2 text-xs" disabled={uploading} onClick={onClearDataset}>
+            <button
+              type="button"
+              className="ui-button-danger px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={uploading || !hasUploadedZip}
+              onClick={onClearDataset}
+            >
               {t("기본값 복원", "Restore Default")}
             </button>
             <button type="button" className="ui-button-ghost px-3 py-2 text-xs" disabled={loading} onClick={onRefresh}>

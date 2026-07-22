@@ -23,6 +23,10 @@ type FloatingMessage = {
   role: "user" | "assistant";
   content: string;
   response?: AssistantQueryResponse;
+  /** The exact user text that produced this assistant message — needed to
+   * re-send with allow_tool_execution=true if the user approves a proposed
+   * simulation run, without asking them to retype the request. */
+  sourcePrompt?: string;
 };
 
 type AssistantPageContext = {
@@ -158,6 +162,9 @@ export default function FloatingAssistant() {
   const [activeAssistantMessageId, setActiveAssistantMessageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [panelSize, setPanelSize] = useState<AssistantPanelSize>(() => readStoredPanelSize());
+  // Assistant message ids where the user explicitly declined a proposed
+  // simulation run, so the confirm card doesn't keep reappearing.
+  const [declinedExecutionIds, setDeclinedExecutionIds] = useState<Set<string>>(new Set());
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const resizeRef = useRef<AssistantPanelResizeState | null>(null);
@@ -269,27 +276,45 @@ export default function FloatingAssistant() {
     };
   }, []);
 
-  async function submitPrompt(nextPrompt?: string) {
-    const text = (nextPrompt ?? prompt).trim();
+  // Core send/re-send path. `targetMessageId` set means this is a confirmed
+  // re-run of an existing proposed action: update that message in place
+  // instead of appending a new user/assistant bubble pair.
+  async function runPrompt(text: string, options?: { allowExecution?: boolean; targetMessageId?: string }) {
     if (!text || loading) return;
+    const allowExecution = options?.allowExecution ?? false;
+    const targetMessageId = options?.targetMessageId;
 
-    const createdAt = Date.now();
-    const assistantMessageId = `${createdAt}-assistant`;
+    let assistantMessageId: string;
     let streamedContent = "";
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `${createdAt}-user`,
-        role: "user",
-        content: text,
-      },
-      {
-        id: assistantMessageId,
-        role: "assistant",
-        content: "",
-      },
-    ]);
-    setPrompt("");
+    let priorContentOnFailure = "";
+
+    if (targetMessageId) {
+      assistantMessageId = targetMessageId;
+      setMessages((prev) => {
+        const existing = prev.find((message) => message.id === targetMessageId);
+        priorContentOnFailure = existing?.content ?? "";
+        return prev;
+      });
+    } else {
+      const createdAt = Date.now();
+      assistantMessageId = `${createdAt}-assistant`;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `${createdAt}-user`,
+          role: "user",
+          content: text,
+        },
+        {
+          id: assistantMessageId,
+          role: "assistant",
+          content: "",
+          sourcePrompt: text,
+        },
+      ]);
+      setPrompt("");
+    }
+
     setError(null);
     setLoading(true);
     setActiveAssistantMessageId(assistantMessageId);
@@ -305,7 +330,13 @@ export default function FloatingAssistant() {
           message: text,
           selected_scenario_ids: activePageContext?.selectedScenarioIds ?? [],
           selected_node_ids: activePageContext?.selectedNodeIds ?? [],
-          allow_tool_execution: shouldAllowPromptExecution(text),
+          // Consent to run a real VISSIM change is never inferred from the
+          // wording of the message (that used to be a client-side keyword
+          // match a suggested starter chip could trigger by accident). The
+          // first pass always asks; execution only happens when the user
+          // explicitly confirms the proposed diff, which resends this same
+          // text with allowExecution=true via targetMessageId above.
+          allow_tool_execution: allowExecution,
           response_language: lang,
         },
         {
@@ -348,8 +379,16 @@ export default function FloatingAssistant() {
       setStatus(response.model_status);
       setStatusError(null);
     } catch (caught) {
-      if (!streamedContent.trim()) {
+      if (!targetMessageId && !streamedContent.trim()) {
         setMessages((prev) => prev.filter((message) => message.id !== assistantMessageId));
+      } else if (targetMessageId && !streamedContent.trim()) {
+        // A failed confirm re-run must not erase the proposal that was
+        // already on screen \u2014 restore it so the user can retry or cancel.
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId ? { ...message, content: priorContentOnFailure } : message,
+          ),
+        );
       }
       if (isAbortError(caught)) {
         setRequestPhase("cancelled");
@@ -366,6 +405,19 @@ export default function FloatingAssistant() {
       setRequestPhase("idle");
       inputRef.current?.focus();
     }
+  }
+
+  async function submitPrompt(nextPrompt?: string) {
+    await runPrompt((nextPrompt ?? prompt).trim());
+  }
+
+  function confirmPromptExecution(message: FloatingMessage) {
+    if (!message.sourcePrompt || loading) return;
+    void runPrompt(message.sourcePrompt, { allowExecution: true, targetMessageId: message.id });
+  }
+
+  function declinePromptExecution(messageId: string) {
+    setDeclinedExecutionIds((prev) => new Set(prev).add(messageId));
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -481,6 +533,9 @@ export default function FloatingAssistant() {
                     message={message}
                     activePhase={message.id === activeAssistantMessageId && loading ? requestPhase : undefined}
                     onCancel={message.id === activeAssistantMessageId ? cancelAssistantRequest : undefined}
+                    declined={declinedExecutionIds.has(message.id)}
+                    onConfirmExecute={() => confirmPromptExecution(message)}
+                    onDeclineExecute={() => declinePromptExecution(message.id)}
                   />
                 ))}
               </div>
@@ -533,15 +588,23 @@ function FloatingChatMessage({
   message,
   activePhase,
   onCancel,
+  declined,
+  onConfirmExecute,
+  onDeclineExecute,
 }: {
   message: FloatingMessage;
   activePhase?: AssistantRequestPhase;
   onCancel?: () => void;
+  declined: boolean;
+  onConfirmExecute: () => void;
+  onDeclineExecute: () => void;
 }) {
   const isUser = message.role === "user";
   const promptSimulation = getPromptSimulationResult(message.response?.tool_results);
   const { t } = useLanguage();
-  const isActiveAssistant = !isUser && Boolean(activePhase) && !message.response;
+  // True both for the very first (empty) render of this message and for a
+  // confirmed re-run (message.response already holds the prior proposal).
+  const isActiveAssistant = !isUser && Boolean(activePhase);
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
@@ -562,7 +625,15 @@ function FloatingChatMessage({
           </>
         )}
         {!isUser && message.response && <AssistantRuntimeBadge response={message.response} />}
-        {promptSimulation && <PromptSimulationStatus result={promptSimulation} />}
+        {promptSimulation && (
+          <PromptSimulationStatus
+            result={promptSimulation}
+            declined={declined}
+            confirming={isActiveAssistant}
+            onConfirmExecute={onConfirmExecute}
+            onDeclineExecute={onDeclineExecute}
+          />
+        )}
         {message.response && <CompactSources sources={message.response.sources} />}
       </div>
     </div>
@@ -709,7 +780,19 @@ function AnswerLines({ lines }: { lines: string[] }) {
   );
 }
 
-function PromptSimulationStatus({ result }: { result: PromptSimulationToolResult }) {
+function PromptSimulationStatus({
+  result,
+  declined,
+  confirming,
+  onConfirmExecute,
+  onDeclineExecute,
+}: {
+  result: PromptSimulationToolResult;
+  declined: boolean;
+  confirming: boolean;
+  onConfirmExecute: () => void;
+  onDeclineExecute: () => void;
+}) {
   const { t } = useLanguage();
   const jobId = result.job?.id;
   const [job, setJob] = useState<SimulationJob | null>(null);
@@ -805,7 +888,43 @@ function PromptSimulationStatus({ result }: { result: PromptSimulationToolResult
       )}
 
       {results && <PromptSimulationMetrics results={results} />}
-      {!result.executed && result.reason && <p className="mt-2 text-[11px] text-slate-500">{result.reason}</p>}
+
+      {!result.executed && result.requires_confirmation && !declined && (
+        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2">
+          <p className="text-[11px] font-semibold text-amber-800">
+            {t(
+              "이 변경을 실제 VISSIM 시뮬레이션에 적용할까요? 위 변경 내용을 확인 후 실행하세요.",
+              "Apply this change to a real VISSIM simulation? Review the changes above before running.",
+            )}
+          </p>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={onConfirmExecute}
+              disabled={confirming}
+              className="ui-button-primary rounded-md px-3 py-1.5 text-[11px] font-bold disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {confirming ? t("실행 중...", "Running...") : t("시뮬레이션 실행", "Run simulation")}
+            </button>
+            <button
+              type="button"
+              onClick={onDeclineExecute}
+              disabled={confirming}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t("취소", "Cancel")}
+            </button>
+          </div>
+        </div>
+      )}
+      {!result.executed && result.requires_confirmation && declined && (
+        <p className="mt-2 text-[11px] font-semibold text-slate-500">
+          {t("시뮬레이션 실행을 취소했습니다.", "Simulation run was cancelled.")}
+        </p>
+      )}
+      {!result.executed && !result.requires_confirmation && result.reason && (
+        <p className="mt-2 text-[11px] text-slate-500">{result.reason}</p>
+      )}
       {error && <p className="mt-2 text-[11px] text-rose-600">{error}</p>}
     </div>
   );
@@ -1223,45 +1342,6 @@ function normalizeAssistantContent(content: string): string {
   return content
     .replace(/^\s{0,3}#{1,6}\s+/gm, "")
     .replace(/\*\*/g, "");
-}
-
-function shouldAllowPromptExecution(text: string): boolean {
-  const lowered = text.toLowerCase();
-  const hasRunTerm = includesAny(lowered, [
-    "\uc2e4\ud589",
-    "\ub3cc\ub824",
-    "\uc218\ud589",
-    "\uc2dc\ubbac\ub808\uc774\uc158",
-    "run",
-    "execute",
-    "simulate",
-    "simulation",
-  ]);
-  const hasSimulationOrParameter = includesAny(lowered, [
-    "vissim",
-    "simulation",
-    "signal",
-    "cycle",
-    "offset",
-    "seed",
-    "vehicle input",
-    "volume",
-    "duration",
-    "\uc2dc\ubbac\ub808\uc774\uc158",
-    "\uc2e0\ud638",
-    "\uc8fc\uae30",
-    "\uc635\uc14b",
-    "\uc624\ud504\uc14b",
-    "\uc2dc\ub4dc",
-    "\ucc28\ub7c9",
-    "\uc720\uc785\ub7c9",
-    "\uad50\ud1b5\ub7c9",
-  ]);
-  return hasRunTerm && hasSimulationOrParameter;
-}
-
-function includesAny(value: string, terms: string[]): boolean {
-  return terms.some((term) => value.includes(term));
 }
 
 function formatMetricValue(value: unknown): string {

@@ -44,7 +44,9 @@ test("app shell exposes the merged dashboard routes", () => {
   assert.match(shell, /href: "\/dashboard"/, "expected dashboard route in top navigation");
   assert.doesNotMatch(shell, /label: "Prompt"/, "expected prompt-only entry to be removed once assistant is floating");
   assert.match(shell, /FloatingAssistant/, "expected assistant chat launcher to be available across pages");
-  assert.match(floatingAssistant, /askAssistant/, "expected floating assistant to call the assistant query API");
+  // Streaming (not the older one-shot askAssistant) is the current call path
+  // so answers render token-by-token instead of appearing all at once.
+  assert.match(floatingAssistant, /streamAssistant/, "expected floating assistant to call the assistant query API");
   assert.match(
     floatingAssistant,
     /selected_scenario_ids: activePageContext\?\.selectedScenarioIds/,
@@ -60,11 +62,20 @@ test("app shell exposes the merged dashboard routes", () => {
   assert.match(floatingAssistant, /response_language: lang/, "expected floating assistant responses to follow the active app language toggle");
   assert.doesNotMatch(floatingAssistant, /inferAssistantResponseLanguage/, "expected prompt text language inference not to override the app language toggle");
   assert.match(floatingAssistant, /buildRouteAssistantContext\(pathname, t\)/, "expected assistant route labels and starters to be localized");
+  // Execution consent must never be inferred from the wording of the user's
+  // message (a client-side keyword match let a suggested starter chip launch
+  // a real VISSIM run with no confirmation). The first send always proposes;
+  // running only happens after an explicit confirm click, which resends the
+  // same prompt with allowExecution=true.
+  assert.doesNotMatch(floatingAssistant, /shouldAllowPromptExecution/, "expected the client-side execution-consent heuristic to be removed");
   assert.match(
     floatingAssistant,
-    /const hasRunTerm = includesAny\(lowered,\s*\[[\s\S]*"\\uc2dc\\ubbac\\ub808\\uc774\\uc158"[\s\S]*"simulation"[\s\S]*\]\)/,
-    "expected Korean and English simulation phrases to enable prompt-run execution",
+    /allow_tool_execution: allowExecution/,
+    "expected execution consent to come from explicit user confirmation, not message wording",
   );
+  assert.match(floatingAssistant, /function confirmPromptExecution/, "expected an explicit confirm action before a proposed simulation runs");
+  assert.match(floatingAssistant, /function declinePromptExecution/, "expected an explicit decline action for a proposed simulation");
+  assert.match(floatingAssistant, /requires_confirmation && !declined/, "expected a visible confirm/cancel control when the backend requires confirmation");
   assert.match(floatingAssistant, /AssistantAnswerContent/, "expected floating assistant to render structured answers");
   assert.match(floatingAssistant, /parseAssistantAnswer/, "expected assistant answers to be split into stable sections");
   assert.match(floatingAssistant, /PANEL_SIZE_STORAGE_KEY/, "expected assistant panel size to persist across sessions");
