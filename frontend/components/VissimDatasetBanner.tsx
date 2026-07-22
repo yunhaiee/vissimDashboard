@@ -48,6 +48,11 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
   const [confirmReset, setConfirmReset] = useState(false);
   const [checking, setChecking] = useState(true);
   const [checkFailed, setCheckFailed] = useState(false);
+  // fetch() has no upload-progress event, so a byte-accurate bar would need
+  // rewriting the upload path onto XMLHttpRequest. This elapsed-time readout
+  // is the honest middle ground: it proves the upload is still alive on a
+  // large ZIP instead of a static "처리 중" label that never changes.
+  const [uploadElapsedSec, setUploadElapsedSec] = useState(0);
   const hasCustomBackground = /\bbg-/.test(className);
   const hasCustomShadow = /\bshadow/.test(className);
 
@@ -85,6 +90,11 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
     async (file: File) => {
       setUploading(true);
       setError(null);
+      setUploadElapsedSec(0);
+      const startedAt = Date.now();
+      const ticker = window.setInterval(() => {
+        setUploadElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+      }, 1000);
       try {
         const dataset = await uploadInpxDataset(file);
         setActiveDataset(dataset);
@@ -93,6 +103,7 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
       } catch (uploadError) {
         setError(uploadError instanceof Error ? uploadError.message : t("VISSIM 파일 업로드에 실패했습니다.", "Failed to upload VISSIM file."));
       } finally {
+        window.clearInterval(ticker);
         setUploading(false);
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
@@ -170,7 +181,9 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
           disabled={uploading || checking}
           className="ui-button-primary inline-flex items-center px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {uploading ? t("처리 중", "Loading") : t("파일/ZIP 업로드", "Load File / ZIP")}
+          {uploading
+            ? t(`업로드 중… ${uploadElapsedSec}초`, `Uploading… ${uploadElapsedSec}s`)
+            : t("파일/ZIP 업로드", "Load File / ZIP")}
         </button>
         <button
           type="button"

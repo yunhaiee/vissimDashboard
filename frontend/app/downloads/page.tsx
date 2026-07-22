@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, fetchActiveDataset, type ActiveDataset } from "@/lib/api";
 
 type ExportItem = { key: string; label: string; filename: string };
 
@@ -129,6 +129,21 @@ export default function DownloadsPage() {
   const [done, setDone] = useState<Record<string, "ok" | "err">>({});
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [busyCombined, setBusyCombined] = useState(false);
+  const [activeDataset, setActiveDataset] = useState<ActiveDataset | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchActiveDataset()
+      .then((dataset) => {
+        if (!cancelled) setActiveDataset(dataset);
+      })
+      .catch(() => {
+        if (!cancelled) setActiveDataset(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -223,6 +238,15 @@ export default function DownloadsPage() {
       {error && (
         <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           {t("목록을 불러오지 못했습니다", "Failed to load the list")}: {error}
+        </div>
+      )}
+
+      {activeDataset && activeDataset.source !== "uploaded" && (
+        <div className="mb-5 rounded-2xl border border-amber-300 bg-amber-100/70 px-4 py-3 text-xs font-medium text-amber-900">
+          {t(
+            `※ 업로드된 VISSIM 데이터셋이 없어 기본 샘플 데이터(${activeDataset.filename})를 내려받게 됩니다. 실제 프로젝트 데이터를 원하면 대시보드에서 먼저 업로드하세요.`,
+            `※ No VISSIM dataset has been uploaded — this will export the bundled sample data (${activeDataset.filename}). Upload your project data on the dashboard first if you want real results.`,
+          )}
         </div>
       )}
 

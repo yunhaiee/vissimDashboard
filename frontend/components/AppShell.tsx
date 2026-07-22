@@ -11,10 +11,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { lang, setLang, t } = useLanguage();
 
+  // Dashboard listed first: it's the landing page (root redirects here) and
+  // the page most users need first; the more specialist calibration page
+  // follows it instead of leading.
   const links: Array<{ href: string; label: string }> = [
-    { href: "/base-model", label: t("베이스모델 검증", "Base Model Validation") },
-    { href: "/dashboard", label: t("대시보드", "Dashboard") },
-    { href: "/downloads", label: t("데이터 다운로드", "Data Downloads") },
+    { href: "/dashboard", label: t("대시보드", "Dashboard", "ダッシュボード") },
+    { href: "/base-model", label: t("베이스모델 검증", "Base Model Validation", "ベースモデル検証") },
+    { href: "/downloads", label: t("데이터 다운로드", "Data Downloads", "データダウンロード") },
     { href: "/report", label: t("보고서 작성", "Report Builder", "レポート作成") },
   ];
 
@@ -32,10 +35,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="app-topbar-inner">
-          <span className="app-brand">
+          <Link href="/dashboard" className="app-brand">
             <span className="app-brand-mark" />
             VISSIM Platform
-          </span>
+          </Link>
 
           {links.map((item) => {
             const active = pathname === item.href;

@@ -34,6 +34,12 @@ interface CurationBarProps {
    * by the current answer, and to explain when the model picked a section
    * whose data isn't actually available. */
   applicableSectionIds: string[];
+  /** Lifted to the page so the SAME toggle also controls how much technical
+   * detail (stdev, scaling factors, GEH) the charts below show — previously
+   * this only changed the wording of AI-generated text, leaving every chart
+   * exactly as jargon-heavy in "Plain" mode as in "Expert" mode. */
+  audience: "plain" | "expert";
+  onAudienceChange: (audience: "plain" | "expert") => void;
 }
 
 export default function CurationBar({
@@ -43,10 +49,11 @@ export default function CurationBar({
   spec,
   onSpecChange,
   applicableSectionIds,
+  audience,
+  onAudienceChange,
 }: CurationBarProps) {
   const { t, lang } = useLanguage();
   const [message, setMessage] = useState("");
-  const [audience, setAudience] = useState<"plain" | "expert">("plain");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -141,14 +148,14 @@ export default function CurationBar({
           <div className="flex overflow-hidden rounded-lg border border-slate-300/70 text-xs font-medium">
             <button
               type="button"
-              onClick={() => setAudience("plain")}
+              onClick={() => onAudienceChange("plain")}
               className={`px-3 py-2 transition ${audience === "plain" ? "bg-[#31517a] text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
             >
               {t("쉬운 설명", "Plain", "やさしい説明")}
             </button>
             <button
               type="button"
-              onClick={() => setAudience("expert")}
+              onClick={() => onAudienceChange("expert")}
               className={`px-3 py-2 transition ${audience === "expert" ? "bg-[#31517a] text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
             >
               {t("전문가", "Expert", "専門家")}

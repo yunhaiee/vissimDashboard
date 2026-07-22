@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
@@ -126,6 +127,7 @@ export default function DashboardPage() {
   const [realCounts, setRealCounts] = useState<NodeRealCounts[]>([]);
   const [datasetRevision, setDatasetRevision] = useState("default");
   const [curationSpec, setCurationSpec] = useState<DashboardCurationSpec | null>(null);
+  const [audience, setAudience] = useState<"plain" | "expert">("plain");
   const requestSerial = useRef(0);
   const loadSerial = useRef(0);
   const hasUploadedDataset = activeDataset?.source === "uploaded";
@@ -373,6 +375,14 @@ export default function DashboardPage() {
             notes: [
               hasUploadedDataset ? "Uploaded VISSIM dataset is active." : "Dashboard analysis is waiting for an uploaded VISSIM dataset.",
               hasData ? "Scenario comparison results are loaded." : "Scenario comparison results are not loaded yet.",
+              // Lets the floating chat explain (if asked) why some sections
+              // are currently hidden — the two AI surfaces otherwise have no
+              // awareness of each other's state.
+              ...(curationSpec
+                ? [
+                    `The dashboard is currently focused by a user question (AI answer: "${curationSpec.headline || "n/a"}"). Only these sections are shown: ${curationSpec.charts.join(", ") || "none"}. The user can click "Show everything" in the curation bar to see all sections again.`,
+                  ]
+                : []),
             ],
             updatedAt: Date.now(),
           },
@@ -453,6 +463,8 @@ export default function DashboardPage() {
           spec={curationSpec}
           onSpecChange={setCurationSpec}
           applicableSectionIds={applicableSectionIds}
+          audience={audience}
+          onAudienceChange={setAudience}
         />
       )}
 
@@ -544,6 +556,7 @@ export default function DashboardPage() {
                 unit={metric.unit}
                 higherIsBetter={metric.higherIsBetter}
                 isTotal={metric.isTotal}
+                showTechnicalDetail={audience === "expert"}
                 values={activeScenarios.map((scenario) => ({
                   scenario,
                   value: results[scenario.id]?.network?.[metric.key] ?? null,
@@ -683,6 +696,15 @@ function SectionJumpIndex({
   );
 }
 
+// Triggers the real file picker owned by the (already-rendered elsewhere)
+// VissimDatasetBanner instance. Not a prop callback: <DashboardDatasetGate />
+// and <DashboardUploadRequiredPanel /> are called with no props by contract
+// (see dashboard-contract.test.ts), so the empty-state gate reaches the
+// actual upload control this way instead of only describing it in prose.
+function openDatasetFilePicker() {
+  document.querySelector<HTMLInputElement>('input[type="file"][accept=".inpx,.zip"]')?.click();
+}
+
 function DashboardDatasetGate() {
   const { t } = useLanguage();
 
@@ -700,9 +722,18 @@ function DashboardDatasetGate() {
             )}
           </p>
         </div>
-        <span className="rounded-full border border-[#e6c98f] bg-white px-3 py-1 text-xs font-bold text-[#9a5b20]">
-          INPX / ZIP
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={openDatasetFilePicker}
+            className="rounded-full border border-[#c99a4f] bg-[#9a5b20] px-3 py-1.5 text-xs font-bold text-white transition hover:bg-[#7f4a19]"
+          >
+            {t("지금 업로드", "Upload now")}
+          </button>
+          <span className="rounded-full border border-[#e6c98f] bg-white px-3 py-1 text-xs font-bold text-[#9a5b20]">
+            INPX / ZIP
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -725,6 +756,13 @@ function DashboardUploadRequiredPanel() {
           "The dashboard now connects to the network and scenario outputs from the dataset you upload instead of the default sample data.",
         )}
       </p>
+      <button
+        type="button"
+        onClick={openDatasetFilePicker}
+        className="ui-button-primary mt-4 inline-flex items-center px-4 py-2 text-sm"
+      >
+        {t("VISSIM 파일 업로드", "Upload a VISSIM file")}
+      </button>
     </section>
   );
 }
@@ -1402,6 +1440,12 @@ function OverallResultsSection({
               ? t("먼저 생성한 뒤 원하는 형식으로 내려받으세요.", "Generate first, then download the preferred format.")
               : t("교차로를 1개 이상 선택하면 생성할 수 있습니다.", "Select at least one intersection to generate a report.")}
         </p>
+        <Link
+          href="/simulation"
+          className="mt-3 inline-block text-[10px] font-semibold text-slate-400 underline decoration-dotted underline-offset-2 hover:text-slate-600"
+        >
+          {t("고급: 시뮬레이션 실행기 열기 →", "Advanced: open the Simulation Runner →")}
+        </Link>
       </section>
     </div>
   );
@@ -1412,12 +1456,16 @@ function KpiCard({
   unit,
   higherIsBetter,
   isTotal,
+  showTechnicalDetail,
   values,
 }: {
   label: string;
   unit: string;
   higherIsBetter: boolean;
   isTotal: boolean;
+  /** "전문가" mode: show ±stdev, noise caveats, and range/diff detail rows.
+   * "쉬운 설명" keeps the same numbers but drops the statistical fine print. */
+  showTechnicalDetail: boolean;
   values: { scenario: ScenarioMeta; value: number | null; stdev: number | null }[];
 }) {
   const { t } = useLanguage();
@@ -1466,12 +1514,14 @@ function KpiCard({
                     className="rounded-full bg-[#dce8df] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-[#3f6651]"
                     title={bestIsWithinNoise ? t("2위와의 차이가 표준편차보다 작습니다.", "The gap to the runner-up is smaller than the standard deviation.") : undefined}
                   >
-                    {t("Best", "Best")}{bestIsWithinNoise ? "*" : ""}
+                    {t("Best", "Best")}{showTechnicalDetail && bestIsWithinNoise ? "*" : ""}
                   </span>
                 )}
                 <div className="text-[11px] font-semibold tabular-nums text-slate-900">
                   {displayVal}
-                  {stdev != null && <span className="ml-0.5 text-slate-400">±{stdev >= 10 ? Math.round(stdev) : stdev.toFixed(1)}</span>}
+                  {showTechnicalDetail && stdev != null && (
+                    <span className="ml-0.5 text-slate-400">±{stdev >= 10 ? Math.round(stdev) : stdev.toFixed(1)}</span>
+                  )}
                 </div>
               </div>
               <div className="relative flex h-24 w-7 items-end overflow-hidden rounded-md border border-slate-200 bg-slate-100/80">
@@ -1492,7 +1542,7 @@ function KpiCard({
         })}
         </div>
       </div>
-      {bestIsWithinNoise && (
+      {showTechnicalDetail && bestIsWithinNoise && (
         <p className="mt-2 text-[10px] text-amber-700">
           * {t("최상위 값과 2위의 차이가 실행 간 변동(표준편차)보다 작아 확정적 차이로 보기 어렵습니다.", "The gap between the top value and the runner-up is smaller than run-to-run variation, so it may not be a real difference.")}
         </p>

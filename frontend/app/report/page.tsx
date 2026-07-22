@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { buildReport, type ReportBlock, type ReportMeta } from "@/lib/api";
+import { buildReport, fetchActiveDataset, type ActiveDataset, type ReportBlock, type ReportMeta } from "@/lib/api";
 
 type Lang = "ko" | "en" | "ja";
 
@@ -73,6 +73,21 @@ export default function ReportPage() {
   const [blocks, setBlocks] = useState<Block[]>(DEFAULT_BLOCKS);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeDataset, setActiveDataset] = useState<ActiveDataset | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchActiveDataset()
+      .then((dataset) => {
+        if (!cancelled) setActiveDataset(dataset);
+      })
+      .catch(() => {
+        if (!cancelled) setActiveDataset(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const labelFor = (type: string) => PALETTE.find((p) => p.type === type)?.label[L] ?? type;
 
@@ -140,6 +155,16 @@ export default function ReportPage() {
           )}
         </p>
       </div>
+
+      {activeDataset && activeDataset.source !== "uploaded" && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-100/70 px-4 py-3 text-xs font-medium text-amber-900">
+          {t(
+            `※ 업로드된 VISSIM 데이터셋이 없어 기본 샘플 데이터(${activeDataset.filename})로 보고서가 생성됩니다.`,
+            `※ No VISSIM dataset has been uploaded — the report will be generated from the bundled sample data (${activeDataset.filename}).`,
+            `※ VISSIMデータセットがアップロードされていないため、サンプルデータ（${activeDataset.filename}）でレポートが作成されます。`,
+          )}
+        </div>
+      )}
 
       {/* meta */}
       <section className="rounded-2xl border border-slate-200 bg-white/90 p-5 shadow-sm">

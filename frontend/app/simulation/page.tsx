@@ -1090,7 +1090,10 @@ function JobRow({ job }: { job: SimulationJob }) {
       </div>
       {job.status === "done" && (
         <p className="mt-2 text-[11px] text-emerald-700">
-          {t("대시보드 비교 시나리오로 등록됨", "Registered as a comparison scenario")}
+          {t(
+            "완료 시점에 대시보드 비교 시나리오로 등록되었습니다. 이후 데이터셋을 교체/복원했다면 목록에서 사라졌을 수 있습니다.",
+            "Registered as a comparison scenario at completion. If the dataset was replaced or reset since, it may no longer appear there.",
+          )}
         </p>
       )}
       {job.error && <p className="mt-2 text-[11px] text-rose-700">{job.error}</p>}
