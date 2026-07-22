@@ -2,24 +2,26 @@
 
 /* ============================================================
    PALETTE LOCK — Claude Console dark theme (2026-07-23)
-   Warm charcoal surfaces, ivory text, clay accent, hairline
-   borders, near-zero shadows. Do not drift from these values
-   during iteration; adjust here, never inline.
+   Values sampled from platform.claude.com/dashboard (dark):
+   page #1a1a19, sidebar #0d0d0d, cards = SAME bg as page with a
+   rgba(255,255,255,0.1) hairline + 12px radius + no shadow/fill,
+   muted text #898781, chip fill white/5, badge navy #032042 with
+   #6da7ec text. Do not drift; adjust here, never inline.
    ============================================================ */
 :root {
   color-scheme: dark;
-  --bg-base: #211f1c;
-  --bg-deep: #1a1917;
-  --surface: #292724;
-  --surface-strong: #302e2a;
-  --surface-muted: #242220;
-  --text-strong: #f5f3ec;
-  --text-muted: #a8a399;
-  --text-faint: #7a756b;
-  --border-subtle: rgba(245, 243, 236, 0.07);
-  --border-soft: rgba(245, 243, 236, 0.13);
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-mid: 0 16px 40px rgba(0, 0, 0, 0.45);
+  --bg-base: #1a1a19;
+  --bg-deep: #0d0d0d;
+  --surface: transparent;
+  --surface-strong: #232322;
+  --surface-muted: rgba(255, 255, 255, 0.03);
+  --text-strong: #ffffff;
+  --text-muted: #898781;
+  --text-faint: #6a6862;
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-soft: rgba(255, 255, 255, 0.1);
+  --shadow-soft: none;
+  --shadow-mid: 0 16px 40px rgba(0, 0, 0, 0.5);
   --accent: #d97757;
   --accent-hover: #e08e70;
   --accent-soft: rgba(217, 119, 87, 0.16);
@@ -48,29 +50,31 @@
    ------------------------------------------------------------ */
 @theme {
   /* custom roles */
-  --color-surface: #292724;
-  --color-ink: #181713;
+  --color-surface: #1a1a19;
+  --color-ink: #0b0b0b;
   --color-accent: #d97757;
   --color-accent-deep: #c96442;
 
-  /* neutral ramp (warm gray) */
-  --color-slate-50: #242220;
-  --color-slate-100: #2b2926;
-  --color-slate-200: #37342f;
-  --color-slate-300: #454239;
-  --color-slate-400: #6e695e;
-  --color-slate-500: #918b7f;
-  --color-slate-600: #a8a296;
-  --color-slate-700: #c6c0b2;
-  --color-slate-800: #dfdacc;
-  --color-slate-900: #f0ede3;
-  --color-slate-950: #f7f5ee;
+  /* neutral ramp — 50..300 are fills/hairlines (white-alpha, so they
+     read as "outline on page bg" like Console cards), 400..950 is the
+     text ramp up to pure white */
+  --color-slate-50: rgba(255, 255, 255, 0.03);
+  --color-slate-100: rgba(255, 255, 255, 0.05);
+  --color-slate-200: rgba(255, 255, 255, 0.1);
+  --color-slate-300: rgba(255, 255, 255, 0.16);
+  --color-slate-400: #6a6862;
+  --color-slate-500: #898781;
+  --color-slate-600: #a5a39a;
+  --color-slate-700: #c3c2b7;
+  --color-slate-800: #e3e2da;
+  --color-slate-900: #fafaf9;
+  --color-slate-950: #ffffff;
 
-  /* danger (rose -> coral/salmon) */
-  --color-rose-50: #3a2823;
-  --color-rose-100: #432d27;
-  --color-rose-200: #57362e;
-  --color-rose-300: #6e4237;
+  /* danger (rose -> Console coral/salmon) */
+  --color-rose-50: #3a2320;
+  --color-rose-100: #422823;
+  --color-rose-200: #57302a;
+  --color-rose-300: #6e3b33;
   --color-rose-400: #c96755;
   --color-rose-500: #d3705f;
   --color-rose-600: #dc8373;
@@ -78,55 +82,57 @@
   --color-rose-800: #ecac9c;
   --color-rose-900: #f2c0b2;
 
-  /* warning (amber -> muted gold) */
-  --color-amber-50: #38301e;
-  --color-amber-100: #413723;
-  --color-amber-200: #584829;
-  --color-amber-300: #6d5a32;
-  --color-amber-400: #c1913f;
-  --color-amber-500: #cc9e4f;
-  --color-amber-600: #d6ac62;
-  --color-amber-700: #dfba76;
-  --color-amber-800: #e7c88b;
-  --color-amber-900: #eed5a1;
+  /* former warning amber -> NEUTRAL. The Console has no yellow;
+     notice panels become quiet outlined cards, the upload CTA a
+     white pill, notice text the muted/strong neutral ramp. */
+  --color-amber-50: rgba(255, 255, 255, 0.03);
+  --color-amber-100: rgba(255, 255, 255, 0.05);
+  --color-amber-200: rgba(255, 255, 255, 0.1);
+  --color-amber-300: rgba(255, 255, 255, 0.16);
+  --color-amber-400: #b5b3ab;
+  --color-amber-500: #fafaf9;
+  --color-amber-600: #d9d8d3;
+  --color-amber-700: #c3c2b7;
+  --color-amber-800: #e3e2da;
+  --color-amber-900: #f5f4ef;
 
   /* ok (emerald -> sage) */
-  --color-emerald-50: #25332a;
-  --color-emerald-100: #2a3b30;
-  --color-emerald-200: #3a523f;
-  --color-emerald-300: #48664e;
+  --color-emerald-50: #1e2b22;
+  --color-emerald-100: #233227;
+  --color-emerald-200: #324936;
+  --color-emerald-300: #405c45;
   --color-emerald-400: #66a273;
   --color-emerald-500: #74ac80;
   --color-emerald-600: #88ba92;
   --color-emerald-700: #9cc8a4;
   --color-emerald-800: #b0d5b6;
 
-  /* info (blue) */
-  --color-blue-50: #252f3a;
-  --color-blue-100: #2a3644;
-  --color-blue-200: #394a5d;
-  --color-blue-300: #495e76;
-  --color-blue-400: #5f8fc0;
-  --color-blue-500: #6e9fcc;
-  --color-blue-600: #82aed8;
-  --color-blue-700: #96bce1;
-  --color-blue-800: #abcae9;
+  /* info (blue) — Console "New/Beta" badge: navy fill, sky text */
+  --color-blue-50: #032042;
+  --color-blue-100: #0a2c55;
+  --color-blue-200: #17406e;
+  --color-blue-300: #275688;
+  --color-blue-400: #4a83c2;
+  --color-blue-500: #5f95d5;
+  --color-blue-600: #6da7ec;
+  --color-blue-700: #8ab8f0;
+  --color-blue-800: #a9cbf4;
 
   /* minor families (a handful of call sites each) */
-  --color-sky-50: #243039;
-  --color-sky-200: #384c59;
-  --color-sky-400: #5c9ac4;
-  --color-sky-500: #6ba6ce;
-  --color-sky-600: #7fb4d9;
-  --color-red-50: #3a2823;
-  --color-red-200: #57362e;
+  --color-sky-50: #032042;
+  --color-sky-200: #17406e;
+  --color-sky-400: #4a83c2;
+  --color-sky-500: #5f95d5;
+  --color-sky-600: #6da7ec;
+  --color-red-50: #3a2320;
+  --color-red-200: #57302a;
   --color-red-400: #c96755;
   --color-red-700: #e49787;
-  --color-cyan-50: #233437;
-  --color-cyan-100: #2f4549;
+  --color-cyan-50: #16333a;
+  --color-cyan-100: #1f454e;
   --color-cyan-700: #7fc0ca;
-  --color-violet-50: #2e2a39;
-  --color-violet-200: #453d58;
+  --color-violet-50: #2b2739;
+  --color-violet-200: #443c5c;
   --color-indigo-600: #93a0de;
 }
 
@@ -162,7 +168,7 @@ body {
   z-index: 2600;
   border-bottom: 1px solid var(--border-subtle);
   backdrop-filter: blur(14px);
-  background: rgba(26, 25, 23, 0.86);
+  background: rgba(13, 13, 13, 0.85);
 }
 
 .app-topbar-inner {
@@ -238,7 +244,7 @@ body {
   padding: 0.2rem;
   border: 1px solid var(--border-soft);
   border-radius: 9999px;
-  background: rgba(48, 46, 42, 0.6);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .app-lang-btn {
@@ -260,7 +266,7 @@ body {
 
 .app-lang-btn-active {
   background: var(--text-strong);
-  color: #1b1a17;
+  color: #0b0b0b;
 }
 
 .app-lang-in-topbar {
@@ -297,7 +303,7 @@ body {
   width: 100%;
   border: 1px solid var(--border-soft);
   border-radius: 0.6rem;
-  background: #1e1c19;
+  background: #131312;
   color: var(--text-strong);
   padding: 0.6rem 0.8rem;
   font-size: 0.875rem;
@@ -319,14 +325,14 @@ body {
   border: 1px solid transparent;
   border-radius: 0.6rem;
   background: var(--text-strong);
-  color: #1b1a17;
+  color: #0b0b0b;
   font-weight: 600;
   transition: background-color 150ms ease, opacity 150ms ease;
   box-shadow: none;
 }
 
 .ui-button-primary:hover {
-  background: #ffffff;
+  background: #e8e8e5;
 }
 
 .ui-button-primary:disabled {
@@ -368,8 +374,8 @@ body {
 .leaflet-tooltip.map-node-tooltip {
   border: 1px solid rgba(20, 19, 15, 0.2);
   border-radius: 0.6rem;
-  background: rgba(247, 245, 238, 0.96);
-  color: #3c3931;
+  background: rgba(250, 250, 249, 0.97);
+  color: #3a3936;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
   font-size: 11px;
   line-height: 1.45;
@@ -378,7 +384,7 @@ body {
 
 .leaflet-tooltip.map-link-tooltip strong,
 .leaflet-tooltip.map-node-tooltip strong {
-  color: #14130f;
+  color: #0b0b0b;
 }
 
 .map-node-callout-anchor {
@@ -398,8 +404,8 @@ body {
   padding: 0 8px 0 7px;
   border-radius: 7px;
   border: 1px solid rgba(20, 19, 15, 0.18);
-  background: rgba(247, 245, 238, 0.95);
-  color: #3c3931;
+  background: rgba(250, 250, 249, 0.96);
+  color: #3a3936;
   font-size: 10.5px;
   font-weight: 600;
   line-height: 1;

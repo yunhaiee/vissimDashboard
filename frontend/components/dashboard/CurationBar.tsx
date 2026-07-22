@@ -124,7 +124,7 @@ export default function CurationBar({
   const unavailableChosenIds = spec ? spec.charts.filter((id) => !applicableSectionIds.includes(id)) : [];
 
   return (
-    <section className="rounded-2xl border border-slate-300/70 bg-surface/90 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
+    <section className="rounded-xl border border-slate-300/70 bg-surface/90 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex min-w-[260px] flex-1 items-center gap-2 rounded-xl border border-slate-300/70 bg-surface px-3 py-2">
           <span aria-hidden className="text-base">✨</span>

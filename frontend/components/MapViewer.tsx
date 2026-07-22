@@ -327,7 +327,7 @@ export default function MapViewer({
   return (
     <div className="simulation-map-viewer relative w-full h-full rounded-xl overflow-hidden">
       <div ref={containerRef} className="w-full h-full" />
-      <div className="pointer-events-none select-none absolute left-4 top-32 z-[500] rounded-2xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-xs text-slate-200 shadow-2xl backdrop-blur">
+      <div className="pointer-events-none select-none absolute left-4 top-32 z-[500] rounded-xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-xs text-slate-200 shadow-2xl backdrop-blur">
         <div className="font-semibold text-slate-100">{t("지도 컨텍스트", "Map Context")}</div>
         <div className="mt-2 space-y-2 text-[11px] text-slate-300">
           <div className="flex items-center justify-between gap-4">
@@ -359,7 +359,7 @@ export default function MapViewer({
         </div>
       </div>
 
-      <div className="pointer-events-none select-none absolute right-4 top-4 z-[500] max-w-[260px] rounded-2xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-xs text-slate-200 shadow-2xl backdrop-blur">
+      <div className="pointer-events-none select-none absolute right-4 top-4 z-[500] max-w-[260px] rounded-xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-xs text-slate-200 shadow-2xl backdrop-blur">
         <div className="font-semibold text-slate-100">{t("선택 정보", "Selection")}</div>
         <div className="mt-2 space-y-2 text-[11px]">
           <div className="rounded-lg border border-ink/10 bg-slate-900/80 px-3 py-2">
@@ -381,7 +381,7 @@ export default function MapViewer({
         </div>
       </div>
 
-      <div className="pointer-events-none select-none absolute left-4 bottom-4 z-[500] rounded-2xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-xs text-slate-200 shadow-2xl backdrop-blur">
+      <div className="pointer-events-none select-none absolute left-4 bottom-4 z-[500] rounded-xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-xs text-slate-200 shadow-2xl backdrop-blur">
         <div className="font-semibold text-slate-100">{t("네트워크 상태", "Network Status")}</div>
         <div className="mt-2 space-y-1.5">
           {metricLegend.rows.map((item) => (

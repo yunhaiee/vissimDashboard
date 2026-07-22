@@ -134,7 +134,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
 
   return (
     <div className="space-y-3.5">
-      <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3.5 py-3">
+      <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3.5 py-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
@@ -208,7 +208,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
         )}
       </div>
 
-      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-surface">
+      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-surface">
         <table className="w-full min-w-[760px] text-sm">
           <thead className="bg-slate-50/90">
             <tr>

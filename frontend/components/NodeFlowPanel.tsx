@@ -245,7 +245,7 @@ function SignalPhasePanelContent({
   );
 
   return (
-    <section className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-3">
+    <section className="rounded-xl border border-slate-200/80 bg-slate-50/60 p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <p className="text-base font-bold tracking-tight text-slate-900">{t("신호 현시", "Signal Phase")}</p>
         {showScenarioSelector && (

@@ -211,7 +211,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
 
   if (!nodes.length) {
     return (
-      <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center text-sm text-slate-400">
+      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center text-sm text-slate-400">
         노드별 방향 차량 수 데이터가 없습니다.
       </div>
     );
@@ -340,7 +340,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                   key={`top-bottleneck-${node.node_id}`}
                   type="button"
                   onClick={() => setActiveNodeId(node.node_id)}
-                  className={`rounded-2xl border px-3.5 py-3 text-left transition ${
+                  className={`rounded-xl border px-3.5 py-3 text-left transition ${
                     isActive
                       ? "border-rose-300 bg-rose-100/80 shadow-sm shadow-rose-100"
                       : "border-slate-200 bg-surface/90 hover:border-rose-200 hover:bg-surface"
@@ -693,7 +693,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
               )}
             </>
           ) : (
-            <div className="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center">
+            <div className="flex min-h-[420px] flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center">
               <p className="text-sm font-semibold text-slate-600">조건에 맞는 노드를 먼저 선택해 주세요.</p>
               <p className="mt-2 text-xs text-slate-400">
                 Current filters are hiding the node workspace. Adjust the search or direction filter to bring it back.
@@ -716,7 +716,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
 
 function SummaryCard({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-surface px-4 py-4 shadow-sm">
+    <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-surface px-4 py-4 shadow-sm">
       <div className="pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full bg-slate-100 blur-2xl" />
       <p className="text-[11px] font-medium text-slate-400">{label}</p>
       <p className="relative mt-2 truncate text-sm font-semibold text-slate-800">{value}</p>
@@ -790,7 +790,7 @@ function ScenarioComparisonOverview({
             : `${formatSignedVolume(row.differenceFromBaseline)} veh vs ${baselineLabel} (${formatSignedPercent(row.differencePercentFromBaseline)})`;
 
           return (
-            <div key={row.scenario.id} className="rounded-2xl border border-slate-200 bg-surface/95 px-3.5 py-3.5 shadow-sm">
+            <div key={row.scenario.id} className="rounded-xl border border-slate-200 bg-surface/95 px-3.5 py-3.5 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
@@ -844,7 +844,7 @@ function DirectionInsightStrip({ insights }: { insights: DirectionInsight[] }) {
                 : "유출 우세";
 
           return (
-            <div key={insight.direction} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3.5 py-3.5">
+            <div key={insight.direction} className="rounded-xl border border-slate-200 bg-slate-50/80 px-3.5 py-3.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-ink">
@@ -943,7 +943,7 @@ function DirectionMatrixView({
         return (
           <section
             key={direction}
-            className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-surface to-slate-50 p-3.5 shadow-sm"
+            className="rounded-xl border border-slate-200 bg-gradient-to-br from-slate-50 via-surface to-slate-50 p-3.5 shadow-sm"
           >
             <div className="mb-2 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -1113,7 +1113,7 @@ function NodeIntersectionGrid({
           peak={peak}
         />
         <div className="relative z-20 col-start-2 row-start-2 flex items-center justify-center">
-          <div className="flex h-[80px] w-[80px] flex-col items-center justify-center rounded-2xl border-4 border-slate-100 bg-surface shadow-xl">
+          <div className="flex h-[80px] w-[80px] flex-col items-center justify-center rounded-xl border-4 border-slate-100 bg-surface shadow-xl">
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-300">Node</span>
             <div className="mt-1 flex gap-1">
               {DIRECTIONS.map((direction) => {
@@ -1291,7 +1291,7 @@ function DirectionBarsView({
 
       <div className="space-y-5">
         {activeDirections.map((direction) => (
-            <div key={direction} className="rounded-2xl border border-slate-200 bg-surface px-4 py-4 shadow-sm">
+            <div key={direction} className="rounded-xl border border-slate-200 bg-surface px-4 py-4 shadow-sm">
               <div className="mb-2 flex items-center gap-2">
                 <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-slate-900 text-[11px] font-bold text-ink shadow-sm">
                   {DIR_KR[direction]}

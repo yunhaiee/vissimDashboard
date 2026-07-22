@@ -437,10 +437,10 @@ export default function SimulationPage() {
         onCancel={() => setConfirmClearDataset(false)}
       />
 
-      <section className="rounded-2xl border border-slate-300/70 bg-surface/92 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+      <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-900">
+            <h1 className="text-[22px] font-medium tracking-tight text-white">
               {t("시뮬레이션 실행", "Simulation Runner")}
             </h1>
             <p className="mt-1 text-sm text-slate-600">
@@ -499,13 +499,13 @@ export default function SimulationPage() {
       </section>
 
       {error && (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm font-medium text-rose-700">
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm font-medium text-rose-700">
           {error}
         </div>
       )}
 
       <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
-        <div className="relative h-[640px] overflow-hidden rounded-2xl border border-slate-300/70 bg-ink">
+        <div className="relative h-[640px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink">
           <MapViewer
             onLinkClick={handleMapLinkClick}
             onNodeClick={handleMapNodeClick}
@@ -515,7 +515,7 @@ export default function SimulationPage() {
             selectedLinkId={selectedLink?.id ?? null}
             queuedLinkModes={queuedLinkModes}
           />
-          <div className="pointer-events-auto absolute left-4 top-4 z-[900] rounded-2xl border border-ink/15 bg-slate-950/88 p-3 text-xs text-ink shadow-2xl backdrop-blur">
+          <div className="pointer-events-auto absolute left-4 top-4 z-[900] rounded-xl border border-ink/15 bg-slate-950/88 p-3 text-xs text-ink shadow-2xl backdrop-blur">
             <div className="mb-2 font-semibold">{t("편집 모드", "Edit Mode")}</div>
             <div className="grid grid-cols-3 gap-1.5">
               <ModeButton active={editMode === "speed"} label={t("속도", "Speed")} onClick={() => setEditMode("speed")} />
@@ -586,7 +586,7 @@ export default function SimulationPage() {
         </QueuePanel>
       </section>
 
-      <section className="rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+      <section className="rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-slate-900">{t("최근 실행 작업", "Recent Simulation Jobs")}</h2>
@@ -648,7 +648,7 @@ function DataAndRuntimePanel({
   const runtimeTone = capabilities?.can_run ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800";
   return (
     <div className="grid h-full gap-4 lg:grid-cols-2">
-        <div className="flex h-full flex-col rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+        <div className="flex h-full flex-col rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-bold text-slate-900">{t("데이터 패키지", "Dataset Package")}</h2>
             <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${hasUploadedZip ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
@@ -678,7 +678,7 @@ function DataAndRuntimePanel({
           {uploadError && <p className="mt-2 text-xs font-medium text-rose-600">{uploadError}</p>}
         </div>
 
-        <div className="flex h-full flex-col rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+        <div className="flex h-full flex-col rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
           <h2 className="text-sm font-bold text-slate-900">{t("실행 환경", "Runtime")}</h2>
           <div className={`mt-2 rounded-xl border px-3 py-3 text-xs ${runtimeTone}`}>
             <p className="font-bold">
@@ -737,7 +737,7 @@ function SelectionInspector({
 }) {
   const { t } = useLanguage();
   return (
-    <div className="flex h-full flex-col rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+    <div className="flex h-full flex-col rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
       <div>
         <h2 className="text-base font-bold text-slate-900">{t("선택 항목", "Selection")}</h2>
         <p className="mt-1 text-sm text-slate-600">
@@ -850,7 +850,7 @@ function RunPanel({
 }) {
   const { t } = useLanguage();
   return (
-    <div className="rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+    <div className="rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-base font-bold text-slate-900">{t("실행 설정", "Run Setup")}</h2>
@@ -980,7 +980,7 @@ function QueuePanel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+    <section className="rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h2 className="text-sm font-bold text-slate-900">{title}</h2>
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{count}</span>

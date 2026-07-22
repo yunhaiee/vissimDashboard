@@ -106,7 +106,7 @@ export default function IncidentPanel({
   };
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-3xl border border-slate-200/80 bg-surface/95 shadow-[0_22px_48px_rgba(15,23,42,0.16)] backdrop-blur">
+    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-surface/95 shadow-[0_22px_48px_rgba(15,23,42,0.16)] backdrop-blur">
       <div className="border-b border-slate-200/80 px-6 py-5">
         <div className="text-sm font-semibold text-slate-900">{t("시나리오 큐", "Scenario Queue")}</div>
         <p className="mt-1 text-xs text-slate-600">
@@ -115,7 +115,7 @@ export default function IncidentPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
-        <section className="rounded-2xl border border-slate-200/80 bg-slate-50/85 p-4">
+        <section className="rounded-xl border border-slate-200/80 bg-slate-50/85 p-4">
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("노드 정보", "Node Details")}</div>
           {node ? (
             <div className="mt-3 space-y-3">
@@ -135,7 +135,7 @@ export default function IncidentPanel({
                     <button
                       key={connectedLink.id}
                       onClick={() => onSelectLink(connectedLink)}
-                      className={`w-full rounded-2xl border px-4 py-3 text-left transition-colors ${
+                      className={`w-full rounded-xl border px-4 py-3 text-left transition-colors ${
                         active
                           ? "border-blue-200 bg-blue-50 text-slate-800"
                           : "border-slate-200/80 bg-surface text-slate-700 hover:border-slate-400"
@@ -151,17 +151,17 @@ export default function IncidentPanel({
               </div>
             </div>
           ) : (
-            <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-surface px-4 py-6 text-center text-sm text-slate-400">
+            <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-surface px-4 py-6 text-center text-sm text-slate-400">
               {t("그래프 노드를 클릭해 연결 링크를 확인하세요.", "Click a graph node to inspect its connected links.")}
             </div>
           )}
         </section>
 
-        <section className="rounded-2xl border border-slate-200/80 bg-surface p-4 shadow-sm">
+        <section className="rounded-xl border border-slate-200/80 bg-surface p-4 shadow-sm">
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("선택 링크", "Selected Link")}</div>
           {link ? (
             <div className="mt-3 space-y-4">
-              <div className="rounded-2xl border border-blue-200/80 bg-blue-50 px-4 py-3">
+              <div className="rounded-xl border border-blue-200/80 bg-blue-50 px-4 py-3">
                 <div className="text-sm font-semibold text-slate-800">Link {link.id}</div>
                 <div className="mt-1 text-xs text-slate-600">
                   {link.lanes} {t("차로", "lanes")} · {link.length.toFixed(1)} m
@@ -172,7 +172,7 @@ export default function IncidentPanel({
                 {incidentTypeOptions.map((option) => (
                   <label
                     key={option.value}
-                    className={`block rounded-2xl border px-4 py-3 transition-colors ${
+                    className={`block rounded-xl border px-4 py-3 transition-colors ${
                       type === option.value
                         ? "border-blue-200 bg-blue-50"
                         : "border-slate-200 hover:border-slate-400"
@@ -259,13 +259,13 @@ export default function IncidentPanel({
               </div>
             </div>
           ) : (
-            <div className="mt-3 rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-400">
+            <div className="mt-3 rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-400">
               {t("연결 링크를 선택해 변경사항을 설정하세요.", "Select a connected link to configure a modification.")}
             </div>
           )}
         </section>
 
-        <section className="rounded-2xl border border-slate-200/80 bg-surface p-4 shadow-sm">
+        <section className="rounded-xl border border-slate-200/80 bg-surface p-4 shadow-sm">
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("수정 큐", "Modification Queue")}</div>
             {onClearAll && incidents.length > 0 && (
@@ -284,12 +284,12 @@ export default function IncidentPanel({
           </div>
           <div className="mt-3 space-y-2">
             {incidents.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-400">
+              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-400">
                 {t("대기 중인 수정사항이 없습니다.", "No queued modifications yet.")}
               </div>
             )}
             {incidents.map((incident) => (
-              <div key={incident.linkId} className="flex items-center justify-between rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3">
+              <div key={incident.linkId} className="flex items-center justify-between rounded-xl border border-amber-100 bg-amber-50 px-4 py-3">
                 <div>
                   <div className="text-sm font-semibold text-amber-900">Link {incident.linkId}</div>
                   <div className="mt-1 text-xs text-amber-700">
@@ -311,7 +311,7 @@ export default function IncidentPanel({
           </div>
         </section>
 
-        <section className="rounded-2xl border border-slate-200/80 bg-surface p-4 shadow-sm">
+        <section className="rounded-xl border border-slate-200/80 bg-surface p-4 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("시나리오 이력", "Scenario History")}</div>
             <div className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-500">
@@ -320,12 +320,12 @@ export default function IncidentPanel({
           </div>
           <div className="mt-3 space-y-2">
             {history.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-5 text-center text-sm text-slate-400">
+              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-5 text-center text-sm text-slate-400">
                 {t("완료된 시나리오 실행 이력이 여기에 표시됩니다.", "Completed scenario runs will appear here.")}
               </div>
             )}
             {history.map((item) => (
-              <div key={`${item.scenarioName}-${item.jobId}`} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+              <div key={`${item.scenarioName}-${item.jobId}`} className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3">
                 <div className="text-sm font-semibold text-slate-800">{item.scenarioName}</div>
                 <div className="mt-1 font-mono text-xs text-slate-500">{item.jobId}</div>
               </div>
@@ -358,7 +358,7 @@ function NodeMiniMap({
 }) {
   const { t } = useLanguage();
   return (
-    <div className="rounded-3xl border border-slate-100 bg-surface p-4">
+    <div className="rounded-xl border border-slate-100 bg-surface p-4">
       <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("노드 다이어그램", "Node Diagram")}</div>
       <div className="relative mt-4 mx-auto h-48 w-48">
         <DirectionStack
@@ -392,7 +392,7 @@ function NodeMiniMap({
           onSelectLink={onSelectLink}
         />
 
-        <div className="absolute inset-1/2 h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-blue-200 bg-blue-50" />
+        <div className="absolute inset-1/2 h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-xl border border-blue-200 bg-blue-50" />
       </div>
     </div>
   );

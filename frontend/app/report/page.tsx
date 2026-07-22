@@ -146,7 +146,7 @@ export default function ReportPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-6 px-4 py-6">
       <div>
-        <h1 className="text-xl font-bold text-slate-900">{t("보고서 작성", "Report Builder", "レポート作成")}</h1>
+        <h1 className="text-[22px] font-medium text-white">{t("보고서 작성", "Report Builder", "レポート作成")}</h1>
         <p className="mt-1 text-sm text-slate-600">
           {t(
             "섹션을 추가·정렬하고 'Word 생성'을 누르면 현재 데이터셋 기준 보고서(.docx)가 만들어집니다.",
@@ -157,7 +157,7 @@ export default function ReportPage() {
       </div>
 
       {activeDataset && activeDataset.source !== "uploaded" && (
-        <div className="rounded-2xl border border-amber-300 bg-amber-100/70 px-4 py-3 text-xs font-medium text-amber-900">
+        <div className="rounded-xl border border-amber-300 bg-amber-100/70 px-4 py-3 text-xs font-medium text-amber-900">
           {t(
             `※ 업로드된 VISSIM 데이터셋이 없어 기본 샘플 데이터(${activeDataset.filename})로 보고서가 생성됩니다.`,
             `※ No VISSIM dataset has been uploaded — the report will be generated from the bundled sample data (${activeDataset.filename}).`,
@@ -167,7 +167,7 @@ export default function ReportPage() {
       )}
 
       {/* meta */}
-      <section className="rounded-2xl border border-slate-200 bg-surface/90 p-5 shadow-sm">
+      <section className="rounded-xl border border-slate-200 bg-surface/90 p-5 shadow-sm">
         <h2 className="mb-3 text-sm font-bold text-slate-800">{t("표지 정보", "Cover info", "表紙情報")}</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           {field("title", t("제목", "Title", "タイトル"), t("예: Murdoch Drive 모델 검증 보고서", "e.g. Murdoch Drive validation report"))}
@@ -189,7 +189,7 @@ export default function ReportPage() {
       </section>
 
       {/* palette */}
-      <section className="rounded-2xl border border-slate-200 bg-surface/90 p-5 shadow-sm">
+      <section className="rounded-xl border border-slate-200 bg-surface/90 p-5 shadow-sm">
         <h2 className="mb-3 text-sm font-bold text-slate-800">{t("섹션 추가", "Add section", "セクション追加")}</h2>
         <div className="flex flex-wrap gap-2">
           {PALETTE.map((p) => (
@@ -207,7 +207,7 @@ export default function ReportPage() {
       </section>
 
       {/* block list */}
-      <section className="rounded-2xl border border-slate-200 bg-surface/90 p-5 shadow-sm">
+      <section className="rounded-xl border border-slate-200 bg-surface/90 p-5 shadow-sm">
         <h2 className="mb-3 text-sm font-bold text-slate-800">
           {t("보고서 구성", "Report outline", "レポート構成")} ({blocks.length})
         </h2>

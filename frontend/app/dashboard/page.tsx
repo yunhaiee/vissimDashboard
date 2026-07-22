@@ -424,11 +424,11 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-5 pb-12">
-      <section className="rounded-2xl border border-slate-300/70 bg-surface/90 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
+      <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 flex-1 flex-col gap-4">
             <div>
-              <h1 className="text-xl font-bold tracking-tight text-slate-900">
+              <h1 className="text-[22px] font-medium tracking-tight text-white">
                 {t("교통 운영 분석", "Traffic Operations Analysis")}
               </h1>
               <p className="text-sm text-slate-600">
@@ -468,7 +468,7 @@ export default function DashboardPage() {
       </section>
 
       {error && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
           <span>{error}</span>
           <button
             type="button"
@@ -503,7 +503,7 @@ export default function DashboardPage() {
             <div className="relative">
               {hasData && <SectionJumpIndex showValidation={realCounts.length > 0} sectionVisible={sectionVisible} />}
 
-              <div className="relative h-[520px] overflow-hidden rounded-2xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[60vh]">
+              <div className="relative h-[520px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[60vh]">
                 <DashboardMap
                   summary={summary}
                   selectedNodeId={activeNodeId}
@@ -524,7 +524,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="flex h-[520px] min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)] xl:h-[60vh]">
+            <div className="flex h-[520px] min-h-0 flex-col overflow-hidden rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)] xl:h-[60vh]">
               <SelectedIntersectionPanel
                 selectedNodeIds={selectedNodeIds}
                 nodeNamesById={nodeNamesById}
@@ -737,7 +737,7 @@ function DashboardDatasetGate() {
   const { t } = useLanguage();
 
   return (
-    <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 px-4 py-3">
+    <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-xs font-semibold text-amber-700">
@@ -771,7 +771,7 @@ function DashboardUploadRequiredPanel() {
   const { t } = useLanguage();
 
   return (
-    <section className="rounded-2xl border border-dashed border-slate-300 bg-surface/78 px-6 py-12 text-center shadow-sm">
+    <section className="rounded-xl border border-dashed border-slate-300 bg-surface/78 px-6 py-12 text-center shadow-sm">
       <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-amber-300 bg-amber-50 text-sm font-black text-amber-600">
         DATA
       </div>
@@ -858,7 +858,7 @@ function IntersectionPerformanceGrid({ cards }: { cards: IntersectionPerformance
 
   if (!cards.length) {
     return (
-      <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-surface/85 px-6 py-10 text-center text-sm text-slate-500">
+      <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-surface/85 px-6 py-10 text-center text-sm text-slate-500">
         {t("지도에서 교차로를 선택하면 성능평가 카드가 표시됩니다.", "Select intersections on the map to show performance cards.")}
       </div>
     );
@@ -900,7 +900,7 @@ function IntersectionPerformanceGrid({ cards }: { cards: IntersectionPerformance
         {cards.map((card, cardIndex) => (
           <article
             key={card.nodeId}
-            className="rounded-2xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]"
+            className="rounded-xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]"
           >
             <div className="mb-3 flex items-start justify-between gap-2">
               <div className="min-w-0">
@@ -936,7 +936,7 @@ function IntersectionMetricBars({
   const maxValue = Math.max(...values.map((item) => item.value ?? 0), 1);
 
   return (
-    <div className="rounded-2xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="rounded-xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-bold text-slate-900">{title}</h3>
         <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">
@@ -1048,7 +1048,7 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
   const maxTotal = Math.max(...cards.map((item) => item.volumeTotal ?? 0), 1);
 
   return (
-    <div className="rounded-2xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="rounded-xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-bold text-slate-900">{t("통행량 구성", "Volume Composition")}</h3>
         <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">veh</span>
@@ -1109,7 +1109,7 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
 
   if (!populated.length || !allValues.length || !labels.length) {
     return (
-      <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-surface/85 px-6 py-10 text-center text-sm text-slate-500">
+      <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-surface/85 px-6 py-10 text-center text-sm text-slate-500">
         <p>
           {t(
             "통행시간 측정 결과가 없어 그래프를 표시할 수 없습니다.",
@@ -1164,7 +1164,7 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
   const tickStride = labels.length > 14 ? Math.ceil(labels.length / 14) : 1;
 
   return (
-    <div className="mt-4 rounded-2xl border border-slate-300/70 bg-surface/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="mt-4 rounded-xl border border-slate-300/70 bg-surface/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       {truncated && (
         <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800">
           {t(
@@ -1348,7 +1348,7 @@ function OverallResultsSection({
 
   return (
     <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <section className="rounded-2xl border border-slate-300/70 bg-surface/95 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+      <section className="rounded-xl border border-slate-300/70 bg-surface/95 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-sm font-bold text-slate-900">{t("결과 해석", "Result Interpretation")}</p>
@@ -1414,7 +1414,7 @@ function OverallResultsSection({
         </div>
       </section>
 
-      <section className="rounded-2xl border border-slate-300/70 bg-surface/95 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+      <section className="rounded-xl border border-slate-300/70 bg-surface/95 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-sm font-bold text-slate-900">{t("보고서 생성", "Report Generator")}</p>
@@ -1533,7 +1533,7 @@ function KpiCard({
     runnerUpGap != null && bestEntryStdev != null && runnerUpGap < bestEntryStdev;
 
   return (
-    <div className="rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="mb-4 flex items-start justify-between gap-2">
         <h3 className="text-sm font-semibold text-slate-800">{label}</h3>
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
@@ -1635,7 +1635,7 @@ function DashboardScenarioPicker({
   };
 
   return (
-    <div className="rounded-2xl border border-slate-200/90 bg-slate-50/70 p-3">
+    <div className="rounded-xl border border-slate-200/90 bg-slate-50/70 p-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-xs font-semibold text-slate-800">{t("시나리오 비교 세트", "Scenario Comparison Set")}</p>
@@ -1794,7 +1794,7 @@ function ValidationMatrix({
         </p>
       )}
 
-      <div className="overflow-x-auto rounded-2xl border border-slate-300/70 bg-surface/92 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+      <div className="overflow-x-auto rounded-xl border border-slate-300/70 bg-surface/92 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-slate-100 bg-slate-50">

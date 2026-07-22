@@ -371,7 +371,7 @@ export default function BaseValidationMap({
   const legend = useMemo(() => buildLegend(overlayMode, t), [overlayMode, t]);
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-2xl">
+    <div className="relative h-full w-full overflow-hidden rounded-xl">
       <div ref={containerRef} className="h-full w-full" />
 
       {networkError && (

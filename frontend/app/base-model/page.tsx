@@ -503,10 +503,10 @@ export default function BaseModelPage() {
 
   return (
     <div className="space-y-5 pb-12">
-      <section className="rounded-2xl border border-slate-300/70 bg-surface/90 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
+      <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-900">
+            <h1 className="text-[22px] font-medium tracking-tight text-white">
               {t("베이스모델 검증", "Base Model Validation")}
             </h1>
             <p className="mt-1 text-sm text-slate-600">
@@ -629,13 +629,13 @@ export default function BaseModelPage() {
       </section>
 
       {error && (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
           {error}
         </div>
       )}
 
       {workbook.warnings.length > 0 && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-700">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-700">
           {workbook.warnings.join(" ")}
         </div>
       )}
@@ -689,7 +689,7 @@ export default function BaseModelPage() {
             );
           })}
         </div>
-        <div className="mt-4 rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+        <div className="mt-4 rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <div>
               <p className="text-xs font-bold text-slate-800">
@@ -770,7 +770,7 @@ export default function BaseModelPage() {
             </div>
           )}
           {travelRoutes.map((route) => (
-            <div key={route.key} className="rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+            <div key={route.key} className="rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="text-sm font-bold text-slate-900">{route.name}</h3>
@@ -824,7 +824,7 @@ export default function BaseModelPage() {
           title={t("3. 결과 분석", "3. Result Analysis")}
           subtitle={t("교통량, GEH, 통행시간 검증 결과를 종합합니다.", "Summarize traffic volume, GEH, and travel time validation outcomes.")}
         />
-        <div className={`mt-4 rounded-2xl border px-5 py-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)] ${analysisPanelClass(countStats, travelStats)}`}>
+        <div className={`mt-4 rounded-xl border px-5 py-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)] ${analysisPanelClass(countStats, travelStats)}`}>
           <p className="text-sm leading-relaxed">
             {buildAnalysisText({ countStats, travelStats, t })}
           </p>
@@ -943,7 +943,7 @@ function ValidationPieCard({
   t: (ko: string, en: string, ja?: string) => string;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-300/70 bg-surface/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="rounded-xl border border-slate-300/70 bg-surface/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="mb-2">
         <p className="text-xs font-bold text-slate-800">{title}</p>
         <p className="mt-0.5 text-[11px] text-slate-500">{criterion}</p>
@@ -972,7 +972,7 @@ function ValidationPieCard({
 
 function EmptyPanel({ text }: { text: string }) {
   return (
-    <div className="flex min-h-[220px] items-center justify-center rounded-2xl border border-slate-300/70 bg-surface/92 p-6 text-center text-sm text-slate-500 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="flex min-h-[220px] items-center justify-center rounded-xl border border-slate-300/70 bg-surface/92 p-6 text-center text-sm text-slate-500 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       {text}
     </div>
   );
@@ -1009,7 +1009,7 @@ function CountComparisonOverview({
 
   return (
     <div className="mt-4 space-y-4">
-      <div className="relative h-[540px] overflow-hidden rounded-2xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[62vh]">
+      <div className="relative h-[540px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[62vh]">
         <BaseValidationMap
           nodes={mapNodes}
           selectedNodeIds={selectedNodeIds}
@@ -1047,7 +1047,7 @@ function ValidationNodeInspector({
   const atSelectionCap = selectedGroups.length >= MAX_SELECTED_VALIDATION_NODES;
 
   return (
-    <aside className="flex h-[540px] min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-300/70 bg-surface/94 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] xl:h-[62vh]">
+    <aside className="flex h-[540px] min-h-0 flex-col overflow-hidden rounded-xl border border-slate-300/70 bg-surface/94 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] xl:h-[62vh]">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
@@ -1161,7 +1161,7 @@ function ValidationNodeDetail({
   const topRows = group.rows.slice(0, 7);
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
+    <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">

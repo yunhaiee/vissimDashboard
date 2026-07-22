@@ -224,7 +224,7 @@ export default function DownloadsPage() {
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+        <h1 className="text-[22px] font-medium tracking-tight text-white">
           {t("데이터 다운로드", "Data Downloads")}
         </h1>
         <p className="mt-1 text-sm text-slate-600">
@@ -242,7 +242,7 @@ export default function DownloadsPage() {
       )}
 
       {activeDataset && activeDataset.source !== "uploaded" && (
-        <div className="mb-5 rounded-2xl border border-amber-300 bg-amber-100/70 px-4 py-3 text-xs font-medium text-amber-900">
+        <div className="mb-5 rounded-xl border border-amber-300 bg-amber-100/70 px-4 py-3 text-xs font-medium text-amber-900">
           {t(
             `※ 업로드된 VISSIM 데이터셋이 없어 기본 샘플 데이터(${activeDataset.filename})를 내려받게 됩니다. 실제 프로젝트 데이터를 원하면 대시보드에서 먼저 업로드하세요.`,
             `※ No VISSIM dataset has been uploaded — this will export the bundled sample data (${activeDataset.filename}). Upload your project data on the dashboard first if you want real results.`,
@@ -250,14 +250,14 @@ export default function DownloadsPage() {
         </div>
       )}
 
-      <div className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-xs text-amber-800 mb-5">
+      <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-xs text-amber-800 mb-5">
         {t(
           "※ 보정·검증·모델 산출물은 시나리오 시뮬레이션(.db) 결과에 기반합니다. 현재 시뮬레이션 런이 미완성이면 값이 부분적일 수 있습니다.",
           "Note: Calibration, Validation and Model outputs are based on the scenario simulation (.db). Values may be partial if the runs are incomplete.",
         )}
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
         <div className="flex items-center gap-3 text-sm text-slate-600">
           <button
             type="button"
@@ -291,7 +291,7 @@ export default function DownloadsPage() {
           return (
             <li
               key={item.key}
-              className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]"
+              className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]"
             >
               <div className="flex items-start gap-4">
                 <input
