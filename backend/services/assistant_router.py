@@ -531,16 +531,24 @@ class LocalQwenProvider:
         """Strict-JSON structured generation for a model with no native tool-use.
 
         Deliberately thin (see docs/phase2/DECISIONS.md, dated entry for this
-        method): all prompt-building, action validation, and fallback-rung
-        bookkeeping live in ``services.agent.structured``, imported lazily here
-        (matching ``claude_provider.py``'s lazy ``import anthropic`` pattern) so
-        this module carries no module-load-time dependency on ``agent/``.
-        Never routes the reply through ``clean_generated_answer`` (it strips
-        JSON). ``max_tokens`` is accepted for signature parity with
-        ``ClaudeProvider`` but is not forwarded — the underlying ``generate``
-        path sizing is controlled by the existing ``QWEN_MAX_NEW_TOKENS`` env var.
+        method): all prompt-building, salvage, action validation, and
+        fallback-rung bookkeeping live in ``services.agent.structured``,
+        imported lazily here (matching ``claude_provider.py``'s lazy ``import
+        anthropic`` pattern) so this module carries no module-load-time
+        dependency on ``agent/``. Both the parsed-JSON path and the rescue path
+        below route through ``salvage_and_validate`` (repairs occasional
+        XML-tool-syntax contamination, then validates) rather than
+        ``validate_action`` directly. Never routes the reply through
+        ``clean_generated_answer`` (it strips JSON). ``max_tokens`` is accepted
+        for signature parity with ``ClaudeProvider`` but is not forwarded — the
+        underlying ``generate`` path sizing is controlled by the existing
+        ``QWEN_MAX_NEW_TOKENS`` env var.
         """
-        from services.agent.structured import build_meta, build_strict_json_prompt, validate_action
+        from services.agent.structured import (
+            build_meta,
+            build_strict_json_prompt,
+            salvage_and_validate,
+        )
         from services.dashboard_curator import extract_json_object
 
         prompt = build_strict_json_prompt(messages, tools, schema, system)
@@ -557,14 +565,16 @@ class LocalQwenProvider:
             action = json.loads(reply)
         except (json.JSONDecodeError, TypeError, ValueError):
             action = None
-        if isinstance(action, dict) and validate_action(action, tools, schema) is None:
-            return action, build_meta(mode=mode, fallback_rung=0)
+        if isinstance(action, dict):
+            cleaned, reason = salvage_and_validate(action, tools, schema)
+            if reason is None:
+                return cleaned, build_meta(mode=mode, fallback_rung=0)
 
         rescued = extract_json_object(reply)
         if isinstance(rescued, dict):
-            reason = validate_action(rescued, tools, schema)
+            cleaned, reason = salvage_and_validate(rescued, tools, schema)
             if reason is None:
-                return rescued, build_meta(mode=mode, fallback_rung=1)
+                return cleaned, build_meta(mode=mode, fallback_rung=1)
             return None, build_meta(mode=mode, fallback_rung=2, error=reason)
 
         return None, build_meta(

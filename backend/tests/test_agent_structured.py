@@ -21,7 +21,7 @@ import pytest
 
 import config  # noqa: F401 - importing triggers load_dotenv of backend/.env
 
-from services.agent.structured import validate_action
+from services.agent.structured import salvage_tool_params, validate_action
 from services.claude_provider import ClaudeProvider
 
 TOOL_A: dict[str, Any] = {
@@ -34,6 +34,22 @@ TOOL_A: dict[str, Any] = {
     },
 }
 TOOLS: list[dict[str, Any]] = [TOOL_A]
+
+# The real M1.3 planner-terminal ``respond`` tool shape (planner.py's
+# _with_summary_param augmentation) — used by the salvage-pass tests below,
+# which reproduce the exact live defect surfaced against this tool.
+RESPOND_TOOL: dict[str, Any] = {
+    "name": "respond",
+    "description": "Deliver the final answer to the user and end the turn.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "answer": {"type": "string"},
+            "summary": {"type": "string", "maxLength": 80},
+        },
+        "required": ["answer", "summary"],
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +270,132 @@ def test_validate_action_accepts_valid_action_with_schema() -> None:
     schema = {"required": ["tool", "params"]}
     action = {"tool": "get_link_volume", "params": {"link_id": "101"}}
     assert validate_action(action, TOOLS, schema) is None
+
+
+# ---------------------------------------------------------------------------
+# XML-tool-syntax salvage pass (fix for the M1.4 live-browser defect: a
+# contaminated native tool_use ``answer`` param arriving with a stray
+# ``</answer>`` tag followed by a serialized ``<parameter name="summary">...``
+# fragment for a DIFFERENT param — see docs/phase2/DECISIONS.md dated entry).
+# Cases (a)-(d) exercise ``salvage_tool_params`` directly; (e) below (Qwen)
+# and the Claude-path test verify both providers route through it.
+# ---------------------------------------------------------------------------
+
+# Exact strings from runtime/agent_sessions/e1dd1bdb76ee/trace_e1dd1bdb76ee.jsonl
+# (plan record, iteration 1) that surfaced this bug.
+_OBSERVED_CONTAMINATED_ANSWER = (
+    "현재 네트워크 개요는 다음과 같습니다.\n\n"
+    "- **링크(Link): 14개** — 예: Main St EB approach(101), Main St WB exit(102), "
+    "1st Ave SB approach(103), 1st Ave NB exit(104) 등\n\n"
+    "전체 데이터가 일부만 표시되어 노드, 차량 입력(vehicle input), 신호(signal) 등 "
+    "나머지 항목은 아직 확인하지 못했습니다. 필요하시면 차량 입력 목록이나 신호 컨트롤러 "
+    "목록을 추가로 조회해 드릴 수 있습니다.</answer>\n"
+    '<parameter name="summary">네트워크 개요 결과를 정리해 답변'
+)
+_OBSERVED_CLEAN_ANSWER_SUFFIX = "조회해 드릴 수 있습니다."
+_OBSERVED_RECOVERED_SUMMARY = "네트워크 개요 결과를 정리해 답변"
+
+
+def test_salvage_tool_params_recovers_real_observed_contamination() -> None:
+    # (a) the EXACT observed contamination -> answer cleaned, summary recovered.
+    action = {
+        "tool": "respond",
+        "params": {"answer": _OBSERVED_CONTAMINATED_ANSWER, "summary": ""},
+    }
+
+    cleaned = salvage_tool_params(action, [RESPOND_TOOL])
+
+    assert "</answer>" not in cleaned["params"]["answer"]
+    assert "<parameter" not in cleaned["params"]["answer"]
+    assert cleaned["params"]["answer"].endswith(_OBSERVED_CLEAN_ANSWER_SUFFIX)
+    assert cleaned["params"]["summary"] == _OBSERVED_RECOVERED_SUMMARY
+
+
+def test_salvage_tool_params_never_overwrites_non_empty_existing_param() -> None:
+    # (b) contamination alongside an already-populated target param -> not
+    # overwritten, but the contaminated param is still cleaned.
+    answer = 'Some clean answer text.</answer>\n<parameter name="summary">recovered summary text'
+    action = {
+        "tool": "respond",
+        "params": {"answer": answer, "summary": "already set summary"},
+    }
+
+    cleaned = salvage_tool_params(action, [RESPOND_TOOL])
+
+    assert cleaned["params"]["summary"] == "already set summary"
+    assert cleaned["params"]["answer"] == "Some clean answer text."
+
+
+def test_salvage_tool_params_passthrough_when_clean() -> None:
+    # (c) clean params -> byte-identical passthrough (same object, untouched).
+    action = {
+        "tool": "respond",
+        "params": {"answer": "A perfectly clean answer.", "summary": "ok"},
+    }
+
+    cleaned = salvage_tool_params(action, [RESPOND_TOOL])
+
+    assert cleaned is action
+
+
+def test_salvage_tool_params_leaves_benign_angle_brackets_untouched() -> None:
+    # (d) prose with benign angle brackets that don't match the artifact
+    # markers must never be altered.
+    action = {
+        "tool": "respond",
+        "params": {"answer": "Use <b>bold</b> tags here.", "summary": "ok"},
+    }
+
+    cleaned = salvage_tool_params(action, [RESPOND_TOOL])
+
+    assert cleaned is action
+    assert cleaned["params"]["answer"] == "Use <b>bold</b> tags here."
+
+
+def test_claude_generate_structured_salvages_contaminated_tool_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: the real defect happened via the Claude path at rung 0."""
+    response = _response(
+        [
+            _tool_use_block(
+                "respond",
+                {"answer": _OBSERVED_CONTAMINATED_ANSWER, "summary": ""},
+            )
+        ]
+    )
+    provider, stub = _provider_with_stub(monkeypatch, [response])
+
+    action, meta = provider.generate_structured(
+        messages=[{"role": "user", "content": "네트워크 개요 알려줘"}],
+        tools=[RESPOND_TOOL],
+    )
+
+    assert meta["fallback_rung"] == 0
+    assert "</answer>" not in action["params"]["answer"]
+    assert action["params"]["answer"].endswith(_OBSERVED_CLEAN_ANSWER_SUFFIX)
+    assert action["params"]["summary"] == _OBSERVED_RECOVERED_SUMMARY
+    assert len(stub.messages.calls) == 1  # salvage succeeded before validation; no retry needed
+
+
+def test_qwen_generate_structured_routes_through_salvage(monkeypatch: pytest.MonkeyPatch) -> None:
+    # (e) the Qwen strict-JSON path also routes through the salvage pass.
+    from services.assistant_router import LocalQwenProvider
+
+    provider = LocalQwenProvider()
+    answer = 'Clean text.</answer>\n<parameter name="summary">recovered'
+    canned = json.dumps({"tool": "respond", "params": {"answer": answer, "summary": ""}})
+    monkeypatch.setattr(
+        provider, "generate", lambda prompt, on_token=None, think=False: (canned, {"mode": "ollama"})
+    )
+
+    action, meta = provider.generate_structured(
+        messages=[{"role": "user", "content": "hi"}], tools=[RESPOND_TOOL]
+    )
+
+    assert meta["fallback_rung"] == 0
+    assert action["params"]["answer"] == "Clean text."
+    assert action["params"]["summary"] == "recovered"
 
 
 # ---------------------------------------------------------------------------

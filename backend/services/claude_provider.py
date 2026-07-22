@@ -112,14 +112,16 @@ class ClaudeProvider:
 
         Uses Anthropic's native tool-use (``tool_choice: {"type": "any"}`` forces
         a ``tool_use`` block) with prompt caching on the system and tools blocks,
-        per docs/phase2/02-ROADMAP.md M1.1. On a missing/invalid tool_use block,
-        retries once with an appended assistant+user turn stating the validation
-        error (``fallback_rung`` 1); giving up after that returns ``(None, meta)``
-        with the error (``fallback_rung`` 2). No streaming. See
-        :mod:`services.agent.structured` for the shared validation/meta-building
-        both providers use.
+        per docs/phase2/02-ROADMAP.md M1.1. A tool_use block's params are first
+        run through ``salvage_and_validate`` (repairs occasional XML-tool-syntax
+        contamination, then validates) before being accepted. On a missing/
+        invalid tool_use block, retries once with an appended assistant+user
+        turn stating the validation error (``fallback_rung`` 1); giving up after
+        that returns ``(None, meta)`` with the error (``fallback_rung`` 2). No
+        streaming. See :mod:`services.agent.structured` for the shared
+        salvage/validation/meta-building both providers use.
         """
-        from services.agent.structured import build_meta, validate_action
+        from services.agent.structured import build_meta, salvage_and_validate
 
         if not self._api_key_present():
             return None, build_meta(
@@ -164,8 +166,8 @@ class ClaudeProvider:
                 None,
             )
             if tool_use_block is not None:
-                action = {"tool": tool_use_block.name, "params": tool_use_block.input}
-                reason = validate_action(action, tools, schema)
+                raw_action = {"tool": tool_use_block.name, "params": tool_use_block.input}
+                action, reason = salvage_and_validate(raw_action, tools, schema)
                 if reason is None:
                     return action, build_meta(mode="claude-api", fallback_rung=rung, model=self.model)
                 last_error = reason

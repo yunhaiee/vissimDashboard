@@ -112,6 +112,46 @@ can reuse it without touching `assistant_router.py` again.
 
 ---
 
+## 2026-07-22 — XML-tool-syntax salvage pass added to `generate_structured` (M1.1 fix)
+
+**Context:** Live browser verification of M1.4 (the read-only agent's frontend wiring)
+surfaced a real defect in M1.1's structured-provider seam: a native `claude-api` `tool_use`
+call for the planner-terminal `respond` tool (docs/phase2 M1.3, `planner.py`'s
+`_TERMINAL_TOOL_DEFS`) arrived at `fallback_rung 0` — i.e. accepted as clean on the first try —
+with its `answer` param contaminated by XML-style tool syntax the model emitted instead of a
+second native param: `answer` ended in `...</answer>\n<parameter name="summary">`-style text,
+and the real `summary` value had landed inside `answer` instead of its own (empty) param. The
+UI rendered the raw tags to the user. Reproduced verbatim from
+`runtime/agent_sessions/e1dd1bdb76ee/trace_e1dd1bdb76ee.jsonl` (plan record, iteration 1).
+`validate_action`'s existing structural checks (tool name known, params is a dict, schema
+required-keys present) all passed, because `answer` was still present as a non-empty string —
+it just wasn't the clean value that string was supposed to hold.
+
+**Decision:** add `salvage_tool_params` (a pure function: given an action and the tool defs,
+returns a new action with any string param's `</{param_name}>` artifact truncated and, where
+present, a following serialized `<parameter name="X">VALUE` fragment recovered into `X` when
+`X` is a declared schema property that is currently absent/empty — never overwriting a
+non-empty existing value) plus `salvage_and_validate` (salvage-then-`validate_action`, same
+`(result, reason)` shape) to `backend/services/agent/structured.py`. Both providers'
+`generate_structured` now call `salvage_and_validate` instead of `validate_action` directly —
+one shared choke point, per the M1.1 monolith-touch decision above, rather than duplicating a
+salvage call at each of Claude's one call site (inside its retry loop) and Qwen's two
+(json.loads path, `extract_json_object` rescue path). The pass is deliberately conservative:
+it only ever touches a string value when the literal artifact marker (`</{param_name}>`,
+`<parameter name="...">`, or a bare trailing `</parameter>`) is actually present in it, so
+ordinary prose that happens to contain angle brackets (e.g. quoting HTML) is never altered —
+verified by a dedicated test alongside the exact-observed-contamination regression test.
+
+**Consequence:** the observed contamination is now repaired before `validate_action` ever
+sees it, so a well-formed-but-hijacked native response like the trace example is accepted
+clean (or, when genuinely malformed, still flows into the existing retry/fallback ladder) —
+the user never again sees raw `</answer>`/`<parameter>` tags for this failure mode. This is a
+salvage, not a root-cause fix for why the model occasionally emits XML tool syntax instead of
+a second native param; if a future model/prompt change surfaces a *new* contamination shape not
+covered by these three checks, that would need its own follow-up entry here.
+
+---
+
 ## 2026-07-22 — M1.4: agent mode ships behind an explicit UI toggle, default off
 
 **Context:** M1.4 (`frontend/components/FloatingAssistant.tsx`, `backend/routers/assistant.py`).

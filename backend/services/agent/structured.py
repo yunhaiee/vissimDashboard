@@ -20,6 +20,7 @@ provider module.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 _JSON_TYPE_CHECKS: dict[str, Any] = {
@@ -90,6 +91,130 @@ def validate_action(
                     return f"action[{key!r}] does not match expected type {prop_schema['type']!r}"
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# XML-tool-syntax salvage
+#
+# Fix for a live-browser-verified defect (docs/phase2/DECISIONS.md, dated
+# entry for this section): some models occasionally emit XML-style tool
+# syntax instead of a clean native tool_use call. When that happens, the
+# API's own salvage can leave one string param's value contaminated with a
+# stray closing tag for ITSELF plus a serialized ``<parameter name="X">VALUE``
+# fragment meant for a DIFFERENT param — e.g. an "answer" value ending in
+# ``...text</answer>\n<parameter name="summary">the real summary`` with
+# ``summary`` itself arriving empty. Observed verbatim in
+# runtime/agent_sessions/e1dd1bdb76ee/trace_e1dd1bdb76ee.jsonl (plan record,
+# iteration 1, fallback_rung 0 — i.e. this reached the user un-retried).
+# ---------------------------------------------------------------------------
+
+# `<parameter name="X">VALUE`, VALUE running to the next `</parameter>`, the
+# next `<parameter name="...">`, or end of string (re.DOTALL so VALUE may
+# span newlines, as the observed case does).
+_PARAMETER_TAG_RE = re.compile(
+    r'<parameter\s+name="([^"]+)">(.*?)(?=</parameter>|<parameter\s+name="|\Z)',
+    re.DOTALL,
+)
+
+# A bare trailing `</parameter>` or a dangling, never-closed `<parameter
+# name="...">` remnant right at the end of a string. Anchored to the literal
+# end (`\Z`, no MULTILINE) so this can never fire on ordinary prose that
+# merely contains angle brackets elsewhere (e.g. "<b>bold</b>").
+_DANGLING_TAG_RE = re.compile(r'(?:<parameter\s+name="[^"]*">|\s*</parameter>)\s*\Z')
+
+
+def _tool_input_schema(tool_name: Any, tools: list[dict[str, Any]]) -> dict[str, Any]:
+    for tool in tools:
+        if tool.get("name") == tool_name:
+            return tool.get("input_schema") or {}
+    return {}
+
+
+def salvage_tool_params(action: dict[str, Any], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    """Repair XML-tool-syntax contamination in a tool_use action's string params.
+
+    Conservative by construction: a param's value is only ever touched when
+    one of the literal artifact markers below is actually present in it —
+    plain prose that happens to contain angle brackets (e.g. quoting HTML) is
+    returned completely unchanged. For each string param value:
+
+    1. If it contains ``</{param_name}>`` (that param's OWN closing tag),
+       truncate the value there, keeping only the clean prefix.
+    2. Parse everything after that truncation point for
+       ``<parameter name="X">VALUE`` fragments. For each ``X`` that both
+       names a declared property of the tool's ``input_schema`` and is
+       currently absent or empty (falsy) in ``params``, recover ``VALUE``
+       (stripped) into ``params[X]``. A non-empty existing param is never
+       overwritten.
+    3. Independently, strip a bare trailing ``</parameter>`` or dangling
+       ``<parameter name="...">`` remnant from any string param.
+
+    Returns a NEW action dict when anything was salvaged; returns the exact
+    same ``action`` object, untouched, when nothing needed it (so callers get
+    a true passthrough — no copying, no risk of accidental mutation either
+    way, since this function never mutates its input in place).
+    """
+    params = action.get("params")
+    if not isinstance(params, dict):
+        return action
+
+    properties = _tool_input_schema(action.get("tool"), tools).get("properties") or {}
+
+    cleaned_params = dict(params)
+    recovered: dict[str, str] = {}
+    changed = False
+
+    for name, value in params.items():
+        if not isinstance(value, str):
+            continue
+
+        close_tag = f"</{name}>"
+        index = value.find(close_tag)
+        if index != -1:
+            remainder = value[index + len(close_tag) :]
+            value = value[:index]
+            changed = True
+            for recovered_name, recovered_value in _PARAMETER_TAG_RE.findall(remainder):
+                if recovered_name in properties and recovered_name not in recovered:
+                    recovered[recovered_name] = recovered_value.strip()
+
+        stripped = _DANGLING_TAG_RE.sub("", value).rstrip()
+        if stripped != value:
+            value = stripped
+            changed = True
+
+        cleaned_params[name] = value
+
+    for name, value in recovered.items():
+        if not cleaned_params.get(name):
+            cleaned_params[name] = value
+            changed = True
+
+    if not changed:
+        return action
+    return {**action, "params": cleaned_params}
+
+
+def salvage_and_validate(
+    action: Any,
+    tools: list[dict[str, Any]],
+    schema: dict[str, Any] | None,
+) -> tuple[Any, str | None]:
+    """Salvage XML-tool-syntax contamination, then validate the result.
+
+    The single shared point both providers' ``generate_structured`` call
+    instead of ``validate_action`` directly, so the salvage pass in
+    :func:`salvage_tool_params` always runs first without duplicating that
+    call at each provider's several call sites (Claude's one call site with
+    its retry loop; Qwen's json.loads path and its extract_json_object rescue
+    path). Returns ``(cleaned_action, reason)`` — ``reason`` is ``None`` when
+    valid, matching :func:`validate_action`'s own convention; the returned
+    action is what callers should use downstream either way.
+    """
+    if not isinstance(action, dict):
+        return action, validate_action(action, tools, schema)
+    cleaned = salvage_tool_params(action, tools)
+    return cleaned, validate_action(cleaned, tools, schema)
 
 
 def build_strict_json_prompt(
