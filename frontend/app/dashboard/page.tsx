@@ -424,7 +424,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-5 pb-12">
-      <section className="rounded-2xl border border-slate-300/70 bg-white/90 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
+      <section className="rounded-2xl border border-slate-300/70 bg-surface/90 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 flex-1 flex-col gap-4">
             <div>
@@ -444,20 +444,20 @@ export default function DashboardPage() {
           <div className="flex flex-col items-end gap-3">
             <div className="flex min-h-[34px] items-center">
               {(datasetLoading || loading) && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e8edf5] px-3 py-1 text-xs font-medium text-[#486483]">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#5f7fa4]" />
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-600">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
                   {datasetLoading ? t("데이터셋 확인 중", "Checking dataset") : t("로딩 중", "Loading")}
                 </span>
               )}
               {!datasetLoading && !hasUploadedDataset && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fff7ed] px-3 py-1 text-xs font-medium text-[#9a5b20]">
-                  <span className="h-1.5 w-1.5 rounded-full bg-[#d99b3d]" />
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-600">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
                   {t("파일 업로드 필요", "Upload required")}
                 </span>
               )}
               {!datasetLoading && !loading && hasData && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#edf4ee] px-3 py-1 text-xs font-medium text-[#456b52]">
-                  <span className="h-1.5 w-1.5 rounded-full bg-[#5f8b6f]" />
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-600">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                   {activeScenarios.filter((scenario) => results[scenario.id]).length}/{activeScenarios.length} {t("시나리오 준비됨", "scenarios ready")}
                 </span>
               )}
@@ -473,7 +473,7 @@ export default function DashboardPage() {
           <button
             type="button"
             onClick={() => loadActiveDataset()}
-            className="shrink-0 rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
+            className="shrink-0 rounded-lg border border-rose-300 bg-surface px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
           >
             {t("다시 시도", "Retry")}
           </button>
@@ -503,7 +503,7 @@ export default function DashboardPage() {
             <div className="relative">
               {hasData && <SectionJumpIndex showValidation={realCounts.length > 0} sectionVisible={sectionVisible} />}
 
-              <div className="relative h-[520px] overflow-hidden rounded-2xl border border-slate-300/70 bg-[#eef3f8] shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[60vh]">
+              <div className="relative h-[520px] overflow-hidden rounded-2xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[60vh]">
                 <DashboardMap
                   summary={summary}
                   selectedNodeId={activeNodeId}
@@ -514,9 +514,9 @@ export default function DashboardPage() {
                   onNodeClick={handleNodeClick}
                 />
                 {loading && (
-                  <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-[#edf3f9]/75 backdrop-blur-sm">
-                    <div className="flex items-center gap-2 rounded-full border border-slate-300/70 bg-white/90 px-4 py-2 text-sm font-medium text-slate-700">
-                      <span className="h-2 w-2 animate-pulse rounded-full bg-[#5f7fa4]" />
+                  <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-blue-50/75 backdrop-blur-sm">
+                    <div className="flex items-center gap-2 rounded-full border border-slate-300/70 bg-surface/90 px-4 py-2 text-sm font-medium text-slate-700">
+                      <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
                       {t("지도 데이터 로딩 중", "Loading map data")}
                     </div>
                   </div>
@@ -524,7 +524,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="flex h-[520px] min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)] xl:h-[60vh]">
+            <div className="flex h-[520px] min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)] xl:h-[60vh]">
               <SelectedIntersectionPanel
                 selectedNodeIds={selectedNodeIds}
                 nodeNamesById={nodeNamesById}
@@ -683,7 +683,7 @@ function SectionJumpIndex({
     >
       <button
         type="button"
-        className="absolute left-0 top-0 flex h-11 w-10 items-center justify-center rounded-r-full border border-l-0 border-slate-300 bg-white/95 text-[#21384f] shadow-[0_8px_18px_rgba(15,23,42,0.18)] backdrop-blur transition hover:bg-[#21384f] hover:text-white focus:outline-none focus:ring-2 focus:ring-[#6f8fb4]/45"
+        className="absolute left-0 top-0 flex h-11 w-10 items-center justify-center rounded-r-full border border-l-0 border-slate-300 bg-surface/95 text-blue-700 shadow-[0_8px_18px_rgba(15,23,42,0.18)] backdrop-blur transition hover:bg-slate-900 hover:text-ink focus:outline-none focus:ring-2 focus:ring-accent/45"
         aria-label={t("분석 목차 열기", "Open analysis sections")}
       >
         <span className="flex flex-col gap-1">
@@ -694,13 +694,13 @@ function SectionJumpIndex({
       </button>
 
       <div className="pointer-events-none absolute right-[42px] top-0 w-[188px] -translate-x-2 opacity-0 transition duration-200 ease-out group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:translate-x-0 group-focus-within:opacity-100">
-        <div className="rounded-xl border border-slate-300/80 bg-white/96 p-2.5 shadow-[0_16px_34px_rgba(15,23,42,0.18)] backdrop-blur-md">
+        <div className="rounded-xl border border-slate-300/80 bg-surface/96 p-2.5 shadow-[0_16px_34px_rgba(15,23,42,0.18)] backdrop-blur-md">
           <div className="mb-2 flex items-center justify-between border-b border-slate-200/80 pb-2">
             <div>
               <p className="text-[10px] font-semibold text-slate-500">{t("분석 목차", "Sections")}</p>
               <p className="mt-0.5 text-[11px] font-bold text-slate-900">{t("빠른 이동", "Quick Jump")}</p>
             </div>
-            <span className="rounded-full bg-[#e8eef6] px-2 py-0.5 text-[10px] font-bold text-[#4f7198]">
+            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-accent">
               {items.length}
             </span>
           </div>
@@ -709,9 +709,9 @@ function SectionJumpIndex({
               <a
                 key={item.href}
                 href={item.href}
-                className="group/link grid h-8 grid-cols-[1.25rem_1fr] items-center gap-2 rounded-md px-1.5 text-[11px] font-semibold text-slate-700 transition hover:bg-[#e8eef6] hover:text-[#21384f] hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-[#6f8fb4]/45"
+                className="group/link grid h-8 grid-cols-[1.25rem_1fr] items-center gap-2 rounded-md px-1.5 text-[11px] font-semibold text-slate-700 transition hover:bg-blue-100 hover:text-blue-700 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/45"
               >
-                <span className="flex h-5 w-5 items-center justify-center rounded-md border border-slate-200 bg-white text-[10px] font-bold text-slate-500 shadow-sm transition group-hover/link:border-[#4f7198] group-hover/link:bg-[#4f7198] group-hover/link:text-white">
+                <span className="flex h-5 w-5 items-center justify-center rounded-md border border-slate-200 bg-surface text-[10px] font-bold text-slate-500 shadow-sm transition group-hover/link:border-accent group-hover/link:bg-accent group-hover/link:text-white">
                   {index + 1}
                 </span>
                 <span className="truncate">{item.label}</span>
@@ -737,13 +737,13 @@ function DashboardDatasetGate() {
   const { t } = useLanguage();
 
   return (
-    <div className="rounded-2xl border border-dashed border-[#d6b77c] bg-[#fffaf0] px-4 py-3">
+    <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold text-[#8a5a1f]">
+          <p className="text-xs font-semibold text-amber-700">
             {t("대시보드 연결 대기", "Dashboard Waiting for Dataset")}
           </p>
-          <p className="mt-1 text-sm text-[#6f5330]">
+          <p className="mt-1 text-sm text-amber-800">
             {t(
               "VISSIM 파일 또는 프로젝트 ZIP을 업로드하면 시나리오 선택과 분석 지도가 활성화됩니다.",
               "Upload a VISSIM file or project ZIP to enable scenario selection and the analysis map.",
@@ -754,11 +754,11 @@ function DashboardDatasetGate() {
           <button
             type="button"
             onClick={openDatasetFilePicker}
-            className="rounded-full border border-[#c99a4f] bg-[#9a5b20] px-3 py-1.5 text-xs font-bold text-white transition hover:bg-[#7f4a19]"
+            className="rounded-full border border-transparent bg-amber-500 px-3 py-1.5 text-xs font-bold text-ink transition hover:bg-amber-600"
           >
             {t("지금 업로드", "Upload now")}
           </button>
-          <span className="rounded-full border border-[#e6c98f] bg-white px-3 py-1 text-xs font-bold text-[#9a5b20]">
+          <span className="rounded-full border border-amber-300 bg-surface px-3 py-1 text-xs font-bold text-amber-600">
             INPX / ZIP
           </span>
         </div>
@@ -771,8 +771,8 @@ function DashboardUploadRequiredPanel() {
   const { t } = useLanguage();
 
   return (
-    <section className="rounded-2xl border border-dashed border-slate-300 bg-white/78 px-6 py-12 text-center shadow-sm">
-      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-[#d6b77c] bg-[#fff7e6] text-sm font-black text-[#9a5b20]">
+    <section className="rounded-2xl border border-dashed border-slate-300 bg-surface/78 px-6 py-12 text-center shadow-sm">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-amber-300 bg-amber-50 text-sm font-black text-amber-600">
         DATA
       </div>
       <h2 className="mt-4 text-lg font-bold tracking-tight text-slate-900">
@@ -833,7 +833,7 @@ function SelectedIntersectionPanel({
 
       <div className="mt-3 flex flex-wrap gap-1.5">
         {selectedNodeIds.length === 0 && (
-          <span className="rounded-full border border-dashed border-slate-300 bg-white px-2.5 py-1 text-[11px] text-slate-500">
+          <span className="rounded-full border border-dashed border-slate-300 bg-surface px-2.5 py-1 text-[11px] text-slate-500">
             {t("선택 없음", "None selected")}
           </span>
         )}
@@ -843,7 +843,7 @@ function SelectedIntersectionPanel({
             key={nodeId}
             type="button"
             onClick={() => onRemove(nodeId)}
-            className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+            className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
           >
             {index + 1}. {nodeNamesById[nodeId] ?? `Node ${nodeId}`} x
           </button>
@@ -858,7 +858,7 @@ function IntersectionPerformanceGrid({ cards }: { cards: IntersectionPerformance
 
   if (!cards.length) {
     return (
-      <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-white/85 px-6 py-10 text-center text-sm text-slate-500">
+      <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-surface/85 px-6 py-10 text-center text-sm text-slate-500">
         {t("지도에서 교차로를 선택하면 성능평가 카드가 표시됩니다.", "Select intersections on the map to show performance cards.")}
       </div>
     );
@@ -900,7 +900,7 @@ function IntersectionPerformanceGrid({ cards }: { cards: IntersectionPerformance
         {cards.map((card, cardIndex) => (
           <article
             key={card.nodeId}
-            className="rounded-2xl border border-slate-300/70 bg-white/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]"
+            className="rounded-2xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]"
           >
             <div className="mb-3 flex items-start justify-between gap-2">
               <div className="min-w-0">
@@ -936,7 +936,7 @@ function IntersectionMetricBars({
   const maxValue = Math.max(...values.map((item) => item.value ?? 0), 1);
 
   return (
-    <div className="rounded-2xl border border-slate-300/70 bg-white/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="rounded-2xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-bold text-slate-900">{title}</h3>
         <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">
@@ -1010,7 +1010,7 @@ function DirectionDelayChart({
               <span className="text-[10px] font-bold tabular-nums text-slate-800">
                 {value != null ? formatNumber(value, value < 10 ? 1 : 0) : "-"}
               </span>
-              <div className="flex h-[86px] w-full max-w-[42px] items-end rounded-md bg-white/80 px-1 py-1 shadow-inner">
+              <div className="flex h-[86px] w-full max-w-[42px] items-end rounded-md bg-surface/80 px-1 py-1 shadow-inner">
                 {value != null && (
                   <span className="block w-full rounded-md" style={{ height: `${height}%`, backgroundColor: color }} />
                 )}
@@ -1048,7 +1048,7 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
   const maxTotal = Math.max(...cards.map((item) => item.volumeTotal ?? 0), 1);
 
   return (
-    <div className="rounded-2xl border border-slate-300/70 bg-white/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="rounded-2xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-bold text-slate-900">{t("통행량 구성", "Volume Composition")}</h3>
         <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">veh</span>
@@ -1109,7 +1109,7 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
 
   if (!populated.length || !allValues.length || !labels.length) {
     return (
-      <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-white/85 px-6 py-10 text-center text-sm text-slate-500">
+      <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-surface/85 px-6 py-10 text-center text-sm text-slate-500">
         <p>
           {t(
             "통행시간 측정 결과가 없어 그래프를 표시할 수 없습니다.",
@@ -1164,7 +1164,7 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
   const tickStride = labels.length > 14 ? Math.ceil(labels.length / 14) : 1;
 
   return (
-    <div className="mt-4 rounded-2xl border border-slate-300/70 bg-white/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="mt-4 rounded-2xl border border-slate-300/70 bg-surface/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       {truncated && (
         <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800">
           {t(
@@ -1348,7 +1348,7 @@ function OverallResultsSection({
 
   return (
     <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <section className="rounded-2xl border border-slate-300/70 bg-white/95 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+      <section className="rounded-2xl border border-slate-300/70 bg-surface/95 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-sm font-bold text-slate-900">{t("결과 해석", "Result Interpretation")}</p>
@@ -1356,7 +1356,7 @@ function OverallResultsSection({
               {t("현재 선택값 기준으로 최종 판단 문장만 정리합니다.", "A concise decision statement from the current selection.")}
             </p>
           </div>
-          <span className="rounded-full bg-[#e8eef6] px-2.5 py-1 text-[10px] font-bold text-[#4f7198]">
+          <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-bold text-accent">
             {t("핵심 요약", "Summary")}
           </span>
         </div>
@@ -1414,7 +1414,7 @@ function OverallResultsSection({
         </div>
       </section>
 
-      <section className="rounded-2xl border border-slate-300/70 bg-white/95 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+      <section className="rounded-2xl border border-slate-300/70 bg-surface/95 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-sm font-bold text-slate-900">{t("보고서 생성", "Report Generator")}</p>
@@ -1437,7 +1437,7 @@ function OverallResultsSection({
             disabled={!canGenerateReport}
             className={`rounded-lg border px-3 py-2.5 text-xs font-semibold transition ${
               canGenerateReport
-                ? "border-[#2f7bc8] bg-[#2f7bc8] text-white shadow-[0_8px_16px_rgba(47,123,200,0.22)] hover:bg-[#276caf]"
+                ? "border-accent bg-accent text-white shadow-[0_8px_16px_rgba(47,123,200,0.22)] hover:bg-accent-deep"
                 : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
             }`}
           >
@@ -1450,7 +1450,7 @@ function OverallResultsSection({
               disabled={!reportMarkdown}
               className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${
                 reportMarkdown
-                  ? "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+                  ? "border-slate-300 bg-surface text-slate-700 hover:border-slate-400"
                   : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
               }`}
             >
@@ -1466,7 +1466,7 @@ function OverallResultsSection({
               )}
               className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${
                 reportMarkdown
-                  ? "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+                  ? "border-slate-300 bg-surface text-slate-700 hover:border-slate-400"
                   : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
               }`}
             >
@@ -1533,7 +1533,7 @@ function KpiCard({
     runnerUpGap != null && bestEntryStdev != null && runnerUpGap < bestEntryStdev;
 
   return (
-    <div className="rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="mb-4 flex items-start justify-between gap-2">
         <h3 className="text-sm font-semibold text-slate-800">{label}</h3>
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
@@ -1560,7 +1560,7 @@ function KpiCard({
               <div className="flex h-9 flex-col items-center justify-end gap-0.5">
                 {isBest && (
                   <span
-                    className="rounded-full bg-[#dce8df] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-[#3f6651]"
+                    className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-emerald-600"
                     title={bestIsWithinNoise ? t("2위와의 차이가 표준편차보다 작습니다.", "The gap to the runner-up is smaller than the standard deviation.") : undefined}
                   >
                     {t("최적", "Best", "最良")}{showTechnicalDetail && bestIsWithinNoise ? "*" : ""}
@@ -1646,7 +1646,7 @@ function DashboardScenarioPicker({
             )}
           </p>
         </div>
-        <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">
+        <span className="rounded-full bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">
           {selected.length}/{scenarios.length} {t("선택", "selected")}
         </span>
       </div>
@@ -1662,8 +1662,8 @@ function DashboardScenarioPicker({
               onClick={() => toggle(scenario.id)}
               className={`group relative overflow-hidden rounded-xl border px-3 py-2 text-left transition-all duration-200 ${
                 active
-                  ? "border-slate-300 bg-white shadow-[0_10px_22px_rgba(15,23,42,0.12)]"
-                  : "border-slate-200 bg-white/70 opacity-75 hover:-translate-y-0.5 hover:border-slate-300 hover:opacity-100"
+                  ? "border-slate-300 bg-surface shadow-[0_10px_22px_rgba(15,23,42,0.12)]"
+                  : "border-slate-200 bg-surface/70 opacity-75 hover:-translate-y-0.5 hover:border-slate-300 hover:opacity-100"
               }`}
             >
               <span
@@ -1794,7 +1794,7 @@ function ValidationMatrix({
         </p>
       )}
 
-      <div className="overflow-x-auto rounded-2xl border border-slate-300/70 bg-white/92 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+      <div className="overflow-x-auto rounded-2xl border border-slate-300/70 bg-surface/92 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-slate-100 bg-slate-50">
@@ -1823,7 +1823,7 @@ function ValidationMatrix({
                   key={node.node_id}
                   onClick={() => onNodeClick(node.node_id, node.node_name)}
                   className={`cursor-pointer border-b border-slate-100 transition-colors last:border-0 hover:bg-slate-100/70 ${
-                    isSelected ? "bg-[#e7edf6] hover:bg-[#e7edf6]" : ""
+                    isSelected ? "bg-blue-50 hover:bg-blue-50" : ""
                   }`}
                 >
                   <td className="px-4 py-3">

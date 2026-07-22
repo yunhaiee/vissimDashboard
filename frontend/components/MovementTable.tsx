@@ -37,7 +37,7 @@ export default function MovementTable({ scenarios, selected, results }: Props) {
             ])}
           </tr>
         </thead>
-        <tbody className="bg-white divide-y divide-slate-50">
+        <tbody className="bg-surface divide-y divide-slate-50">
           {ids.slice(0, 30).map((id) => (
             <tr key={id} className="hover:bg-slate-50 transition-colors">
               <td className="px-3 py-1.5 font-mono text-slate-700">{id}</td>

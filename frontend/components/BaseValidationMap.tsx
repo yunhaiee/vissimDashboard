@@ -51,7 +51,7 @@ interface Props {
   datasetRevision?: number | string;
 }
 
-const TILE_URL = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
+const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 const GEO_PARAMS = "scale_x=1.178200&scale_y=1.178200&offset_x=14427.6419&offset_y=-4221.3566&rotation_deg=-0.45759";
 
 const OVERLAY_OPTIONS: Array<{ value: OverlayMode; ko: string; en: string; ja: string }> = [
@@ -380,12 +380,12 @@ export default function BaseValidationMap({
         </div>
       )}
 
-      <div className="pointer-events-auto absolute right-3 top-3 z-[700] min-w-[220px] rounded-xl border border-slate-200 bg-white/95 px-4 py-3 text-sm shadow-lg backdrop-blur-sm">
+      <div className="pointer-events-auto absolute right-3 top-3 z-[700] min-w-[220px] rounded-xl border border-slate-200 bg-surface/95 px-4 py-3 text-sm shadow-lg backdrop-blur-sm">
         <label className="mb-1.5 block text-sm font-semibold text-slate-700">{t("검증 표시 기준", "Validation Overlay")}</label>
         <select
           value={overlayMode}
           onChange={(event) => setOverlayMode(event.target.value as OverlayMode)}
-          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          className="w-full rounded-lg border border-slate-300 bg-surface px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
         >
           {OVERLAY_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>
@@ -395,7 +395,7 @@ export default function BaseValidationMap({
         </select>
       </div>
 
-      <div className="pointer-events-none absolute bottom-3 left-3 z-[500] max-w-[260px] select-none rounded-xl border border-slate-200 bg-white/92 px-3 py-2.5 text-[11px] text-slate-700 shadow-lg backdrop-blur-sm">
+      <div className="pointer-events-none absolute bottom-3 left-3 z-[500] max-w-[260px] select-none rounded-xl border border-slate-200 bg-surface/92 px-3 py-2.5 text-[11px] text-slate-700 shadow-lg backdrop-blur-sm">
         <p className="mb-1.5 font-semibold text-slate-800">{legend.title}</p>
         <div className="space-y-1">
           {legend.rows.map((row) => (

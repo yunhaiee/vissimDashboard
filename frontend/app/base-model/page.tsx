@@ -503,7 +503,7 @@ export default function BaseModelPage() {
 
   return (
     <div className="space-y-5 pb-12">
-      <section className="rounded-2xl border border-slate-300/70 bg-white/90 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
+      <section className="rounded-2xl border border-slate-300/70 bg-surface/90 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <h1 className="text-xl font-bold tracking-tight text-slate-900">
@@ -516,13 +516,13 @@ export default function BaseModelPage() {
           <div className="flex flex-wrap items-start justify-end gap-3">
             <div className="flex min-h-[32px] flex-wrap items-center gap-2">
             {loading || resultLoading ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e8edf5] px-3 py-1 text-xs font-medium text-[#486483]">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#5f7fa4]" />
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-600">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
                 {t("로딩 중", "Loading")}
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#edf4ee] px-3 py-1 text-xs font-medium text-[#456b52]">
-                <span className="h-1.5 w-1.5 rounded-full bg-[#5f8b6f]" />
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-600">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                 {selectedScenario?.name ?? t("시나리오 선택 필요", "Choose scenario")}
               </span>
             )}
@@ -689,7 +689,7 @@ export default function BaseModelPage() {
             );
           })}
         </div>
-        <div className="mt-4 rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+        <div className="mt-4 rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <div>
               <p className="text-xs font-bold text-slate-800">
@@ -770,7 +770,7 @@ export default function BaseModelPage() {
             </div>
           )}
           {travelRoutes.map((route) => (
-            <div key={route.key} className="rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+            <div key={route.key} className="rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="text-sm font-bold text-slate-900">{route.name}</h3>
@@ -855,7 +855,7 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }
 function GehFormulaExplanation({ t }: { t: (ko: string, en: string, ja?: string) => string }) {
   return (
     <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-      <div className="flex justify-center rounded-lg bg-white px-3 py-3 text-slate-900 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.25)]">
+      <div className="flex justify-center rounded-lg bg-surface px-3 py-3 text-slate-900 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.25)]">
         <svg
           className="h-[58px] w-[230px] max-w-full overflow-visible"
           viewBox="0 0 230 58"
@@ -943,7 +943,7 @@ function ValidationPieCard({
   t: (ko: string, en: string, ja?: string) => string;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-300/70 bg-white/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="rounded-2xl border border-slate-300/70 bg-surface/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="mb-2">
         <p className="text-xs font-bold text-slate-800">{title}</p>
         <p className="mt-0.5 text-[11px] text-slate-500">{criterion}</p>
@@ -972,7 +972,7 @@ function ValidationPieCard({
 
 function EmptyPanel({ text }: { text: string }) {
   return (
-    <div className="flex min-h-[220px] items-center justify-center rounded-2xl border border-slate-300/70 bg-white/92 p-6 text-center text-sm text-slate-500 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="flex min-h-[220px] items-center justify-center rounded-2xl border border-slate-300/70 bg-surface/92 p-6 text-center text-sm text-slate-500 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       {text}
     </div>
   );
@@ -1009,7 +1009,7 @@ function CountComparisonOverview({
 
   return (
     <div className="mt-4 space-y-4">
-      <div className="relative h-[540px] overflow-hidden rounded-2xl border border-slate-300/70 bg-[#eef3f8] shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[62vh]">
+      <div className="relative h-[540px] overflow-hidden rounded-2xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[62vh]">
         <BaseValidationMap
           nodes={mapNodes}
           selectedNodeIds={selectedNodeIds}
@@ -1047,7 +1047,7 @@ function ValidationNodeInspector({
   const atSelectionCap = selectedGroups.length >= MAX_SELECTED_VALIDATION_NODES;
 
   return (
-    <aside className="flex h-[540px] min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-300/70 bg-white/94 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] xl:h-[62vh]">
+    <aside className="flex h-[540px] min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-300/70 bg-surface/94 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] xl:h-[62vh]">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
@@ -1077,7 +1077,7 @@ function ValidationNodeInspector({
             <span
               key={group.nodeId}
               className={`inline-flex max-w-full items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                group.nodeId === activeGroup?.nodeId ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-700"
+                group.nodeId === activeGroup?.nodeId ? "bg-slate-900 text-ink" : "bg-slate-100 text-slate-700"
               }`}
             >
               <button
@@ -1090,7 +1090,7 @@ function ValidationNodeInspector({
               </button>
               <button
                 type="button"
-                className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[11px] leading-none opacity-75 hover:bg-white/20 hover:opacity-100"
+                className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[11px] leading-none opacity-75 hover:bg-surface/20 hover:opacity-100"
                 onClick={() => onNodeRemove(group.nodeId)}
                 aria-label={`${group.nodeName} ${t("선택 해제", "remove")}`}
               >
@@ -1193,7 +1193,7 @@ function ValidationNodeDetail({
         ))}
       </div>
 
-      <div className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
+      <div className="mt-3 rounded-xl border border-slate-200 bg-surface px-3 py-2">
         <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold text-slate-500">
           <span>{t("상세 이동류", "Movement Detail")}</span>
           <span>{topRows.length}/{group.rows.length}</span>
@@ -1236,7 +1236,7 @@ function ValidationMetricCard({
             ? "text-blue-700"
             : "text-slate-900";
   return (
-    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+    <div className="rounded-xl border border-slate-200 bg-surface px-3 py-2">
       <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">{label}</p>
       <p className={`mt-1 text-base font-bold tabular-nums ${toneClass}`}>{value}</p>
     </div>
@@ -1273,10 +1273,10 @@ function ValidationDirectionStrip({
   const biasOnRight = (group.pctError ?? 0) >= 0;
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+    <div className="rounded-xl border border-slate-200 bg-surface px-3 py-2">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-[#21384f] text-[10px] font-bold text-white">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-slate-900 text-[10px] font-bold text-ink">
             {label.short}
           </span>
           <span aria-hidden className="text-xs font-bold text-slate-500">{label.arrow}</span>
@@ -1332,10 +1332,10 @@ function ValidationIssueListItem({
       type="button"
       className={`grid w-full grid-cols-[2.1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-3 py-2 text-left transition ${
         active
-          ? "border-slate-900 bg-slate-900 text-white shadow-sm"
+          ? "border-slate-900 bg-slate-900 text-ink shadow-sm"
           : selected
             ? "border-slate-300 bg-slate-100 text-slate-800 hover:border-slate-400"
-            : "border-slate-200 bg-white text-slate-800 hover:border-slate-300 hover:bg-slate-50"
+            : "border-slate-200 bg-surface text-slate-800 hover:border-slate-300 hover:bg-slate-50"
       }`}
       onClick={() => onClick(group.nodeId, group.nodeName)}
     >
@@ -1405,7 +1405,7 @@ function CountNodeDirectionMatrixRow({
 
   return (
     <div className="grid grid-cols-[190px_repeat(4,minmax(230px,1fr))] border-b border-slate-200 last:border-b-0">
-      <div className="sticky left-0 z-10 border-r border-slate-200 bg-white px-4 py-4 shadow-[5px_0_12px_rgba(15,23,42,0.04)]">
+      <div className="sticky left-0 z-10 border-r border-slate-200 bg-surface px-4 py-4 shadow-[5px_0_12px_rgba(15,23,42,0.04)]">
         <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{t("노드", "Node")} {group.nodeId}</p>
         <h3 className="mt-1 text-sm font-bold leading-snug text-slate-900">{group.nodeName}</h3>
         <div className="mt-3 space-y-1.5">
@@ -1446,7 +1446,7 @@ function CountDirectionMatrixCell({
 }) {
   if (group.rows.length === 0) {
     return (
-      <div className="border-l border-slate-200 bg-white px-3 py-4">
+      <div className="border-l border-slate-200 bg-surface px-3 py-4">
         <div className="flex h-full min-h-[150px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-400">
           {t("데이터 없음", "No data")}
         </div>
@@ -1459,7 +1459,7 @@ function CountDirectionMatrixCell({
   const modelPct = group.modelTotal == null ? 0 : (group.modelTotal / maxValue) * 100;
 
   return (
-    <div className="border-l border-slate-200 bg-white px-3 py-4">
+    <div className="border-l border-slate-200 bg-surface px-3 py-4">
       <div className="grid grid-cols-[1fr_auto] items-start gap-2">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">

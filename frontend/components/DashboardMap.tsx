@@ -80,7 +80,7 @@ interface Props {
   datasetRevision?: number | string;
 }
 
-const TILE_URL = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
+const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 const GEO_PARAMS = "scale_x=1.178200&scale_y=1.178200&offset_x=14427.6419&offset_y=-4221.3566&rotation_deg=-0.45759";
 
 const OVERLAY_OPTIONS: Array<{ value: OverlayMode; ko: string; en: string; ja: string }> = [
@@ -594,12 +594,12 @@ export default function DashboardMap({
         </div>
       )}
 
-      <div className="pointer-events-auto absolute right-3 top-3 z-[700] rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-xs shadow-lg backdrop-blur-sm">
+      <div className="pointer-events-auto absolute right-3 top-3 z-[700] rounded-xl border border-slate-200 bg-surface/95 px-3 py-2 text-xs shadow-lg backdrop-blur-sm">
         <label className="mb-1 block font-semibold text-slate-700">{t("지도 표시 기준", "Map Overlay")}</label>
         <select
           value={overlayMode}
           onChange={(event) => setOverlayMode(event.target.value as OverlayMode)}
-          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          className="rounded-lg border border-slate-300 bg-surface px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
         >
           {OVERLAY_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>
@@ -609,7 +609,7 @@ export default function DashboardMap({
         </select>
       </div>
 
-      <div className="pointer-events-none absolute bottom-3 left-3 z-[500] select-none rounded-xl border border-slate-200 bg-white/92 px-3 py-2.5 text-[11px] text-slate-700 shadow-lg backdrop-blur-sm">
+      <div className="pointer-events-none absolute bottom-3 left-3 z-[500] select-none rounded-xl border border-slate-200 bg-surface/92 px-3 py-2.5 text-[11px] text-slate-700 shadow-lg backdrop-blur-sm">
         <p className="mb-1.5 font-semibold text-slate-800">{legend.title}</p>
         <div className="space-y-1">
           {legend.rows.map((row) => (

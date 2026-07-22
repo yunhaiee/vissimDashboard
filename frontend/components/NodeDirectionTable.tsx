@@ -289,7 +289,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
       <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50/60 px-4 py-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.18)]">
         <div className="mb-2 flex items-center justify-between gap-2">
           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-rose-500">상위 병목 노드</p>
-          <span className="rounded-full border border-rose-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-rose-600">
+          <span className="rounded-full border border-rose-200 bg-surface px-2.5 py-0.5 text-[11px] font-medium text-rose-600">
             상위 {topBottleneckCount}
           </span>
         </div>
@@ -302,7 +302,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                 className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
                   selectedNode?.node_id === node.node_id
                     ? "border-rose-400 bg-rose-500 text-white"
-                    : "border-rose-200 bg-white text-rose-700 hover:border-rose-300"
+                    : "border-rose-200 bg-surface text-rose-700 hover:border-rose-300"
                 }`}
                 title={`평균 교통량: ${formatVolume(node.avgTotal)}`}
               >
@@ -316,7 +316,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
       </div>
 
       {topBottleneckCount > 0 && (
-        <section className="rounded-[1.5rem] border border-rose-200 bg-gradient-to-r from-rose-50 via-white to-amber-50 px-4 py-4 shadow-sm">
+        <section className="rounded-[1.5rem] border border-rose-200 bg-gradient-to-r from-rose-50 via-surface to-amber-50 px-4 py-4 shadow-sm">
           <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-rose-100 pb-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-rose-500">병목 집중</p>
@@ -325,7 +325,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                 Jump directly to the busiest nodes in the current filtered result set and compare their directional flows first.
               </p>
             </div>
-            <div className="rounded-full border border-rose-200 bg-white px-3 py-1 text-[11px] font-medium text-rose-600">
+            <div className="rounded-full border border-rose-200 bg-surface px-3 py-1 text-[11px] font-medium text-rose-600">
               Avg total volume
             </div>
           </div>
@@ -343,11 +343,11 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                   className={`rounded-2xl border px-3.5 py-3 text-left transition ${
                     isActive
                       ? "border-rose-300 bg-rose-100/80 shadow-sm shadow-rose-100"
-                      : "border-white/80 bg-white/90 hover:border-rose-200 hover:bg-white"
+                      : "border-slate-200 bg-surface/90 hover:border-rose-200 hover:bg-surface"
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full bg-slate-900 px-2 text-xs font-semibold text-white">
+                    <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full bg-slate-900 px-2 text-xs font-semibold text-ink">
                       {index + 1}
                     </span>
                     <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
@@ -377,7 +377,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
         </section>
       )}
 
-      <div className="rounded-[1.5rem] border border-slate-200 bg-white px-4 py-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.22)]">
+      <div className="rounded-[1.5rem] border border-slate-200 bg-surface px-4 py-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.22)]">
         <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">작업 제어</p>
@@ -394,10 +394,10 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="노드 이름 또는 노드 ID 검색"
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none ring-blue-500/30 transition focus:border-blue-400 focus:ring-2"
+                className="w-full rounded-lg border border-slate-200 bg-surface px-3 py-2 text-sm text-slate-700 outline-none ring-blue-500/30 transition focus:border-blue-400 focus:ring-2"
               />
             </div>
-            <div className="flex items-center rounded-lg border border-slate-200 bg-white p-0.5 text-xs shadow-sm">
+            <div className="flex items-center rounded-lg border border-slate-200 bg-surface p-0.5 text-xs shadow-sm">
               {[
                 { key: "spread", label: "편차" },
                 { key: "volume", label: "교통량" },
@@ -409,7 +409,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                   onClick={() => setSortKey(option.key as SortKey)}
                   className={`rounded-md px-3 py-1 font-medium transition-colors ${
                     sortKey === option.key
-                      ? "bg-slate-800 text-white shadow-sm"
+                      ? "bg-slate-800 text-ink shadow-sm"
                       : "text-slate-500 hover:text-slate-700"
                   }`}
                 >
@@ -417,12 +417,12 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                 </button>
               ))}
             </div>
-            <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[11px] text-slate-500">
+            <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-surface px-2.5 py-2 text-[11px] text-slate-500">
               <span className="font-medium text-slate-400">기준</span>
               <select
                 value={comparisonBaseline}
                 onChange={(event) => setComparisonBaseline(event.target.value)}
-                className="max-w-[170px] rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 outline-none ring-blue-500/30 transition focus:border-blue-400 focus:ring-2"
+                className="max-w-[170px] rounded border border-slate-200 bg-surface px-2 py-1 text-[11px] font-medium text-slate-600 outline-none ring-blue-500/30 transition focus:border-blue-400 focus:ring-2"
               >
                 <option value="average">평균</option>
                 {activeScenarios.map((scenario) => (
@@ -437,17 +437,17 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
               className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
                 showChangedOnly
                   ? "border-rose-200 bg-rose-50 text-rose-600"
-                  : "border-slate-200 bg-white text-slate-500 hover:text-slate-700"
+                  : "border-slate-200 bg-surface text-slate-500 hover:text-slate-700"
               }`}
             >
               변화 있는 항목만
-              <span className="ml-1 rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] font-semibold">
+              <span className="ml-1 rounded-full bg-surface/80 px-1.5 py-0.5 text-[10px] font-semibold">
                 {changedNodeCount}
               </span>
             </button>
           </div>
 
-          <div className="flex items-center rounded-lg border border-slate-200 bg-white p-0.5 text-xs shadow-sm">
+          <div className="flex items-center rounded-lg border border-slate-200 bg-surface p-0.5 text-xs shadow-sm">
             {[
               { key: "matrix", label: "방향 매트릭스" },
               { key: "intersection", label: "교차로 도식" },
@@ -458,7 +458,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                 onClick={() => setViewMode(option.key as ViewMode)}
                 className={`rounded-md px-3 py-1 font-medium transition-colors ${
                   viewMode === option.key
-                    ? "bg-slate-800 text-white shadow-sm"
+                    ? "bg-slate-800 text-ink shadow-sm"
                     : "text-slate-500 hover:text-slate-700"
                 }`}
               >
@@ -475,8 +475,8 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
               onClick={() => setDirectionFilter("all")}
               className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
                 directionFilter === "all"
-                  ? "border-slate-800 bg-slate-800 text-white"
-                  : "border-slate-200 bg-white text-slate-500 hover:text-slate-700"
+                  ? "border-slate-800 bg-slate-800 text-ink"
+                  : "border-slate-200 bg-surface text-slate-500 hover:text-slate-700"
               }`}
             >
               전체
@@ -488,8 +488,8 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                 onClick={() => setDirectionFilter(direction)}
                 className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
                   directionFilter === direction
-                    ? "border-slate-800 bg-slate-800 text-white"
-                    : "border-slate-200 bg-white text-slate-500 hover:text-slate-700"
+                    ? "border-slate-800 bg-slate-800 text-ink"
+                    : "border-slate-200 bg-surface text-slate-500 hover:text-slate-700"
                 }`}
               >
                 {DIR_ARROW[direction]} {DIR_KR[direction]}
@@ -506,7 +506,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                 </span>
               )}
               {directionFilter !== "all" && (
-                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-600">
+                <span className="rounded-full border border-slate-200 bg-surface px-2.5 py-1 text-slate-600">
                   방향: {DIR_ARROW[directionFilter]} {DIR_KR[directionFilter]}
                 </span>
               )}
@@ -517,7 +517,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
               )}
               <button
                 onClick={resetFilters}
-                className="rounded-full border border-slate-200 bg-white px-2.5 py-1 font-medium text-slate-500 transition hover:text-slate-700"
+                className="rounded-full border border-slate-200 bg-surface px-2.5 py-1 font-medium text-slate-500 transition hover:text-slate-700"
               >
                 필터 초기화
               </button>
@@ -527,7 +527,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
-        <aside className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.24)]">
+        <aside className="rounded-[1.5rem] border border-slate-200 bg-surface p-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.24)]">
           <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">탐색</p>
@@ -553,7 +553,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                         ? "border-violet-200 bg-violet-50/80 shadow-sm shadow-violet-100/60"
                         : bottleneckRank
                           ? "border-rose-200 bg-rose-50/60 hover:border-rose-300 hover:bg-rose-50"
-                          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                          : "border-slate-200 bg-surface hover:border-slate-300 hover:bg-slate-50"
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
@@ -568,14 +568,14 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                         </div>
                         <p className="font-mono text-[11px] text-slate-400">노드 {node.node_id}</p>
                       </div>
-                      <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+                      <span className="rounded-full border border-slate-200 bg-surface px-2 py-0.5 text-[10px] font-semibold text-slate-600">
                         {DIR_ARROW[direction]} {DIR_KR[direction]}
                       </span>
                     </div>
 
                     {bottleneckRank && (
                       <div className="mt-2">
-                        <span className="inline-flex items-center rounded-full border border-rose-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-rose-600">
+                        <span className="inline-flex items-center rounded-full border border-rose-200 bg-surface px-2 py-0.5 text-[10px] font-semibold text-rose-600">
                           병목 상위 {bottleneckRank}
                         </span>
                       </div>
@@ -585,7 +585,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                       {activeScenarios.map((scenario) => (
                         <div
                           key={scenario.id}
-                          className="flex items-center justify-between rounded-lg border border-white/80 bg-slate-50 px-2 py-1"
+                          className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-2 py-1"
                         >
                           <span className="flex min-w-0 items-center gap-1.5 text-[10px] text-slate-500">
                             <span
@@ -616,7 +616,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
               {hasActiveFilters && (
                 <button
                   onClick={resetFilters}
-                  className="mt-3 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:text-slate-800"
+                  className="mt-3 rounded-full border border-slate-200 bg-surface px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:text-slate-800"
                 >
                   필터 초기화
                 </button>
@@ -625,10 +625,10 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
           )}
         </aside>
 
-        <section className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.24)]">
+        <section className="rounded-[1.5rem] border border-slate-200 bg-surface p-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.24)]">
           {selectedNode ? (
             <>
-              <header className="mb-4 rounded-[1.25rem] border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-50 px-4 py-4 shadow-sm">
+              <header className="mb-4 rounded-[1.25rem] border border-slate-200 bg-gradient-to-br from-slate-50 via-surface to-slate-50 px-4 py-4 shadow-sm">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">선택 노드</p>
@@ -636,23 +636,23 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                     <p className="font-mono text-xs text-slate-400">노드 {selectedNode.node_id}</p>
                   </div>
                   {dominantDirection && (
-                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-xs font-semibold text-slate-600">
+                    <span className="rounded-full border border-slate-200 bg-surface px-2.5 py-0.5 text-xs font-semibold text-slate-600">
                       우세 방향: {DIR_ARROW[dominantDirection]} {DIR_KR[dominantDirection]}
                     </span>
                   )}
                 </div>
                 <SelectedScenarioLegend scenarios={activeScenarios} />
                 <div className="mt-4 grid gap-2 text-xs text-slate-500 sm:grid-cols-4">
-                  <div className="rounded-xl border border-slate-100 bg-white px-3 py-2.5 shadow-sm">
+                  <div className="rounded-xl border border-slate-100 bg-surface px-3 py-2.5 shadow-sm">
                     평균 교통량 <span className="ml-1 font-semibold text-slate-700">{formatVolume(selectedNode.avgTotal)}대</span>
                   </div>
-                  <div className="rounded-xl border border-slate-100 bg-white px-3 py-2.5 shadow-sm">
+                  <div className="rounded-xl border border-slate-100 bg-surface px-3 py-2.5 shadow-sm">
                     최대 교통량 <span className="ml-1 font-semibold text-slate-700">{formatVolume(selectedNode.maxTotal)}대</span>
                   </div>
-                  <div className="rounded-xl border border-slate-100 bg-white px-3 py-2.5 shadow-sm">
+                  <div className="rounded-xl border border-slate-100 bg-surface px-3 py-2.5 shadow-sm">
                     시나리오 편차 <span className="ml-1 font-semibold text-rose-500">{formatVolume(selectedNode.spread)}대</span>
                   </div>
-                  <div className="rounded-xl border border-slate-100 bg-white px-3 py-2.5 shadow-sm">
+                  <div className="rounded-xl border border-slate-100 bg-surface px-3 py-2.5 shadow-sm">
                     기준({baselineLabel}){" "}
                     <span className="ml-1 font-semibold text-indigo-600">{formatVolume(selectedNodeBaselineTotal)}대</span>
                   </div>
@@ -701,7 +701,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
               {hasActiveFilters && (
                 <button
                   onClick={resetFilters}
-                  className="mt-4 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:text-slate-800"
+                  className="mt-4 rounded-full border border-slate-200 bg-surface px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:text-slate-800"
                 >
                   필터 초기화
                 </button>
@@ -716,7 +716,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
 
 function SummaryCard({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+    <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-surface px-4 py-4 shadow-sm">
       <div className="pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full bg-slate-100 blur-2xl" />
       <p className="text-[11px] font-medium text-slate-400">{label}</p>
       <p className="relative mt-2 truncate text-sm font-semibold text-slate-800">{value}</p>
@@ -727,7 +727,7 @@ function SummaryCard({ label, value, hint }: { label: string; value: string; hin
 
 function SelectedScenarioLegend({ scenarios }: { scenarios: ScenarioMeta[] }) {
   return (
-    <div className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
+    <div className="mt-3 rounded-xl border border-slate-200 bg-surface px-3 py-2">
       <div className="mb-2 flex items-center justify-between gap-2">
         <p className="text-[11px] font-semibold text-slate-500">Selected scenarios</p>
         <span className="text-[10px] font-medium text-slate-400">
@@ -759,7 +759,7 @@ function ScenarioComparisonOverview({
   const peak = Math.max(...rows.map((row) => row.total), 1);
 
   return (
-    <section className="rounded-[1.5rem] border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-50 px-4 py-4 shadow-sm">
+    <section className="rounded-[1.5rem] border border-slate-200 bg-gradient-to-br from-slate-50 via-surface to-slate-50 px-4 py-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="sr-only">
           Scenario totals for this intersection. Compare selected scenarios against the chosen baseline.
@@ -790,7 +790,7 @@ function ScenarioComparisonOverview({
             : `${formatSignedVolume(row.differenceFromBaseline)} veh vs ${baselineLabel} (${formatSignedPercent(row.differencePercentFromBaseline)})`;
 
           return (
-            <div key={row.scenario.id} className="rounded-2xl border border-slate-200 bg-white/95 px-3.5 py-3.5 shadow-sm">
+            <div key={row.scenario.id} className="rounded-2xl border border-slate-200 bg-surface/95 px-3.5 py-3.5 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
@@ -825,7 +825,7 @@ function DirectionInsightStrip({ insights }: { insights: DirectionInsight[] }) {
   const peak = Math.max(...insights.map((insight) => insight.totalAcross), 1);
 
   return (
-    <section className="rounded-[1.5rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+    <section className="rounded-[1.5rem] border border-slate-200 bg-surface px-4 py-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div>
           <h4 className="text-sm font-semibold text-slate-700">방향별 비교 하이라이트</h4>
@@ -847,7 +847,7 @@ function DirectionInsightStrip({ insights }: { insights: DirectionInsight[] }) {
             <div key={insight.direction} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3.5 py-3.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-white">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-ink">
                     {DIR_KR[insight.direction]}
                   </span>
                   <div>
@@ -865,11 +865,11 @@ function DirectionInsightStrip({ insights }: { insights: DirectionInsight[] }) {
               </div>
 
               <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-500">
-                <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+                <div className="rounded-lg border border-slate-200 bg-surface px-2.5 py-2">
                   <p className="text-slate-400">시나리오 편차</p>
                   <p className="mt-0.5 font-semibold text-rose-500">{formatVolume(insight.spread)}대</p>
                 </div>
-                <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+                <div className="rounded-lg border border-slate-200 bg-surface px-2.5 py-2">
                   <p className="text-slate-400">최다 시나리오</p>
                   <p className="mt-0.5 truncate font-semibold text-slate-700">{insight.leaderScenario.name}</p>
                 </div>
@@ -881,7 +881,7 @@ function DirectionInsightStrip({ insights }: { insights: DirectionInsight[] }) {
                   return (
                     <div
                       key={row.scenario.id}
-                     className="min-w-[110px] flex-1 rounded-xl border border-slate-200 bg-white px-2.5 py-2 shadow-sm"
+                     className="min-w-[110px] flex-1 rounded-xl border border-slate-200 bg-surface px-2.5 py-2 shadow-sm"
                     >
                       <div className="flex items-center justify-between gap-2 text-[10px]">
                         <span className="flex min-w-0 items-center gap-1.5 text-slate-500">
@@ -943,18 +943,18 @@ function DirectionMatrixView({
         return (
           <section
             key={direction}
-            className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-50 p-3.5 shadow-sm"
+            className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-surface to-slate-50 p-3.5 shadow-sm"
           >
             <div className="mb-2 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900 text-xs font-bold text-white shadow-sm">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900 text-xs font-bold text-ink shadow-sm">
                   {DIR_KR[direction]}
                 </span>
                 <p className="text-sm font-semibold text-slate-700">
                   {DIR_ARROW[direction]} {DIR_KR[direction]} 방향
                 </p>
               </div>
-                  <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+                  <span className="rounded-full border border-slate-200 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-600">
                     {formatVolume(totalAcross)}대
                   </span>
             </div>
@@ -969,7 +969,7 @@ function DirectionMatrixView({
                 const share = totalAcross > 0 ? (total / totalAcross) * 100 : 0;
 
                 return (
-                  <div key={scenario.id} className="rounded-xl border border-slate-200 bg-white/95 px-3 py-2.5 shadow-sm">
+                  <div key={scenario.id} className="rounded-xl border border-slate-200 bg-surface/95 px-3 py-2.5 shadow-sm">
                     <div className="flex items-center justify-between">
                       <span className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-600">
                         <span
@@ -1052,7 +1052,7 @@ function ScenarioIntersectionCard({
   );
 
   return (
-    <div className="rounded-[1.5rem] border border-slate-200 bg-white px-4 py-4 shadow-sm">
+    <div className="rounded-[1.5rem] border border-slate-200 bg-surface px-4 py-4 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span
@@ -1089,7 +1089,7 @@ function NodeIntersectionGrid({
   peak: number;
 }) {
   return (
-    <div className="relative overflow-hidden rounded-[1.5rem] border border-slate-100 bg-gradient-to-br from-slate-50 via-white to-slate-50 px-4 py-5 shadow-inner">
+    <div className="relative overflow-hidden rounded-[1.5rem] border border-slate-100 bg-gradient-to-br from-slate-50 via-surface to-slate-50 px-4 py-5 shadow-inner">
       <div className="relative mx-auto grid w-full max-w-[336px] grid-cols-[104px_88px_104px] grid-rows-[80px_88px_80px] gap-2">
         <div className="pointer-events-none absolute left-1/2 top-2 h-[calc(100%-16px)] w-3.5 -translate-x-1/2 rounded-full bg-slate-200/95 shadow-[0_0_0_1px_rgba(255,255,255,0.55)]" />
         <div className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-[calc(100%-16px)] -translate-y-1/2 rounded-full bg-slate-200/95 shadow-[0_0_0_1px_rgba(255,255,255,0.55)]" />
@@ -1113,7 +1113,7 @@ function NodeIntersectionGrid({
           peak={peak}
         />
         <div className="relative z-20 col-start-2 row-start-2 flex items-center justify-center">
-          <div className="flex h-[80px] w-[80px] flex-col items-center justify-center rounded-2xl border-4 border-slate-100 bg-white shadow-xl">
+          <div className="flex h-[80px] w-[80px] flex-col items-center justify-center rounded-2xl border-4 border-slate-100 bg-surface shadow-xl">
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-300">Node</span>
             <div className="mt-1 flex gap-1">
               {DIRECTIONS.map((direction) => {
@@ -1233,7 +1233,7 @@ function FlowBox({
           <div className="text-center text-[9px] text-slate-300">—</div>
         )}
       </div>
-      <div className="mt-1 h-1.5 rounded-full bg-white/60">
+      <div className="mt-1 h-1.5 rounded-full bg-surface/60">
         <div
           className={`h-full rounded-full transition-all duration-300 ${style.bar}`}
           style={{ width: `${Math.min(100, ratio * 100)}%` }}
@@ -1291,9 +1291,9 @@ function DirectionBarsView({
 
       <div className="space-y-5">
         {activeDirections.map((direction) => (
-            <div key={direction} className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+            <div key={direction} className="rounded-2xl border border-slate-200 bg-surface px-4 py-4 shadow-sm">
               <div className="mb-2 flex items-center gap-2">
-                <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-slate-900 text-[11px] font-bold text-white shadow-sm">
+                <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-slate-900 text-[11px] font-bold text-ink shadow-sm">
                   {DIR_KR[direction]}
                 </span>
                 <span className="text-xs font-semibold text-slate-600">

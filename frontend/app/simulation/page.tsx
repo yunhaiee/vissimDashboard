@@ -437,7 +437,7 @@ export default function SimulationPage() {
         onCancel={() => setConfirmClearDataset(false)}
       />
 
-      <section className="rounded-2xl border border-slate-300/70 bg-white/92 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+      <section className="rounded-2xl border border-slate-300/70 bg-surface/92 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <h1 className="text-xl font-bold tracking-tight text-slate-900">
@@ -505,7 +505,7 @@ export default function SimulationPage() {
       )}
 
       <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
-        <div className="relative h-[640px] overflow-hidden rounded-2xl border border-slate-300/70 bg-slate-900 shadow-[0_18px_34px_rgba(15,23,42,0.16)]">
+        <div className="relative h-[640px] overflow-hidden rounded-2xl border border-slate-300/70 bg-ink">
           <MapViewer
             onLinkClick={handleMapLinkClick}
             onNodeClick={handleMapNodeClick}
@@ -515,7 +515,7 @@ export default function SimulationPage() {
             selectedLinkId={selectedLink?.id ?? null}
             queuedLinkModes={queuedLinkModes}
           />
-          <div className="pointer-events-auto absolute left-4 top-4 z-[900] rounded-2xl border border-white/15 bg-slate-950/88 p-3 text-xs text-white shadow-2xl backdrop-blur">
+          <div className="pointer-events-auto absolute left-4 top-4 z-[900] rounded-2xl border border-ink/15 bg-slate-950/88 p-3 text-xs text-ink shadow-2xl backdrop-blur">
             <div className="mb-2 font-semibold">{t("편집 모드", "Edit Mode")}</div>
             <div className="grid grid-cols-3 gap-1.5">
               <ModeButton active={editMode === "speed"} label={t("속도", "Speed")} onClick={() => setEditMode("speed")} />
@@ -586,7 +586,7 @@ export default function SimulationPage() {
         </QueuePanel>
       </section>
 
-      <section className="rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+      <section className="rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-slate-900">{t("최근 실행 작업", "Recent Simulation Jobs")}</h2>
@@ -648,7 +648,7 @@ function DataAndRuntimePanel({
   const runtimeTone = capabilities?.can_run ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800";
   return (
     <div className="grid h-full gap-4 lg:grid-cols-2">
-        <div className="flex h-full flex-col rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+        <div className="flex h-full flex-col rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-bold text-slate-900">{t("데이터 패키지", "Dataset Package")}</h2>
             <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${hasUploadedZip ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
@@ -678,7 +678,7 @@ function DataAndRuntimePanel({
           {uploadError && <p className="mt-2 text-xs font-medium text-rose-600">{uploadError}</p>}
         </div>
 
-        <div className="flex h-full flex-col rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+        <div className="flex h-full flex-col rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
           <h2 className="text-sm font-bold text-slate-900">{t("실행 환경", "Runtime")}</h2>
           <div className={`mt-2 rounded-xl border px-3 py-3 text-xs ${runtimeTone}`}>
             <p className="font-bold">
@@ -737,7 +737,7 @@ function SelectionInspector({
 }) {
   const { t } = useLanguage();
   return (
-    <div className="flex h-full flex-col rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+    <div className="flex h-full flex-col rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
       <div>
         <h2 className="text-base font-bold text-slate-900">{t("선택 항목", "Selection")}</h2>
         <p className="mt-1 text-sm text-slate-600">
@@ -850,7 +850,7 @@ function RunPanel({
 }) {
   const { t } = useLanguage();
   return (
-    <div className="rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+    <div className="rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-base font-bold text-slate-900">{t("실행 설정", "Run Setup")}</h2>
@@ -909,7 +909,7 @@ function RunPanel({
             <span>{activeProgress}%</span>
           </div>
           <div className="mt-2 h-2 rounded-full bg-slate-200">
-            <div className={`h-2 rounded-full transition-all duration-500 ${activeStatus === "error" ? "bg-rose-500" : "bg-[#5f7fa4]"}`} style={{ width: `${activeProgress}%` }} />
+            <div className={`h-2 rounded-full transition-all duration-500 ${activeStatus === "error" ? "bg-rose-500" : "bg-blue-500"}`} style={{ width: `${activeProgress}%` }} />
           </div>
           {activeStatus === "done" && (
             <div className="mt-3 grid grid-cols-2 gap-2">
@@ -941,7 +941,7 @@ function ConnectionList({
   return (
     <div className="grid grid-cols-2 gap-2">
       {(["north", "east", "south", "west"] as const).map((direction) => (
-        <div key={direction} className="rounded-lg border border-slate-200 bg-white p-2">
+        <div key={direction} className="rounded-lg border border-slate-200 bg-surface p-2">
           <p className="mb-1 text-[10px] font-bold uppercase text-slate-500">{directionLabel(direction, t)}</p>
           <div className="space-y-1">
             {grouped[direction].length === 0 && <span className="text-[10px] text-slate-400">-</span>}
@@ -953,7 +953,7 @@ function ConnectionList({
                   type="button"
                   onClick={() => onPick(link)}
                   className={`flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1 text-[10px] transition ${
-                    active ? "border-[#5f7fa4] bg-[#e8eef6] text-slate-900" : "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300"
+                    active ? "border-blue-500 bg-blue-100 text-slate-900" : "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300"
                   }`}
                 >
                   <span>Link {link.id}</span>
@@ -980,7 +980,7 @@ function QueuePanel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-slate-300/70 bg-white/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
+    <section className="rounded-2xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h2 className="text-sm font-bold text-slate-900">{title}</h2>
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{count}</span>
@@ -1035,7 +1035,7 @@ function ModeButton({ active, label, onClick }: { active: boolean; label: string
       type="button"
       onClick={onClick}
       className={`rounded-lg border px-3 py-2 text-xs font-bold transition ${
-        active ? "border-white/30 bg-white text-slate-900" : "border-white/10 bg-white/8 text-white hover:bg-white/14"
+        active ? "border-white/30 bg-surface text-slate-900" : "border-white/10 bg-surface/8 text-white hover:bg-surface/14"
       }`}
     >
       {label}
@@ -1068,7 +1068,7 @@ function StatusPill({ label, value, tone = "neutral" }: { label: string; value: 
         ? "border-amber-200 bg-amber-50 text-amber-800"
         : tone === "info"
           ? "border-blue-200 bg-blue-50 text-blue-800"
-          : "border-slate-200 bg-white text-slate-600";
+          : "border-slate-200 bg-surface text-slate-600";
   return (
     <span className={`inline-flex max-w-[260px] items-center gap-2 rounded-full border px-3 py-1 text-xs shadow-sm ${toneClass}`}>
       <span className="font-semibold">{label}</span>
@@ -1098,7 +1098,7 @@ function JobRow({ job }: { job: SimulationJob }) {
         <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${statusStyle}`}>{job.status}</span>
       </div>
       <div className="mt-2 h-1.5 rounded-full bg-slate-200">
-        <div className="h-1.5 rounded-full bg-[#5f7fa4]" style={{ width: `${progress}%` }} />
+        <div className="h-1.5 rounded-full bg-blue-500" style={{ width: `${progress}%` }} />
       </div>
       {job.status === "done" && (
         <p className="mt-2 text-[11px] text-emerald-700">

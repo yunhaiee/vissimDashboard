@@ -122,7 +122,7 @@ export default function NodeFlowPanel({ nodeId, nodeName, scenarios, selected, r
               className={`rounded-full border px-3 py-1 text-xs font-semibold transition-all ${
                 active
                   ? "text-white shadow-[0_8px_18px_rgba(15,23,42,0.22)]"
-                  : "border-slate-300/80 bg-white text-slate-700 hover:border-slate-400"
+                  : "border-slate-300/80 bg-surface text-slate-700 hover:border-slate-400"
               }`}
               style={active ? { backgroundColor: scenarioColor, borderColor: scenarioColor } : {}}
             >
@@ -260,7 +260,7 @@ function SignalPhasePanelContent({
                   key={`signal-phase-${id}`}
                   onClick={() => onChangeActiveId(id)}
                   className={`rounded-full border px-2.5 py-0.5 text-[10px] font-semibold transition ${
-                    active ? "text-white shadow-[0_8px_18px_rgba(15,23,42,0.18)]" : "border-slate-300 bg-white text-slate-600"
+                    active ? "text-white shadow-[0_8px_18px_rgba(15,23,42,0.18)]" : "border-slate-300 bg-surface text-slate-600"
                   }`}
                   style={active ? { backgroundColor: scenarioColor, borderColor: scenarioColor } : {}}
                 >
@@ -271,7 +271,7 @@ function SignalPhasePanelContent({
           </div>
         )}
       </div>
-      <div className="rounded-xl border border-slate-200/80 bg-white/90 p-3">
+      <div className="rounded-xl border border-slate-200/80 bg-surface/90 p-3">
         <SignalPhaseDonut signalInfo={signalInfo} laneFlows={activeData?.lane_flows ?? []} layout={phaseLayout} />
       </div>
     </section>
@@ -290,7 +290,7 @@ function SignalPhaseDonut({
   const { t } = useLanguage();
   if (!signalInfo || !signalInfo.has_signal || !signalInfo.cycle_time || signalInfo.cycle_time <= 0) {
     return (
-      <div className="rounded-xl border border-slate-200/80 bg-white/90 p-3">
+      <div className="rounded-xl border border-slate-200/80 bg-surface/90 p-3">
         <p className="text-[11px] font-semibold text-slate-700">{t("신호 페이즈", "Signal Phases")}</p>
         <p className="mt-1 text-[11px] text-slate-500">
           {t("이 교차로에 표시 가능한 신호 페이즈 정보가 없습니다.", "No displayable signal phase data is available for this node.")}
@@ -354,7 +354,7 @@ function SignalPhaseDonut({
   const gradient = `conic-gradient(from -90deg, ${gradientStops.join(", ") || "#e2e8f0 0% 100%"})`;
 
   return (
-    <div className="rounded-xl border border-slate-200/80 bg-white/90 p-3">
+    <div className="rounded-xl border border-slate-200/80 bg-surface/90 p-3">
       <div className="mb-2 flex items-center justify-between">
         <p className="text-[11px] font-semibold text-slate-700">{t("신호 페이즈", "Signal Phases")}</p>
         <p className="text-[11px] text-slate-500">
@@ -384,14 +384,14 @@ function SignalPhaseDonut({
               return (
                 <div
                   key={`phase-pct-${idx}`}
-                  className="absolute rounded bg-white/90 px-1 text-[9px] font-semibold text-slate-700 shadow-sm"
+                  className="absolute rounded bg-surface/90 px-1 text-[9px] font-semibold text-slate-700 shadow-sm"
                   style={{ left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)" }}
                 >
                   {Math.round(segment.pct)}%
                 </div>
               );
             })}
-            <div className="absolute inset-[25%] flex items-center justify-center rounded-full bg-white text-center">
+            <div className="absolute inset-[25%] flex items-center justify-center rounded-full bg-surface text-center">
               <div>
                 <p className="text-[10px] font-semibold text-slate-700">{cycle}s</p>
                 <p className="text-[9px] text-slate-500">Phase+IG</p>
@@ -406,7 +406,7 @@ function SignalPhaseDonut({
           )}
           {segments.length > 0 && (
             <div className="flex h-full flex-col gap-2">
-              <div className="rounded-lg border border-slate-200/80 bg-white/80 p-2">
+              <div className="rounded-lg border border-slate-200/80 bg-surface/80 p-2">
                 <div className="space-y-0.5">
                   {segments.map((segment, idx) => {
                     const wraps = segment.windowDuration > 0 && segment.start + segment.windowDuration > cycle;
@@ -435,7 +435,7 @@ function SignalPhaseDonut({
                   })}
                 </div>
               </div>
-              <div className="flex flex-1 flex-col rounded-lg border border-slate-200/80 bg-white/85 p-1.5">
+              <div className="flex flex-1 flex-col rounded-lg border border-slate-200/80 bg-surface/85 p-1.5">
                 <p className="text-[10px] font-semibold text-slate-700">{t("페이즈별 현시", "Phase Movement")}</p>
                 <div
                   className="mt-1 grid flex-1 overflow-hidden rounded-md border border-slate-200/80"
@@ -509,7 +509,7 @@ function DetailedCompass({
           maxApproachTotal={maxApproachTotal}
           data={approachBreakdown.west}
         />
-        <div className="relative flex items-center justify-center rounded-xl bg-slate-900 p-2 text-center text-white">
+        <div className="relative flex items-center justify-center rounded-xl bg-slate-900 p-2 text-center text-ink">
           <div>
             <p className="text-[10px] font-semibold text-slate-300">{t("교차로", "Node")}</p>
             <p className="mt-0.5 text-xs font-bold text-white">{nodeName}</p>
@@ -582,7 +582,7 @@ function DirectionDetailCard({
   const useVerticalGauge = dir === "north" || dir === "south";
 
   return (
-    <div className="rounded-xl border border-slate-300/80 bg-white/95 p-2">
+    <div className="rounded-xl border border-slate-300/80 bg-surface/95 p-2">
       <div className="mb-1.5 flex items-center justify-between">
         <p className="text-[11px] font-semibold text-slate-700">{directionLabel(dir, t)}</p>
         <p className="text-[11px] font-bold text-slate-900">{formatCompactVolume(data.total, t)}</p>

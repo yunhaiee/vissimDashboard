@@ -564,14 +564,14 @@ export default function FloatingAssistant() {
     <>
       {open && (
         <section
-          className="fixed bottom-[5.75rem] left-3 right-3 z-[2700] flex h-[min(var(--assistant-panel-height),calc(100vh-7.25rem))] min-h-[430px] flex-col overflow-hidden rounded-2xl border border-slate-300/80 bg-white/95 shadow-[0_22px_60px_rgba(15,23,42,0.26)] backdrop-blur md:left-auto md:right-5 md:w-[var(--assistant-panel-width)]"
+          className="fixed bottom-[5.75rem] left-3 right-3 z-[2700] flex h-[min(var(--assistant-panel-height),calc(100vh-7.25rem))] min-h-[430px] flex-col overflow-hidden rounded-2xl border border-slate-300/80 bg-surface/95 shadow-[0_22px_60px_rgba(15,23,42,0.26)] backdrop-blur md:left-auto md:right-5 md:w-[var(--assistant-panel-width)]"
           style={panelStyle}
           aria-label={t("VISSIM \ub3c4\uc6b0\ubbf8 \ucc44\ud305", "VISSIM assistant chat")}
         >
           <button
             type="button"
             onPointerDown={beginPanelResize}
-            className="absolute left-2 top-2 hidden h-7 w-7 cursor-nwse-resize items-center justify-center rounded-md border border-slate-200 bg-white/95 text-slate-400 shadow-sm transition hover:border-slate-300 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#6f8fb4]/35 md:flex"
+            className="absolute left-2 top-2 hidden h-7 w-7 cursor-nwse-resize items-center justify-center rounded-md border border-slate-200 bg-surface/95 text-slate-400 shadow-sm transition hover:border-slate-300 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-accent/35 md:flex"
             aria-label={t("\ub3c4\uc6b0\ubbf8 \ud06c\uae30 \uc870\uc808", "Resize assistant")}
             title={t("\ub3c4\uc6b0\ubbf8 \ud06c\uae30 \uc870\uc808", "Resize assistant")}
           >
@@ -581,7 +581,7 @@ export default function FloatingAssistant() {
           <header className="flex items-start justify-between gap-3 border-b border-slate-200/80 px-4 py-3 md:pl-11">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#4f7198] text-xs font-bold text-white">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-bold text-white">
                   AI
                 </span>
                 <div className="min-w-0">
@@ -596,7 +596,7 @@ export default function FloatingAssistant() {
                   type="button"
                   onClick={refreshAssistantStatus}
                   disabled={statusChecking}
-                  className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-800 disabled:cursor-wait disabled:opacity-70"
+                  className="rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-800 disabled:cursor-wait disabled:opacity-70"
                 >
                   {statusChecking ? t("\ud655\uc778 \uc911", "Checking") : t("\uc0c1\ud0dc \uc0c8\ub85c\uace0\uce68", "Refresh status")}
                 </button>
@@ -607,7 +607,7 @@ export default function FloatingAssistant() {
                   checked={agentMode}
                   disabled={loading}
                   onChange={(event) => setAgentMode(event.target.checked)}
-                  className="h-3.5 w-3.5 rounded border-slate-300 text-[#4f7198] focus:outline-none focus:ring-2 focus:ring-[#6f8fb4]/35 disabled:cursor-not-allowed"
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-accent focus:outline-none focus:ring-2 focus:ring-accent/35 disabled:cursor-not-allowed"
                 />
                 <span>{t("\uc5d0\uc774\uc804\ud2b8 \ubaa8\ub4dc (\ubca0\ud0c0)", "Agent mode (beta)", "\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30e2\u30fc\u30c9 (\u30d9\u30fc\u30bf)")}</span>
               </label>
@@ -617,7 +617,7 @@ export default function FloatingAssistant() {
             <button
               type="button"
               onClick={() => setOpen(false)}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-sm font-bold text-slate-500 transition hover:border-slate-300 hover:text-slate-900"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-surface text-sm font-bold text-slate-500 transition hover:border-slate-300 hover:text-slate-900"
               aria-label={t("\ub3c4\uc6b0\ubbf8 \ub2eb\uae30", "Close assistant")}
             >
               x
@@ -633,7 +633,7 @@ export default function FloatingAssistant() {
                     key={starter}
                     type="button"
                     onClick={() => setPrompt(starter)}
-                    className="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-left text-xs font-medium leading-5 text-slate-600 transition hover:border-[#9ab0c8] hover:bg-[#edf3f8] hover:text-[#25405e]"
+                    className="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-left text-xs font-medium leading-5 text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
                   >
                     {starter}
                   </button>
@@ -663,7 +663,7 @@ export default function FloatingAssistant() {
           </div>
 
           <form onSubmit={handleSubmit} className="border-t border-slate-200/80 bg-slate-50/70 p-3">
-            <div className="flex items-end gap-2 rounded-xl border border-slate-300/80 bg-white px-3 py-2 shadow-sm">
+            <div className="flex items-end gap-2 rounded-xl border border-slate-300/80 bg-surface px-3 py-2 shadow-sm">
               <textarea
                 ref={inputRef}
                 rows={2}
@@ -689,7 +689,7 @@ export default function FloatingAssistant() {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="fixed bottom-5 right-5 z-[2690] flex h-14 w-14 items-center justify-center rounded-full border border-white/70 bg-[#4f7198] text-sm font-bold text-white shadow-[0_16px_34px_rgba(15,23,42,0.28)] transition hover:-translate-y-0.5 hover:bg-[#456487] focus:outline-none focus:ring-4 focus:ring-[#6f8fb4]/35"
+        className="fixed bottom-5 right-5 z-[2690] flex h-14 w-14 items-center justify-center rounded-full border border-white/70 bg-accent text-sm font-bold text-white shadow-[0_16px_34px_rgba(15,23,42,0.28)] transition hover:-translate-y-0.5 hover:bg-accent-deep focus:outline-none focus:ring-4 focus:ring-accent/35"
         aria-label={open ? t("\ub3c4\uc6b0\ubbf8 \ub2eb\uae30", "Close assistant") : t("\ub3c4\uc6b0\ubbf8 \uc5f4\uae30", "Open assistant")}
       >
         {open ? "x" : "AI"}
@@ -728,8 +728,8 @@ function FloatingChatMessage({
       <div
         className={
           isUser
-            ? "max-w-[86%] rounded-lg bg-[#4f7198] px-3 py-2 text-sm leading-6 text-white shadow-sm selection:bg-white selection:text-[#21466d]"
-            : "max-w-[94%] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm leading-6 text-slate-800 shadow-sm"
+            ? "max-w-[86%] rounded-lg bg-accent px-3 py-2 text-sm leading-6 text-white shadow-sm selection:bg-surface selection:text-blue-700"
+            : "max-w-[94%] rounded-lg border border-slate-200 bg-surface px-3 py-2 text-sm leading-6 text-slate-800 shadow-sm"
         }
       >
         {isUser ? (
@@ -804,12 +804,12 @@ function PageContextSummary({
   const { t } = useLanguage();
   const chips = buildContextChips(context, t);
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+    <div className="rounded-lg border border-slate-200 bg-surface px-3 py-2">
       <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">{routeLabel}</div>
       {chips.length > 0 ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {chips.map((chip) => (
-            <span key={chip} className="rounded-full bg-[#edf3f8] px-2 py-0.5 text-[10px] font-semibold text-[#486483]">
+            <span key={chip} className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">
               {chip}
             </span>
           ))}
@@ -841,8 +841,8 @@ function AssistantAnswerContent({
   return (
     <div className="space-y-2">
       {sections.map((section) => (
-        <section key={`${section.heading}-${section.lines.join("").slice(0, 16)}`} className="border-l-2 border-[#9ab0c8] pl-3">
-          <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-[#486483]">{localizeHeading(section.heading, lang)}</div>
+        <section key={`${section.heading}-${section.lines.join("").slice(0, 16)}`} className="border-l-2 border-blue-200 pl-3">
+          <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-blue-600">{localizeHeading(section.heading, lang)}</div>
           <div className="mt-1">
             <AnswerLines lines={section.lines} />
           </div>
@@ -994,7 +994,7 @@ function PromptSimulationStatus({
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="font-semibold text-slate-800">{t("\uc2dc\ubbac\ub808\uc774\uc158", "Simulation")}</span>
         {jobId && <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] text-slate-500">{jobId}</span>}
-        <span className="rounded-full bg-[#edf4ee] px-2 py-0.5 font-semibold text-[#456b52]">{currentStatus}</span>
+        <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-600">{currentStatus}</span>
       </div>
 
       {result.changes && result.changes.length > 0 && (
@@ -1014,7 +1014,7 @@ function PromptSimulationStatus({
             <span>{progress}%</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-slate-100">
-            <div className="h-1.5 rounded-full bg-[#5f7fa4] transition-all duration-500" style={{ width: `${progress}%` }} />
+            <div className="h-1.5 rounded-full bg-blue-500 transition-all duration-500" style={{ width: `${progress}%` }} />
           </div>
         </div>
       )}
@@ -1048,7 +1048,7 @@ function PromptSimulationStatus({
               type="button"
               onClick={onDeclineExecute}
               disabled={confirming}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-md border border-slate-300 bg-surface px-3 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {t("취소", "Cancel")}
             </button>
@@ -1141,7 +1141,7 @@ function AssistantInlineProgress({
   return (
     <div className={compact ? "mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2" : "flex items-center justify-between gap-3"}>
       <div className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-500">
-        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[#5f7fa4]" />
+        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500" />
         <span className="truncate">{label}</span>
       </div>
       {onCancel && (
@@ -1271,7 +1271,7 @@ function AssistantStatusPill({ status, checking }: { status: AssistantStatus | n
             ? t("AI \uc5d4\uc9c4 \ub300\uae30", "AI engine standby")
             : t("AI \uc5d4\uc9c4 \uc624\ud504\ub77c\uc778", "AI engine offline");
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600">
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-600">
       <span className={`h-1.5 w-1.5 rounded-full ${color}`} />
       {label}
     </span>
@@ -1295,7 +1295,7 @@ function ComStatusPill({ status }: { status: VissimComToolStatus | null }) {
 
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600"
+      className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-600"
       title={status?.reason ?? status?.error ?? undefined}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${color}`} />

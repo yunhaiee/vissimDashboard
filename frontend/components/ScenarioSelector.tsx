@@ -25,7 +25,7 @@ export default function ScenarioSelector({ scenarios, selected, onChange }: Prop
             className={`px-4 py-2 rounded-full text-sm font-semibold border transition-all duration-200 ${
               active
                 ? "text-white shadow-[0_12px_24px_rgba(15,23,42,0.2)]"
-                : "bg-white/80 text-slate-600 border-slate-300/70 hover:-translate-y-0.5 hover:border-slate-400 hover:text-slate-800"
+                : "bg-surface/80 text-slate-600 border-slate-300/70 hover:-translate-y-0.5 hover:border-slate-400 hover:text-slate-800"
             }`}
             style={active ? { backgroundColor: scenarioColor, borderColor: scenarioColor } : { borderColor: "#d9e2ec" }}
           >

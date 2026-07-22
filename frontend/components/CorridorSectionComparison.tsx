@@ -144,8 +144,8 @@ export default function CorridorSectionComparison({ scenarios, selected, results
                   onClick={() => setMetric(key)}
                   className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
                     metric === key
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-800"
+                      ? "border-slate-900 bg-slate-900 text-ink"
+                      : "border-slate-200 bg-surface text-slate-600 hover:border-slate-300 hover:text-slate-800"
                   }`}
                 >
                   {METRICS[key].label}
@@ -166,8 +166,8 @@ export default function CorridorSectionComparison({ scenarios, selected, results
                   onClick={() => setSortBy(option.key)}
                   className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
                     sortBy === option.key
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-800"
+                      ? "border-slate-900 bg-slate-900 text-ink"
+                      : "border-slate-200 bg-surface text-slate-600 hover:border-slate-300 hover:text-slate-800"
                   }`}
                 >
                   {option.label}
@@ -196,7 +196,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
                 className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
                   activeSegmentId === row.segmentId
                     ? "border-amber-500 bg-amber-500 text-white"
-                    : "border-amber-200 bg-white text-amber-700 hover:border-amber-300"
+                    : "border-amber-200 bg-surface text-amber-700 hover:border-amber-300"
                 }`}
               >
                 #{index + 1} {row.segmentId} (?? {row.spread.toFixed(1)})
@@ -208,7 +208,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
         )}
       </div>
 
-      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-surface">
         <table className="w-full min-w-[760px] text-sm">
           <thead className="bg-slate-50/90">
             <tr>

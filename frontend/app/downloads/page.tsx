@@ -262,7 +262,7 @@ export default function DownloadsPage() {
           <button
             type="button"
             onClick={toggleAll}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            className="rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
           >
             {allSelected ? t("선택 해제", "Clear all") : t("전체 선택", "Select all")}
           </button>
@@ -291,7 +291,7 @@ export default function DownloadsPage() {
           return (
             <li
               key={item.key}
-              className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]"
+              className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]"
             >
               <div className="flex items-start gap-4">
                 <input
@@ -329,7 +329,7 @@ export default function DownloadsPage() {
                   type="button"
                   onClick={() => download(item)}
                   disabled={busy === item.key}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3.5 py-2 text-sm font-semibold text-ink transition hover:bg-slate-950 disabled:opacity-50"
                 >
                   {busy === item.key ? t("생성 중…", "Building…") : t("다운로드", "Download")}
                 </button>

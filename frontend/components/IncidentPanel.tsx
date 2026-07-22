@@ -106,7 +106,7 @@ export default function IncidentPanel({
   };
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-3xl border border-slate-200/80 bg-white/95 shadow-[0_22px_48px_rgba(15,23,42,0.16)] backdrop-blur">
+    <div className="flex h-full flex-col overflow-hidden rounded-3xl border border-slate-200/80 bg-surface/95 shadow-[0_22px_48px_rgba(15,23,42,0.16)] backdrop-blur">
       <div className="border-b border-slate-200/80 px-6 py-5">
         <div className="text-sm font-semibold text-slate-900">{t("시나리오 큐", "Scenario Queue")}</div>
         <p className="mt-1 text-xs text-slate-600">
@@ -137,8 +137,8 @@ export default function IncidentPanel({
                       onClick={() => onSelectLink(connectedLink)}
                       className={`w-full rounded-2xl border px-4 py-3 text-left transition-colors ${
                         active
-                          ? "border-[#9ab0c8] bg-[#edf3fa] text-slate-800"
-                          : "border-slate-200/80 bg-white text-slate-700 hover:border-slate-400"
+                          ? "border-blue-200 bg-blue-50 text-slate-800"
+                          : "border-slate-200/80 bg-surface text-slate-700 hover:border-slate-400"
                       }`}
                     >
                       <div className="text-sm font-semibold">Link {connectedLink.id}</div>
@@ -151,17 +151,17 @@ export default function IncidentPanel({
               </div>
             </div>
           ) : (
-            <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-400">
+            <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-surface px-4 py-6 text-center text-sm text-slate-400">
               {t("그래프 노드를 클릭해 연결 링크를 확인하세요.", "Click a graph node to inspect its connected links.")}
             </div>
           )}
         </section>
 
-        <section className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
+        <section className="rounded-2xl border border-slate-200/80 bg-surface p-4 shadow-sm">
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("선택 링크", "Selected Link")}</div>
           {link ? (
             <div className="mt-3 space-y-4">
-              <div className="rounded-2xl border border-[#b7c8db]/80 bg-[#edf3fa] px-4 py-3">
+              <div className="rounded-2xl border border-blue-200/80 bg-blue-50 px-4 py-3">
                 <div className="text-sm font-semibold text-slate-800">Link {link.id}</div>
                 <div className="mt-1 text-xs text-slate-600">
                   {link.lanes} {t("차로", "lanes")} · {link.length.toFixed(1)} m
@@ -174,7 +174,7 @@ export default function IncidentPanel({
                     key={option.value}
                     className={`block rounded-2xl border px-4 py-3 transition-colors ${
                       type === option.value
-                        ? "border-[#9ab0c8] bg-[#edf3fa]"
+                        ? "border-blue-200 bg-blue-50"
                         : "border-slate-200 hover:border-slate-400"
                     }`}
                   >
@@ -223,7 +223,7 @@ export default function IncidentPanel({
                       max={80}
                       value={speedLimit}
                       onChange={(event) => setSpeedLimit(Number(event.target.value))}
-                      className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#8ea7c2]"
+                      className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
                     />
                   </label>
                 )}
@@ -236,7 +236,7 @@ export default function IncidentPanel({
                     max={1800}
                   value={duration}
                   onChange={(event) => setDuration(Number(event.target.value))}
-                  className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#8ea7c2]"
+                  className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
                 />
               </label>
               </div>
@@ -265,7 +265,7 @@ export default function IncidentPanel({
           )}
         </section>
 
-        <section className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
+        <section className="rounded-2xl border border-slate-200/80 bg-surface p-4 shadow-sm">
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("수정 큐", "Modification Queue")}</div>
             {onClearAll && incidents.length > 0 && (
@@ -311,7 +311,7 @@ export default function IncidentPanel({
           </div>
         </section>
 
-        <section className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
+        <section className="rounded-2xl border border-slate-200/80 bg-surface p-4 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("시나리오 이력", "Scenario History")}</div>
             <div className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-500">
@@ -358,7 +358,7 @@ function NodeMiniMap({
 }) {
   const { t } = useLanguage();
   return (
-    <div className="rounded-3xl border border-slate-100 bg-white p-4">
+    <div className="rounded-3xl border border-slate-100 bg-surface p-4">
       <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("노드 다이어그램", "Node Diagram")}</div>
       <div className="relative mt-4 mx-auto h-48 w-48">
         <DirectionStack
@@ -392,7 +392,7 @@ function NodeMiniMap({
           onSelectLink={onSelectLink}
         />
 
-        <div className="absolute inset-1/2 h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-[#b7c8db] bg-[#edf3fa]" />
+        <div className="absolute inset-1/2 h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-blue-200 bg-blue-50" />
       </div>
     </div>
   );
@@ -425,8 +425,8 @@ function DirectionStack({
               onClick={() => onSelectLink(item)}
               className={`rounded-lg border px-2 py-1 text-[10px] font-semibold transition-colors ${
                 selected
-                  ? "border-[#5f7fa4] bg-[#5f7fa4] text-white"
-                  : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                  ? "border-blue-500 bg-blue-500 text-white"
+                  : "border-slate-200 bg-surface text-slate-600 hover:border-slate-300"
               }`}
             >
               {item.id}

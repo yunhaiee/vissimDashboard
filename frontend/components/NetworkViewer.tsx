@@ -115,10 +115,10 @@ export default function NetworkViewer({ network, results, selectedScenario, metr
 
   return (
     <div className="relative w-full h-full">
-      <svg ref={svgRef} className="w-full h-full bg-slate-900 rounded-xl" />
+      <svg ref={svgRef} className="w-full h-full bg-ink rounded-xl" />
       {tooltip && (
         <div
-          className="fixed z-50 bg-slate-800 text-white text-xs px-3 py-1.5 rounded shadow-lg pointer-events-none"
+          className="fixed z-50 bg-slate-800 text-ink text-xs px-3 py-1.5 rounded shadow-lg pointer-events-none"
           style={{ left: tooltip.x + 12, top: tooltip.y - 10 }}
         >
           {tooltip.text}

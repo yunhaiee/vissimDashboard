@@ -45,14 +45,14 @@ export default function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[3000] flex items-center justify-center bg-slate-900/45 px-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[3000] flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label={title}
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-sm rounded-2xl border border-slate-300/80 bg-white p-5 shadow-[0_24px_60px_rgba(15,23,42,0.3)]"
+        className="w-full max-w-sm rounded-2xl border border-slate-300/80 bg-surface p-5 shadow-[0_24px_60px_rgba(15,23,42,0.3)]"
         onClick={(event) => event.stopPropagation()}
       >
         <h2 className="text-sm font-bold text-slate-900">{title}</h2>
@@ -62,7 +62,7 @@ export default function ConfirmDialog({
             type="button"
             onClick={onCancel}
             disabled={busy}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-lg border border-slate-300 bg-surface px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {cancelLabel}
           </button>
@@ -72,7 +72,7 @@ export default function ConfirmDialog({
             onClick={onConfirm}
             disabled={busy}
             className={`rounded-lg px-3 py-2 text-xs font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-60 ${
-              danger ? "bg-rose-600 hover:bg-rose-700" : "bg-[#2f7bc8] hover:bg-[#276caf]"
+              danger ? "bg-rose-600 hover:bg-rose-700" : "bg-accent hover:bg-accent-deep"
             }`}
           >
             {confirmLabel}

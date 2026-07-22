@@ -41,7 +41,7 @@ export function SummaryCardsPanel({ cards }: { cards: CompareSummaryCard[] }) {
         return (
           <article
             key={card.id}
-            className={`rounded-2xl border bg-white p-4 shadow-sm ${toneStyle.border}`}
+            className={`rounded-2xl border bg-surface p-4 shadow-sm ${toneStyle.border}`}
           >
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{card.label}</p>
             <p className="mt-3 text-2xl font-semibold text-slate-900">
@@ -84,10 +84,10 @@ export function ScenarioRankingPanel({
           <article key={`${item.scenario_id}-${rank}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
-                <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-slate-900 px-2 text-xs font-semibold text-white">
+                <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-slate-900 px-2 text-xs font-semibold text-ink">
                   {rank}
                 </span>
-                <span className="h-3 w-3 rounded-full border border-white shadow-sm" style={{ backgroundColor: color }} />
+                <span className="h-3 w-3 rounded-full border border-white/30" style={{ backgroundColor: color }} />
                 <p className="text-sm font-semibold text-slate-900">{label}</p>
               </div>
               <p className="text-xs font-semibold text-slate-600">{scoreLabel}</p>
@@ -113,7 +113,7 @@ export function KeyInsightsPanel({
         const scenario = insight.scenario_id ? getScenarioMeta(scenarios, insight.scenario_id) : null;
 
         return (
-          <article key={insight.id} className={`rounded-2xl border bg-white p-4 shadow-sm ${toneStyle.border}`}>
+          <article key={insight.id} className={`rounded-2xl border bg-surface p-4 shadow-sm ${toneStyle.border}`}>
             <div>
               <p className="text-sm font-semibold text-slate-900">{insight.title}</p>
               <p className="mt-1 text-xs leading-5 text-slate-600">{insight.message}</p>

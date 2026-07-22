@@ -21,7 +21,7 @@ export default function KpiCards({ scenarios, selected, results }: Props) {
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
       {KPI_DEFS.map((kpi) => (
-        <div key={kpi.key} className="bg-white rounded-xl border border-slate-100 shadow-sm p-4">
+        <div key={kpi.key} className="bg-surface rounded-xl border border-slate-100 shadow-sm p-4">
           <p className="text-xs text-slate-500 font-medium mb-2">{kpi.label}</p>
           <div className="space-y-1.5">
             {active.map((s) => {

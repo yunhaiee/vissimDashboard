@@ -15,7 +15,7 @@ interface Props {
   datasetRevision?: number | string;
 }
 
-const TILE_URL = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
+const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 const GEO_PARAMS = "scale_x=1.178200&scale_y=1.178200&offset_x=14427.6419&offset_y=-4221.3566&rotation_deg=-0.45759";
 
 export default function IntersectionCompareMap({ selectedNodeIds, onToggleNode, datasetRevision = 0 }: Props) {

@@ -129,7 +129,7 @@ export default function SimulationControl() {
           </div>
           <div className="h-2 w-full rounded-full bg-slate-200/80">
             <div
-              className="h-2 rounded-full bg-[#5f7fa4] transition-all duration-500"
+              className="h-2 rounded-full bg-blue-500 transition-all duration-500"
               style={{ width: `${progress}%` }}
             />
           </div>
@@ -140,13 +140,13 @@ export default function SimulationControl() {
       )}
 
       {status === "done" && (
-        <div className="rounded-lg border border-[#cad9cc] bg-[#edf5ef] px-4 py-3 text-sm text-[#355f44]">
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-600">
           {t("시뮬레이션 완료", "Simulation completed")} (Job: {jobId})
         </div>
       )}
 
       {status === "error" && (
-        <div className="rounded-lg border border-[#e5c6ca] bg-[#f8eff1] px-4 py-3 text-sm text-[#8a4c55]">
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
           {error}
         </div>
       )}

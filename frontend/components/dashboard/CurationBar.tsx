@@ -6,8 +6,8 @@ import { useLanguage } from "@/components/LanguageProvider";
 import { curateDashboard, type DashboardCurationSpec } from "@/lib/api";
 
 const TONE_STYLES: Record<string, string> = {
-  success: "border-[#cfe3d4] bg-[#f2f8f3] text-[#2f5a3d]",
-  warning: "border-[#ecd9bb] bg-[#fdf6ea] text-[#8a5a1f]",
+  success: "border-emerald-200 bg-emerald-50 text-emerald-600",
+  warning: "border-amber-300 bg-amber-50 text-amber-700",
   info: "border-slate-200 bg-slate-50 text-slate-700",
 };
 
@@ -124,9 +124,9 @@ export default function CurationBar({
   const unavailableChosenIds = spec ? spec.charts.filter((id) => !applicableSectionIds.includes(id)) : [];
 
   return (
-    <section className="rounded-2xl border border-slate-300/70 bg-white/90 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
+    <section className="rounded-2xl border border-slate-300/70 bg-surface/90 px-5 py-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur">
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex min-w-[260px] flex-1 items-center gap-2 rounded-xl border border-slate-300/70 bg-white px-3 py-2">
+        <div className="flex min-w-[260px] flex-1 items-center gap-2 rounded-xl border border-slate-300/70 bg-surface px-3 py-2">
           <span aria-hidden className="text-base">✨</span>
           <input
             value={message}
@@ -149,14 +149,14 @@ export default function CurationBar({
             <button
               type="button"
               onClick={() => onAudienceChange("plain")}
-              className={`px-3 py-2 transition ${audience === "plain" ? "bg-[#31517a] text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
+              className={`px-3 py-2 transition ${audience === "plain" ? "bg-accent-deep text-white" : "bg-surface text-slate-600 hover:bg-slate-50"}`}
             >
               {t("쉬운 설명", "Plain", "やさしい説明")}
             </button>
             <button
               type="button"
               onClick={() => onAudienceChange("expert")}
-              className={`px-3 py-2 transition ${audience === "expert" ? "bg-[#31517a] text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
+              className={`px-3 py-2 transition ${audience === "expert" ? "bg-accent-deep text-white" : "bg-surface text-slate-600 hover:bg-slate-50"}`}
             >
               {t("전문가", "Expert", "専門家")}
             </button>
@@ -174,7 +174,7 @@ export default function CurationBar({
               type="button"
               onClick={submit}
               disabled={disabled || !message.trim()}
-              className="rounded-lg bg-[#31517a] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#27415f] disabled:opacity-50"
+              className="rounded-lg bg-accent-deep px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-100 disabled:opacity-50"
             >
               {t("질문하기", "Ask", "質問する")}
             </button>
@@ -183,7 +183,7 @@ export default function CurationBar({
             <button
               type="button"
               onClick={reset}
-              className="rounded-lg border border-slate-300/70 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              className="rounded-lg border border-slate-300/70 bg-surface px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
             >
               {t("전체 보기", "Show everything", "すべて表示")}
             </button>

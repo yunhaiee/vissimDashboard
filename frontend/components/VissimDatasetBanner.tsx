@@ -145,7 +145,7 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
   }, [onDatasetChange, t]);
 
   return (
-    <div className={`${fullWidth ? "min-w-0" : "min-w-[260px]"} rounded-xl border border-slate-200 ${hasCustomBackground ? "" : "bg-white/95"} p-3 ${hasCustomShadow ? "" : "shadow-sm"} ${className}`}>
+    <div className={`${fullWidth ? "min-w-0" : "min-w-[260px]"} rounded-xl border border-slate-200 ${hasCustomBackground ? "" : "bg-surface/95"} p-3 ${hasCustomShadow ? "" : "shadow-sm"} ${className}`}>
       <input
         ref={fileInputRef}
         type="file"
@@ -169,7 +169,7 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
         <button
           type="button"
           onClick={() => loadActiveDataset()}
-          className="mt-1 text-[11px] font-semibold text-[#31517a] underline decoration-dotted underline-offset-2 hover:text-[#1f3a5f]"
+          className="mt-1 text-[11px] font-semibold text-blue-600 underline decoration-dotted underline-offset-2 hover:text-blue-700"
         >
           {t("다시 시도", "Retry")}
         </button>
