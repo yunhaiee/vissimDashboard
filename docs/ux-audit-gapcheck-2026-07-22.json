@@ -1,0 +1,200 @@
+﻿{
+    "counts":  {
+                   "fixed":  11,
+                   "partial":  25,
+                   "not_fixed":  1,
+                   "regressed":  0,
+                   "cannot_verify":  0
+               },
+    "surviving_gaps":  [
+                           {
+                               "rank":  7,
+                               "verdict":  "partial",
+                               "severity":  "high",
+                               "gap":  "The invented 0.75-1.25 volume-factor is still multiplied into intersection-average delay and the resulting synthetic per-direction LOS letters are still exported into the formal report as \"Estimated LOS\", with the estimation disclaimer only on hover.",
+                               "current_evidence":  "page.tsx:1961-1962 still computes volumeFactor=0.75+(directionVolume/maxDirectionVolume)*0.5 applied via buckets[direction].sum += averageDelay*volumeFactor; :2405/:2585 export \"Estimated LOS\" letters; :972-980 disclaimer is hover-only title; tooltip wording \"distributed by volume share\" still contradicts the multiplicative code. Only the always-visible A-F legend was added. Fabricated numbers land in a professor-facing report."
+                           },
+                           {
+                               "rank":  18,
+                               "verdict":  "not_fixed",
+                               "severity":  "high",
+                               "gap":  "None of the three recommended fixes were done: the overall narrative/scenario ranking is still buried at section 5 of 6, the 520px map is still the first section, and no default intersection is auto-seeded so intersection-performance and node-flow render empty on first load.",
+                               "current_evidence":  "page.tsx section order unchanged (map-selection first at :477 with 520px map at :486; overall-results-analysis at :599-616, 5th of 6); no summary strip between CurationBar (:463-474) and map (:476); selectedNodeIds inits to [] (:125) with no effect seeding from summary.top_congested_nodes, so EmptyNodePanel (:525) renders on load. Only a KPI-section reorder was made, not addressing the headline."
+                           },
+                           {
+                               "rank":  2,
+                               "verdict":  "partial",
+                               "severity":  "high",
+                               "gap":  "Reconciliation and scaling disclosure are done, but the internal id \"S000001\" still leaks into user-facing copy, sim totals still come only from top_congested_nodes (nodes outside it render \"-\"), and /base-model remains a disjoint third GEH pipeline with no cross-link or authoritative-surface statement.",
+                               "current_evidence":  "page.tsx:1752-1755 amber banner and :2386 report footnote literally print \"S000001\"; base scenario hard-pegged to \"S000001\" (:1710,:1747); sim totals sourced from summary?.top_congested_nodes?.find (:1706) â†’ null renders \"-\" (:1830-1831); base-model/page.tsx:1559 has its own geh() with no dashboard link."
+                           },
+                           {
+                               "rank":  24,
+                               "verdict":  "partial",
+                               "severity":  "high",
+                               "gap":  "Total metrics (TRAVTMTOT, DELAYTOT) are still labeled with a bare \"s\" and formatted \"51.5k\" rather than converted to vehicle-hours, and the \"Best\" tag is still awarded on the raw minimum total (favoring scenarios that simply serve fewer vehicles).",
+                               "current_evidence":  "page.tsx:36-37 TRAVTMTOT/DELAYTOT unit still \"s\"; :1525-1526 displayVal renders \"51.5k\"; :1498/:1524 Best tag on raw minimum total; only a generic non-VEHARR-conditioned caveat (:1569-1573) added. Per-vehicle labeling for DELAYAVG/STOPSAVG was fixed but totals were not normalized."
+                           },
+                           {
+                               "rank":  31,
+                               "verdict":  "partial",
+                               "severity":  "medium-high",
+                               "gap":  "When QLENMAX is absent, average queue QLEN is substituted and displayed under the \"ìµœëŒ€ ëŒ€ê¸°í–‰ë ¬ / Max Q Length\" header with no retitle and no source indicator â€” a data mislabel.",
+                               "current_evidence":  "calculateNodeMaxQueue (page.tsx:2079-2082) falls back to avgValues (QLEN) shown under static title at :864; no flag propagated to card/bar. Cross-scenario-max disclosure and the QLENMAX/QLEN pooling bug were fixed, but the mislabel survives."
+                           },
+                           {
+                               "rank":  11,
+                               "verdict":  "partial",
+                               "severity":  "medium-high",
+                               "gap":  "In the default \"plain\" mode, multi-run scenarios still show bare point values with an unqualified \"Best\" tag even when the gap to the runner-up is within stochastic noise â€” Â±stdev and the noise softening only appear in expert mode.",
+                               "current_evidence":  "Â±stdev display (page.tsx:1541), bestIsWithinNoise softening (1534,1536,1564) all gated on showTechnicalDetail=audience===\"expert\" (564); default audience is \"plain\" (130). Only the single-run caveat is shown by default. Verifier flagged medium confidence."
+                           },
+                           {
+                               "rank":  9,
+                               "verdict":  "partial",
+                               "severity":  "medium",
+                               "gap":  "Backend-unreachable is not distinguished from no-dataset, so when the server is down the page still shows the \"Upload required\" pill, DashboardDatasetGate, and full upload panel telling the user to upload (which will also fail) simultaneously with the new error banner.",
+                               "current_evidence":  "page.tsx:133 hasUploadedDataset false in both no-dataset and backend-down cases (catch sets activeDataset=null at :210); :432-437 pill, :418-422 gate, :531-532 upload panel all still render alongside the rose error banner (:450-461). Only banner message + retry buttons were added."
+                           },
+                           {
+                               "rank":  32,
+                               "verdict":  "partial",
+                               "severity":  "medium",
+                               "gap":  "Bar labels still apply the \u0027k\u0027 abbreviation (\"51.5k\") while no unit badge reflects the scaling and the range footer directly below shows \"51,546\" â€” the same quantity renders two inconsistent ways within one component.",
+                               "current_evidence":  "page.tsx:1526 bar label value\u003e=1000?`${(value/1000).toFixed(1)}k`; :1576 range footer uses formatNumber (toLocaleString separators). Only the footer format was fixed; bar labels unchanged."
+                           },
+                           {
+                               "rank":  30,
+                               "verdict":  "partial",
+                               "severity":  "medium",
+                               "gap":  "The downloadable Word file is still HTML saved as .doc, so the format-mismatch prompt still fires; the ja locale lacks the inline warning and Word was not made primary.",
+                               "current_evidence":  "Verifier: \"Buttons relabeled but the Word file is still HTML saved as .doc.\" Format-mismatch prompt still triggers on open."
+                           },
+                           {
+                               "rank":  21,
+                               "verdict":  "partial",
+                               "severity":  "medium",
+                               "gap":  "The audience toggle is threaded into only 1 of the 3 named chart surfaces: in plain mode the LOS section still shows raw A-F letters and the validation section still shows the full GEH table, and no plain-mode SectionHeader subtitles were added.",
+                               "current_evidence":  "Only KPI section wired (page.tsx:564 showTechnicalDetail); IntersectionPerformanceGrid signature (:836) takes no audience, LOS renders unconditionally (:1000); ValidationMatrix signature (:1732-1744) has no audience param; SectionHeader subtitles static t(...)."
+                           },
+                           {
+                               "rank":  33,
+                               "verdict":  "partial",
+                               "severity":  "medium",
+                               "gap":  "The scenario picker toggle still enforces no maximum while the reload path silently slices selections back to 4, so the core cap inconsistency persists; no \"auto-selected\" badge distinguishes the default set.",
+                               "current_evidence":  "toggle appends uncapped [...selected, id] (page.tsx:1603-1605), call site passes setSelected directly (:419), reload slices .slice(0,4) (:169,:171). Only an explanatory subtitle and a count badge were added."
+                           },
+                           {
+                               "rank":  14,
+                               "verdict":  "partial",
+                               "severity":  "medium",
+                               "gap":  "The server-side half is absent: no has_real_counts/has_data flags are passed into the curation context and validate_spec still doesn\u0027t filter chosen ids by data availability, so the LLM can still select field-count-validation with no counts loaded; the client only shows a text notice, not an in-place stub.",
+                               "current_evidence":  "backend/routers/assistant.py:83-95 context carries only compare_summary/selected_nodes; dashboard_curator.py validate_spec:132-137 filters only against VALID_CHART_IDS. Client amber notice at CurationBar.tsx:222-229 only."
+                           },
+                           {
+                               "rank":  6,
+                               "verdict":  "partial",
+                               "severity":  "medium",
+                               "gap":  "The report is still emitted English-only with hardcoded en-AU dates and no language/template disclosure on the Korean-labeled button, and the three report pipelines remain disconnected (dashboard builds its own client-side markdown instead of a canonical backend .docx).",
+                               "current_evidence":  "page.tsx:2260 hardcodes English title, :2826 formatReportDate hardcodes \u0027en-AU\u0027; handleGenerateReport :1275 uses client-side buildCalibrationReportMarkdown; zero references to /report or /downloads. Fabricated-provenance strings were removed."
+                           },
+                           {
+                               "rank":  13,
+                               "verdict":  "partial",
+                               "severity":  "medium",
+                               "gap":  "The 5xx auto-retry still fires silently with no \"retrying\" feedback, so a failing curation query takes ~40s while the static status line claims 10-20s.",
+                               "current_evidence":  "api.ts:730-735 auto-retries once on any 5xx (sleepForRetry(700)+second fetch) with no callback; CurationBar.tsx:194-198 status line is static. Cancel-on-cold-start was fixed (CurationBar.tsx:164-171)."
+                           },
+                           {
+                               "rank":  25,
+                               "verdict":  "partial",
+                               "severity":  "medium",
+                               "gap":  "Uploads/resets still go through apiMutationFetch with no AbortSignal or timeout and the banner exposes no cancel button, so a stalled backend leaves the UI disabled indefinitely (now with an elapsed counter ticking forever).",
+                               "current_evidence":  "api.ts:848/872 use apiMutationFetch â†’ bare fetch, no signal/timeout (fetchWithTimeout wired only into read-path apiFetch); buttons only disabled during upload (VissimDatasetBanner.tsx:181,191). The \u0027Loading\u0027 mislabel and elapsed-seconds readout were fixed."
+                           },
+                           {
+                               "rank":  17,
+                               "verdict":  "partial",
+                               "severity":  "medium",
+                               "gap":  "The cross-handoff is not implemented: execution-intent questions typed into the read-only curation bar are still routed to the curation endpoint with no way to open/prefill the chat, so curation still cannot run changes.",
+                               "current_evidence":  "CurationBar submit (CurationBar.tsx:61-105) only calls curateDashboard, no execution-intent detection; FloatingAssistant only listens for vissim:page-context/pointer/resize â€” no assistant-open/prefill event exists. Distinct verbs and curationSpec-in-page-context were fixed."
+                           },
+                           {
+                               "rank":  19,
+                               "verdict":  "partial",
+                               "severity":  "low-medium",
+                               "gap":  "JobRow never compares job.dataset_filename against the active dataset, so stale jobs tied to a destroyed/replaced dataset are not rendered distinctly â€” every completed job gets the same generic hedge.",
+                               "current_evidence":  "simulation/page.tsx:1103-1110 renders the message for every job.status===\"done\" unconditionally; JobRow signature (:1080) receives no active-dataset context; dataset_filename (api.ts:486) never read. Only the literal falsehood was softened to a hedge."
+                           },
+                           {
+                               "rank":  12,
+                               "verdict":  "partial",
+                               "severity":  "low-medium",
+                               "gap":  "Travel-time series are still encoded by stroke color alone (identical circle markers, no per-series shapes or end-of-line labels), so near-similar hues remain indistinguishable â€” the non-color channel recommendation was not added.",
+                               "current_evidence":  "page.tsx:1183-1212 renders every series as polyline stroke={color} plus identical r=3.5 circle markers; legend (:1225-1232) color-keyed. The scenario color-collision and direction/intersection overlap were genuinely fixed."
+                           },
+                           {
+                               "rank":  15,
+                               "verdict":  "partial",
+                               "severity":  "low-medium",
+                               "gap":  "Three sub-problems survive: hidden sections still instant-unmount to null with no placeholder stub, the new count badge lives in the non-sticky curation bar and scrolls out of view, and there is no aria-live region so the unmount is never announced.",
+                               "current_evidence":  "page.tsx sections unmount to null (:476,:542,:576,:589,:599,:618); badge inside non-sticky CurationBar (:127) â€” no \u0027sticky\u0027 matches; no aria-live/role=status/alert matches, badge is a plain span. Only the \"Showing X of Y\" count was added."
+                           },
+                           {
+                               "rank":  29,
+                               "verdict":  "partial",
+                               "severity":  "low-medium",
+                               "gap":  "Three of four jargon exposures remain as primary UI text: the \"Qwen model path\"/\"worker\" status note, the \"COM offline/connected/ready\" pill label, and the compactWorkerError \"ID:\"/raw-worker-error fragment; no plain-language disclosure control was added.",
+                               "current_evidence":  "FloatingAssistant.tsx:1091-1096 Qwen/worker note, :1155 ComStatusPill COM labels, :1143-1149 compactWorkerError appended at :1101. Only formatAssistantError/port-8001 copy was rewritten."
+                           },
+                           {
+                               "rank":  27,
+                               "verdict":  "partial",
+                               "severity":  "low-medium",
+                               "gap":  "Nav labels still have no one-line descriptors and the jargon label \"ë² ì´ìŠ¤ëª¨ë¸ ê²€ì¦\" was not renamed toward a task, so a non-expert still cannot distinguish routes from labels alone.",
+                               "current_evidence":  "AppShell.tsx:46-48 renders only {item.label}; :19 label unchanged. Nav reorder, ja strings, and brand-home-link were done."
+                           },
+                           {
+                               "rank":  16,
+                               "verdict":  "partial",
+                               "severity":  "low",
+                               "gap":  "The section jump-index is still absolutely positioned inside the map section so it scrolls away and vanishes under focus mode, and it still lacks a real onClick/aria-expanded toggle (CSS hover/focus only), leaving touch reachability unaddressed.",
+                               "current_evidence":  "page.tsx:484/:662 absolute inside map wrapper; :476 returns null when map-selection hidden; :676 group-hover/group-focus-within, no onClick, no aria-expanded on button (:664-668). Dead-link filtering and aria-labels were fixed."
+                           },
+                           {
+                               "rank":  28,
+                               "verdict":  "partial",
+                               "severity":  "low",
+                               "gap":  "The \u0027sec\u0027 and \u0027veh\u0027 axis/unit labels are still hardcoded English (not routed through t()), and per-direction volume values and the full estimation disclaimer remain hover-only title attributes rather than visible text.",
+                               "current_evidence":  "page.tsx:1219-1221 bare \u0027sec\u0027 SVG text, :1027 hardcoded \u0027veh\u0027; :1044 volume values hover-only, :974-977 disclaimer title-only. Volume tooltips, Best badge, and locale-aware report timestamp were fixed."
+                           },
+                           {
+                               "rank":  36,
+                               "verdict":  "partial",
+                               "severity":  "low",
+                               "gap":  "No \"what should the ZIP contain\" hint was added next to either upload button â€” the banner remains guidance-free and the sim-page ZIP button has no adjacent hint; the disabled message names .vissimpdb but not the full ZIP contents.",
+                               "current_evidence":  "VissimDatasetBanner.tsx:177-196 upload button has no ZIP guidance; simulation/page.tsx:662-665 ZIP button no hint. The disabled message (:1248-1252) was fixed to name the cause."
+                           },
+                           {
+                               "rank":  34,
+                               "verdict":  "partial",
+                               "severity":  "low",
+                               "gap":  "Two of three developer/changelog voice leaks remain: the map-selection subtitle still says \"use the existing dashboard mapâ€¦ as-is\" and the upload-required panel still describes removed sample-data behavior users never saw.",
+                               "current_evidence":  "page.tsx:480 \"ê¸°ì¡´ ëŒ€ì‹œë³´ë“œ ì§€ë„ë¥¼ ê·¸ëŒ€ë¡œ ì‚¬ìš©\"; :762-765 \"ê¸°ë³¸ ìƒ˜í”Œ ë°ì´í„° ëŒ€ì‹ â€¦ instead of the default sample data\". Only the internal design-note leak (:603) was fixed."
+                           },
+                           {
+                               "rank":  38,
+                               "verdict":  "partial",
+                               "severity":  "low",
+                               "gap":  "The vestigial SimulationControl.tsx was neither deleted nor rewritten on the WS+polling pattern â€” its WebSocket-only monitor bug (ws.onerrorâ†’error on drop, no polling, can stick at \"running\") is still live, defused only by a warning comment (though the file has zero real imports).",
+                               "current_evidence":  "SimulationControl.tsx still exists, ws.onerror flips status to \"error\" (:70-73), no polling fallback; only a comment (:3-11) was added. Hazard 1 (the 404 page, not-found.tsx) was genuinely fixed; the component has no real importers per grep."
+                           }
+                       ],
+    "regressions":  [
+
+                    ],
+    "cannot_verify":  [
+
+                      ],
+    "bottom_line":  "The fix pass mostly held up: of 37 verified findings (rank 8 has no verdict), 11 are fully fixed, 25 are partial, 1 is not_fixed, and there are no regressions and nothing that needs a runtime check â€” every verdict is code-evidenced at high confidence (only rank 11 is medium). The consistent pattern is that the visible/disclosure half of each fix landed while the deeper data-integrity or server-side half did not, so most partials are honest \\\"disclosed but not corrected\\\" states rather than failed work. Before the professor demo, prioritize the four high-severity data-integrity gaps that produce visibly wrong or fabricated numbers: rank 7 (invented 0.75-1.25 volume factor and synthetic LOS still exported into the formal report), rank 2 (\\\"S000001\\\" internal id leaking into user copy plus a disjoint third GEH pipeline), rank 24 (\\\"Best\\\" awarded on raw minimum totals, favoring scenarios that serve fewer vehicles), and rank 31 (average queue shown under a \\\"Max Q Length\\\" title) â€” any of these on screen or in the exported report would undermine credibility. Rank 18 (not_fixed) is the biggest UX gap: decision content is still buried at section 5 and intersection panels render empty on first load, so at minimum auto-seed a default intersection selection before the demo. The remaining partials (plain-mode jargon, backend-down contradictory panels, HTML-as-.doc export, number-format inconsistency, silent retries, missing upload cancel/timeout) are demo-safe to defer but should be tracked; the lone dead-code hazard (rank 38 SimulationControl) has no real importers and is not a demo risk."
+}

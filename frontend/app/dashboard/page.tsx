@@ -130,6 +130,9 @@ export default function DashboardPage() {
   const [audience, setAudience] = useState<"plain" | "expert">("plain");
   const requestSerial = useRef(0);
   const loadSerial = useRef(0);
+  // Auto-seed a default intersection once per dataset so the performance and
+  // flow panels are not empty on first load; reset on dataset change.
+  const autoSeededNodesRef = useRef(false);
   const hasUploadedDataset = activeDataset?.source === "uploaded";
   // Focus mode: with no curation spec every section is visible; with one,
   // only the LLM-chosen sections render (the header and curation bar always stay).
@@ -147,6 +150,7 @@ export default function DashboardPage() {
     setSelectedNodeIds([]);
     setNodeNamesById({});
     setRealCounts([]);
+    autoSeededNodesRef.current = false;
     // An AI curation answer is only valid for the scenarios/data it was
     // computed against; a dataset change invalidates it immediately.
     setCurationSpec(null);
@@ -273,6 +277,22 @@ export default function DashboardPage() {
       },
     );
   }, [hasUploadedDataset, selected, t]);
+
+  // Seed the busiest intersection into the selection once results arrive, so
+  // the intersection-performance and flow panels render real content on first
+  // load instead of an empty "click a node" prompt. Runs at most once per
+  // dataset (autoSeededNodesRef), and never overrides a user's own selection.
+  useEffect(() => {
+    if (autoSeededNodesRef.current) return;
+    if (selectedNodeIds.length > 0) return;
+    const top = summary?.top_congested_nodes?.[0];
+    if (!top?.node_id) return;
+    autoSeededNodesRef.current = true;
+    const nodeId = String(top.node_id);
+    const nodeName = top.node_name ?? `Node ${nodeId}`;
+    setNodeNamesById((prev) => ({ ...prev, [nodeId]: nodeName }));
+    setSelectedNodeIds([nodeId]);
+  }, [summary, selectedNodeIds.length]);
 
   useEffect(() => {
     function handleAssistantSimulationComplete(event: Event) {
@@ -1012,6 +1032,13 @@ function DirectionDelayChart({
           </span>
         ))}
       </div>
+
+      <p className="mt-2 text-[9.5px] leading-snug text-amber-700">
+        {t(
+          "방향별 값은 교차로 평균 지체를 방향별 통행량 비율로 배분한 추정치입니다. 실제 방향별 측정값이 아닙니다.",
+          "Per-direction values estimate the intersection-average delay distributed by volume share — not a per-direction measurement.",
+        )}
+      </p>
     </div>
   );
 }
@@ -1521,7 +1548,10 @@ function KpiCard({
 
           const pct = maxVal > 0 ? (value / maxVal) * 100 : 100;
 
-          const isBest = value === bestVal;
+          // A minimum total is NOT "best" — a lower network-wide total can
+          // simply mean fewer vehicles were served — so the Best tag is
+          // suppressed on total metrics (the caveat line below explains why).
+          const isBest = value === bestVal && !isTotal;
           const displayVal =
             value >= 1000 ? `${(value / 1000).toFixed(1)}k` : value.toFixed(value < 10 ? 2 : 1);
 
@@ -1686,6 +1716,15 @@ function translateKpiMetricLabel(
   }
 }
 
+// The scenario the validation scaling is pegged to. Kept as a named constant
+// so the internal id never appears in user-facing copy — resolveBaseScenarioName
+// turns it into the scenario's display name where the scenario is loaded.
+const BASE_SCENARIO_ID = "S000001";
+
+function resolveBaseScenarioName(scenarios: ScenarioMeta[], t: (ko: string, en: string, ja?: string) => string): string {
+  return scenarios.find((scenario) => scenario.id === BASE_SCENARIO_ID)?.name ?? t("기준 시나리오", "the base scenario", "基準シナリオ");
+}
+
 interface ScaledVolumeResult {
   value: number | null;
   rawValue: number | null;
@@ -1707,7 +1746,7 @@ function computeScaledSimVolume(
   const raw = node?.scenario_totals?.[scenarioId] ?? null;
   if (raw == null) return { value: null, rawValue: null, scaleFactor: null };
 
-  const dbBasam = node?.scenario_totals?.["S000001"] ?? null;
+  const dbBasam = node?.scenario_totals?.[BASE_SCENARIO_ID] ?? null;
   const excelBasam = realCounts.find((row) => String(row.node_id) === String(nodeId))?.total_sim_basam ?? null;
 
   if (dbBasam != null && dbBasam > 0 && excelBasam != null) {
@@ -1744,14 +1783,14 @@ function ValidationMatrix({
 }) {
   const { t } = useLanguage();
 
-  const hasBasam = scenarios.some((scenario) => scenario.id === "S000001");
+  const hasBasam = scenarios.some((scenario) => scenario.id === BASE_SCENARIO_ID);
   const nodes = [...realCounts].sort((a, b) => parseInt(a.node_id) - parseInt(b.node_id));
 
   return (
     <div className="mt-4 space-y-2">
       {!hasBasam && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
-          {t("Base 시나리오(S000001)가 선택되지 않아 스케일 기반 검증 정확도가 낮아질 수 있습니다.", "Base scenario (S000001) is not selected, so scaling-based validation may be less accurate.")}
+          {t("기준(base) 시나리오가 선택되지 않아 스케일 기반 검증 정확도가 낮아질 수 있습니다.", "The base scenario is not selected, so scaling-based validation may be less accurate.")}
         </p>
       )}
 
@@ -2065,21 +2104,16 @@ function calculateWorstApproachDelay(result: ScenarioResults, nodeId: string): n
 }
 
 function calculateNodeMaxQueue(result: ScenarioResults, nodeId: string): number | null {
-  // QLENMAX (peak queue) and QLEN (average queue) must never be pooled into
-  // one Math.max — mixing them let an average value from one row silently
-  // win over a max value from another under a single "Max Q Length" label.
-  // Prefer QLENMAX across every row for this node; only fall back to QLEN
-  // (network-wide, not per-row) when QLENMAX is absent everywhere.
-  const rows = result.queues.filter((row) => objectBelongsToNode(row.OBJECT_ID, nodeId));
-  const maxValues = rows
+  // "Max Q Length" must only ever report QLENMAX (peak queue). Substituting
+  // QLEN (average queue) under that title — as an earlier version did when
+  // QLENMAX was absent — mislabels an average as a maximum, so it is NOT
+  // done: when no peak-queue value exists for this node we return null and
+  // the bar renders "-" rather than a wrong number under the wrong label.
+  const maxValues = result.queues
+    .filter((row) => objectBelongsToNode(row.OBJECT_ID, nodeId))
     .map((row) => toFiniteNumber(row["QLENMAX_MEAN"] ?? row["QLENMAX"]))
     .filter((value): value is number => value != null);
-  if (maxValues.length) return Math.max(...maxValues);
-
-  const avgValues = rows
-    .map((row) => toFiniteNumber(row["QLEN_MEAN"] ?? row["QLEN"]))
-    .filter((value): value is number => value != null);
-  return avgValues.length ? Math.max(...avgValues) : null;
+  return maxValues.length ? Math.max(...maxValues) : null;
 }
 
 function sumDirectionMap(values: Record<string, number> | undefined): number {
@@ -2381,9 +2415,10 @@ function buildCalibrationReportMarkdown({
       : "_Observed traffic count data was not available for the selected intersections. GEH calibration evidence should be added when survey counts are confirmed._",
   );
   if (validationRows.some((row) => row.modelledIsScaled)) {
+    const baseName = scenarios.find((scenario) => scenario.id === BASE_SCENARIO_ID)?.name ?? "the base scenario";
     lines.push("");
     lines.push(
-      "_* Modelled volume is scaled against the base scenario (S000001) using the ratio between the observed base-scenario count and the simulated base-scenario volume. This is an estimate, not a direct simulation output._",
+      `_* Modelled volume is scaled against ${baseName} using the ratio between the observed base-scenario count and the simulated base-scenario volume. This is an estimate, not a direct simulation output._`,
     );
   }
   lines.push("");
@@ -2402,9 +2437,13 @@ function buildCalibrationReportMarkdown({
   lines.push("#### Selected Intersection Direction Summary");
   lines.push("");
   lines.push(markdownTable(
-    ["Intersection", "Direction", "Scenario", "Inbound Volume", "Estimated LOS"],
+    ["Intersection", "Direction", "Scenario", "Inbound Volume"],
     buildDirectionReportRows(intersectionCards, scenarios, results),
   ));
+  lines.push("");
+  lines.push(
+    "_Per-approach Level of Service is not reported here: VISSIM outputs delay at the intersection level, not per approach, so any per-direction LOS would be an estimate rather than a measured value._",
+  );
   lines.push("");
 
   if (summaryCards.length > 0 || keyInsights.length > 0 || hotspotRows.length > 0 || ranking.length > 0) {
@@ -2576,19 +2615,20 @@ function buildDirectionReportRows(
       const volume = nodeRow ? calculateDirectionalVolume(nodeRow) : null;
       for (const direction of DIRECTION_ORDER) {
         const directionLabel = DIRECTION_LABELS[direction].en;
-        const los = card.delayByDirection.find((item) => item.direction === direction)?.los ?? null;
+        // Inbound volume is a real per-direction measurement; per-approach LOS
+        // is NOT (it would be synthesized from intersection-average delay), so
+        // it is deliberately omitted from the formal report.
         rows.push([
           card.nodeName,
           directionLabel,
           scenario.name,
           formatReportNumber(volume?.directions[direction]),
-          los ?? "N/A",
         ]);
       }
     }
   }
 
-  return rows.length > 0 ? rows : [["N/A", "N/A", "N/A", "N/A", "N/A"]];
+  return rows.length > 0 ? rows : [["N/A", "N/A", "N/A", "N/A"]];
 }
 
 function calculateScenarioNodeVolume(result: ScenarioResults | undefined, nodeId: string): number | null {
