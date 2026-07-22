@@ -75,9 +75,11 @@ _active_inpx_override: Path | None = None
 def set_active_inpx(path: str | Path | None) -> None:
     """Override the .inpx every tool in this module reads.
 
-    ``None`` reverts to ``config.SIMULATION_INPX_PATH`` (the demo default).
-    The M1.3 orchestrator calls this once per session before dispatching any
-    tool; tests use it the same way to point at fixtures.
+    ``None`` reverts to ``config.SIMULATION_INPX_PATH`` (the demo default) —
+    which is what every session uses today, since neither the M1.3
+    orchestrator nor the M1.4 router calls this. It exists as a test/ops
+    override (tests use it to point at fixtures) until per-session dataset
+    selection lands for the agent.
     """
     global _active_inpx_override
     _active_inpx_override = Path(path) if path is not None else None

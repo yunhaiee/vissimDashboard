@@ -409,3 +409,60 @@ def test_planner_truncates_overlong_summary_to_80_chars(tmp_path):
         record for record in read_trace(result.trace_path) if record["kind"] == "plan"
     ]
     assert len(plan_records[0]["payload"]["summary"]) == 80
+
+
+# ---------------------------------------------------------------------------
+# Scenario 8 — on_step: the M1.4 streaming hook
+# ---------------------------------------------------------------------------
+
+
+def test_on_step_fires_per_step_with_correct_payloads(tmp_path):
+    provider = FakeStructuredProvider(
+        [
+            _action("get_network_overview", summary="네트워크 개요를 확인합니다"),
+            _action("respond", summary="정리했습니다", answer="확인을 마쳤습니다."),
+        ]
+    )
+    observed: list[dict[str, Any]] = []
+
+    result = run_agent_turn(
+        "이 네트워크에 뭐가 있어?",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-on-step",
+        language="ko",
+        on_step=observed.append,
+    )
+
+    # Fired once per narrated step, in order, carrying the same
+    # summary/tool/status as result.steps plus a 0-based index.
+    assert [
+        {"summary": step["summary"], "tool": step["tool"], "status": step["status"]}
+        for step in observed
+    ] == result.steps
+    assert [step["index"] for step in observed] == [0, 1]
+
+
+def test_on_step_raising_does_not_break_the_turn(tmp_path):
+    provider = FakeStructuredProvider(
+        [
+            _action("get_network_overview", summary="네트워크 개요를 확인합니다"),
+            _action("respond", summary="정리했습니다", answer="확인을 마쳤습니다."),
+        ]
+    )
+
+    def _bad_on_step(step: dict[str, Any]) -> None:
+        raise RuntimeError("boom — a broken UI adapter must not wedge the agent")
+
+    result = run_agent_turn(
+        "이 네트워크에 뭐가 있어?",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-on-step-raise",
+        language="ko",
+        on_step=_bad_on_step,
+    )
+
+    assert result.kind == "answer"
+    assert [step["tool"] for step in result.steps] == ["get_network_overview", "respond"]
+    assert "확인을 마쳤습니다" in result.answer

@@ -17,9 +17,10 @@ context; acceptable M1 limitation per tools_network's docstring).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # Importing the tool modules registers the M1.2 read tools onto
 # default_registry at decoration time (see toolkit.py's module docstring) —
@@ -31,6 +32,8 @@ from services.agent.planner import Planner, pick_language_text
 from services.agent.state import AgentState, StepRecord
 from services.agent.toolkit import ToolRegistry, default_registry, dispatch
 from services.agent.trace import TraceWriter
+
+logger = logging.getLogger(__name__)
 
 _FORCED_COMPLETION_HEADER = {
     "ko": "죄송합니다. 반복 한도({limit}회) 안에 요청을 끝내지 못했습니다. 지금까지 확인한 내용입니다:",
@@ -102,6 +105,26 @@ def _forced_completion_answer(
     return header + "\n" + "\n".join(lines)
 
 
+def _emit_step(
+    steps: list[dict[str, Any]],
+    step: dict[str, Any],
+    on_step: Callable[[dict[str, Any]], None] | None,
+) -> None:
+    """Append ``step`` to ``steps`` and, if ``on_step`` is set, notify it with
+    that same payload plus its 0-based ``index`` (the M1.4 streaming hook).
+
+    ``on_step`` is best-effort: a callback that raises (e.g. a broken UI
+    adapter) is logged and swallowed rather than allowed to break the turn.
+    """
+    steps.append(step)
+    if on_step is None:
+        return
+    try:
+        on_step({**step, "index": len(steps) - 1})
+    except Exception:
+        logger.exception("on_step callback raised; ignoring")
+
+
 def run_agent_turn(
     message: str,
     *,
@@ -111,12 +134,19 @@ def run_agent_turn(
     language: str = "ko",
     registry: ToolRegistry | None = None,
     max_iterations: int = 6,
+    on_step: Callable[[dict[str, Any]], None] | None = None,
 ) -> AgentTurnResult:
     """Run one full agent turn for ``message`` and return the result.
 
     ``provider`` is anything with the ``generate_structured`` seam
     (ClaudeProvider, LocalQwenProvider, or a test fake). The trace JSONL is
     written to ``<work_dir>/trace_<session_id>.jsonl``.
+
+    ``on_step``, when given, is called once per narrated step (each regular
+    tool dispatch, and the terminal ``respond``/``ask_user`` decision) with
+    ``{"summary", "tool", "status", "index"}`` — the M1.4 router bridges this
+    to NDJSON ``step`` events. Default ``None`` keeps this function's
+    behavior byte-for-byte identical to before M1.4.
     """
     target_registry = registry if registry is not None else default_registry
     state = AgentState(goal=message, artifacts={}, history=[], context={"language": language})
@@ -141,7 +171,9 @@ def run_agent_turn(
         )
 
         if decision.kind == "respond":
-            steps.append({"summary": decision.summary, "tool": "respond", "status": "ok"})
+            _emit_step(
+                steps, {"summary": decision.summary, "tool": "respond", "status": "ok"}, on_step
+            )
             return AgentTurnResult(
                 answer=decision.params.get("answer", ""),
                 kind="answer",
@@ -150,7 +182,9 @@ def run_agent_turn(
                 state=state,
             )
         if decision.kind == "ask_user":
-            steps.append({"summary": decision.summary, "tool": "ask_user", "status": "ok"})
+            _emit_step(
+                steps, {"summary": decision.summary, "tool": "ask_user", "status": "ok"}, on_step
+            )
             return AgentTurnResult(
                 answer=decision.params.get("question", ""),
                 kind="clarification",
@@ -201,8 +235,10 @@ def run_agent_turn(
                 observation=envelope,
             )
         )
-        steps.append(
-            {"summary": decision.summary, "tool": decision.tool, "status": envelope["status"]}
+        _emit_step(
+            steps,
+            {"summary": decision.summary, "tool": decision.tool, "status": envelope["status"]},
+            on_step,
         )
 
     return AgentTurnResult(

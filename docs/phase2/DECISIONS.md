@@ -109,3 +109,29 @@ level beyond the two lazy ones inside it, no changes to routing/selection logic)
 actual structured-generation behavior — prompt construction, `validate_action`, `build_meta` —
 is centralized in `services/agent/structured.py` where M1.3's planner and any future provider
 can reuse it without touching `assistant_router.py` again.
+
+---
+
+## 2026-07-22 — M1.4: agent mode ships behind an explicit UI toggle, default off
+
+**Context:** M1.4 (`frontend/components/FloatingAssistant.tsx`, `backend/routers/assistant.py`).
+The read-only agent (M1.3's `run_agent_turn`) is now reachable from the UI via a new
+`POST /api/assistant/agent/query/stream` endpoint. The question was whether every prompt should
+route to the agent once it exists, or whether it should be opt-in.
+
+**Decision:** agent mode is an explicit opt-in toggle in `FloatingAssistant` — a small
+text-labeled checkbox in the assistant header, default **off** — not the default seam for every
+prompt. The existing intent pipeline (curation via `/api/assistant/query` and `/query/stream`,
+including the regex-based simulation-command path and its propose→confirm→execute flow) keeps
+working completely unchanged when the toggle is off; this was verified by asserting the
+existing frontend contract tests and `npx tsc --noEmit` show zero new failures/errors with the
+toggle defaulting to `false`.
+
+**Consequence:** routing every prompt to the read-only agent today would regress simulation
+commands to refusals — M1's agent can only read, and the tier gate structurally refuses any
+write/run tool, so a user asking to change a vehicle input or run a simulation would get a
+polite "I can't do that yet" instead of the working propose→confirm→execute flow. Keeping the
+agent behind an explicit, clearly-labeled beta toggle avoids that regression while still making
+the read-only agent reachable for evaluation. This toggle is expected to flip to on-by-default
+(or be removed in favor of the agent being the single seam) once M2/M3 give the agent write
+capability behind the same approval flow the existing simulation path already has.

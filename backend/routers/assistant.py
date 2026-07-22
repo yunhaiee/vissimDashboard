@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import uuid
+from pathlib import Path
 from queue import Queue
 from typing import Any, Callable
 
@@ -12,7 +13,16 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from services.assistant_router import AssistantRequestContext, VissimAssistantRouter, build_assistant_exception_response, minimal_assistant_status
+from config import REPO_ROOT
+from services.agent.orchestrator import run_agent_turn
+from services.assistant_router import (
+    AssistantRequestContext,
+    VissimAssistantRouter,
+    _default_provider,
+    build_assistant_exception_answer,
+    build_assistant_exception_response,
+    minimal_assistant_status,
+)
 from services.dashboard_curator import curate_dashboard
 from services.results_reader import get_compare_summary, get_selected_node_details
 from services.vissim_tool import get_vissim_status
@@ -63,6 +73,11 @@ class AssistantQueryRequest(BaseModel):
     selected_node_ids: list[str] = Field(default_factory=list)
     allow_tool_execution: bool = False
     response_language: str = "auto"
+
+
+class AgentQueryRequest(BaseModel):
+    message: str = Field(min_length=1)
+    response_language: str | None = "ko"
 
 
 class CurateRequest(BaseModel):
@@ -205,6 +220,128 @@ def stream_assistant(payload: AssistantQueryRequest):
                 yield encode_stream_event({"type": "chunk", "stream_id": stream_id, "text": chunk})
 
         yield encode_stream_event({"type": "done", "stream_id": stream_id, "response": response})
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="application/x-ndjson; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _agent_session_work_dir(session_id: str) -> Path:
+    """Per-session agent scratch dir — mirrors ``simulation_runs.job_dir``'s
+    REPO_ROOT-relative base resolution (``backend/services/simulation_runs.py``)."""
+    return REPO_ROOT / "runtime" / "agent_sessions" / session_id
+
+
+@router.post("/agent/query/stream")
+def stream_agent_query(payload: AgentQueryRequest):
+    """M1.4: stream a read-only agent turn (docs/phase2/01-ARCHITECTURE.md §3).
+
+    Thin by design — request parsing, provider/work-dir setup, and streaming
+    glue only; all agent logic lives in ``services.agent.orchestrator``. NDJSON
+    events: one ``status`` (accepted), one ``step`` per ``on_step`` callback,
+    ``chunk`` events for the final answer, then one ``done``. No event ever
+    carries a filesystem path (``trace_path`` stays server-side).
+    """
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    language = (payload.response_language or "ko").strip().lower() or "ko"
+
+    def generate_events():
+        stream_id = uuid.uuid4().hex[:10]
+        session_id = uuid.uuid4().hex[:12]
+        yield encode_stream_event({"type": "status", "stream_id": stream_id, "phase": "accepted"})
+
+        # Same worker-thread + Queue bridge as /query/stream's on_token, but
+        # for the orchestrator's per-step on_step callback instead of tokens.
+        step_queue: Queue = Queue()
+        holder: dict[str, Any] = {}
+
+        def on_step(step: dict[str, Any]) -> None:
+            step_queue.put(("step", dict(step)))
+
+        def run() -> None:
+            try:
+                holder["result"] = run_agent_turn(
+                    message,
+                    provider=_default_provider(),
+                    work_dir=_agent_session_work_dir(session_id),
+                    session_id=session_id,
+                    language=language,
+                    on_step=on_step,
+                )
+            except Exception as exc:  # noqa: BLE001 - surfaced as an apologetic `done`, never raised to the client
+                holder["error"] = exc
+            finally:
+                step_queue.put(("end", None))
+
+        threading.Thread(target=run, name=f"agent-stream-{stream_id}", daemon=True).start()
+
+        while True:
+            kind, value = step_queue.get()
+            if kind == "end":
+                break
+            yield encode_stream_event(
+                {
+                    "type": "step",
+                    "stream_id": stream_id,
+                    "summary": value.get("summary", ""),
+                    "tool": value.get("tool", ""),
+                    "status": value.get("status", ""),
+                    "index": value.get("index", 0),
+                }
+            )
+
+        result = holder.get("result")
+        error = holder.get("error")
+        if error is not None or result is None:
+            error_id = uuid.uuid4().hex[:10]
+            logger.error(
+                "Agent stream failed stream_id=%s session_id=%s error_id=%s",
+                stream_id,
+                session_id,
+                error_id,
+                exc_info=error,
+            )
+            answer = build_assistant_exception_answer(
+                error_id, english=language == "en", japanese=language == "ja"
+            )
+            for chunk in chunk_answer_for_stream(answer):
+                yield encode_stream_event({"type": "chunk", "stream_id": stream_id, "text": chunk})
+            yield encode_stream_event(
+                {
+                    "type": "done",
+                    "stream_id": stream_id,
+                    "response": {
+                        "answer": answer,
+                        "kind": "answer",
+                        "steps": [],
+                        "session_id": session_id,
+                    },
+                }
+            )
+            return
+
+        for chunk in chunk_answer_for_stream(result.answer):
+            yield encode_stream_event({"type": "chunk", "stream_id": stream_id, "text": chunk})
+
+        yield encode_stream_event(
+            {
+                "type": "done",
+                "stream_id": stream_id,
+                "response": {
+                    "answer": result.answer,
+                    "kind": result.kind,
+                    "steps": result.steps,
+                    "session_id": session_id,
+                },
+            }
+        )
 
     return StreamingResponse(
         generate_events(),

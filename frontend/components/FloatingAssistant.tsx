@@ -9,7 +9,9 @@ import {
   fetchAssistantStatus,
   fetchSimulationJob,
   fetchSimulationResults,
+  streamAgentQuery,
   streamAssistant,
+  type AgentStep,
   type AssistantQueryResponse,
   type AssistantSource,
   type AssistantStatus,
@@ -27,6 +29,10 @@ type FloatingMessage = {
    * re-send with allow_tool_execution=true if the user approves a proposed
    * simulation run, without asking them to retype the request. */
   sourcePrompt?: string;
+  /** M1.4 agent-mode step narration (the agent's read-only work log for this
+   * turn). Present only for messages sent while agent mode was on; stays
+   * populated after completion so the log remains visible. */
+  agentSteps?: AgentStep[];
 };
 
 type AssistantPageContext = {
@@ -165,6 +171,10 @@ export default function FloatingAssistant() {
   // Assistant message ids where the user explicitly declined a proposed
   // simulation run, so the confirm card doesn't keep reappearing.
   const [declinedExecutionIds, setDeclinedExecutionIds] = useState<Set<string>>(new Set());
+  // M1.4: read-only agent mode is an explicit opt-in, default off — see
+  // docs/phase2/DECISIONS.md. Off keeps every existing prompt (curation +
+  // the regex simulation-command path) behaved exactly as before.
+  const [agentMode, setAgentMode] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const resizeRef = useRef<AssistantPanelResizeState | null>(null);
@@ -407,8 +417,96 @@ export default function FloatingAssistant() {
     }
   }
 
+  // M1.4 agent-mode path: read-only, no propose→confirm→execute machinery
+  // (that flow is simulation-specific and agent mode never proposes a run),
+  // so this stays a separate function rather than another branch inside
+  // runPrompt's confirm/resend bookkeeping.
+  async function runAgentPrompt(text: string) {
+    if (!text || loading) return;
+    const createdAt = Date.now();
+    const assistantMessageId = `${createdAt}-assistant`;
+    setMessages((prev) => [
+      ...prev,
+      { id: `${createdAt}-user`, role: "user", content: text },
+      { id: assistantMessageId, role: "assistant", content: "", agentSteps: [] },
+    ]);
+    setPrompt("");
+
+    setError(null);
+    setLoading(true);
+    setActiveAssistantMessageId(assistantMessageId);
+    setRequestPhase("querying");
+
+    const controller = new AbortController();
+    requestAbortRef.current = controller;
+    let streamedContent = "";
+    try {
+      const response = await streamAgentQuery(
+        { message: text, response_language: lang },
+        {
+          onStep: (event) => {
+            setRequestPhase("streaming");
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      agentSteps: [
+                        ...(message.agentSteps ?? []),
+                        { summary: event.summary ?? "", tool: event.tool ?? "", status: event.status ?? "" },
+                      ],
+                    }
+                  : message,
+              ),
+            );
+          },
+          onChunk: (chunk) => {
+            streamedContent += chunk;
+            setRequestPhase("streaming");
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId ? { ...message, content: streamedContent } : message,
+              ),
+            );
+          },
+        },
+        controller.signal,
+      );
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === assistantMessageId
+            ? { ...message, content: response.answer, agentSteps: response.steps }
+            : message,
+        ),
+      );
+    } catch (caught) {
+      if (!streamedContent.trim()) {
+        setMessages((prev) => prev.filter((message) => message.id !== assistantMessageId));
+      }
+      if (isAbortError(caught)) {
+        setRequestPhase("cancelled");
+        setError(t("요청을 취소했습니다.", "Request cancelled."));
+      } else {
+        setError(formatAssistantError(caught, t));
+      }
+    } finally {
+      if (requestAbortRef.current === controller) {
+        requestAbortRef.current = null;
+      }
+      setLoading(false);
+      setActiveAssistantMessageId(null);
+      setRequestPhase("idle");
+      inputRef.current?.focus();
+    }
+  }
+
   async function submitPrompt(nextPrompt?: string) {
-    await runPrompt((nextPrompt ?? prompt).trim());
+    const text = (nextPrompt ?? prompt).trim();
+    if (agentMode) {
+      await runAgentPrompt(text);
+    } else {
+      await runPrompt(text);
+    }
   }
 
   function confirmPromptExecution(message: FloatingMessage) {
@@ -497,6 +595,16 @@ export default function FloatingAssistant() {
                   {statusChecking ? t("\ud655\uc778 \uc911", "Checking") : t("\uc0c1\ud0dc \uc0c8\ub85c\uace0\uce68", "Refresh status")}
                 </button>
               </div>
+              <label className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+                <input
+                  type="checkbox"
+                  checked={agentMode}
+                  disabled={loading}
+                  onChange={(event) => setAgentMode(event.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-[#4f7198] focus:outline-none focus:ring-2 focus:ring-[#6f8fb4]/35 disabled:cursor-not-allowed"
+                />
+                <span>{t("\uc5d0\uc774\uc804\ud2b8 \ubaa8\ub4dc (\ubca0\ud0c0)", "Agent mode (beta)", "\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30e2\u30fc\u30c9 (\u30d9\u30fc\u30bf)")}</span>
+              </label>
               <PageContextPills context={activePageContext} />
               <AssistantRuntimeNote status={status} statusError={statusError} checking={statusChecking} />
             </div>
@@ -605,6 +713,10 @@ function FloatingChatMessage({
   // True both for the very first (empty) render of this message and for a
   // confirmed re-run (message.response already holds the prior proposal).
   const isActiveAssistant = !isUser && Boolean(activePhase);
+  // M1.4 agent-mode step narration — stays visible after completion (it's
+  // the agent's read-only work log for this turn), so this only checks
+  // presence, not activePhase.
+  const hasAgentSteps = !isUser && Boolean(message.agentSteps && message.agentSteps.length > 0);
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
@@ -616,10 +728,11 @@ function FloatingChatMessage({
       >
         {isUser ? (
           <div className="whitespace-pre-wrap">{message.content}</div>
-        ) : !message.content.trim() && !message.response ? (
+        ) : !message.content.trim() && !message.response && !hasAgentSteps ? (
           <AssistantInlineProgress phase={activePhase ?? "querying"} onCancel={onCancel} />
         ) : (
           <>
+            {hasAgentSteps && <AgentStepNarration steps={message.agentSteps!} />}
             <AssistantAnswerContent content={message.content} response={message.response} />
             {isActiveAssistant && <AssistantInlineProgress phase={activePhase ?? "streaming"} onCancel={onCancel} compact />}
           </>
@@ -636,6 +749,25 @@ function FloatingChatMessage({
         )}
         {message.response && <CompactSources sources={message.response.sources} />}
       </div>
+    </div>
+  );
+}
+
+// M1.4 agent-mode narration: a compact, text-led log of the read-only
+// agent's steps — small muted lines, no icons or per-step spinners. Status
+// only renders when a step failed; a successful step is just its summary.
+function AgentStepNarration({ steps }: { steps: AgentStep[] }) {
+  const { t } = useLanguage();
+  return (
+    <div className="mb-2 space-y-0.5 border-b border-slate-100 pb-2">
+      {steps.map((step, index) => (
+        <p key={index} className="text-[11px] leading-5 text-slate-500">
+          {index + 1}. {step.summary}
+          {step.status === "error" && (
+            <span className="ml-1 font-semibold text-rose-600">({t("오류", "error", "エラー")})</span>
+          )}
+        </p>
+      ))}
     </div>
   );
 }

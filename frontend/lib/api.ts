@@ -608,6 +608,53 @@ export interface AssistantStreamHandlers {
   onChunk?: (text: string) => void;
 }
 
+// --- M1.4 read-only agent (POST /api/assistant/agent/query/stream) --------
+
+export interface AgentQueryRequest {
+  message: string;
+  response_language?: "ko" | "en" | "ja";
+}
+
+export interface AgentStep {
+  summary: string;
+  tool: string;
+  status: string;
+}
+
+export interface AgentQueryResponse {
+  answer: string;
+  kind: "answer" | "clarification";
+  steps: AgentStep[];
+  session_id: string;
+}
+
+export type AgentStreamEvent =
+  | {
+      type: "status";
+      stream_id?: string;
+      phase?: string;
+    }
+  | ({
+      type: "step";
+      stream_id?: string;
+    } & Partial<AgentStep> & { index?: number })
+  | {
+      type: "chunk";
+      stream_id?: string;
+      text?: string;
+    }
+  | {
+      type: "done";
+      stream_id?: string;
+      response?: AgentQueryResponse;
+    };
+
+export interface AgentStreamHandlers {
+  onStatus?: (event: Extract<AgentStreamEvent, { type: "status" }>) => void;
+  onStep?: (event: Extract<AgentStreamEvent, { type: "step" }>) => void;
+  onChunk?: (text: string) => void;
+}
+
 export interface AssistantSource {
     kind: string;
     title: string;
@@ -810,6 +857,91 @@ function handleAssistantStreamLine(line: string, handlers: AssistantStreamHandle
   }
   if (event.type === "metadata") {
     if (event.response) handlers.onMetadata?.(event.response);
+    return null;
+  }
+  if (event.type === "chunk") {
+    if (event.text) handlers.onChunk?.(event.text);
+    return null;
+  }
+  if (event.type === "done" && event.response) {
+    return event.response;
+  }
+  return null;
+}
+
+export async function streamAgentQuery(
+  payload: AgentQueryRequest,
+  handlers: AgentStreamHandlers = {},
+  signal?: AbortSignal,
+): Promise<AgentQueryResponse> {
+  const init: RequestInit = {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  };
+  const response = await apiDirectMutationFetch("/api/assistant/agent/query/stream", init);
+  if (response.ok) return readAgentEventStream(response, handlers);
+
+  const firstError = await readApiError(response);
+  if (response.status >= 500 && !signal?.aborted) {
+    await sleepForRetry(700);
+    const retry = await apiDirectMutationFetch("/api/assistant/agent/query/stream", init, { sameOrigin: false });
+    if (retry.ok) return readAgentEventStream(retry, handlers);
+    throw new Error(await readApiError(retry));
+  }
+
+  throw new Error(firstError);
+}
+
+async function readAgentEventStream(response: Response, handlers: AgentStreamHandlers): Promise<AgentQueryResponse> {
+  if (!response.body) {
+    return readAgentEventLines(await response.text(), handlers);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResponse: AgentQueryResponse | null = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      finalResponse = handleAgentStreamLine(line, handlers) ?? finalResponse;
+    }
+  }
+
+  buffer += decoder.decode();
+  finalResponse = handleAgentStreamLine(buffer, handlers) ?? finalResponse;
+  if (finalResponse) return finalResponse;
+  throw new Error("Agent stream ended before a final response was received.");
+}
+
+function readAgentEventLines(text: string, handlers: AgentStreamHandlers): AgentQueryResponse {
+  let finalResponse: AgentQueryResponse | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    finalResponse = handleAgentStreamLine(line, handlers) ?? finalResponse;
+  }
+  if (finalResponse) return finalResponse;
+  throw new Error("Agent stream ended before a final response was received.");
+}
+
+function handleAgentStreamLine(line: string, handlers: AgentStreamHandlers): AgentQueryResponse | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  const event = JSON.parse(trimmed) as AgentStreamEvent;
+  if (event.type === "status") {
+    handlers.onStatus?.(event);
+    return null;
+  }
+  if (event.type === "step") {
+    handlers.onStep?.(event);
     return null;
   }
   if (event.type === "chunk") {
