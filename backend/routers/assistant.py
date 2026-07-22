@@ -282,17 +282,30 @@ def stream_agent_query(payload: AgentQueryRequest):
 
         threading.Thread(target=run, name=f"agent-stream-{stream_id}", daemon=True).start()
 
+        # Accumulated so the exception branch below can still report whatever
+        # steps actually streamed before the failure — the realistic failure
+        # mode is a later planner call raising after 1+ tool steps already
+        # succeeded (tool failures are caught internally by dispatch), and
+        # that partial work log is exactly what matters most to preserve.
+        streamed_steps: list[dict[str, Any]] = []
+
         while True:
             kind, value = step_queue.get()
             if kind == "end":
                 break
+            summary = value.get("summary", "")
+            tool = value.get("tool", "")
+            status = value.get("status", "")
+            # Same {summary, tool, status} shape as AgentTurnResult.steps (no
+            # "index" — that's wire-only, for the client's ordered narration).
+            streamed_steps.append({"summary": summary, "tool": tool, "status": status})
             yield encode_stream_event(
                 {
                     "type": "step",
                     "stream_id": stream_id,
-                    "summary": value.get("summary", ""),
-                    "tool": value.get("tool", ""),
-                    "status": value.get("status", ""),
+                    "summary": summary,
+                    "tool": tool,
+                    "status": status,
                     "index": value.get("index", 0),
                 }
             )
@@ -320,7 +333,7 @@ def stream_agent_query(payload: AgentQueryRequest):
                     "response": {
                         "answer": answer,
                         "kind": "answer",
-                        "steps": [],
+                        "steps": streamed_steps,
                         "session_id": session_id,
                     },
                 }

@@ -48,6 +48,33 @@ def _action(
     return {"tool": tool_name, "params": params}, {"mode": "fake", "fallback_rung": 0}
 
 
+class RaisingAfterOneStepProvider:
+    """First ``generate_structured`` call returns a canned tool action (so one
+    real step streams and dispatches); the second call raises — the realistic
+    trigger for the router's exception branch, since a tool failure is caught
+    and reported internally by ``toolkit.dispatch`` while a *planner* call
+    raising is not caught anywhere before the router's own worker-thread
+    try/except."""
+
+    def __init__(self, action: tuple[dict[str, Any], dict[str, Any]]) -> None:
+        self._action = action
+        self.calls = 0
+
+    def generate_structured(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        schema: dict[str, Any] | None = None,
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        self.calls += 1
+        if self.calls == 1:
+            return self._action
+        raise RuntimeError("forced planner failure after one streamed step")
+
+
 def _assert_no_path_like_strings(value: Any) -> None:
     """Recursively assert no string anywhere in ``value`` looks like a
     filesystem path — reuses tools_metrics.py's own path-detection heuristic
@@ -147,3 +174,48 @@ def test_clarification_flow_yields_done_kind_clarification(client, monkeypatch):
 def test_empty_message_returns_400(client):
     response = client.post("/api/assistant/agent/query/stream", json={"message": "   "})
     assert response.status_code == 400
+
+
+def test_exception_after_one_step_preserves_streamed_narration(client, monkeypatch):
+    """Regression for the reviewer's IMPORTANT-1 finding: a planner call that
+    raises after 1+ steps already streamed must not wipe those steps from
+    done.response.steps."""
+    provider = RaisingAfterOneStepProvider(
+        _action("get_network_overview", summary="네트워크 개요를 확인합니다")
+    )
+    monkeypatch.setattr(assistant_endpoint, "_default_provider", lambda: provider)
+
+    response = client.post(
+        "/api/assistant/agent/query/stream",
+        json={"message": "이 네트워크에 뭐가 있어?", "response_language": "ko"},
+    )
+
+    assert response.status_code == 200
+    events = _stream_events(response)
+    types = [event["type"] for event in events]
+    assert types[0] == "status"
+    assert types[-1] == "done"
+
+    # The one real step (dispatched against the real demo network before the
+    # second planner call raised) streamed as a `step` event...
+    step_events = [event for event in events if event["type"] == "step"]
+    assert len(step_events) == 1
+    assert step_events[0]["tool"] == "get_network_overview"
+    assert step_events[0]["summary"] == "네트워크 개요를 확인합니다"
+    assert step_events[0]["status"] == "ok"
+
+    # ...and it must still be there in `done`, not wiped to [].
+    done_event = events[-1]
+    response_payload = done_event["response"]
+    assert response_payload["steps"] == [
+        {"summary": "네트워크 개요를 확인합니다", "tool": "get_network_overview", "status": "ok"}
+    ]
+    assert response_payload["kind"] == "answer"
+    assert response_payload["answer"]  # apologetic language-appropriate fallback, not empty
+
+    # No raw exception text anywhere in any event.
+    for event in events:
+        _assert_no_path_like_strings(event)
+        serialized = json.dumps(event)
+        assert "RuntimeError" not in serialized
+        assert "forced planner failure" not in serialized
