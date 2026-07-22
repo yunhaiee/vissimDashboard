@@ -20,6 +20,24 @@
         "Set-Location 'C:\\Users\\user\\Documents\\GitHub\\vissimDashboard\\frontend'; & npm.cmd run dev"
       ],
       "port": 3000
+    },
+    {
+      "name": "backend-mac",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "QWEN_WORKER_AUTO_START=0 .venv/bin/python -m uvicorn main:app --app-dir backend --port 8001"
+      ],
+      "port": 8001
+    },
+    {
+      "name": "frontend-mac",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd frontend && npm run dev"
+      ],
+      "port": 3000
     }
   ]
 }
