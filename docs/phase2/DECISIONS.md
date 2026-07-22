@@ -55,3 +55,27 @@ protection — a too-short cycle can be written and verified even though it may 
 physically achievable by the controller's timing plan. This gap is intentional and tracked
 here, not silently absorbed; M3.1 must close it before this constraint is meaningful against
 real data.
+
+---
+
+## 2026-07-22 — Tool dispatch rejects unknown params instead of filtering them
+
+**Context:** M0.4 (`backend/services/agent/toolkit.py`). docs/phase2/01-ARCHITECTURE.md §4
+says tool params are "validated + extraneous keys filtered before dispatch (ChatSUMO
+pattern)". docs/phase2/02-ROADMAP.md's M0.4 task text explicitly overrides this: `dispatch`
+must "validate (reject unknown/missing/mistyped — NOT key-filtering)".
+
+**Decision:** the roadmap governs (controller-adjudicated). `dispatch()` validates every tool
+call against a pydantic params model built with `model_config = ConfigDict(extra="forbid")` —
+the `@tool` decorator refuses to register any params model that does not forbid extras, so
+this cannot be bypassed per-tool. An unknown key, a missing required key, or a mistyped value
+all produce the same structured `invalid_params` envelope (field + reason), never a silently
+trimmed params dict passed through to the tool function.
+
+**Consequence:** a planner (M1.3) that hallucinates a param name gets a machine-readable error
+it can learn from and retry against, instead of the call silently succeeding with the bad
+param dropped — the exact drift class (phantom tools, silently stripped params) this module
+exists to kill per docs/phase2/01-ARCHITECTURE.md §1. The cost is that any legitimate but
+not-yet-modeled param addition to a tool must update that tool's params model in lockstep, or
+every call carrying it will be rejected; this is treated as a feature (registry is the single
+source of truth), not a workaround-worthy limitation.
