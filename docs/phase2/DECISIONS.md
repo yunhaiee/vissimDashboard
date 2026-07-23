@@ -257,3 +257,48 @@ was kept.
 
 **Consequence:** `main.py` now has a `lifespan=` app; future startup/shutdown hooks should be
 added to that same context manager rather than introducing `on_event` alongside it.
+
+---
+
+## 2026-07-23 — M2.1: `CycleTime` was never a valid COM attribute; `CycTm` is disconnected from the real program cycle
+
+**Context:** building `get_signal_cycle` required reading what `set_signal_cycle` writes:
+`SetAttValue("CycleTime", …)`. Verified live on Vissim 2026 (first live-COM exercise of this
+verb ever — M0/M1 were read-only): `CycleTime` does not exist ("Could not find attribute with
+ID CYCLETIME") — **`set_signal_cycle` has always raised**. The correct id is `CycTm`, readable
+everywhere but (a) **read-only on program-driven fixed-time controllers** ("Attribute Cycle
+time cannot be changed" on the Beijing example — cycle lives in the opaque base64
+`intSupplyData` blob `signal_parser.py` decodes), and (b) even where writable
+(`FIXEDTIMESIMPLE`, Air Taxi Vertiport example), **not the field** `signal_parser`/
+`build_shadow_model` report as `cycle_time` — that value has no COM read or write path at all.
+
+**Decision:** fixed the id (`CycleTime` → `CycTm`) in setter + getter — a bug fix, not a
+redesign. The smoke tool's persistence check tries the roadmap's named route
+(`build_shadow_model` reparse) first and falls back to a direct XML/COM re-get of `CycTm`,
+which still proves `save_net_as` + the round-trip. Vissim's own refusal on program-driven
+controllers surfaces as a normal `RuntimeError` — the guardrail doctrine working as intended.
+
+**Consequence:** `set_signal_cycle`/`get_signal_cycle` are functional for the first time, but
+only ever reach the `CycTm` rollup — never the real simulated cycle for opaque-blob
+program-driven controllers, which is the common real-world case. M2.3+ must not treat a
+successful `set_signal_cycle` as proof the simulated cycle changed; this corroborates
+constraint #4's conservative refuse-on-missing-`controller_type` stance, and M3 should
+additionally gate on whether the target's cycle is program-driven (a separate per-controller
+fact today's shadow model doesn't expose either).
+
+---
+
+## 2026-07-23 — M2.1: `save_net_as` actively refuses to overwrite the loaded source
+
+**Context:** the task said `save_net_as` must "never silently overwrite the loaded source
+network file" without specifying enforcement vs documentation. Every other job-work-dir
+safety rule (00-EXECUTION-GUIDE.md rule 4) is currently caller-discipline only.
+
+**Decision:** active enforcement — `VissimController` tracks `_loaded_net_path` (set in
+`load_network`); `save_net_as` raises `ValueError` on a case-insensitive absolute-path match
+before touching COM.
+
+**Consequence:** M2.2's `ArtifactManager` wiring and M2.3's write tools inherit this
+protection automatically. The guard covers only the currently-loaded network in this
+controller instance's lifetime; constructing a correct work-dir path remains the caller's
+responsibility.

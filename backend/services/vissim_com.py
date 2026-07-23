@@ -6,6 +6,8 @@ this controller.
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,7 @@ class VissimController:
         self.prog_id: str | None = None
         self._max_sim_sec = 0.0
         self._sim_run_ended = False
+        self._loaded_net_path: Path | None = None
 
     def connect(
         self,
@@ -82,11 +85,35 @@ class VissimController:
     def load_network(self, inpx_path: str) -> None:
         self.vissim.LoadNet(str(inpx_path), False)
         self._reset_run_tracking()
+        self._loaded_net_path = Path(inpx_path)
         try:
             self.vissim.Net.SetAttValue("ScenManagmt", 0)
             logger.info("Scenario management disabled")
         except Exception:
             logger.warning("Could not disable scenario management; ensure VISSIM is in Edit Scenario mode")
+
+    def save_net_as(self, path: str | Path) -> None:
+        """Persist the currently loaded network to ``path`` via COM SaveNetAs.
+
+        This is how agent edits get written out of the live COM session into
+        a job work dir (docs/phase2/01-ARCHITECTURE.md, agent-state
+        artifacts). Refuses -- without touching COM at all -- when ``path``
+        resolves to the same file as the network this session loaded, so an
+        edit session can never silently overwrite the source .inpx it was
+        cloned from (docs/phase2/00-EXECUTION-GUIDE.md rule 4). Callers must
+        always pass a new path inside the job work dir (e.g. an
+        ``edit_001.inpx`` version file).
+        """
+        target = Path(path)
+        if self._loaded_net_path is not None and _same_path(target, self._loaded_net_path):
+            raise ValueError(
+                f"Refusing to overwrite the loaded source network file at {target}. "
+                "Pass a new path inside the job work dir instead."
+            )
+        try:
+            self.vissim.SaveNetAs(str(target))
+        except Exception as exc:
+            raise RuntimeError(f"Could not save network to {target}: {exc}") from exc
 
     def set_vehicle_input(self, input_no: int, volume: float) -> None:
         vehicle_input = self._item_by_key(
@@ -100,14 +127,58 @@ class VissimController:
         except Exception as exc:
             raise RuntimeError(f"Could not set vehicle input {input_no} volume to {volume}: {exc}") from exc
 
+    def get_vehicle_input_volume(self, input_no: int) -> float:
+        vehicle_input = self._item_by_key(
+            self.vissim.Net.VehicleInputs,
+            input_no,
+            "Vehicle input",
+            self.available_vehicle_input_nos(),
+        )
+        try:
+            return float(vehicle_input.AttValue("Volume(1)"))
+        except Exception as exc:
+            raise RuntimeError(f"Could not read vehicle input {input_no} volume: {exc}") from exc
+
     def set_sim_duration(self, seconds: int) -> None:
         self.vissim.Simulation.SetAttValue("SimPeriod", seconds)
         self._reset_run_tracking()
 
+    def get_sim_duration(self) -> int:
+        try:
+            return int(self.vissim.Simulation.AttValue("SimPeriod"))
+        except Exception as exc:
+            raise RuntimeError(f"Could not read simulation duration (SimPeriod): {exc}") from exc
+
     def set_random_seed(self, seed: int) -> None:
         self.vissim.Simulation.SetAttValue("RandSeed", seed)
 
+    def get_random_seed(self) -> int:
+        try:
+            return int(self.vissim.Simulation.AttValue("RandSeed"))
+        except Exception as exc:
+            raise RuntimeError(f"Could not read random seed (RandSeed): {exc}") from exc
+
     def set_signal_cycle(self, sc_no: int, cycle: int) -> None:
+        """Set the controller's top-level cycle-time attribute (COM id
+        ``CycTm``; Vissim's own long name for it is "Cycle time").
+
+        NOTE (verified empirically against live Vissim 2026 for M2.1): the
+        correct COM attribute id is ``CycTm`` -- ``CycleTime``, used by this
+        method before this fix, does not exist on ISignalController in this
+        Vissim version and always raised "Could not find attribute with ID
+        CYCLETIME". ``CycTm`` itself is, on many real fixed-time controllers,
+        a read-only rollup: when the controller runs a program from the
+        internal opaque supply-data blob (the ``intSupplyData`` base64 blob
+        ``services/signal_parser.py`` decodes), the EFFECTIVE cycle time
+        lives inside that blob and Vissim raises "Attribute Cycle time
+        cannot be changed" for this call -- there is no COM-writable path to
+        that blob (matches docs/phase2/00-EXECUTION-GUIDE.md SS3.2's
+        opaque-blob landmine). That refusal surfaces here as a normal
+        RuntimeError, which is the correct, safe behavior per the guardrail
+        doctrine: callers must not assume ``CycTm`` drives the simulated
+        cycle just because this method returns without raising on some
+        OTHER, non-program-driven controller -- see get_signal_cycle.
+        """
         try:
             signal_controller = self._item_by_key(
                 self.vissim.Net.SignalControllers,
@@ -115,11 +186,35 @@ class VissimController:
                 "Signal controller",
                 self.available_signal_controller_nos(),
             )
-            signal_controller.SetAttValue("CycleTime", cycle)
+            signal_controller.SetAttValue("CycTm", cycle)
         except VissimObjectNotFoundError:
             raise
         except Exception as exc:
             raise RuntimeError(f"Could not set signal controller {sc_no} cycle to {cycle}: {exc}") from exc
+
+    def get_signal_cycle(self, sc_no: int) -> int:
+        """Read back the same ``CycTm`` attribute ``set_signal_cycle`` writes.
+
+        See that method's docstring: ``CycTm`` is NOT the field
+        ``services.signal_parser`` / ``services.agent.tools_network.
+        build_shadow_model`` report as ``cycle_time`` for opaque-blob-program
+        controllers (that field has no COM read OR write path at all). This
+        getter verifies a ``set_signal_cycle`` write landed in the live COM
+        session (and, after ``save_net_as`` + reload, on disk) -- it is not
+        a source of the "real" simulated cycle time.
+        """
+        try:
+            signal_controller = self._item_by_key(
+                self.vissim.Net.SignalControllers,
+                sc_no,
+                "Signal controller",
+                self.available_signal_controller_nos(),
+            )
+            return int(signal_controller.AttValue("CycTm"))
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read signal controller {sc_no} cycle: {exc}") from exc
 
     def set_signal_offset(self, sc_no: int, offset: int) -> None:
         try:
@@ -134,6 +229,20 @@ class VissimController:
             raise
         except Exception as exc:
             raise RuntimeError(f"Could not set signal controller {sc_no} offset to {offset}: {exc}") from exc
+
+    def get_signal_offset(self, sc_no: int) -> int:
+        try:
+            signal_controller = self._item_by_key(
+                self.vissim.Net.SignalControllers,
+                sc_no,
+                "Signal controller",
+                self.available_signal_controller_nos(),
+            )
+            return int(signal_controller.AttValue("Offset"))
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read signal controller {sc_no} offset: {exc}") from exc
 
     def get_sim_sec(self) -> float:
         try:
@@ -211,6 +320,11 @@ class VissimController:
         self.vissim = None
         self._owns_instance = False
         self.prog_id = None
+
+
+def _same_path(a: str | Path, b: str | Path) -> bool:
+    """Case-insensitive, absolute-path comparison (Windows filesystem semantics)."""
+    return os.path.normcase(os.path.abspath(str(a))) == os.path.normcase(os.path.abspath(str(b)))
 
 
 def _format_available_keys(values: list[int], limit: int = 20) -> str:
