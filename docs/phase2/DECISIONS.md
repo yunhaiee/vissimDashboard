@@ -239,3 +239,21 @@ name instead of relying on tribal memory.
   missing.
 - **Future multi-dataset work:** `tools_network`'s module-global active-inpx becomes a real
   concurrency bug once per-session dataset selection lands.
+
+---
+
+## 2026-07-23 — M2 ops: `main.py` had no existing lifespan/on_event idiom to match
+
+**Context:** the M2-ops session-cleanup task said to wire `sweep_stale_sessions()` into
+"`main.py`'s existing startup idiom (lifespan or on_event)". Verified reality: neither exists
+anywhere in the repo — `main.py` had no FastAPI startup hook of any kind; the only "run at
+boot" precedent is `routers/assistant.py`'s module-import-time `_preload_assistant_model()`.
+
+**Decision:** added a `lifespan` async-context-manager (FastAPI's current recommended
+mechanism), wrapped in try/except so a failed sweep can never block startup.
+`@app.on_event("startup")` was tried first and works identically, but it was the sole source
+of `DeprecationWarning`s in an otherwise 0-warning, 211-test backend suite, so `lifespan=`
+was kept.
+
+**Consequence:** `main.py` now has a `lifespan=` app; future startup/shutdown hooks should be
+added to that same context manager rather than introducing `on_event` alongside it.

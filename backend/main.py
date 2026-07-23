@@ -1,15 +1,36 @@
 import logging
 import os
 import re
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from routers import assistant, datasets, network, scenarios, simulations, geojson, validation, exports, report
+from services.agent.sessions import sweep_stale_sessions
 from services.license_guard import license_required, license_status
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="VISSIM Platform API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """M2 ops (docs/phase2/DECISIONS.md, "M2 ops" deferred finding):
+    ``runtime/agent_sessions`` had no cleanup/TTL. Sweep it once per boot so
+    the directory doesn't grow without bound. ``sweep_stale_sessions`` is
+    already best-effort internally (a single locked/inaccessible session
+    directory is skipped, not raised), but startup must survive even an
+    unexpected failure in this module, so it is wrapped here too — a failed
+    sweep must never prevent the backend from starting."""
+    try:
+        sweep_stale_sessions()
+    except Exception:  # noqa: BLE001 - a cleanup failure must never block startup
+        logger.exception("Agent session sweep failed at startup; continuing without cleanup.")
+    yield
+
+
+app = FastAPI(title="VISSIM Platform API", version="1.0.0", lifespan=lifespan)
 
 
 def _load_cors_origins() -> list[str]:
