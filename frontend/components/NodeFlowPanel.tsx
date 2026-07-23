@@ -119,13 +119,13 @@ export default function NodeFlowPanel({ nodeId, nodeName, scenarios, selected, r
             <button
               key={id}
               onClick={() => setActiveId(id)}
-              className={`rounded-full border px-3 py-1 text-xs font-semibold transition-all ${
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                 active
-                  ? "text-white shadow-[0_8px_18px_rgba(15,23,42,0.22)]"
-                  : "border-slate-300/80 bg-surface text-slate-700 hover:border-slate-400"
+                  ? "border-slate-300 bg-white/[0.06] text-white"
+                  : "border-slate-200 text-slate-500 hover:text-slate-800"
               }`}
-              style={active ? { backgroundColor: scenarioColor, borderColor: scenarioColor } : {}}
             >
+              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: scenarioColor }} />
               {scenario.name}
             </button>
           );
@@ -245,9 +245,9 @@ function SignalPhasePanelContent({
   );
 
   return (
-    <section className="rounded-xl border border-slate-200/80 bg-slate-50/60 p-3">
+    <section className="rounded-xl border border-slate-200 bg-surface p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-base font-bold tracking-tight text-slate-900">{t("신호 현시", "Signal Phase")}</p>
+        <p className="text-sm font-semibold tracking-tight text-slate-900">{t("신호 현시", "Signal Phase")}</p>
         {showScenarioSelector && (
           <div className="flex flex-wrap justify-end gap-1.5">
             {selected.map((id, index) => {
@@ -259,11 +259,11 @@ function SignalPhasePanelContent({
                 <button
                   key={`signal-phase-${id}`}
                   onClick={() => onChangeActiveId(id)}
-                  className={`rounded-full border px-2.5 py-0.5 text-[10px] font-semibold transition ${
-                    active ? "text-white shadow-[0_8px_18px_rgba(15,23,42,0.18)]" : "border-slate-300 bg-surface text-slate-600"
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10px] font-medium transition-colors ${
+                    active ? "border-slate-300 bg-white/[0.06] text-white" : "border-slate-200 text-slate-500 hover:text-slate-800"
                   }`}
-                  style={active ? { backgroundColor: scenarioColor, borderColor: scenarioColor } : {}}
                 >
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: scenarioColor }} />
                   {scenario.name}
                 </button>
               );
@@ -271,9 +271,7 @@ function SignalPhasePanelContent({
           </div>
         )}
       </div>
-      <div className="rounded-xl border border-slate-200/80 bg-surface/90 p-3">
-        <SignalPhaseDonut signalInfo={signalInfo} laneFlows={activeData?.lane_flows ?? []} layout={phaseLayout} />
-      </div>
+      <SignalPhaseDonut signalInfo={signalInfo} laneFlows={activeData?.lane_flows ?? []} layout={phaseLayout} />
     </section>
   );
 }
@@ -290,12 +288,9 @@ function SignalPhaseDonut({
   const { t } = useLanguage();
   if (!signalInfo || !signalInfo.has_signal || !signalInfo.cycle_time || signalInfo.cycle_time <= 0) {
     return (
-      <div className="rounded-xl border border-slate-200/80 bg-surface/90 p-3">
-        <p className="text-[11px] font-semibold text-slate-700">{t("신호 페이즈", "Signal Phases")}</p>
-        <p className="mt-1 text-[11px] text-slate-500">
-          {t("이 교차로에 표시 가능한 신호 페이즈 정보가 없습니다.", "No displayable signal phase data is available for this node.")}
-        </p>
-      </div>
+      <p className="text-[11px] text-slate-500">
+        {t("이 교차로에 표시 가능한 신호 페이즈 정보가 없습니다.", "No displayable signal phase data is available for this node.")}
+      </p>
     );
   }
 
@@ -354,13 +349,10 @@ function SignalPhaseDonut({
   const gradient = `conic-gradient(from -90deg, ${gradientStops.join(", ") || "#33332f 0% 100%"})`;
 
   return (
-    <div className="rounded-xl border border-slate-200/80 bg-surface/90 p-3">
-      <div className="mb-2 flex items-center justify-between">
-        <p className="text-[11px] font-semibold text-slate-700">{t("신호 페이즈", "Signal Phases")}</p>
-        <p className="text-[11px] text-slate-500">
-          {cycle}s {t("주기", "cycle")} · Phase {segments.length}{t("개", "")}
-        </p>
-      </div>
+    <div>
+      <p className="mb-2 text-[11px] text-slate-500">
+        {cycle}s {t("주기", "cycle")} · Phase {segments.length}{t("개", "")}
+      </p>
 
       <div
         className={

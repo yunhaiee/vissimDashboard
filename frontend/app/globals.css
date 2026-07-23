@@ -22,9 +22,9 @@
   --border-soft: rgba(255, 255, 255, 0.1);
   --shadow-soft: none;
   --shadow-mid: 0 16px 40px rgba(0, 0, 0, 0.5);
-  --accent: #d97757;
-  --accent-hover: #e08e70;
-  --accent-soft: rgba(217, 119, 87, 0.16);
+  --accent: #4c8dff;
+  --accent-hover: #6fa1ff;
+  --accent-soft: rgba(76, 141, 255, 0.16);
   --font-ui: "Pretendard Variable", "Pretendard", "Segoe UI", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
   --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
 }
@@ -52,8 +52,8 @@
   /* custom roles */
   --color-surface: #1a1a19;
   --color-ink: #0b0b0b;
-  --color-accent: #d97757;
-  --color-accent-deep: #c96442;
+  --color-accent: #4c8dff;
+  --color-accent-deep: #3d7ef5;
 
   /* neutral ramp — 50..300 are fills/hairlines (white-alpha, so they
      read as "outline on page bg" like Console cards), 400..950 is the
@@ -153,7 +153,7 @@ body {
 }
 
 ::selection {
-  background: rgba(217, 119, 87, 0.35);
+  background: rgba(76, 141, 255, 0.35);
 }
 
 .app-shell {
@@ -278,9 +278,12 @@ body {
   padding: 2rem 2.5rem 3rem;
 }
 
+/* Page owns its own max-width now (some pages go wide like the Console
+   dashboard, others stay comfortable for forms) — the shell only supplies
+   fluid padding and centers whatever width the page declares. */
 .app-content-inner {
   margin: 0 auto;
-  max-width: 76rem;
+  width: 100%;
 }
 
 .ui-surface {
@@ -317,7 +320,7 @@ body {
 .ui-select:focus-visible {
   outline: none;
   border-color: color-mix(in oklab, var(--accent) 65%, transparent);
-  box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.2);
+  box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.2);
 }
 
 .ui-button-primary {

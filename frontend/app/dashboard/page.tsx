@@ -423,7 +423,7 @@ export default function DashboardPage() {
   }, [activeDataset, activeScenarios, curationSpec, hasData, hasUploadedDataset, nodeNamesById, selected, selectedNodeIds]);
 
   return (
-    <div className="space-y-6 pb-16">
+    <div className="mx-auto w-full max-w-[104rem] space-y-6 pb-16">
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -497,7 +497,7 @@ export default function DashboardPage() {
             title={t("지도 기반 교차로 선택", "Map-Based Intersection Selection")}
             subtitle={t("기존 대시보드 지도를 그대로 사용해 비교할 교차로를 최대 6개까지 선택합니다.", "Use the existing dashboard map to select up to six intersections for comparison.")}
           />
-          <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+          <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_460px]">
             <div className="relative">
               {hasData && <SectionJumpIndex showValidation={realCounts.length > 0} sectionVisible={sectionVisible} />}
 
@@ -950,9 +950,9 @@ function IntersectionMetricBars({
           return (
             <div key={item.nodeId} className="grid grid-cols-[7.2rem_1fr_4.8rem] items-center gap-3">
               <span className="truncate text-[11px] font-semibold text-slate-700">{item.nodeName}</span>
-              <span className="h-4 overflow-hidden rounded-full bg-slate-100 shadow-inner">
+              <span className="h-3 overflow-hidden bg-white/[0.05]">
                 {item.value != null && (
-                  <span className="block h-full rounded-full" style={{ width: `${width}%`, backgroundColor: color }} />
+                  <span className="block h-full" style={{ width: `${width}%`, backgroundColor: color }} />
                 )}
               </span>
               <span className="text-right text-[11px] font-bold tabular-nums text-slate-900">
@@ -1008,9 +1008,9 @@ function DirectionDelayChart({
               <span className="text-[10px] font-bold tabular-nums text-slate-800">
                 {value != null ? formatNumber(value, value < 10 ? 1 : 0) : "-"}
               </span>
-              <div className="flex h-[86px] w-full max-w-[42px] items-end rounded-md bg-surface/80 px-1 py-1 shadow-inner">
+              <div className="flex h-[86px] w-full max-w-[42px] items-end bg-white/[0.04] px-1 py-1">
                 {value != null && (
-                  <span className="block w-full rounded-md" style={{ height: `${height}%`, backgroundColor: color }} />
+                  <span className="block w-full" style={{ height: `${height}%`, backgroundColor: color }} />
                 )}
               </div>
               <span className="text-[10px] font-semibold text-slate-600">
@@ -1056,7 +1056,7 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
         {cards.map((card) => (
           <div key={card.nodeId} className="grid grid-cols-[7.2rem_1fr_4.8rem] items-center gap-3">
             <span className="truncate text-[11px] font-semibold text-slate-700">{card.nodeName}</span>
-            <div className="h-5 overflow-hidden rounded-full bg-slate-100 shadow-inner">
+            <div className="h-4 overflow-hidden bg-white/[0.05]">
               {card.volumeTotal != null && card.volumeTotal > 0 && (
                 <div className="flex h-full" style={{ width: `${Math.max(8, (card.volumeTotal / maxTotal) * 100)}%` }}>
                   {DIRECTION_ORDER.map((direction) => {
@@ -1210,25 +1210,27 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
             const segments = buildSegments(item.points);
             return (
               <g key={item.scenario.id}>
-                {segments.map((segment, segmentIndex) => (
-                  <polyline
-                    key={segmentIndex}
-                    points={segment.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ")}
-                    fill="none"
-                    stroke={color}
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                ))}
-                {item.points.map((point, pointIndex) =>
-                  point.value == null ? null : (
+                {segments.map((segment, segmentIndex) =>
+                  // A lone point has no line to draw, so mark it with a dot;
+                  // multi-point segments render as clean lines with no per-point
+                  // markers (Console-style — the previous double end-dots read
+                  // as clutter).
+                  segment.length === 1 ? (
                     <circle
-                      key={`${item.scenario.id}-${pointIndex}`}
-                      cx={xForIndex(pointIndex)}
-                      cy={yForValue(point.value)}
-                      r="3.5"
+                      key={segmentIndex}
+                      cx={segment[0][0]}
+                      cy={segment[0][1]}
+                      r="2.5"
                       fill={color}
+                    />
+                  ) : (
+                    <polyline
+                      key={segmentIndex}
+                      points={segment.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ")}
+                      fill="none"
+                      stroke={color}
+                      strokeWidth="2"
+                      strokeLinejoin="round"
                     />
                   ),
                 )}
@@ -1433,11 +1435,7 @@ function OverallResultsSection({
             type="button"
             onClick={handleGenerateReport}
             disabled={!canGenerateReport}
-            className={`rounded-lg border px-3 py-2.5 text-xs font-semibold transition ${
-              canGenerateReport
-                ? "border-accent bg-accent text-white shadow-[0_8px_16px_rgba(47,123,200,0.22)] hover:bg-accent-deep"
-                : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
-            }`}
+            className="ui-button-primary px-3 py-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t("보고서 생성하기", "Generate Report")}
           </button>
@@ -1446,11 +1444,7 @@ function OverallResultsSection({
               type="button"
               onClick={handleDownloadReport}
               disabled={!reportMarkdown}
-              className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${
-                reportMarkdown
-                  ? "border-slate-300 bg-surface text-slate-700 hover:border-slate-400"
-                  : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
-              }`}
+              className="ui-button-ghost px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t("텍스트 (.md)", "Text (.md)")}
             </button>
@@ -1462,11 +1456,7 @@ function OverallResultsSection({
                 "Word에서 열 때 '파일 형식이 확장자와 다릅니다'라는 확인 창이 뜰 수 있습니다 — 정상이며 그대로 여세요.",
                 "Word may show a \"file format doesn't match extension\" prompt when opening this — that's expected, open it anyway.",
               )}
-              className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${
-                reportMarkdown
-                  ? "border-slate-300 bg-surface text-slate-700 hover:border-slate-400"
-                  : "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
-              }`}
+              className="ui-button-ghost px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t("Word (.doc)", "Word (.doc)")}
             </button>
@@ -1571,9 +1561,9 @@ function KpiCard({
                   )}
                 </div>
               </div>
-              <div className="relative flex h-24 w-7 items-end overflow-hidden rounded-md border border-slate-200 bg-slate-100/80">
+              <div className="relative flex h-24 w-7 items-end overflow-hidden border border-slate-200 bg-white/[0.04]">
                 <div
-                  className="w-full rounded-md transition-all duration-500"
+                  className="w-full transition-all duration-500"
                   style={{ height: `${Math.max(pct, 8)}%`, backgroundColor: scenarioColor }}
                 />
               </div>
@@ -1633,18 +1623,18 @@ function DashboardScenarioPicker({
   };
 
   return (
-    <div className="rounded-xl border border-slate-200/90 bg-slate-50/70 p-3">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+    <div className="rounded-xl border border-slate-200 bg-surface p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-xs font-semibold text-slate-800">{t("시나리오 비교 세트", "Scenario Comparison Set")}</p>
-          <p className="text-[11px] text-slate-500">
+          <p className="mt-0.5 text-[11px] text-slate-500">
             {t(
               "KPI, 지도, 교차로 비교에 포함할 시나리오를 선택합니다. 새로고침하면 최대 4개까지만 자동으로 다시 선택됩니다.",
               "Choose scenarios to include in KPI, map, and node comparisons. On reload, only up to 4 are automatically reselected.",
             )}
           </p>
         </div>
-        <span className="rounded-full bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">
+        <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
           {selected.length}/{scenarios.length} {t("선택", "selected")}
         </span>
       </div>
@@ -1658,34 +1648,33 @@ function DashboardScenarioPicker({
             <button
               key={scenario.id}
               onClick={() => toggle(scenario.id)}
-              className={`group relative overflow-hidden rounded-xl border px-3 py-2 text-left transition-all duration-200 ${
+              className={`group flex items-center justify-between gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors duration-150 ${
                 active
-                  ? "border-slate-300 bg-surface shadow-[0_10px_22px_rgba(15,23,42,0.12)]"
-                  : "border-slate-200 bg-surface/70 opacity-75 hover:-translate-y-0.5 hover:border-slate-300 hover:opacity-100"
+                  ? "border-slate-300 bg-white/[0.06]"
+                  : "border-slate-200 bg-transparent hover:border-slate-300 hover:bg-white/[0.03]"
               }`}
             >
-              <span
-                className="absolute inset-y-0 left-0 w-1"
-                style={{ backgroundColor: active ? scenarioColor : "#45443f" }}
-              />
-              <div className="flex items-center justify-between gap-2 pl-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: active ? scenarioColor : "#45443f" }}
+                />
                 <div className="min-w-0">
-                  <p className={`truncate text-sm font-bold ${active ? "text-slate-900" : "text-slate-500"}`}>
+                  <p className={`truncate text-sm font-medium ${active ? "text-slate-900" : "text-slate-500"}`}>
                     {scenario.name}
                   </p>
                   <p className="mt-0.5 text-[10px] text-slate-500">
                     {active ? t("비교 포함", "Included") : t("클릭하여 포함", "Click to include")}
                   </p>
                 </div>
-                <span
-                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
-                    active ? "text-white" : "bg-slate-100 text-slate-400"
-                  }`}
-                  style={active ? { backgroundColor: scenarioColor } : {}}
-                >
-                  {active ? order : "+"}
-                </span>
               </div>
+              <span
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold ${
+                  active ? "bg-white/10 text-white" : "bg-slate-100 text-slate-400"
+                }`}
+              >
+                {active ? order : "+"}
+              </span>
             </button>
           );
         })}

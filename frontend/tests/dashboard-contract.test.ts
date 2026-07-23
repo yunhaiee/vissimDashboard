@@ -197,7 +197,7 @@ test("intersection comparison is merged into the main dashboard", () => {
   assert.doesNotMatch(page, /stabilizeTravelTimeProfile/, "expected the fabricated travel-time easing to be removed");
   assert.doesNotMatch(page, /Math\.pow\(progress, 1\.18\)/, "expected no synthetic accelerated display profile on travel time");
   assert.match(page, /SectionJumpIndex/, "expected section shortcut index");
-  assert.match(page, /xl:grid-cols-\[minmax\(0,1fr\)_380px\]/, "expected map grid to keep its original width");
+  assert.match(page, /xl:grid-cols-\[minmax\(0,1fr\)_460px\]/, "expected widened map/intersection grid (Console-density pass)");
   assert.doesNotMatch(
     page,
     /xl:grid-cols-\[148px_minmax\(0,1fr\)\]/,

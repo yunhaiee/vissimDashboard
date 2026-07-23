@@ -189,7 +189,7 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
           type="button"
           onClick={() => setConfirmReset(true)}
           disabled={uploading || activeDataset?.source !== "uploaded"}
-          className="ui-button-danger inline-flex items-center px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          className="ui-button-ghost inline-flex items-center px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t("기본값 복원", "Restore Default")}
         </button>

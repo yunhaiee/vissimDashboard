@@ -502,7 +502,7 @@ export default function BaseModelPage() {
   }, [activeDataset, effectiveSelectedValidationNodeIds, period, selectedScenario, selectedScenarioId, selectedValidationNodeNames, workbook]);
 
   return (
-    <div className="space-y-6 pb-16">
+    <div className="mx-auto w-full max-w-[96rem] space-y-6 pb-16">
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>

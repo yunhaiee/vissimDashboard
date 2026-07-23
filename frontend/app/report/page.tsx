@@ -257,7 +257,7 @@ export default function ReportPage() {
           type="button"
           onClick={generate}
           disabled={busy || blocks.length === 0}
-          className="rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-semibold text-ink transition hover:bg-slate-950 disabled:cursor-wait disabled:opacity-50"
+          className="ui-button-primary px-5 py-2.5 text-sm disabled:cursor-wait disabled:opacity-50"
         >
           {busy ? t("생성 중…", "Generating…", "生成中…") : t("Word 생성", "Generate Word", "Word生成")}
         </button>
