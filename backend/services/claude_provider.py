@@ -26,7 +26,15 @@ class ClaudeProvider:
             try:
                 import anthropic
 
-                self._client = anthropic.Anthropic()
+                # Explicit bounds instead of the SDK defaults (600s timeout,
+                # 2 retries ~= a 30-minute worst case): an agent turn holds a
+                # live NDJSON stream, a session work dir, and possibly a COM
+                # edit session while each planner call runs — a wedged HTTP
+                # request must fail fast and fall down the existing
+                # fallback/error ladder rather than hold all of that hostage.
+                # Observed live 2026-07-23: a stalled call after a COM
+                # LoadNet failure froze the whole approve stream.
+                self._client = anthropic.Anthropic(timeout=90.0, max_retries=1)
             except Exception as exc:  # missing package or key resolution failure
                 self._client_error = str(exc)
         return self._client
