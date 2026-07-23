@@ -13,8 +13,10 @@ task touches the evaluation harness).
 
 ## 1. Non-negotiable rules
 
-1. **Local commits only. NEVER push, never add a remote.** The repo contains Dochak's proprietary
-   source; pushing requires explicit Dochak team approval that has not been given.
+1. **Push only to the approved private remote** (`github.com/yunhalee2008/vissimDashboard`,
+   user-approved 2026-07-22 under "private = no outside access"). The repo contains Dochak's
+   proprietary source: never make it public, never add any other remote, never grant access —
+   those decisions belong to the user and the Dochak team.
 2. **Never commit secrets.** The Anthropic key lives in git-ignored `backend/.env`
    (`ANTHROPIC_API_KEY`). `.gitignore` blocks `.env*`; do not weaken it. Never print the key in
    logs, test output, or error messages.
