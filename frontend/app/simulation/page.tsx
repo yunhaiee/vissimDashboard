@@ -410,7 +410,7 @@ export default function SimulationPage() {
   };
 
   return (
-    <div className="space-y-5 pb-12">
+    <div className="space-y-6 pb-16">
       <input
         ref={zipInputRef}
         type="file"

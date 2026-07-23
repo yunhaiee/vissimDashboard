@@ -138,7 +138,7 @@ export default function NodeFlowPanel({ nodeId, nodeName, scenarios, selected, r
             color={
               activeScenario
                 ? getScenarioDisplayColor(activeScenario, selected.findIndex((id) => id === activeScenario.id))
-                : "#5f7fa4"
+                : "#4a83c2"
             }
             nodeName={nodeName}
             total={activeTotal}
@@ -311,7 +311,7 @@ function SignalPhaseDonut({
     }))
     .sort((a, b) => a.start - b.start);
 
-  const palette = ["#5d87af", "#6b9a7b", "#aa8656", "#7a6b94", "#95666c", "#668f95", "#927252"];
+  const palette = ["#5f95d5", "#9cc8a4", "#d97757", "#93a0de", "#ecac9c", "#7fc0ca", "#b5b3ab"];
   const baseStart = sorted[0]?.start ?? 0;
   const segments = sorted
     .map((phase, idx) => {
@@ -351,7 +351,7 @@ function SignalPhaseDonut({
   for (const segment of segments) {
     gradientStops.push(`${segment.color} ${segment.from}% ${Math.min(segment.to, 100)}%`);
   }
-  const gradient = `conic-gradient(from -90deg, ${gradientStops.join(", ") || "#e2e8f0 0% 100%"})`;
+  const gradient = `conic-gradient(from -90deg, ${gradientStops.join(", ") || "#33332f 0% 100%"})`;
 
   return (
     <div className="rounded-xl border border-slate-200/80 bg-surface/90 p-3">
@@ -1341,7 +1341,7 @@ function buildParallelStraightStroke(
   }
 }
 
-const PHASE_ARROW_COLOR = "#1e293b";
+const PHASE_ARROW_COLOR = "#e3e2da";
 const PHASE_ARROW_STROKE = 4.0;
 const PHASE_ARROW_HEAD_SIZE = 8.1;
 const PHASE_ARROW_HEAD_WIDTH_FACTOR = 0.6;

@@ -185,7 +185,7 @@ export default function IncidentPanel({
                         value={option.value}
                         checked={type === option.value}
                         onChange={() => setType(option.value)}
-                        className="mt-1 accent-[#5f7fa4]"
+                        className="mt-1 accent-[#4a83c2]"
                       />
                       <div>
                         <div className="text-sm font-semibold text-slate-900">{option.label}</div>

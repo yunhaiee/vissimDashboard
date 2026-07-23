@@ -30,7 +30,7 @@ export default function KpiCards({ scenarios, selected, results }: Props) {
                 <div key={s.id} className="flex items-center justify-between gap-2">
                   <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: s.color }} />
                   <span className="text-xs text-slate-500 flex-1 truncate">{s.name}</span>
-                  <span className="text-sm font-bold text-slate-800">
+                  <span className="text-base font-semibold tabular-nums text-slate-900">
                     {val != null ? val.toFixed(1) : "—"}
                     <span className="text-xs font-normal text-slate-400 ml-0.5">{kpi.unit}</span>
                   </span>

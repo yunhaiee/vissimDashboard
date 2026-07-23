@@ -335,9 +335,9 @@ export default function BaseModelPage() {
   const travelRoutes = useMemo(() => groupTravelPointsByRoute(travelPoints), [travelPoints]);
   const pieData = useMemo<BandStat[]>(
     () => [
-      { name: "GEH < 5", value: countStats.under5, color: "#5f8b6f" },
-      { name: "GEH 5-10", value: countStats.between5And10, color: "#d99b3d" },
-      { name: "GEH > 10", value: countStats.over10, color: "#c75b62" },
+      { name: "GEH < 5", value: countStats.under5, color: "#74ac80" },
+      { name: "GEH 5-10", value: countStats.between5And10, color: "#b5b3ab" },
+      { name: "GEH > 10", value: countStats.over10, color: "#dc8373" },
     ],
     [countStats],
   );
@@ -351,8 +351,8 @@ export default function BaseModelPage() {
         title: t("저유량 (< 700 veh/h)", "Low flow (< 700 veh/h)"),
         criterion: t("기준: 차이 ±100 veh/h", "Criterion: diff ±100 veh/h"),
         data: [
-          { name: t("기준 충족", "Within"), value: flowBandStats.low.pass, color: "#5f8b6f" },
-          { name: t("기준 초과", "Exceeds"), value: flowBandStats.low.fail, color: "#c75b62" },
+          { name: t("기준 충족", "Within"), value: flowBandStats.low.pass, color: "#74ac80" },
+          { name: t("기준 초과", "Exceeds"), value: flowBandStats.low.fail, color: "#dc8373" },
         ],
       },
       {
@@ -360,8 +360,8 @@ export default function BaseModelPage() {
         title: t("중유량 (700–2,700 veh/h)", "Mid flow (700–2,700 veh/h)"),
         criterion: t("기준: 차이 ±15%", "Criterion: diff ±15%"),
         data: [
-          { name: t("기준 충족", "Within"), value: flowBandStats.mid.pass, color: "#5f8b6f" },
-          { name: t("기준 초과", "Exceeds"), value: flowBandStats.mid.fail, color: "#c75b62" },
+          { name: t("기준 충족", "Within"), value: flowBandStats.mid.pass, color: "#74ac80" },
+          { name: t("기준 초과", "Exceeds"), value: flowBandStats.mid.fail, color: "#dc8373" },
         ],
       },
       {
@@ -369,8 +369,8 @@ export default function BaseModelPage() {
         title: t("고유량 (> 2,700 veh/h)", "High flow (> 2,700 veh/h)"),
         criterion: t("기준: 차이 ±400 veh/h", "Criterion: diff ±400 veh/h"),
         data: [
-          { name: t("기준 충족", "Within"), value: flowBandStats.high.pass, color: "#5f8b6f" },
-          { name: t("기준 초과", "Exceeds"), value: flowBandStats.high.fail, color: "#c75b62" },
+          { name: t("기준 충족", "Within"), value: flowBandStats.high.pass, color: "#74ac80" },
+          { name: t("기준 초과", "Exceeds"), value: flowBandStats.high.fail, color: "#dc8373" },
         ],
       },
     ],
@@ -502,7 +502,7 @@ export default function BaseModelPage() {
   }, [activeDataset, effectiveSelectedValidationNodeIds, period, selectedScenario, selectedScenarioId, selectedValidationNodeNames, workbook]);
 
   return (
-    <div className="space-y-5 pb-12">
+    <div className="space-y-6 pb-16">
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -713,14 +713,14 @@ export default function BaseModelPage() {
           ) : (
             <ResponsiveContainer width="100%" height={420}>
               <ScatterChart margin={{ top: 16, right: 32, left: 16, bottom: 28 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#33332f" />
                 <XAxis
                   type="number"
                   dataKey="x"
                   name={t("실측", "Observed")}
                   domain={[0, rSquaredData.axisMax]}
                   tick={{ fontSize: 11 }}
-                  label={{ value: "Observed", position: "insideBottom", offset: -10, style: { fontSize: 11, fill: "#64748b" } }}
+                  label={{ value: "Observed", position: "insideBottom", offset: -10, style: { fontSize: 11, fill: "#898781" } }}
                 />
                 <YAxis
                   type="number"
@@ -728,7 +728,7 @@ export default function BaseModelPage() {
                   name={t("모델", "Modelled")}
                   domain={[0, rSquaredData.axisMax]}
                   tick={{ fontSize: 11 }}
-                  label={{ value: "Modelled", angle: -90, position: "insideLeft", offset: 10, style: { fontSize: 11, fill: "#64748b" } }}
+                  label={{ value: "Modelled", angle: -90, position: "insideLeft", offset: 10, style: { fontSize: 11, fill: "#898781" } }}
                 />
                 <ZAxis range={[36, 36]} />
                 <Tooltip
@@ -742,13 +742,13 @@ export default function BaseModelPage() {
                       { x: 0, y: 0 },
                       { x: rSquaredData.axisMax, y: rSquaredData.axisMax * rSquaredData.slope },
                     ]}
-                    stroke="#dc2626"
+                    stroke="#e4574d"
                     strokeDasharray="4 4"
                     strokeWidth={1.2}
                     ifOverflow="extendDomain"
                   />
                 )}
-                <Scatter data={rSquaredData.points} fill="#f97316" stroke="#9a3412" strokeWidth={1} />
+                <Scatter data={rSquaredData.points} fill="#ee9b5c" stroke="#c96442" strokeWidth={1} />
               </ScatterChart>
             </ResponsiveContainer>
           )}
@@ -782,7 +782,7 @@ export default function BaseModelPage() {
               </div>
               <ResponsiveContainer width="100%" height={260}>
                 <LineChart data={pointsToCumulativeChartRows(route.points)} margin={{ top: 8, right: 24, left: 0, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#33332f" />
                   <XAxis
                     dataKey="dist"
                     type="number"
@@ -793,7 +793,7 @@ export default function BaseModelPage() {
                       value: t("시작점부터의 거리(km)", "Distance from start (km)"),
                       position: "insideBottom",
                       offset: -4,
-                      style: { fontSize: 11, fill: "#64748b" },
+                      style: { fontSize: 11, fill: "#898781" },
                     }}
                   />
                   <YAxis
@@ -803,15 +803,15 @@ export default function BaseModelPage() {
                       value: t("누적 통행시간(분)", "Cumulative travel time (min)"),
                       angle: -90,
                       position: "insideLeft",
-                      style: { fontSize: 11, fill: "#64748b" },
+                      style: { fontSize: 11, fill: "#898781" },
                     }}
                   />
                   <Tooltip formatter={(value) => `${formatNumber(Number(value), 1)} min`} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Line type="monotone" dataKey="observed" name={t("실측", "Observed")} stroke="#1473e6" strokeWidth={2.4} dot={{ r: 3 }} connectNulls />
-                  <Line type="monotone" dataKey="model" name={t("예측", "Predicted")} stroke="#dc2626" strokeWidth={2.4} dot={{ r: 3 }} connectNulls />
-                  <Line type="monotone" dataKey="upper" name={`+${TRAVEL_TIME_TOLERANCE_PCT}%`} stroke="#0f172a" strokeDasharray="6 6" dot={false} connectNulls />
-                  <Line type="monotone" dataKey="lower" name={`-${TRAVEL_TIME_TOLERANCE_PCT}%`} stroke="#0f172a" strokeDasharray="6 6" dot={false} connectNulls />
+                  <Line type="monotone" dataKey="observed" name={t("실측", "Observed")} stroke="#6da7ec" strokeWidth={2.4} dot={{ r: 3 }} connectNulls />
+                  <Line type="monotone" dataKey="model" name={t("예측", "Predicted")} stroke="#e4574d" strokeWidth={2.4} dot={{ r: 3 }} connectNulls />
+                  <Line type="monotone" dataKey="upper" name={`+${TRAVEL_TIME_TOLERANCE_PCT}%`} stroke="#fafaf9" strokeDasharray="6 6" dot={false} connectNulls />
+                  <Line type="monotone" dataKey="lower" name={`-${TRAVEL_TIME_TOLERANCE_PCT}%`} stroke="#fafaf9" strokeDasharray="6 6" dot={false} connectNulls />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -846,7 +846,7 @@ function ControlField({ label, children }: { label: string; children: React.Reac
 function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <div>
-      <h2 className="text-lg font-bold tracking-tight text-slate-900">{title}</h2>
+      <h2 className="text-[15px] font-semibold text-white">{title}</h2>
       {subtitle && <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>}
     </div>
   );
@@ -1482,8 +1482,8 @@ function CountDirectionMatrixCell({
       </div>
 
       <div className="mt-3 space-y-1.5">
-        <ComparisonBarLine label={t("실측", "Observed")} value={group.observedTotal} pct={observedPct} color="#4f7198" />
-        <ComparisonBarLine label={t("모델", "Model")} value={group.modelTotal} pct={modelPct} color="#c75b62" />
+        <ComparisonBarLine label={t("실측", "Observed")} value={group.observedTotal} pct={observedPct} color="#6da7ec" />
+        <ComparisonBarLine label={t("모델", "Model")} value={group.modelTotal} pct={modelPct} color="#dc8373" />
       </div>
 
       <div className="mt-3 border-t border-slate-200 pt-2">

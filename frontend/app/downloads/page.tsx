@@ -274,7 +274,7 @@ export default function DownloadsPage() {
           type="button"
           onClick={downloadCombined}
           disabled={selectedCount === 0 || busyCombined}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-ink transition hover:bg-slate-950 disabled:opacity-40"
         >
           {busyCombined
             ? t("생성 중…", "Building…")
@@ -298,7 +298,7 @@ export default function DownloadsPage() {
                   type="checkbox"
                   checked={!!selected[item.key]}
                   onChange={() => toggle(item.key)}
-                  className="mt-2 h-4 w-4 flex-none accent-emerald-600"
+                  className="mt-2 h-4 w-4 flex-none accent-accent"
                   aria-label={label}
                 />
                 <span className="mt-0.5 flex h-8 w-8 flex-none items-center justify-center rounded-full bg-slate-100 text-sm font-bold text-slate-600">

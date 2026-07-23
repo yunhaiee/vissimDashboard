@@ -87,19 +87,19 @@ const DIRECTION_LABELS: Record<DirectionKey, { ko: string; en: string; shortKo: 
 
 const DIRECTION_ORDER: DirectionKey[] = ["north", "east", "south", "west"];
 const DIRECTION_COLORS: Record<DirectionKey, string> = {
-  north: "#4f7198",
-  east: "#6b9a7b",
-  south: "#aa8656",
-  west: "#7a6b94",
+  north: "#6da7ec",
+  east: "#9cc8a4",
+  south: "#d97757",
+  west: "#93a0de",
 };
-const INTERSECTION_COLORS = ["#4f7198", "#6b9a7b", "#aa8656", "#7a6b94", "#8a6f55", "#5f7fa4"];
+const INTERSECTION_COLORS = ["#6da7ec", "#9cc8a4", "#d97757", "#93a0de", "#b5b3ab", "#4a83c2"];
 const LOS_COLORS: Record<LosGrade, string> = {
-  A: "#16a34a",
-  B: "#84cc16",
-  C: "#facc15",
-  D: "#f97316",
-  E: "#ef4444",
-  F: "#7f1d1d",
+  A: "#22c55e",
+  B: "#a3d977",
+  C: "#e5c76b",
+  D: "#ee9b5c",
+  E: "#e4574d",
+  F: "#a83a32",
 };
 // Delay-second bands behind resolveLosGrade(), spelled out for the legend so
 // "LOS" isn't shown as an unexplained letter anywhere it appears.
@@ -423,7 +423,7 @@ export default function DashboardPage() {
   }, [activeDataset, activeScenarios, curationSpec, hasData, hasUploadedDataset, nodeNamesById, selected, selectedNodeIds]);
 
   return (
-    <div className="space-y-5 pb-12">
+    <div className="space-y-6 pb-16">
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 flex-1 flex-col gap-4">
@@ -775,7 +775,7 @@ function DashboardUploadRequiredPanel() {
       <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-amber-300 bg-amber-50 text-sm font-black text-amber-600">
         DATA
       </div>
-      <h2 className="mt-4 text-lg font-bold tracking-tight text-slate-900">
+      <h2 className="mt-4 text-[15px] font-semibold text-white">
         {t("업로드한 VISSIM 데이터셋이 필요합니다", "Uploaded VISSIM Dataset Required")}
       </h2>
       <p className="mx-auto mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">
@@ -1003,7 +1003,7 @@ function DirectionDelayChart({
       <div className="mt-4 grid h-32 grid-cols-4 items-end gap-2 border-b border-slate-200 pb-2">
         {values.map(({ direction, value, los }) => {
           const height = value != null ? Math.max(10, (value / maxValue) * 100) : 0;
-          const color = los ? LOS_COLORS[los] : "#cbd5e1";
+          const color = los ? LOS_COLORS[los] : "#45443f";
 
           return (
             <div key={direction} className="flex h-full flex-col items-center justify-end gap-1">
@@ -1180,16 +1180,16 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
             const labelValue = maxValue - ratio * valueSpan;
             return (
               <g key={ratio}>
-                <line x1={left} x2={width - right} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="4 5" />
-                <text x={left - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#64748b">
+                <line x1={left} x2={width - right} y1={y} y2={y} stroke="#33332f" strokeDasharray="4 5" />
+                <text x={left - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#898781">
                   {formatNumber(labelValue, 0)}
                 </text>
               </g>
             );
           })}
 
-          <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} stroke="#cbd5e1" />
-          <line x1={left} x2={left} y1={top} y2={height - bottom} stroke="#cbd5e1" />
+          <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} stroke="#45443f" />
+          <line x1={left} x2={left} y1={top} y2={height - bottom} stroke="#45443f" />
 
           {labels.map((label, index) =>
             index % tickStride === 0 ? (
@@ -1199,7 +1199,7 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
                 y={height - bottom + 16}
                 textAnchor="end"
                 fontSize="9.5"
-                fill="#64748b"
+                fill="#898781"
                 transform={`rotate(-38 ${xForIndex(index)} ${height - bottom + 16})`}
               >
                 {label.length > 12 ? `${label.slice(0, 11)}…` : label}
@@ -1238,12 +1238,12 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
             );
           })}
 
-          <text x={left} y={20} fontSize="10" fill="#64748b">
+          <text x={left} y={20} fontSize="10" fill="#898781">
             {useSectionLabels
               ? t("측정 구간별 통행시간", "Travel time by measurement section")
               : t("시간 간격별 통행시간", "Travel time by time interval")}
           </text>
-          <text x={left - 34} y={top - 8} fontSize="10" fill="#64748b">
+          <text x={left - 34} y={top - 8} fontSize="10" fill="#898781">
             sec
           </text>
         </svg>
@@ -1613,7 +1613,7 @@ function KpiCard({
 function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <div>
-      <h2 className="text-lg font-bold tracking-tight text-slate-900">{title}</h2>
+      <h2 className="text-[15px] font-semibold text-white">{title}</h2>
       <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>
     </div>
   );
@@ -1668,7 +1668,7 @@ function DashboardScenarioPicker({
             >
               <span
                 className="absolute inset-y-0 left-0 w-1"
-                style={{ backgroundColor: active ? scenarioColor : "#cbd5e1" }}
+                style={{ backgroundColor: active ? scenarioColor : "#45443f" }}
               />
               <div className="flex items-center justify-between gap-2 pl-1">
                 <div className="min-w-0">
@@ -2696,18 +2696,18 @@ function buildWordDocumentHtml(markdown: string): string {
   <meta charset="utf-8">
   <title>Traffic Modelling Report</title>
   <style>
-    body { font-family: Arial, Helvetica, sans-serif; font-size: 10.5pt; line-height: 1.45; color: #111827; }
+    body { font-family: Arial, Helvetica, sans-serif; font-size: 10.5pt; line-height: 1.45; color: #fafaf9; }
     h1 { font-size: 20pt; margin: 0 0 18pt; }
-    h2 { font-size: 15pt; margin: 18pt 0 8pt; border-bottom: 1px solid #cbd5e1; padding-bottom: 4pt; }
+    h2 { font-size: 15pt; margin: 18pt 0 8pt; border-bottom: 1px solid #45443f; padding-bottom: 4pt; }
     h3 { font-size: 12.5pt; margin: 14pt 0 6pt; }
     h4 { font-size: 11pt; margin: 12pt 0 6pt; }
     p { margin: 0 0 8pt; }
     ul { margin: 0 0 8pt 18pt; padding: 0; }
     li { margin: 0 0 4pt; }
     table { width: 100%; border-collapse: collapse; margin: 8pt 0 12pt; }
-    th, td { border: 1px solid #94a3b8; padding: 5pt 6pt; vertical-align: top; }
-    th { background: #e2e8f0; font-weight: 700; }
-    em { color: #475569; }
+    th, td { border: 1px solid #6a6862; padding: 5pt 6pt; vertical-align: top; }
+    th { background: #33332f; font-weight: 700; }
+    em { color: #a5a39a; }
   </style>
 </head>
 <body>

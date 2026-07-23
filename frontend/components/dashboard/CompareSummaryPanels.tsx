@@ -75,7 +75,7 @@ export function ScenarioRankingPanel({
       {ordered.map((item, index) => {
         const meta = getScenarioMeta(scenarios, item.scenario_id);
         const label = item.scenario_name ?? meta?.name ?? item.scenario_id;
-        const color = item.color ?? (meta ? getScenarioDisplayColor(meta, index) : "#5f7fa4");
+        const color = item.color ?? (meta ? getScenarioDisplayColor(meta, index) : "#4a83c2");
         const scoreLabel =
           item.score_label ?? (item.score != null ? `${item.score.toFixed(1)} pts` : "No score");
         const rank = item.rank ?? index + 1;
