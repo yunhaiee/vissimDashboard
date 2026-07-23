@@ -302,3 +302,103 @@ before touching COM.
 protection automatically. The guard covers only the currently-loaded network in this
 controller instance's lifetime; constructing a correct work-dir path remains the caller's
 responsibility.
+
+---
+
+## 2026-07-23 — M2.2: `"cancelled"` is an 11th trace kind beyond the roadmap's 10
+
+**Context:** M0.1 enumerates exactly 10 trace kinds; none fits a caller-initiated stop
+distinct from a tool/guardrail outcome. The cancellation seam (`should_cancel`, checked at
+the top of every loop iteration, before planning — so a cancel costs zero planner/tool calls)
+needs its own terminal record.
+
+**Decision:** added `"cancelled"` to `ALLOWED_KINDS`; `run_agent_turn` returns
+`AgentTurnResult(kind="cancelled", …)` with a deterministic ko/en/ja notice (no LLM call).
+
+**Consequence:** the kind catalog is 11, not 10. M5's eval harness should treat `"cancelled"`
+as a first-class non-failure terminal.
+
+---
+
+## 2026-07-23 — M2.2: clone-precondition guard is divergence-based, not existence-based
+
+**Context:** the task brief's literal wording ("a work dir that already contains a working
+copy must fail loudly") collides with the already-pinned
+`test_new_manager_over_existing_work_dir_continues_numbering`, which re-clones over an
+existing working copy on purpose (process-restart resume).
+
+**Decision:** `clone()` refuses only when the existing working copy has *no saved version* or
+has *diverged* from its latest saved version (not byte-identical); re-cloning over a
+still-clean working copy stays allowed. Both the new guard tests and the pre-existing resume
+test pass unmodified.
+
+**Consequence:** the guard protects against silent loss of unsaved edits (the actual risk)
+without breaking session resume — the "closest verifiable subset" reading of the brief.
+
+---
+
+## 2026-07-23 — M2.2: `rollback_to(0)` restores the pristine clone
+
+**Context:** `last_good_version` is `0` for a session's very first write (nothing saved yet),
+but `rollback_to(0)` raised `FileNotFoundError` (no `edit_000.inpx` exists) — the single most
+common rollback case couldn't work.
+
+**Decision:** `rollback_to(0)` restores directly from `source_inpx`, same as `clone()`. An
+addition beyond the brief's literal text, made because the mandated postwrite-abort wiring is
+not usably correct without it; pinned by state tests plus the orchestrator's
+mismatch-rollback integration test, which exercises exactly this path.
+
+---
+
+## 2026-07-23 — M2.2: `build_shadow_model`'s mtime-keyed cache needs explicit cache-busting in `ArtifactManager`
+
+**Context:** verified empirically on this Windows/NTFS box — two back-to-back writes to the
+same path can report the *identical* `os.path.getmtime()`, so the `lru_cache` keyed on
+(path, mtime) can serve a stale parse right after an edit.
+
+**Decision:** `ArtifactManager` tracks `_last_parsed_mtime` per instance and nudges the
+file's mtime strictly forward via `os.utime()` before reparsing whenever it wouldn't
+otherwise advance. Deterministic regression test forces the collision via `os.utime` (not
+timing luck). This is a machine-verified landmine of the 00-EXECUTION-GUIDE §3 class; fold
+into that guide on its next docs pass.
+
+---
+
+## 2026-07-23 — M2.2: `guardrails._WRITE_TARGET_FIELD_SPEC` pre-declares M2.3 tool field mappings
+
+**Context:** the nothing-else-moved diff must know which (object, field) pair each write tool
+is *expected* to touch, but M2.3's tools don't exist yet.
+
+**Decision:** pre-declared the table for the three object-targeting M2 verbs
+(`set_vehicle_input_volume`, `set_signal_cycle`, `set_signal_offset`), deliberately mirrored
+from (not imported out of) `constraints.py`'s private `_TOOL_TARGET_SPEC`, per the existing
+M1.2 precedent. A tool absent from the table gets no exemption — any change anywhere counts
+as evidence (conservative default).
+
+**Consequence:** M2.3 must keep tool/param names in lockstep with this table or writes get
+noisy (safe) false-positive diff evidence. Note the `set_signal_cycle` mapping targets the
+parsed `cycle_time`, which the M2.1 `CycTm` entry shows is disconnected from what the setter
+actually writes — moot today (constraint #4 refuses all signal-cycle edits), but M3 must
+revisit this mapping when it re-enables them.
+
+---
+
+## 2026-07-23 — M2.2 controller-review addition: postwrite gains a target-persisted check
+
+**Context:** review of the as-implemented engine found a hole: a write tool that succeeds
+over COM but never calls `save_net_as` before returning passes both original postwrite checks
+— the read-back compare proves only Vissim's *in-memory* state changed, and identical
+before/after shadow models make the nothing-else-moved diff *silent* — while the versioned
+artifact silently lacks the change. That is precisely the silent-failure class the doctrine
+exists to kill.
+
+**Decision:** `postwrite` now also verifies the written value actually appears in the AFTER
+shadow model (same numeric tolerance as constraint #6; reuses the `write_verification_failed`
+id with `persistence_check` details). Degrades silently when no claim can be made either way:
+unmapped tool, no `written_value`, target absent (other checks own that), or the parsed field
+is `None` (parser can't see that attribute — e.g. signal `cycle_time` on program-driven
+controllers per the M2.1 finding — refusing there would be a false positive, not caution).
+
+**Consequence:** M2.3's write tools MUST call `save_net_as` onto the working copy before
+returning, or every mapped write is refused post-hoc and rolled back — the contract is now
+enforced, not documented.

@@ -20,6 +20,11 @@ from typing import Any
 
 # The full catalog of trace record kinds. Unknown kinds are rejected rather
 # than silently accepted, since a typo here would corrupt the eval substrate.
+#
+# "cancelled" was added in M2.2, one kind beyond the roadmap's original
+# 10-kind list (docs/phase2/02-ROADMAP.md M0.1) — the cooperative
+# cancellation seam threaded through the same orchestrator loop M2.2 already
+# edits for the guardrail engine; see docs/phase2/DECISIONS.md.
 ALLOWED_KINDS = frozenset(
     {
         "action_start",
@@ -32,6 +37,7 @@ ALLOWED_KINDS = frozenset(
         "warning",
         "user_confirm",
         "fallback_rung",
+        "cancelled",
     }
 )
 

@@ -1,13 +1,24 @@
-"""Orchestrator: the M1 read-only agent loop (plan → gate → dispatch → observe).
+"""Orchestrator: the agent loop (plan -> gate -> dispatch -> observe).
 
-Implements docs/phase2/01-ARCHITECTURE.md §3 at M1.3 scope: per iteration the
-planner produces ONE decision; the tier gate lets only ``read``-tier tools
-through (write/run become a structured refusal the planner can react to — the
-M2 approval flow replaces that refusal); the tool runs via
-``toolkit.dispatch``; the envelope lands in history and the loop continues
-until a terminal decision (``respond``/``ask_user``) or the K=6 iteration cap
-forces a deterministic completion. Every step is written to the session's
-trace JSONL (the M5 eval substrate).
+Implements docs/phase2/01-ARCHITECTURE.md §3. Per iteration the planner
+produces ONE decision; the tier gate lets ``read``-tier tools through
+unconditionally (unchanged since M1.3). A ``write``-tier decision is
+authorized by an injectable :class:`WriteGate` policy (M2.2) — the default
+:class:`RefuseAllWriteGate` preserves M1's "every write is refused, never
+dispatched" behavior byte-for-byte; a caller that supplies a permissive gate
+gets the M2.2 guardrail sandwich instead: :meth:`GuardrailEngine.preflight`
+before dispatch, the tool call via ``toolkit.dispatch``, then
+:meth:`GuardrailEngine.postwrite` after — a blocking postwrite report rolls
+the session's artifacts back and aborts the whole plan. ``run``-tier tools
+are unconditionally refused for now (M2.4 defines their own gating/postrun
+wiring). Non-write/run (read, or an unrecognized tool name) dispatches
+exactly as before M2.2 — the engine and gate are never consulted.
+
+The loop also carries a cooperative cancellation seam (M2.2, same loop):
+``should_cancel``, when given, is checked at the top of every iteration and
+ends the turn with a ``"cancelled"`` result instead of continuing.
+
+Every step is written to the session's trace JSONL (the M5 eval substrate).
 
 The active network is whatever ``tools_network.set_active_inpx`` points at —
 ``config.SIMULATION_INPX_PATH`` (the demo network) by default. Callers that
@@ -20,7 +31,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 # Importing the tool modules registers the M1.2 read tools onto
 # default_registry at decoration time (see toolkit.py's module docstring) —
@@ -28,9 +39,10 @@ from typing import Any, Callable
 # registry is populated.
 import services.agent.tools_metrics  # noqa: F401
 import services.agent.tools_network  # noqa: F401
+from services.agent.guardrails import GuardrailEngine, GuardrailReport
 from services.agent.planner import Planner, pick_language_text
-from services.agent.state import AgentState, StepRecord
-from services.agent.toolkit import ToolRegistry, default_registry, dispatch
+from services.agent.state import AgentState, ArtifactManager, StepRecord
+from services.agent.toolkit import ToolRegistry, ToolSpec, default_registry, dispatch
 from services.agent.trace import TraceWriter
 
 logger = logging.getLogger(__name__)
@@ -50,14 +62,37 @@ _STATUS_WORD = {
     "ja": {"ok": "成功", "error": "エラー"},
 }
 
+# M2.2: the turn ends immediately (loop aborted) when a write's postwrite
+# guardrail report is blocking — the change is already rolled back by the
+# time the user reads this, so the header says so rather than "will".
+_POSTWRITE_ABORT_HEADER = {
+    "ko": "쓰기 결과를 검증하는 과정에서 문제가 발견되어 방금 변경한 내용을 되돌렸습니다. 사유:",
+    "en": (
+        "A problem was found while verifying the write, so the change has been rolled "
+        "back. Reason:"
+    ),
+    "ja": "書き込み結果を検証する過程で問題が見つかったため、変更を元に戻しました。理由:",
+}
+
+# M2.2: the cooperative-cancellation seam's deterministic answer (no LLM
+# call — mirrors _forced_completion_answer's "assembled without any LLM
+# call" discipline so cancellation can never itself wedge or cost).
+_CANCELLED_ANSWER = {
+    "ko": "요청이 취소되어 중단했습니다.",
+    "en": "The request was cancelled and has been stopped.",
+    "ja": "リクエストがキャンセルされたため中断しました。",
+}
+
 
 @dataclass
 class AgentTurnResult:
     """One completed agent turn, ready for the M1.4 router/UI.
 
     ``kind`` is "answer" (a final answer, including the forced K-cap
-    completion) or "clarification" (``answer`` holds the question the user
-    must resolve). ``steps`` narrates the turn for the UI: one
+    completion and a postwrite-abort explanation), "clarification"
+    (``answer`` holds the question the user must resolve), or "cancelled"
+    (M2.2: ``should_cancel`` fired; ``answer`` is a short deterministic
+    notice). ``steps`` narrates the turn for the UI: one
     ``{summary, tool, status}`` dict per decision, terminals included.
     """
 
@@ -85,6 +120,115 @@ def _tier_refusal_envelope(tool_name: str, tier: str) -> dict[str, Any]:
         "verification": None,
         "data": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# M2.2: the injectable write-gate policy
+# ---------------------------------------------------------------------------
+
+
+class WriteGate(Protocol):
+    """Authorizes (or refuses) a write-tier decision before the M2.2
+    guardrail sandwich (preflight -> dispatch -> postwrite) runs.
+
+    ``action`` is the ``{"tool", "params"}`` shape ``constraints.py``/
+    ``guardrails.py`` consume; ``spec`` is the tool's registered
+    :class:`~services.agent.toolkit.ToolSpec` (tier/provider/params model),
+    for gates that want to condition on more than the tool name.
+    """
+
+    def authorize(self, action: dict[str, Any], spec: ToolSpec) -> bool:
+        """Return ``True`` to let this write-tier action proceed to
+        preflight this turn; ``False`` to refuse it via the same
+        structural ``tool_tier_forbidden`` envelope M1 always used."""
+        ...
+
+
+class RefuseAllWriteGate:
+    """The M1-preserving default: every write-tier decision is refused,
+    never dispatched. ``run_agent_turn``'s default when ``gate`` is not
+    given — pinned unchanged by
+    ``test_tier_gate_blocks_write_tool_and_planner_offers_only_read_tools``.
+    """
+
+    def authorize(self, action: dict[str, Any], spec: ToolSpec) -> bool:
+        del action, spec
+        return False
+
+
+# ---------------------------------------------------------------------------
+# M2.2: guardrail-report -> envelope/answer rendering
+# ---------------------------------------------------------------------------
+
+
+def _guardrail_refusal_envelope(report: GuardrailReport, language: str) -> dict[str, Any]:
+    """The structured refusal observation a blocking :class:`GuardrailReport`
+    produces — same 7-key shape as toolkit.dispatch envelopes, so the
+    planner (preflight case) or the history log (postwrite case) reads it
+    like any other tool failure.
+
+    ``error_type`` is the FIRST refuse-tier finding's constraint id (per the
+    M2.2 brief); ``suggested_fix`` is that same finding's suggested_fix
+    (candidates, ranges, ...); ``message`` joins every refuse-tier finding's
+    rendered text, in ``language``, so a postwrite report carrying BOTH a
+    readback mismatch and unrelated drift surfaces both, not just the first.
+    """
+    refusals = report.refusals()
+    if not refusals:
+        # Unreachable when report.blocking is True (blocking is defined as
+        # "any refuse-tier finding exists") -- defensive fallback so a
+        # future GuardrailReport construction bug degrades to a generic
+        # refusal instead of crashing the turn.
+        return {
+            "status": "error",
+            "error_type": "guardrail_blocked",
+            "message": "The guardrail engine blocked this action.",
+            "artifacts": None,
+            "suggested_fix": None,
+            "verification": None,
+            "data": {"findings": [f.constraint_id for f in report.findings]},
+        }
+    primary = refusals[0]
+    message = "; ".join(pick_language_text(finding.messages, language) for finding in refusals)
+    return {
+        "status": "error",
+        "error_type": primary.constraint_id,
+        "message": message,
+        "artifacts": None,
+        "suggested_fix": primary.suggested_fix,
+        "verification": None,
+        "data": {"findings": [f.constraint_id for f in report.findings]},
+    }
+
+
+def _attach_guardrail_warnings(
+    envelope: dict[str, Any], warn_findings: list[Any], language: str
+) -> dict[str, Any]:
+    """A copy of ``envelope`` carrying warn-tier guardrail findings as the
+    ``guardrail_warnings`` key, so they ride along in the observation the
+    planner sees on its next turn (docs/phase2/02-ROADMAP.md M2.2). Never
+    mutates the caller's envelope in place; appends to (rather than
+    replaces) any warnings already attached, so preflight- and
+    postwrite-sourced warnings both survive on the same envelope."""
+    enriched = dict(envelope)
+    accumulated = list(enriched.get("guardrail_warnings") or [])
+    accumulated.extend(
+        {"constraint_id": finding.constraint_id, "message": pick_language_text(finding.messages, language)}
+        for finding in warn_findings
+    )
+    enriched["guardrail_warnings"] = accumulated
+    return enriched
+
+
+def _postwrite_abort_answer(language: str, report: GuardrailReport) -> str:
+    """The deterministic answer when a blocking postwrite report aborts the
+    whole plan — assembled without any further LLM call, same discipline as
+    ``_forced_completion_answer``."""
+    header = pick_language_text(_POSTWRITE_ABORT_HEADER, language)
+    lines = [f"- {pick_language_text(finding.messages, language)}" for finding in report.refusals()]
+    if not lines:
+        return header
+    return header + "\n" + "\n".join(lines)
 
 
 def _forced_completion_answer(
@@ -135,6 +279,10 @@ def run_agent_turn(
     registry: ToolRegistry | None = None,
     max_iterations: int = 6,
     on_step: Callable[[dict[str, Any]], None] | None = None,
+    gate: WriteGate | None = None,
+    engine: GuardrailEngine | None = None,
+    artifact_manager: ArtifactManager | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> AgentTurnResult:
     """Run one full agent turn for ``message`` and return the result.
 
@@ -147,14 +295,52 @@ def run_agent_turn(
     ``{"summary", "tool", "status", "index"}`` — the M1.4 router bridges this
     to NDJSON ``step`` events. Default ``None`` keeps this function's
     behavior byte-for-byte identical to before M1.4.
+
+    M2.2 additions, all optional and all defaulting to M1-identical
+    behavior:
+
+    - ``gate``: a :class:`WriteGate` authorizing write-tier decisions.
+      Defaults to :class:`RefuseAllWriteGate` — every write is refused,
+      never dispatched, exactly as before M2.2. A permissive gate routes an
+      approved write through ``engine.preflight`` -> dispatch ->
+      ``engine.postwrite``; a blocking postwrite report rolls
+      ``artifact_manager`` back and aborts the whole turn. ``run``-tier
+      decisions are unconditionally refused regardless of ``gate`` (M2.4
+      defines their own gating).
+    - ``engine``: the :class:`~services.agent.guardrails.GuardrailEngine` run
+      for gate-approved writes. Defaults to a fresh ``GuardrailEngine()``
+      (env-var ablation-controlled). Never consulted for read tools or for
+      writes the gate itself refuses.
+    - ``artifact_manager``: the session's
+      :class:`~services.agent.state.ArtifactManager`, already ``clone()``-d
+      by the caller. Required (raises ``RuntimeError``) the first time
+      ``gate`` actually approves a write — supplying a permissive gate
+      without one is a caller configuration error, not a guardrail refusal.
+      Unused, and safe to omit, under the default refuse-all gate.
+    - ``should_cancel``: checked at the top of every iteration; when it
+      returns ``True`` the turn ends immediately with
+      ``AgentTurnResult(kind="cancelled", ...)`` and a trace record of kind
+      ``"cancelled"``. Default ``None`` never cancels.
     """
     target_registry = registry if registry is not None else default_registry
+    target_gate: WriteGate = gate if gate is not None else RefuseAllWriteGate()
+    target_engine = engine if engine is not None else GuardrailEngine()
     state = AgentState(goal=message, artifacts={}, history=[], context={"language": language})
     tracer = TraceWriter(work_dir, session_id)
     planner = Planner(provider, registry=target_registry)
     steps: list[dict[str, Any]] = []
 
     for iteration in range(max_iterations):
+        if should_cancel is not None and should_cancel():
+            tracer.write("cancelled", {"iteration": iteration})
+            return AgentTurnResult(
+                answer=pick_language_text(_CANCELLED_ANSWER, language),
+                kind="cancelled",
+                steps=steps,
+                trace_path=tracer.path,
+                state=state,
+            )
+
         decision = planner.next_action(state, language)
         if decision.meta.get("rule_fallback"):
             tracer.write("fallback_rung", {"iteration": iteration, **decision.meta})
@@ -194,10 +380,192 @@ def run_agent_turn(
             )
 
         spec = target_registry.get(decision.tool)
-        if spec is not None and spec.tier != "read":
-            # Tier gate: in M1 a write/run decision is refused, never
-            # dispatched. In M2 this branch becomes the propose→confirm→
-            # execute approval flow.
+
+        if spec is not None and spec.tier == "write":
+            action = {"tool": decision.tool, "params": decision.params}
+
+            if not target_gate.authorize(action, spec):
+                # Tier gate refused: unchanged M1 behavior, never dispatched.
+                envelope = _tier_refusal_envelope(decision.tool, spec.tier)
+                tracer.write(
+                    "refusal",
+                    {
+                        "iteration": iteration,
+                        "tool": decision.tool,
+                        "tier": spec.tier,
+                        "error_type": "tool_tier_forbidden",
+                        "message": envelope["message"],
+                    },
+                )
+            else:
+                if artifact_manager is None:
+                    raise RuntimeError(
+                        f"run_agent_turn: the write gate approved {decision.tool!r} but no "
+                        "artifact_manager was provided. A permissive gate requires an "
+                        "ArtifactManager (already clone()-d) to preflight/postwrite/roll back "
+                        "against."
+                    )
+
+                last_good_version = artifact_manager.version
+                before_model = artifact_manager.shadow_model or {}
+                preflight_report = target_engine.preflight(action, before_model)
+                tracer.write(
+                    "preflight",
+                    {
+                        "iteration": iteration,
+                        "tool": decision.tool,
+                        "blocking": preflight_report.blocking,
+                        "disabled": preflight_report.disabled,
+                        "findings": [f.constraint_id for f in preflight_report.findings],
+                    },
+                )
+
+                if preflight_report.blocking:
+                    # REFUSE tier: skip dispatch entirely, feed the planner a
+                    # structured refusal it can react to next iteration (the
+                    # loop continues -- this does NOT abort the plan).
+                    envelope = _guardrail_refusal_envelope(preflight_report, language)
+                    tracer.write(
+                        "refusal",
+                        {
+                            "iteration": iteration,
+                            "tool": decision.tool,
+                            "tier": spec.tier,
+                            "phase": "preflight",
+                            "error_type": envelope["error_type"],
+                            "message": envelope["message"],
+                        },
+                    )
+                else:
+                    preflight_warnings = preflight_report.warnings()
+                    if preflight_warnings:
+                        tracer.write(
+                            "warning",
+                            {
+                                "iteration": iteration,
+                                "tool": decision.tool,
+                                "phase": "preflight",
+                                "findings": [f.constraint_id for f in preflight_warnings],
+                                "messages": [
+                                    pick_language_text(f.messages, language)
+                                    for f in preflight_warnings
+                                ],
+                            },
+                        )
+
+                    tracer.write(
+                        "action_start",
+                        {
+                            "iteration": iteration,
+                            "tool": decision.tool,
+                            "params": decision.params,
+                        },
+                    )
+                    envelope = dispatch(decision.tool, decision.params, registry=target_registry)
+                    tracer.write(
+                        "action_end",
+                        {
+                            "iteration": iteration,
+                            "tool": decision.tool,
+                            "status": envelope["status"],
+                            "error_type": envelope["error_type"],
+                        },
+                    )
+
+                    if preflight_warnings:
+                        envelope = _attach_guardrail_warnings(
+                            envelope, preflight_warnings, language
+                        )
+
+                    if envelope["status"] == "ok":
+                        # The write landed at the toolkit-dispatch level --
+                        # snapshot + verify it actually did what it claims.
+                        artifact_manager.save_version()
+                        after_model = artifact_manager.shadow_model or {}
+                        com_result = envelope.get("verification") or {}
+                        postwrite_report = target_engine.postwrite(
+                            action, before_model, after_model, com_result
+                        )
+                        tracer.write(
+                            "postwrite",
+                            {
+                                "iteration": iteration,
+                                "tool": decision.tool,
+                                "blocking": postwrite_report.blocking,
+                                "disabled": postwrite_report.disabled,
+                                "findings": [
+                                    f.constraint_id for f in postwrite_report.findings
+                                ],
+                            },
+                        )
+
+                        if postwrite_report.blocking:
+                            # REFUSE tier, postwrite: unlike preflight, this
+                            # aborts the WHOLE plan -- roll back and stop.
+                            refusal_envelope = _guardrail_refusal_envelope(
+                                postwrite_report, language
+                            )
+                            tracer.write(
+                                "refusal",
+                                {
+                                    "iteration": iteration,
+                                    "tool": decision.tool,
+                                    "tier": spec.tier,
+                                    "phase": "postwrite",
+                                    "error_type": refusal_envelope["error_type"],
+                                    "message": refusal_envelope["message"],
+                                },
+                            )
+                            artifact_manager.rollback_to(last_good_version)
+                            state.history.append(
+                                StepRecord(
+                                    thought=decision.summary,
+                                    action=decision.tool,
+                                    params=decision.params,
+                                    observation=refusal_envelope,
+                                )
+                            )
+                            _emit_step(
+                                steps,
+                                {
+                                    "summary": decision.summary,
+                                    "tool": decision.tool,
+                                    "status": refusal_envelope["status"],
+                                },
+                                on_step,
+                            )
+                            return AgentTurnResult(
+                                answer=_postwrite_abort_answer(language, postwrite_report),
+                                kind="answer",
+                                steps=steps,
+                                trace_path=tracer.path,
+                                state=state,
+                            )
+
+                        postwrite_warnings = postwrite_report.warnings()
+                        if postwrite_warnings:
+                            tracer.write(
+                                "warning",
+                                {
+                                    "iteration": iteration,
+                                    "tool": decision.tool,
+                                    "phase": "postwrite",
+                                    "findings": [
+                                        f.constraint_id for f in postwrite_warnings
+                                    ],
+                                    "messages": [
+                                        pick_language_text(f.messages, language)
+                                        for f in postwrite_warnings
+                                    ],
+                                },
+                            )
+                            envelope = _attach_guardrail_warnings(
+                                envelope, postwrite_warnings, language
+                            )
+        elif spec is not None and spec.tier != "read":
+            # "run" tier (or any future non-read, non-write tier): M2.4
+            # defines its own gating/postrun wiring. Unconditionally
+            # refused for now, same as every non-read tool was under M1.
             envelope = _tier_refusal_envelope(decision.tool, spec.tier)
             tracer.write(
                 "refusal",
@@ -210,7 +578,8 @@ def run_agent_turn(
                 },
             )
         else:
-            # M2.2 seam: guardrails.preflight(action) goes here (REFUSE/WARN/PASS).
+            # Read-tier tool, or an unrecognized tool name: unchanged M1
+            # behavior -- the gate and engine are never consulted.
             tracer.write(
                 "action_start",
                 {"iteration": iteration, "tool": decision.tool, "params": decision.params},
@@ -225,7 +594,6 @@ def run_agent_turn(
                     "error_type": envelope["error_type"],
                 },
             )
-            # M2.2 seam: guardrails.postwrite(action) read-back/diff goes here.
 
         state.history.append(
             StepRecord(
