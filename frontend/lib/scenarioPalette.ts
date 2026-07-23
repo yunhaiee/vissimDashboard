@@ -3,10 +3,10 @@ import type { ScenarioMeta } from "@/lib/api";
 // 10 vivid hues in the spirit of the Claude Console graphing palette
 // (blue/coral/green/violet/amber/cyan/pink/sky/orange/gray), saturated for
 // the dark theme so scenario keys read as distinct, confident colors rather
-// than the previous washed-out set. Deliberately NOT reusing any hex from the
-// (muted) DIRECTION_COLORS or INTERSECTION_COLORS in app/dashboard/page.tsx —
-// those render on the same screens and must stay distinguishable, which the
-// vividness gap now reinforces.
+// than the previous washed-out set. The direction palette (DIRECTION_COLORS in
+// app/dashboard/page.tsx) was moved to a different hue family (amber/teal/
+// magenta/bronze) and the intersection metric bars to a single neutral steel,
+// so nothing that renders on the same screen can be mistaken for a scenario key.
 const SCENARIO_PALETTE = [
   "#4c8dff",
   "#f2704d",

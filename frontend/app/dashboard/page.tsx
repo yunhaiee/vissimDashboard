@@ -86,13 +86,20 @@ const DIRECTION_LABELS: Record<DirectionKey, { ko: string; en: string; shortKo: 
 };
 
 const DIRECTION_ORDER: DirectionKey[] = ["north", "east", "south", "west"];
+// Direction hues are deliberately a DIFFERENT family from the vivid scenario
+// palette (blue/coral/green/violet in scenarioPalette.ts): amber/teal/magenta/
+// bronze, so a volume segment can never be mistaken for a scenario key on the
+// same screen. They also stay clear of the LOS green→red scale.
 const DIRECTION_COLORS: Record<DirectionKey, string> = {
-  north: "#6da7ec",
-  east: "#9cc8a4",
-  south: "#d97757",
-  west: "#93a0de",
+  north: "#e0a73c",
+  east: "#17a89e",
+  south: "#d45ca0",
+  west: "#b0763a",
 };
-const INTERSECTION_COLORS = ["#6da7ec", "#9cc8a4", "#d97757", "#93a0de", "#b5b3ab", "#4a83c2"];
+// The two intersection metric-bar charts identify each row by its NAME label,
+// so the bar itself only needs to encode magnitude — a single neutral steel
+// keeps it from echoing either the scenario or the direction palettes.
+const METRIC_BAR_COLOR = "#7f8ba0";
 const LOS_COLORS: Record<LosGrade, string> = {
   A: "#22c55e",
   B: "#a3d977",
@@ -943,16 +950,15 @@ function IntersectionMetricBars({
       </div>
 
       <div className="mt-4 space-y-3">
-        {values.map((item, index) => {
+        {values.map((item) => {
           const width = item.value != null ? Math.max(7, (item.value / maxValue) * 100) : 0;
-          const color = INTERSECTION_COLORS[index % INTERSECTION_COLORS.length];
 
           return (
             <div key={item.nodeId} className="grid grid-cols-[7.2rem_1fr_4.8rem] items-center gap-3">
               <span className="truncate text-[11px] font-semibold text-slate-700">{item.nodeName}</span>
               <span className="h-3 overflow-hidden bg-white/[0.05]">
                 {item.value != null && (
-                  <span className="block h-full" style={{ width: `${width}%`, backgroundColor: color }} />
+                  <span className="block h-full" style={{ width: `${width}%`, backgroundColor: METRIC_BAR_COLOR }} />
                 )}
               </span>
               <span className="text-right text-[11px] font-bold tabular-nums text-slate-900">
@@ -1087,11 +1093,17 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
         </p>
       )}
 
-      <div className="mt-3 flex flex-wrap gap-1.5 text-[10px] text-slate-500">
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+          {t("방향", "Direction")}
+        </span>
         {DIRECTION_ORDER.map((direction) => (
-          <span key={direction} className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: DIRECTION_COLORS[direction] }} />
-            {t(DIRECTION_LABELS[direction].shortKo, DIRECTION_LABELS[direction].shortEn)}
+          <span
+            key={direction}
+            className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] px-2 py-1 text-[11px] font-medium text-slate-700"
+          >
+            <span className="h-3 w-3 rounded-sm" style={{ backgroundColor: DIRECTION_COLORS[direction] }} />
+            {t(DIRECTION_LABELS[direction].ko, DIRECTION_LABELS[direction].en)}
           </span>
         ))}
       </div>
