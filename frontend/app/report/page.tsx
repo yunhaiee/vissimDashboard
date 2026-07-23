@@ -133,9 +133,9 @@ export default function ReportPage() {
 
   const field = (key: keyof ReportMeta, label: string, placeholder?: string) => (
     <label className="block">
-      <span className="mb-1 block text-xs font-semibold text-slate-600">{label}</span>
+      <span className="mb-1 block text-xs font-medium text-slate-500">{label}</span>
       <input
-        className="w-full rounded-lg border border-slate-300 bg-surface px-3 py-2 text-sm"
+        className="w-full rounded-lg border border-slate-200 bg-ink/40 px-3 py-2 text-sm"
         value={meta[key] ?? ""}
         placeholder={placeholder}
         onChange={(e) => setMeta((m) => ({ ...m, [key]: e.target.value }))}
@@ -167,8 +167,8 @@ export default function ReportPage() {
       )}
 
       {/* meta */}
-      <section className="rounded-xl border border-slate-200 bg-surface/90 p-5 shadow-sm">
-        <h2 className="mb-3 text-sm font-bold text-slate-800">{t("표지 정보", "Cover info", "表紙情報")}</h2>
+      <section className="rounded-xl border border-slate-200 p-5">
+        <h2 className="mb-3 text-sm font-semibold text-white">{t("표지 정보", "Cover info", "表紙情報")}</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           {field("title", t("제목", "Title", "タイトル"), t("예: Murdoch Drive 모델 검증 보고서", "e.g. Murdoch Drive validation report"))}
           {field("subtitle", t("부제", "Subtitle", "サブタイトル"))}
@@ -178,9 +178,9 @@ export default function ReportPage() {
           {field("reviewer", t("검토자(Review)", "Reviewer", "レビュー"))}
           {field("date", t("작성일", "Date", "作成日"), "2026-06-05")}
           <label className="block">
-            <span className="mb-1 block text-xs font-semibold text-slate-600">{t("파일명", "File name", "ファイル名")}</span>
+            <span className="mb-1 block text-xs font-medium text-slate-500">{t("파일명", "File name", "ファイル名")}</span>
             <input
-              className="w-full rounded-lg border border-slate-300 bg-surface px-3 py-2 text-sm"
+              className="w-full rounded-lg border border-slate-200 bg-ink/40 px-3 py-2 text-sm"
               value={filename}
               onChange={(e) => setFilename(e.target.value)}
             />
@@ -189,8 +189,8 @@ export default function ReportPage() {
       </section>
 
       {/* palette */}
-      <section className="rounded-xl border border-slate-200 bg-surface/90 p-5 shadow-sm">
-        <h2 className="mb-3 text-sm font-bold text-slate-800">{t("섹션 추가", "Add section", "セクション追加")}</h2>
+      <section className="rounded-xl border border-slate-200 p-5">
+        <h2 className="mb-3 text-sm font-semibold text-white">{t("섹션 추가", "Add section", "セクション追加")}</h2>
         <div className="flex flex-wrap gap-2">
           {PALETTE.map((p) => (
             <button
@@ -198,7 +198,7 @@ export default function ReportPage() {
               type="button"
               onClick={() => addBlock(p.type)}
               title={p.desc[L]}
-              className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
+              className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-200 hover:text-white"
             >
               + {p.label[L]}
             </button>
@@ -207,37 +207,37 @@ export default function ReportPage() {
       </section>
 
       {/* block list */}
-      <section className="rounded-xl border border-slate-200 bg-surface/90 p-5 shadow-sm">
-        <h2 className="mb-3 text-sm font-bold text-slate-800">
+      <section className="rounded-xl border border-slate-200 p-5">
+        <h2 className="mb-3 text-sm font-semibold text-white">
           {t("보고서 구성", "Report outline", "レポート構成")} ({blocks.length})
         </h2>
         {blocks.length === 0 ? (
           <p className="text-sm text-slate-500">{t("위 버튼으로 섹션을 추가하세요.", "Add sections with the buttons above.", "上のボタンでセクションを追加してください。")}</p>
         ) : (
-          <ol className="space-y-2">
+          <ol className="divide-y divide-slate-200">
             {blocks.map((b, i) => (
-              <li key={b.id} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+              <li key={b.id} className="py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
-                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-200 text-[11px] font-bold text-slate-600">{i + 1}</span>
-                    <span className="text-sm font-semibold text-slate-800">{labelFor(b.type)}</span>
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-[11px] font-semibold text-slate-500">{i + 1}</span>
+                    <span className="text-sm font-medium text-slate-900">{labelFor(b.type)}</span>
                   </div>
                   <div className="flex items-center gap-1">
-                    <button type="button" onClick={() => move(b.id, -1)} disabled={i === 0} className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-40">↑</button>
-                    <button type="button" onClick={() => move(b.id, 1)} disabled={i === blocks.length - 1} className="rounded border border-slate-300 px-2 py-1 text-xs disabled:opacity-40">↓</button>
-                    <button type="button" onClick={() => removeBlock(b.id)} className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-600 hover:bg-rose-50">✕</button>
+                    <button type="button" onClick={() => move(b.id, -1)} disabled={i === 0} className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 transition hover:border-slate-300 hover:text-white disabled:opacity-40">↑</button>
+                    <button type="button" onClick={() => move(b.id, 1)} disabled={i === blocks.length - 1} className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 transition hover:border-slate-300 hover:text-white disabled:opacity-40">↓</button>
+                    <button type="button" onClick={() => removeBlock(b.id)} className="rounded-md border border-slate-200 px-2 py-1 text-xs text-rose-600 transition hover:border-rose-300">✕</button>
                   </div>
                 </div>
                 {b.type === "text" && (
                   <div className="mt-2 grid gap-2">
                     <input
-                      className="w-full rounded-lg border border-slate-300 bg-surface px-3 py-2 text-sm"
+                      className="w-full rounded-lg border border-slate-200 bg-ink/40 px-3 py-2 text-sm"
                       placeholder={t("소제목", "Heading", "見出し")}
                       value={b.heading ?? ""}
                       onChange={(e) => patch(b.id, { heading: e.target.value })}
                     />
                     <textarea
-                      className="min-h-[90px] w-full rounded-lg border border-slate-300 bg-surface px-3 py-2 text-sm"
+                      className="min-h-[90px] w-full rounded-lg border border-slate-200 bg-ink/40 px-3 py-2 text-sm"
                       placeholder={t("본문 (줄바꿈은 새 단락)", "Body (newlines become paragraphs)", "本文 (改行で段落)")}
                       value={b.body ?? ""}
                       onChange={(e) => patch(b.id, { body: e.target.value })}
@@ -257,7 +257,7 @@ export default function ReportPage() {
           type="button"
           onClick={generate}
           disabled={busy || blocks.length === 0}
-          className="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-400 disabled:cursor-wait disabled:opacity-60"
+          className="rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-semibold text-ink transition hover:bg-slate-950 disabled:cursor-wait disabled:opacity-50"
         >
           {busy ? t("생성 중…", "Generating…", "生成中…") : t("Word 생성", "Generate Word", "Word生成")}
         </button>
