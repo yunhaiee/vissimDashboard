@@ -426,23 +426,15 @@ export default function DashboardPage() {
     <div className="space-y-6 pb-16">
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex min-w-0 flex-1 flex-col gap-4">
-            <div>
-              <h1 className="text-[22px] font-medium tracking-tight text-white">
-                {t("교통 운영 분석", "Traffic Operations Analysis")}
-              </h1>
-              <p className="text-sm text-slate-600">
-                {t("시나리오와 교차로 성능을 지도, 통행시간, 네트워크 지표로 함께 확인합니다.", "Review scenario and intersection performance through the map, travel time, and network metrics.")}
-              </p>
-            </div>
-            {hasUploadedDataset ? (
-              <DashboardScenarioPicker scenarios={scenarios} selected={selected} onChange={setSelected} />
-            ) : (
-              <DashboardDatasetGate />
-            )}
+          <div>
+            <h1 className="text-[22px] font-semibold tracking-tight text-white">
+              {t("교통 운영 분석", "Traffic Operations Analysis")}
+            </h1>
+            <p className="text-sm text-slate-600">
+              {t("시나리오와 교차로 성능을 지도, 통행시간, 네트워크 지표로 함께 확인합니다.", "Review scenario and intersection performance through the map, travel time, and network metrics.")}
+            </p>
           </div>
-          <div className="flex flex-col items-end gap-3">
-            <div className="flex min-h-[34px] items-center">
+          <div className="flex min-h-[34px] items-center">
               {(datasetLoading || loading) && (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-600">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
@@ -461,9 +453,15 @@ export default function DashboardPage() {
                   {activeScenarios.filter((scenario) => results[scenario.id]).length}/{activeScenarios.length} {t("시나리오 준비됨", "scenarios ready")}
                 </span>
               )}
-            </div>
-            <VissimDatasetBanner onDatasetChange={handleDatasetChange} />
           </div>
+        </div>
+        <div className="mt-4 grid gap-3 lg:grid-cols-[1.6fr_1fr]">
+          {hasUploadedDataset ? (
+            <DashboardScenarioPicker scenarios={scenarios} selected={selected} onChange={setSelected} />
+          ) : (
+            <DashboardDatasetGate />
+          )}
+          <VissimDatasetBanner onDatasetChange={handleDatasetChange} fullWidth className="h-full" />
         </div>
       </section>
 
@@ -737,7 +735,7 @@ function DashboardDatasetGate() {
   const { t } = useLanguage();
 
   return (
-    <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 px-4 py-3">
+    <div className="flex h-full items-center rounded-xl border border-dashed border-amber-300 bg-amber-50 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-xs font-semibold text-amber-700">

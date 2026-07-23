@@ -155,7 +155,7 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
           handleFileSelected(event.target.files?.[0]);
         }}
       />
-      <p className="text-sm font-medium text-slate-600">{t("모델 선택", "Model")}</p>
+      <p className="text-sm font-semibold text-slate-600">{t("모델 선택", "Model")}</p>
       <p className="mt-1 truncate text-xs leading-relaxed text-slate-500">
         {activeDataset
           ? activeDataset.source === "uploaded"

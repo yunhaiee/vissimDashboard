@@ -146,7 +146,7 @@ export default function ReportPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-6 px-4 py-6">
       <div>
-        <h1 className="text-[22px] font-medium text-white">{t("보고서 작성", "Report Builder", "レポート作成")}</h1>
+        <h1 className="text-[22px] font-semibold text-white">{t("보고서 작성", "Report Builder", "レポート作成")}</h1>
         <p className="mt-1 text-sm text-slate-600">
           {t(
             "섹션을 추가·정렬하고 'Word 생성'을 누르면 현재 데이터셋 기준 보고서(.docx)가 만들어집니다.",

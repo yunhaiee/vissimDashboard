@@ -224,7 +224,7 @@ export default function DownloadsPage() {
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
       <header className="mb-6">
-        <h1 className="text-[22px] font-medium tracking-tight text-white">
+        <h1 className="text-[22px] font-semibold tracking-tight text-white">
           {t("데이터 다운로드", "Data Downloads")}
         </h1>
         <p className="mt-1 text-sm text-slate-600">

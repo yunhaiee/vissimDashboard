@@ -506,7 +506,7 @@ export default function BaseModelPage() {
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-[22px] font-medium tracking-tight text-white">
+            <h1 className="text-[22px] font-semibold tracking-tight text-white">
               {t("베이스모델 검증", "Base Model Validation")}
             </h1>
             <p className="mt-1 text-sm text-slate-600">
@@ -534,7 +534,7 @@ export default function BaseModelPage() {
           <div className="grid gap-3 sm:grid-cols-2">
             <VissimDatasetBanner onDatasetChange={handleDatasetChange} fullWidth className="h-full" />
             <div className="h-full rounded-xl border border-slate-200 p-5">
-              <p className="text-sm font-medium text-slate-600">{t("실측데이터(엑셀)", "Observed Data (Excel)")}</p>
+              <p className="text-sm font-semibold text-slate-600">{t("실측데이터(엑셀)", "Observed Data (Excel)")}</p>
               <p className="mt-1 truncate text-xs leading-relaxed text-slate-500">
                 {workbook.exists
                   ? workbook.filename
@@ -597,7 +597,7 @@ export default function BaseModelPage() {
             </div>
           </div>
           <div className="h-full rounded-xl border border-slate-200 p-5">
-            <p className="text-sm font-medium text-slate-600">{t("분석 설정", "Analysis Setup")}</p>
+            <p className="text-sm font-semibold text-slate-600">{t("분석 설정", "Analysis Setup")}</p>
             <div className="mt-4 grid gap-3">
             <ControlField label={t("BaseAM Model", "BaseAM Model")}>
               <select className="ui-select" value={amScenarioId} onChange={(event) => setAmScenarioId(event.target.value)} disabled={scenarios.length === 0}>
