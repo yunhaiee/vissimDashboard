@@ -164,7 +164,11 @@ def _run_simulation(job_id: str, params: SimParams):
 
         _update_job(job_id, status="running", progress=0.0)
         ctrl = VissimController()
-        ctrl.connect(visible=False)
+        # attach_to_running=False is a hard safety rule for automation: the default
+        # (GetActiveObject) can attach to a human's open Vissim GUI, and loading a
+        # network into it would destroy their unsaved work. Jobs always get their
+        # own instance. See docs/phase2/00-EXECUTION-GUIDE.md §1 rule 3.
+        ctrl.connect(visible=False, attach_to_running=False)
 
         source_inpx = _simulation_source_inpx()
         if not source_inpx.exists():
