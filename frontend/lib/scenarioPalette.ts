@@ -32,11 +32,24 @@ export function getScenarioDisplayColor(
   scenario: Pick<ScenarioMeta, "id">,
   fallbackIndex = 0,
 ): string {
-  // Prefer the render-position index over an id-derived hash: it reflects
-  // which scenarios are actually shown together on THIS screen, so two
-  // scenarios visible at the same time can never collide just because their
-  // ids happen to differ by a multiple of the palette length (e.g. S000001
-  // and S000008 previously landed on the exact same color).
+  // Prefer an explicit index over an id-derived hash: it reflects a stable
+  // rendering order instead of colliding just because two ids happen to
+  // differ by a multiple of the palette length (e.g. S000001 and S000008
+  // previously landed on the exact same color).
+  //
+  // IMPORTANT: `fallbackIndex` must be the scenario's position in the FULL
+  // scenario list (the same order the scenario-picker legend renders), NOT
+  // the position within whatever subset is currently selected/visible. This
+  // function has no way to tell the difference, so it trusts the caller —
+  // indexing by a filtered/selected array's position previously made a
+  // scenario's color depend on which OTHER scenarios happened to be
+  // selected alongside it (e.g. the 3rd scenario in the full list rendered
+  // palette[0]/blue instead of its legend color the moment it was the only
+  // one selected). Callers that only have a selected/filtered subset must
+  // resolve each item's full-list index (or a pre-resolved color) before
+  // calling this — typically via a memoized id->index or id->color map built
+  // from the full scenario list — and pass that down through their own
+  // props/items rather than the subset's own map/filter index.
   if (Number.isInteger(fallbackIndex) && fallbackIndex >= 0) {
     return SCENARIO_PALETTE[fallbackIndex % SCENARIO_PALETTE.length];
   }

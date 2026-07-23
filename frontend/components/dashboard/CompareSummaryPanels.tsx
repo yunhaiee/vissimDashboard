@@ -75,7 +75,10 @@ export function ScenarioRankingPanel({
       {ordered.map((item, index) => {
         const meta = getScenarioMeta(scenarios, item.scenario_id);
         const label = item.scenario_name ?? meta?.name ?? item.scenario_id;
-        const color = item.color ?? (meta ? getScenarioDisplayColor(meta, index) : "#4a83c2");
+        // Index by position in the FULL `scenarios` list, not `index` (the
+        // ranking's own order/length) -- otherwise a scenario's color here
+        // could disagree with the picker legend depending on ranking order.
+        const color = item.color ?? (meta ? getScenarioDisplayColor(meta, scenarios.indexOf(meta)) : "#4a83c2");
         const scoreLabel =
           item.score_label ?? (item.score != null ? `${item.score.toFixed(1)} pts` : "No score");
         const rank = item.rank ?? index + 1;
@@ -121,7 +124,10 @@ export function KeyInsightsPanel({
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {scenario ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: getScenarioDisplayColor(scenario) }} />
+                  {/* Full-list index, not the no-argument default (which always
+                      resolved to palette[0]/blue regardless of which scenario
+                      this insight was about). */}
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: getScenarioDisplayColor(scenario, scenarios.indexOf(scenario)) }} />
                   {scenario.name}
                 </span>
               ) : null}

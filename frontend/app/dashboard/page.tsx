@@ -65,6 +65,10 @@ type IntersectionPerformanceCard = {
 
 type TravelTimeSeries = {
   scenario: ScenarioMeta;
+  // Resolved once, from the scenario's position in the FULL scenario list
+  // (see scenarioColorById below) -- NOT recomputed from this series array's
+  // own position, which only reflects the currently-selected subset.
+  color: string;
   points: Array<{ label: string; value: number | null }>;
 };
 type TravelTimeChart = {
@@ -118,6 +122,17 @@ const LOS_GRADE_THRESHOLDS: Array<{ grade: LosGrade; label: string }> = [
   { grade: "E", label: "≤80s" },
   { grade: "F", label: ">80s" },
 ];
+
+// Every chart on this page must color a scenario the SAME way the picker
+// legend does, regardless of which other scenarios are currently selected
+// alongside it. scenarioColorById (built once from the FULL scenario list,
+// see DashboardPage) is the single source of truth; this just reads it with
+// a defensive fallback for a scenario id it doesn't recognize (shouldn't
+// happen in practice since every scenario shown anywhere on this page comes
+// from that same full list).
+function resolveScenarioColor(colorById: Map<string, string>, scenario: Pick<ScenarioMeta, "id">): string {
+  return colorById.get(scenario.id) ?? getScenarioDisplayColor(scenario, -1);
+}
 
 export default function DashboardPage() {
   const { t, lang } = useLanguage();
@@ -319,6 +334,20 @@ export default function DashboardPage() {
     [scenarios, selected],
   );
 
+  // id -> display color, keyed off each scenario's position in the FULL
+  // `scenarios` list (the same order DashboardScenarioPicker renders) so a
+  // scenario's color is stable no matter which subset ends up selected. Every
+  // chart below must resolve colors through this map (via resolveScenarioColor)
+  // instead of indexing into `activeScenarios`/`selected`, which only reflects
+  // the current selection's order and length.
+  const scenarioColorById = useMemo(() => {
+    const map = new Map<string, string>();
+    scenarios.forEach((scenario, index) => {
+      map.set(scenario.id, getScenarioDisplayColor(scenario, index));
+    });
+    return map;
+  }, [scenarios]);
+
   const hasData = useMemo(
     () => activeScenarios.some((scenario) => results[scenario.id]),
     [activeScenarios, results],
@@ -347,8 +376,8 @@ export default function DashboardPage() {
   );
 
   const travelTimeSeries = useMemo(
-    () => buildTravelTimeSeries(activeScenarios, results),
-    [activeScenarios, results],
+    () => buildTravelTimeSeries(activeScenarios, results, scenarioColorById),
+    [activeScenarios, results, scenarioColorById],
   );
 
   const overallNarrative = useMemo(
@@ -591,6 +620,7 @@ export default function DashboardPage() {
                   scenario,
                   value: results[scenario.id]?.network?.[metric.key] ?? null,
                   stdev: toFiniteNumber(results[scenario.id]?.network?.[`${metric.key}_STDEV`]),
+                  color: resolveScenarioColor(scenarioColorById, scenario),
                 }))}
               />
             ))}
@@ -652,6 +682,7 @@ export default function DashboardPage() {
           <ValidationMatrix
             realCounts={realCounts}
             scenarios={activeScenarios}
+            scenarioColorById={scenarioColorById}
             summary={summary}
             onNodeClick={handleNodeClick}
             selectedNodeId={activeNodeId}
@@ -1217,8 +1248,8 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
             ) : null,
           )}
 
-          {populated.map((item, seriesIndex) => {
-            const color = getScenarioDisplayColor(item.scenario, seriesIndex);
+          {populated.map((item) => {
+            const color = item.color;
             const segments = buildSegments(item.points);
             return (
               <g key={item.scenario.id}>
@@ -1262,9 +1293,9 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
-        {populated.map((item, index) => (
+        {populated.map((item) => (
           <span key={item.scenario.id} className="inline-flex items-center gap-1.5 rounded-full bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: getScenarioDisplayColor(item.scenario, index) }} />
+            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
             {item.scenario.name}
           </span>
         ))}
@@ -1512,7 +1543,10 @@ function KpiCard({
   /** "전문가" mode: show ±stdev, noise caveats, and range/diff detail rows.
    * "쉬운 설명" keeps the same numbers but drops the statistical fine print. */
   showTechnicalDetail: boolean;
-  values: { scenario: ScenarioMeta; value: number | null; stdev: number | null }[];
+  /** Resolved via resolveScenarioColor(scenarioColorById, scenario) by the
+   * caller -- always the scenario's full-list color, never derived from this
+   * array's own position (that position only reflects the current selection). */
+  values: { scenario: ScenarioMeta; value: number | null; stdev: number | null; color: string }[];
 }) {
   const { t } = useLanguage();
   const present = values.filter((item) => item.value != null);
@@ -1542,9 +1576,8 @@ function KpiCard({
       </div>
       <div className="overflow-x-auto pb-1">
         <div className="flex min-w-max items-end gap-3">
-        {values.map(({ scenario, value, stdev }, index) => {
+        {values.map(({ scenario, value, stdev, color: scenarioColor }) => {
           if (value == null) return null;
-          const scenarioColor = getScenarioDisplayColor(scenario, index);
 
           const pct = maxVal > 0 ? (value / maxVal) * 100 : 100;
 
@@ -1770,12 +1803,17 @@ function combinedValidationTone(pct: number | null, geh: number | null): Validat
 function ValidationMatrix({
   realCounts,
   scenarios,
+  scenarioColorById,
   summary,
   onNodeClick,
   selectedNodeId,
 }: {
   realCounts: NodeRealCounts[];
   scenarios: ScenarioMeta[];
+  /** Full-list id->color map (see DashboardPage) -- `scenarios` here is only
+   * the currently-selected subset, so its own map() position must never be
+   * used to pick a color. */
+  scenarioColorById: Map<string, string>;
   summary: CompareSummaryResponse | null;
   onNodeClick: (nodeId: string, nodeName: string) => void;
   selectedNodeId: string | null;
@@ -1799,12 +1837,12 @@ function ValidationMatrix({
             <tr className="border-b border-slate-100 bg-slate-50">
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600">{t("교차로", "Node")}</th>
               <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600">{t("관측", "Observed")}</th>
-              {scenarios.map((scenario, index) => (
+              {scenarios.map((scenario) => (
                 <th key={scenario.id} className="px-4 py-3 text-center text-xs font-semibold text-slate-600">
                   <span className="flex items-center justify-center gap-1.5">
                     <span
                       className="inline-block h-2 w-2 rounded-full"
-                      style={{ backgroundColor: getScenarioDisplayColor(scenario, index) }}
+                      style={{ backgroundColor: resolveScenarioColor(scenarioColorById, scenario) }}
                     />
                     {scenario.name}
                   </span>
@@ -2130,6 +2168,7 @@ const TRAVEL_TIME_MAX_POINTS = 18;
 function buildTravelTimeSeries(
   scenarios: ScenarioMeta[],
   results: Record<string, ScenarioResults>,
+  scenarioColorById: Map<string, string>,
 ): TravelTimeChart {
   // The grouping mode (per-section vs per-interval) is decided ONCE from the
   // union of all scenarios' rows, not independently per scenario — otherwise
@@ -2189,6 +2228,7 @@ function buildTravelTimeSeries(
 
   const series = perScenario.map(({ scenario, grouped }) => ({
     scenario,
+    color: resolveScenarioColor(scenarioColorById, scenario),
     points: labels.map((label) => {
       const aggregate = grouped.get(label);
       return { label, value: aggregate ? roundChartValue(aggregate.sum / aggregate.count) : null };

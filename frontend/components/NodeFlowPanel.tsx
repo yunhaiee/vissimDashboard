@@ -109,10 +109,13 @@ export default function NodeFlowPanel({ nodeId, nodeName, scenarios, selected, r
       </div>
 
       <div className="flex flex-wrap gap-1.5">
-        {selected.map((id, index) => {
+        {selected.map((id) => {
           const scenario = scenarios.find((item) => item.id === id);
           if (!scenario) return null;
-          const scenarioColor = getScenarioDisplayColor(scenario, index);
+          // Index into the FULL `scenarios` list (matching the picker legend),
+          // not the position within `selected` -- that position shifts
+          // depending on which OTHER scenarios happen to be selected too.
+          const scenarioColor = getScenarioDisplayColor(scenario, scenarios.indexOf(scenario));
 
           const active = id === activeId;
           return (
@@ -136,8 +139,11 @@ export default function NodeFlowPanel({ nodeId, nodeName, scenarios, selected, r
         <>
           <DetailedCompass
             color={
+              // Same full-list indexing as the scenario chips above --
+              // selected.findIndex() here previously colored this compass by
+              // the scenario's position among the SELECTED scenarios only.
               activeScenario
-                ? getScenarioDisplayColor(activeScenario, selected.findIndex((id) => id === activeScenario.id))
+                ? getScenarioDisplayColor(activeScenario, scenarios.indexOf(activeScenario))
                 : "#4a83c2"
             }
             nodeName={nodeName}
@@ -250,10 +256,12 @@ function SignalPhasePanelContent({
         <p className="text-sm font-semibold tracking-tight text-slate-900">{t("신호 현시", "Signal Phase")}</p>
         {showScenarioSelector && (
           <div className="flex flex-wrap justify-end gap-1.5">
-            {selected.map((id, index) => {
+            {selected.map((id) => {
               const scenario = scenarios.find((item) => item.id === id);
               if (!scenario) return null;
-              const scenarioColor = getScenarioDisplayColor(scenario, index);
+              // Full-list index again (see the scenario chips above) so this
+              // selector's dots match the picker legend regardless of selection.
+              const scenarioColor = getScenarioDisplayColor(scenario, scenarios.indexOf(scenario));
               const active = id === activeId;
               return (
                 <button
