@@ -402,3 +402,98 @@ controllers per the M2.1 finding — refusing there would be a false positive, n
 **Consequence:** M2.3's write tools MUST call `save_net_as` onto the working copy before
 returning, or every mapped write is refused post-hoc and rolled back — the contract is now
 enforced, not documented.
+
+---
+
+## 2026-07-23 — M2.3: `VissimEditSession` runs COM on the agent turn's worker thread, not the job queue
+
+**Context:** 00-EXECUTION-GUIDE rule 6 says "all COM work goes through the job queue, never a
+request handler." A write turn needs synchronous, low-latency COM interleaved with planning
+inside one conversational stream — the async job queue's poll-for-completion shape would break
+the propose → approve → verified-answer-in-one-stream UX the roadmap specifies.
+
+**Decision:** `VissimEditSession` runs on the turn's dedicated worker thread (the existing
+per-stream `threading.Thread`, unchanged since M1.4) with its own `CoInitialize`/instance/
+`CoUninitialize` lifecycle and `attach_to_running=False`. The rule's intent — never COM on the
+ASGI event-loop/request-handler path — is honored: COM never touches async code. A
+`Semaphore(2)` caps concurrent edit sessions (Vissim ~4 instances/machine; runs need slots).
+
+**Consequence:** M2.4 RUNS stay on the simulation job queue — long-running work still gets
+queue semantics; this exception is for short parameter edits only.
+
+---
+
+## 2026-07-23 — M2.3: `set_desired_speed_area` deferred
+
+**Context:** the roadmap's M2.3 verb list includes it (an XML-injection path, not a COM
+setter). Controller decision: XML injection has different failure modes than COM SetAttValue
+and deserves its own verification pass; the milestone acceptance doesn't need it.
+
+**Decision:** not implemented; `tools_edit.py` ships the 5 COM verbs. `v1_system.md`'s
+lane-closure refusal text explicitly notes reduced-speed areas are *not yet* agent-editable
+rather than implying availability.
+
+---
+
+## 2026-07-23 — M2.3 live finding, fixed in controller review: the nothing-else-moved diff needed float tolerance
+
+**Context:** live end-to-end verification (`tools/edit_tool_live_check.py`) showed every real
+write refused with `write_verification_failed`, evidence `links#10039:points;
+links#10051:points`. Root cause isolated: Vissim's own `SaveNetAs` re-serializes
+auto-computed connector geometry with ~5.68e-14 per-coordinate drift on EVERY save — pure
+float noise (identical point counts), tripping `_diff_object_list`'s exact `!=` compare. The
+implementing agent could not fix it (guardrails.py was outside its scope) and proved via
+`GuardrailEngine(disabled=True)` that the M2.3 plumbing itself was correct.
+
+**Decision (controller):** `_values_differ` is now the single recursive comparison for both
+postwrite checks — numeric pairs use the constraint-#6 1e-9 tolerance at any nesting depth;
+structural differences (length, key set, type) remain strict evidence. Three regression tests
+pin the exact observed noise (silent), a 0.5 m real move (flagged), and an added point
+(flagged).
+
+**Consequence:** re-ran the live check with the production engine: the write completes AND
+verifies (`preflight → action → postwrite` clean). 1e-9 sits ~5 orders above the observed
+noise and ~7 below any meaningful coordinate change; if a future network shows larger benign
+re-serialization drift, tune with evidence, not by loosening structure checks.
+
+---
+
+## 2026-07-23 — M2.3: `/agent/approve` reconstructs state fresh; working-copy re-sync is version-aware
+
+**Context:** the propose and approve calls are separate HTTP requests; reusing the literal
+`ArtifactManager` object would need a cross-request in-memory cache, conflicting with the
+file-based-storage principle. A second `clone()` also trips the M2.2 divergence guard.
+
+**Decision:** `/agent/approve` builds a fresh `ArtifactManager` over the same work dir;
+`_ensure_working_copy` re-syncs via public `rollback_to(artifact_manager.version)` — the
+controller hardened this from the agent's `rollback_to(0)`: version-0 behavior is identical
+today (every stream mints a fresh session id, so approve always sees a pristine dir), but
+once M3.3 reloads sessions by id, a dir can arrive carrying approved verified edits
+(version ≥ 1) and rolling to 0 would silently destroy them. `rollback_to(version)` is a no-op
+for a clean copy and discards only unverified divergence (crash between `persist()` and
+`save_version()`).
+
+---
+
+## 2026-07-23 — M2.3: no-session write errors surface as `tool_execution_error`, not a dedicated `error_type`
+
+**Context:** the brief asked for `error_type: "no_edit_session"`. Verified: `toolkit.dispatch`
+wraps any dict RETURNED by a tool as `status: "ok"` — an error-shaped return would make the
+orchestrator treat a no-session write as landed and `save_version()` an unchanged file (a
+silent-lie risk). Only a raised exception produces `status: "error"` (always labeled
+`tool_execution_error`).
+
+**Decision:** `_require_session()` raises `NoEditSessionError`; the message embeds the
+greppable literal `"no_edit_session"`. Tests assert status + substring, not the
+`error_type` value.
+
+---
+
+## 2026-07-23 — M2.3: `pending_approval.json` carries `message`/`language` beyond the brief's four fields
+
+**Context:** the approve re-run must replay the original user message in the original
+language; no other persistence mechanism exists in this stateless file-based design.
+
+**Decision:** two additive fields. The frontend never reads this file directly — its contract
+is the NDJSON `approval_request` event + `/agent/approve` — so the schema stays
+backend-internal.

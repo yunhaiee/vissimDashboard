@@ -264,7 +264,7 @@ def _diff_object_list(
             if exempt_field is not None and exempt_field == (obj_id, field_name):
                 continue
             before_value, after_value = before_obj.get(field_name), after_obj.get(field_name)
-            if before_value != after_value:
+            if _values_differ(before_value, after_value):
                 evidence.append(
                     {
                         "object_class": object_class,
@@ -301,19 +301,42 @@ def _nothing_else_moved_diff(
     return evidence
 
 
-def _values_differ(written: Any, saved: Any) -> bool:
-    """Same comparison semantics as constraint #6's value-compare: float
-    tolerance for numeric pairs (bool excluded — it is an int subclass but
-    equality-comparing True to 1.0 numerically would be nonsense here),
-    plain inequality otherwise."""
+def _values_differ(before: Any, after: Any) -> bool:
+    """Recursive inequality with numeric tolerance — the single comparison
+    semantics for both the target-persisted check and the
+    nothing-else-moved diff.
+
+    Numeric pairs compare with the same 1e-9 tolerance as constraint #6's
+    value-compare (bool excluded — an int subclass, but equality-comparing
+    True to 1.0 numerically would be nonsense here). Lists/tuples and dicts
+    recurse element-wise, and any STRUCTURAL difference (length, key set,
+    type mix) is a real difference — only numeric noise is forgiven.
+
+    Why recursion matters (live-verified, M2.3 — see DECISIONS.md
+    2026-07-23): Vissim's own ``SaveNetAs`` re-serializes auto-computed
+    connector geometry (``links[].points``, lists of float pairs) with
+    ~5.7e-14 floating-point drift on EVERY save. An exact ``!=`` on those
+    fields refused every real-world write as "something else moved" even
+    though nothing did. 1e-9 is ~5 orders of magnitude above the observed
+    noise and ~7 below any geometrically meaningful coordinate change
+    (millimeters), so real edits still register as evidence.
+    """
     if (
-        isinstance(written, (int, float))
-        and isinstance(saved, (int, float))
-        and not isinstance(written, bool)
-        and not isinstance(saved, bool)
+        isinstance(before, (int, float))
+        and isinstance(after, (int, float))
+        and not isinstance(before, bool)
+        and not isinstance(after, bool)
     ):
-        return abs(float(written) - float(saved)) > 1e-9
-    return written != saved
+        return abs(float(before) - float(after)) > 1e-9
+    if isinstance(before, (list, tuple)) and isinstance(after, (list, tuple)):
+        if len(before) != len(after):
+            return True
+        return any(_values_differ(b, a) for b, a in zip(before, after))
+    if isinstance(before, dict) and isinstance(after, dict):
+        if set(before) != set(after):
+            return True
+        return any(_values_differ(before[key], after[key]) for key in before)
+    return before != after
 
 
 def _target_not_persisted_finding(

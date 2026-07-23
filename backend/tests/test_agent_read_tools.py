@@ -30,6 +30,24 @@ EXPECTED_TOOL_NAMES = {
     "compare_scenarios",
 }
 
+# M2.3's tools_edit.py registers these write-tier tools onto the SAME
+# default_registry. This file only imports tools_metrics/tools_network
+# directly, but pytest's collection phase imports every test module up
+# front -- including ones that import services.agent.orchestrator, which
+# imports tools_edit.py purely for its registration side effect (see that
+# module's docstring) -- so by the time any test in THIS file runs,
+# default_registry already carries all 11 tools regardless of this file's
+# own imports or test execution order. The anti-drift test below has to
+# know about them too, or it would (correctly, but confusingly) fail on
+# every run.
+EXPECTED_WRITE_TOOL_NAMES = {
+    "set_vehicle_input_volume",
+    "set_signal_cycle",
+    "set_signal_offset",
+    "set_sim_duration",
+    "set_random_seed",
+}
+
 
 @pytest.fixture(autouse=True)
 def _reset_active_inpx():
@@ -49,19 +67,33 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def test_default_registry_has_exactly_the_six_read_tools():
+def test_default_registry_has_exactly_the_expected_read_and_write_tools():
+    """M1.2's 6 read tools + M2.3's 5 write tools, no phantoms, nothing
+    missing. Was "...exactly_the_six_read_tools" before M2.3 registered
+    tools_edit.py's write tools onto this same default_registry — renamed
+    and widened rather than split, since a second anti-drift test over the
+    same registry would just duplicate this one's headings/duplicate-check
+    logic for no real isolation (both modules' tools share one registry by
+    design)."""
     contract = render_contract(registry=default_registry)
     headings = re.findall(r"^## (\S+)$", contract, flags=re.MULTILINE)
 
     assert len(headings) == len(set(headings))  # no duplicates
-    assert set(headings) == EXPECTED_TOOL_NAMES  # exact set — no phantoms, nothing missing
+    assert set(headings) == EXPECTED_TOOL_NAMES | EXPECTED_WRITE_TOOL_NAMES
 
 
-def test_all_six_tools_are_tier_read():
+def test_all_six_read_tools_are_tier_read():
     for name in EXPECTED_TOOL_NAMES:
         spec = default_registry.get(name)
         assert spec is not None, f"{name} not registered"
         assert spec.tier == "read"
+
+
+def test_all_five_write_tools_are_tier_write():
+    for name in EXPECTED_WRITE_TOOL_NAMES:
+        spec = default_registry.get(name)
+        assert spec is not None, f"{name} not registered"
+        assert spec.tier == "write"
 
 
 def test_network_tools_use_inspect_provider_and_metrics_tools_use_metrics_provider():

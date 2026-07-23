@@ -372,6 +372,88 @@ def test_postwrite_persisted_check_skips_none_parsed_field():
 
 
 # ---------------------------------------------------------------------------
+# postwrite — float tolerance in the nothing-else-moved diff
+# (live-verified M2.3 finding: Vissim's SaveNetAs re-serializes connector
+# geometry with ~5.7e-14 drift on EVERY save; exact != refused every
+# real-world write)
+# ---------------------------------------------------------------------------
+
+# The exact per-coordinate delta observed live on Urban Intersection
+# Beijing.CN's auto-computed connectors (links 10039/10051).
+_OBSERVED_SAVE_NOISE = 5.684341886080802e-14
+
+
+def _links_with_points(points: list[list[float]]) -> list[dict[str, Any]]:
+    return [{"id": "10039", "name": "connector", "lanes": 1, "points": points}]
+
+
+def test_postwrite_diff_tolerates_savenetas_float_noise_in_geometry():
+    action = _action("set_vehicle_input_volume", input_no="1", volume=600)
+    base_points = [[100.0, 200.0], [101.5, 201.5], [103.0, 203.0]]
+    noisy_points = [[x + _OBSERVED_SAVE_NOISE, y - _OBSERVED_SAVE_NOISE] for x, y in base_points]
+    before = _shadow_model(
+        links=_links_with_points(base_points),
+        vehicle_inputs=[{"no": "1", "name": "VI1", "link": "10039", "volume": 500.0}],
+    )
+    after = _shadow_model(
+        links=_links_with_points(noisy_points),
+        vehicle_inputs=[{"no": "1", "name": "VI1", "link": "10039", "volume": 600.0}],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 600, "readback_value": 600})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_still_flags_a_real_geometry_change():
+    # Half a meter is a real edit, ~13 orders of magnitude above the noise.
+    action = _action("set_vehicle_input_volume", input_no="1", volume=600)
+    base_points = [[100.0, 200.0], [101.5, 201.5]]
+    moved_points = [[100.0, 200.0], [102.0, 201.5]]
+    before = _shadow_model(
+        links=_links_with_points(base_points),
+        vehicle_inputs=[{"no": "1", "name": "VI1", "link": "10039", "volume": 500.0}],
+    )
+    after = _shadow_model(
+        links=_links_with_points(moved_points),
+        vehicle_inputs=[{"no": "1", "name": "VI1", "link": "10039", "volume": 600.0}],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 600, "readback_value": 600})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert diff[0]["object_class"] == "links"
+    assert diff[0]["field"] == "points"
+
+
+def test_postwrite_diff_still_flags_an_added_geometry_point():
+    # Structural change (point count) is never forgiven, regardless of values.
+    action = _action("set_vehicle_input_volume", input_no="1", volume=600)
+    base_points = [[100.0, 200.0], [101.5, 201.5]]
+    grown_points = [[100.0, 200.0], [101.5, 201.5], [103.0, 203.0]]
+    before = _shadow_model(
+        links=_links_with_points(base_points),
+        vehicle_inputs=[{"no": "1", "name": "VI1", "link": "10039", "volume": 500.0}],
+    )
+    after = _shadow_model(
+        links=_links_with_points(grown_points),
+        vehicle_inputs=[{"no": "1", "name": "VI1", "link": "10039", "volume": 600.0}],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 600, "readback_value": 600})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert diff[0]["object_class"] == "links"
+    assert diff[0]["field"] == "points"
+
+
+# ---------------------------------------------------------------------------
 # postrun — lie-detector pass-through
 # ---------------------------------------------------------------------------
 

@@ -52,10 +52,15 @@ SUMMARY_MAX_CHARS = 80
 _HISTORY_K = 6
 _OBSERVATION_SNIPPET_CHARS = 300
 
-# M1: only read-tier registry tools are offered to the provider. Write/run
-# tools join in M2 behind the approval flow (this is the planner-side half of
-# the tier gate; orchestrator.py enforces the dispatch-side half).
-_OFFERED_TIERS = frozenset({"read"})
+# M1: only read-tier registry tools were offered to the provider. M2.3 adds
+# write-tier tools to the offer: the approval flow (services.agent.gates,
+# orchestrator.py's ApprovalRequired handling) needs the planner to be able
+# to SELECT a write action in the first place, since a native tool_choice
+# call can only ever pick from tools actually offered here -- gating safety
+# now lives entirely in the dispatch-side tier gate (orchestrator.py's
+# WriteGate) and the guardrail engine, not in withholding the tool
+# definition itself. ``run`` tools join in M2.4 behind their own gating.
+_OFFERED_TIERS = frozenset({"read", "write"})
 
 _FALLBACK_GROUNDING_TOOL = "get_network_overview"
 

@@ -149,6 +149,58 @@ def test_claude_generate_structured_retries_once_on_malformed(monkeypatch: pytes
 
 
 # ---------------------------------------------------------------------------
+# 2b. M2.3 (docs/phase2/DECISIONS.md, BLOCKING finding): when the REJECTED
+# response DID contain a tool_use block, the retry turn must pair a
+# tool_result block against that exact id, not a plain-text echo -- the
+# plain-text shape 400s once the Messages API enforces tool_result pairing
+# for a preceding assistant tool_use turn.
+# ---------------------------------------------------------------------------
+
+
+def test_claude_generate_structured_retry_uses_tool_result_block_when_tool_use_was_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The first response's tool_use block names a tool that isn't in TOOLS
+    # -- validate_action rejects it ("does not name a known tool") while
+    # tool_use_block is still non-None, which is exactly the case the fix
+    # targets (as opposed to test #2 above, where the first response has NO
+    # tool_use block at all and the plain-text retry shape remains correct).
+    first = _response(
+        [_tool_use_block("totally_made_up_tool", {"x": 1}, block_id="toolu_abc123")]
+    )
+    second = _response([_tool_use_block("get_link_volume", {"link_id": "303"})])
+    provider, stub = _provider_with_stub(monkeypatch, [first, second])
+
+    action, meta = provider.generate_structured(
+        messages=[{"role": "user", "content": "check link 303"}],
+        tools=TOOLS,
+    )
+
+    assert action == {"tool": "get_link_volume", "params": {"link_id": "303"}}
+    assert meta["fallback_rung"] == 1
+    assert len(stub.messages.calls) == 2
+
+    retry_messages = stub.messages.calls[1]["messages"]
+    assert retry_messages[0] == {"role": "user", "content": "check link 303"}
+    # The assistant turn echoes the ORIGINAL content (including its
+    # tool_use block) verbatim -- required for the tool_result pairing to
+    # even make sense to the API.
+    assert retry_messages[1] == {"role": "assistant", "content": first.content}
+
+    retry_user_turn = retry_messages[2]
+    assert retry_user_turn["role"] == "user"
+    assert isinstance(retry_user_turn["content"], list)
+    assert len(retry_user_turn["content"]) == 1
+
+    tool_result_block = retry_user_turn["content"][0]
+    assert tool_result_block["type"] == "tool_result"
+    assert tool_result_block["tool_use_id"] == "toolu_abc123"
+    assert tool_result_block["is_error"] is True
+    assert "invalid" in tool_result_block["content"].lower()
+    assert "totally_made_up_tool" in tool_result_block["content"]
+
+
+# ---------------------------------------------------------------------------
 # 3. Claude mocked: malformed twice -> (None, meta), fallback_rung 2
 # ---------------------------------------------------------------------------
 

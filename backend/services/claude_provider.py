@@ -175,15 +175,41 @@ class ClaudeProvider:
                 last_error = "Claude response contained no tool_use block."
 
             if rung == 0:
+                retry_notice = (
+                    f"That response was invalid: {last_error}. "
+                    "Reply again with exactly one valid tool call."
+                )
+                if tool_use_block is not None:
+                    # A tool_use block WAS present (its params just failed
+                    # validation) -- the Messages API requires the very
+                    # next user turn to carry a matching tool_result for
+                    # every tool_use block id in the preceding assistant
+                    # turn, or the request 400s once that pairing is
+                    # enforced (docs/phase2/DECISIONS.md, "Deferred
+                    # findings from the M0+M1 whole-branch review", first
+                    # bullet). is_error=True marks the attempt rejected;
+                    # `content` carries the validation reason so the model
+                    # can actually fix it on retry.
+                    retry_user_message: dict[str, Any] = {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_block.id,
+                                "is_error": True,
+                                "content": retry_notice,
+                            }
+                        ],
+                    }
+                else:
+                    # No tool_use block at all (e.g. a plain-text reply) --
+                    # there is no tool_use id to pair a tool_result against,
+                    # so a plain-text nudge is the only valid shape here.
+                    retry_user_message = {"role": "user", "content": retry_notice}
+
                 kwargs["messages"] = kwargs["messages"] + [
                     {"role": "assistant", "content": response.content},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"That response was invalid: {last_error}. "
-                            "Reply again with exactly one valid tool call."
-                        ),
-                    },
+                    retry_user_message,
                 ]
 
         return None, build_meta(mode="claude-api", fallback_rung=2, model=self.model, error=last_error)

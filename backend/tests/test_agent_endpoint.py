@@ -5,10 +5,19 @@ monkeypatched to a canned-queue fake provider — deterministic, no paid API
 calls. The fake replicates ``test_agent_orchestrator.py``'s
 ``FakeStructuredProvider`` (kept local rather than cross-imported so this
 file stays a self-contained endpoint test).
+
+M2.3: the endpoint now resolves its working network via
+``services.datasets.get_active_inpx_path()`` (an uploaded dataset, when
+present, takes priority over ``data/practice.inpx``) rather than
+``config.SIMULATION_INPX_PATH`` directly — the ``_pin_active_dataset_to_demo``
+autouse fixture below pins it to the demo network for every test in this
+file, so a stray uploaded dataset left on a dev machine (or CI runner) from
+an unrelated manual session can never make these tests non-deterministic.
 """
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,6 +26,8 @@ from fastapi.testclient import TestClient
 import main
 from routers import assistant as assistant_endpoint
 from services.agent.tools_metrics import _looks_like_path
+
+DEMO_INPX = Path(__file__).resolve().parents[2] / "data" / "practice.inpx"
 
 
 class FakeStructuredProvider:
@@ -91,6 +102,11 @@ def _assert_no_path_like_strings(value: Any) -> None:
 
 def _stream_events(response) -> list[dict[str, Any]]:
     return [json.loads(line) for line in response.text.splitlines() if line.strip()]
+
+
+@pytest.fixture(autouse=True)
+def _pin_active_dataset_to_demo(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(assistant_endpoint, "get_active_inpx_path", lambda: DEMO_INPX)
 
 
 @pytest.fixture()

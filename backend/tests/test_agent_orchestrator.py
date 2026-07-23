@@ -30,6 +30,18 @@ EXPECTED_READ_TOOLS = {
     "compare_scenarios",
 }
 
+# M2.3: tools_edit.py's write tools are now offered to the planner too (see
+# planner.py's _OFFERED_TIERS docstring) — write safety moved entirely to
+# the dispatch-side WriteGate + guardrail engine, not to withholding the
+# tool definition from the model.
+EXPECTED_WRITE_TOOLS = {
+    "set_vehicle_input_volume",
+    "set_signal_cycle",
+    "set_signal_offset",
+    "set_sim_duration",
+    "set_random_seed",
+}
+
 
 @pytest.fixture(autouse=True)
 def _reset_active_inpx():
@@ -128,11 +140,14 @@ def test_overview_conversation_answers_from_tools_and_writes_trace(tmp_path):
         "status": "ok",
     }
 
-    # The planner offered exactly the read tools + the two terminals, every
-    # def carrying the required `summary` param.
+    # The planner offered exactly the read tools + M2.3's write tools + the
+    # two terminals, every def carrying the required `summary` param (write
+    # tools are offered but stay unreachable through this default,
+    # gate-less call — see test_default_write_gate_refuses_dispatch_even_
+    # though_the_write_tool_is_offered below).
     offered = provider.calls[0]["tools"]
     assert {tool_def["name"] for tool_def in offered} == (
-        EXPECTED_READ_TOOLS | {"respond", "ask_user"}
+        EXPECTED_READ_TOOLS | EXPECTED_WRITE_TOOLS | {"respond", "ask_user"}
     )
     for tool_def in offered:
         assert "summary" in tool_def["input_schema"]["properties"]
@@ -244,11 +259,19 @@ def test_nonsense_request_yields_clarification_after_one_iteration(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Scenario 4 — tier gate: write tools are structurally unreachable in M1
+# Scenario 4 — tier gate: the default gate refuses dispatch even though
+# M2.3 now OFFERS write tools to the planner (pre-M2.3 this test was named
+# "...offers_only_read_tools" and asserted write tools were never even
+# offered; M2.3 deliberately moved that safety net from "never offer" to
+# "offer, but refuse at dispatch time unless a permissive gate says
+# otherwise" — see planner.py's _OFFERED_TIERS docstring and
+# orchestrator.py's RefuseAllWriteGate. What still matters, and is still
+# pinned here, is that with NO gate supplied (the default), a write tool
+# the planner picks is refused before ever dispatching.
 # ---------------------------------------------------------------------------
 
 
-def test_tier_gate_blocks_write_tool_and_planner_offers_only_read_tools(tmp_path):
+def test_default_write_gate_refuses_dispatch_even_though_the_write_tool_is_offered(tmp_path):
     executed = {"write": False}
     registry = ToolRegistry()
 
@@ -311,10 +334,11 @@ def test_tier_gate_blocks_write_tool_and_planner_offers_only_read_tools(tmp_path
     assert result.kind == "answer"
     assert "수정할 수 없습니다" in result.answer
 
-    # The "not reachable" acceptance: native tool defs offered to the
-    # provider contain ONLY read-tier tools + respond/ask_user.
+    # M2.3: native tool defs offered to the provider now include the
+    # write-tier tool too (offered, but still refused at dispatch time by
+    # the default RefuseAllWriteGate — proven above).
     offered = {tool_def["name"] for tool_def in provider.calls[0]["tools"]}
-    assert offered == {"peek_network", "respond", "ask_user"}
+    assert offered == {"peek_network", "set_vehicle_input_volume", "respond", "ask_user"}
 
 
 # ---------------------------------------------------------------------------
