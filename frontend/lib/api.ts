@@ -609,6 +609,9 @@ export interface AssistantStreamHandlers {
 }
 
 // --- M1.4 read-only agent (POST /api/assistant/agent/query/stream) --------
+// M2.3 extends this with the write-approval flow: a paused turn's
+// approval_request event / done.response.approval, and POST
+// /api/assistant/agent/approve (approveAgentAction below) to resolve it.
 
 export interface AgentQueryRequest {
   message: string;
@@ -621,11 +624,45 @@ export interface AgentStep {
   status: string;
 }
 
+// M2.3: one proposed write action inside an approval_request/done.approval
+// payload. `params` mirrors the tool's own pydantic params model
+// (backend/services/agent/tools_edit.py) -- e.g. set_vehicle_input_volume
+// carries {input_no, volume}.
+export interface AgentAction {
+  tool: string;
+  params: Record<string, unknown>;
+  summary: string;
+}
+
+// M2.3: one preflight finding attached to a pending approval -- mirrors
+// orchestrator.py's `warning_payload` (constraint_id + a message already
+// localized server-side to the turn's response_language).
+export interface AgentWarning {
+  constraint_id: string;
+  message: string;
+}
+
+// M2.3: the full payload backend/routers/assistant.py emits both from the
+// dedicated `approval_request` NDJSON event and, identically, under
+// `done.response.approval` (a client that only inspects `done` still gets
+// it -- see that router's own docstring). `assumptions` is always `[]`
+// today -- no structured assumption signal exists yet from the planner --
+// but is part of the wire shape so the UI can render it once it starts
+// populating, at no future contract-breaking cost.
+export interface AgentApproval {
+  approval_id: string;
+  actions: AgentAction[];
+  warnings: AgentWarning[];
+  assumptions: string[];
+}
+
 export interface AgentQueryResponse {
   answer: string;
-  kind: "answer" | "clarification";
+  kind: "answer" | "clarification" | "cancelled" | "approval_request";
   steps: AgentStep[];
   session_id: string;
+  /** Present iff kind === "approval_request". */
+  approval?: AgentApproval;
 }
 
 export type AgentStreamEvent =
@@ -638,6 +675,10 @@ export type AgentStreamEvent =
       type: "step";
       stream_id?: string;
     } & Partial<AgentStep> & { index?: number })
+  | ({
+      type: "approval_request";
+      stream_id?: string;
+    } & Partial<AgentApproval>)
   | {
       type: "chunk";
       stream_id?: string;
@@ -652,7 +693,19 @@ export type AgentStreamEvent =
 export interface AgentStreamHandlers {
   onStatus?: (event: Extract<AgentStreamEvent, { type: "status" }>) => void;
   onStep?: (event: Extract<AgentStreamEvent, { type: "step" }>) => void;
+  onApprovalRequest?: (event: Extract<AgentStreamEvent, { type: "approval_request" }>) => void;
   onChunk?: (text: string) => void;
+}
+
+// M2.3: request body for POST /api/assistant/agent/approve. No
+// response_language field on purpose -- the approve-turn's language is
+// sourced server-side from the original proposal's pending_approval.json,
+// never re-supplied by the client (see AgentApproveRequest in
+// backend/routers/assistant.py).
+export interface AgentApproveRequest {
+  session_id: string;
+  approval_id: string;
+  approved: boolean;
 }
 
 export interface AssistantSource {
@@ -895,6 +948,61 @@ export async function streamAgentQuery(
   throw new Error(firstError);
 }
 
+// M2.3: thrown by approveAgentAction on a 404 (unknown/stale/consumed
+// pending approval -- backend/routers/assistant.py's approve_agent_action
+// 404s the same way for both cases, with no further detail). Carries the
+// HTTP status explicitly rather than making the UI string-match the
+// (English-only, backend-owned) error detail text, so a stale approval can
+// get its own graceful, localized inline message instead of the generic
+// assistant-error copy.
+export class AgentApprovalError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "AgentApprovalError";
+    this.status = status;
+  }
+}
+
+// M2.3: resolves one pending write approval from an earlier streamAgentQuery
+// turn's approval_request event. Reuses the exact same NDJSON reader/handler
+// plumbing as streamAgentQuery (readAgentEventStream below, no parser
+// duplication) -- approved:true streams the approved write's execution +
+// postwrite verification, approved:false streams a short polite decline,
+// both in the same NDJSON shape a fresh agent turn uses.
+export async function approveAgentAction(
+  payload: AgentApproveRequest,
+  handlers: AgentStreamHandlers = {},
+  signal?: AbortSignal,
+): Promise<AgentQueryResponse> {
+  const init: RequestInit = {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  };
+  const response = await apiDirectMutationFetch("/api/assistant/agent/approve", init);
+  if (response.ok) return readAgentEventStream(response, handlers);
+
+  const firstError = await readApiError(response);
+  if (response.status === 404) {
+    throw new AgentApprovalError(firstError, 404);
+  }
+  if (response.status >= 500 && !signal?.aborted) {
+    await sleepForRetry(700);
+    const retry = await apiDirectMutationFetch("/api/assistant/agent/approve", init, { sameOrigin: false });
+    if (retry.ok) return readAgentEventStream(retry, handlers);
+    if (retry.status === 404) {
+      throw new AgentApprovalError(await readApiError(retry), 404);
+    }
+    throw new Error(await readApiError(retry));
+  }
+
+  throw new Error(firstError);
+}
+
 async function readAgentEventStream(response: Response, handlers: AgentStreamHandlers): Promise<AgentQueryResponse> {
   if (!response.body) {
     return readAgentEventLines(await response.text(), handlers);
@@ -942,6 +1050,10 @@ function handleAgentStreamLine(line: string, handlers: AgentStreamHandlers): Age
   }
   if (event.type === "step") {
     handlers.onStep?.(event);
+    return null;
+  }
+  if (event.type === "approval_request") {
+    handlers.onApprovalRequest?.(event);
     return null;
   }
   if (event.type === "chunk") {

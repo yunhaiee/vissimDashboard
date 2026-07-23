@@ -6,12 +6,16 @@ import { usePathname } from "next/navigation";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import {
+  AgentApprovalError,
+  approveAgentAction,
   fetchAssistantStatus,
   fetchSimulationJob,
   fetchSimulationResults,
   streamAgentQuery,
   streamAssistant,
+  type AgentAction,
   type AgentStep,
+  type AgentWarning,
   type AssistantQueryResponse,
   type AssistantSource,
   type AssistantStatus,
@@ -19,6 +23,25 @@ import {
   type SimulationResultsResponse,
   type VissimComToolStatus,
 } from "@/lib/api";
+
+// M2.3: lifecycle of a write-approval card attached to an agent-mode
+// message. "pending" -> user has not acted yet (Run/Cancel both enabled);
+// "approving"/"declining" -> the /agent/approve call is streaming (buttons
+// disabled, busy label); "approved"/"declined" -> resolved, single-use,
+// buttons replaced by a small label; "error" -> the resolve call failed
+// (stale/consumed approval, or a network error) and is also terminal, since
+// a consumed approval_id would just 404 again on retry.
+type AgentApprovalResolution = "pending" | "approving" | "declining" | "approved" | "declined" | "error";
+
+type AgentApprovalState = {
+  approvalId: string;
+  sessionId: string;
+  actions: AgentAction[];
+  warnings: AgentWarning[];
+  assumptions: string[];
+  resolution: AgentApprovalResolution;
+  errorMessage?: string;
+};
 
 type FloatingMessage = {
   id: string;
@@ -33,6 +56,11 @@ type FloatingMessage = {
    * turn). Present only for messages sent while agent mode was on; stays
    * populated after completion so the log remains visible. */
   agentSteps?: AgentStep[];
+  /** M2.3: present once this agent-mode message pauses for a write approval
+   * (set from the approval_request stream event, reconciled from the
+   * terminal done.response.approval as a safety net). Stays on the message
+   * after resolution — single-use, inert once acted on. */
+  agentApproval?: AgentApprovalState;
 };
 
 type AssistantPageContext = {
@@ -150,6 +178,26 @@ function localizeHeading(heading: string, lang: string): string {
   const entry = ANSWER_HEADING_I18N[heading.trim()];
   if (!entry) return heading;
   return lang === "ja" ? entry.ja : entry.en;
+}
+
+// M2.3: builds/reconciles agentApproval state from either wire source --
+// the early approval_request stream event (no session_id: the backend
+// mints it before that event, see AgentStreamEvent's "approval_request"
+// variant) or the terminal done.response.approval (session_id always
+// known). `resolution` always starts "pending" here; only
+// runAgentApproval below ever advances it.
+function approvalStateFromEvent(
+  event: { approval_id?: string; actions?: AgentAction[]; warnings?: AgentWarning[]; assumptions?: string[] },
+  sessionId: string,
+): AgentApprovalState {
+  return {
+    approvalId: event.approval_id ?? "",
+    sessionId,
+    actions: event.actions ?? [],
+    warnings: event.warnings ?? [],
+    assumptions: event.assumptions ?? [],
+    resolution: "pending",
+  };
 }
 
 export default function FloatingAssistant() {
@@ -462,6 +510,22 @@ export default function FloatingAssistant() {
               ),
             );
           },
+          // M2.3: shows the approval card as soon as the turn pauses,
+          // ahead of the (short) proposal-line chunks and done — session_id
+          // is not on this event (see approvalStateFromEvent), so it starts
+          // empty and is reconciled from `response.session_id` below once
+          // the stream completes; the card's own buttons stay disabled
+          // until then (AgentApprovalCard checks approval.sessionId).
+          onApprovalRequest: (event) => {
+            setRequestPhase("streaming");
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, agentApproval: approvalStateFromEvent(event, message.agentApproval?.sessionId ?? "") }
+                  : message,
+              ),
+            );
+          },
           onChunk: (chunk) => {
             streamedContent += chunk;
             setRequestPhase("streaming");
@@ -477,7 +541,14 @@ export default function FloatingAssistant() {
       setMessages((prev) =>
         prev.map((message) =>
           message.id === assistantMessageId
-            ? { ...message, content: response.answer, agentSteps: response.steps }
+            ? {
+                ...message,
+                content: response.answer,
+                agentSteps: response.steps,
+                agentApproval: response.approval
+                  ? approvalStateFromEvent(response.approval, response.session_id)
+                  : message.agentApproval,
+              }
             : message,
         ),
       );
@@ -495,6 +566,142 @@ export default function FloatingAssistant() {
       } else {
         setError(formatAssistantError(caught, t));
       }
+    } finally {
+      if (requestAbortRef.current === controller) {
+        requestAbortRef.current = null;
+      }
+      setLoading(false);
+      setActiveAssistantMessageId(null);
+      setRequestPhase("idle");
+      inputRef.current?.focus();
+    }
+  }
+
+  // M2.3: resolves the write-approval card on `sourceMessageId` (Run ->
+  // approved=true, Cancel -> approved=false) by streaming
+  // POST /agent/approve INTO A NEW assistant message appended after it —
+  // same step-narration + chunk-accumulation handling as runAgentPrompt,
+  // so an approved write's postwrite verification narrates identically to
+  // a fresh turn. The card's own message only gets its resolution label
+  // updated in place; it is never removed and never re-offered (single-use
+  // — a consumed approval_id 404s on any retry, see AgentApprovalError).
+  async function runAgentApproval(sourceMessageId: string, approval: AgentApprovalState, approved: boolean) {
+    if (loading || approval.resolution !== "pending" || !approval.sessionId) return;
+
+    const createdAt = Date.now();
+    const assistantMessageId = `${createdAt}-assistant-approval`;
+    const busyResolution: AgentApprovalResolution = approved ? "approving" : "declining";
+    setMessages((prev) => [
+      ...prev.map((message) =>
+        message.id === sourceMessageId && message.agentApproval
+          ? { ...message, agentApproval: { ...message.agentApproval, resolution: busyResolution } }
+          : message,
+      ),
+      { id: assistantMessageId, role: "assistant", content: "", agentSteps: [] },
+    ]);
+
+    setError(null);
+    setLoading(true);
+    setActiveAssistantMessageId(assistantMessageId);
+    setRequestPhase("querying");
+
+    const controller = new AbortController();
+    requestAbortRef.current = controller;
+    let streamedContent = "";
+    let hasAgentSteps = false;
+    try {
+      const response = await approveAgentAction(
+        { session_id: approval.sessionId, approval_id: approval.approvalId, approved },
+        {
+          onStep: (event) => {
+            hasAgentSteps = true;
+            setRequestPhase("streaming");
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      agentSteps: [
+                        ...(message.agentSteps ?? []),
+                        { summary: event.summary ?? "", tool: event.tool ?? "", status: event.status ?? "" },
+                      ],
+                    }
+                  : message,
+              ),
+            );
+          },
+          // A plan can in principle chain into a second write needing its
+          // own approval (a different action, outside this approval's
+          // signature) — handled generically here exactly like the first
+          // card, on this NEW message, so it can itself be run/cancelled.
+          onApprovalRequest: (event) => {
+            setRequestPhase("streaming");
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, agentApproval: approvalStateFromEvent(event, message.agentApproval?.sessionId ?? "") }
+                  : message,
+              ),
+            );
+          },
+          onChunk: (chunk) => {
+            streamedContent += chunk;
+            setRequestPhase("streaming");
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId ? { ...message, content: streamedContent } : message,
+              ),
+            );
+          },
+        },
+        controller.signal,
+      );
+      setMessages((prev) =>
+        prev.map((message) => {
+          if (message.id === assistantMessageId) {
+            return {
+              ...message,
+              content: response.answer,
+              agentSteps: response.steps,
+              agentApproval: response.approval
+                ? approvalStateFromEvent(response.approval, response.session_id)
+                : message.agentApproval,
+            };
+          }
+          if (message.id === sourceMessageId && message.agentApproval) {
+            return {
+              ...message,
+              agentApproval: { ...message.agentApproval, resolution: approved ? "approved" : "declined" },
+            };
+          }
+          return message;
+        }),
+      );
+    } catch (caught) {
+      if (!streamedContent.trim() && !hasAgentSteps) {
+        setMessages((prev) => prev.filter((message) => message.id !== assistantMessageId));
+      }
+      const is404 = caught instanceof AgentApprovalError && caught.status === 404;
+      const resolutionMessage = is404
+        ? t(
+            "이 승인 요청은 만료되었거나 이미 처리되었습니다. 다시 요청해 주세요.",
+            "This approval request has expired or was already handled. Please ask again.",
+            "この承認リクエストは期限切れか、既に処理済みです。もう一度お試しください。",
+          )
+        : isAbortError(caught)
+          ? t("요청을 취소했습니다.", "Request cancelled.")
+          : formatAssistantError(caught, t);
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === sourceMessageId && message.agentApproval
+            ? { ...message, agentApproval: { ...message.agentApproval, resolution: "error", errorMessage: resolutionMessage } }
+            : message,
+        ),
+      );
+      if (isAbortError(caught)) {
+        setRequestPhase("cancelled");
+      }
+      setError(resolutionMessage);
     } finally {
       if (requestAbortRef.current === controller) {
         requestAbortRef.current = null;
@@ -650,6 +857,9 @@ export default function FloatingAssistant() {
                     declined={declinedExecutionIds.has(message.id)}
                     onConfirmExecute={() => confirmPromptExecution(message)}
                     onDeclineExecute={() => declinePromptExecution(message.id)}
+                    onResolveApproval={(approved) => {
+                      if (message.agentApproval) void runAgentApproval(message.id, message.agentApproval, approved);
+                    }}
                   />
                 ))}
               </div>
@@ -705,6 +915,7 @@ function FloatingChatMessage({
   declined,
   onConfirmExecute,
   onDeclineExecute,
+  onResolveApproval,
 }: {
   message: FloatingMessage;
   activePhase?: AssistantRequestPhase;
@@ -712,6 +923,8 @@ function FloatingChatMessage({
   declined: boolean;
   onConfirmExecute: () => void;
   onDeclineExecute: () => void;
+  /** M2.3: resolves this message's write-approval card, if it has one. */
+  onResolveApproval: (approved: boolean) => void;
 }) {
   const isUser = message.role === "user";
   const promptSimulation = getPromptSimulationResult(message.response?.tool_results);
@@ -743,6 +956,9 @@ function FloatingChatMessage({
             {isActiveAssistant && <AssistantInlineProgress phase={activePhase ?? "streaming"} onCancel={onCancel} compact />}
           </>
         )}
+        {!isUser && message.agentApproval && (
+          <AgentApprovalCard approval={message.agentApproval} onRun={() => onResolveApproval(true)} onCancelApproval={() => onResolveApproval(false)} />
+        )}
         {!isUser && message.response && <AssistantRuntimeBadge response={message.response} />}
         {promptSimulation && (
           <PromptSimulationStatus
@@ -762,6 +978,9 @@ function FloatingChatMessage({
 // M1.4 agent-mode narration: a compact, text-led log of the read-only
 // agent's steps — small muted lines, no icons or per-step spinners. Status
 // only renders when a step failed; a successful step is just its summary.
+// M2.3 adds "pending_approval": the step that paused for a write approval —
+// rendered with the same neutral tone as a plain step (not the red error
+// style), since it is expected/normal, not a failure.
 function AgentStepNarration({ steps }: { steps: AgentStep[] }) {
   const { t } = useLanguage();
   return (
@@ -772,10 +991,164 @@ function AgentStepNarration({ steps }: { steps: AgentStep[] }) {
           {step.status === "error" && (
             <span className="ml-1 font-semibold text-rose-600">({t("오류", "error", "エラー")})</span>
           )}
+          {step.status === "pending_approval" && (
+            <span className="ml-1 font-semibold text-slate-500">({t("승인 대기", "awaiting approval", "承認待ち")})</span>
+          )}
         </p>
       ))}
     </div>
   );
+}
+
+// M2.3 write-approval card: the action list + warnings for an agent-mode
+// write turn paused via approval_request. Console-inspired card language
+// (bg-surface, slate-200 hairline, rounded-xl, no colored left border, no
+// shadow) — distinct on purpose from the regex-flow's inline
+// PromptSimulationStatus confirm strip below, since this one carries a
+// multi-action list, per-action params, and warnings rather than a single
+// yes/no prompt.
+function AgentApprovalCard({
+  approval,
+  onRun,
+  onCancelApproval,
+}: {
+  approval: AgentApprovalState;
+  onRun: () => void;
+  onCancelApproval: () => void;
+}) {
+  const { t } = useLanguage();
+  const busy = approval.resolution === "approving" || approval.resolution === "declining";
+  const actionable = approval.resolution === "pending" || busy;
+  const runDisabled = busy || !approval.sessionId;
+
+  return (
+    <div className="mt-2 rounded-xl border border-slate-200 bg-surface px-3 py-2.5">
+      <p className="text-xs font-bold text-slate-800">
+        {t("실행 전 확인이 필요합니다", "Approval needed before executing", "実行前に確認が必要です")}
+      </p>
+
+      <div className="mt-2 space-y-1.5">
+        {approval.actions.map((action, index) => (
+          <div key={`${action.tool}-${index}`} className="rounded-lg bg-slate-50 px-2.5 py-2">
+            <p className="text-[11px] font-semibold text-slate-700">{agentActionLabel(action.tool, t)}</p>
+            <p className="mt-0.5 text-[11px] text-slate-600">{agentActionDetail(action, t)}</p>
+          </div>
+        ))}
+      </div>
+
+      {approval.warnings.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {approval.warnings.map((warning, index) => (
+            <p
+              key={`${warning.constraint_id || warning.message}-${index}`}
+              className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-5 text-amber-800"
+            >
+              {warning.message}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {approval.assumptions.length > 0 && (
+        <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
+          <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500">{t("가정", "Assumptions", "前提")}</p>
+          <ul className="mt-1 space-y-0.5">
+            {approval.assumptions.map((assumption, index) => (
+              <li key={index} className="text-[11px] leading-5 text-slate-600">
+                {assumption}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {actionable ? (
+        <div className="mt-2.5 flex gap-2">
+          <button
+            type="button"
+            onClick={onRun}
+            disabled={runDisabled}
+            className="ui-button-primary inline-flex h-9 items-center px-4 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {approval.resolution === "approving" ? t("실행 중...", "Running...", "実行中...") : t("실행", "Run", "実行")}
+          </button>
+          <button
+            type="button"
+            onClick={onCancelApproval}
+            disabled={runDisabled}
+            className="ui-button-ghost inline-flex h-9 items-center px-4 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {approval.resolution === "declining" ? t("취소 중...", "Cancelling...", "キャンセル中...") : t("취소", "Cancel", "キャンセル")}
+          </button>
+        </div>
+      ) : approval.resolution === "error" ? (
+        <p className="mt-2.5 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] leading-5 text-rose-700">
+          {approval.errorMessage}
+        </p>
+      ) : (
+        <p className="mt-2.5 text-[11px] font-semibold text-slate-500">
+          {approval.resolution === "approved" ? t("승인됨", "Approved", "承認済み") : t("취소됨", "Cancelled", "キャンセル済み")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// M2.3 tool -> human label map for the approval card (docs/phase2/02-ROADMAP.md
+// M4's "plan-approval card" bullet). Falls back to the raw tool name for
+// anything not in this table (e.g. a future write verb landing ahead of a
+// frontend update).
+const AGENT_ACTION_LABELS: Record<string, [string, string, string]> = {
+  set_vehicle_input_volume: ["차량 입력 교통량 변경", "Change vehicle input volume", "車両入力交通量の変更"],
+  set_signal_cycle: ["신호 주기 변경", "Change signal cycle", "信号周期の変更"],
+  set_signal_offset: ["신호 옵셋 변경", "Change signal offset", "信号オフセットの変更"],
+  set_sim_duration: ["시뮬레이션 시간 변경", "Change simulation duration", "シミュレーション時間の変更"],
+  set_random_seed: ["랜덤 시드 변경", "Change random seed", "ランダムシードの変更"],
+};
+
+function agentActionLabel(tool: string, t: Translate): string {
+  const entry = AGENT_ACTION_LABELS[tool];
+  return entry ? t(entry[0], entry[1], entry[2]) : tool;
+}
+
+// Readable "field -> new value" line per action, param names matching
+// backend/services/agent/tools_edit.py's pydantic params models exactly
+// (input_no/volume, sc_no/cycle, sc_no/offset, seconds, seed). Falls back to
+// a plain key=value dump for an unrecognized tool.
+function agentActionDetail(action: AgentAction, t: Translate): string {
+  const params = action.params ?? {};
+  switch (action.tool) {
+    case "set_vehicle_input_volume":
+      return t(
+        `차량 입력 ${params.input_no} → ${params.volume} veh/h`,
+        `Vehicle input ${params.input_no} → ${params.volume} veh/h`,
+        `車両入力 ${params.input_no} → ${params.volume} veh/h`,
+      );
+    case "set_signal_cycle":
+      return t(
+        `신호제어기 ${params.sc_no} 주기 → ${params.cycle}초`,
+        `Signal controller ${params.sc_no} cycle → ${params.cycle}s`,
+        `信号制御機 ${params.sc_no} 周期 → ${params.cycle}秒`,
+      );
+    case "set_signal_offset":
+      return t(
+        `신호제어기 ${params.sc_no} 옵셋 → ${params.offset}초`,
+        `Signal controller ${params.sc_no} offset → ${params.offset}s`,
+        `信号制御機 ${params.sc_no} オフセット → ${params.offset}秒`,
+      );
+    case "set_sim_duration":
+      return t(
+        `시뮬레이션 시간 → ${params.seconds}초`,
+        `Simulation duration → ${params.seconds}s`,
+        `シミュレーション時間 → ${params.seconds}秒`,
+      );
+    case "set_random_seed":
+      return t(`랜덤 시드 → ${params.seed}`, `Random seed → ${params.seed}`, `ランダムシード → ${params.seed}`);
+    default:
+      return Object.entries(params)
+        .map(([key, value]) => `${key}=${String(value)}`)
+        .join(", ");
+  }
 }
 
 function PageContextPills({ context }: { context: AssistantPageContext | null }) {
