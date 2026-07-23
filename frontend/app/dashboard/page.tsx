@@ -455,7 +455,7 @@ export default function DashboardPage() {
               )}
           </div>
         </div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-[1.6fr_1fr]">
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
           {hasUploadedDataset ? (
             <DashboardScenarioPicker scenarios={scenarios} selected={selected} onChange={setSelected} />
           ) : (
@@ -1639,7 +1639,7 @@ function DashboardScenarioPicker({
         </span>
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(215px,1fr))] gap-2">
         {scenarios.map((scenario, index) => {
           const active = selected.includes(scenario.id);
           const scenarioColor = getScenarioDisplayColor(scenario, index);

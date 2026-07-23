@@ -126,8 +126,10 @@ export default function CurationBar({
   return (
     <section className="rounded-xl border border-slate-200 bg-surface px-5 py-4">
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex min-w-[260px] flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-white/[0.03] px-3 py-2 focus-within:border-slate-300">
-          <span aria-hidden className="text-base">✨</span>
+        <div className="flex h-10 min-w-[260px] flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-white/[0.03] px-3 focus-within:border-slate-300">
+          <svg aria-hidden viewBox="0 0 24 24" className="h-4 w-4 shrink-0 text-slate-400" fill="currentColor">
+            <path d="M12 2l1.9 6.3a3 3 0 0 0 1.8 1.8L22 12l-6.3 1.9a3 3 0 0 0-1.8 1.8L12 22l-1.9-6.3a3 3 0 0 0-1.8-1.8L2 12l6.3-1.9a3 3 0 0 0 1.8-1.8z" />
+          </svg>
           <input
             value={message}
             onChange={(event) => setMessage(event.target.value)}
@@ -145,18 +147,18 @@ export default function CurationBar({
           />
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex gap-0.5 rounded-lg border border-slate-200 p-0.5 text-xs font-medium">
+          <div className="flex h-10 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-xs font-medium">
             <button
               type="button"
               onClick={() => onAudienceChange("plain")}
-              className={`rounded-md px-3 py-1.5 transition-colors ${audience === "plain" ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"}`}
+              className={`flex h-full items-center rounded-md px-3 transition-colors ${audience === "plain" ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"}`}
             >
               {t("쉬운 설명", "Plain", "やさしい説明")}
             </button>
             <button
               type="button"
               onClick={() => onAudienceChange("expert")}
-              className={`rounded-md px-3 py-1.5 transition-colors ${audience === "expert" ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"}`}
+              className={`flex h-full items-center rounded-md px-3 transition-colors ${audience === "expert" ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"}`}
             >
               {t("전문가", "Expert", "専門家")}
             </button>
@@ -165,7 +167,7 @@ export default function CurationBar({
             <button
               type="button"
               onClick={cancel}
-              className="ui-button-ghost px-4 py-2 text-sm"
+              className="ui-button-ghost inline-flex h-10 items-center px-4 text-sm"
             >
               {t("취소", "Cancel", "キャンセル")}
             </button>
@@ -174,7 +176,7 @@ export default function CurationBar({
               type="button"
               onClick={submit}
               disabled={disabled || !message.trim()}
-              className="ui-button-primary px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              className="ui-button-primary inline-flex h-10 items-center px-4 text-sm disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t("질문하기", "Ask", "質問する")}
             </button>
@@ -183,7 +185,7 @@ export default function CurationBar({
             <button
               type="button"
               onClick={reset}
-              className="ui-button-ghost px-4 py-2 text-sm"
+              className="ui-button-ghost inline-flex h-10 items-center px-4 text-sm"
             >
               {t("전체 보기", "Show everything", "すべて表示")}
             </button>

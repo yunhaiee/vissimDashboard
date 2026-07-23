@@ -1,22 +1,23 @@
 import type { ScenarioMeta } from "@/lib/api";
 
-// 10 hues drawn from the Claude Console graphing palette (blue/coral/sage/
-// periwinkle/ivory/teal/mauve/sky/salmon/gray, tuned for the dark theme) and
-// deliberately NOT reusing any hex from DIRECTION_COLORS or
-// INTERSECTION_COLORS in app/dashboard/page.tsx — those palettes render on
-// the same screens as scenario colors (direction bars, intersection markers)
-// and must stay visually distinguishable from them.
+// 10 vivid hues in the spirit of the Claude Console graphing palette
+// (blue/coral/green/violet/amber/cyan/pink/sky/orange/gray), saturated for
+// the dark theme so scenario keys read as distinct, confident colors rather
+// than the previous washed-out set. Deliberately NOT reusing any hex from the
+// (muted) DIRECTION_COLORS or INTERSECTION_COLORS in app/dashboard/page.tsx —
+// those render on the same screens and must stay distinguishable, which the
+// vividness gap now reinforces.
 const SCENARIO_PALETTE = [
-  "#5f95d5",
-  "#dc8373",
-  "#88ba92",
-  "#7d8fd6",
-  "#e3e0d5",
-  "#7fc0ca",
-  "#b58ebc",
-  "#a9cbf4",
-  "#ecac9c",
-  "#898781",
+  "#4c8dff",
+  "#f2704d",
+  "#46c08a",
+  "#9b7ef0",
+  "#e9b54c",
+  "#3bbfd1",
+  "#e56ca6",
+  "#6fb6f5",
+  "#e08a5a",
+  "#9aa0ab",
 ] as const;
 
 function hashScenarioId(id: string): number {
