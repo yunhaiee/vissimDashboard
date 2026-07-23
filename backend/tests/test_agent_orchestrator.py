@@ -42,6 +42,12 @@ EXPECTED_WRITE_TOOLS = {
     "set_random_seed",
 }
 
+# M2.4: the run tool is offered too — same rationale as the write tools
+# above (the dispatch-side gate + postrun detectors are the safety layer,
+# not withholding the definition), and render_contract() already narrated
+# it, so offering it also closes a prompt/capability mismatch.
+EXPECTED_RUN_TOOLS = {"run_simulation"}
+
 
 @pytest.fixture(autouse=True)
 def _reset_active_inpx():
@@ -147,7 +153,7 @@ def test_overview_conversation_answers_from_tools_and_writes_trace(tmp_path):
     # though_the_write_tool_is_offered below).
     offered = provider.calls[0]["tools"]
     assert {tool_def["name"] for tool_def in offered} == (
-        EXPECTED_READ_TOOLS | EXPECTED_WRITE_TOOLS | {"respond", "ask_user"}
+        EXPECTED_READ_TOOLS | EXPECTED_WRITE_TOOLS | EXPECTED_RUN_TOOLS | {"respond", "ask_user"}
     )
     for tool_def in offered:
         assert "summary" in tool_def["input_schema"]["properties"]

@@ -30,22 +30,28 @@ EXPECTED_TOOL_NAMES = {
     "compare_scenarios",
 }
 
-# M2.3's tools_edit.py registers these write-tier tools onto the SAME
+# M2.3's tools_edit.py registers these write-tier tools, and M2.4's
+# tools_run.py registers the one run-tier tool below, onto the SAME
 # default_registry. This file only imports tools_metrics/tools_network
 # directly, but pytest's collection phase imports every test module up
 # front -- including ones that import services.agent.orchestrator, which
-# imports tools_edit.py purely for its registration side effect (see that
-# module's docstring) -- so by the time any test in THIS file runs,
-# default_registry already carries all 11 tools regardless of this file's
-# own imports or test execution order. The anti-drift test below has to
-# know about them too, or it would (correctly, but confusingly) fail on
-# every run.
+# imports tools_edit.py and tools_run.py purely for their registration side
+# effect (see that module's docstring) -- so by the time any test in THIS
+# file runs, default_registry already carries all 12 tools regardless of
+# this file's own imports or test execution order. The anti-drift test
+# below has to know about them too, or it would (correctly, but
+# confusingly) fail on every run.
 EXPECTED_WRITE_TOOL_NAMES = {
     "set_vehicle_input_volume",
     "set_signal_cycle",
     "set_signal_offset",
     "set_sim_duration",
     "set_random_seed",
+}
+
+# M2.4's single run-gate tool (docs/phase2/02-ROADMAP.md M2.4).
+EXPECTED_RUN_TOOL_NAMES = {
+    "run_simulation",
 }
 
 
@@ -67,19 +73,21 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def test_default_registry_has_exactly_the_expected_read_and_write_tools():
-    """M1.2's 6 read tools + M2.3's 5 write tools, no phantoms, nothing
-    missing. Was "...exactly_the_six_read_tools" before M2.3 registered
-    tools_edit.py's write tools onto this same default_registry — renamed
-    and widened rather than split, since a second anti-drift test over the
-    same registry would just duplicate this one's headings/duplicate-check
-    logic for no real isolation (both modules' tools share one registry by
-    design)."""
+def test_default_registry_has_exactly_the_expected_read_write_and_run_tools():
+    """M1.2's 6 read tools + M2.3's 5 write tools + M2.4's 1 run tool, no
+    phantoms, nothing missing. Was "...exactly_the_six_read_tools" before
+    M2.3 registered tools_edit.py's write tools, then
+    "...the_expected_read_and_write_tools" before M2.4 registered
+    tools_run.py's run tool, onto this same default_registry — renamed and
+    widened each time rather than split, since a second anti-drift test over
+    the same registry would just duplicate this one's headings/duplicate-
+    check logic for no real isolation (all three modules' tools share one
+    registry by design)."""
     contract = render_contract(registry=default_registry)
     headings = re.findall(r"^## (\S+)$", contract, flags=re.MULTILINE)
 
     assert len(headings) == len(set(headings))  # no duplicates
-    assert set(headings) == EXPECTED_TOOL_NAMES | EXPECTED_WRITE_TOOL_NAMES
+    assert set(headings) == EXPECTED_TOOL_NAMES | EXPECTED_WRITE_TOOL_NAMES | EXPECTED_RUN_TOOL_NAMES
 
 
 def test_all_six_read_tools_are_tier_read():
@@ -94,6 +102,14 @@ def test_all_five_write_tools_are_tier_write():
         spec = default_registry.get(name)
         assert spec is not None, f"{name} not registered"
         assert spec.tier == "write"
+
+
+def test_run_simulation_is_tier_run_and_run_provider():
+    for name in EXPECTED_RUN_TOOL_NAMES:
+        spec = default_registry.get(name)
+        assert spec is not None, f"{name} not registered"
+        assert spec.tier == "run"
+        assert spec.provider == "run"
 
 
 def test_network_tools_use_inspect_provider_and_metrics_tools_use_metrics_provider():

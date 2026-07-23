@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import shutil
 import sys
 import threading
 import uuid
@@ -373,3 +374,205 @@ def _format_simulation_error(exc: Exception) -> str:
         )
 
     return f"Simulation failed: {message}"
+
+
+# ---------------------------------------------------------------------------
+# M2.4: agent-run job submission — RunContinuous, explicit source .inpx
+#
+# Distinct from start_simulation_job/_run_simulation above (which always
+# resolves the source network from the globally ACTIVE dataset and runs it
+# via a RunSingleStep loop for live interactive progress). An agent run
+# submits the calling turn's OWN session working copy (never the active
+# dataset — see services.agent.tools_run's module docstring) and uses
+# RunContinuous throughout: docs/phase2/00-EXECUTION-GUIDE.md SS3.1,
+# RunSingleStep over COM costs minutes for 60 sim-seconds and is reserved
+# for a possible future live-streaming feature, never batch/agent runs.
+# Reuses this module's existing job registry, _update_job bookkeeping, and
+# _check_pywin32/_format_simulation_error helpers — the "existing simulation
+# job queue" docs/phase2/DECISIONS.md's M2.3 entry says M2.4 runs must stay
+# on, not a parallel one.
+# ---------------------------------------------------------------------------
+
+
+def start_agent_simulation_job(
+    *, source_inpx: Path, duration_s: int, random_seeds: list
+) -> dict:
+    """Submit one agent-driven simulation job against an EXPLICIT source
+    .inpx to the same job registry/threading pattern ``start_simulation_job``
+    uses, but via ``RunContinuous``.
+
+    ``random_seeds`` is ONE job with N sequential sub-runs (one per seed,
+    each isolated in its own ``seed_NN`` subdirectory under the job's work
+    dir) rather than N separate jobs — ``results_reader.get_runtime_results``
+    already averages across every ``*.db`` it finds under a work dir
+    (``rglob("*.db")``), so this aggregates multi-seed KPIs for free with no
+    new aggregation logic. A ``None`` entry in ``random_seeds`` means "don't
+    override — run with whatever RandSeed the source network already has."
+    """
+    pywin32_available, pywin32_error = _check_pywin32()
+    if not (os.name == "nt" and pywin32_available):
+        raise SimulationUnavailableError(
+            pywin32_error or "VISSIM COM can run only on Windows with pywin32 available."
+        )
+    if not source_inpx.exists():
+        raise SimulationUnavailableError(f"Source network not found: {source_inpx}")
+    if not random_seeds:
+        raise SimulationParameterError("random_seeds must contain at least one entry (or None).")
+
+    job_id = str(uuid.uuid4())[:8]
+    record = create_job_record(
+        job_id,
+        {
+            "name": f"agent_run_{job_id}",
+            "source": "agent",
+            "sim_duration": duration_s,
+            "random_seeds": random_seeds,
+        },
+    )
+    _jobs[job_id] = record
+    t = threading.Thread(
+        target=_run_agent_simulation_job,
+        args=(job_id, source_inpx, duration_s, random_seeds),
+        daemon=True,
+    )
+    t.start()
+    return {
+        "id": job_id,
+        "status": "queued",
+        "scenario_result_id": record.get("scenario_result_id"),
+    }
+
+
+def _clear_stale_result_dbs(directory: Path) -> list[Path]:
+    """Delete every ``*.db`` already present under ``directory`` and return
+    what was removed.
+
+    A pre-existing result database must never be read as THIS run's result
+    (docs/phase2/02-ROADMAP.md M2.4). A fresh, uuid-keyed job/seed directory
+    should never already contain one, but this is enforced rather than
+    merely assumed — a stray leftover (e.g. a crashed prior attempt that
+    reused a directory) is deleted before Vissim ever runs, not discovered
+    (and silently misattributed) after.
+    """
+    removed: list[Path] = []
+    if not directory.exists():
+        return removed
+    for stale_db in directory.rglob("*.db"):
+        try:
+            stale_db.unlink()
+            removed.append(stale_db)
+        except OSError:
+            logger.warning("Could not remove stale result db %s", stale_db)
+    if removed:
+        logger.warning(
+            "Removed %d stale result db(s) from %s before running", len(removed), directory
+        )
+    return removed
+
+
+def _read_result_table_names(db_path: Path) -> set[str]:
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    finally:
+        conn.close()
+    return {str(row[0]).upper() for row in rows}
+
+
+def _run_agent_simulation_job(
+    job_id: str, source_inpx: Path, duration_s: int, random_seeds: list
+) -> None:
+    """M2.4 job runner thread body: RunContinuous once per seed, each seed
+    isolated in its own subdirectory so results_reader's existing multi-db
+    averaging aggregates KPIs across seeds with no new logic. Marks the job
+    "done" only after every seed's result database is verified to carry a
+    SIMULATIONRUN row (the run-completed artifact — never SimSec, which
+    resets to 0 the moment a run ends; see
+    docs/phase2/00-EXECUTION-GUIDE.md SS3.1)."""
+    ctrl = None
+    try:
+        import pythoncom
+
+        pythoncom.CoInitialize()
+    except ImportError:
+        _update_job(
+            job_id, status="error", error="pywin32 is not installed, so VISSIM COM cannot run."
+        )
+        logger.error("pythoncom not available")
+        return
+
+    try:
+        from services.vissim_com import VissimController
+
+        _update_job(job_id, status="running", progress=0.0)
+        work_dir = job_dir(job_id)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        all_tables: set[str] = set()
+
+        for index, seed in enumerate(random_seeds):
+            seed_dir = work_dir / f"seed_{index:02d}"
+            seed_dir.mkdir(parents=True, exist_ok=True)
+            _clear_stale_result_dbs(seed_dir)
+
+            run_inpx = seed_dir / source_inpx.name
+            shutil.copyfile(source_inpx, run_inpx)
+
+            ctrl = VissimController()
+            try:
+                # attach_to_running=False is a hard safety rule for automation:
+                # the default (GetActiveObject) can attach to a human's open
+                # Vissim GUI, destroying their unsaved work. See
+                # docs/phase2/00-EXECUTION-GUIDE.md SS1 rule 3.
+                ctrl.connect(visible=False, attach_to_running=False)
+                ctrl.load_network(str(run_inpx))
+                ctrl.set_sim_duration(duration_s)
+                if seed is not None:
+                    ctrl.set_random_seed(seed)
+
+                # RunContinuous is a single COM call that runs to SimPeriod
+                # internally (~7.3x realtime observed) — RunSingleStep in a
+                # Python loop costs minutes for 60 sim-seconds and is
+                # reserved for a future live-streaming feature, never
+                # batch/agent runs (docs/phase2/00-EXECUTION-GUIDE.md SS3.1).
+                ctrl.vissim.Simulation.RunContinuous()
+
+                db_paths = sorted(seed_dir.rglob("*.db"), key=lambda p: p.stat().st_mtime)
+                if not db_paths:
+                    raise RuntimeError(
+                        f"RunContinuous finished but no results .db was written for seed "
+                        f"{seed!r} (index {index})."
+                    )
+                tables = _read_result_table_names(db_paths[-1])
+                if "SIMULATIONRUN" not in tables:
+                    raise RuntimeError(
+                        f"Results database for seed {seed!r} (index {index}) has no "
+                        "SIMULATIONRUN row -- the run did not complete."
+                    )
+                all_tables |= tables
+            finally:
+                try:
+                    ctrl.disconnect()
+                except Exception:
+                    logger.exception(
+                        "Error disconnecting agent-run Vissim instance (job %s, seed index %d)",
+                        job_id,
+                        index,
+                    )
+                ctrl = None
+
+            _update_job(job_id, progress=(index + 1) / len(random_seeds))
+
+        _update_job(job_id, status="done", progress=1.0, result_tables=sorted(all_tables))
+        logger.info("Agent simulation job %s completed (%d seed run(s))", job_id, len(random_seeds))
+    except Exception as exc:
+        logger.exception("Agent simulation job %s failed", job_id)
+        _update_job(job_id, status="error", error=_format_simulation_error(exc))
+    finally:
+        try:
+            if ctrl is not None:
+                ctrl.disconnect()
+        except Exception:
+            pass
+        pythoncom.CoUninitialize()

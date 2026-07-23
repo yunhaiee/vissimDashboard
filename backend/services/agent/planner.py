@@ -60,7 +60,7 @@ _OBSERVATION_SNIPPET_CHARS = 300
 # now lives entirely in the dispatch-side tier gate (orchestrator.py's
 # WriteGate) and the guardrail engine, not in withholding the tool
 # definition itself. ``run`` tools join in M2.4 behind their own gating.
-_OFFERED_TIERS = frozenset({"read", "write"})
+_OFFERED_TIERS = frozenset({"read", "write", "run"})  # run added at M2.4 review: the gate, not the offer, is the safety layer
 
 _FALLBACK_GROUNDING_TOOL = "get_network_overview"
 

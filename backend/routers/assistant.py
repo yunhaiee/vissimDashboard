@@ -27,7 +27,9 @@ from services.agent.guardrails import GuardrailEngine
 from services.agent.orchestrator import run_agent_turn
 from services.agent.planner import pick_language_text
 from services.agent.state import ArtifactManager
+from services.agent.toolkit import default_registry
 import services.agent.tools_network as tools_network
+import services.agent.tools_run as tools_run
 from services.assistant_router import (
     AssistantRequestContext,
     VissimAssistantRouter,
@@ -439,6 +441,13 @@ async def _stream_agent_turn(
             # concurrency limitation (docs/phase2/DECISIONS.md, "Future
             # multi-dataset work"), not a fix for it.
             tools_network.set_active_inpx(artifact_manager.working_path)
+            # M2.4: tools_run.py's run_simulation submits THIS turn's working
+            # copy to the simulation job queue — a SEPARATE module-global
+            # from tools_network's (mirrors edit_session.py's own active-
+            # session pattern rather than reaching into tools_network's
+            # private resolver; see tools_run.py's module docstring). Reset
+            # in `finally` alongside tools_network's, same hygiene rationale.
+            tools_run.set_active_run_source(artifact_manager.working_path)
             if edit_session is not None:
                 set_active_edit_session(edit_session)
             try:
@@ -462,6 +471,7 @@ async def _stream_agent_turn(
             holder["error"] = exc
         finally:
             tools_network.set_active_inpx(None)
+            tools_run.clear_active_run_source()
             step_queue.put(("end", None))
 
     threading.Thread(target=run, name=f"agent-stream-{stream_id}", daemon=True).start()
@@ -728,7 +738,22 @@ def approve_agent_action(payload: AgentApproveRequest, request: Request):
     artifact_manager = ArtifactManager(source_inpx=get_active_inpx_path(), work_dir=work_dir)
     engine = GuardrailEngine()
     gate = PreapprovedWriteGate(set(pending.get("signatures") or []))
-    edit_session = _build_edit_session(artifact_manager.working_path)
+    # M2.4: a run-tier approval needs the artifact manager + active-inpx
+    # context (set in _stream_agent_turn's run(), same as every turn) but
+    # NOT a live VissimEditSession — the job queue owns COM for runs (see
+    # docs/phase2/DECISIONS.md, "VissimEditSession runs COM on the agent
+    # turn's worker thread, not the job queue"). Building one anyway would
+    # needlessly spend a scarce edit-session concurrency slot (MAX_CONCURRENT
+    # _EDIT_SESSIONS=2) launching a Vissim instance no run tool ever touches.
+    # `actions` holds exactly one entry today (run_agent_turn returns on the
+    # FIRST ApprovalRequired), so this is equivalent to checking that one
+    # action's own tier, but stays correct if a future milestone ever
+    # batches more than one approved action per turn.
+    needs_edit_session = any(
+        (spec := default_registry.get(action.get("tool", ""))) is not None and spec.tier == "write"
+        for action in actions
+    )
+    edit_session = _build_edit_session(artifact_manager.working_path) if needs_edit_session else None
 
     async def approve_events() -> AsyncIterator[str]:
         async for event in _stream_agent_turn(

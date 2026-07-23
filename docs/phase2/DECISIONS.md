@@ -497,3 +497,33 @@ language; no other persistence mechanism exists in this stateless file-based des
 **Decision:** two additive fields. The frontend never reads this file directly — its contract
 is the NDJSON `approval_request` event + `/agent/approve` — so the schema stays
 backend-internal.
+
+---
+
+## 2026-07-23 — M2.4 decision batch (run gate + post-run detectors)
+
+- **Run tier reuses the WriteGate machinery verbatim** (`_GATED_TIERS = {"write","run"}`) —
+  `authorize(action, spec)` was already tier-agnostic; no parallel RunGate type.
+- **`postrun` is called by orchestrator.py, not the tool** — mirrors the postwrite precedent;
+  a tool cannot bypass the ablation flag by constructing its own engine.
+- **`tools_run` has its own active-run-source module-global** (set/cleared alongside
+  `set_active_inpx` in the same try/finally) rather than reaching into `tools_network`
+  privates.
+- **Multi-seed = ONE job with N sequential `seed_NN` sub-runs** — `results_reader` already
+  averages every .db via rglob; parallel seeds deferred (Vissim ~4-instance ceiling).
+- **`deleted_vehicles` is always `None` for now**: DiffusTm removals live only in the run's
+  `.err` text log, never in the result .db (verified against the constraint catalog + every
+  known table). `vehicles_deleted_in_run` cannot fire until an `.err` parser exists — tracked
+  gap for M3.
+- **`/agent/approve` builds a VissimEditSession only for write-tier actions** — run approvals
+  never burn an edit-session slot.
+- **Controller review fix: `_OFFERED_TIERS` now includes `"run"`** — the executor flagged that
+  `run_simulation` was registered+gated but never offered natively to a live LLM while
+  `render_contract()` already narrated it (prompt/capability mismatch). Offered-tools
+  anti-drift pin updated deliberately (`EXPECTED_RUN_TOOLS`).
+
+Live acceptance (run_gate_live_check.py, real Vissim 2026, Beijing clone): edit → 300s run
+through the real job queue via RunContinuous → SIMULATIONRUN row verified → the
+`results_missing_kpi_tables` warning FIRED on a genuine short run — the detector proven
+against real Vissim behavior. Trace: plan → preflight → action_start → action_end → postrun
+→ warning.
