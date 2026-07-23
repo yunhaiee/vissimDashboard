@@ -145,7 +145,7 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
   }, [onDatasetChange, t]);
 
   return (
-    <div className={`${fullWidth ? "min-w-0" : "min-w-[260px]"} rounded-xl border border-slate-200 ${hasCustomBackground ? "" : "bg-surface/95"} p-3 ${hasCustomShadow ? "" : "shadow-sm"} ${className}`}>
+    <div className={`${fullWidth ? "min-w-0" : "min-w-[260px]"} rounded-xl border border-slate-200  p-5  ${className}`}>
       <input
         ref={fileInputRef}
         type="file"
@@ -155,8 +155,8 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
           handleFileSelected(event.target.files?.[0]);
         }}
       />
-      <p className="text-xs font-semibold text-slate-800">{t("모델 선택", "Model")}</p>
-      <p className="mt-1 truncate text-[11px] leading-relaxed text-slate-500">
+      <p className="text-sm font-medium text-slate-600">{t("모델 선택", "Model")}</p>
+      <p className="mt-1 truncate text-xs leading-relaxed text-slate-500">
         {activeDataset
           ? activeDataset.source === "uploaded"
             ? t(`업로드됨: ${activeDataset.filename}`, `Uploaded: ${activeDataset.filename}`, `アップロード済み: ${activeDataset.filename}`)
@@ -174,7 +174,7 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
           {t("다시 시도", "Retry")}
         </button>
       )}
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div className="mt-4 flex flex-wrap gap-2">
         <button
           type="button"
           onClick={handleSelectFile}
@@ -231,7 +231,7 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
         onCancel={() => setConfirmReset(false)}
       />
       {activeDataset && (
-        <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-slate-200/70 pt-3 text-[11px]">
+        <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-2 border-t border-slate-200 pt-3.5 text-xs">
           <div className="flex items-center justify-between">
             <dt className="text-slate-500">{t("형식", "Format")}</dt>
             <dd className="font-medium uppercase tracking-wide text-slate-700">

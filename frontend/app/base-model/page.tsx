@@ -530,12 +530,12 @@ export default function BaseModelPage() {
           </div>
         </div>
 
-        <div className="mt-4 grid items-start gap-3 lg:grid-cols-[1.6fr_1fr]">
-          <div className="grid items-start gap-3 sm:grid-cols-2">
-            <VissimDatasetBanner onDatasetChange={handleDatasetChange} fullWidth className="bg-slate-50/70 shadow-none" />
-            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-              <p className="text-xs font-semibold text-slate-800">{t("실측데이터(엑셀)", "Observed Data (Excel)")}</p>
-              <p className="mt-1 truncate text-[11px] leading-relaxed text-slate-500">
+        <div className="mt-4 grid gap-3 lg:grid-cols-[1.6fr_1fr]">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <VissimDatasetBanner onDatasetChange={handleDatasetChange} fullWidth className="h-full" />
+            <div className="h-full rounded-xl border border-slate-200 p-5">
+              <p className="text-sm font-medium text-slate-600">{t("실측데이터(엑셀)", "Observed Data (Excel)")}</p>
+              <p className="mt-1 truncate text-xs leading-relaxed text-slate-500">
                 {workbook.exists
                   ? workbook.filename
                   : t("표준 real_counts.xlsx가 아직 연결되지 않았습니다.", "No standard real_counts.xlsx is connected yet.")}
@@ -561,7 +561,7 @@ export default function BaseModelPage() {
                 </button>
               </div>
               {workbook.exists && (
-                <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 border-t border-slate-200/70 pt-3 text-[11px]">
+                <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-2 border-t border-slate-200 pt-3.5 text-xs">
                   <div className="flex items-center justify-between">
                     <dt className="text-slate-500">{t("교통량 행", "Count rows")}</dt>
                     <dd className="font-medium text-slate-700">{workbook.counts.length}</dd>
@@ -596,7 +596,9 @@ export default function BaseModelPage() {
               )}
             </div>
           </div>
-          <div className="grid gap-3">
+          <div className="h-full rounded-xl border border-slate-200 p-5">
+            <p className="text-sm font-medium text-slate-600">{t("분석 설정", "Analysis Setup")}</p>
+            <div className="mt-4 grid gap-3">
             <ControlField label={t("BaseAM Model", "BaseAM Model")}>
               <select className="ui-select" value={amScenarioId} onChange={(event) => setAmScenarioId(event.target.value)} disabled={scenarios.length === 0}>
                 {scenarios.map((scenario) => (
@@ -624,6 +626,7 @@ export default function BaseModelPage() {
                 ))}
               </select>
             </ControlField>
+            </div>
           </div>
         </div>
       </section>

@@ -160,34 +160,34 @@ body {
   min-height: 100vh;
 }
 
-.app-topbar {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 2600;
-  border-bottom: 1px solid var(--border-subtle);
-  backdrop-filter: blur(14px);
-  background: rgba(13, 13, 13, 0.85);
-}
-
-.app-topbar-inner {
-  margin: 0 auto;
+/* Console-style shell: fixed-width dark sidebar + fluid content column. */
+.app-frame {
   display: flex;
-  max-width: 80rem;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.95rem 1.5rem;
+  min-height: 100vh;
 }
 
-.app-brand {
-  margin-right: 1.25rem;
-  display: inline-flex;
+.app-sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: 240px;
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  padding: 1.25rem 0.75rem 1rem;
+  background: var(--bg-deep);
+  border-right: 1px solid var(--border-subtle);
+  z-index: 2600;
+}
+
+.app-side-brand {
+  display: flex;
   align-items: center;
   gap: 0.55rem;
+  padding: 0.15rem 0.65rem 1.1rem;
   color: var(--text-strong);
   font-family: var(--font-display);
-  font-size: 1.05rem;
+  font-size: 1.02rem;
   font-weight: 600;
   letter-spacing: 0.005em;
 }
@@ -199,42 +199,45 @@ body {
   background: var(--accent);
 }
 
-.app-link {
-  position: relative;
+.app-side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.app-side-link {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 0.5rem;
   color: var(--text-muted);
   font-size: 0.88rem;
   font-weight: 500;
-  letter-spacing: 0.01em;
-  transition: color 180ms ease;
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
-.app-link:hover {
+.app-side-link svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  opacity: 0.85;
+}
+
+.app-side-link:hover {
   color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.04);
 }
 
-.app-link::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  bottom: -0.25rem;
-  height: 1.5px;
-  width: 100%;
-  transform: scaleX(0);
-  transform-origin: left center;
-  background: var(--accent);
-  transition: transform 180ms ease;
-}
-
-.app-link:hover::after {
-  transform: scaleX(1);
-}
-
-.app-link-active {
+.app-side-link-active {
   color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.06);
 }
 
-.app-link-active::after {
-  transform: scaleX(1);
+.app-side-footer {
+  margin-top: auto;
+  padding: 0.75rem 0.25rem 0;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .app-lang-switch {
@@ -269,19 +272,15 @@ body {
   color: #0b0b0b;
 }
 
-.app-lang-in-topbar {
-  position: absolute;
-  right: max(0.75rem, env(safe-area-inset-right));
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 1;
-  width: max-content;
+.app-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2rem 2.5rem 3rem;
 }
 
-.app-content {
+.app-content-inner {
   margin: 0 auto;
-  max-width: 80rem;
-  padding: 5.75rem 1.5rem 2rem;
+  max-width: 76rem;
 }
 
 .ui-surface {
@@ -457,22 +456,52 @@ body {
   }
 }
 
-@media (max-width: 768px) {
-  .app-topbar-inner {
-    flex-wrap: wrap;
-    row-gap: 0.5rem;
+@media (max-width: 880px) {
+  .app-frame {
+    flex-direction: column;
   }
 
-  .app-brand {
-    margin-right: 0.25rem;
+  .app-sidebar {
+    position: static;
+    height: auto;
+    width: 100%;
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.65rem 1rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-subtle);
+    overflow-x: auto;
   }
 
-  .app-lang-in-topbar {
-    right: max(0.5rem, env(safe-area-inset-right));
-    top: 50%;
+  .app-side-brand {
+    padding: 0 0.5rem 0 0;
+    white-space: nowrap;
+  }
+
+  .app-side-nav {
+    flex-direction: row;
+    gap: 0.25rem;
+  }
+
+  .app-side-link {
+    white-space: nowrap;
+    padding: 0.45rem 0.55rem;
+  }
+
+  .app-side-link svg {
+    display: none;
+  }
+
+  .app-side-footer {
+    margin-top: 0;
+    margin-left: auto;
+    padding: 0;
+    border-top: 0;
   }
 
   .app-content {
-    padding-top: 6.2rem;
+    padding: 1.25rem 1rem 2rem;
   }
 }
