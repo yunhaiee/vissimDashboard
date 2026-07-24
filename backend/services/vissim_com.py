@@ -509,6 +509,98 @@ class VissimController:
     def available_conflict_area_nos(self) -> list[int]:
         return self._collection_nos(self.vissim.Net.ConflictAreas)
 
+    def set_route_relative_flow(
+        self, decision_no: int, route_no: int, rel_flow: float, interval_no: int = 1
+    ) -> None:
+        """Set a static routing decision's route's ``RelFlow(interval_no)``
+        (COM attribute id ``RelFlow`` -- INDEXED ONLY, verified live via
+        ``backend/tools/routing_decision_probe.py`` against Vissim 2026:
+        ``AttValue('RelFlow')`` with no index RAISES ("The subattribute no.
+        1 of type 'Time Interval' of the attribute 'RELFLOW()' is invalid:
+        Sub-attribute not specified") -- there is no scalar form at all,
+        unlike ``CycTm``/``Offset``. 1-based interval index, matching
+        ``Volume(i)``/``Cont(i)`` (v2 unit ⑤), but with NO Cont-flag
+        equivalent: a second live probe on a genuine 2-interval route (LRT
+        Priority Luxembourg.LU, decision 1 route 1) confirmed every interval
+        always carries an explicit stored value with nothing to "clear"
+        first, so this method never needs the clear-then-set two-step
+        ``set_vehicle_input`` uses.
+
+        **Normalization semantics (the central empirical finding, verified
+        live).** ``RelFlow`` is a RAW weight, not a pre-computed proportion:
+        writing route 1's RelFlow from 245.0 to 745.0 on a real 3-route
+        decision left routes 2 and 3's OWN stored RelFlow values completely
+        UNCHANGED (139.0 and 1454.0, byte-identical before/after) -- Vissim
+        does not renormalize sibling routes at write time. Each route's
+        ACTUAL simulated traffic share is only computed at RUN time, as this
+        route's RelFlow divided by the SUM of every route's RelFlow in the
+        same decision. Writing RelFlow on a decision's ONLY route (verified
+        live, Beijing decision no=9) succeeds and reads back normally like
+        any other write -- there is simply nothing to redistribute against,
+        so the actual split stays 100% down that one route regardless of
+        the number.
+
+        Error behavior (per the 3-point AttValue taxonomy in
+        docs/phase2/00-EXECUTION-GUIDE.md / DECISIONS.md): a bogus
+        ``decision_no`` and a bogus ``route_no`` (within a real decision)
+        both fail CLOSED via ``ItemByKey`` ("object does not exist"),
+        matching every other per-object collection lookup in this module
+        (conflict areas, vehicle inputs, signal controllers) -- not
+        ``Net.AttValue``'s fail-OPEN exception. Writing/reading a genuinely
+        non-existent interval index on a route that HAS fewer intervals also
+        fails CLOSED ("Object N not found"), matching ``Volume(i)``'s own
+        per-object-indexed behavior -- not a new data point, a
+        reconfirmation.
+        """
+        try:
+            decision = self._item_by_key(
+                self.vissim.Net.VehicleRoutingDecisionsStatic,
+                decision_no,
+                "Vehicle routing decision",
+                self.available_routing_decision_nos(),
+            )
+            route = self._item_by_key(
+                decision.VehRoutSta,
+                route_no,
+                "Route",
+                self._collection_nos(decision.VehRoutSta),
+            )
+            route.SetAttValue(f"RelFlow({interval_no})", rel_flow)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set decision {decision_no} route {route_no} interval {interval_no} "
+                f"relative flow to {rel_flow}: {exc}"
+            ) from exc
+
+    def get_route_relative_flow(self, decision_no: int, route_no: int, interval_no: int = 1) -> float:
+        """Paired getter for :meth:`set_route_relative_flow`."""
+        try:
+            decision = self._item_by_key(
+                self.vissim.Net.VehicleRoutingDecisionsStatic,
+                decision_no,
+                "Vehicle routing decision",
+                self.available_routing_decision_nos(),
+            )
+            route = self._item_by_key(
+                decision.VehRoutSta,
+                route_no,
+                "Route",
+                self._collection_nos(decision.VehRoutSta),
+            )
+            return float(route.AttValue(f"RelFlow({interval_no})"))
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read decision {decision_no} route {route_no} interval {interval_no} "
+                f"relative flow: {exc}"
+            ) from exc
+
+    def available_routing_decision_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.VehicleRoutingDecisionsStatic)
+
     def get_sim_sec(self) -> float:
         try:
             value = float(self.vissim.Simulation.AttValue("SimSec"))

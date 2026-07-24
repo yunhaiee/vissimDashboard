@@ -25,6 +25,7 @@ def _shadow_model(
     signals: list[dict[str, Any]] | None = None,
     nodes: list[dict[str, Any]] | None = None,
     conflict_areas: list[dict[str, Any]] | None = None,
+    routes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -36,6 +37,34 @@ def _shadow_model(
         "signals": signals if signals is not None else [],
         "nodes": nodes if nodes is not None else [],
         "conflict_areas": conflict_areas if conflict_areas is not None else [],
+        # v2 unit ⑥: the flat routes list (id = "{decision_no}.{route_no}")
+        # -- see tools_network._flatten_routes for the real shape this mirrors.
+        "routes": routes if routes is not None else [],
+    }
+
+
+def _route(
+    route_no: str,
+    decision_no: str,
+    *,
+    rel_flow: float | None = 100.0,
+    rel_flows: list[dict[str, Any]] | None = None,
+    disconnected: bool = False,
+) -> dict[str, Any]:
+    if rel_flows is None:
+        rel_flows = [{"interval_no": 1, "from_s": 0.0, "rel_flow": rel_flow}] if rel_flow is not None else []
+    return {
+        "id": f"{decision_no}.{route_no}",
+        "decision_no": decision_no,
+        "route_no": route_no,
+        "dest_link": "1",
+        "dest_pos": 0.0,
+        "rel_flow": rel_flow,
+        "interval_count": len(rel_flows),
+        "rel_flows": rel_flows,
+        "link_seq": [],
+        "disconnected": disconnected,
+        "manually_scaled_this_turn": False,
     }
 
 
@@ -603,6 +632,158 @@ def test_postwrite_interval_no_2_diff_still_flags_unrelated_drift():
         "before": 200.0,
         "after": 999.0,
     } in diff
+
+
+# ---------------------------------------------------------------------------
+# postwrite — set_route_relative_flow (v2 unit ⑥): TWO-PART id_param_parts
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_diff_is_silent_when_only_the_target_routes_rel_flow_changed():
+    action = _action("set_route_relative_flow", decision_no="1", route_no="1", rel_flow=745.0)
+    before = _shadow_model(routes=[_route("1", "1", rel_flow=245.0), _route("2", "1", rel_flow=139.0)])
+    after = _shadow_model(routes=[_route("1", "1", rel_flow=745.0), _route("2", "1", rel_flow=139.0)])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 745.0, "readback_value": 745.0})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_flags_an_unrelated_sibling_routes_rel_flow_change_as_evidence():
+    # The written route's OWN id ("1.1") is exempt, but a SIBLING route
+    # (same decision, different route_no -- a different flat-list id)
+    # silently changing too must still be evidence -- Vissim does NOT
+    # renormalize siblings on write (verified live), so a sibling actually
+    # moving is a genuine anomaly this diff must catch.
+    action = _action("set_route_relative_flow", decision_no="1", route_no="1", rel_flow=745.0)
+    before = _shadow_model(routes=[_route("1", "1", rel_flow=245.0), _route("2", "1", rel_flow=139.0)])
+    after = _shadow_model(
+        routes=[_route("1", "1", rel_flow=745.0), _route("2", "1", rel_flow=999.0)]  # unrelated drift
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 745.0, "readback_value": 745.0})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {
+        "object_class": "routes",
+        "object_id": "1.2",
+        "change": "field_changed",
+        "field": "rel_flow",
+        "before": 139.0,
+        "after": 999.0,
+    } in diff
+
+
+def test_postwrite_diff_does_not_confuse_two_decisions_own_route_no_1():
+    # decision 1 route 1 ("1.1") and decision 5 route 1 ("5.1") are two
+    # entirely different objects sharing the same route_no -- the
+    # synthesized id must keep them apart (a bug here would either miss real
+    # drift or false-positive on the unrelated decision's own route 1).
+    action = _action("set_route_relative_flow", decision_no="1", route_no="1", rel_flow=745.0)
+    before = _shadow_model(routes=[_route("1", "1", rel_flow=245.0), _route("1", "5", rel_flow=2845.0)])
+    after = _shadow_model(routes=[_route("1", "1", rel_flow=745.0), _route("1", "5", rel_flow=2845.0)])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 745.0, "readback_value": 745.0})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_route_relative_flow_target_persisted_check_interval_1_byte_compatible():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(routes=[_route("1", "1", rel_flow=245.0)])
+    after = _shadow_model(routes=[_route("1", "1", rel_flow=245.0)])  # write never reached the file
+    action = _action("set_route_relative_flow", decision_no="1", route_no="1", rel_flow=745.0)
+
+    report = engine.postwrite(action, before, after, {"written_value": 745.0, "readback_value": 745.0})
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "routes"
+    assert check["object_id"] == "1.1"
+    assert check["field"] == "rel_flow"
+    assert check["saved_value"] == 245.0
+
+
+def test_postwrite_route_relative_flow_target_persisted_check_interval_2_reads_rel_flows_list():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        routes=[
+            _route(
+                "1",
+                "1",
+                rel_flows=[
+                    {"interval_no": 1, "from_s": 0.0, "rel_flow": 45.0},
+                    {"interval_no": 2, "from_s": 5400.0, "rel_flow": 45.0},
+                ],
+            )
+        ]
+    )
+    after = _shadow_model(
+        routes=[
+            _route(
+                "1",
+                "1",
+                rel_flows=[
+                    {"interval_no": 1, "from_s": 0.0, "rel_flow": 45.0},
+                    {"interval_no": 2, "from_s": 5400.0, "rel_flow": 999.0},
+                ],
+            )
+        ]
+    )
+    action = _action(
+        "set_route_relative_flow", decision_no="1", route_no="1", rel_flow=999.0, interval_no=2
+    )
+
+    report = engine.postwrite(action, before, after, {"written_value": 999.0, "readback_value": 999.0})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_route_relative_flow_target_persisted_check_interval_2_fires_when_not_persisted():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        routes=[
+            _route(
+                "1",
+                "1",
+                rel_flows=[
+                    {"interval_no": 1, "from_s": 0.0, "rel_flow": 45.0},
+                    {"interval_no": 2, "from_s": 5400.0, "rel_flow": 45.0},
+                ],
+            )
+        ]
+    )
+    after = _shadow_model(
+        routes=[
+            _route(
+                "1",
+                "1",
+                rel_flows=[
+                    {"interval_no": 1, "from_s": 0.0, "rel_flow": 45.0},
+                    # interval 2 unchanged -- the write never reached the file.
+                    {"interval_no": 2, "from_s": 5400.0, "rel_flow": 45.0},
+                ],
+            )
+        ]
+    )
+    action = _action(
+        "set_route_relative_flow", decision_no="1", route_no="1", rel_flow=999.0, interval_no=2
+    )
+
+    report = engine.postwrite(action, before, after, {"written_value": 999.0, "readback_value": 999.0})
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["field"] == "rel_flows[2].rel_flow"
+    assert check["written_value"] == 999.0
+    assert check["saved_value"] == 45.0
 
 
 def test_postwrite_unpersisted_conflict_area_status_is_blocking():

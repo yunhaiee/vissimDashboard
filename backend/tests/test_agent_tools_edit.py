@@ -104,6 +104,34 @@ class FakeEditSession:
         self._record("get_conflict_area", conflict_area_no=conflict_area_no)
         return self._readback["conflict_area"]
 
+    def set_route_relative_flow(
+        self, decision_no: int, route_no: int, rel_flow: float, interval_no: int = 1
+    ) -> None:
+        if interval_no == 1:
+            self._record(
+                "set_route_relative_flow", decision_no=decision_no, route_no=route_no, rel_flow=rel_flow
+            )
+        else:
+            self._record(
+                "set_route_relative_flow",
+                decision_no=decision_no,
+                route_no=route_no,
+                rel_flow=rel_flow,
+                interval_no=interval_no,
+            )
+
+    def get_route_relative_flow(self, decision_no: int, route_no: int, interval_no: int = 1) -> float:
+        if interval_no == 1:
+            self._record("get_route_relative_flow", decision_no=decision_no, route_no=route_no)
+        else:
+            self._record(
+                "get_route_relative_flow",
+                decision_no=decision_no,
+                route_no=route_no,
+                interval_no=interval_no,
+            )
+        return self._readback["route_relative_flow"]
+
     def persist(self) -> None:
         self.persist_calls += 1
 
@@ -140,6 +168,10 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
             {"link_id": "101", "speed_kmh": 40.0, "from_m": 0.0, "length_m": 20.0},
         ),
         ("set_conflict_area_status", {"conflict_area_no": "3", "status": "AHASRIGHTOFWAY"}),
+        (
+            "set_route_relative_flow",
+            {"decision_no": "1", "route_no": "1", "rel_flow": 500.0},
+        ),
     ],
 )
 def test_no_active_session_yields_structured_error_never_a_crash(tool_name, params):
@@ -403,6 +435,136 @@ def test_set_conflict_area_status_rejects_a_status_outside_the_verified_vocabula
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "invalid_params"
     assert session.calls == []
+
+
+# ---------------------------------------------------------------------------
+# set_route_relative_flow — v2 unit (6)
+# ---------------------------------------------------------------------------
+
+
+def test_set_route_relative_flow_happy_path_interval_1_is_byte_compatible():
+    session = FakeEditSession(readback={"route_relative_flow": 745.0})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_route_relative_flow", decision_no="1", route_no="1", rel_flow=745.0
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": 745.0, "readback_value": 745.0}
+    assert "raw weight" in envelope["message"]
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {"op": "set_route_relative_flow", "decision_no": 1, "route_no": 1, "rel_flow": 745.0},
+        {"op": "get_route_relative_flow", "decision_no": 1, "route_no": 1},
+    ]
+    # decision_no/route_no were coerced str -> int at the COM boundary.
+    assert isinstance(session.calls[0]["decision_no"], int)
+    assert isinstance(session.calls[0]["route_no"], int)
+
+
+def test_set_route_relative_flow_interval_no_2_happy_path():
+    session = FakeEditSession(readback={"route_relative_flow": 999.0})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_route_relative_flow", decision_no="1", route_no="1", rel_flow=999.0, interval_no=2
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": 999.0, "readback_value": 999.0}
+    assert "interval 2" in envelope["message"]
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {
+            "op": "set_route_relative_flow",
+            "decision_no": 1,
+            "route_no": 1,
+            "rel_flow": 999.0,
+            "interval_no": 2,
+        },
+        {"op": "get_route_relative_flow", "decision_no": 1, "route_no": 1, "interval_no": 2},
+    ]
+
+
+def test_set_route_relative_flow_readback_mismatch_still_reports_ok_envelope():
+    # Same discipline as every other write tool: comparing written vs
+    # read-back is guardrails.py's postwrite job, not this tool's.
+    session = FakeEditSession(readback={"route_relative_flow": 139.0})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_route_relative_flow", decision_no="1", route_no="1", rel_flow=745.0
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": 745.0, "readback_value": 139.0}
+
+
+def test_set_route_relative_flow_interval_no_zero_is_rejected_at_param_layer():
+    session = FakeEditSession(readback={"route_relative_flow": 745.0})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_route_relative_flow",
+        decision_no="1",
+        route_no="1",
+        rel_flow=745.0,
+        interval_no=0,
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_route_relative_flow_vissim_refusal_surfaces_as_structured_error():
+    session = FakeEditSession(
+        raise_on={
+            "set_route_relative_flow": RuntimeError(
+                "Could not set decision 1 route 99 interval 1 relative flow to 500.0: "
+                "CCOMVehicleRouteStaticContainerBase::get_ItemByKey failed: object does not exist"
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_route_relative_flow", decision_no="1", route_no="99", rel_flow=500.0)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "object does not exist" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+def test_set_route_relative_flow_extra_param_is_rejected_before_the_tool_ever_runs():
+    session = FakeEditSession(readback={"route_relative_flow": 745.0})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_route_relative_flow",
+        decision_no="1",
+        route_no="1",
+        rel_flow=745.0,
+        extra_field="nope",
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_route_relative_flow_non_numeric_route_no_is_rejected_not_a_crash():
+    session = FakeEditSession(readback={"route_relative_flow": 745.0})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_route_relative_flow", decision_no="1", route_no="not-a-number", rel_flow=745.0
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert session.persist_calls == 0
 
 
 # ---------------------------------------------------------------------------

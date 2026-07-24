@@ -931,3 +931,31 @@ supported-verbs section updated for interval_no. FOLLOW-UPS RECORDED: ArtifactMa
 clone() copies only the .inpx — sibling assets (external .vap controller files etc.) are
 not cloned, surfaced live on this network (init failed until the script copied siblings);
 needs its own unit before networks with external controller files work in edit sessions.
+
+---
+
+## 2026-07-24 — v2 unit ⑥ (queue complete): route relative flows shipped; raw-weight semantics settled
+
+**Context:** probed live on Beijing (12 decisions / 28 routes). RelFlow has NO scalar COM
+form (AttValue('RelFlow') raises "Sub-attribute not specified") — indexed-only, interval-
+indexed like Volume(i), no Cont trap (every interval always carries a value). CENTRAL
+FINDING: writing one route's RelFlow does NOT renormalize siblings — relFlow is a raw
+weight; the simulated share is this-route/sum-of-decision, computed only at run time.
+Error taxonomy reconfirmed (bogus decision/route/interval all fail CLOSED).
+
+**Decision:** shadow_model gains routing_decisions (nested) + routes (flat, decision.route
+keyed, with a genuine disconnected flag from linkSeq-vs-links) — waking
+route_integrity_unverifiable (#31) for real. New get_routing_decisions +
+set_route_relative_flow(decision_no, route_no, rel_flow, interval_no); constraints #46
+route_not_found_in_decision, #47 interval-out-of-range, #48 split_confirm (always fires,
+echoing old/new relFlow AND the estimated resulting share % so the card is never a
+misleading raw number). Guardrails gained id_param_parts for the first two-part-identity
+write tool. demand_scale_route_double_count_gap stays open by design (needs turn-scoped
+orchestrator state); stale_route_files untouched (DA subsystem). Registry 45→48.
+
+**Consequence:** route splits are inspectable and editable, live-verified end to end
+(preflight refusals with candidates → COM write+readback → persisted XML with siblings
+byte-untouched → load_check clean). Route-identity stability verified within-session only
+(no structural edit tool exists yet to stress it across geometry ops). THE SIX-UNIT
+UNATTENDED QUEUE IS COMPLETE — controller review pass bumped TOOL-CATALOG + the
+supported-verbs prompt (present the share, never the raw weight alone).

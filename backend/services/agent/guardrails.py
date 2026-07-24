@@ -69,6 +69,12 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # conflict_areas coverage as an unavoidable consequence of the same
     # entry (same shared table both mechanisms read).
     "conflict_areas": "no",
+    # v2 unit ⑥: the FLAT routes list tools_network._flatten_routes builds
+    # (not "routing_decisions" — a route's own identity is the (decision,
+    # route) pair, which has no natural home in a decision-keyed list; see
+    # _target_id_for_spec below for how a two-param write action resolves
+    # this SAME synthesized id).
+    "routes": "id",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -141,7 +147,55 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "value_field": "status",
         "none_means": "not_persisted",
     },
+    # v2 unit ⑥: routing-decision route relative flow. relFlow is a plain
+    # XML attribute the parser can always see whenever the vehicleRouteStatic
+    # element itself exists (verified live -- backend/tools/
+    # routing_decision_probe.py -- no opaque-blob case like signal
+    # cycle_time), so, like volume/status, a None after a write IS evidence
+    # the write never reached the file. "id_param_parts" (not "id_param") --
+    # see _target_id_for_spec -- because this tool's target has a TWO-part
+    # identity (decision_no + route_no), unlike every other write tool here.
+    # Interval-aware exactly like set_vehicle_input_volume (v2 unit ⑤): the
+    # DIFF EXEMPTION always exempts {"rel_flow", "rel_flows",
+    # "interval_count"} together for this tool, any interval_no, for the
+    # same "derived/mirrored views of one XML structure" reasoning that
+    # exemption already documents for vehicle inputs.
+    "set_route_relative_flow": {
+        "object_class": "routes",
+        "id_param_parts": ("decision_no", "route_no"),
+        "value_field": "rel_flow",
+        "none_means": "not_persisted",
+        "interval_param": "interval_no",
+        "interval_list_field": "rel_flows",
+        "interval_key_field": "interval_no",
+        "interval_value_field": "rel_flow",
+        "interval_count_field": "interval_count",
+    },
 }
+
+
+def _target_id_for_spec(spec: dict[str, str], action: dict[str, Any]) -> str:
+    """The write action's target object id in the shadow model, per its
+    ``_WRITE_TARGET_FIELD_SPEC`` entry.
+
+    Every tool but ``set_route_relative_flow`` supplies a single
+    ``id_param`` naming ONE of ``action["params"]``'s own keys, read
+    directly. ``set_route_relative_flow``'s target has a TWO-part identity
+    (decision_no + route_no) with no single param to read, so its spec
+    supplies ``id_param_parts`` instead -- joined with ``"."`` into the SAME
+    synthesized ``"{decision_no}.{route_no}"`` string
+    ``tools_network._flatten_routes`` already uses as the flat
+    ``shadow_model["routes"]`` list's own ``id`` field, so the two sides
+    (this lookup, and that list's own keys) always agree.
+    """
+    params = action.get("params", {})
+    id_param = spec.get("id_param")
+    if id_param is not None:
+        return str(params.get(id_param, ""))
+    id_param_parts = spec.get("id_param_parts")
+    if id_param_parts:
+        return ".".join(str(params.get(part, "")) for part in id_param_parts)
+    return ""
 
 
 def _env_says_disabled() -> bool:
@@ -414,7 +468,7 @@ def _nothing_else_moved_diff(
     spec = _WRITE_TARGET_FIELD_SPEC.get(action.get("tool", ""))
     exemptions: dict[str, tuple[str, frozenset[str]]] = {}
     if spec is not None:
-        target_id = str(action.get("params", {}).get(spec["id_param"], ""))
+        target_id = _target_id_for_spec(spec, action)
         exemptions[spec["object_class"]] = (target_id, _write_target_fields(spec, action))
 
     evidence: list[dict[str, Any]] = []
@@ -498,7 +552,7 @@ def _target_not_persisted_finding(
     if spec is None or "written_value" not in com_result:
         return None
 
-    target_id = str(action.get("params", {}).get(spec["id_param"], ""))
+    target_id = _target_id_for_spec(spec, action)
     id_field = _SHADOW_OBJECT_ID_FIELDS[spec["object_class"]]
     target = next(
         (

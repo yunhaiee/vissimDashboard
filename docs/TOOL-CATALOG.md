@@ -41,7 +41,10 @@ forbids overclaiming). V1 close-out complete.
 
 time-varying demand profiles (multi-interval inputs) ✅(shipped 2026-07-24, v2 unit ⑤ —
 see V1's edits list) · vehicle composition shares ·
-static route relative flows · desired-speed decision PAIRS (set+restore atomic) ·
+static route relative flows ✅(shipped 2026-07-24: get_routing_decisions +
+set_route_relative_flow — raw-weight semantics confirmed live, approval card echoes the
+estimated resulting share %; route_integrity_unverifiable check now live) ·
+desired-speed decision PAIRS (set+restore atomic) ·
 desired-speed distribution assignment · desired-speed/time DISTRIBUTION curve editing
 (the legitimate CC1 route) · conflict-area status ✅(shipped 2026-07-24: get_conflict_areas
 + set_conflict_area_status, number-addressed with link-pair echo on the card; the

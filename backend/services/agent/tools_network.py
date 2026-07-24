@@ -24,7 +24,22 @@ it; see docs/phase2/DECISIONS.md's #5 gap entry. ``conflict_areas`` (v2 unit
 ④, 2026-07-24: parsed here directly from the .inpx — no/link_a/link_b/
 link_pair/status/name — closing the M3.1 CATALOG-GAP so
 ``conflict_area_data_unavailable`` finally fires for real; see
-:func:`_parse_conflict_areas`'s own docstring for the live-verified findings).
+:func:`_parse_conflict_areas`'s own docstring for the live-verified findings),
+``routing_decisions`` and ``routes`` (v2 unit ⑥, 2026-07-24: parsed here
+directly from ``<vehicleRoutingDecisionStatic>``/``<vehicleRouteStatic>`` —
+``routing_decisions`` is the planner-facing nested shape (decision no/link,
+each route's dest link/relative-flow profile/link sequence);  ``routes`` is
+a FLAT, one-entry-per-route mirror of the same data, keyed by a synthesized
+``"{decision_no}.{route_no}"`` id — this is the exact shape and field names
+``constraints.py``'s dormant ``route_integrity_unverifiable`` (#31) and
+``demand_scale_route_double_count_gap`` (#14) checks already expected from
+their own CATALOG-GAP docstrings, so populating it here WAKES #31 for real
+(``disconnected`` is genuinely computed from each route's ``link_seq``
+against the network's own link ids) while #14 stays open (its
+``manually_scaled_this_turn`` flag is turn-scoped ephemeral state with no
+XML representation — see :func:`_flatten_routes`'s own docstring). See
+:func:`_parse_routing_decisions`'s own docstring for the live-verified
+findings).
 
 ``resolve_object`` is the "network-RAG" pattern (research-digest #10): a
 small, deterministic lexical top-k retrieval over the shadow model's objects.
@@ -54,7 +69,7 @@ from services.agent.toolkit import tool
 from services.inpx_parser import parse_network
 from services.signal_parser import parse_signal_controllers
 
-ObjectType = Literal["link", "node", "vehicle_input", "signal", "conflict_area"]
+ObjectType = Literal["link", "node", "vehicle_input", "signal", "conflict_area", "routing_decision"]
 
 # {object_type: {shadow_key, id_field, name_field}} — the one place that maps
 # a planner-facing object_type onto the shadow model's (differently-named)
@@ -65,6 +80,13 @@ _OBJECT_TYPE_SPECS: dict[str, dict[str, str]] = {
     "vehicle_input": {"shadow_key": "vehicle_inputs", "id_field": "no", "name_field": "name"},
     "signal": {"shadow_key": "signals", "id_field": "sc_no", "name_field": "sc_name"},
     "conflict_area": {"shadow_key": "conflict_areas", "id_field": "no", "name_field": "name"},
+    # v2 unit ⑥: keyed against the NESTED "routing_decisions" list (one entry
+    # per decision, not per route — resolve_object/get_network_overview
+    # resolve a decision by its own no/name; a specific ROUTE within a
+    # decision is addressed by set_route_relative_flow's own
+    # decision_no+route_no params, not through this generic object_type
+    # machinery).
+    "routing_decision": {"shadow_key": "routing_decisions", "id_field": "no", "name_field": "name"},
 }
 
 _TOP_K = 5
@@ -226,6 +248,163 @@ def _parse_conflict_areas(root: ET.Element) -> list[dict[str, Any]]:
     return result
 
 
+def _parse_rel_flow(raw: str | None) -> list[dict[str, Any]]:
+    """[{interval_no, from_s, rel_flow}] from a ``<vehicleRouteStatic
+    relFlow="...">`` attribute, one entry per referenced time interval, in
+    document order.
+
+    ``relFlow`` is a COMMA-separated list of ``"<const> <start_ms>:<value>"``
+    fragments -- verified live and via a network-wide static scan across all
+    25 real Vissim 2026 example networks
+    (``backend/tools/routing_decision_probe.py``): Beijing's single-interval
+    routes read ``"2 0:245"``; LRT Priority Luxembourg.LU's two-interval
+    routes read ``"2 0:45, 2 5400000:45"`` -- both match the network's own
+    ``<timeIntervalSet no="VEHICLEROUTESTATIC">`` start times (seconds)
+    exactly once the millisecond token is divided by 1000, the SAME encoding
+    convention vehicle inputs' ``timeInt`` uses (v2 unit ⑤). The leading
+    constant token (``"2"`` on every fragment, every real example network,
+    every interval) is left uninterpreted, matching the same precedent
+    ``_parse_time_interval_start_s`` established for vehicle inputs' own
+    constant leading ``"1"`` token.
+    """
+    if not raw:
+        return []
+    result: list[dict[str, Any]] = []
+    for idx, fragment in enumerate(raw.split(","), start=1):
+        fragment = fragment.strip()
+        if not fragment:
+            continue
+        parts = fragment.split()
+        if len(parts) < 2 or ":" not in parts[-1]:
+            continue
+        start_token, _, value_token = parts[-1].partition(":")
+        start_ms = _coerce_float_or_none(start_token)
+        result.append(
+            {
+                "interval_no": idx,
+                "from_s": start_ms / 1000.0 if start_ms is not None else None,
+                "rel_flow": _coerce_float_or_none(value_token),
+            }
+        )
+    return result
+
+
+def _parse_routing_decisions(root: ET.Element, link_ids: set[str]) -> list[dict[str, Any]]:
+    """{no, link, name, routes: [{route_no, dest_link, dest_pos, rel_flow,
+    interval_count, rel_flows, link_seq, disconnected}]} per
+    ``<vehicleRoutingDecisionStatic>``.
+
+    v2 unit ⑥ (2026-07-24). COM surface verified live
+    (``backend/tools/routing_decision_probe.py``, Beijing.CN clone):
+    ``Net.VehicleRoutingDecisionsStatic`` (``GetAll()`` count 12 == the XML
+    element count) -> per-decision ``.VehRoutSta`` child collection (matches
+    the XML child tag exactly; count matched per-decision route counts too)
+    -> per-route ``AttValue('No'/'DestLink'/'DestPos')`` all read directly
+    (plain attributes, spelled exactly as the XML). ``RelFlow`` has NO scalar
+    COM form at all -- ``AttValue('RelFlow')`` (no index) RAISES ("Sub-
+    attribute not specified"); only the INDEXED form works
+    (``AttValue('RelFlow(1)')`` -> ``245.0``, matching the first fragment
+    :func:`_parse_rel_flow` extracts from the same route's XML) -- relFlow is
+    genuinely interval-indexed like Volume(i), confirmed both statically and
+    live. A second live probe on a genuinely 2-interval route (LRT Priority
+    Luxembourg.LU, decision 1 route 1) confirmed ``RelFlow(2)`` reads/writes
+    exactly like ``RelFlow(1)`` with NO Cont-flag equivalent (every interval
+    always carries an explicit value; unlike vehicle inputs there is nothing
+    to "clear" first), and that ``RelFlow(3)`` on that 2-interval route FAILS
+    CLOSED for both read and write ("Object 3 not found") -- matching
+    Volume(i)'s own per-object-indexed fail-closed behavior (v2 unit ⑤), not
+    a new data point.
+
+    ``disconnected`` is REAL (v2 unit ⑥ closes #31's
+    ``route_integrity_unverifiable`` CATALOG-GAP): every ``<vehicleRouteStatic>``
+    carries a ``<linkSeq><intObjectRef key="..."/></linkSeq>`` child listing
+    the link/connector ids the route traverses -- verified live that every
+    key already matches a ``services.inpx_parser.parse_network`` link id
+    (plain links and connectors share one id space) -- so a route is
+    ``disconnected`` iff any of its own ``link_seq`` keys is NOT a real link
+    id in ``link_ids`` (this network's own current links, passed in by the
+    caller so the check is against THIS shadow model's own links, never a
+    stale snapshot).
+
+    ``rel_flow``/``interval_count``/``rel_flows`` mirror the ``volume``/
+    ``interval_count``/``volumes`` shape v2 unit ⑤ established for vehicle
+    inputs: ``rel_flow`` is interval 1's value (or ``None`` when ``relFlow``
+    is empty/absent, which was never observed on a real network but is
+    handled defensively), ``rel_flows`` is the full per-interval list.
+    """
+    result: list[dict[str, Any]] = []
+    for dec in root.findall(".//vehicleRoutingDecisionStatic"):
+        routes: list[dict[str, Any]] = []
+        for r in dec.findall(".//vehicleRouteStatic"):
+            rel_flows = _parse_rel_flow(r.get("relFlow"))
+            rel_flow = rel_flows[0]["rel_flow"] if rel_flows else None
+            link_seq = [ref.get("key", "") for ref in r.findall(".//linkSeq/intObjectRef")]
+            disconnected = any(key not in link_ids for key in link_seq) if link_seq else False
+            routes.append(
+                {
+                    "route_no": r.get("no", ""),
+                    "dest_link": r.get("destLink", ""),
+                    "dest_pos": _coerce_float_or_none(r.get("destPos")),
+                    "rel_flow": rel_flow,
+                    "interval_count": len(rel_flows),
+                    "rel_flows": rel_flows,
+                    "link_seq": link_seq,
+                    "disconnected": disconnected,
+                }
+            )
+        result.append(
+            {
+                "no": dec.get("no", ""),
+                "link": dec.get("link", ""),
+                "name": dec.get("name", ""),
+                "routes": routes,
+            }
+        )
+    return result
+
+
+def _flatten_routes(routing_decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A flat, one-entry-per-route view of ``routing_decisions``, keyed by a
+    synthesized ``"{decision_no}.{route_no}"`` ``id`` -- there is no
+    single-token route identity in Vissim itself (a route's real identity is
+    the (decision, route) pair; docs/phase2/DECISIONS.md's v2 unit ⑥ probe
+    entry).
+
+    This is the exact shape ``constraints.py``'s dormant CATALOG-GAP checks
+    already expected from their OWN docstrings before this unit existed
+    (``shadow_model["routes"]``, entries carrying ``id``/``disconnected``/
+    ``manually_scaled_this_turn``) -- matching those field names, not
+    inventing a new contract, is what wakes ``route_integrity_unverifiable``
+    (#31) for real. Every route field (``rel_flow``/``rel_flows``/
+    ``interval_count``/``link_seq``/``disconnected``) is carried through
+    unchanged so ``guardrails.py``'s postwrite machinery (the
+    nothing-else-moved diff + the target-persisted check) has a real,
+    id-keyed object list to compare, exactly like every other write-tool
+    target object class.
+
+    ``manually_scaled_this_turn`` is HARD-CODED ``False`` here and stays that
+    way until further notice: it is turn-scoped ephemeral state ("was this
+    SPECIFIC route touched by set_route_relative_flow earlier in THIS SAME
+    agent turn") with no representation anywhere in the .inpx this function
+    parses -- only ``services.agent.orchestrator``'s turn loop could supply
+    it (out of this unit's file scope per the task brief: orchestrator.py is
+    not listed in scope, and threading per-turn "which routes did I already
+    touch" state through preflight would be a real, orchestrator-level
+    change, not a shadow-model parsing one). #14
+    (``demand_scale_route_double_count_gap``) therefore stays open — see the
+    drafted DECISIONS.md entry.
+    """
+    flat: list[dict[str, Any]] = []
+    for dec in routing_decisions:
+        for route in dec["routes"]:
+            entry = dict(route)
+            entry["id"] = f"{dec['no']}.{route['route_no']}"
+            entry["decision_no"] = dec["no"]
+            entry["manually_scaled_this_turn"] = False
+            flat.append(entry)
+    return flat
+
+
 def _signal_to_contract_shape(info: dict[str, Any]) -> dict[str, Any]:
     """Map a signal_parser SignalInfo down to the M0.3 contract shape.
 
@@ -249,12 +428,16 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
     net = parse_network(str(inpx_path))
     root = ET.parse(inpx_path).getroot()
     signals_by_sc_no = parse_signal_controllers(inpx_path)
+    link_ids = {str(link.get("id", "")) for link in net["links"]}
+    routing_decisions = _parse_routing_decisions(root, link_ids)
     return {
         "links": net["links"],
         "nodes": net["nodes"],
         "vehicle_inputs": _parse_vehicle_inputs(root),
         "signals": [_signal_to_contract_shape(info) for info in signals_by_sc_no.values()],
         "conflict_areas": _parse_conflict_areas(root),
+        "routing_decisions": routing_decisions,
+        "routes": _flatten_routes(routing_decisions),
     }
 
 
@@ -456,3 +639,20 @@ def get_conflict_areas(params: GetConflictAreasParams) -> dict[str, Any]:
     del params  # no fields
     conflict_areas = _current_shadow_model()["conflict_areas"]
     return {"count": len(conflict_areas), "conflict_areas": conflict_areas}
+
+
+# ---------------------------------------------------------------------------
+# get_routing_decisions — v2 unit ⑥
+# ---------------------------------------------------------------------------
+
+
+class GetRoutingDecisionsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+@tool(name="get_routing_decisions", tier="read", provider="inspect", params=GetRoutingDecisionsParams)
+def get_routing_decisions(params: GetRoutingDecisionsParams) -> dict[str, Any]:
+    """Return the network's static vehicle routing decisions (id, origin link, and each alternative route's destination link + relative-flow profile) -- relative flow is a RAW weight, not a pre-computed percentage: Vissim derives each route's actual traffic share by normalizing its relative flow against the SUM of every route's relative flow in the SAME decision at simulation time, so use set_route_relative_flow to change one route's split rather than assuming the number itself is a proportion."""
+    del params  # no fields
+    routing_decisions = _current_shadow_model()["routing_decisions"]
+    return {"count": len(routing_decisions), "routing_decisions": routing_decisions}

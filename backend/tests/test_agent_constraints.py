@@ -19,6 +19,7 @@ def _shadow_model(
     signals: list[dict[str, Any]] | None = None,
     nodes: list[dict[str, Any]] | None = None,
     conflict_areas: list[dict[str, Any]] | None = None,
+    routing_decisions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -49,7 +50,41 @@ def _shadow_model(
     # that explicitly pass conflict_areas=[...] get the key at all.
     if conflict_areas is not None:
         shadow["conflict_areas"] = conflict_areas
+    # routing_decisions is deliberately OMITTED by default too (v2 unit ⑥) --
+    # same "most tests have nothing to do with this object class, and a
+    # caller-built fixture can legitimately omit the key" reasoning as
+    # conflict_areas above.
+    if routing_decisions is not None:
+        shadow["routing_decisions"] = routing_decisions
     return shadow
+
+
+def _route(
+    route_no: str,
+    *,
+    dest_link: str = "1",
+    dest_pos: float = 0.0,
+    rel_flow: float | None = 100.0,
+    rel_flows: list[dict[str, Any]] | None = None,
+    link_seq: list[str] | None = None,
+    disconnected: bool = False,
+) -> dict[str, Any]:
+    if rel_flows is None:
+        rel_flows = [{"interval_no": 1, "from_s": 0.0, "rel_flow": rel_flow}] if rel_flow is not None else []
+    return {
+        "route_no": route_no,
+        "dest_link": dest_link,
+        "dest_pos": dest_pos,
+        "rel_flow": rel_flow,
+        "interval_count": len(rel_flows),
+        "rel_flows": rel_flows,
+        "link_seq": link_seq if link_seq is not None else [],
+        "disconnected": disconnected,
+    }
+
+
+def _routing_decision(no: str, routes: list[dict[str, Any]], *, link: str = "1", name: str = "") -> dict[str, Any]:
+    return {"no": no, "link": link, "name": name, "routes": routes}
 
 
 def _action(tool: str, **params: Any) -> dict[str, Any]:
@@ -281,6 +316,221 @@ def test_object_not_found_silent_when_conflict_area_present():
     findings = run_checks("preflight", action, shadow, {})
 
     assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_fires_for_missing_routing_decision():
+    # v2 unit ⑥: the decision-level (first) half of set_route_relative_flow's
+    # two-part object resolution reuses #1's generic single-id machinery.
+    shadow = _shadow_model(routing_decisions=[_routing_decision("1", [_route("1")])])
+    action = _action("set_route_relative_flow", decision_no="999", route_no="1", rel_flow=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    _assert_well_formed_messages(matches[0], must_contain_ko="999")
+
+
+def test_object_not_found_suggested_fix_resolves_near_miss_decision_no():
+    shadow = _shadow_model(routing_decisions=[_routing_decision("10", [_route("1")])])
+    action = _action("set_route_relative_flow", decision_no="1", route_no="1", rel_flow=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert "10" in matches[0].suggested_fix
+
+
+def test_object_not_found_silent_when_routing_decision_present():
+    shadow = _shadow_model(routing_decisions=[_routing_decision("1", [_route("1")])])
+    action = _action("set_route_relative_flow", decision_no="1", route_no="1", rel_flow=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# #46 route_not_found_in_decision — v2 unit ⑥
+# ---------------------------------------------------------------------------
+
+
+def test_route_not_found_in_decision_fires_for_missing_route():
+    shadow = _shadow_model(
+        routing_decisions=[_routing_decision("1", [_route("1"), _route("2")])]
+    )
+    action = _action("set_route_relative_flow", decision_no="1", route_no="99", rel_flow=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "route_not_found_in_decision"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    _assert_well_formed_messages(finding, must_contain_ko="1")
+    assert finding.suggested_fix == ["1", "2"]
+
+
+def test_route_not_found_in_decision_silent_when_route_present():
+    shadow = _shadow_model(
+        routing_decisions=[_routing_decision("1", [_route("1"), _route("2")])]
+    )
+    action = _action("set_route_relative_flow", decision_no="1", route_no="2", rel_flow=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "route_not_found_in_decision" for f in findings)
+
+
+def test_route_not_found_in_decision_defers_to_object_not_found_when_decision_missing():
+    shadow = _shadow_model(routing_decisions=[_routing_decision("1", [_route("1")])])
+    action = _action("set_route_relative_flow", decision_no="999", route_no="1", rel_flow=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "route_not_found_in_decision" for f in findings)
+    assert any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_route_not_found_in_decision_does_not_apply_to_unrelated_tool():
+    shadow = _shadow_model(routing_decisions=[_routing_decision("1", [_route("1")])])
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "route_not_found_in_decision" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# #47 route_relative_flow_interval_out_of_range — v2 unit ⑥
+# ---------------------------------------------------------------------------
+
+
+def test_route_relative_flow_interval_out_of_range_fires_when_beyond_known_count():
+    route = _route("1", rel_flows=[{"interval_no": 1, "from_s": 0.0, "rel_flow": 45.0}])
+    shadow = _shadow_model(routing_decisions=[_routing_decision("1", [route])])
+    action = _action(
+        "set_route_relative_flow", decision_no="1", route_no="1", rel_flow=99.0, interval_no=3
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "route_relative_flow_interval_out_of_range"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    assert finding.suggested_fix == {"available_intervals": 1}
+    _assert_well_formed_messages(finding, must_contain_ko="1")
+
+
+def test_route_relative_flow_interval_out_of_range_silent_when_within_range():
+    route = _route(
+        "1",
+        rel_flows=[
+            {"interval_no": 1, "from_s": 0.0, "rel_flow": 45.0},
+            {"interval_no": 2, "from_s": 5400.0, "rel_flow": 45.0},
+        ],
+    )
+    shadow = _shadow_model(routing_decisions=[_routing_decision("1", [route])])
+    action = _action(
+        "set_route_relative_flow", decision_no="1", route_no="1", rel_flow=99.0, interval_no=2
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "route_relative_flow_interval_out_of_range" for f in findings
+    )
+
+
+def test_route_relative_flow_interval_out_of_range_silent_when_interval_1():
+    # interval 1 is always potentially valid, regardless of interval_count.
+    route = _route("1", rel_flows=[])
+    shadow = _shadow_model(routing_decisions=[_routing_decision("1", [route])])
+    action = _action("set_route_relative_flow", decision_no="1", route_no="1", rel_flow=99.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "route_relative_flow_interval_out_of_range" for f in findings
+    )
+
+
+def test_route_relative_flow_interval_out_of_range_skipped_when_target_missing():
+    shadow = _shadow_model(routing_decisions=[])
+    action = _action(
+        "set_route_relative_flow", decision_no="999", route_no="1", rel_flow=99.0, interval_no=5
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "route_relative_flow_interval_out_of_range" for f in findings
+    )
+
+
+# ---------------------------------------------------------------------------
+# #48 route_relative_flow_split_confirm — v2 unit ⑥
+# ---------------------------------------------------------------------------
+
+
+def test_route_relative_flow_split_confirm_always_fires_and_echoes_the_estimated_share():
+    shadow = _shadow_model(
+        routing_decisions=[
+            _routing_decision(
+                "1", [_route("1", rel_flow=245.0), _route("2", rel_flow=139.0), _route("3", rel_flow=1454.0)]
+            )
+        ]
+    )
+    action = _action("set_route_relative_flow", decision_no="1", route_no="1", rel_flow=745.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "route_relative_flow_split_confirm"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "warn"
+    _assert_well_formed_messages(finding, must_contain_ko="1")
+    # 745 / (745 + 139 + 1454) == 31.9% -- siblings' CURRENT relFlow used,
+    # not renormalized.
+    assert finding.details["estimated_share_pct"] == 31.9
+    assert finding.details["old_rel_flow"] == 245.0
+    assert finding.details["new_rel_flow"] == 745.0
+    assert finding.details["route_count"] == 3
+    assert "raw" in finding.messages["en"].lower()
+
+
+def test_route_relative_flow_split_confirm_notes_single_route_has_no_effect_on_split():
+    shadow = _shadow_model(routing_decisions=[_routing_decision("9", [_route("1", rel_flow=568.0)])])
+    action = _action("set_route_relative_flow", decision_no="9", route_no="1", rel_flow=1567.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "route_relative_flow_split_confirm"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.details["route_count"] == 1
+    assert finding.details["estimated_share_pct"] == 100.0
+    assert "100%" in finding.messages["en"]
+
+
+def test_route_relative_flow_split_confirm_silent_when_target_missing():
+    shadow = _shadow_model(routing_decisions=[])
+    action = _action("set_route_relative_flow", decision_no="999", route_no="1", rel_flow=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "route_relative_flow_split_confirm" for f in findings)
+
+
+def test_route_relative_flow_split_confirm_does_not_apply_to_unrelated_tool():
+    shadow = _shadow_model(routing_decisions=[_routing_decision("1", [_route("1")])])
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "route_relative_flow_split_confirm" for f in findings)
 
 
 # ---------------------------------------------------------------------------
@@ -2258,9 +2508,13 @@ def test_registry_size_matches_m3_1_catalog_port():
     # set_conflict_area_status, see that constraint's own docstring) == 44,
     # + 1 (v2 unit ⑤'s vehicle_input_interval_out_of_range, same "not a
     # §-numbered catalog entry, a defensive addition" shape, this time for
-    # set_vehicle_input_volume's new interval_no param) == 45.
+    # set_vehicle_input_volume's new interval_no param) == 45, + 3 (v2 unit
+    # ⑥'s route_not_found_in_decision / route_relative_flow_interval_out_of_
+    # range / route_relative_flow_split_confirm, all three "not a
+    # §-numbered catalog entry, a defensive addition" shapes for the new
+    # set_route_relative_flow tool) == 48.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 45
+    assert len(get_registry()) == 48
 
 
 def test_registry_has_unique_ids():

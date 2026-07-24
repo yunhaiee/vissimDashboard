@@ -29,6 +29,7 @@ EXPECTED_TOOL_NAMES = {
     "get_vehicle_inputs",
     "get_signal_controllers",
     "get_conflict_areas",
+    "get_routing_decisions",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -44,6 +45,7 @@ EXPECTED_TOOL_NAMES = {
 # three registry-shape tests fail whenever this file ran in isolation.
 # v2 unit (2) adds set_reduced_speed_area (XML-injection, not COM), the sixth.
 # v2 unit (4) adds set_conflict_area_status, the seventh.
+# v2 unit (6) adds set_route_relative_flow, the eighth.
 EXPECTED_WRITE_TOOL_NAMES = {
     "set_vehicle_input_volume",
     "set_signal_cycle",
@@ -52,6 +54,7 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_random_seed",
     "set_reduced_speed_area",
     "set_conflict_area_status",
+    "set_route_relative_flow",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -139,6 +142,7 @@ def test_network_tools_use_inspect_provider_and_metrics_tools_use_metrics_provid
         "get_vehicle_inputs",
         "get_signal_controllers",
         "get_conflict_areas",
+        "get_routing_decisions",
     ):
         assert default_registry.get(name).provider == "inspect"
     for name in ("get_run_kpis", "compare_scenarios"):
@@ -155,7 +159,7 @@ def test_get_network_overview_returns_counts_and_compact_lists_for_demo_data():
 
     assert envelope["status"] == "ok"
     data = envelope["data"]
-    for key in ("links", "nodes", "vehicle_inputs", "signals", "conflict_areas"):
+    for key in ("links", "nodes", "vehicle_inputs", "signals", "conflict_areas", "routing_decisions"):
         assert key in data
         section = data[key]
         assert set(section.keys()) == {"count", "items", "truncated"}
@@ -166,12 +170,14 @@ def test_get_network_overview_returns_counts_and_compact_lists_for_demo_data():
     # demo dataset facts (data/practice.inpx): 14 links, 2 nodes, 6 vehicle
     # inputs, 0 working signal controllers (no intSupplyData in the demo file),
     # 0 conflict areas (the demo .inpx carries no <conflictArea> elements at
-    # all -- v2 unit ④)
+    # all -- v2 unit ④), 2 static routing decisions (v2 unit ⑥ -- unlike
+    # signals/conflict_areas, the demo .inpx DOES carry these)
     assert data["links"]["count"] == 14
     assert data["nodes"]["count"] == 2
     assert data["vehicle_inputs"]["count"] == 6
     assert data["signals"]["count"] == 0
     assert data["conflict_areas"]["count"] == 0
+    assert data["routing_decisions"]["count"] == 2
     assert data["links"]["truncated"] is False
 
 
@@ -463,6 +469,227 @@ def test_get_vehicle_inputs_parses_multi_interval_volumes(multi_interval_fixture
 
 
 # ---------------------------------------------------------------------------
+# get_routing_decisions / _parse_routing_decisions — v2 unit ⑥
+# ---------------------------------------------------------------------------
+
+
+def test_get_routing_decisions_on_demo_data():
+    # Unlike signals/conflict_areas, the demo .inpx DOES carry static routing
+    # decisions (2 decisions, 3 routes each) -- verified directly against
+    # data/practice.inpx. Its <vehicleRouteStatic> elements carry no
+    # <linkSeq> child at all (unlike a real Vissim export), so every route
+    # parses as disconnected=False (vacuously — nothing to check) and
+    # link_seq == [].
+    envelope = _dispatch("get_routing_decisions")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 2
+    first = next(d for d in data["routing_decisions"] if d["no"] == "1")
+    assert first["link"] == "101"
+    assert {r["route_no"] for r in first["routes"]} == {"1", "2", "3"}
+    for route in first["routes"]:
+        assert set(route.keys()) == {
+            "route_no",
+            "dest_link",
+            "dest_pos",
+            "rel_flow",
+            "interval_count",
+            "rel_flows",
+            "link_seq",
+            "disconnected",
+        }
+        assert route["link_seq"] == []
+        assert route["disconnected"] is False
+    route_1 = next(r for r in first["routes"] if r["route_no"] == "1")
+    assert route_1["dest_link"] == "140"
+    assert route_1["rel_flow"] == 780.0
+    assert route_1["interval_count"] == 1
+    assert route_1["rel_flows"] == [{"interval_no": 1, "from_s": 0.0, "rel_flow": 780.0}]
+
+
+def test_get_routing_decisions_rejects_unexpected_params():
+    envelope = _dispatch("get_routing_decisions", bogus=1)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+# Synthetic fixture with real <linkSeq> children (the demo .inpx has none) --
+# covers multi-interval relFlow, a single-route decision, and a genuinely
+# disconnected route (a linkSeq key that is NOT among the network's links).
+_ROUTING_DECISION_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links>
+    <link no="101" name="Approach"><lanes><lane width="3.5"/></lanes></link>
+    <link no="140" name="Exit A"><lanes><lane width="3.5"/></lanes></link>
+    <link no="141" name="Exit B"><lanes><lane width="3.5"/></lanes></link>
+  </links>
+  <timeIntervalSets>
+    <timeIntervalSet no="VEHICLEROUTESTATIC">
+      <timeIntervals>
+        <timeInterval start="0"/>
+        <timeInterval start="5400"/>
+      </timeIntervals>
+    </timeIntervalSet>
+  </timeIntervalSets>
+  <vehicleRoutingDecisionsStatic>
+    <vehicleRoutingDecisionStatic no="1" name="Main decision" link="101" pos="1.0">
+      <vehRoutSta>
+        <vehicleRouteStatic no="1" name="" destLink="140" destPos="2.0" formula=""
+          relFlow="2 0:45, 2 5400000:45">
+          <linkSeq>
+            <intObjectRef key="101"/>
+            <intObjectRef key="140"/>
+          </linkSeq>
+        </vehicleRouteStatic>
+        <vehicleRouteStatic no="2" name="" destLink="141" destPos="3.0" formula=""
+          relFlow="2 0:55">
+          <linkSeq>
+            <intObjectRef key="101"/>
+            <intObjectRef key="9999"/>
+            <intObjectRef key="141"/>
+          </linkSeq>
+        </vehicleRouteStatic>
+      </vehRoutSta>
+    </vehicleRoutingDecisionStatic>
+    <vehicleRoutingDecisionStatic no="2" name="Single-route decision" link="101" pos="4.0">
+      <vehRoutSta>
+        <vehicleRouteStatic no="1" name="" destLink="140" destPos="5.0" formula=""
+          relFlow="2 0:568">
+          <linkSeq>
+            <intObjectRef key="101"/>
+            <intObjectRef key="140"/>
+          </linkSeq>
+        </vehicleRouteStatic>
+      </vehRoutSta>
+    </vehicleRoutingDecisionStatic>
+  </vehicleRoutingDecisionsStatic>
+</network>
+"""
+
+
+@pytest.fixture()
+def routing_decision_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "routing_decisions.inpx"
+    path.write_text(_ROUTING_DECISION_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_routing_decisions_parses_multi_interval_rel_flow(routing_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(routing_decision_fixture_inpx)
+
+    envelope = _dispatch("get_routing_decisions")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 2
+    decision_1 = next(d for d in data["routing_decisions"] if d["no"] == "1")
+    route_1 = next(r for r in decision_1["routes"] if r["route_no"] == "1")
+    assert route_1["rel_flow"] == 45.0  # interval 1's value (backward-compat top-level field)
+    assert route_1["interval_count"] == 2
+    assert route_1["rel_flows"] == [
+        {"interval_no": 1, "from_s": 0.0, "rel_flow": 45.0},
+        {"interval_no": 2, "from_s": 5400.0, "rel_flow": 45.0},
+    ]
+    assert route_1["disconnected"] is False
+
+
+def test_get_routing_decisions_flags_a_route_referencing_a_missing_link(
+    routing_decision_fixture_inpx: Path,
+):
+    # route no=2 on decision 1's linkSeq references link 9999, which does not
+    # exist in the fixture's <links> section -- the exact "broken route"
+    # shape route_integrity_unverifiable (constraints.py #31) needs.
+    tools_network.set_active_inpx(routing_decision_fixture_inpx)
+
+    envelope = _dispatch("get_routing_decisions")
+
+    data = envelope["data"]
+    decision_1 = next(d for d in data["routing_decisions"] if d["no"] == "1")
+    route_2 = next(r for r in decision_1["routes"] if r["route_no"] == "2")
+    assert route_2["link_seq"] == ["101", "9999", "141"]
+    assert route_2["disconnected"] is True
+
+    route_1 = next(r for r in decision_1["routes"] if r["route_no"] == "1")
+    assert route_1["disconnected"] is False  # a real sibling stays unaffected
+
+
+def test_get_routing_decisions_single_route_decision(routing_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(routing_decision_fixture_inpx)
+
+    envelope = _dispatch("get_routing_decisions")
+
+    data = envelope["data"]
+    decision_2 = next(d for d in data["routing_decisions"] if d["no"] == "2")
+    assert len(decision_2["routes"]) == 1
+    assert decision_2["routes"][0]["rel_flow"] == 568.0
+
+
+def test_build_shadow_model_flattens_routes_with_synthesized_ids(
+    routing_decision_fixture_inpx: Path,
+):
+    shadow = tools_network.build_shadow_model(routing_decision_fixture_inpx)
+
+    assert len(shadow["routes"]) == 3
+    by_id = {r["id"]: r for r in shadow["routes"]}
+    assert set(by_id) == {"1.1", "1.2", "2.1"}
+    assert by_id["1.2"]["decision_no"] == "1"
+    assert by_id["1.2"]["route_no"] == "2"
+    assert by_id["1.2"]["disconnected"] is True
+    # v2 unit ⑥: manually_scaled_this_turn is a documented, permanently-open
+    # gap (turn-scoped orchestrator state with no XML representation) --
+    # always False from a pure reparse.
+    assert all(r["manually_scaled_this_turn"] is False for r in shadow["routes"])
+
+
+def test_route_integrity_unverifiable_fires_for_real_against_a_broken_link_seq(
+    routing_decision_fixture_inpx: Path,
+):
+    """End-to-end proof that v2 unit ⑥ actually WAKES constraints.py's
+    dormant route_integrity_unverifiable (#31) check, not just that
+    tools_network.py computes `disconnected` in isolation: feed a REAL
+    build_shadow_model() output (this module's own production code path,
+    not a hand-rolled constraints.py fixture) into the real
+    ``services.agent.constraints.run_checks``."""
+    from services.agent import constraints
+
+    shadow = tools_network.build_shadow_model(routing_decision_fixture_inpx)
+    action = {"tool": "set_route_relative_flow", "params": {}}
+
+    findings = constraints.run_checks("postwrite", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "route_integrity_unverifiable"]
+    assert len(matches) == 1
+    assert "1.2" in matches[0].messages["en"]  # the synthesized id of the broken route
+
+
+def test_resolve_object_finds_routing_decision_by_name(routing_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(routing_decision_fixture_inpx)
+
+    envelope = _dispatch("resolve_object", query="Single-route decision", object_type="routing_decision")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["found"] is True
+    assert data["candidates"][0]["id"] == "2"
+    assert data["candidates"][0]["object_type"] == "routing_decision"
+
+
+def test_get_network_overview_includes_routing_decisions_section(
+    routing_decision_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(routing_decision_fixture_inpx)
+
+    envelope = _dispatch("get_network_overview")
+
+    data = envelope["data"]
+    assert data["routing_decisions"]["count"] == 2
+    ids = {item["id"] for item in data["routing_decisions"]["items"]}
+    assert ids == {"1", "2"}
+
+
+# ---------------------------------------------------------------------------
 # build_shadow_model — the extended shadow model builder (unit-level)
 # ---------------------------------------------------------------------------
 
@@ -470,7 +697,15 @@ def test_get_vehicle_inputs_parses_multi_interval_volumes(multi_interval_fixture
 def test_build_shadow_model_has_exactly_the_contract_keys():
     shadow = tools_network.build_shadow_model(Path(tools_network._active_inpx_path()))
 
-    assert set(shadow.keys()) == {"links", "nodes", "vehicle_inputs", "signals", "conflict_areas"}
+    assert set(shadow.keys()) == {
+        "links",
+        "nodes",
+        "vehicle_inputs",
+        "signals",
+        "conflict_areas",
+        "routing_decisions",
+        "routes",
+    }
     assert len(shadow["links"]) == 14
     assert len(shadow["nodes"]) == 2
     assert len(shadow["vehicle_inputs"]) == 6
@@ -479,6 +714,17 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
     # the shadow key must still be present and well-formed (empty list, not
     # absent/None), the same "no signal controllers" shape signals already has.
     assert shadow["conflict_areas"] == []
+    # v2 unit ⑥: unlike signals/conflict_areas, the demo .inpx DOES carry
+    # static routing decisions (2 decisions, 3 routes each = 6 flat routes) —
+    # verified directly against data/practice.inpx before pinning these
+    # numbers.
+    assert len(shadow["routing_decisions"]) == 2
+    assert len(shadow["routes"]) == 6
+    assert {r["route_no"] for r in shadow["routing_decisions"][0]["routes"]} == {"1", "2", "3"}
+    # the demo .inpx's <vehicleRouteStatic> elements carry no <linkSeq> child
+    # at all (unlike a real Vissim export) -- every route parses as NOT
+    # disconnected (empty link_seq is vacuously "connected", not unknown).
+    assert all(r["disconnected"] is False for r in shadow["routes"])
 
 
 def test_build_shadow_model_is_mtime_cached_across_repeat_calls():

@@ -206,6 +206,16 @@ class VissimEditSession:
     def get_conflict_area(self, conflict_area_no: int) -> dict[str, Any]:
         return self._ensure_connected().get_conflict_area(conflict_area_no)
 
+    # v2 unit ⑥: static routing decision route relative-flow verbs.
+
+    def set_route_relative_flow(
+        self, decision_no: int, route_no: int, rel_flow: float, interval_no: int = 1
+    ) -> None:
+        self._ensure_connected().set_route_relative_flow(decision_no, route_no, rel_flow, interval_no)
+
+    def get_route_relative_flow(self, decision_no: int, route_no: int, interval_no: int = 1) -> float:
+        return self._ensure_connected().get_route_relative_flow(decision_no, route_no, interval_no)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

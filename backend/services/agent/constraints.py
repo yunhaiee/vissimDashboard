@@ -28,7 +28,18 @@ too. Constraint #13's twin gap (``interval_count``/per-interval ``volumes``)
 was CLOSED in v2 unit ⑤ (2026-07-24): ``tools_network._parse_vehicle_inputs``
 now populates both for real, and ``set_vehicle_input_volume`` gained an
 optional ``interval_no`` param — see #13's own docstring and the new #44
-(``vehicle_input_interval_out_of_range``) it introduced.
+(``vehicle_input_interval_out_of_range``) it introduced. Constraint #31's
+twin gap (``routes``) was CLOSED in v2 unit ⑥ (2026-07-24):
+``tools_network._flatten_routes`` now populates ``shadow_model["routes"]``
+for real, straight from ``<vehicleRoutingDecisionStatic>``/
+``<vehicleRouteStatic>`` — see #31's own comment and the new
+``set_route_relative_flow`` write tool + its dedicated
+``route_not_found_in_decision``/``route_relative_flow_interval_out_of_range``/
+``route_relative_flow_split_confirm`` checks. Constraint #14's SAME
+``routes`` field also went from absent to populated in v2 unit ⑥, but #14
+itself stays a documented gap (its ``manually_scaled_this_turn`` datum is
+turn-scoped orchestrator state, out of this unit's scope) — see #14's own
+comment.
 
 This module is intentionally stdlib-only, like trace.py, and does not import
 state.py or trace.py — it only consumes the shadow-model dict shape they
@@ -365,6 +376,20 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "conflict_area_no",
     },
+    # v2 unit ⑥: set_route_relative_flow added to the object_not_found /
+    # _TOOL_TARGET_SPEC lockstep table -- this only covers the DECISION-level
+    # lookup (routing_decisions object class, keyed by decision no); the
+    # SECOND-level lookup (does route_no exist WITHIN that decision) has no
+    # single flat id to check against a single object list the way every
+    # other tool here does, so it is a dedicated check
+    # (route_not_found_in_decision, below) rather than an extension of this
+    # generic single-id machinery.
+    "set_route_relative_flow": {
+        "object_class": "routing_decisions",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "decision_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -372,6 +397,7 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "signals": {"ko": "신호제어기", "en": "signal controller", "ja": "信号制御機"},
     "links": {"ko": "링크", "en": "link", "ja": "リンク"},
     "conflict_areas": {"ko": "충돌구간", "en": "conflict area", "ja": "錯綜区間"},
+    "routing_decisions": {"ko": "차량 경로 결정", "en": "vehicle routing decision", "ja": "車両経路決定"},
 }
 
 
@@ -463,6 +489,7 @@ register(
             "set_signal_offset",
             "set_reduced_speed_area",
             "set_conflict_area_status",
+            "set_route_relative_flow",
         ],
         phase="preflight",
         tier="refuse",
@@ -1243,11 +1270,24 @@ register(
 #
 # Catalog §4 "Scaling demand automatically scales routes — don't do it
 # twice": route volumes are relative shares of what arrives, so raising input
-# volume already carries through to every downstream route. CATALOG-GAP: the
-# shadow model has no "routes" key (contract is {links, nodes,
-# vehicle_inputs, signals} — docs/phase2/DECISIONS.md) and no M2 tool edits
-# route flows, so this reads shadow_model["routes"] defensively; always
-# absent today.
+# volume already carries through to every downstream route.
+#
+# HALF of this CATALOG-GAP closed in v2 unit ⑥ (2026-07-24):
+# tools_network._flatten_routes now populates shadow_model["routes"] for
+# real (a flat, id-keyed list — see that function's docstring), so the
+# `if not routes: return None` early-exit below no longer short-circuits on
+# a real network. The OTHER half stays open: `manually_scaled_this_turn` is
+# turn-scoped ephemeral state ("was this route touched by
+# set_route_relative_flow earlier in THIS SAME agent turn") that has no
+# representation in the .inpx a shadow-model reparse reads — only
+# services.agent.orchestrator's turn loop could thread that fact into a
+# later preflight call within the same turn, and orchestrator.py is out of
+# this unit's file scope (see the task brief's SCOPE list). Every real
+# route's `manually_scaled_this_turn` is hard-coded False by
+# `_flatten_routes`, so `manually_scaled` below is always `[]` and this
+# check still never fires in production — same visible behavior as before,
+# now for the documented reason instead of the old absent-key one. See the
+# drafted DECISIONS.md entry.
 # ---------------------------------------------------------------------------
 
 
@@ -2498,9 +2538,25 @@ register(
 # Merges catalog §1 "Broken routes stay broken even after you fix the road"
 # + "Deleting a route silently bans a turn": both stem from the same root
 # cause — routes are stored as fixed link sequences and a banned movement is
-# expressed by ABSENCE of a route, not an attribute. CATALOG-GAP: "routes" is
-# not part of the shadow-model contract; reads shadow_model["routes"]
-# defensively.
+# expressed by ABSENCE of a route, not an attribute.
+#
+# CATALOG-GAP CLOSED in v2 unit ⑥ (2026-07-24):
+# tools_network._flatten_routes now populates shadow_model["routes"] for
+# real — a flat, id-keyed list where `disconnected` is a GENUINE, computed
+# fact (verified live, backend/tools/routing_decision_probe.py): every
+# <vehicleRouteStatic> carries a <linkSeq><intObjectRef key="..."/></linkSeq>
+# child naming the link/connector ids the route traverses, and every key
+# already matched a real services.inpx_parser link id on Beijing — so a
+# route is `disconnected` iff any of its own link_seq keys is NOT among the
+# network's CURRENT link ids (computed fresh against whichever shadow model
+# — before or after — this check is handed, so a link-deleting edit, when
+# one ships, would flip this to True for real). No M2/v2 write tool edits
+# link/route STRUCTURE today (v2 unit ⑥ only edits relFlow, a plain
+# attribute that never changes link_seq), so this stays silent (no
+# disconnected routes) on every real network in practice — but it is a live,
+# fully real check now, not a permanently-dormant CATALOG-GAP one; it will
+# fire the moment a future structural edit tool (V2b's add/remove
+# links/connectors) actually breaks a route.
 # ---------------------------------------------------------------------------
 
 
@@ -2555,6 +2611,12 @@ register(
 # files are stale, and Vissim only checks them if "check edges" is enabled.
 # CATALOG-GAP: dynamic-assignment status is not part of the shadow-model
 # contract; reads shadow_model["dynamic_assignment"] defensively.
+#
+# NOT touched by v2 unit ⑥: this check concerns DYNAMIC assignment's
+# external path/cost files, a completely different Vissim subsystem from the
+# STATIC routing decisions (vehicleRoutingDecisionStatic) that unit shipped —
+# same catalog section, unrelated root cause and unrelated shadow-model
+# field. Stays open/documented, not accidentally "closed" by proximity.
 # ---------------------------------------------------------------------------
 
 
@@ -3329,5 +3391,323 @@ register(
         "requested interval {interval_no} does not exist.",
         message_ja="車両インプット '{input_no}' には時間区間が{interval_count}個しかありません。"
         "指定された区間{interval_no}は存在しません。",
+    )
+)
+
+
+# =============================================================================
+# v2 unit ⑥ (2026-07-24) — static vehicle routing decisions
+# =============================================================================
+
+
+# ---------------------------------------------------------------------------
+# #46 route_not_found_in_decision (refuse, preflight)
+#
+# Not a §-numbered catalog entry; the SECOND half of set_route_relative_flow's
+# object-resolution (the FIRST half — does decision_no exist at all — is
+# object_not_found (#1), which _TOOL_TARGET_SPEC already covers). A routing
+# decision's routes have no flat, cross-decision id space of their own (route
+# "No" is only unique WITHIN its own decision — Beijing's own data has
+# decision 1 route 2 and decision 5 route 2 as two entirely different
+# objects), so this cannot reuse #1's single-flat-list machinery; it looks
+# the target decision up first (deferring to #1 when even THAT fails) and
+# then checks route_no against that ONE decision's own routes list.
+# ---------------------------------------------------------------------------
+
+
+def _check_route_not_found_in_decision(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_route_relative_flow":
+        return None
+
+    params = action.get("params", {})
+    decision_no = str(params.get("decision_no", ""))
+    route_no = str(params.get("route_no", ""))
+
+    decision = _find_by_field(shadow_model.get("routing_decisions", []), "no", decision_no)
+    if decision is None:
+        return None  # missing decision is object_not_found's job (#1)
+
+    routes = decision.get("routes", [])
+    if _find_by_field(routes, "route_no", route_no) is not None:
+        return None
+
+    candidates = [str(r.get("route_no", "")) for r in routes]
+    return Finding(
+        constraint_id="route_not_found_in_decision",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "route_not_found_in_decision",
+            decision_no=decision_no,
+            route_no=route_no,
+            candidates=", ".join(candidates) if candidates else "-",
+        ),
+        suggested_fix=candidates,
+        details={"decision_no": decision_no, "route_no": route_no, "candidates": candidates},
+    )
+
+
+register(
+    Constraint(
+        id="route_not_found_in_decision",
+        applies_to=["set_route_relative_flow"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_route_not_found_in_decision,
+        message_ko="경로 결정 '{decision_no}'에 경로 번호 '{route_no}'이(가) 없습니다. 이 결정의 사용 "
+        "가능한 경로 번호: {candidates}.",
+        message_en="Routing decision '{decision_no}' has no route numbered '{route_no}'. This "
+        "decision's available route numbers: {candidates}.",
+        message_ja="経路決定 '{decision_no}' に経路番号 '{route_no}' はありません。この決定で利用"
+        "可能な経路番号: {candidates}。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# #47 route_relative_flow_interval_out_of_range (refuse, preflight)
+#
+# Not a §-numbered catalog entry; the SAME defensive pattern as #44
+# (vehicle_input_interval_out_of_range) applied to set_route_relative_flow's
+# own interval_no param. interval_no == 1 is always potentially valid (every
+# real route observed carries at least one relFlow interval; malformed
+# values are invalid_params's job at the pydantic layer). interval_no > 1 is
+# only checkable against a KNOWN interval_count
+# (tools_network._parse_routing_decisions) -- without this check, an
+# out-of-range request would reach live COM and raise a raw "Object N not
+# found" com_error (verified live, backend/tools/routing_decision_probe.py's
+# Luxembourg follow-up probe) instead of a clear, structured refusal with the
+# available interval count as suggested_fix.
+# ---------------------------------------------------------------------------
+
+
+def _check_route_relative_flow_interval_out_of_range(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_route_relative_flow":
+        return None
+
+    params = action.get("params", {})
+    raw_interval_no = params.get("interval_no", 1)
+    interval_no = _coerce_number(raw_interval_no, cast=int)
+    if interval_no is None or interval_no <= 1:
+        return None  # interval 1 is always valid; malformed values are invalid_params's job
+
+    decision_no = str(params.get("decision_no", ""))
+    route_no = str(params.get("route_no", ""))
+    decision = _find_by_field(shadow_model.get("routing_decisions", []), "no", decision_no)
+    if decision is None:
+        return None  # missing target is object_not_found's job (#1)
+    route = _find_by_field(decision.get("routes", []), "route_no", route_no)
+    if route is None:
+        return None  # missing target is route_not_found_in_decision's job (#46)
+
+    raw_interval_count = route.get("interval_count")
+    interval_count = _coerce_number(raw_interval_count, cast=int)
+    if not interval_count:  # None or 0 — datum unavailable, don't guess
+        return None
+
+    if interval_no <= interval_count:
+        return None
+
+    return Finding(
+        constraint_id="route_relative_flow_interval_out_of_range",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "route_relative_flow_interval_out_of_range",
+            decision_no=decision_no,
+            route_no=route_no,
+            interval_no=interval_no,
+            interval_count=interval_count,
+        ),
+        suggested_fix={"available_intervals": interval_count},
+        details={
+            "decision_no": decision_no,
+            "route_no": route_no,
+            "interval_no": interval_no,
+            "interval_count": interval_count,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="route_relative_flow_interval_out_of_range",
+        applies_to=["set_route_relative_flow"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_route_relative_flow_interval_out_of_range,
+        message_ko="경로 결정 '{decision_no}'의 경로 '{route_no}'에는 시간 구간이 {interval_count}개"
+        "뿐입니다. 요청한 구간 {interval_no}은(는) 존재하지 않습니다.",
+        message_en="Decision '{decision_no}' route '{route_no}' only has {interval_count} time "
+        "interval(s). The requested interval {interval_no} does not exist.",
+        message_ja="経路決定 '{decision_no}' の経路 '{route_no}' には時間区間が{interval_count}個"
+        "しかありません。指定された区間{interval_no}は存在しません。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# #48 route_relative_flow_split_confirm (warn, preflight)
+#
+# Not a §-numbered catalog entry; a defensive addition specific to
+# set_route_relative_flow, motivated directly by the v2 unit ⑥ probe's
+# central empirical finding (see vissim_com.set_route_relative_flow's
+# docstring): relFlow is a RAW weight, not a percentage -- Vissim computes
+# each route's ACTUAL simulated traffic share at RUN time as this value
+# divided by the SUM of every route's relFlow in the SAME decision, and
+# writing one route's relFlow leaves every sibling route's own stored value
+# completely untouched (verified live: no renormalization on write). A bare
+# "relFlow set to 745" on an approval card would misleadingly read like a
+# direct traffic-share number. This ALWAYS fires (whenever the target
+# resolves; a missing decision/route is #1's/#46's job) so the decision's
+# current route count, the estimated resulting share (computed from the
+# OTHER routes' CURRENT relFlow plus this proposed new value), and an
+# explicit single-route caveat are unconditionally echoed into the approval
+# card's warning list -- regardless of whether the planner's own free-text
+# summary happens to explain the normalization. Deliberately warn-tier, not
+# refuse: this is a confirmation aid, not a problem with the write itself
+# (mirrors conflict_area_status_change_confirm's precedent, v2 unit ④).
+# ---------------------------------------------------------------------------
+
+
+def _rel_flow_at_interval(route: dict[str, Any], interval_no: int) -> float | None:
+    """The route's own relFlow value at ``interval_no`` (1-based), reading
+    the per-interval ``rel_flows`` list when present and falling back to the
+    top-level ``rel_flow`` field for interval 1 (mirrors
+    guardrails._resolve_saved_value's same interval-list-then-top-level-
+    fallback shape)."""
+    rel_flows = route.get("rel_flows") or []
+    entry = next(
+        (rf for rf in rel_flows if _coerce_number(rf.get("interval_no"), cast=int) == interval_no),
+        None,
+    )
+    if entry is not None:
+        return _coerce_number(entry.get("rel_flow"))
+    if interval_no == 1:
+        return _coerce_number(route.get("rel_flow"))
+    return None
+
+
+def _check_route_relative_flow_split_confirm(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_route_relative_flow":
+        return None
+
+    params = action.get("params", {})
+    decision_no = str(params.get("decision_no", ""))
+    route_no = str(params.get("route_no", ""))
+    raw_interval_no = params.get("interval_no", 1)
+    interval_no = _coerce_number(raw_interval_no, cast=int)
+    if interval_no is None:
+        interval_no = 1
+    raw_new_rel_flow = params.get("rel_flow")
+    if raw_new_rel_flow is None:
+        return None
+    new_rel_flow = _coerce_number(raw_new_rel_flow)
+    if new_rel_flow is None:
+        return None
+
+    decision = _find_by_field(shadow_model.get("routing_decisions", []), "no", decision_no)
+    if decision is None:
+        return None  # missing target is object_not_found's job (#1)
+    routes = decision.get("routes", [])
+    target = _find_by_field(routes, "route_no", route_no)
+    if target is None:
+        return None  # missing target is route_not_found_in_decision's job (#46)
+
+    old_rel_flow = _rel_flow_at_interval(target, interval_no)
+    route_count = len(routes)
+
+    sibling_sum = 0.0
+    sibling_known = True
+    for route in routes:
+        if str(route.get("route_no", "")) == route_no:
+            continue
+        sibling_value = _rel_flow_at_interval(route, interval_no)
+        if sibling_value is None:
+            sibling_known = False
+            break
+        sibling_sum += sibling_value
+
+    if route_count <= 1:
+        share_pct: float | None = 100.0
+        share_note_ko = "이 결정에는 경로가 이 경로 하나뿐이므로, relFlow 값과 무관하게 실제 배분은 " \
+            "항상 100%입니다."
+        share_note_en = "This decision has only this one route, so the actual traffic share is " \
+            "always 100% regardless of the relFlow value."
+        share_note_ja = "この決定にはこの経路しかないため、relFlowの値に関わらず実際の配分は常に" \
+            "100%です。"
+    elif sibling_known and (sibling_sum + new_rel_flow) > 0:
+        share_pct = round((new_rel_flow / (sibling_sum + new_rel_flow)) * 100, 1)
+        share_note_ko = f"이 결정의 다른 경로들이 현재 relFlow를 유지한다고 가정하면, 이 경로의 " \
+            f"예상 실제 배분은 약 {share_pct}%입니다."
+        share_note_en = f"Assuming the decision's other routes keep their current relFlow, this " \
+            f"route's estimated actual share is about {share_pct}%."
+        share_note_ja = f"この決定の他の経路が現在のrelFlowを維持すると仮定すると、この経路の推定" \
+            f"実配分は約{share_pct}%です。"
+    else:
+        share_pct = None
+        share_note_ko = "다른 경로의 relFlow 값을 알 수 없어 예상 배분을 계산할 수 없습니다."
+        share_note_en = "The resulting share could not be estimated (a sibling route's relFlow " \
+            "is unknown)."
+        share_note_ja = "他の経路のrelFlow値が不明なため、予想配分を計算できません。"
+
+    return Finding(
+        constraint_id="route_relative_flow_split_confirm",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "route_relative_flow_split_confirm",
+            decision_no=decision_no,
+            route_no=route_no,
+            interval_no=interval_no,
+            old_rel_flow=old_rel_flow if old_rel_flow is not None else "?",
+            new_rel_flow=raw_new_rel_flow,
+            route_count=route_count,
+            share_note_ko=share_note_ko,
+            share_note_en=share_note_en,
+            share_note_ja=share_note_ja,
+        ),
+        suggested_fix=None,
+        details={
+            "decision_no": decision_no,
+            "route_no": route_no,
+            "interval_no": interval_no,
+            "old_rel_flow": old_rel_flow,
+            "new_rel_flow": new_rel_flow,
+            "route_count": route_count,
+            "estimated_share_pct": share_pct,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="route_relative_flow_split_confirm",
+        applies_to=["set_route_relative_flow"],
+        phase="preflight",
+        tier="warn",
+        check=_check_route_relative_flow_split_confirm,
+        message_ko="경로 결정 '{decision_no}'의 경로 '{route_no}' (구간 {interval_no}) relFlow를 "
+        "{old_rel_flow} → {new_rel_flow}(으)로 변경하려 합니다. relFlow는 백분율이 아니라 원시 "
+        "가중치이며, Vissim은 같은 결정 안의 모든 경로 relFlow 합계에 대한 비율로 실제 교통 배분을 "
+        "시뮬레이션 시점에 계산합니다 — 이 값을 바꿔도 다른 경로 자체의 relFlow는 그대로 남습니다 "
+        "(이 결정의 경로 수: {route_count}개). {share_note_ko}",
+        message_en="Proposing to change decision '{decision_no}' route '{route_no}' (interval "
+        "{interval_no}) relFlow from {old_rel_flow} to {new_rel_flow}. relFlow is a RAW weight, "
+        "not a percentage — Vissim computes the actual traffic split at simulation time as each "
+        "route's share of the SUM of every route's relFlow in the same decision, and writing "
+        "this value leaves every sibling route's own relFlow untouched (this decision has "
+        "{route_count} route(s)). {share_note_en}",
+        message_ja="経路決定 '{decision_no}' の経路 '{route_no}'（区間{interval_no}）のrelFlowを "
+        "{old_rel_flow} から {new_rel_flow} に変更しようとしています。relFlowは百分率ではなく生の" \
+        "重みであり、Vissimは同じ決定内の全経路のrelFlow合計に対する比率として実際の交通配分を"
+        "シミュレーション時に計算します — この値を変更しても他の経路自身のrelFlowはそのまま残り"
+        "ます（この決定の経路数: {route_count}）。{share_note_ja}",
     )
 )

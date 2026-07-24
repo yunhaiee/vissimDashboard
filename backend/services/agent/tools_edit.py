@@ -14,16 +14,29 @@ replace onto the working copy), then return an envelope whose
 actually reached the saved file (the "target-persisted" check,
 docs/phase2/DECISIONS.md, "postwrite gains a target-persisted check").
 
-Param names for the four object-targeting tools (vehicle input, signal cycle,
-signal offset, conflict area status) match
-``guardrails._WRITE_TARGET_FIELD_SPEC`` EXACTLY (tool name AND field names)
--- that table is what lets the postwrite "nothing else moved" diff exempt
-each tool's own intended target field; drifting a name here silently
-reintroduces false-positive diff evidence on every write. ``input_no``/
-``sc_no`` are typed ``str`` here (matching the shadow model's own string id
-fields and ``constraints.py``'s ``_TOOL_TARGET_SPEC``/``guardrails.py``'s
+Param names for the object-targeting tools (vehicle input, signal cycle,
+signal offset, conflict area status, and -- v2 unit ⑥ -- routing decision
+route relative flow) match ``guardrails._WRITE_TARGET_FIELD_SPEC`` EXACTLY
+(tool name AND field names) -- that table is what lets the postwrite
+"nothing else moved" diff exempt each tool's own intended target field;
+drifting a name here silently reintroduces false-positive diff evidence on
+every write. ``input_no``/``sc_no``/``decision_no``/``route_no`` are typed
+``str`` here (matching the shadow model's own string id fields and
+``constraints.py``'s ``_TOOL_TARGET_SPEC``/``guardrails.py``'s
 ``_WRITE_TARGET_FIELD_SPEC`` string-keyed lookups) and converted to ``int``
 only at the COM boundary, inside each tool function.
+
+**v2 unit ⑥: ``set_route_relative_flow`` has a TWO-PART object identity.**
+Every other object-targeting write tool addresses its target with ONE param
+(``input_no``/``sc_no``/``conflict_area_no``) that maps 1:1 onto a flat
+shadow-model object list's own id field. A routing-decision route has no
+single-token identity in Vissim itself -- it is addressed by the
+(``decision_no``, ``route_no``) PAIR. ``guardrails.py``'s
+``_WRITE_TARGET_FIELD_SPEC`` entry for this tool therefore uses
+``id_param_parts`` (not ``id_param``) to synthesize the SAME
+``"{decision_no}.{route_no}"`` id ``tools_network._flatten_routes`` already
+uses as the flat ``shadow_model["routes"]`` list's own ``id`` field -- see
+that helper's docstring and ``guardrails._target_id_for_spec``.
 
 **Failure shape.** ``toolkit.dispatch`` can only ever produce an
 envelope-level ``status: "error"`` when the tool FUNCTION RAISES (unknown
@@ -423,3 +436,64 @@ def set_reduced_speed_area(params: SetReducedSpeedAreaParams) -> dict[str, Any]:
             "lane_count": readback["lane_count"],
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# set_route_relative_flow(decision_no, route_no, rel_flow, interval_no)
+#
+# v2 unit ⑥. A COM verb, same shape as set_vehicle_input_volume/
+# set_conflict_area_status: set -> get (readback) -> persist ->
+# verification envelope. RelFlow is a RAW weight, not a percentage --
+# verified live (backend/tools/routing_decision_probe.py) that Vissim does
+# NOT renormalize sibling routes' own stored values when one route's
+# RelFlow is written; each route's ACTUAL simulated traffic share is
+# derived at RUN time as this value divided by the sum of every route's
+# RelFlow in the SAME decision. A raw number alone on the approval card
+# would misleadingly read like a percentage/share, so the message here AND
+# the dedicated route_relative_flow_split_confirm preflight constraint
+# (constraints.py) both spell out the normalization semantics explicitly
+# rather than just stating "changed to X".
+# ---------------------------------------------------------------------------
+
+
+class SetRouteRelativeFlowParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision_no: str
+    route_no: str
+    rel_flow: float
+    # v2 unit ⑥, same convention as set_vehicle_input_volume's interval_no
+    # (v2 unit ⑤): default 1 addresses the byte-compatible common case (a
+    # single-interval route, or a multi-interval route's first interval).
+    # RelFlow has NO scalar COM form at all (verified live -- see
+    # vissim_com.set_route_relative_flow's docstring) so, unlike
+    # set_signal_cycle/set_signal_offset, every write ALWAYS goes through an
+    # indexed AttValue call regardless of interval_no.
+    interval_no: int = Field(default=1, ge=1)
+
+
+@tool(
+    name="set_route_relative_flow",
+    tier="write",
+    provider="edit",
+    params=SetRouteRelativeFlowParams,
+)
+def set_route_relative_flow(params: SetRouteRelativeFlowParams) -> dict[str, Any]:
+    """Set one route's relative-flow weight within a static vehicle routing decision (interval_no, default 1) on the active edit session's working network -- relFlow is a RAW weight, not a percentage: Vissim computes each route's actual traffic share by normalizing its relFlow against the SUM of every route's relFlow in the SAME decision at simulation time, and writing this value never changes any sibling route's own stored relFlow (verified live; siblings are always left untouched)."""
+    session = _require_session()
+    decision_no = _coerce_id(params.decision_no, "decision_no")
+    route_no = _coerce_id(params.route_no, "route_no")
+
+    session.set_route_relative_flow(decision_no, route_no, params.rel_flow, params.interval_no)
+    readback = session.get_route_relative_flow(decision_no, route_no, params.interval_no)
+    session.persist()
+
+    verification: dict[str, Any] = {"written_value": params.rel_flow, "readback_value": readback}
+    interval_note = "" if params.interval_no == 1 else f" interval {params.interval_no}"
+    message = (
+        f"Decision {params.decision_no} route {params.route_no}{interval_note} relative flow "
+        f"set to {params.rel_flow} (a raw weight, not a percentage -- Vissim normalizes each "
+        f"route's actual traffic share across decision {params.decision_no}'s routes at "
+        "simulation time; sibling routes' own relative flow are left untouched)."
+    )
+    return {"message": message, "verification": verification}

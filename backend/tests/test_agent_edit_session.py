@@ -113,6 +113,16 @@ def test_conflict_area_verb_call_raises_file_not_found_before_touching_com_when_
         session.get_conflict_area(3)
 
 
+def test_route_relative_flow_verb_call_raises_file_not_found_before_touching_com_when_working_copy_missing(
+    tmp_path: Path,
+):
+    # v2 unit (6): same pre-connect guard as every other paired verb.
+    session = VissimEditSession(tmp_path / "missing.inpx")
+
+    with pytest.raises(FileNotFoundError, match="missing.inpx"):
+        session.get_route_relative_flow(1, 1)
+
+
 def test_persist_raises_file_not_found_before_touching_com_when_working_copy_missing(
     tmp_path: Path,
 ):
