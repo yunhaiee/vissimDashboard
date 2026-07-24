@@ -53,6 +53,44 @@ ends the turn with a ``"cancelled"`` result instead of continuing.
 
 Every step is written to the session's trace JSONL (the M5 eval substrate).
 
+**M3.3: multi-turn session + clarification memory.** At the top of every
+call, ``run_agent_turn`` attempts ``session_store.load_state(work_dir,
+session_id)``; when a caller reuses the same ``work_dir``/``session_id`` as
+an earlier call AND that earlier call's ``state.json`` is present and
+parses, the reloaded ``AgentState`` (history, context — including the
+running ``accumulated_warnings`` ledger) becomes THIS turn's starting state
+instead of a fresh one. A brand-new session (no ``state.json`` yet) is a
+no-op reload, so this is byte-for-byte inert for every pre-M3.3 caller. At
+the END of every turn — every terminal ``kind``, including
+``clarification``/``approval_request``/``cancelled``, not just a clean
+``answer`` — the (possibly mutated) state is written back via
+``session_store.save_state`` through the single ``finalize()`` choke point
+below, so the very next call on the same session always has the freshest
+state available, regardless of how this turn ended. Two concrete effects of
+carrying state forward:
+
+- **Clarification memory:** when the reloaded state's previous turn ended in
+  ``ask_user`` (tracked via ``state.context["pending_clarification"]``,
+  since a terminal ``ask_user``/``respond`` decision is never appended to
+  ``state.history`` — see the M1.3 loop above), this turn prepends a
+  deterministic system note (the original goal + the question + this turn's
+  reply, ko/en/ja) into ``state.context["warnings"]`` — the ONE per-turn
+  context field ``planner.py``'s ``_state_block`` already renders (present
+  since M1.3, unused until now) — so the merge is left to the planner
+  prompt/model, never regex-spliced here.
+- **Accumulated warnings surfacing:** every WARN-tier finding that actually
+  fires on a DISPATCHED write/run action (never a preflight shown on an
+  approval request that might still be declined) is recorded into
+  ``state.context["accumulated_warnings"]`` (deduped by
+  constraint_id+message — see ``_record_accumulated_warnings``). Warnings
+  already present in that ledger BEFORE this turn started (i.e. from an
+  EARLIER turn) are appended as a deterministic suffix to this turn's final
+  ``answer`` (kind == "answer" only) via ``_append_carried_forward_warnings``
+  — the cross-turn counterpart to the M3.2 agentic-tier safety net
+  (``_append_agentic_warning_notice``, unchanged, intra-turn only); both
+  share one low-level renderer, ``_append_warning_block``, so a future
+  formatting fix only has one place to land.
+
 The active network is whatever ``tools_network.set_active_inpx`` points at —
 ``config.SIMULATION_INPX_PATH`` (the demo network) by default. Callers that
 serve a specific dataset set it before running a turn (module-global session
@@ -62,7 +100,7 @@ context; acceptable M1 limitation per tools_network's docstring).
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -74,7 +112,7 @@ import services.agent.tools_edit  # noqa: F401
 import services.agent.tools_metrics  # noqa: F401
 import services.agent.tools_network  # noqa: F401
 import services.agent.tools_run  # noqa: F401
-from services.agent import complexity
+from services.agent import complexity, session_store
 from services.agent.gates import ApprovalRequired
 from services.agent.guardrails import GuardrailEngine, GuardrailReport
 from services.agent.planner import Planner, PlannerDecision, pick_language_text
@@ -149,6 +187,63 @@ _APPROVAL_PROPOSAL_PROMPT = {
     "ko": "승인하시겠습니까?",
     "en": "Approve this action?",
     "ja": "承認しますか？",
+}
+
+# M3.3: the context key carrying a not-yet-resolved clarification across a
+# state.json reload — {"goal": <the goal that prompted the question>,
+# "question": <the question asked>}. Set by _finalize_turn whenever a turn
+# ends with kind == "clarification" (ask_user is planner-terminal and, like
+# `respond`, is never appended to state.history — see the module docstring
+# — so this context field, not history, is the only place "was the previous
+# turn a clarification" can be recovered from after a reload); cleared the
+# moment the NEXT turn consumes it, whether or not that turn asks another
+# question (a second question gets its OWN fresh entry, keyed off that
+# turn's own goal — see run_agent_turn's reload block).
+_CLARIFICATION_CONTEXT_KEY = "pending_clarification"
+
+# M3.3: the deterministic system note prepended into
+# state.context["warnings"] (planner.py's _state_block already renders this
+# field verbatim; it is otherwise unused today) when a reloaded session's
+# previous turn was left waiting on a clarification question. Merging the
+# original goal with the user's new reply is deliberately left to the
+# planner PROMPT (i.e. the model reads both raw texts together), never done
+# by string-splicing/regex here — see the module docstring.
+_CLARIFICATION_MERGE_NOTE = {
+    "ko": (
+        "[시스템 참고: 이전 요청 '{goal}'에 대해 '{question}'라고 확인을 요청했고, "
+        "사용자가 이번에 '{reply}'라고 응답했습니다. 두 내용을 종합하여 이번 요청을 "
+        "이해하세요.]"
+    ),
+    "en": (
+        "[System note: for the earlier request '{goal}', the assistant asked "
+        "'{question}', and the user just replied '{reply}'. Reconcile both "
+        "when understanding this request.]"
+    ),
+    "ja": (
+        "[システム注記: 以前のリクエスト『{goal}』について『{question}』と確認を求め、"
+        "ユーザーは今回『{reply}』と返答しました。両方を踏まえて今回のリクエストを"
+        "理解してください。]"
+    ),
+}
+
+# M3.3: the cross-turn accumulated-warnings suffix header — deliberately
+# DIFFERENT text from _AGENTIC_WARNING_NOTICE_HEADER's "참고:"/"Note:" so the
+# two notices (intra-turn agentic safety net vs. cross-turn carried-forward
+# ledger) are never visually confusable with each other if both happen to
+# fire on the same agentic-tier turn.
+_CARRIED_FORWARD_WARNINGS_HEADER = {
+    "ko": (
+        "참고: 이전 대화에서 발생한 경고가 여전히 유효합니다. 이번 답변도 아래 내용과 "
+        "함께 참고하세요:"
+    ),
+    "en": (
+        "Note: warning(s) from earlier in this conversation still apply. Read this "
+        "answer together with them:"
+    ),
+    "ja": (
+        "注意: これまでの会話で発生した警告は引き続き有効です。今回の回答もこれらと"
+        "合わせてご確認ください:"
+    ),
 }
 
 
@@ -362,6 +457,26 @@ def _collect_history_warnings(history: list[StepRecord]) -> list[dict[str, Any]]
     return collected
 
 
+def _append_warning_block(answer: str, header: str, warnings: list[dict[str, Any]]) -> str:
+    """Shared low-level suffix renderer (M3.3): header line + one ``- message``
+    bullet per warning, appended after a blank line. A no-op (returns
+    ``answer`` unchanged) when ``warnings`` is empty, so a clean answer with
+    nothing to report is never mutated. Used by both
+    ``_append_agentic_warning_notice`` (M3.2, intra-turn, agentic-tier only)
+    and ``_append_carried_forward_warnings`` (M3.3, cross-turn, every tier) —
+    one formatting implementation, two distinct trigger conditions and
+    header texts (see each caller's own docstring for why they stay
+    separate rather than being merged into one trigger).
+    """
+    if not warnings:
+        return answer
+    lines = [f"- {warning.get('message', '')}" for warning in warnings]
+    notice = header + "\n" + "\n".join(lines)
+    if not answer.strip():
+        return notice
+    return answer + "\n\n" + notice
+
+
 def _append_agentic_warning_notice(
     language: str, answer: str, warnings: list[dict[str, Any]]
 ) -> str:
@@ -378,14 +493,59 @@ def _append_agentic_warning_notice(
     ``_forced_completion_answer``. A no-op (returns ``answer`` unchanged)
     when ``warnings`` is empty.
     """
-    if not warnings:
-        return answer
-    header = pick_language_text(_AGENTIC_WARNING_NOTICE_HEADER, language)
-    lines = [f"- {warning.get('message', '')}" for warning in warnings]
-    notice = header + "\n" + "\n".join(lines)
-    if not answer.strip():
-        return notice
-    return answer + "\n\n" + notice
+    return _append_warning_block(
+        answer, pick_language_text(_AGENTIC_WARNING_NOTICE_HEADER, language), warnings
+    )
+
+
+def _append_carried_forward_warnings(
+    language: str, answer: str, warnings: list[dict[str, Any]]
+) -> str:
+    """M3.3 cross-turn counterpart to ``_append_agentic_warning_notice``:
+    unconditionally appends warnings that were ALREADY in
+    ``state.context["accumulated_warnings"]`` before THIS turn started (see
+    ``run_agent_turn``'s ``carried_forward_warnings`` snapshot) to a
+    kind == "answer" turn's final answer, regardless of tier — the roadmap's
+    accept criterion ("a warning from turn 2 still visible in turn 3's
+    answer") does not restrict this to the agentic tier. Deliberately scoped
+    to warnings from EARLIER turns only (not this turn's own new findings):
+    an agentic-tier turn's own same-turn findings are already covered by
+    ``_append_agentic_warning_notice`` above, and duplicating them here
+    would produce two overlapping notice blocks on the same answer. A no-op
+    when ``warnings`` is empty (the common case: most sessions never
+    accumulate a warning at all).
+    """
+    return _append_warning_block(
+        answer, pick_language_text(_CARRIED_FORWARD_WARNINGS_HEADER, language), warnings
+    )
+
+
+def _record_accumulated_warnings(
+    state: AgentState, warn_findings: list[Any], language: str
+) -> None:
+    """M3.3: append every WARN-tier finding that fired on a DISPATCHED
+    write/run action to ``state.context["accumulated_warnings"]`` —
+    ``{"constraint_id", "message"}`` per finding, deduped by
+    (constraint_id, message) so an identical warning firing again later in
+    the same session is not repeated. This is the session's persisted,
+    cross-turn ledger (``session_store.save_state`` writes ``state.context``
+    to ``state.json`` at the end of every turn via ``_finalize_turn`` below)
+    — distinct from ``_attach_guardrail_warnings``, which only rides ONE
+    tool call's own observation envelope for the CURRENT turn's planner to
+    see. Deliberately NOT called for a preflight warning shown on an
+    ``approval_request`` the user might still decline (see the ``except
+    ApprovalRequired`` branch) — nothing has actually happened yet, so
+    recording it here would be premature.
+    """
+    accumulated = state.context.setdefault("accumulated_warnings", [])
+    seen = {(entry.get("constraint_id"), entry.get("message")) for entry in accumulated}
+    for finding in warn_findings:
+        message = pick_language_text(finding.messages, language)
+        key = (finding.constraint_id, message)
+        if key in seen:
+            continue
+        seen.add(key)
+        accumulated.append({"constraint_id": finding.constraint_id, "message": message})
 
 
 def _forced_completion_answer(
@@ -424,6 +584,73 @@ def _emit_step(
         on_step({**step, "index": len(steps) - 1})
     except Exception:
         logger.exception("on_step callback raised; ignoring")
+
+
+def _finalize_turn(
+    result: AgentTurnResult,
+    *,
+    state: AgentState,
+    language: str,
+    work_dir: Path | str,
+    session_id: str,
+    carried_forward_warnings: list[dict[str, Any]],
+) -> AgentTurnResult:
+    """M3.3: the single choke point every ``return AgentTurnResult(...)`` in
+    ``run_agent_turn`` routes through, so "persist state.json" and "append
+    the cross-turn warning suffix" can never be forgotten on a return path
+    added later (docs/phase2/02-ROADMAP.md M3.3's "write state.json ... at
+    the END of every turn, ALL terminal kinds").
+
+    1. Clarification-memory bookkeeping: a turn ending in ``kind ==
+       "clarification"`` records ``{goal, question}`` under
+       ``state.context[_CLARIFICATION_CONTEXT_KEY]`` for the NEXT reload to
+       consume; every other terminal kind clears it (the question either
+       just got answered — this turn's reload already popped and consumed
+       the OLD entry, see ``run_agent_turn`` — or was never asked).
+    2. Cross-turn warning suffix: ``carried_forward_warnings`` (the
+       ``accumulated_warnings`` snapshot taken BEFORE this turn ran) is
+       appended to the answer, but ONLY for ``kind == "answer"`` — a
+       clarification question, an approval proposal line, or the short
+       cancellation notice each have their own pinned deterministic text
+       elsewhere and are left untouched.
+    3. Persistence: ``session_store.save_state`` writes ``state`` (by now
+       carrying every ``StepRecord``/``accumulated_warnings`` entry this
+       turn produced) to ``<work_dir>/state.json``. Best-effort: a
+       persistence failure (bad session_id, unwritable dir, a
+       non-JSON-serializable value that snuck into ``context``) is logged
+       and swallowed, never allowed to turn an already-computed answer into
+       a 500 — the session simply won't resume with full context next time,
+       which is what the reload's own OWN "missing/corrupt state.json
+       degrades to a fresh state" contract already treats as a normal,
+       recoverable case.
+    """
+    if result.kind == "clarification":
+        state.context[_CLARIFICATION_CONTEXT_KEY] = {
+            "goal": state.goal,
+            "question": result.answer,
+        }
+    else:
+        state.context.pop(_CLARIFICATION_CONTEXT_KEY, None)
+
+    finalized = result
+    if result.kind == "answer" and carried_forward_warnings:
+        finalized = replace(
+            result,
+            answer=_append_carried_forward_warnings(
+                language, result.answer, carried_forward_warnings
+            ),
+        )
+
+    try:
+        session_store.save_state(work_dir, session_id, state)
+    except Exception:  # noqa: BLE001 - persistence must never break a computed answer
+        logger.exception(
+            "Failed to persist agent session state session_id=%s work_dir=%s",
+            session_id,
+            work_dir,
+        )
+
+    return finalized
 
 
 def run_agent_turn(
@@ -478,33 +705,93 @@ def run_agent_turn(
       returns ``True`` the turn ends immediately with
       ``AgentTurnResult(kind="cancelled", ...)`` and a trace record of kind
       ``"cancelled"``. Default ``None`` never cancels.
+
+    M3.3 addition, unconditional (no opt-out flag — see the module
+    docstring): ``session_store.load_state(work_dir, session_id)`` is
+    attempted first; a caller reusing the same ``work_dir``/``session_id``
+    as an earlier call transparently resumes that session's history and
+    context (including ``accumulated_warnings``), while a brand-new
+    session/work dir (no ``state.json`` yet) is a no-op reload — every
+    pre-M3.3 caller's behavior is unaffected.
     """
     target_registry = registry if registry is not None else default_registry
     target_gate: WriteGate = gate if gate is not None else RefuseAllWriteGate()
     target_engine = engine if engine is not None else GuardrailEngine()
-    # M3.2: classified ONCE per turn from the original message (not
+    # M3.2: classified ONCE per turn from the CURRENT message (not
     # re-classified per iteration/per compacted state block — see
     # complexity.py's module docstring) and threaded through state.context so
     # the planner (system-prompt selection, meta["tier"] on every decision,
     # the mandatory-preview diversion) and this loop (the agentic-tier
-    # warning-notice safety net below) share the exact same value.
+    # warning-notice safety net below) share the exact same value. Computed
+    # from ``message`` regardless of whether this turn reloads a prior
+    # session's state — a resumed conversation's tier can legitimately shift
+    # turn to turn (e.g. a plain follow-up after an optimization request).
     tier = complexity.classify_tier(message)
-    state = AgentState(
-        goal=message, artifacts={}, history=[], context={"language": language, "tier": tier}
+
+    # M3.3: reload-by-session-id (see the module + function docstrings).
+    reloaded_state = session_store.load_state(work_dir, session_id)
+    if reloaded_state is not None:
+        state = reloaded_state
+        state.context["language"] = language
+        state.context["tier"] = tier
+        # Clarification memory: consume (pop, not peek) whatever the
+        # PREVIOUS turn left pending — this turn's message is presumed to be
+        # the user's reply to it. A fresh, per-turn note only; stale notes
+        # from turns further back never accumulate here (that is what
+        # accumulated_warnings is for, deliberately kept as a SEPARATE
+        # ledger — see _record_accumulated_warnings).
+        pending_clarification = state.context.pop(_CLARIFICATION_CONTEXT_KEY, None)
+        if pending_clarification:
+            note = pick_language_text(_CLARIFICATION_MERGE_NOTE, language).format(
+                goal=pending_clarification.get("goal", ""),
+                question=pending_clarification.get("question", ""),
+                reply=message,
+            )
+            state.context["warnings"] = [note]
+        else:
+            state.context["warnings"] = []
+        # This turn's own message is the goal from here on (persisted goal
+        # from a reloaded turn would otherwise leak a stale prior request
+        # into every subsequent planner prompt via _state_block's "Goal:"
+        # line).
+        state.goal = message
+    else:
+        state = AgentState(
+            goal=message, artifacts={}, history=[], context={"language": language, "tier": tier}
+        )
+
+    # Snapshot BEFORE this turn's own findings can append to it, so the
+    # cross-turn suffix (_append_carried_forward_warnings) only ever shows
+    # warnings from EARLIER turns — see _finalize_turn.
+    carried_forward_warnings: list[dict[str, Any]] = list(
+        state.context.get("accumulated_warnings") or []
     )
+
     tracer = TraceWriter(work_dir, session_id)
     planner = Planner(provider, registry=target_registry)
     steps: list[dict[str, Any]] = []
 
+    def finalize(result: AgentTurnResult) -> AgentTurnResult:
+        return _finalize_turn(
+            result,
+            state=state,
+            language=language,
+            work_dir=work_dir,
+            session_id=session_id,
+            carried_forward_warnings=carried_forward_warnings,
+        )
+
     for iteration in range(max_iterations):
         if should_cancel is not None and should_cancel():
             tracer.write("cancelled", {"iteration": iteration})
-            return AgentTurnResult(
-                answer=pick_language_text(_CANCELLED_ANSWER, language),
-                kind="cancelled",
-                steps=steps,
-                trace_path=tracer.path,
-                state=state,
+            return finalize(
+                AgentTurnResult(
+                    answer=pick_language_text(_CANCELLED_ANSWER, language),
+                    kind="cancelled",
+                    steps=steps,
+                    trace_path=tracer.path,
+                    state=state,
+                )
             )
 
         decision = planner.next_action(state, language)
@@ -534,23 +821,27 @@ def run_agent_turn(
             _emit_step(
                 steps, {"summary": decision.summary, "tool": "respond", "status": "ok"}, on_step
             )
-            return AgentTurnResult(
-                answer=answer,
-                kind="answer",
-                steps=steps,
-                trace_path=tracer.path,
-                state=state,
+            return finalize(
+                AgentTurnResult(
+                    answer=answer,
+                    kind="answer",
+                    steps=steps,
+                    trace_path=tracer.path,
+                    state=state,
+                )
             )
         if decision.kind == "ask_user":
             _emit_step(
                 steps, {"summary": decision.summary, "tool": "ask_user", "status": "ok"}, on_step
             )
-            return AgentTurnResult(
-                answer=decision.params.get("question", ""),
-                kind="clarification",
-                steps=steps,
-                trace_path=tracer.path,
-                state=state,
+            return finalize(
+                AgentTurnResult(
+                    answer=decision.params.get("question", ""),
+                    kind="clarification",
+                    steps=steps,
+                    trace_path=tracer.path,
+                    state=state,
+                )
             )
 
         spec = target_registry.get(decision.tool)
@@ -634,13 +925,15 @@ def run_agent_turn(
                         },
                         on_step,
                     )
-                    return AgentTurnResult(
-                        answer=_approval_proposal_answer(language, decision, warning_payload),
-                        kind="approval_request",
-                        steps=steps,
-                        trace_path=tracer.path,
-                        state=state,
-                        pending_approval=pending_approval,
+                    return finalize(
+                        AgentTurnResult(
+                            answer=_approval_proposal_answer(language, decision, warning_payload),
+                            kind="approval_request",
+                            steps=steps,
+                            trace_path=tracer.path,
+                            state=state,
+                            pending_approval=pending_approval,
+                        )
                     )
             else:
                 if not action_authorized:
@@ -743,6 +1036,11 @@ def run_agent_turn(
                             envelope = _attach_guardrail_warnings(
                                 envelope, preflight_warnings, language
                             )
+                            # M3.3: the action actually dispatched (see the
+                            # class docstring for why an approval-pending
+                            # preflight warning is NOT recorded here) --
+                            # persist it into the cross-turn ledger too.
+                            _record_accumulated_warnings(state, preflight_warnings, language)
 
                         if envelope["status"] == "ok":
                             if spec.tier == "write":
@@ -802,12 +1100,16 @@ def run_agent_turn(
                                         },
                                         on_step,
                                     )
-                                    return AgentTurnResult(
-                                        answer=_postwrite_abort_answer(language, postwrite_report),
-                                        kind="answer",
-                                        steps=steps,
-                                        trace_path=tracer.path,
-                                        state=state,
+                                    return finalize(
+                                        AgentTurnResult(
+                                            answer=_postwrite_abort_answer(
+                                                language, postwrite_report
+                                            ),
+                                            kind="answer",
+                                            steps=steps,
+                                            trace_path=tracer.path,
+                                            state=state,
+                                        )
                                     )
 
                                 postwrite_warnings = postwrite_report.warnings()
@@ -829,6 +1131,9 @@ def run_agent_turn(
                                     )
                                     envelope = _attach_guardrail_warnings(
                                         envelope, postwrite_warnings, language
+                                    )
+                                    _record_accumulated_warnings(
+                                        state, postwrite_warnings, language
                                     )
                             else:
                                 # M2.4: run-tier post-dispatch handling.
@@ -876,6 +1181,9 @@ def run_agent_turn(
                                     )
                                     envelope = _attach_guardrail_warnings(
                                         envelope, postrun_warnings, language
+                                    )
+                                    _record_accumulated_warnings(
+                                        state, postrun_warnings, language
                                     )
 
         elif spec is not None and spec.tier != "read":
@@ -927,10 +1235,12 @@ def run_agent_turn(
             on_step,
         )
 
-    return AgentTurnResult(
-        answer=_forced_completion_answer(language, steps, max_iterations),
-        kind="answer",
-        steps=steps,
-        trace_path=tracer.path,
-        state=state,
+    return finalize(
+        AgentTurnResult(
+            answer=_forced_completion_answer(language, steps, max_iterations),
+            kind="answer",
+            steps=steps,
+            trace_path=tracer.path,
+            state=state,
+        )
     )

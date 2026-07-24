@@ -625,3 +625,22 @@ against real Vissim behavior. Trace: plan → preflight → action_start → act
   tables need scripted twins or exclusion; the real RQ2 scenario is proven by a dedicated
   twice-scripted fixture where the unsafe write genuinely lands under ablation.
 - Naive LLM-codegen baseline deferred (roadmap-optional; needs its own sandbox + taxonomy).
+
+---
+
+## 2026-07-24 — M3.3 decision batch (multi-turn sessions)
+
+- **SESSION_ID_RE deliberately broader than the router's hex-only _SESSION_ID_RE**: the
+  literal copy would have rejected every existing human-readable id in tests/eval/live
+  tools (verified, ~40 shapes). trace.SESSION_ID_RE = ^[A-Za-z0-9_-]{1,128}$ blocks all
+  traversal metacharacters; the strict hex gate remains at the HTTP boundary. Two
+  allowlists at two trust boundaries, by design.
+- **Clarification memory rides the pre-existing (unused) state.context["warnings"] hook**
+  that planner._state_block already renders — planner.py stayed untouched. Field name is
+  now overloaded vs accumulated_warnings; rename when planner is next in scope.
+- **Cross-turn and intra-turn (M3.2 agentic) warning notices stay separate mechanisms**
+  sharing one line renderer — distinct headers, never duplicated in one answer, M3.2's
+  pinned strings untouched.
+- Persistence goes through one _finalize_turn choke point (state.json on EVERY terminal
+  kind); session resume validated at the endpoint (400 on malformed). Frontend threading of
+  session_id (api.ts + FloatingAssistant) is deliberately left to M4.

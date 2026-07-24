@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from services.agent.trace import ALLOWED_KINDS, TraceWriter, read_trace
+from services.agent.trace import (
+    ALLOWED_KINDS,
+    SESSION_ID_RE,
+    TraceWriter,
+    read_trace,
+    validate_session_id,
+)
 
 
 def test_write_then_read_round_trips_records(tmp_path: Path):
@@ -100,3 +106,78 @@ def test_read_trace_ignores_blank_lines(tmp_path: Path):
 
     assert len(records) == 1
     assert records[0]["kind"] == "plan"
+
+
+# ---------------------------------------------------------------------------
+# M3.3 blocking finding: session_id sanitization at the TraceWriter.__init__
+# boundary (docs/phase2/DECISIONS.md). session_store.py's own side of the
+# same check is covered in test_agent_session_store.py.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_session_id",
+    [
+        "../../../etc/passwd",
+        "../evil",
+        "a/b",
+        "a\\b",
+        "",
+        "..",
+        "session id with spaces",
+        "C:\\Windows",
+    ],
+)
+def test_tracewriter_rejects_a_path_traversal_shaped_session_id(
+    tmp_path: Path, bad_session_id: str
+):
+    with pytest.raises(ValueError):
+        TraceWriter(tmp_path, session_id=bad_session_id)
+
+    # Never path-traverses: nothing was created anywhere, not even inside
+    # work_dir, let alone escaping it.
+    assert list(tmp_path.rglob("*")) == []
+
+
+def test_tracewriter_rejects_a_bad_session_id_before_creating_work_dir(tmp_path: Path):
+    work_dir = tmp_path / "does-not-exist-yet"
+
+    with pytest.raises(ValueError):
+        TraceWriter(work_dir, session_id="../escape")
+
+    assert not work_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "good_session_id",
+    ["sess-1", "alpha", "s-tier-simple", "0123456789ab", "eval-T001_network_overview_read"],
+)
+def test_tracewriter_accepts_every_session_id_shape_used_elsewhere_in_this_repo(
+    tmp_path: Path, good_session_id: str
+):
+    # Deliberately broader than routers/assistant.py's own stricter
+    # hex-only _SESSION_ID_RE (that one gates the HTTP client-input
+    # boundary specifically) -- see SESSION_ID_RE's module docstring for
+    # why. This is a regression guard: a literal copy of the hex-only
+    # pattern here would break every orchestrator test and the eval
+    # harness's "eval-<task id>" session ids.
+    writer = TraceWriter(tmp_path, session_id=good_session_id)
+    assert writer.path.exists() is False  # created on first write, not on construction
+    writer.write("plan", {})
+    assert writer.path.exists()
+
+
+def test_validate_session_id_returns_the_input_unchanged_on_success():
+    assert validate_session_id("sess-1") == "sess-1"
+
+
+def test_validate_session_id_raises_value_error_on_a_non_string():
+    with pytest.raises(ValueError):
+        validate_session_id(None)  # type: ignore[arg-type]
+
+
+def test_session_id_re_is_fully_anchored_not_a_prefix_match():
+    # A regex without leading ^/trailing $ would let "safe/../../etc" match
+    # on its safe-looking prefix -- assert the compiled pattern rejects any
+    # traversal-shaped suffix, not just a traversal-shaped whole string.
+    assert SESSION_ID_RE.match("safe/../etc") is None

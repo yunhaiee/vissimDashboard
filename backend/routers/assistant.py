@@ -94,6 +94,18 @@ class AssistantQueryRequest(BaseModel):
 class AgentQueryRequest(BaseModel):
     message: str = Field(min_length=1)
     response_language: str | None = "ko"
+    # M3.3: optional session reuse -- omitted/None (every pre-M3.3 client)
+    # mints a fresh session exactly as before; a client that supplies the
+    # session_id from an earlier turn's `done.response.session_id` resumes
+    # that SAME work dir (trace appends -- append-mode by design -- and
+    # services.agent.session_store reloads that session's AgentState), so a
+    # follow-up message carries forward its history, accumulated guardrail
+    # warnings, and (if the previous turn ended in a clarification question)
+    # the original goal for the planner to reconcile with this reply. See
+    # `_SESSION_ID_RE`'s validation below -- the SAME client-input-boundary
+    # check `/agent/approve` already applies, now shared by both endpoints
+    # via that one module-level pattern.
+    session_id: str | None = None
 
 
 class AgentApproveRequest(BaseModel):
@@ -628,13 +640,35 @@ def stream_agent_query(payload: AgentQueryRequest, request: Request):
     ``ProposeWriteGate``: the FIRST write of a plan always pauses for
     approval; there is currently no way to opt out of the approval flow
     from this endpoint (by design — M2.3's whole point).
+
+    M3.3: ``payload.session_id``, when supplied, resumes that session's work
+    dir/trace/state instead of minting a fresh one — see
+    ``AgentQueryRequest.session_id``'s own field comment and
+    ``services.agent.orchestrator.run_agent_turn``'s reload contract. Every
+    ``done`` event still carries ``response.session_id`` regardless of
+    whether it was client-supplied or freshly minted, so a client can always
+    resume the returned id on its next message.
     """
     message = payload.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
     language = (payload.response_language or "ko").strip().lower() or "ko"
 
-    session_id = uuid.uuid4().hex[:12]
+    # M3.3: a client-supplied session_id resumes that session's work dir
+    # (services.agent.session_store reloads its AgentState at turn start --
+    # see orchestrator.run_agent_turn); no session_id (every pre-M3.3
+    # client) mints a fresh one exactly as before. Same validation as
+    # `/agent/approve`'s existing client-input boundary -- a malformed id is
+    # a 400 here (unlike approve's 404: there is no existing pending-approval
+    # resource being addressed, just a bad request) rather than silently
+    # falling back to a fresh session, since silently ignoring a client's
+    # explicit resume request would be a confusing, hard-to-debug surprise.
+    if payload.session_id is not None:
+        if not _SESSION_ID_RE.match(payload.session_id):
+            raise HTTPException(status_code=400, detail="Invalid session_id.")
+        session_id = payload.session_id
+    else:
+        session_id = uuid.uuid4().hex[:12]
     work_dir = _agent_session_work_dir(session_id)
     artifact_manager = ArtifactManager(source_inpx=get_active_inpx_path(), work_dir=work_dir)
     engine = GuardrailEngine()
