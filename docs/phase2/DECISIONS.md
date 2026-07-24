@@ -770,3 +770,25 @@ the validation-retry path); mirrored onto the Qwen loop.
 an unbounded silent wait. Residual: the ceiling bounds the walk, not a single pathological
 call ignoring its SDK timeout (would need thread preemption); the orchestrator's own
 iterations each get a fresh ceiling, converging via the rule-fallback to ask_user.
+
+---
+
+## 2026-07-24 — NDJSON heartbeat fixes the dead-stream live bug (idle proxy kill)
+
+**Context:** two live incidents, identical trace signature — a 2+ min run_simulation call
+emits zero stream events until it completes (on_step fires post-dispatch), long enough for
+the Next dev proxy to kill the idle connection; the backend correctly cancels on disconnect
+(action_end ok → postrun clean → cancelled) but the browser's dead fetch is never surfaced —
+"Preparing answer..." forever, answer lost.
+
+**Decision:** _stream_agent_turn emits {"type":"ping"} whenever queue silence exceeds
+AGENT_STREAM_PING_INTERVAL_S (default 15s; same env-fallback pattern as
+ladder_ceiling_seconds) — one generator, both endpoints. Frontend explicitly no-ops ping;
+belt-and-suspenders AgentStreamDisconnectedError (stream ends without done / non-abort read
+error) resolves the pending message and any busy approval card into a localized
+"connection lost — your progress was saved, ask again" state, preserving partial narration.
+Accurate claim: every terminal path persists state.json via _finalize_turn first. Next's
+rewrites() has no timeout knob (verified) — heartbeat is the only available fix.
+
+**Consequence:** no intermediary can ever see >15s of stream silence; any残 dropped
+connection surfaces visibly instead of an eternal spinner.

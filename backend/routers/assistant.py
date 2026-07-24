@@ -459,6 +459,42 @@ _APPROVAL_DECLINED_TEXT = {
     "ja": "リクエストされた操作はキャンセルされました。ネットワークは変更されていません。",
 }
 
+# ---------------------------------------------------------------------------
+# NDJSON heartbeat: a long-running tool call (e.g. a 2+ minute RunContinuous
+# simulation) produces no `on_step` narration until it finishes -- see
+# run_agent_turn's own docstring, "on_step ... called once per narrated
+# step" -- so the queue-drain loop below can otherwise sit silent for
+# minutes. An idle NDJSON connection that long is exactly what an
+# intermediary (observed: the Next.js dev proxy) will kill, at which point
+# the backend's own request.is_disconnected() poll correctly cancels the
+# turn -- but the browser's now-dead fetch/reader is never told anything
+# happened (docs/phase2/DECISIONS.md, 2026-07-24 heartbeat entry). A `ping`
+# event emitted whenever the queue has been silent for
+# _stream_ping_interval_seconds() keeps the connection demonstrably alive so
+# an idle-timeout intermediary never has a silent gap long enough to act on.
+# Both /agent/query/stream and /agent/approve share this one generator, so
+# one change covers both endpoints.
+# ---------------------------------------------------------------------------
+
+DEFAULT_STREAM_PING_INTERVAL_S = 15.0
+
+
+def _stream_ping_interval_seconds() -> float:
+    """Max seconds the NDJSON queue-drain loop may stay silent before it
+    emits a heartbeat `ping`. Read fresh on every call (never cached, same
+    pattern as ``services.agent.structured.ladder_ceiling_seconds``) so a
+    test can shrink it via ``AGENT_STREAM_PING_INTERVAL_S`` without a
+    process restart. Falls back to :data:`DEFAULT_STREAM_PING_INTERVAL_S` on
+    anything unset, unparsable, or non-positive."""
+    raw = os.getenv("AGENT_STREAM_PING_INTERVAL_S", "").strip()
+    if not raw:
+        return DEFAULT_STREAM_PING_INTERVAL_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_STREAM_PING_INTERVAL_S
+    return value if value > 0 else DEFAULT_STREAM_PING_INTERVAL_S
+
 # {actions} is filled by _format_actions_for_note — a compact, LLM-legible
 # rendering of the approved tool call(s), so the re-run's planner has
 # everything it needs to reissue the SAME action rather than guessing.
@@ -590,6 +626,9 @@ async def _stream_agent_turn(
     # steps actually streamed before the failure (same rationale as M1.4).
     streamed_steps: list[dict[str, Any]] = []
 
+    ping_interval = _stream_ping_interval_seconds()
+    last_emit = time.monotonic()
+
     try:
         while True:
             try:
@@ -601,8 +640,13 @@ async def _stream_agent_turn(
                     disconnected = False
                 if disconnected:
                     cancelled.set()
+                now = time.monotonic()
+                if now - last_emit >= ping_interval:
+                    last_emit = now
+                    yield encode_stream_event({"type": "ping", "stream_id": stream_id})
                 await asyncio.sleep(0.03)
                 continue
+            last_emit = time.monotonic()
             if kind == "end":
                 break
             summary = value.get("summary", "")

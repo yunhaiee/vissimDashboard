@@ -695,6 +695,17 @@ export type AgentStreamEvent =
       stream_id?: string;
       text?: string;
     }
+  // Backend heartbeat (backend/routers/assistant.py's _stream_agent_turn,
+  // docs/phase2/DECISIONS.md 2026-07-24 heartbeat entry): emitted every
+  // ~15s of queue silence during a long-running tool call (e.g. a 300s
+  // RunContinuous) so an idle-timeout intermediary (the Next.js dev proxy)
+  // never sees a long enough silent gap to kill the connection. Carries no
+  // payload beyond stream_id -- handleAgentStreamLine below is a pure no-op
+  // for it, same as any other event type it doesn't recognize.
+  | {
+      type: "ping";
+      stream_id?: string;
+    }
   | {
       type: "done";
       stream_id?: string;
@@ -976,6 +987,26 @@ export class AgentApprovalError extends Error {
   }
 }
 
+// Live-bug fix (docs/phase2/DECISIONS.md, 2026-07-24 heartbeat entry):
+// thrown by readAgentEventStream when the NDJSON body ends (or its reader
+// throws) WITHOUT ever delivering a `done` event -- a dropped/killed
+// connection, as opposed to a clean stream that completed normally or a
+// user-initiated AbortError (readAgentEventStream re-throws aborts as-is so
+// callers keep using their existing isAbortError check). Distinguished from
+// a generic Error so FloatingAssistant.tsx can resolve the pending message
+// into one clear, localized "connection lost, try again" state instead of
+// either an eternal spinner or the generic assistant-error copy.
+export class AgentStreamDisconnectedError extends Error {
+  constructor(message = "Agent stream ended before a final response was received.", options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "AgentStreamDisconnectedError";
+  }
+}
+
+function isAbortErrorLike(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error && String((error as { name?: unknown }).name) === "AbortError";
+}
+
 // M2.3: resolves one pending write approval from an earlier streamAgentQuery
 // turn's approval_request event. Reuses the exact same NDJSON reader/handler
 // plumbing as streamAgentQuery (readAgentEventStream below, no parser
@@ -1024,21 +1055,36 @@ async function readAgentEventStream(response: Response, handlers: AgentStreamHan
   let buffer = "";
   let finalResponse: AgentQueryResponse | null = null;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      finalResponse = handleAgentStreamLine(line, handlers) ?? finalResponse;
+  // Live-bug fix: an intermediary (observed: the Next.js dev proxy) that
+  // kills an idle connection mid-turn can surface here either as
+  // reader.read() rejecting, or (more commonly observed) as the readable
+  // stream simply ending (`done: true`) with no `done` NDJSON event ever
+  // having been parsed -- the loop below falls through to the
+  // AgentStreamDisconnectedError throw after it either way. A genuine
+  // user-initiated abort (AbortController.signal, wired into the
+  // `fetch(...)` call the caller made) is re-thrown as-is so existing
+  // isAbortError callers keep working unchanged; anything else reading the
+  // body is a dropped connection, not a "malformed stream" bug.
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        finalResponse = handleAgentStreamLine(line, handlers) ?? finalResponse;
+      }
     }
+  } catch (caught) {
+    if (isAbortErrorLike(caught)) throw caught;
+    throw new AgentStreamDisconnectedError(undefined, { cause: caught });
   }
 
   buffer += decoder.decode();
   finalResponse = handleAgentStreamLine(buffer, handlers) ?? finalResponse;
   if (finalResponse) return finalResponse;
-  throw new Error("Agent stream ended before a final response was received.");
+  throw new AgentStreamDisconnectedError();
 }
 
 function readAgentEventLines(text: string, handlers: AgentStreamHandlers): AgentQueryResponse {
@@ -1047,7 +1093,7 @@ function readAgentEventLines(text: string, handlers: AgentStreamHandlers): Agent
     finalResponse = handleAgentStreamLine(line, handlers) ?? finalResponse;
   }
   if (finalResponse) return finalResponse;
-  throw new Error("Agent stream ended before a final response was received.");
+  throw new AgentStreamDisconnectedError();
 }
 
 function handleAgentStreamLine(line: string, handlers: AgentStreamHandlers): AgentQueryResponse | null {
@@ -1071,9 +1117,19 @@ function handleAgentStreamLine(line: string, handlers: AgentStreamHandlers): Age
     if (event.text) handlers.onChunk?.(event.text);
     return null;
   }
+  if (event.type === "ping") {
+    // Heartbeat only (see AgentStreamEvent's "ping" comment) -- no handler,
+    // no finalResponse update. Kept as its own explicit branch (rather than
+    // relying on the implicit fall-through every OTHER unknown/future event
+    // type already gets below) so this no-op is test-visible and won't look
+    // like an oversight to the next reader.
+    return null;
+  }
   if (event.type === "done" && event.response) {
     return event.response;
   }
+  // Any other/unrecognized event type (forward-compat: a future backend
+  // event this client doesn't know about yet) is ignored the same way.
   return null;
 }
 

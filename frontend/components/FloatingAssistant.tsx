@@ -8,6 +8,7 @@ import { usePathname } from "next/navigation";
 import { useLanguage } from "@/components/LanguageProvider";
 import {
   AgentApprovalError,
+  AgentStreamDisconnectedError,
   approveAgentAction,
   fetchAssistantStatus,
   fetchSimulationJob,
@@ -602,18 +603,38 @@ export default function FloatingAssistant() {
         ),
       );
     } catch (caught) {
-      // A stream that dies after emitting step narration but before any
-      // answer content must keep the message — the step log the user
-      // already watched is real work, not noise, so only drop the bubble
-      // when there's neither content nor steps to show for it.
-      if (!streamedContent.trim() && !hasAgentSteps) {
-        setMessages((prev) => prev.filter((message) => message.id !== assistantMessageId));
-      }
-      if (isAbortError(caught)) {
-        setRequestPhase("cancelled");
-        setError(t("요청을 취소했습니다.", "Request cancelled."));
+      if (caught instanceof AgentStreamDisconnectedError) {
+        // Live-bug fix (docs/phase2/DECISIONS.md, 2026-07-24 heartbeat
+        // entry): the stream ended (or a mid-read error fired) without ever
+        // delivering a `done` event -- e.g. an idle-timeout intermediary
+        // killing the connection during a long tool call. Resolve THIS
+        // message into a clear, localized error state instead of leaving it
+        // stuck on "Preparing answer..." forever (the reported symptom) or
+        // silently vanishing -- any step narration/partial answer text that
+        // DID arrive before the drop is kept, not discarded.
+        const notice = agentStreamDisconnectedMessage(t);
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? { ...message, content: streamedContent.trim() ? `${streamedContent}\n\n${notice}` : notice }
+              : message,
+          ),
+        );
+        setError(notice);
       } else {
-        setError(formatAssistantError(caught, t));
+        // A stream that dies after emitting step narration but before any
+        // answer content must keep the message — the step log the user
+        // already watched is real work, not noise, so only drop the bubble
+        // when there's neither content nor steps to show for it.
+        if (!streamedContent.trim() && !hasAgentSteps) {
+          setMessages((prev) => prev.filter((message) => message.id !== assistantMessageId));
+        }
+        if (isAbortError(caught)) {
+          setRequestPhase("cancelled");
+          setError(t("요청을 취소했습니다.", "Request cancelled."));
+        } else {
+          setError(formatAssistantError(caught, t));
+        }
       }
     } finally {
       if (requestAbortRef.current === controller) {
@@ -732,7 +753,27 @@ export default function FloatingAssistant() {
         }),
       );
     } catch (caught) {
-      if (!streamedContent.trim() && !hasAgentSteps) {
+      // Live-bug fix (docs/phase2/DECISIONS.md, 2026-07-24 heartbeat entry):
+      // a stream that ends (or errors mid-read) without ever delivering a
+      // `done` event -- e.g. an idle-timeout intermediary killing the
+      // connection during a long postwrite run. Computed once so both the
+      // narration message below and the approval card's own errorMessage
+      // (via resolutionMessage) show identical, localized copy.
+      const disconnected = caught instanceof AgentStreamDisconnectedError;
+      const disconnectNotice = disconnected ? agentStreamDisconnectedMessage(t) : null;
+      if (disconnectNotice) {
+        // Keep this message (the approve turn's own narration) and resolve
+        // it into the drop notice instead of vanishing it -- mirrors
+        // runAgentPrompt's identical fix; any partial narration that DID
+        // arrive is kept, not discarded.
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? { ...message, content: streamedContent.trim() ? `${streamedContent}\n\n${disconnectNotice}` : disconnectNotice }
+              : message,
+          ),
+        );
+      } else if (!streamedContent.trim() && !hasAgentSteps) {
         setMessages((prev) => prev.filter((message) => message.id !== assistantMessageId));
       }
       const is404 = caught instanceof AgentApprovalError && caught.status === 404;
@@ -742,9 +783,15 @@ export default function FloatingAssistant() {
             "This approval request has expired or was already handled. Please ask again.",
             "この承認リクエストは期限切れか、既に処理済みです。もう一度お試しください。",
           )
-        : isAbortError(caught)
-          ? t("요청을 취소했습니다.", "Request cancelled.")
-          : formatAssistantError(caught, t);
+        : disconnectNotice
+          ? disconnectNotice
+          : isAbortError(caught)
+            ? t("요청을 취소했습니다.", "Request cancelled.")
+            : formatAssistantError(caught, t);
+      // Settles the source message's approval card busy state
+      // ("approving"/"declining") to its error resolution on EVERY caught
+      // path, including the dead-stream case above -- a busy card must
+      // never stay stuck any more than the message bubble itself.
       setMessages((prev) =>
         prev.map((message) =>
           message.id === sourceMessageId && message.agentApproval
@@ -2095,6 +2142,21 @@ function formatMetricValue(value: unknown): string {
 
 function isAbortError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "name" in error && String((error as { name?: unknown }).name) === "AbortError";
+}
+
+// Live-bug fix (docs/phase2/DECISIONS.md, 2026-07-24 heartbeat entry): the
+// dedicated copy for a dropped agent stream (api.ts's
+// AgentStreamDisconnectedError) -- distinct from formatAssistantError's
+// generic fallback because it can make a stronger, true promise: every
+// terminal agent-turn path persists state.json before returning
+// (orchestrator.py's _finalize_turn), so telling the user their progress
+// was saved is accurate, not just reassuring copy.
+function agentStreamDisconnectedMessage(t: Translate): string {
+  return t(
+    "연결이 끊어졌습니다. 결과는 안전하게 저장되었으니 다시 질문해 주세요.",
+    "The connection was lost. Your progress was saved safely — please ask again.",
+    "接続が切断されました。結果は安全に保存されているので、もう一度お尋ねください。",
+  );
 }
 
 function formatAssistantError(error: unknown, t: Translate): string {

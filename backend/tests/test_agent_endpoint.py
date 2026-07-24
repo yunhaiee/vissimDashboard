@@ -17,6 +17,7 @@ an unrelated manual session can never make these tests non-deterministic.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,36 @@ class RaisingAfterOneStepProvider:
         if self.calls == 1:
             return self._action
         raise RuntimeError("forced planner failure after one streamed step")
+
+
+class SlowThenRespondProvider:
+    """Sleeps synchronously on its first ``generate_structured`` call before
+    returning a canned action -- simulating a long-running turn (a slow
+    planner call and a slow tool dispatch look identical to the router's
+    queue-drain loop: both leave ``step_queue`` empty for the delay's
+    duration, see ``_stream_agent_turn``'s heartbeat comment). Used to prove
+    the ``ping`` heartbeat fires while the worker thread is busy and
+    otherwise-silent, the regression this test guards
+    (docs/phase2/DECISIONS.md, 2026-07-24 heartbeat entry)."""
+
+    def __init__(self, delay_seconds: float, action: tuple[dict[str, Any], dict[str, Any]]) -> None:
+        self._delay_seconds = delay_seconds
+        self._action = action
+        self.calls = 0
+
+    def generate_structured(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        schema: dict[str, Any] | None = None,
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        self.calls += 1
+        if self.calls == 1:
+            time.sleep(self._delay_seconds)
+        return self._action
 
 
 def _assert_no_path_like_strings(value: Any) -> None:
@@ -154,6 +185,45 @@ def test_overview_question_streams_status_step_chunk_done_in_order(client, monke
     assert done_event["response"]["kind"] == "answer"
     assert done_event["response"]["steps"]
     assert done_event["response"]["session_id"]
+
+    for event in events:
+        _assert_no_path_like_strings(event)
+
+
+def test_ping_events_stream_while_worker_is_slow(client, monkeypatch):
+    """A long-running tool call (e.g. a 2+ minute simulation) must never
+    leave the NDJSON stream silent for longer than
+    AGENT_STREAM_PING_INTERVAL_S -- an idle NDJSON connection that long is
+    exactly what an intermediary (observed: the Next.js dev proxy) kills,
+    which is the root cause of the "answer never arrives" live bug (see
+    docs/phase2/DECISIONS.md's 2026-07-24 heartbeat entry). The interval is
+    shrunk via the env var so this stays fast."""
+    monkeypatch.setenv("AGENT_STREAM_PING_INTERVAL_S", "0.05")
+    provider = SlowThenRespondProvider(
+        delay_seconds=0.35,
+        action=_action("respond", summary="확인했습니다", answer="완료했습니다."),
+    )
+    monkeypatch.setattr(assistant_endpoint, "_default_provider", lambda: provider)
+
+    response = client.post(
+        "/api/assistant/agent/query/stream",
+        json={"message": "상태를 요약해줘", "response_language": "ko"},
+    )
+
+    assert response.status_code == 200
+    events = _stream_events(response)
+
+    ping_events = [event for event in events if event["type"] == "ping"]
+    assert len(ping_events) >= 2  # 0.35s delay / 0.05s interval ~= 7 pings
+    for event in ping_events:
+        assert event["stream_id"]
+
+    # ping is a pure heartbeat: it never disturbs the existing
+    # status -> step+ -> chunk+ -> done ordering other tests pin.
+    non_ping_types = [event["type"] for event in events if event["type"] != "ping"]
+    assert non_ping_types[0] == "status"
+    assert non_ping_types[-1] == "done"
+    assert events[-1]["type"] == "done"
 
     for event in events:
         _assert_no_path_like_strings(event)
