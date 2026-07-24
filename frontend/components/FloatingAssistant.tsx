@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { useLanguage } from "@/components/LanguageProvider";
@@ -223,6 +224,19 @@ export default function FloatingAssistant() {
   // docs/phase2/DECISIONS.md. Off keeps every existing prompt (curation +
   // the regex simulation-command path) behaved exactly as before.
   const [agentMode, setAgentMode] = useState(false);
+  // M4: the current open conversation's agent session id (M3.3's backend
+  // capability, wired into the UI here for the first time — see
+  // docs/phase2/DECISIONS.md's 2026-07-24 M3.3 entry, "Frontend threading
+  // of session_id ... is deliberately left to M4"). `null` means "no agent
+  // turn has completed yet in this conversation" -- the next agent-mode
+  // send omits `session_id`, which mints a fresh session exactly like every
+  // pre-M4 client. Set from `done.response.session_id` after each agent
+  // turn (both a fresh proposal and an approval resolution); reset to
+  // `null` on an explicit conversation reset (resetConversation below) or
+  // an agent-mode off→on toggle (see the effect below) — a stale session id
+  // surviving either of those would silently resume a conversation the user
+  // just asked to abandon.
+  const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const resizeRef = useRef<AssistantPanelResizeState | null>(null);
@@ -333,6 +347,32 @@ export default function FloatingAssistant() {
       window.removeEventListener("resize", handleWindowResize);
     };
   }, []);
+
+  // M4: an agent-mode off→on toggle starts a fresh agent session, never
+  // resuming whatever session id a PRIOR agent-mode stretch of this same
+  // open conversation left behind (see agentSessionId's own comment). A
+  // plain re-render or an on→off→(still off) toggle must not reset it --
+  // only the off→on edge does, tracked via this ref rather than effect
+  // deps so mounting doesn't itself count as a transition.
+  const previousAgentModeRef = useRef(agentMode);
+  useEffect(() => {
+    if (!previousAgentModeRef.current && agentMode) {
+      setAgentSessionId(null);
+    }
+    previousAgentModeRef.current = agentMode;
+  }, [agentMode]);
+
+  // M4: explicit "start over" control -- the "panel's conversation is
+  // cleared" reset trigger session continuity depends on. Aborts any
+  // in-flight request first so a stale stream can never repopulate the
+  // message list right after it was cleared.
+  function resetConversation() {
+    requestAbortRef.current?.abort();
+    setMessages([]);
+    setDeclinedExecutionIds(new Set());
+    setAgentSessionId(null);
+    setError(null);
+  }
 
   // Core send/re-send path. `targetMessageId` set means this is a confirmed
   // re-run of an existing proposed action: update that message in place
@@ -491,7 +531,11 @@ export default function FloatingAssistant() {
     let hasAgentSteps = false;
     try {
       const response = await streamAgentQuery(
-        { message: text, response_language: lang },
+        // M4: resume the same backend session as the previous agent-mode
+        // turn in this open conversation, if any (see agentSessionId's own
+        // comment) -- this is what makes a multi-turn clarification actually
+        // work in the UI instead of every send starting a fresh session.
+        { message: text, response_language: lang, session_id: agentSessionId ?? undefined },
         {
           onStep: (event) => {
             hasAgentSteps = true;
@@ -538,6 +582,11 @@ export default function FloatingAssistant() {
         },
         controller.signal,
       );
+      // M4: carry this turn's session id forward to the next agent-mode
+      // send in this conversation (see agentSessionId's own comment) --
+      // set unconditionally on every completed turn, including a
+      // clarification, so the very next message resumes it too.
+      setAgentSessionId(response.session_id);
       setMessages((prev) =>
         prev.map((message) =>
           message.id === assistantMessageId
@@ -656,6 +705,11 @@ export default function FloatingAssistant() {
         },
         controller.signal,
       );
+      // M4: keep the threaded session id in sync (it should already equal
+      // approval.sessionId — the approve call targets that exact session —
+      // but this stays the single source of truth for the NEXT agent-mode
+      // send rather than assuming the two can never diverge).
+      setAgentSessionId(response.session_id);
       setMessages((prev) =>
         prev.map((message) => {
           if (message.id === assistantMessageId) {
@@ -807,6 +861,19 @@ export default function FloatingAssistant() {
                 >
                   {statusChecking ? t("\ud655\uc778 \uc911", "Checking") : t("\uc0c1\ud0dc \uc0c8\ub85c\uace0\uce68", "Refresh status")}
                 </button>
+                <button
+                  type="button"
+                  onClick={resetConversation}
+                  disabled={loading || messages.length === 0}
+                  className="rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  title={t(
+                    "\ub300\ud654\uc640 \uc5d0\uc774\uc804\ud2b8 \uc138\uc158\uc744 \ucd08\uae30\ud654\ud569\ub2c8\ub2e4",
+                    "Resets the conversation and the agent session",
+                    "\u4f1a\u8a71\u3068\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30bb\u30c3\u30b7\u30e7\u30f3\u3092\u30ea\u30bb\u30c3\u30c8\u3057\u307e\u3059",
+                  )}
+                >
+                  {t("\ub300\ud654 \ucd08\uae30\ud654", "New conversation", "\u4f1a\u8a71\u3092\u30ea\u30bb\u30c3\u30c8")}
+                </button>
               </div>
               <label className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
                 <input
@@ -953,6 +1020,7 @@ function FloatingChatMessage({
           <>
             {hasAgentSteps && <AgentStepNarration steps={message.agentSteps!} />}
             <AssistantAnswerContent content={message.content} response={message.response} />
+            {hasAgentSteps && <AgentRunDashboardHint steps={message.agentSteps} />}
             {isActiveAssistant && <AssistantInlineProgress phase={activePhase ?? "streaming"} onCancel={onCancel} compact />}
           </>
         )}
@@ -1000,6 +1068,92 @@ function AgentStepNarration({ steps }: { steps: AgentStep[] }) {
   );
 }
 
+// M4 roadmap bullet ("Post-run: link into the existing dashboard compare
+// surfaces"). Investigated against the backend rather than built blind: a
+// successful `run_simulation` dispatch submits to the SAME job queue/registry
+// `POST /api/simulations` already uses (backend/services/agent/tools_run.py
+// -> routers/simulations.py's `start_agent_simulation_job` ->
+// services/simulation_runs.py's `create_job_record`, which stamps a
+// `scenario_result_id` ("SIM_<job_id>") and the ACTIVE dataset's revision at
+// submit time exactly like every other job). Once that job reaches "done",
+// `list_completed_runtime_scenarios()` (filtered only by a matching dataset
+// revision) already feeds `services/results_reader.list_scenarios()`, which
+// is exactly what `GET /api/scenarios` -- the same endpoint the dashboard's
+// scenario picker calls via `fetchScenarios()` -- returns. So the agent's run
+// lands a real, comparable scenario with ZERO backend wiring, as long as the
+// active dataset was not swapped between the agent run and viewing the
+// dashboard. This hint is therefore frontend-only: it fires whenever this
+// turn's step log contains a successfully dispatched `run_simulation` step
+// (`AgentStep.status === "ok"` -- toolkit.dispatch's own success marker) and
+// links into `/dashboard`, where that new scenario is already selectable.
+// The exact scenario id is NOT threaded through (AgentStep only carries
+// summary/tool/status on the wire today, per api.ts) -- a generic pointer to
+// the picker satisfies the roadmap bullet without inventing a new wire
+// field; see the M4 report for the "zero/minimal wiring" finding in full.
+function AgentRunDashboardHint({ steps }: { steps?: AgentStep[] }) {
+  const pathname = usePathname();
+  const { t } = useLanguage();
+  const ranSuccessfully = (steps ?? []).some((step) => step.tool === "run_simulation" && step.status === "ok");
+  if (!ranSuccessfully) return null;
+
+  const message = t(
+    "결과가 대시보드 시나리오 목록에 추가되었습니다.",
+    "The result was added to the dashboard's scenario list.",
+    "結果はダッシュボードのシナリオ一覧に追加されました。",
+  );
+
+  if (pathname.startsWith("/dashboard")) {
+    return <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">{message}</p>;
+  }
+
+  return (
+    <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">
+      {message}{" "}
+      <Link href="/dashboard" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
+        {t("대시보드에서 보기", "View in dashboard", "ダッシュボードで見る")}
+      </Link>
+    </p>
+  );
+}
+
+// M4 roadmap bullet ("per-action preflight status chips (pass/warn/refuse)"):
+// 통과 (pass, neutral gray) when this action's approval carries zero
+// preflight warnings, 주의 N (warn, amber) with the fired count otherwise.
+// No "refuse" tone exists here BY DESIGN, not omission: verified against
+// backend/services/agent/orchestrator.py -- a preflight report with any
+// BLOCKING finding returns a "refusal" turn (kind: "answer", a structured
+// refusal envelope) BEFORE `pending_approval` is ever constructed (see the
+// `if preflight_report.blocking:` branch, which short-circuits ahead of the
+// `pending_approval = {...}` assignment a few lines below it). A refused
+// action can therefore never reach an approval_request event or this card
+// at all -- only WARN-tier findings (or none) ever ride along here.
+//
+// `warningCount` is `approval.warnings.length`, not a per-action slice:
+// backend/services/agent/orchestrator.py's `pending_approval` is always
+// built from a SINGLE proposed action (`action_entry`/`pending_approval`
+// there are singular objects, never a list) and `warnings` is that one
+// action's own preflight findings -- so every action row getting the same
+// count is exact for the only shape the backend emits today, not an
+// approximation. If a future milestone teaches the backend to propose
+// multiple actions in one approval, this chip would need a real per-action
+// warning mapping from the wire contract; tracked here so that gap is not
+// silently reintroduced.
+function PreflightStatusChip({ warningCount }: { warningCount: number }) {
+  const { t } = useLanguage();
+  if (warningCount <= 0) {
+    return (
+      <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+        {t("통과", "Pass", "通過")}
+      </span>
+    );
+  }
+  return (
+    <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 ring-1 ring-amber-200">
+      {t(`주의 ${warningCount}`, `Warn ${warningCount}`, `注意 ${warningCount}`)}
+    </span>
+  );
+}
+
 // M2.3 write-approval card: the action list + warnings for an agent-mode
 // write turn paused via approval_request. Console-inspired card language
 // (bg-surface, slate-200 hairline, rounded-xl, no colored left border, no
@@ -1030,7 +1184,10 @@ function AgentApprovalCard({
       <div className="mt-2 space-y-1.5">
         {approval.actions.map((action, index) => (
           <div key={`${action.tool}-${index}`} className="rounded-lg bg-slate-50 px-2.5 py-2">
-            <p className="text-[11px] font-semibold text-slate-700">{agentActionLabel(action.tool, t)}</p>
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-[11px] font-semibold text-slate-700">{agentActionLabel(action.tool, t)}</p>
+              <PreflightStatusChip warningCount={approval.warnings.length} />
+            </div>
             <p className="mt-0.5 text-[11px] text-slate-600">{agentActionDetail(action, t)}</p>
           </div>
         ))}
@@ -1210,6 +1367,39 @@ function PageContextSummary({
   );
 }
 
+// M4 roadmap bullet ("refusals rendered as explanatory blocks ... verification
+// evidence in the final answer" + the deterministic-suffix polish item): the
+// literal markers backend/services/agent/orchestrator.py's
+// `_append_warning_block` prepends to its two deterministic notice headers
+// (_AGENTIC_WARNING_NOTICE_HEADER, _CARRIED_FORWARD_WARNINGS_HEADER) --
+// "참고:"/"Note:"/"注意:" -- checked at the START of a trimmed line only, so
+// an ordinary sentence that happens to use the word "note" mid-paragraph is
+// never misdetected.
+const DETERMINISTIC_NOTICE_MARKERS = ["참고:", "Note:", "注意:"];
+
+// Splits a deterministic warning-suffix block (header line + "- message"
+// bullets, always appended after a blank line -- see `_append_warning_block`
+// in backend/services/agent/orchestrator.py) off the end of an answer, so it
+// can render as a visually distinct block instead of run-on paragraph text
+// inside the normal section flow. Finds the FIRST line starting with a known
+// marker and treats everything from there to the end of the content as the
+// notice (both of orchestrator.py's notice callers only ever APPEND, never
+// prepend, so "marker line to end" is exactly the suffix). Robust to
+// absence: no marker line anywhere returns the content unchanged and
+// `notice: null`.
+function splitDeterministicNotice(content: string): { main: string; notice: string | null } {
+  const lines = content.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trimStart();
+    if (DETERMINISTIC_NOTICE_MARKERS.some((marker) => trimmed.startsWith(marker))) {
+      const notice = lines.slice(index).join("\n").trim();
+      if (!notice) continue;
+      return { main: lines.slice(0, index).join("\n").trimEnd(), notice };
+    }
+  }
+  return { main: content, notice: null };
+}
+
 function AssistantAnswerContent({
   content,
   response,
@@ -1218,22 +1408,52 @@ function AssistantAnswerContent({
   response?: AssistantQueryResponse;
 }) {
   const { lang } = useLanguage();
-  const sections = parseAssistantAnswer(content, response);
+  const { main, notice } = splitDeterministicNotice(content);
+  const sections = parseAssistantAnswer(main, response);
 
-  if (sections.length === 1 && sections[0].heading === "답변") {
-    return <AnswerLines lines={sections[0].lines} />;
-  }
+  const mainContent =
+    sections.length === 1 && sections[0].heading === "답변" ? (
+      <AnswerLines lines={sections[0].lines} />
+    ) : (
+      <div className="space-y-2">
+        {sections.map((section) => (
+          <section key={`${section.heading}-${section.lines.join("").slice(0, 16)}`} className="border-l-2 border-blue-200 pl-3">
+            <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-blue-600">{localizeHeading(section.heading, lang)}</div>
+            <div className="mt-1">
+              <AnswerLines lines={section.lines} />
+            </div>
+          </section>
+        ))}
+      </div>
+    );
+
+  if (!notice) return mainContent;
 
   return (
     <div className="space-y-2">
-      {sections.map((section) => (
-        <section key={`${section.heading}-${section.lines.join("").slice(0, 16)}`} className="border-l-2 border-blue-200 pl-3">
-          <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-blue-600">{localizeHeading(section.heading, lang)}</div>
-          <div className="mt-1">
-            <AnswerLines lines={section.lines} />
-          </div>
-        </section>
-      ))}
+      {mainContent}
+      <AssistantNoticeBlock text={notice} />
+    </div>
+  );
+}
+
+// M4: the deterministic warning-suffix block, styled as a muted callout with
+// a top divider -- distinct from ordinary paragraph text and from the
+// approval card's amber warning strips (this can appear on ANY answer, not
+// just a write approval), so a presenter/user's eye separates "the model's
+// own answer" from "a guardrail system note attached underneath it". The
+// header line (the "참고:"/"Note:"/"注意:" line itself) renders slightly
+// bolder than its bullets, same visual grammar AnswerLines already uses for
+// label lines elsewhere in this component.
+function AssistantNoticeBlock({ text }: { text: string }) {
+  const lines = text.split(/\r?\n/);
+  const [headerLine, ...restLines] = lines;
+  return (
+    <div className="mt-1 border-t border-dashed border-slate-200 pt-2">
+      <div className="rounded-md bg-slate-50 px-2.5 py-2 text-slate-600">
+        <p className="text-[11px] font-semibold leading-5 text-slate-700">{headerLine}</p>
+        <AnswerLines lines={restLines} />
+      </div>
     </div>
   );
 }

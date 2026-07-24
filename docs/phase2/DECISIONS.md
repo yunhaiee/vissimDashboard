@@ -663,3 +663,23 @@ against real Vissim behavior. Trace: plan → preflight → action_start → act
 - Write-gate integration fixtures now persist the written volume into the working copy
   (via eval's XML helper) — required under the stricter engine, matching what real write
   tools do.
+
+---
+
+## 2026-07-24 — M4 decision batch (demo polish — Phase 2 feature-complete)
+
+- **Post-run dashboard linkage needed zero backend wiring** (verified by code-trace, not
+  assumption): agent runs stamp scenario_result_id through the same registry
+  list_completed_runtime_scenarios()/list_scenarios() path the dashboard picker already
+  reads; a frontend-only /dashboard hint suffices.
+- **No refuse-chip on the approval card by verified design**: a blocking preflight refuses
+  BEFORE pending_approval is built — refused actions structurally cannot reach the card.
+- Session continuity threads done.response.session_id; resets on the new
+  대화 초기화 button and agent-mode off→on toggle. Deterministic 참고:/Note:/注意: notice
+  blocks render as distinct muted callouts keyed on the backend's exact marker.
+- **QUEUED (server-side investigation)**: twice-reproduced case where the turn after an
+  /agent/approve started a FRESH session despite the request verifiably carrying the
+  correct session_id (network-intercepted). Frontend threading proven correct; router code
+  echoes payload.session_id unconditionally. Possibly sandbox/proxy-specific. Rehearsal
+  caution noted in docs/demo-script.md §0.4 (retry the turn); investigate with server-side
+  request logging if it recurs.

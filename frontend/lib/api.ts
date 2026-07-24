@@ -616,6 +616,17 @@ export interface AssistantStreamHandlers {
 export interface AgentQueryRequest {
   message: string;
   response_language?: "ko" | "en" | "ja";
+  // M3.3 backend capability, M4 frontend wiring: an earlier turn's
+  // done.response.session_id in the SAME open conversation resumes that
+  // session's work dir server-side (state reload, accumulated guardrail
+  // warnings, clarification memory) -- see
+  // backend/routers/assistant.py's AgentQueryRequest.session_id and
+  // docs/phase2/DECISIONS.md's 2026-07-24 M3.3 entry. Omitted/undefined
+  // mints a fresh session exactly as before. Must match
+  // ^[0-9a-f]{8,64}$ (the backend's _SESSION_ID_RE) -- always satisfied
+  // here since the only source is a prior done.response.session_id, never
+  // free-typed by the client.
+  session_id?: string;
 }
 
 export interface AgentStep {
