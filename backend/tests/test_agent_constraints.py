@@ -173,6 +173,57 @@ def test_object_not_found_does_not_apply_to_unrelated_tool():
     assert not any(f.constraint_id == "object_not_found" for f in findings)
 
 
+# --- v2 unit (2): set_reduced_speed_area added to the object_not_found /
+# _TOOL_TARGET_SPEC lockstep table (links object class) ------------------
+
+
+def test_object_not_found_fires_for_missing_link_on_reduced_speed_area():
+    shadow = _shadow_model(
+        links=[
+            {"id": "101", "name": "Main St EB approach", "lanes": 3, "length": 280.0},
+            {"id": "102", "name": "Main St WB exit", "lanes": 3, "length": 280.0},
+        ]
+    )
+    action = _action(
+        "set_reduced_speed_area", link_id="999", speed_kmh=40.0, from_m=0.0, length_m=20.0
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    assert finding.phase == "preflight"
+    _assert_well_formed_messages(finding, must_contain_ko="999")
+
+
+def test_object_not_found_suggested_fix_resolves_near_miss_link_id():
+    shadow = _shadow_model(
+        links=[{"id": "101", "name": "Main St EB approach", "lanes": 3, "length": 280.0}]
+    )
+    action = _action(
+        "set_reduced_speed_area", link_id="102", speed_kmh=40.0, from_m=0.0, length_m=20.0
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert "101" in matches[0].suggested_fix
+
+
+def test_object_not_found_silent_when_link_present_for_reduced_speed_area():
+    shadow = _shadow_model()  # default fixture link id "101"
+    action = _action(
+        "set_reduced_speed_area", link_id="101", speed_kmh=40.0, from_m=0.0, length_m=20.0
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
 # ---------------------------------------------------------------------------
 # #2 volume_out_of_range
 # ---------------------------------------------------------------------------

@@ -816,3 +816,34 @@ omit-controller-type test pin updated by the controller at review.
 end-to-end (preflight pass → real COM write+readback 7==7 → postwrite clean → persisted XML
 offset="7") on a Beijing clone; RAILWAYCROSSING and unknown fixtures still refuse. v1 verb
 set is now fully operational. min_green_intergreen_sum (#5) remains the separate open gap.
+
+---
+
+## 2026-07-24 — v2 unit ②: set_reduced_speed_area shipped (first non-COM verb)
+
+**Context:** closes the M2.3 deferral. Injects reducedSpeedArea (+ its speedDistribution)
+into the session working.inpx, reusing simulation_network_builder's element builders
+(minimally generalized, existing caller's output byte-preserved by regression test).
+
+**Decisions:** proof is a REPARSE readback (fresh ET.parse of the saved file) riding the
+generic written/readback shape constraint #6 already compares — no new constraint;
+_WRITE_TARGET_FIELD_SPEC deliberately NOT extended (shadow model has no
+reduced_speed_areas key → unmapped-write degradation by design); constraints
+_TOOL_TARGET_SPEC/object_not_found extended lockstep so bad link_ids refuse with
+candidates; param names chosen outside the speed_limit_edit_ambiguous blacklist (a
+bounded area IS the unambiguous verb that check exists to steer toward); edit-session
+presence proven unconditional for write-tier dispatches (no ArtifactManager-only path
+exists); per-tool descriptions are English-only by registry design — ko/en/ja lives at
+answer level (interface gap noted, not fought).
+
+**LIVE FINDING (fixed):** real Vissim exports OMIT unused top-level sections entirely —
+Beijing has no <reducedSpeedAreas> element at all. _get_or_create_top_level_section
+creates missing sections at Vissim's own alphabetical child position (verified against
+two real networks' full child listings). Live oracle passed: dispatch → reparse match →
+LoadNet succeeds on the modified file → RunContinuous 60s completes with a valid
+SIMULATIONRUN row.
+
+**Controller review additions:** v1_system.md's lane-closure alternative text updated
+(reduced-speed area is now agent-editable — same staleness class as the run-prose bug);
+TOOL-CATALOG bumped (offsets unlocked ✓, speed areas ✓; v1 close-out done except the
+network-check verb = queue unit ③).

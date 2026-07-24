@@ -1,21 +1,29 @@
-"""Tests for M2.3's tools_edit.py: the five write-tier tools, dispatched
-through the REAL toolkit.dispatch (so pydantic validation + the envelope
-machinery are exercised exactly like production), against a hand-rolled
-``FakeEditSession`` — no real Vissim COM anywhere in this file.
+"""Tests for M2.3/v2 unit (2)'s tools_edit.py: the six write-tier tools,
+dispatched through the REAL toolkit.dispatch (so pydantic validation + the
+envelope machinery are exercised exactly like production), against a
+hand-rolled ``FakeEditSession`` — no real Vissim COM anywhere in this file.
 
-Covers: happy-path verification envelopes for all five tools, the
+Covers: happy-path verification envelopes for all six tools, the
 no-active-session structured error, a Vissim-refusal structured error
 (never an exception leak), string-id -> int COM-key coercion, and that
 ``persist()`` is only ever called after a successful set+get (never on a
-refused/raised write).
+refused/raised write). ``set_reduced_speed_area`` (the sixth, XML-injection
+tool -- see its own docstring) gets its own section near the bottom: it
+never calls any ``FakeEditSession`` COM method at all, only reads
+``.working_inpx``, and its own injection/reparse machinery is unit-tested
+separately in test_simulation_network_builder.py -- what THIS file covers
+for it is the dispatch-level wiring (params validation, no-session error,
+the verification envelope shape, artifacts).
 """
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-import services.agent.tools_edit as tools_edit  # noqa: F401 - import registers the 5 write tools
+import services.agent.tools_edit as tools_edit  # noqa: F401 - import registers the 6 write tools
 from services.agent.edit_session import clear_active_edit_session, set_active_edit_session
 from services.agent.toolkit import default_registry, dispatch
 
@@ -108,6 +116,10 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
         ("set_signal_offset", {"sc_no": "1", "offset": 10}),
         ("set_sim_duration", {"seconds": 600}),
         ("set_random_seed", {"seed": 42}),
+        (
+            "set_reduced_speed_area",
+            {"link_id": "101", "speed_kmh": 40.0, "from_m": 0.0, "length_m": 20.0},
+        ),
     ],
 )
 def test_no_active_session_yields_structured_error_never_a_crash(tool_name, params):
@@ -278,3 +290,146 @@ def test_non_numeric_id_string_is_rejected_with_a_clear_error_not_a_crash():
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "tool_execution_error"
     assert session.persist_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# set_reduced_speed_area — the sixth (XML-injection, non-COM) write tool
+# ---------------------------------------------------------------------------
+
+_SYNTH_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network version="2400">
+  <links>
+    <link no="101" name="Main St EB approach">
+      <lanes><lane width="3.5"/><lane width="3.5"/></lanes>
+    </link>
+  </links>
+  <speedDistributions></speedDistributions>
+  <reducedSpeedAreas></reducedSpeedAreas>
+</network>
+"""
+
+
+class _FakeWorkingInpxSession:
+    """The minimal shape ``set_reduced_speed_area`` actually needs from an
+    edit session: a ``working_inpx`` PATH attribute, nothing else. Unlike
+    ``FakeEditSession`` above, this class exposes NO COM-shaped methods at
+    all -- if the tool ever tried to call one (a regression that would mean
+    it started touching COM), this would raise ``AttributeError``, not
+    silently succeed.
+    """
+
+    def __init__(self, working_inpx: Path) -> None:
+        self.working_inpx = working_inpx
+
+
+@pytest.fixture()
+def synthetic_working_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "working.inpx"
+    path.write_text(_SYNTH_INPX, encoding="utf-8")
+    return path
+
+
+def test_set_reduced_speed_area_happy_path(synthetic_working_inpx: Path):
+    set_active_edit_session(_FakeWorkingInpxSession(synthetic_working_inpx))
+
+    envelope = _dispatch(
+        "set_reduced_speed_area",
+        link_id="101",
+        speed_kmh=40.0,
+        from_m=5.0,
+        length_m=20.0,
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"]["written_value"] == {
+        "link_id": "101",
+        "speed_kmh": 40.0,
+        "from_m": 5.0,
+        "length_m": 20.0,
+    }
+    assert envelope["verification"]["readback_value"] == envelope["verification"]["written_value"]
+    assert envelope["artifacts"]["lane_count"] == 2
+    assert len(envelope["artifacts"]["area_nos"]) == 2
+
+    # the write actually landed on the working copy on disk (no separate
+    # persist() step exists for this tool -- inject_reduced_speed_area IS
+    # the persistence step).
+    root = ET.parse(synthetic_working_inpx).getroot()
+    assert len(root.findall(".//reducedSpeedAreas/reducedSpeedArea")) == 2
+
+
+def test_set_reduced_speed_area_never_touches_a_com_shaped_method(
+    synthetic_working_inpx: Path,
+):
+    # _FakeWorkingInpxSession exposes no set_/get_/persist methods -- a
+    # happy-path dispatch succeeding at all (previous test) plus this
+    # session object never raising AttributeError already proves the tool
+    # stayed off COM; this test just makes the intent explicit and pins it
+    # against a future regression that adds a stray session.persist() call.
+    session = _FakeWorkingInpxSession(synthetic_working_inpx)
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_reduced_speed_area",
+        link_id="101",
+        speed_kmh=30.0,
+        from_m=0.0,
+        length_m=10.0,
+    )
+
+    assert envelope["status"] == "ok"
+    assert not hasattr(session, "persist_calls")  # never gained a persist-tracking attribute
+
+
+def test_set_reduced_speed_area_link_not_found_surfaces_as_tool_execution_error(
+    synthetic_working_inpx: Path,
+):
+    # At the dispatch level (bypassing constraints.py's preflight, which is
+    # what actually catches this in production -- see
+    # test_agent_constraints.py's object_not_found coverage for
+    # set_reduced_speed_area), inject_reduced_speed_area's own ValueError
+    # must still surface as a structured error, never a crash.
+    set_active_edit_session(_FakeWorkingInpxSession(synthetic_working_inpx))
+
+    envelope = _dispatch(
+        "set_reduced_speed_area",
+        link_id="999-does-not-exist",
+        speed_kmh=40.0,
+        from_m=0.0,
+        length_m=10.0,
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "999-does-not-exist" in envelope["message"]
+    # nothing was written for a refused injection
+    root = ET.parse(synthetic_working_inpx).getroot()
+    assert root.findall(".//reducedSpeedAreas/reducedSpeedArea") == []
+
+
+@pytest.mark.parametrize(
+    "params,expected_error_type",
+    [
+        (
+            {"link_id": "101", "speed_kmh": 40.0, "from_m": 0.0, "length_m": 20.0, "extra": "nope"},
+            "invalid_params",
+        ),
+        ({"link_id": "101", "speed_kmh": 40.0, "from_m": 0.0}, "invalid_params"),  # length_m missing
+        (
+            {"link_id": "101", "speed_kmh": "fast", "from_m": 0.0, "length_m": 20.0},
+            "invalid_params",
+        ),  # wrong type
+    ],
+)
+def test_set_reduced_speed_area_malformed_params_rejected(
+    synthetic_working_inpx: Path, params, expected_error_type
+):
+    set_active_edit_session(_FakeWorkingInpxSession(synthetic_working_inpx))
+
+    envelope = _dispatch("set_reduced_speed_area", **params)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == expected_error_type
+    # never reached the tool function -- nothing written
+    root = ET.parse(synthetic_working_inpx).getroot()
+    assert root.findall(".//reducedSpeedAreas/reducedSpeedArea") == []

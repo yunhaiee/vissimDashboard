@@ -10,9 +10,11 @@ Updated 2026-07-24 (post-Phase-2 completion + completeness audit).
 controllers · run KPIs · scenario comparison — all ✅
 
 **Edits:** vehicle input volume ✅ · sim duration ✅ · random seed ✅ ·
-signal offset ✅(refused until controller-type parsing lands — v1 close-out item) ·
+signal offset ✅(unlocked 2026-07-24: controller types now parsed; FIXEDTIME/FIXEDTIMESIMPLE
+allowed, all external types refuse by design) ·
 signal cycle ⚠️(CycTm only; disconnected from program-driven real cycle by Vissim design) ·
-reduced-speed area 🔜(XML route, queued v1 close-out)
+reduced-speed area ✅(XML-injection verb set_reduced_speed_area; reparse readback + live
+LoadNet/run oracle — shipped 2026-07-24)
 
 **Runs:** multi-seed simulation with auto-armed evaluation ✅ · post-run lie detection +
 KPI summary ✅
@@ -21,8 +23,8 @@ KPI summary ✅
 shared driving-behavior edits · CC1-as-scalar · agency-restricted calibration params ·
 unknown objects · out-of-range values
 
-**V1 close-out (≈1.5 days):** signal controller-type parsing (unlocks offsets) ·
-reduced-speed area tool · network-check read verb (Vissim's own checker via COM).
+**V1 close-out:** controller-type parsing ✅ · reduced-speed area ✅ (both 2026-07-24) ·
+network-check read verb 🔜 (v2 queue unit ③).
 
 ## V2a — more parameters (same machinery, new plumbing + live probing per verb)
 

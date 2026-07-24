@@ -41,11 +41,20 @@ produce (every raised exception's ``error_type`` is the fixed string
 ``"tool_execution_error"``); :class:`NoEditSessionError`'s message carries
 the ``no_edit_session`` marker as literal, greppable text instead.
 
-**Deferred:** ``set_desired_speed_area`` (the roadmap's sixth M2.3 verb) is
-NOT implemented here -- controller-decided deferral, see the M2.3 report's
-drafted DECISIONS.md entry. It is a separate, non-COM (XML-injection) write
-path deserving its own verification pass, and the milestone's acceptance
-criteria do not require it.
+**v2 unit (2): ``set_reduced_speed_area`` closes the M2.3 deferral.** The
+roadmap's sixth verb (``set_desired_speed_area`` in the original naming;
+renamed here per the controller's v2 design to match its actual object --
+see the M2.3 report's drafted DECISIONS.md entry, "set_desired_speed_area
+deferred", now superseded) is implemented below, but it is deliberately NOT
+shaped like the five COM verbs above: it never touches
+:class:`~services.agent.edit_session.VissimEditSession`'s COM surface at
+all, only its ``working_inpx`` PATH attribute -- the write itself is
+:func:`services.simulation_network_builder.inject_reduced_speed_area`, a
+direct XML mutation of the session's working copy. See that tool's own
+docstring for why this is safe (it never triggers ``_ensure_connected()``,
+so no Vissim instance is ever launched for this tool) and for its distinct
+verification story (a reparse readback, not a COM read-back -- no COM getter
+exists for an XML-injected object).
 """
 
 from __future__ import annotations
@@ -56,6 +65,10 @@ from pydantic import BaseModel, ConfigDict
 
 from services.agent.edit_session import get_active_edit_session
 from services.agent.toolkit import tool
+from services.simulation_network_builder import (
+    inject_reduced_speed_area,
+    reparse_reduced_speed_area,
+)
 
 
 class NoEditSessionError(RuntimeError):
@@ -224,4 +237,108 @@ def set_random_seed(params: SetRandomSeedParams) -> dict[str, Any]:
     return {
         "message": f"Random seed set to {params.seed}.",
         "verification": {"written_value": params.seed, "readback_value": readback},
+    }
+
+
+# ---------------------------------------------------------------------------
+# set_reduced_speed_area(link_id, speed_kmh, from_m, length_m)
+#
+# v2 unit (2). NOT a COM verb -- see the module docstring's "v2 unit (2)"
+# paragraph. Does not call session.persist() (no COM session is ever
+# connected for this tool -- there is nothing to SaveNetAs): the write
+# itself already lands directly on session.working_inpx via
+# inject_reduced_speed_area's own temp-file + os.replace, so by the time
+# this function returns the working copy on disk already reflects the edit.
+# ---------------------------------------------------------------------------
+
+
+class SetReducedSpeedAreaParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_id: str
+    speed_kmh: float
+    from_m: float
+    length_m: float
+
+
+@tool(
+    name="set_reduced_speed_area",
+    tier="write",
+    provider="edit",
+    params=SetReducedSpeedAreaParams,
+)
+def set_reduced_speed_area(params: SetReducedSpeedAreaParams) -> dict[str, Any]:
+    """Add a permanent, spatially-bounded reduced-speed area on one link (XML injection, not COM) -- the SAFE speed-editing verb, since it is bounded by position and length rather than being a network-wide desired-speed decision that stays in effect until a second, restoring decision undoes it.
+
+    Injects a ``reducedSpeedArea`` (+ its own ``speedDistribution``) onto
+    EVERY lane of ``link_id`` over ``[from_m, from_m + length_m)``, active for
+    the whole simulation (no time-window restriction) -- directly into the
+    active edit session's ``working_inpx`` file
+    (:func:`services.simulation_network_builder.inject_reduced_speed_area`),
+    never through COM: :func:`~services.agent.edit_session.
+    get_active_edit_session`'s session is used ONLY for its ``working_inpx``
+    path attribute, so this tool never launches a Vissim instance (unlike
+    every other tool in this module).
+
+    **Verification is a reparse readback, not a COM read-back.** There is no
+    COM getter for an object that was never created through COM -- the
+    session's own COM controller (if one happens to exist this turn because
+    a write plan mixed this tool with a COM one) is never even touched here.
+    Instead, immediately after the injection, the SAME working copy is
+    re-read fresh from disk
+    (:func:`~services.simulation_network_builder.reparse_reduced_speed_area`)
+    and the newly created element's actual attributes (link, speed, position,
+    length) are extracted and compared against what was intended -- this IS
+    the tool's whole proof that the write landed, standing in for the
+    set-then-get pattern every COM verb in this module uses.
+    ``guardrails.GuardrailEngine.postwrite``'s generic write-verification
+    compare (constraint #6) still runs against this ``verification`` payload
+    exactly like any other tool's (it is tool-agnostic, ``applies_to:
+    ["*"]``), so a written-vs-reparsed mismatch still refuses the turn and
+    rolls back. What does NOT run for this tool is the separate
+    "target-persisted" postwrite check and the "nothing else moved" diff's
+    exemption bookkeeping: the shadow model (``build_shadow_model`` in
+    ``tools_network.py``) has no ``reduced_speed_areas`` key at all today, so
+    this tool is deliberately left OUT of ``guardrails._WRITE_TARGET_FIELD_
+    SPEC`` -- an unmapped tool gets no target-persisted claim (degrades
+    silently, same as any other unmapped write) and the diff sees no
+    reduced-speed-area object class to compare either way. The reparse
+    readback above is this tool's OWN, self-contained proof; it does not
+    lean on those two shadow-model-based checks the way the three
+    object-targeting COM verbs do.
+    """
+    session = _require_session()
+    injected = inject_reduced_speed_area(
+        session.working_inpx,
+        link_no=params.link_id,
+        speed_kmh=params.speed_kmh,
+        from_m=params.from_m,
+        length_m=params.length_m,
+    )
+    readback = reparse_reduced_speed_area(session.working_inpx, injected["area_nos"])
+    # written_value/readback_value must carry EXACTLY the same key set:
+    # constraints.py's generic #6 (write_verification_failed, applies_to
+    # ["*"]) compares them with a bare `!=` for any non-numeric top-level
+    # pair (see that check's own _values_differ) -- a dict with an extra key
+    # on either side is a structural mismatch REGARDLESS of whether every
+    # shared key's value actually agrees, so lane_count (present in
+    # reparse_reduced_speed_area's return, useful diagnostic info but not
+    # part of what THIS write intended to set) is reported separately via
+    # `artifacts`, never inside the compared dicts.
+    readback_value = {key: readback[key] for key in ("link_id", "speed_kmh", "from_m", "length_m")}
+    return {
+        "message": (
+            f"Reduced-speed area added on link {params.link_id}: {params.speed_kmh} km/h "
+            f"over {params.length_m} m starting at {params.from_m} m "
+            f"({injected['lane_count']} lane(s))."
+        ),
+        "verification": {
+            "written_value": injected["written_value"],
+            "readback_value": readback_value,
+        },
+        "artifacts": {
+            "area_nos": injected["area_nos"],
+            "distribution_no": injected["distribution_no"],
+            "lane_count": readback["lane_count"],
+        },
     }

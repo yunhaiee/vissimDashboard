@@ -313,7 +313,13 @@ def run_checks(
 # ---------------------------------------------------------------------------
 
 # {tool: {object_class, id_field, name_field, param}} for the M2 verb set
-# constraint #1 (object_not_found) resolves against.
+# constraint #1 (object_not_found) resolves against. "set_reduced_speed_area"
+# (v2 unit (2)) added here per DECISIONS.md's lockstep convention -- it is an
+# XML-injection write, not a COM setter, but #1's job (does the target id
+# exist in the shadow model, difflib-suggest near misses if not) applies
+# identically: a link_id has to resolve to a real "links" entry before
+# services.simulation_network_builder.inject_reduced_speed_area ever touches
+# the working copy.
 _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
     "set_vehicle_input_volume": {
         "object_class": "vehicle_inputs",
@@ -333,11 +339,18 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "sc_name",
         "param": "sc_no",
     },
+    "set_reduced_speed_area": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_id",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "vehicle_inputs": {"ko": "차량 입력", "en": "vehicle input", "ja": "車両インプット"},
     "signals": {"ko": "신호제어기", "en": "signal controller", "ja": "信号制御機"},
+    "links": {"ko": "링크", "en": "link", "ja": "リンク"},
 }
 
 
@@ -423,7 +436,12 @@ def _check_object_not_found(
 register(
     Constraint(
         id="object_not_found",
-        applies_to=["set_vehicle_input_volume", "set_signal_cycle", "set_signal_offset"],
+        applies_to=[
+            "set_vehicle_input_volume",
+            "set_signal_cycle",
+            "set_signal_offset",
+            "set_reduced_speed_area",
+        ],
         phase="preflight",
         tier="refuse",
         check=_check_object_not_found,
@@ -2296,6 +2314,13 @@ register(
 # decision immediately after to restore the original speed. No M2 tool
 # creates desired speed decisions today; applies_to names the future tool
 # explicitly.
+#
+# v2 unit (2) note: this is exactly why ``set_reduced_speed_area``
+# (services/agent/tools_edit.py, XML-injection write) is the SAFE verb for a
+# local/bounded speed reduction and does NOT need a twin of this check --
+# unlike a desired-speed decision, a reducedSpeedArea is spatially bounded by
+# its own pos/length regardless of how long it stays active, so there is no
+# unpaired-decision failure mode to warn about. See that tool's docstring.
 # ---------------------------------------------------------------------------
 
 

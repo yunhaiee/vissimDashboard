@@ -41,12 +41,14 @@ EXPECTED_TOOL_NAMES = {
 # services.agent.orchestrator, which imports tools_edit/tools_run for their
 # registration side effect) -- that held for full-suite runs but made the
 # three registry-shape tests fail whenever this file ran in isolation.
+# v2 unit (2) adds set_reduced_speed_area (XML-injection, not COM), the sixth.
 EXPECTED_WRITE_TOOL_NAMES = {
     "set_vehicle_input_volume",
     "set_signal_cycle",
     "set_signal_offset",
     "set_sim_duration",
     "set_random_seed",
+    "set_reduced_speed_area",
 }
 
 # M2.4's single run-gate tool (docs/phase2/02-ROADMAP.md M2.4).
@@ -74,9 +76,9 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
 
 
 def test_default_registry_has_exactly_the_expected_read_write_and_run_tools():
-    """M1.2's 6 read tools + M2.3's 5 write tools + M2.4's 1 run tool, no
-    phantoms, nothing missing. Was "...exactly_the_six_read_tools" before
-    M2.3 registered tools_edit.py's write tools, then
+    """M1.2's 6 read tools + M2.3/v2 unit (2)'s 6 write tools + M2.4's 1 run
+    tool, no phantoms, nothing missing. Was "...exactly_the_six_read_tools"
+    before M2.3 registered tools_edit.py's write tools, then
     "...the_expected_read_and_write_tools" before M2.4 registered
     tools_run.py's run tool, onto this same default_registry — renamed and
     widened each time rather than split, since a second anti-drift test over

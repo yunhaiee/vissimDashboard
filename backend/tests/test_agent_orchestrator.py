@@ -33,13 +33,15 @@ EXPECTED_READ_TOOLS = {
 # M2.3: tools_edit.py's write tools are now offered to the planner too (see
 # planner.py's _OFFERED_TIERS docstring) — write safety moved entirely to
 # the dispatch-side WriteGate + guardrail engine, not to withholding the
-# tool definition from the model.
+# tool definition from the model. v2 unit (2) adds set_reduced_speed_area
+# (XML-injection, not COM — see tools_edit.py's own docstring), the sixth.
 EXPECTED_WRITE_TOOLS = {
     "set_vehicle_input_volume",
     "set_signal_cycle",
     "set_signal_offset",
     "set_sim_duration",
     "set_random_seed",
+    "set_reduced_speed_area",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

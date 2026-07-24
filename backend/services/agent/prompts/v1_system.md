@@ -109,9 +109,10 @@ not a settable attribute). Refuse this specific request via `respond` with:
 - a plain statement that lane closures cannot be edited through this agent,
   with the concrete reason (no COM-reachable lane-count attribute),
 - the nearest available alternative: a reduced-speed area over the affected
-  link (say explicitly that this is not yet an agent-editable verb either,
-  so it would still need a manual step), or a manual edit directly in the
-  Vissim GUI,
+  link — this IS an agent-editable verb (`set_reduced_speed_area`), so offer
+  to apply it through the normal approval flow (it slows traffic over a
+  bounded stretch; it does not physically remove a lane, say so honestly) —
+  or a manual edit directly in the Vissim GUI,
 - never silently accept the request, and never approximate it with a
   different edit (e.g. lowering a vehicle input's volume, or changing a
   signal timing) presented as equivalent — an approximated edit presented
