@@ -42,6 +42,11 @@ class SignalInfo(TypedDict):
     sc_no: str
     sc_name: str
     cycle_time: int          # seconds; 0 = variable / unknown
+    controller_type: str     # <signalController type="..."> verbatim (e.g. "FIXEDTIME",
+                              # "FIXEDTIMESIMPLE", "VAP", "RINGBARRIERCONTROLLER",
+                              # "RAILWAYCROSSING", "PEDESTRIANCROSSING",
+                              # "TWOSTAGECONTROLLER"); "unknown" when the attribute is
+                              # genuinely absent/blank (never guessed/inferred).
     num_signal_groups: int
     num_phases: int
     phases: list[PhaseInfo]
@@ -67,8 +72,41 @@ def _parse_one_sc(
     no = sc_el.get("no", "")
     name = sc_el.get("name", "")
     isd = sc_el.get("intSupplyData", "")
+    # Empirically verified against all 25 real PTV Vissim 2026 "Examples Demo"
+    # networks (2026-07-24): <signalController>'s own "type" attribute carries
+    # the controller family verbatim -- FIXEDTIME/FIXEDTIMESIMPLE (COM-writable
+    # per the M2.1 CycTm finding), VAP/RINGBARRIERCONTROLLER/RAILWAYCROSSING/
+    # PEDESTRIANCROSSING/TWOSTAGECONTROLLER (program logic Vissim's COM API
+    # cannot safely rewrite via CycTm/Offset -- see constraints.py #4). Never
+    # inferred/guessed: a blank or missing attribute becomes the literal
+    # string "unknown", which constraints.py #4 already refuses on.
+    controller_type = (sc_el.get("type") or "").strip() or "unknown"
     if not isd:
-        return None
+        # Empirically verified (2026-07-24) against all 25 real example
+        # networks: intSupplyData is populated ONLY on type="FIXEDTIME"
+        # controllers. Every other real type -- including FIXEDTIMESIMPLE
+        # (Air Taxi Vertiport) -- carries a real "type" attribute but NO
+        # intSupplyData at all; dropping those entirely (the old behavior)
+        # would make FIXEDTIMESIMPLE structurally invisible to the shadow
+        # model, defeating the M2.1 finding that its cycle/offset ARE
+        # COM-writable. Return a type-only, timing-blind SignalInfo instead
+        # of None whenever the element carries a real "type" (existence +
+        # controller family is still genuine, verifiable data) -- but keep
+        # returning None when BOTH isd and type are absent (the synthetic
+        # demo .inpx's <signalController no="1" name="..."/> shape, which
+        # must stay invisible per test_agent_read_tools.py's pinned
+        # empty-shadow-signals contract).
+        if not sc_el.get("type"):
+            return None
+        return SignalInfo(
+            sc_no=no,
+            sc_name=name,
+            cycle_time=0,
+            controller_type=controller_type,
+            num_signal_groups=0,
+            num_phases=0,
+            phases=[],
+        )
 
     try:
         inner = ET.fromstring(base64.b64decode(isd).decode("utf-8"))
@@ -91,6 +129,7 @@ def _parse_one_sc(
             sc_no=no,
             sc_name=name,
             cycle_time=stage_cycle_s,
+            controller_type=controller_type,
             num_signal_groups=num_sgs,
             num_phases=len(stage_phases),
             phases=stage_phases,
@@ -199,6 +238,7 @@ def _parse_one_sc(
         sc_no=no,
         sc_name=name,
         cycle_time=cycle_s,
+        controller_type=controller_type,
         num_signal_groups=num_sgs,
         num_phases=len(phases),
         phases=sorted(phases, key=lambda p: p["start"]),

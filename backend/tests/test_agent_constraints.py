@@ -33,7 +33,7 @@ def _shadow_model(
                 "sc_no": "1",
                 "sc_name": "SC1",
                 "cycle_time": 90,
-                "controller_type": "fixed_time",
+                "controller_type": "FIXEDTIME",
                 "min_green_intergreen_sum": 34,
                 "phases": [],
             }
@@ -319,13 +319,17 @@ def test_signal_controller_type_unsupported_fires_when_type_is_unknown():
 
 
 def test_signal_controller_type_unsupported_fires_for_non_fixed_time_controller():
+    # "RINGBARRIERCONTROLLER" is a REAL type string (verified against the
+    # real "BRT Priority Texas.US" example network, 2026-07-24) -- Vissim's
+    # built-in ring-barrier controller, in TOOL-CATALOG.md's "Impossible by
+    # design" refusal family alongside VAP/Econolite external logic.
     shadow = _shadow_model(
         signals=[
             {
                 "sc_no": "1",
                 "sc_name": "SC1",
                 "cycle_time": 90,
-                "controller_type": "RBC",
+                "controller_type": "RINGBARRIERCONTROLLER",
                 "phases": [],
             }
         ]
@@ -336,12 +340,57 @@ def test_signal_controller_type_unsupported_fires_for_non_fixed_time_controller(
 
     matches = [f for f in findings if f.constraint_id == "signal_controller_type_unsupported"]
     assert len(matches) == 1
-    _assert_well_formed_messages(matches[0], must_contain_ko="RBC")
+    _assert_well_formed_messages(matches[0], must_contain_ko="RINGBARRIERCONTROLLER")
 
 
 def test_signal_controller_type_unsupported_silent_for_fixed_time():
-    shadow = _shadow_model()  # controller_type = "fixed_time"
+    shadow = _shadow_model()  # controller_type = "FIXEDTIME"
     action = _action("set_signal_cycle", sc_no="1", cycle=90)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "signal_controller_type_unsupported" for f in findings
+    )
+
+
+def test_signal_controller_type_unsupported_silent_for_fixedtimesimple_cycle():
+    # M2.1 live evidence (docs/phase2/DECISIONS.md): the Air Taxi Vertiport
+    # example's FIXEDTIMESIMPLE controllers are COM-writable too, not just
+    # Beijing's FIXEDTIME -- both real types must pass #4 for both verbs.
+    shadow = _shadow_model(
+        signals=[
+            {
+                "sc_no": "11",
+                "sc_name": "Terminal entrance door",
+                "cycle_time": 999,
+                "controller_type": "FIXEDTIMESIMPLE",
+                "phases": [],
+            }
+        ]
+    )
+    action = _action("set_signal_cycle", sc_no="11", cycle=999)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "signal_controller_type_unsupported" for f in findings
+    )
+
+
+def test_signal_controller_type_unsupported_silent_for_fixedtimesimple_offset():
+    shadow = _shadow_model(
+        signals=[
+            {
+                "sc_no": "11",
+                "sc_name": "Terminal entrance door",
+                "cycle_time": 999,
+                "controller_type": "FIXEDTIMESIMPLE",
+                "phases": [],
+            }
+        ]
+    )
+    action = _action("set_signal_offset", sc_no="11", offset=5)
 
     findings = run_checks("preflight", action, shadow, {})
 
@@ -396,7 +445,7 @@ def test_cycle_below_intergreen_sum_skipped_when_datum_absent():
                 "sc_no": "1",
                 "sc_name": "SC1",
                 "cycle_time": 90,
-                "controller_type": "fixed_time",
+                "controller_type": "FIXEDTIME",
                 "phases": [],
                 # no min_green_intergreen_sum key at all
             }
@@ -648,8 +697,8 @@ def test_sim_duration_too_short_for_evaluation_silent_at_or_above_floor():
 def test_signal_cycle_change_may_break_corridor_sync_fires_when_sibling_shares_old_cycle():
     shadow = _shadow_model(
         signals=[
-            {"sc_no": "1", "sc_name": "SC1", "cycle_time": 90, "controller_type": "fixed_time", "phases": []},
-            {"sc_no": "2", "sc_name": "SC2", "cycle_time": 90, "controller_type": "fixed_time", "phases": []},
+            {"sc_no": "1", "sc_name": "SC1", "cycle_time": 90, "controller_type": "FIXEDTIME", "phases": []},
+            {"sc_no": "2", "sc_name": "SC2", "cycle_time": 90, "controller_type": "FIXEDTIME", "phases": []},
         ]
     )
     action = _action("set_signal_cycle", sc_no="1", cycle=100)
@@ -669,8 +718,8 @@ def test_signal_cycle_change_may_break_corridor_sync_fires_when_sibling_shares_o
 def test_signal_cycle_change_may_break_corridor_sync_silent_when_no_sibling_shares_cycle():
     shadow = _shadow_model(
         signals=[
-            {"sc_no": "1", "sc_name": "SC1", "cycle_time": 90, "controller_type": "fixed_time", "phases": []},
-            {"sc_no": "2", "sc_name": "SC2", "cycle_time": 60, "controller_type": "fixed_time", "phases": []},
+            {"sc_no": "1", "sc_name": "SC1", "cycle_time": 90, "controller_type": "FIXEDTIME", "phases": []},
+            {"sc_no": "2", "sc_name": "SC2", "cycle_time": 60, "controller_type": "FIXEDTIME", "phases": []},
         ]
     )
     action = _action("set_signal_cycle", sc_no="1", cycle=100)
@@ -685,8 +734,8 @@ def test_signal_cycle_change_may_break_corridor_sync_silent_when_no_sibling_shar
 def test_signal_cycle_change_may_break_corridor_sync_silent_when_cycle_unchanged():
     shadow = _shadow_model(
         signals=[
-            {"sc_no": "1", "sc_name": "SC1", "cycle_time": 90, "controller_type": "fixed_time", "phases": []},
-            {"sc_no": "2", "sc_name": "SC2", "cycle_time": 90, "controller_type": "fixed_time", "phases": []},
+            {"sc_no": "1", "sc_name": "SC1", "cycle_time": 90, "controller_type": "FIXEDTIME", "phases": []},
+            {"sc_no": "2", "sc_name": "SC2", "cycle_time": 90, "controller_type": "FIXEDTIME", "phases": []},
         ]
     )
     action = _action("set_signal_cycle", sc_no="1", cycle=90)
@@ -912,7 +961,7 @@ def _signal_with_phases(phases: list[dict[str, Any]]) -> dict[str, Any]:
         "sc_no": "1",
         "sc_name": "SC1",
         "cycle_time": 90,
-        "controller_type": "fixed_time",
+        "controller_type": "FIXEDTIME",
         "phases": phases,
     }
 
@@ -1075,7 +1124,7 @@ def test_ring_barrier_splits_sum_mismatch_fires_when_sums_differ():
                 "sc_no": "1",
                 "sc_name": "SC1",
                 "cycle_time": 90,
-                "controller_type": "fixed_time",
+                "controller_type": "FIXEDTIME",
                 "phases": [],
                 "ring_barrier_splits": [30, 25, 20, 15],  # sums to 90
             }
@@ -1099,7 +1148,7 @@ def test_ring_barrier_splits_sum_mismatch_silent_when_sums_match():
                 "sc_no": "1",
                 "sc_name": "SC1",
                 "cycle_time": 90,
-                "controller_type": "fixed_time",
+                "controller_type": "FIXEDTIME",
                 "phases": [],
                 "ring_barrier_splits": [30, 25, 20, 15],
             }

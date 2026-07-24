@@ -304,9 +304,11 @@ def test_build_shadow_model_is_mtime_cached_across_repeat_calls():
     assert first is second  # same lru_cache hit, not just equal
 
 
-def test_signal_to_contract_shape_omits_controller_type_and_min_green_intergreen_sum():
-    """docs/phase2/DECISIONS.md gap entry: signal_parser exposes neither field
-    yet, so the shadow model must OMIT them entirely (not set to None)."""
+def test_signal_to_contract_shape_carries_controller_type_but_omits_min_green_sum():
+    """v2 unit ① closed the controller_type gap: the shadow model now carries
+    it ("unknown" when the parsed info lacks it — constraint #4's refuse-on-
+    unknown stance). min_green_intergreen_sum (#5) remains a separate, still-
+    open gap and must stay OMITTED entirely (not set to None)."""
     synthetic_signal_info = {
         "sc_no": "1",
         "sc_name": "SC1",
@@ -318,8 +320,13 @@ def test_signal_to_contract_shape_omits_controller_type_and_min_green_intergreen
 
     shaped = tools_network._signal_to_contract_shape(synthetic_signal_info)
 
-    assert shaped == {"sc_no": "1", "sc_name": "SC1", "cycle_time": 90, "phases": []}
-    assert "controller_type" not in shaped
+    assert shaped == {
+        "sc_no": "1",
+        "sc_name": "SC1",
+        "cycle_time": 90,
+        "phases": [],
+        "controller_type": "unknown",
+    }
     assert "min_green_intergreen_sum" not in shaped
 
 

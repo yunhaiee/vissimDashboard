@@ -792,3 +792,27 @@ rewrites() has no timeout knob (verified) — heartbeat is the only available fi
 
 **Consequence:** no intermediary can ever see >15s of stream silence; any残 dropped
 connection surfaces visibly instead of an eternal spinner.
+
+---
+
+## 2026-07-24 — v2 unit ①: controller-type gap CLOSED; parser surfaces type-only controllers
+
+**Context:** probed all 25 real Vissim 2026 example networks — <signalController type="...">
+carries the value verbatim (FIXEDTIME 20 / RINGBARRIERCONTROLLER 56 / RAILWAYCROSSING 25 /
+VAP 16 / FIXEDTIMESIMPLE 7 / TWOSTAGE 3 / PEDESTRIAN 2). Second finding: intSupplyData
+exists ONLY on FIXEDTIME — the old isd-empty gate silently DROPPED every other controller
+from the shadow model entirely.
+
+**Decision:** parser extracts controller_type ("unknown" only when genuinely blank); a
+controller with type but no intSupplyData surfaces as type-only/timing-blind instead of
+invisible; fully invisible only when both absent (the synthetic demo's shape, unchanged).
+Constraint #4 checks membership in {FIXEDTIME, FIXEDTIMESIMPLE} (was an inert "fixed_time"
+placeholder that could never match); all other real types + unknown still refuse — the
+RBC/VAP external-file family stays impossible-by-design per TOOL-CATALOG. Cycle edits
+remain additionally guarded by the parser_blind postwrite handling (CycTm). The old
+omit-controller-type test pin updated by the controller at review.
+
+**Consequence:** set_signal_offset UNLOCKED for real fixed-time controllers — live-verified
+end-to-end (preflight pass → real COM write+readback 7==7 → postwrite clean → persisted XML
+offset="7") on a Beijing clone; RAILWAYCROSSING and unknown fixtures still refuse. v1 verb
+set is now fully operational. min_green_intergreen_sum (#5) remains the separate open gap.

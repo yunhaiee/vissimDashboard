@@ -11,9 +11,12 @@ constraints.py expects (see that module's docstring): links/nodes from
 directly from the .inpx — no/name/link/volume, volume ``None`` when the demo
 file's ``<vehicleInput>`` carries no ``timeIntervalVehVolume`` child) and
 ``signals`` (from ``services.signal_parser.parse_signal_controllers``, mapped
-down to the contract shape — ``controller_type`` and
-``min_green_intergreen_sum`` are deliberately OMITTED, not set to ``None``:
-the parser doesn't expose them yet; see docs/phase2/DECISIONS.md).
+down to the contract shape — ``controller_type`` is now populated for real
+(v2 unit ①, 2026-07-24: ``signal_parser.py`` extracts the verbatim
+``<signalController type="...">`` attribute, e.g. ``"FIXEDTIME"``/
+``"FIXEDTIMESIMPLE"``/``"unknown"``). ``min_green_intergreen_sum`` remains
+deliberately OMITTED, not set to ``None``: the parser still doesn't expose
+it; see docs/phase2/DECISIONS.md's #5 gap entry.
 
 ``resolve_object`` is the "network-RAG" pattern (research-digest #10): a
 small, deterministic lexical top-k retrieval over the shadow model's objects.
@@ -122,13 +125,18 @@ def _parse_vehicle_inputs(root: ET.Element) -> list[dict[str, Any]]:
 def _signal_to_contract_shape(info: dict[str, Any]) -> dict[str, Any]:
     """Map a signal_parser SignalInfo down to the M0.3 contract shape.
 
-    ``controller_type``/``min_green_intergreen_sum`` are OMITTED (not set to
-    None) — signal_parser doesn't expose either yet (DECISIONS.md gap entry).
+    ``controller_type`` is now populated for real (v2 unit ①): signal_parser
+    extracts the verbatim ``<signalController type="...">`` attribute, so
+    constraints.py #4 (``signal_controller_type_unsupported``) can finally
+    distinguish COM-writable fixed-time controllers from RBC/VAP/Econolite
+    ones. ``min_green_intergreen_sum`` remains OMITTED (not set to None) —
+    signal_parser still doesn't expose it (DECISIONS.md #5 gap entry).
     """
     return {
         "sc_no": info["sc_no"],
         "sc_name": info["sc_name"],
         "cycle_time": info["cycle_time"],
+        "controller_type": info.get("controller_type", "unknown"),
         "phases": info["phases"],
     }
 

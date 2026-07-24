@@ -13,10 +13,14 @@ an ``extra`` dict carrying whatever postwrite/postrun evidence a check needs
 (e.g. ``extra["written_value"]``/``extra["readback_value"]``,
 ``extra["run_result"]``).
 
-Two interface gaps between the roadmap's aspirational text and what
-``signal_parser.py`` actually exposes today are resolved here per the
-roadmap's gap protocol; see ``docs/phase2/DECISIONS.md`` for both entries
-(constraints #4 and #5 below).
+An interface gap between the roadmap's aspirational text and what
+``signal_parser.py`` exposed at M0.3 time is resolved here per the roadmap's
+gap protocol; see ``docs/phase2/DECISIONS.md`` for the entry (constraint #5
+below). Constraint #4's twin gap (``controller_type``) was CLOSED in v2 unit
+① (2026-07-24): ``signal_parser.py`` now extracts the real
+``<signalController type="...">`` attribute (verified against all 25 real
+PTV Vissim 2026 example networks), so #4 reads a genuinely populated field,
+not a forward-declared one.
 
 This module is intentionally stdlib-only, like trace.py, and does not import
 state.py or trace.py — it only consumes the shadow-model dict shape they
@@ -28,10 +32,10 @@ today reads that datum defensively (``dict.get(...)``) from a documented,
 not-yet-populated field name and silently returns ``None`` when it is
 absent — it is fully implemented and tested (both branches, via an injected
 fixture), it just never fires in production until the relevant parser/job
-runner grows that field. This is the same pattern constraints #4
-(``controller_type``) and #5 (``min_green_intergreen_sum``) already
-established. Every such check's docstring is tagged ``CATALOG-GAP`` with the
-field name it is waiting on.
+runner grows that field. This is the same pattern constraint #5
+(``min_green_intergreen_sum``) established, and #4 (``controller_type``)
+followed before its own gap closed. Every such check's docstring is tagged
+``CATALOG-GAP`` with the field name it is waiting on.
 
 ===============================================================================
 Catalog coverage table (docs/reference/vissim-constraints.html, compiled
@@ -557,14 +561,27 @@ register(
 # ---------------------------------------------------------------------------
 # #4 signal_controller_type_unsupported (refuse, preflight)
 #
-# Gap decision (docs/phase2/DECISIONS.md): signal_parser.parse_signal_controllers
-# exposes no controller-type attribute today. We read controller_type from the
-# shadow-model signal entry (an agent-model extension M1.2 will populate);
-# missing or "unknown" is treated as unsupported (conservative: an
-# unverifiable signal edit is a silent-failure risk).
+# Gap CLOSED in v2 unit ① (2026-07-24; was docs/phase2/DECISIONS.md
+# 2026-07-22 entry, superseded): signal_parser.parse_signal_controllers now
+# extracts the real <signalController type="..."> attribute onto
+# SignalInfo.controller_type, verified against all 25 real PTV Vissim 2026
+# example networks. Empirically only two type strings are COM-writable for
+# cycle/offset (M2.1's CycTm finding, live-verified on the Beijing (FIXEDTIME)
+# and Air Taxi Vertiport (FIXEDTIMESIMPLE) examples): "FIXEDTIME" and
+# "FIXEDTIMESIMPLE". Every other real type observed (VAP, RINGBARRIERCONTROLLER,
+# RAILWAYCROSSING, PEDESTRIANCROSSING, TWOSTAGECONTROLLER) keeps its program
+# logic in a form Vissim's COM API cannot safely rewrite via CycTm/Offset —
+# TOOL-CATALOG.md's "Impossible by design" refusal for external
+# RBC/VAP/Econolite logic. Missing or "unknown" (signal_parser's own fallback
+# when the attribute is genuinely blank) is still treated as unsupported —
+# the conservative refuse-on-unproven-type stance is unchanged, just now
+# backed by a real field instead of a forward-declared one. Cycle edits stay
+# additionally guarded by guardrails.py's "parser_blind" postwrite handling
+# for program-driven fixed-time controllers (the CycTm finding) — #4 only
+# gates the controller FAMILY, not per-controller program-driven-ness.
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_CONTROLLER_TYPE = "fixed_time"
+_SUPPORTED_CONTROLLER_TYPES = frozenset({"FIXEDTIME", "FIXEDTIMESIMPLE"})
 
 
 def _check_signal_controller_type_unsupported(
@@ -581,7 +598,7 @@ def _check_signal_controller_type_unsupported(
         return None  # missing target is object_not_found's job (#1)
 
     controller_type = signal.get("controller_type")
-    if controller_type == _SUPPORTED_CONTROLLER_TYPE:
+    if controller_type in _SUPPORTED_CONTROLLER_TYPES:
         return None
 
     displayed_type = controller_type if controller_type else "unknown"
@@ -1639,8 +1656,9 @@ register(
 # without shortening another is arithmetically invalid. CATALOG-GAP:
 # signal_parser.py exposes cycle_time/phases but never a per-controller
 # ring-barrier split list, so this reads the shadow-model signal entry's
-# optional "ring_barrier_splits" field (same forward-ready pattern as #4/#5's
-# controller_type/min_green_intergreen_sum); always absent today.
+# optional "ring_barrier_splits" field (same forward-ready pattern #5's
+# min_green_intergreen_sum still follows; #4's controller_type gap closed in
+# v2 unit ①); ring_barrier_splits itself remains always absent today.
 # ---------------------------------------------------------------------------
 
 _SPLIT_SUM_TOLERANCE_S = 0.5
