@@ -267,19 +267,29 @@ class VissimController:
                 f"Could not read network-performance evaluation config: {exc}"
             ) from exc
 
-    def set_vehicle_input(self, input_no: int, volume: float) -> None:
-        vehicle_input = self._item_by_key(
-            self.vissim.Net.VehicleInputs,
-            input_no,
-            "Vehicle input",
-            self.available_vehicle_input_nos(),
-        )
-        try:
-            vehicle_input.SetAttValue("Volume(1)", volume)
-        except Exception as exc:
-            raise RuntimeError(f"Could not set vehicle input {input_no} volume to {volume}: {exc}") from exc
+    def set_vehicle_input(self, input_no: int, volume: float, interval_no: int = 1) -> None:
+        """Set a vehicle input's Volume(``interval_no``) (veh/h; 1-based --
+        verified live, ``backend/tools/vehicle_input_interval_probe.py``).
 
-    def get_vehicle_input_volume(self, input_no: int) -> float:
+        ``interval_no=1`` (default) is byte-compatible with the pre-v2-unit-⑤
+        single-interval verb: the exact same ``SetAttValue("Volume(1)", ...)``
+        call, no ``Cont`` handling (every real network probed reads
+        ``Cont(1)`` as always false/0 -- interval 1 has nothing before it to
+        continue from).
+
+        ``interval_no > 1`` clears ``Cont(interval_no)`` FIRST when Vissim
+        reports it continuous. Verified live: ``SetAttValue`` on
+        ``Volume(i)`` for ``i > 1`` RAISES ("Attribute Volume (...) cannot be
+        changed") whenever ``Cont(i)`` is true (the interval inherits the
+        previous interval's volume) -- it is not a silent no-op. Reading an
+        interval index that does not exist on this input at all (beyond its
+        own ``timeIntervalVehVolume`` count) also RAISES ("Object N not
+        found") -- per-object indexed sub-attributes fail CLOSED, unlike
+        ``Net.AttValue``'s fail-OPEN behavior for unknown top-level ids (v2
+        unit ③'s landmine); this method does not attempt to catch/soften
+        that, it is the caller's (constraints.py's preflight bounds check,
+        when the datum is known) job to refuse before this is ever reached.
+        """
         vehicle_input = self._item_by_key(
             self.vissim.Net.VehicleInputs,
             input_no,
@@ -287,9 +297,47 @@ class VissimController:
             self.available_vehicle_input_nos(),
         )
         try:
-            return float(vehicle_input.AttValue("Volume(1)"))
+            if interval_no != 1 and bool(int(vehicle_input.AttValue(f"Cont({interval_no})"))):
+                vehicle_input.SetAttValue(f"Cont({interval_no})", False)
+            vehicle_input.SetAttValue(f"Volume({interval_no})", volume)
         except Exception as exc:
-            raise RuntimeError(f"Could not read vehicle input {input_no} volume: {exc}") from exc
+            raise RuntimeError(
+                f"Could not set vehicle input {input_no} interval {interval_no} volume to {volume}: {exc}"
+            ) from exc
+
+    def get_vehicle_input_volume(self, input_no: int, interval_no: int = 1) -> float:
+        """Paired getter for :meth:`set_vehicle_input`. ``interval_no=1``
+        (default) reads the exact same ``Volume(1)`` attribute as before."""
+        vehicle_input = self._item_by_key(
+            self.vissim.Net.VehicleInputs,
+            input_no,
+            "Vehicle input",
+            self.available_vehicle_input_nos(),
+        )
+        try:
+            return float(vehicle_input.AttValue(f"Volume({interval_no})"))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read vehicle input {input_no} interval {interval_no} volume: {exc}"
+            ) from exc
+
+    def get_vehicle_input_continuous(self, input_no: int, interval_no: int) -> bool:
+        """Read the ``Cont(interval_no)`` flag -- a second paired getter so
+        callers can report the post-write continuous state in their
+        verification payload (00-EXECUTION-GUIDE.md §4: every setter needs a
+        read-back) when :meth:`set_vehicle_input` had to clear it."""
+        vehicle_input = self._item_by_key(
+            self.vissim.Net.VehicleInputs,
+            input_no,
+            "Vehicle input",
+            self.available_vehicle_input_nos(),
+        )
+        try:
+            return bool(int(vehicle_input.AttValue(f"Cont({interval_no})")))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read vehicle input {input_no} interval {interval_no} continuous flag: {exc}"
+            ) from exc
 
     def set_sim_duration(self, seconds: int) -> None:
         self.vissim.Simulation.SetAttValue("SimPeriod", seconds)

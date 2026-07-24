@@ -901,3 +901,33 @@ fixable end to end, live-verified (preflight → COM write+readback → persiste
 load_check still clean). Controller review: TOOL-CATALOG bumped; supported-verbs prompt
 section updated with the PASSIVE-danger explanation. Executor disclosed running read-only
 git commands against instructions (stash/pop for a baseline diff; verified harmless).
+
+---
+
+## 2026-07-24 — v2 unit ⑤: time-varying demand shipped; Cont-flag trap confirmed live
+
+**Context:** probed live on Border Crossing Breitenau.DE (one of 6 example networks with
+real multi-interval inputs). Volume(i)/Cont(i) are 1-based and match XML document order;
+non-existent interval indices fail CLOSED ("Object N not found" — third data point in the
+AttValue error-behavior taxonomy: Net fails OPEN, per-object and per-object-indexed fail
+CLOSED). THE CONT TRAP IS REAL AND RAISES: SetAttValue Volume(i>1) while Cont(i)=true
+raises "Attribute Volume (...) cannot be changed"; clearing Cont(i) first succeeds — and
+still-continuous downstream intervals chain-inherit from their PREDECESSOR, not interval 1.
+
+**Decision:** set_vehicle_input_volume gained optional interval_no (default 1 =
+byte-compatible original path); interval_no>1 clears Cont first and reports cont_after in
+verification. Shadow vehicle_inputs gained interval_count + volumes[] (closing #13's
+CATALOG-GAP — it now fires only for interval-1 writes on multi-interval inputs); new #45
+vehicle_input_interval_out_of_range refuses only when interval_count is known (COM's own
+fail-closed raise is the fallback net). Guardrails' persisted check gained an interval
+dimension; the diff exemption is deliberately interval-INDEPENDENT ({volume, volumes,
+interval_count} exempted together) after a real false positive against the demo network's
+zero-interval inputs was caught by the existing end-to-end regression suite pre-ship.
+
+**Consequence:** peak/off-peak demand profiles are now inspectable and editable
+per-interval, live-verified (write to interval 2 → readback + cont_after → persisted XML
+with interval 1 byte-identical → load_check clean). Controller review: prompt's
+supported-verbs section updated for interval_no. FOLLOW-UPS RECORDED: ArtifactManager.
+clone() copies only the .inpx — sibling assets (external .vap controller files etc.) are
+not cloned, surfaced live on this network (init failed until the script copied siblings);
+needs its own unit before networks with external controller files work in edit sessions.

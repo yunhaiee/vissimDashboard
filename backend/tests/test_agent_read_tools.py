@@ -285,7 +285,8 @@ def test_resolve_object_rejects_unknown_object_type():
 
 def test_get_vehicle_inputs_on_demo_data_has_no_volume_children():
     """The demo .inpx's <vehicleInput> elements carry no/name/link attrs and
-    no volume children — volume must come back None, never crash."""
+    no volume children — volume must come back None, never crash. v2 unit ⑤:
+    interval_count/volumes are now real fields too (0/[] here, not absent)."""
     envelope = _dispatch("get_vehicle_inputs")
 
     assert envelope["status"] == "ok"
@@ -293,8 +294,10 @@ def test_get_vehicle_inputs_on_demo_data_has_no_volume_children():
     assert data["count"] == 6
     assert len(data["vehicle_inputs"]) == 6
     for vi in data["vehicle_inputs"]:
-        assert set(vi.keys()) == {"no", "name", "link", "volume"}
+        assert set(vi.keys()) == {"no", "name", "link", "volume", "interval_count", "volumes"}
         assert vi["volume"] is None
+        assert vi["interval_count"] == 0
+        assert vi["volumes"] == []
     first = next(vi for vi in data["vehicle_inputs"] if vi["no"] == "1")
     assert first["name"] == "Main St EB"
     assert first["link"] == "101"
@@ -402,6 +405,61 @@ def test_get_network_overview_includes_conflict_areas_section(conflict_area_fixt
     assert data["conflict_areas"]["count"] == 2
     ids = {item["id"] for item in data["conflict_areas"]["items"]}
     assert ids == {"3", "7"}
+
+
+# ---------------------------------------------------------------------------
+# vehicle_inputs — multi-interval volumes (v2 unit ⑤)
+# ---------------------------------------------------------------------------
+
+_MULTI_INTERVAL_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links>
+    <link no="11" name="Border Rd"><lanes><lane width="3.5"/></lanes></link>
+  </links>
+  <vehicleInputs>
+    <vehicleInput anmFlag="false" link="11" name="" no="2">
+      <timeIntVehVols>
+        <timeIntervalVehVolume cont="false" timeInt="1 0" vehComp="100" volType="EXACT" volume="1000"/>
+        <timeIntervalVehVolume cont="true" timeInt="1 1200000" vehComp="100" volType="EXACT" volume="1000"/>
+        <timeIntervalVehVolume cont="true" timeInt="1 1800000" vehComp="100" volType="EXACT" volume="1000"/>
+      </timeIntVehVols>
+    </vehicleInput>
+    <vehicleInput anmFlag="false" link="11" name="single" no="9"/>
+  </vehicleInputs>
+</network>
+"""
+
+
+@pytest.fixture()
+def multi_interval_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "multi_interval.inpx"
+    path.write_text(_MULTI_INTERVAL_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_vehicle_inputs_parses_multi_interval_volumes(multi_interval_fixture_inpx: Path):
+    # v2 unit ⑤: closes the vehicle_input_multi_interval_write_gap
+    # CATALOG-GAP -- interval_count/volumes are now real, parsed straight
+    # from every <timeIntervalVehVolume> child in document order.
+    tools_network.set_active_inpx(multi_interval_fixture_inpx)
+
+    envelope = _dispatch("get_vehicle_inputs")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    multi = next(vi for vi in data["vehicle_inputs"] if vi["no"] == "2")
+    assert multi["volume"] == 1000.0  # backward-compat: interval 1's volume
+    assert multi["interval_count"] == 3
+    assert multi["volumes"] == [
+        {"interval_no": 1, "from_s": 0.0, "volume": 1000.0, "continuous": False},
+        {"interval_no": 2, "from_s": 1200.0, "volume": 1000.0, "continuous": True},
+        {"interval_no": 3, "from_s": 1800.0, "volume": 1000.0, "continuous": True},
+    ]
+
+    single = next(vi for vi in data["vehicle_inputs"] if vi["no"] == "9")
+    assert single["volume"] is None
+    assert single["interval_count"] == 0
+    assert single["volumes"] == []
 
 
 # ---------------------------------------------------------------------------

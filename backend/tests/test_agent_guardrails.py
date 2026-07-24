@@ -409,6 +409,202 @@ def test_postwrite_persisted_value_numeric_tolerance_is_clean():
     assert report.findings == []
 
 
+# ---------------------------------------------------------------------------
+# postwrite — set_vehicle_input_volume interval_no dimension (v2 unit ⑤)
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_interval_no_1_target_persisted_check_is_byte_compatible():
+    # interval_no absent -- the field/lookup must be EXACTLY the pre-v2-unit-⑤
+    # top-level "volume" compare, unaffected by the vehicle input also
+    # carrying a "volumes" list.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model(
+        vehicle_inputs=[
+            {
+                "no": "1",
+                "name": "Main St EB",
+                "link": "101",
+                "volume": 500.0,  # write never reached the file
+                "interval_count": 2,
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 500.0, "continuous": False},
+                    {"interval_no": 2, "from_s": 900.0, "volume": 700.0, "continuous": False},
+                ],
+            }
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="1", volume=600)
+
+    report = engine.postwrite(action, before, after, {"written_value": 600, "readback_value": 600})
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["field"] == "volume"
+    assert check["saved_value"] == 500.0
+
+
+def test_postwrite_interval_no_2_target_persisted_check_reads_the_volumes_list():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        vehicle_inputs=[
+            {
+                "no": "2",
+                "name": "VI2",
+                "link": "11",
+                "volume": 1000.0,
+                "interval_count": 3,
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 1000.0, "continuous": False},
+                    {"interval_no": 2, "from_s": 1200.0, "volume": 1000.0, "continuous": True},
+                    {"interval_no": 3, "from_s": 1800.0, "volume": 1000.0, "continuous": True},
+                ],
+            }
+        ]
+    )
+    after = _shadow_model(
+        vehicle_inputs=[
+            {
+                "no": "2",
+                "name": "VI2",
+                "link": "11",
+                "volume": 1000.0,  # interval 1 unchanged -- byte-compatible top-level field
+                "interval_count": 3,
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 1000.0, "continuous": False},
+                    {"interval_no": 2, "from_s": 1200.0, "volume": 1333.0, "continuous": False},
+                    {"interval_no": 3, "from_s": 1800.0, "volume": 1333.0, "continuous": True},
+                ],
+            }
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="2", volume=1333.0, interval_no=2)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": 1333.0, "readback_value": 1333.0}
+    )
+
+    # Persisted correctly (interval 2's volume matches) AND the diff must not
+    # flag interval 3's own downstream (still-continuous) mirror change or
+    # interval 2's cont flag flipping true->false as "something else moved"
+    # -- both are direct, expected consequences of writing interval 2 that
+    # the coarse "volumes" list exemption (v2 unit ⑤) absorbs.
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_interval_no_2_target_persisted_check_fires_when_not_persisted():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        vehicle_inputs=[
+            {
+                "no": "2",
+                "name": "VI2",
+                "link": "11",
+                "volume": 1000.0,
+                "interval_count": 3,
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 1000.0, "continuous": False},
+                    {"interval_no": 2, "from_s": 1200.0, "volume": 1000.0, "continuous": True},
+                    {"interval_no": 3, "from_s": 1800.0, "volume": 1000.0, "continuous": True},
+                ],
+            }
+        ]
+    )
+    after = _shadow_model(
+        vehicle_inputs=[
+            {
+                "no": "2",
+                "name": "VI2",
+                "link": "11",
+                "volume": 1000.0,
+                "interval_count": 3,
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 1000.0, "continuous": False},
+                    # interval 2 unchanged -- the write to interval 2 never
+                    # reached the saved file.
+                    {"interval_no": 2, "from_s": 1200.0, "volume": 1000.0, "continuous": True},
+                    {"interval_no": 3, "from_s": 1800.0, "volume": 1000.0, "continuous": True},
+                ],
+            }
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="2", volume=1333.0, interval_no=2)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": 1333.0, "readback_value": 1333.0}
+    )
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["field"] == "volumes[2].volume"
+    assert check["written_value"] == 1333.0
+    assert check["saved_value"] == 1000.0
+
+
+def test_postwrite_interval_no_2_diff_still_flags_unrelated_drift():
+    # A write to interval 2 exempts the "volumes" field of ITS OWN vehicle
+    # input, but a completely unrelated object changing is still evidence --
+    # the coarse exemption is scoped to (object_id, field), not global.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        vehicle_inputs=[
+            {
+                "no": "2",
+                "name": "VI2",
+                "link": "11",
+                "volume": 1000.0,
+                "interval_count": 2,
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 1000.0, "continuous": False},
+                    {"interval_no": 2, "from_s": 1200.0, "volume": 1000.0, "continuous": True},
+                ],
+            },
+            {"no": "5", "name": "VI5", "link": "12", "volume": 200.0, "interval_count": 0, "volumes": []},
+        ]
+    )
+    after = _shadow_model(
+        vehicle_inputs=[
+            {
+                "no": "2",
+                "name": "VI2",
+                "link": "11",
+                "volume": 1000.0,
+                "interval_count": 2,
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 1000.0, "continuous": False},
+                    {"interval_no": 2, "from_s": 1200.0, "volume": 1333.0, "continuous": False},
+                ],
+            },
+            {
+                "no": "5",
+                "name": "VI5",
+                "link": "12",
+                "volume": 999.0,  # unrelated drift
+                "interval_count": 0,
+                "volumes": [],
+            },
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="2", volume=1333.0, interval_no=2)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": 1333.0, "readback_value": 1333.0}
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {
+        "object_class": "vehicle_inputs",
+        "object_id": "5",
+        "change": "field_changed",
+        "field": "volume",
+        "before": 200.0,
+        "after": 999.0,
+    } in diff
+
+
 def test_postwrite_unpersisted_conflict_area_status_is_blocking():
     # v2 unit (4): status is "not_persisted" semantics (a plain XML attribute
     # the parser can always see -- no opaque-blob case like signal

@@ -894,6 +894,39 @@ def test_vehicle_input_multi_interval_write_gap_fires_when_datum_present():
     _assert_well_formed_messages(matches[0], must_contain_ko="4")
 
 
+def test_vehicle_input_multi_interval_write_gap_fires_when_interval_no_is_explicit_one():
+    # v2 unit ⑤: interval_no=1 passed EXPLICITLY is the same "writing
+    # interval 1, other intervals exist" case as omitting it.
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "1", "name": "Main St EB", "link": "101", "volume": 900.0, "interval_count": 4}
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="1", volume=1200, interval_no=1)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert any(f.constraint_id == "vehicle_input_multi_interval_write_gap" for f in findings)
+
+
+def test_vehicle_input_multi_interval_write_gap_silent_when_targeting_a_later_interval():
+    # v2 unit ⑤: explicitly targeting interval_no=2 is a deliberate, informed
+    # choice about WHICH interval to change -- not the "wrote interval 1,
+    # ignored the rest" gap this check exists for.
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "1", "name": "Main St EB", "link": "101", "volume": 900.0, "interval_count": 4}
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="1", volume=1200, interval_no=2)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "vehicle_input_multi_interval_write_gap" for f in findings
+    )
+
+
 def test_vehicle_input_multi_interval_write_gap_skipped_when_datum_absent():
     shadow = _shadow_model()  # default fixture has no interval_count key
     action = _action("set_vehicle_input_volume", input_no="1", volume=1200)
@@ -903,6 +936,82 @@ def test_vehicle_input_multi_interval_write_gap_skipped_when_datum_absent():
     assert not any(
         f.constraint_id == "vehicle_input_multi_interval_write_gap" for f in findings
     )
+
+
+# ---------------------------------------------------------------------------
+# #44 vehicle_input_interval_out_of_range (refuse, preflight) — v2 unit ⑤
+# ---------------------------------------------------------------------------
+
+
+def test_vehicle_input_interval_out_of_range_fires_when_beyond_known_count():
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "1", "name": "Main St EB", "link": "101", "volume": 900.0, "interval_count": 3}
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="1", volume=1200, interval_no=5)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "vehicle_input_interval_out_of_range"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].suggested_fix == {"available_intervals": 3}
+    _assert_well_formed_messages(matches[0], must_contain_ko="3")
+
+
+def test_vehicle_input_interval_out_of_range_silent_when_within_range():
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "1", "name": "Main St EB", "link": "101", "volume": 900.0, "interval_count": 3}
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="1", volume=1200, interval_no=3)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_input_interval_out_of_range" for f in findings)
+
+
+def test_vehicle_input_interval_out_of_range_silent_for_interval_1():
+    # interval_no absent/1 is always valid regardless of interval_count --
+    # every vehicle input has an implicit interval 1.
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "1", "name": "Main St EB", "link": "101", "volume": 900.0, "interval_count": 0}
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="1", volume=1200)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_input_interval_out_of_range" for f in findings)
+
+
+def test_vehicle_input_interval_out_of_range_skipped_when_interval_count_unknown():
+    # interval_count absent entirely (older/synthetic fixture, or the demo
+    # network's zero-interval shape) -- refusing on absent data would be a
+    # false positive, not caution; the write stays safe either way because a
+    # genuinely-nonexistent interval fails CLOSED over COM.
+    shadow = _shadow_model(
+        vehicle_inputs=[{"no": "1", "name": "Main St EB", "link": "101", "volume": 900.0}]
+    )
+    action = _action("set_vehicle_input_volume", input_no="1", volume=1200, interval_no=5)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_input_interval_out_of_range" for f in findings)
+
+
+def test_vehicle_input_interval_out_of_range_skipped_when_target_missing():
+    shadow = _shadow_model(vehicle_inputs=[])
+    action = _action("set_vehicle_input_volume", input_no="999", volume=1200, interval_no=5)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    # missing target is object_not_found's job (#1), not this check's
+    assert not any(f.constraint_id == "vehicle_input_interval_out_of_range" for f in findings)
+    assert any(f.constraint_id == "object_not_found" for f in findings)
 
 
 def test_demand_scale_route_double_count_gap_fires_when_routes_flagged():
@@ -2146,9 +2255,12 @@ def test_registry_size_matches_m3_1_catalog_port():
     # intergreen) + 9 (batch 3: post-run lie detectors) + 14 (batch 4: the
     # remainder) == 43, + 1 (v2 unit ④'s conflict_area_status_change_confirm,
     # not a §-numbered catalog entry -- a defensive addition specific to
-    # set_conflict_area_status, see that constraint's own docstring) == 44.
+    # set_conflict_area_status, see that constraint's own docstring) == 44,
+    # + 1 (v2 unit ⑤'s vehicle_input_interval_out_of_range, same "not a
+    # §-numbered catalog entry, a defensive addition" shape, this time for
+    # set_vehicle_input_volume's new interval_no param) == 45.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 44
+    assert len(get_registry()) == 45
 
 
 def test_registry_has_unique_ids():

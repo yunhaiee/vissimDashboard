@@ -24,7 +24,11 @@ not a forward-declared one. Constraint #18's twin gap (``conflict_areas``)
 was CLOSED in v2 unit ④ (2026-07-24): ``tools_network.build_shadow_model``
 now parses real conflict-area data straight from the .inpx (verified live
 against Vissim 2026), so ``conflict_area_data_unavailable`` fires for real
-too.
+too. Constraint #13's twin gap (``interval_count``/per-interval ``volumes``)
+was CLOSED in v2 unit ⑤ (2026-07-24): ``tools_network._parse_vehicle_inputs``
+now populates both for real, and ``set_vehicle_input_volume`` gained an
+optional ``interval_no`` param — see #13's own docstring and the new #44
+(``vehicle_input_interval_out_of_range``) it introduced.
 
 This module is intentionally stdlib-only, like trace.py, and does not import
 state.py or trace.py — it only consumes the shadow-model dict shape they
@@ -1160,13 +1164,21 @@ register(
 #
 # Catalog §4 "Volume is always per hour, whatever the interval": a vehicle
 # input with a multi-interval demand profile has one volume value PER
-# interval; set_vehicle_input_volume (vissim_com.py) writes only
-# "Volume(1)" — interval 1. CATALOG-GAP: tools_network._parse_vehicle_inputs
-# captures only the FIRST <timeIntervalVehVolume> per input and never counts
-# how many intervals exist, so today's shadow model can never populate the
-# "interval_count" field this check reads. Fully implemented and tested
-# against an injected fixture; silently skips until a parser extension adds
-# interval_count to vehicle_input entries.
+# interval.
+#
+# GAP CLOSED in v2 unit ⑤ (2026-07-24): tools_network._parse_vehicle_inputs
+# now populates "interval_count" (and the full per-interval "volumes" list)
+# for real, straight from every <timeIntervalVehVolume> child — verified live
+# against Vissim 2026 (backend/tools/vehicle_input_interval_probe.py, Border
+# Crossing Breitenau.DE/Roundabout Schenectady.US/Toll Plaza Camden.US). AND
+# set_vehicle_input_volume gained an optional interval_no param, so this
+# check now reads the way its own catalog citation always meant: it fires
+# ONLY when the write (implicitly or explicitly) targets interval 1 while
+# OTHER intervals exist that this write leaves untouched. A write that
+# explicitly targets interval_no > 1 is a deliberate, informed choice about
+# WHICH interval to change — it does not trigger this warning (interval-
+# bounds correctness for that case is vehicle_input_interval_out_of_range's
+# job instead, below).
 # ---------------------------------------------------------------------------
 
 
@@ -1177,14 +1189,19 @@ def _check_vehicle_input_multi_interval_write_gap(
         return None
 
     params = action.get("params", {})
+    raw_interval_no = params.get("interval_no", 1)
+    interval_no = _coerce_number(raw_interval_no, cast=int)
+    if interval_no is None or interval_no != 1:
+        return None  # explicitly targeting a specific non-first interval — not this gap
+
     input_no = str(params.get("input_no", ""))
     vehicle_input = _find_by_field(shadow_model.get("vehicle_inputs", []), "no", input_no)
     if vehicle_input is None:
         return None  # missing target is object_not_found's job (#1)
 
-    raw_interval_count = vehicle_input.get("interval_count")  # CATALOG-GAP: never populated today
+    raw_interval_count = vehicle_input.get("interval_count")
     if raw_interval_count is None:
-        return None
+        return None  # caller-built fixture omitting the field entirely — defensive
     interval_count = _coerce_number(raw_interval_count, cast=int)
     if interval_count is None or interval_count <= 1:
         return None
@@ -3232,5 +3249,85 @@ register(
         "すべてのダイアログを抑制するグローバルスイッチがなく、形式変換の確認やメッセージウィンドウ"
         "が表示されるとワーカーが無期限に停止する可能性があります — quick modeとウォッチドッグの"
         "設定を確認してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# #44 vehicle_input_interval_out_of_range (refuse, preflight) — v2 unit ⑤
+#
+# Not a §-numbered catalog entry; a defensive addition specific to
+# set_vehicle_input_volume's new interval_no param. interval_no == 1 is
+# ALWAYS valid — every vehicle input has an implicit interval 1 even when the
+# .inpx carries no explicit <timeIntervalVehVolume> at all (the demo
+# network's shape; the M2.1 write path has always targeted Volume(1)
+# successfully there). interval_no > 1 is only checkable against a KNOWN
+# interval_count (tools_network._parse_vehicle_inputs, v2 unit ⑤) — without
+# this check, an out-of-range request would reach live COM and raise a raw
+# "Object N not found" com_error (verified live,
+# backend/tools/vehicle_input_interval_probe.py) instead of a clear,
+# structured refusal with the available interval count as suggested_fix.
+# When interval_count is unknown (0 — the demo network's shape, or a
+# caller-built fixture that omits the field), this check stays silent:
+# refusing on absent data would be a false positive, not caution (same
+# posture as #5's min_green_intergreen_sum gap) — the write is still safe
+# either way, since a genuinely-nonexistent interval fails CLOSED over COM
+# (a normal RuntimeError, never a silent wrong number).
+# ---------------------------------------------------------------------------
+
+
+def _check_vehicle_input_interval_out_of_range(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_vehicle_input_volume":
+        return None
+
+    params = action.get("params", {})
+    raw_interval_no = params.get("interval_no", 1)
+    interval_no = _coerce_number(raw_interval_no, cast=int)
+    if interval_no is None or interval_no <= 1:
+        return None  # interval 1 is always valid; malformed values are invalid_params's job
+
+    input_no = str(params.get("input_no", ""))
+    vehicle_input = _find_by_field(shadow_model.get("vehicle_inputs", []), "no", input_no)
+    if vehicle_input is None:
+        return None  # missing target is object_not_found's job (#1)
+
+    raw_interval_count = vehicle_input.get("interval_count")
+    interval_count = _coerce_number(raw_interval_count, cast=int)
+    if not interval_count:  # None or 0 — datum unavailable, don't guess
+        return None
+
+    if interval_no <= interval_count:
+        return None
+
+    return Finding(
+        constraint_id="vehicle_input_interval_out_of_range",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "vehicle_input_interval_out_of_range",
+            input_no=input_no,
+            interval_no=interval_no,
+            interval_count=interval_count,
+        ),
+        suggested_fix={"available_intervals": interval_count},
+        details={"input_no": input_no, "interval_no": interval_no, "interval_count": interval_count},
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_input_interval_out_of_range",
+        applies_to=["set_vehicle_input_volume"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_vehicle_input_interval_out_of_range,
+        message_ko="차량 입력 '{input_no}'에는 시간 구간이 {interval_count}개뿐입니다. 요청한 구간 "
+        "{interval_no}은(는) 존재하지 않습니다.",
+        message_en="Vehicle input '{input_no}' only has {interval_count} time interval(s). The "
+        "requested interval {interval_no} does not exist.",
+        message_ja="車両インプット '{input_no}' には時間区間が{interval_count}個しかありません。"
+        "指定された区間{interval_no}は存在しません。",
     )
 )

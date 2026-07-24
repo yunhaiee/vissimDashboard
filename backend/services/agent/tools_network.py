@@ -8,8 +8,12 @@ this module registers them onto ``default_registry`` at decoration time.
 ``build_shadow_model`` assembles the EXTENDED shadow model M0.3's
 constraints.py expects (see that module's docstring): links/nodes from
 ``services.inpx_parser.parse_network`` plus ``vehicle_inputs`` (parsed here
-directly from the .inpx — no/name/link/volume, volume ``None`` when the demo
-file's ``<vehicleInput>`` carries no ``timeIntervalVehVolume`` child),
+directly from the .inpx — no/name/link/volume/interval_count/volumes, volume
+``None`` and interval_count ``0``/volumes ``[]`` when the demo file's
+``<vehicleInput>`` carries no ``timeIntervalVehVolume`` child; v2 unit ⑤,
+2026-07-24: ``volumes`` is now populated for real, one entry per time
+interval — see ``_parse_vehicle_inputs``'s own docstring for the live-verified
+findings),
 ``signals`` (from ``services.signal_parser.parse_signal_controllers``, mapped
 down to the contract shape — ``controller_type`` is now populated for real
 (v2 unit ①, 2026-07-24: ``signal_parser.py`` extracts the verbatim
@@ -104,24 +108,78 @@ def _active_inpx_path() -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _coerce_float_or_none(raw: Any) -> float | None:
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_time_interval_start_s(raw: str | None) -> float | None:
+    """``timeInt`` is a two-token attribute, e.g. ``"1 1200000"`` -- the
+    SECOND token is the interval's start time in MILLISECONDS (verified
+    live, ``backend/tools/vehicle_input_interval_probe.py``: the network's
+    own ``<timeIntervalSet no="VEHICLEINPUT"><timeInterval start="1200"/>``
+    ground truth matched ``timeInt``'s second token, 1200000 ms, exactly,
+    across every real Vissim 2026 example network probed). The FIRST token
+    was observed as a constant ``"1"`` on every ``<timeIntervalVehVolume>``
+    in every one of the 25 real example networks and is not otherwise
+    documented; deliberately not interpreted here."""
+    if not raw:
+        return None
+    parts = raw.split()
+    if len(parts) < 2:
+        return None
+    try:
+        return float(parts[-1]) / 1000.0
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_vehicle_inputs(root: ET.Element) -> list[dict[str, Any]]:
-    """{no, name, link, volume} per <vehicleInput> — volume None when the
-    element carries no <timeIntervalVehVolume> child (the demo file's case)."""
+    """{no, name, link, volume, interval_count, volumes} per <vehicleInput>.
+
+    ``volume``/``interval_count``/``volumes`` -- v2 unit ⑤ (2026-07-24):
+    ``volumes`` is now populated for real, one entry per
+    ``<timeIntervalVehVolume>`` child IN DOCUMENT ORDER --
+    ``{interval_no, from_s, volume, continuous}``, ``interval_no`` 1-based.
+    Verified live (``backend/tools/vehicle_input_interval_probe.py``): COM's
+    own ``Volume(i)``/``Cont(i)`` 1-based index matched XML document order on
+    every real example network probed (Border Crossing Breitenau.DE,
+    Roundabout Schenectady.US, Toll Plaza Camden.US) -- Vissim always keeps
+    document order == chronological start-time order, so no separate
+    start-time sort is needed or attempted. ``interval_count`` (``len(``
+    ``volumes)``) CLOSES constraint #13's
+    (``vehicle_input_multi_interval_write_gap``) CATALOG-GAP -- see
+    ``constraints.py``'s docstring for that check.
+
+    ``volume`` stays the exact same top-level field it always was
+    (backward-compat, unchanged since M1.2): interval 1's volume, or
+    ``None`` when the element carries no ``<timeIntervalVehVolume>`` child at
+    all (the demo file's case -- ``interval_count`` is ``0``, ``volumes`` is
+    ``[]`` there, not absent).
+    """
     result: list[dict[str, Any]] = []
     for vi in root.findall(".//vehicleInput"):
-        volume: float | None = None
-        vol_el = vi.find(".//timeIntervalVehVolume")
-        if vol_el is not None:
-            try:
-                volume = float(vol_el.get("volume"))
-            except (TypeError, ValueError):
-                volume = None
+        intervals: list[dict[str, Any]] = []
+        for idx, vol_el in enumerate(vi.findall(".//timeIntervalVehVolume"), start=1):
+            intervals.append(
+                {
+                    "interval_no": idx,
+                    "from_s": _parse_time_interval_start_s(vol_el.get("timeInt")),
+                    "volume": _coerce_float_or_none(vol_el.get("volume")),
+                    "continuous": (vol_el.get("cont") or "").strip().lower() == "true",
+                }
+            )
+        volume = intervals[0]["volume"] if intervals else None
         result.append(
             {
                 "no": vi.get("no", ""),
                 "name": vi.get("name", ""),
                 "link": vi.get("link", ""),
                 "volume": volume,
+                "interval_count": len(intervals),
+                "volumes": intervals,
             }
         )
     return result

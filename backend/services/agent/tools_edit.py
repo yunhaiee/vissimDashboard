@@ -62,7 +62,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from services.agent.edit_session import get_active_edit_session
 from services.agent.toolkit import tool
@@ -120,6 +120,18 @@ class SetVehicleInputVolumeParams(BaseModel):
 
     input_no: str
     volume: float
+    # v2 unit ⑤: addresses a specific time interval on a multi-interval
+    # vehicle input (shadow_model["vehicle_inputs"][].volumes[], populated by
+    # tools_network._parse_vehicle_inputs). Default 1 is byte-compatible with
+    # the original single-interval verb -- ge=1 rejects 0/negative at the
+    # pydantic layer (invalid_params) before this ever reaches a tool
+    # function; an interval_no beyond what the target input actually has is
+    # constraints.py's vehicle_input_interval_out_of_range's job to refuse
+    # (when interval_count is known) or Vissim's own live COM raise (verified
+    # empirically, backend/tools/vehicle_input_interval_probe.py: reading/
+    # writing a genuinely non-existent interval index fails CLOSED, "Object N
+    # not found") when it is not.
+    interval_no: int = Field(default=1, ge=1)
 
 
 @tool(
@@ -129,16 +141,36 @@ class SetVehicleInputVolumeParams(BaseModel):
     params=SetVehicleInputVolumeParams,
 )
 def set_vehicle_input_volume(params: SetVehicleInputVolumeParams) -> dict[str, Any]:
-    """Set a vehicle input's volume (veh/h) on the active edit session's working network."""
+    """Set a vehicle input's volume (veh/h) for a given time interval (interval_no, default 1) on the active edit session's working network -- a multi-interval input's OTHER intervals are left untouched by design; see get_vehicle_inputs for the per-interval profile."""
     session = _require_session()
     input_no = _coerce_id(params.input_no, "input_no")
-    session.set_vehicle_input_volume(input_no, params.volume)
-    readback = session.get_vehicle_input_volume(input_no)
+
+    if params.interval_no == 1:
+        # Exact original two-call path -- byte-compatible with every caller
+        # (fake and real) that predates v2 unit ⑤ and never passes
+        # interval_no. Interval 1 is never continuous (verified live: every
+        # probed network's Cont(1) reads false), so there is no Cont
+        # handling to report here.
+        session.set_vehicle_input_volume(input_no, params.volume)
+        readback = session.get_vehicle_input_volume(input_no)
+        verification: dict[str, Any] = {"written_value": params.volume, "readback_value": readback}
+        message = f"Vehicle input {params.input_no} volume set to {params.volume} veh/h."
+    else:
+        session.set_vehicle_input_volume(input_no, params.volume, params.interval_no)
+        readback = session.get_vehicle_input_volume(input_no, params.interval_no)
+        cont_after = session.get_vehicle_input_continuous(input_no, params.interval_no)
+        verification = {
+            "written_value": params.volume,
+            "readback_value": readback,
+            "cont_after": cont_after,
+        }
+        message = (
+            f"Vehicle input {params.input_no} interval {params.interval_no} volume set to "
+            f"{params.volume} veh/h."
+        )
+
     session.persist()
-    return {
-        "message": f"Vehicle input {params.input_no} volume set to {params.volume} veh/h.",
-        "verification": {"written_value": params.volume, "readback_value": readback},
-    }
+    return {"message": message, "verification": verification}
 
 
 # ---------------------------------------------------------------------------

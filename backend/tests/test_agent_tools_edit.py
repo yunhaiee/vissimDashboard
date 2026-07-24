@@ -50,12 +50,24 @@ class FakeEditSession:
         if op in self._raise_on:
             raise self._raise_on[op]
 
-    def set_vehicle_input_volume(self, input_no: int, volume: float) -> None:
-        self._record("set_vehicle_input_volume", input_no=input_no, volume=volume)
+    def set_vehicle_input_volume(self, input_no: int, volume: float, interval_no: int = 1) -> None:
+        if interval_no == 1:
+            self._record("set_vehicle_input_volume", input_no=input_no, volume=volume)
+        else:
+            self._record(
+                "set_vehicle_input_volume", input_no=input_no, volume=volume, interval_no=interval_no
+            )
 
-    def get_vehicle_input_volume(self, input_no: int) -> float:
-        self._record("get_vehicle_input_volume", input_no=input_no)
+    def get_vehicle_input_volume(self, input_no: int, interval_no: int = 1) -> float:
+        if interval_no == 1:
+            self._record("get_vehicle_input_volume", input_no=input_no)
+        else:
+            self._record("get_vehicle_input_volume", input_no=input_no, interval_no=interval_no)
         return self._readback["vehicle_input_volume"]
+
+    def get_vehicle_input_continuous(self, input_no: int, interval_no: int) -> bool:
+        self._record("get_vehicle_input_continuous", input_no=input_no, interval_no=interval_no)
+        return self._readback.get("vehicle_input_continuous", False)
 
     def set_signal_cycle(self, sc_no: int, cycle: int) -> None:
         self._record("set_signal_cycle", sc_no=sc_no, cycle=cycle)
@@ -213,6 +225,80 @@ def test_set_vehicle_input_volume_readback_mismatch_still_reports_ok_envelope():
 
     assert envelope["status"] == "ok"
     assert envelope["verification"] == {"written_value": 600.0, "readback_value": 500.0}
+
+
+# ---------------------------------------------------------------------------
+# set_vehicle_input_volume — interval_no (v2 unit ⑤)
+# ---------------------------------------------------------------------------
+
+
+def test_set_vehicle_input_volume_interval_1_is_byte_compatible_with_no_interval_no_param():
+    # interval_no is not passed at all -- pydantic defaults it to 1. The
+    # session must see EXACTLY the same 2-arg calls as before v2 unit ⑤ (no
+    # interval_no anywhere, no get_vehicle_input_continuous call at all).
+    session = FakeEditSession(readback={"vehicle_input_volume": 600.0})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_vehicle_input_volume", input_no="1", volume=600.0)
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": 600.0, "readback_value": 600.0}
+    assert session.calls == [
+        {"op": "set_vehicle_input_volume", "input_no": 1, "volume": 600.0},
+        {"op": "get_vehicle_input_volume", "input_no": 1},
+    ]
+
+
+def test_set_vehicle_input_volume_interval_no_2_happy_path():
+    session = FakeEditSession(
+        readback={"vehicle_input_volume": 1333.0, "vehicle_input_continuous": False}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_vehicle_input_volume", input_no="2", volume=1333.0, interval_no=2)
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": 1333.0,
+        "readback_value": 1333.0,
+        "cont_after": False,
+    }
+    assert "interval 2" in envelope["message"]
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {"op": "set_vehicle_input_volume", "input_no": 2, "volume": 1333.0, "interval_no": 2},
+        {"op": "get_vehicle_input_volume", "input_no": 2, "interval_no": 2},
+        {"op": "get_vehicle_input_continuous", "input_no": 2, "interval_no": 2},
+    ]
+    # input_no was coerced str -> int at the COM boundary, same as interval 1.
+    assert isinstance(session.calls[0]["input_no"], int)
+
+
+def test_set_vehicle_input_volume_interval_no_default_is_explicit_one():
+    # interval_no=1 passed EXPLICITLY must take the exact same byte-compatible
+    # path as omitting it entirely.
+    session = FakeEditSession(readback={"vehicle_input_volume": 600.0})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_vehicle_input_volume", input_no="1", volume=600.0, interval_no=1)
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": 600.0, "readback_value": 600.0}
+    assert session.calls == [
+        {"op": "set_vehicle_input_volume", "input_no": 1, "volume": 600.0},
+        {"op": "get_vehicle_input_volume", "input_no": 1},
+    ]
+
+
+def test_set_vehicle_input_volume_interval_no_zero_is_rejected_at_param_layer():
+    session = FakeEditSession(readback={"vehicle_input_volume": 600.0})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_vehicle_input_volume", input_no="1", volume=600.0, interval_no=0)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
 
 
 def test_set_signal_cycle_happy_path():

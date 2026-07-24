@@ -158,13 +158,23 @@ class VissimEditSession:
 
     # -----------------------------------------------------------------
     # M2.1 paired verbs (set + get), one per write tool in tools_edit.py
+    #
+    # v2 unit ⑤: set_vehicle_input_volume/get_vehicle_input_volume gained an
+    # optional interval_no (default 1, byte-compatible); get_vehicle_input_
+    # continuous is a THIRD paired getter (no matching "set" here -- Cont
+    # clearing is a side effect of set_vehicle_input_volume itself, see
+    # VissimController.set_vehicle_input's docstring for the verified
+    # live Cont-flag trap) used only for interval_no > 1 verification.
     # -----------------------------------------------------------------
 
-    def set_vehicle_input_volume(self, input_no: int, volume: float) -> None:
-        self._ensure_connected().set_vehicle_input(input_no, volume)
+    def set_vehicle_input_volume(self, input_no: int, volume: float, interval_no: int = 1) -> None:
+        self._ensure_connected().set_vehicle_input(input_no, volume, interval_no)
 
-    def get_vehicle_input_volume(self, input_no: int) -> float:
-        return self._ensure_connected().get_vehicle_input_volume(input_no)
+    def get_vehicle_input_volume(self, input_no: int, interval_no: int = 1) -> float:
+        return self._ensure_connected().get_vehicle_input_volume(input_no, interval_no)
+
+    def get_vehicle_input_continuous(self, input_no: int, interval_no: int) -> bool:
+        return self._ensure_connected().get_vehicle_input_continuous(input_no, interval_no)
 
     def set_signal_cycle(self, sc_no: int, cycle: int) -> None:
         self._ensure_connected().set_signal_cycle(sc_no, cycle)

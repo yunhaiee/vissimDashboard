@@ -87,14 +87,32 @@ def _expanded_block_pattern(input_no: str) -> "re.Pattern[str]":
     )
 
 
-def set_vehicle_input_volume_in_xml(text: str, input_no: str, volume: float) -> str:
+_TIME_INTERVAL_VEH_VOLUME_RE = re.compile(r"<timeIntervalVehVolume\b[^>]*/>")
+
+
+def set_vehicle_input_volume_in_xml(
+    text: str, input_no: str, volume: float, interval_no: int = 1
+) -> str:
     """Return ``text`` with ``<vehicleInput no="{input_no}">``'s
-    ``<timeIntervalVehVolume volume="...">`` child set to ``volume``,
-    injecting the child if the element is currently self-closing (the
-    synthetic demo network's actual shape — see module docstring).
+    ``interval_no``-th (1-based, document order) ``<timeIntervalVehVolume
+    volume="...">`` child set to ``volume``.
+
+    ``interval_no=1`` (default, byte-compatible with the original
+    single-interval helper): injects a child if the element is currently
+    self-closing (the synthetic demo network's actual shape — see module
+    docstring) or has no ``<timeIntervalVehVolume>`` children yet; otherwise
+    edits the FIRST existing one.
+
+    ``interval_no > 1`` (v2 unit ⑤) edits an EXISTING later interval only —
+    this fake never invents new intervals, matching the real COM behavior
+    verified live (backend/tools/vehicle_input_interval_probe.py:
+    ``SetAttValue`` on a genuinely non-existent interval index raises, never
+    creates one). Raises :class:`ValueError` if the target ``<vehicleInput>``
+    has fewer than ``interval_no`` existing children (a task-authoring bug,
+    same precedent as the missing-input_no case below).
 
     Raises :class:`ValueError` if no ``<vehicleInput>`` with that ``no``
-    exists in ``text`` — a task-authoring bug (the guardrail catalog's
+    exists in ``text`` at all — a task-authoring bug (the guardrail catalog's
     ``object_not_found`` check should have refused before this fake ever
     runs for a genuinely absent id).
     """
@@ -102,16 +120,35 @@ def set_vehicle_input_volume_in_xml(text: str, input_no: str, volume: float) -> 
     match = expanded.search(text)
     if match is not None:
         inner = match.group(2)
-        if "timeIntervalVehVolume" in inner:
-            new_inner = re.sub(r'volume="[^"]*"', f'volume="{volume}"', inner, count=1)
-        else:
+        children = list(_TIME_INTERVAL_VEH_VOLUME_RE.finditer(inner))
+        if interval_no <= len(children):
+            target = children[interval_no - 1]
+            child_text = target.group(0)
+            if 'volume="' in child_text:
+                new_child_text = re.sub(r'volume="[^"]*"', f'volume="{volume}"', child_text, count=1)
+            else:
+                new_child_text = child_text[:-2] + f' volume="{volume}"/>'
+            new_inner = inner[: target.start()] + new_child_text + inner[target.end() :]
+        elif interval_no == 1:
+            # No children at all yet -- inject one (identical to the
+            # original single-interval behavior).
             new_inner = inner + f'<timeIntervalVehVolume timeInt="1" volume="{volume}"/>'
+        else:
+            raise ValueError(
+                f'<vehicleInput no="{input_no}"> only has {len(children)} '
+                f"<timeIntervalVehVolume> interval(s); interval_no={interval_no} does not exist"
+            )
         return text[: match.start()] + match.group(1) + new_inner + match.group(3) + text[match.end() :]
 
     self_closing = _self_closing_pattern(input_no)
     match2 = self_closing.search(text)
     if match2 is None:
         raise ValueError(f"No <vehicleInput no=\"{input_no}\"> element found in the working .inpx")
+    if interval_no != 1:
+        raise ValueError(
+            f'<vehicleInput no="{input_no}"> has no <timeIntervalVehVolume> children at all; '
+            f"interval_no={interval_no} does not exist"
+        )
     attrs = match2.group(1)
     replacement = (
         f"<vehicleInput{attrs}><timeIntervalVehVolume timeInt=\"1\" volume=\"{volume}\"/></vehicleInput>"
@@ -143,7 +180,11 @@ class FakeEditSession:
         self.simulate_ignored_write = set(simulate_ignored_write or set())
         self.simulate_clamped_write = dict(simulate_clamped_write or {})
 
-        self._pending_volume: dict[str, float] = {}
+        # v2 unit ⑤: keyed by (input_no, interval_no) so interval_no=1 (the
+        # byte-compatible default) and any other interval on the same input
+        # coexist independently.
+        self._pending_volume: dict[tuple[str, int], float] = {}
+        self._pending_continuous: dict[tuple[str, int], bool] = {}
         self._pending_cycle: dict[str, int] = {}
         self._pending_offset: dict[str, int] = {}
         self._sim_duration: int | None = None
@@ -156,13 +197,31 @@ class FakeEditSession:
     # M2.1 paired verbs — same names/signatures as VissimEditSession
     # -----------------------------------------------------------------
 
-    def set_vehicle_input_volume(self, input_no: int, volume: float) -> None:
-        self.calls.append(("set_vehicle_input_volume", (input_no, volume)))
-        self._pending_volume[str(input_no)] = float(volume)
+    def set_vehicle_input_volume(self, input_no: int, volume: float, interval_no: int = 1) -> None:
+        self.calls.append(
+            ("set_vehicle_input_volume", (input_no, volume))
+            if interval_no == 1
+            else ("set_vehicle_input_volume", (input_no, volume, interval_no))
+        )
+        self._pending_volume[(str(input_no), interval_no)] = float(volume)
+        if interval_no != 1:
+            # Simulates the real Cont-clearing side effect
+            # (VissimController.set_vehicle_input's docstring, v2 unit ⑤
+            # probe): a non-first interval is no longer "continuous" once
+            # explicitly written.
+            self._pending_continuous[(str(input_no), interval_no)] = False
 
-    def get_vehicle_input_volume(self, input_no: int) -> float:
-        self.calls.append(("get_vehicle_input_volume", (input_no,)))
-        return self._pending_volume[str(input_no)]
+    def get_vehicle_input_volume(self, input_no: int, interval_no: int = 1) -> float:
+        self.calls.append(
+            ("get_vehicle_input_volume", (input_no,))
+            if interval_no == 1
+            else ("get_vehicle_input_volume", (input_no, interval_no))
+        )
+        return self._pending_volume[(str(input_no), interval_no)]
+
+    def get_vehicle_input_continuous(self, input_no: int, interval_no: int) -> bool:
+        self.calls.append(("get_vehicle_input_continuous", (input_no, interval_no)))
+        return self._pending_continuous.get((str(input_no), interval_no), False)
 
     def set_signal_cycle(self, sc_no: int, cycle: int) -> None:
         self.calls.append(("set_signal_cycle", (sc_no, cycle)))
@@ -209,14 +268,17 @@ class FakeEditSession:
             return
         text = self.working_inpx.read_text(encoding="utf-8")
         changed = False
-        for input_no, volume in self._pending_volume.items():
+        for (input_no, interval_no), volume in self._pending_volume.items():
             if input_no in self.simulate_ignored_write:
                 # Failure injection: acknowledge the write (get_* above
                 # already returned the "landed" value) but never actually
                 # save it — see module docstring's §"Failure injection".
+                # Scoped by input_no only (not interval_no) -- v2 unit ⑤
+                # does not extend this injection hook to the interval
+                # dimension.
                 continue
             effective_volume = self.simulate_clamped_write.get(input_no, volume)
-            text = set_vehicle_input_volume_in_xml(text, input_no, effective_volume)
+            text = set_vehicle_input_volume_in_xml(text, input_no, effective_volume, interval_no)
             changed = True
         if changed:
             self.working_inpx.write_text(text, encoding="utf-8")

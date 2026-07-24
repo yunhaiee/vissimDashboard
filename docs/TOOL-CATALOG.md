@@ -2,14 +2,22 @@
 
 The definitive list of what the AI agent can do in Vissim, by verification tier.
 Doctrine: a verb ships only when its verification method does (00-EXECUTION-GUIDE §4).
-Updated 2026-07-24 (post-Phase-2 completion + completeness audit).
+Updated 2026-07-24 (post-Phase-2 completion + completeness audit; v2 unit ⑤).
 
 ## V1 — parameter tier (read-back verification) — SHIPPED
 
-**Reads:** network overview · object resolve (fuzzy ko) · vehicle inputs · signal
+**Reads:** network overview · object resolve (fuzzy ko) · vehicle inputs (now with
+per-interval volume/from_s/continuous profile — v2 unit ⑤) · signal
 controllers · run KPIs · scenario comparison — all ✅
 
-**Edits:** vehicle input volume ✅ · sim duration ✅ · random seed ✅ ·
+**Edits:** vehicle input volume ✅ · vehicle input volume PER TIME INTERVAL
+✅(shipped 2026-07-24, v2 unit ⑤: `set_vehicle_input_volume` gained an optional
+`interval_no` param addressing any of a multi-interval input's intervals, not just
+the first; verified live against the Cont-flag trap — `SetAttValue Volume(i)` for
+`i>1` raises while `Cont(i)` is true, the setter clears it first and reports
+`cont_after` in the verification payload; closes the
+`vehicle_input_multi_interval_write_gap` CATALOG-GAP for real) · sim duration ✅ ·
+random seed ✅ ·
 signal offset ✅(unlocked 2026-07-24: controller types now parsed; FIXEDTIME/FIXEDTIMESIMPLE
 allowed, all external types refuse by design) ·
 signal cycle ⚠️(CycTm only; disconnected from program-driven real cycle by Vissim design) ·
@@ -31,7 +39,8 @@ forbids overclaiming). V1 close-out complete.
 
 ## V2a — more parameters (same machinery, new plumbing + live probing per verb)
 
-time-varying demand profiles (multi-interval inputs) · vehicle composition shares ·
+time-varying demand profiles (multi-interval inputs) ✅(shipped 2026-07-24, v2 unit ⑤ —
+see V1's edits list) · vehicle composition shares ·
 static route relative flows · desired-speed decision PAIRS (set+restore atomic) ·
 desired-speed distribution assignment · desired-speed/time DISTRIBUTION curve editing
 (the legitimate CC1 route) · conflict-area status ✅(shipped 2026-07-24: get_conflict_areas

@@ -95,6 +95,28 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "id_param": "input_no",
         "value_field": "volume",
         "none_means": "not_persisted",
+        # v2 unit ⑤: interval-aware addressing. The TARGET-PERSISTED check
+        # (_resolve_saved_value) redirects to the matching "volumes" list
+        # entry for interval_no > 1, staying exactly "volume" (byte-
+        # compatible) for interval_no absent/1. The DIFF EXEMPTION
+        # (_write_target_fields) is intentionally NOT interval-conditional:
+        # it always exempts {"volume", "volumes", "interval_count"} together
+        # for this tool, any interval_no. Reason (real regression, caught by
+        # this task's own test suite before shipping): the demo network's
+        # vehicle inputs start with ZERO <timeIntervalVehVolume> elements, so
+        # an interval_no==1 write there takes interval_count 0->1 and
+        # volumes []->[...] in the SAME step as volume None-><written> --
+        # exempting "volume" alone left interval_count/volumes as
+        # false-positive "something else moved" evidence. The three fields
+        # are derived/mirrored views of the same underlying XML structure
+        # (interval_count == len(volumes), volume == volumes[0].volume), so
+        # treating them as one exempt unit is the more correct reading, not
+        # merely a workaround.
+        "interval_param": "interval_no",
+        "interval_list_field": "volumes",
+        "interval_key_field": "interval_no",
+        "interval_value_field": "volume",
+        "interval_count_field": "interval_count",
     },
     "set_signal_cycle": {
         "object_class": "signals",
@@ -270,14 +292,16 @@ def _diff_object_list(
     id_field: str,
     before: list[dict[str, Any]],
     after: list[dict[str, Any]],
-    exempt_field: tuple[str, str] | None,
+    exempt_field: tuple[str, frozenset[str]] | None,
 ) -> list[dict[str, Any]]:
     """Structural diff of one shadow-model object list, id-keyed.
 
-    ``exempt_field`` is ``(object_id, field_name)`` — the one (object,
-    field) pair allowed to differ without becoming evidence (the write
-    action's own intended target). Every other addition, removal, or
-    field-level change becomes one evidence entry.
+    ``exempt_field`` is ``(object_id, field_names)`` — the ONE object (by id)
+    whose listed field NAMES are allowed to differ without becoming evidence
+    (the write action's own intended target — usually one field, but v2 unit
+    ⑤'s ``set_vehicle_input_volume`` exempts a small coupled set, see
+    ``_write_target_fields``). Every other addition, removal, or field-level
+    change becomes one evidence entry.
     """
     before_by_id = _index_by_id(before, id_field)
     after_by_id = _index_by_id(after, id_field)
@@ -290,7 +314,11 @@ def _diff_object_list(
     for obj_id in sorted(set(before_by_id) & set(after_by_id)):
         before_obj, after_obj = before_by_id[obj_id], after_by_id[obj_id]
         for field_name in sorted(set(before_obj) | set(after_obj)):
-            if exempt_field is not None and exempt_field == (obj_id, field_name):
+            if (
+                exempt_field is not None
+                and exempt_field[0] == obj_id
+                and field_name in exempt_field[1]
+            ):
                 continue
             before_value, after_value = before_obj.get(field_name), after_obj.get(field_name)
             if _values_differ(before_value, after_value):
@@ -307,14 +335,87 @@ def _diff_object_list(
     return evidence
 
 
+def _coerce_int_or_default(raw: Any, default: int) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _interval_no_from_action(spec: dict[str, str], action: dict[str, Any]) -> int:
+    """1 for every tool without an ``interval_param`` in its spec, or when
+    the action's own params omit/malform it -- the byte-compatible default
+    (v2 unit ⑤)."""
+    interval_param = spec.get("interval_param")
+    if interval_param is None:
+        return 1
+    raw_interval_no = action.get("params", {}).get(interval_param, 1)
+    return _coerce_int_or_default(raw_interval_no, default=1)
+
+
+def _write_target_fields(spec: dict[str, str], action: dict[str, Any]) -> frozenset[str]:
+    """Which top-level shadow-model field NAME(s) the nothing-else-moved diff
+    should exempt for this write. Every tool without an ``interval_param``
+    exempts exactly ``{spec["value_field"]}`` (unchanged since M1.2/M2.2).
+    ``set_vehicle_input_volume`` (v2 unit ⑤) exempts ``{"volume", "volumes",
+    "interval_count"}`` together, UNCONDITIONALLY regardless of interval_no
+    -- see the ``_WRITE_TARGET_FIELD_SPEC`` comment for why the narrower
+    per-interval-no exemption this function used to compute was a real
+    false-positive regression against the demo network's zero-interval
+    vehicle inputs, and why exempting the trio together is the more correct
+    reading (they are coupled/derived views of the same XML structure), not
+    merely a workaround. ``action`` is accepted for signature symmetry with
+    :func:`_resolve_saved_value` but is not read here since v2 unit ⑤ made
+    this exemption interval_no-independent.
+    """
+    del action
+    if spec.get("interval_param") is None:
+        return frozenset({spec["value_field"]})
+    fields = {spec["value_field"], spec["interval_list_field"]}
+    count_field = spec.get("interval_count_field")
+    if count_field:
+        fields.add(count_field)
+    return frozenset(fields)
+
+
+def _resolve_saved_value(
+    spec: dict[str, str], action: dict[str, Any], target: dict[str, Any]
+) -> tuple[str, Any]:
+    """(field_label, saved_value) for the target-persisted check.
+
+    Same interval-dimension redirect as :func:`_write_target_field`, but
+    this one also digs into the interval LIST to find the matching entry by
+    ``interval_no`` (the diff-exemption helper only needs the top-level
+    field NAME, not a specific list entry).
+    """
+    interval_no = _interval_no_from_action(spec, action)
+    if interval_no == 1:
+        return spec["value_field"], target.get(spec["value_field"])
+
+    intervals = target.get(spec["interval_list_field"]) or []
+    key_field = spec["interval_key_field"]
+    value_field = spec["interval_value_field"]
+    field_label = f"{spec['interval_list_field']}[{interval_no}].{value_field}"
+    entry = next(
+        (iv for iv in intervals if _coerce_int_or_default(iv.get(key_field), -1) == interval_no),
+        None,
+    )
+    if entry is None:
+        # The interval itself is absent from the AFTER model entirely -- a
+        # genuinely dropped write (or an index Vissim never had) reads the
+        # exact same way as "not persisted": no value at all.
+        return field_label, None
+    return field_label, entry.get(value_field)
+
+
 def _nothing_else_moved_diff(
     action: dict[str, Any], before_model: dict[str, Any], after_model: dict[str, Any]
 ) -> list[dict[str, Any]]:
     spec = _WRITE_TARGET_FIELD_SPEC.get(action.get("tool", ""))
-    exemptions: dict[str, tuple[str, str]] = {}
+    exemptions: dict[str, tuple[str, frozenset[str]]] = {}
     if spec is not None:
         target_id = str(action.get("params", {}).get(spec["id_param"], ""))
-        exemptions[spec["object_class"]] = (target_id, spec["value_field"])
+        exemptions[spec["object_class"]] = (target_id, _write_target_fields(spec, action))
 
     evidence: list[dict[str, Any]] = []
     for object_class, id_field in _SHADOW_OBJECT_ID_FIELDS.items():
@@ -410,7 +511,7 @@ def _target_not_persisted_finding(
     if target is None:
         return None
 
-    saved_value = target.get(spec["value_field"])
+    field, saved_value = _resolve_saved_value(spec, action, target)
     written_value = com_result["written_value"]
     if saved_value is None:
         if spec.get("none_means") != "not_persisted":
@@ -425,7 +526,6 @@ def _target_not_persisted_finding(
     elif not _values_differ(written_value, saved_value):
         return None
 
-    field = spec["value_field"]
     return Finding(
         constraint_id="write_verification_failed",
         tier="refuse",

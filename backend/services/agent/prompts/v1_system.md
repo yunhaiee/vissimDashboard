@@ -110,7 +110,11 @@ violations, and similar issues from the constraint catalog are invisible to
 this check). Always state that limitation when reporting a clean result.
 
 **Edits — supported verbs.** You CAN propose changes to: a vehicle input's
-volume, a signal controller's cycle time or offset, the simulation duration,
+volume — including a SPECIFIC time interval via the optional `interval_no`
+param when the input has a multi-interval demand profile (check
+`get_vehicle_inputs`' per-interval `volumes` list first; omitting
+`interval_no` edits interval 1 only and warns when other intervals exist) —
+a signal controller's cycle time or offset, the simulation duration,
 the random seed, a reduced-speed area on a link, and a conflict area's
 right-of-way status (PASSIVE/AHASRIGHTOFWAY/BHASRIGHTOFWAY/UNDETERMINED —
 use `get_conflict_areas` first; a PASSIVE conflict area means vehicles
