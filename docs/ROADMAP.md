@@ -88,3 +88,17 @@ Claude codes; Yunha handles: Vissim install/license, running COM smoke tests
 from the Dochak team, API keys via `.env` (never committed), meetings/elicitation
 with Dochak's traffic engineers (Dr. Chun/Dr. Oh) for guardrail rules and
 eval-task ground truth.
+
+## Status update — 2026-07-24
+
+Phases 0, 1, 2 (all of docs/phase2 M0–M5) COMPLETE and live-demo-verified end to end
+(edit → approve → verified COM write → 5-seed run with auto-armed evaluation → real KPIs
+in chat + dashboard). Six live-rehearsal defects found and fixed same-day — see
+docs/phase2/DECISIONS.md 2026-07-24 entries. Eval headline: 60% vs 0% silent-failure
+detection (full stack vs ablation).
+
+Remaining: Phase 3 (network preview — runs on the laptop, branch phase3-render),
+Phase 4 completion (real Dochak .inpx + live eval runs + ground-truth tasks),
+TR-C paper (deadline ~09-05), then v2 tool expansion per docs/TOOL-CATALOG.md
+(the definitive v1/v2 capability matrix; v2 work runs on the Vissim box, branch
+v2-tools, one verified verb per commit).
