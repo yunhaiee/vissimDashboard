@@ -1104,6 +1104,7 @@ const AGENT_ACTION_LABELS: Record<string, [string, string, string]> = {
   set_signal_offset: ["신호 옵셋 변경", "Change signal offset", "信号オフセットの変更"],
   set_sim_duration: ["시뮬레이션 시간 변경", "Change simulation duration", "シミュレーション時間の変更"],
   set_random_seed: ["랜덤 시드 변경", "Change random seed", "ランダムシードの変更"],
+  run_simulation: ["시뮬레이션 실행", "Run simulation", "シミュレーション実行"],
 };
 
 function agentActionLabel(tool: string, t: Translate): string {
@@ -1144,6 +1145,18 @@ function agentActionDetail(action: AgentAction, t: Translate): string {
       );
     case "set_random_seed":
       return t(`랜덤 시드 → ${params.seed}`, `Random seed → ${params.seed}`, `ランダムシード → ${params.seed}`);
+    case "run_simulation": {
+      const seeds = params.random_seeds as number[] | null | undefined;
+      const seedsLabel =
+        seeds && seeds.length > 0
+          ? t(`시드 ${seeds.join(", ")}`, `seeds ${seeds.join(", ")}`, `シード ${seeds.join(", ")}`)
+          : t("기본 시드", "default seed", "デフォルトシード");
+      return t(
+        `${params.duration_s}초 실행 · ${seedsLabel}`,
+        `Run for ${params.duration_s}s · ${seedsLabel}`,
+        `${params.duration_s}秒実行 · ${seedsLabel}`,
+      );
+    }
     default:
       return Object.entries(params)
         .map(([key, value]) => `${key}=${String(value)}`)
