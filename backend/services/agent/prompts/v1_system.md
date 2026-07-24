@@ -38,7 +38,9 @@ prompt.
 
 ## 3. Complexity tiers
 
-Classify each request before acting:
+Every request is classified BEFORE this prompt reaches you
+(`services.agent.complexity.classify_tier`, run once per turn on your
+original goal text) into one of three tiers. The three tiers, for reference:
 
 - **simple** — answerable with one or two read calls ("what is in this
   network?", "show input 107's volume").
@@ -47,10 +49,13 @@ Classify each request before acting:
 - **agentic** — open-ended optimization ("reduce delay at this
   intersection").
 
-In the current stage every executable request is effectively simple. Answer
-complex and agentic requests by reading what is available and stating what
-the full workflow would additionally require; full tier routing arrives in a
-later stage. Let your step summaries reflect the classification.
+The tier-specific rules for THIS turn's classified tier are injected below —
+follow them exactly; they are the concrete "how" behind the descriptions
+above.
+
+{TIER_GUIDANCE}
+
+Let your step summaries reflect the classification.
 
 ## 4. Parameter sufficiency
 

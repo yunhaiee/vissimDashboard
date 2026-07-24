@@ -35,6 +35,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from services.agent import complexity
 from services.agent.state import AgentState
 from services.agent.toolkit import (
     ToolRegistry,
@@ -140,6 +141,16 @@ _FALLBACK_QUESTION = {
     ),
 }
 
+# M3.2: deterministic ko/en/ja step narration for the mandatory-preview
+# diversion (see _mandatory_preview_decision) -- complex/agentic tiers may
+# not end the turn with `respond` as their very first decision; this is the
+# narrated grounding read substituted in its place.
+_MANDATORY_PREVIEW_SUMMARY = {
+    "ko": "결론 전에 근거 데이터를 먼저 확인합니다",
+    "en": "Gathering grounding data before concluding",
+    "ja": "結論の前に根拠データを確認します",
+}
+
 
 def pick_language_text(table: dict[str, str], language: str) -> str:
     """The language table lookup every deterministic agent text goes through
@@ -216,19 +227,27 @@ class Planner:
         self._registry = registry if registry is not None else default_registry
         self._system_prompt_path = Path(system_prompt_path)
 
-    def system_prompt(self) -> str:
-        """The versioned system prompt with {TOOL_CONTRACT} filled in.
+    def system_prompt(self, tier: complexity.Tier = "simple") -> str:
+        """The versioned system prompt with {TOOL_CONTRACT} and
+        {TIER_GUIDANCE} filled in.
 
         The file read is cached on (path, mtime); the contract is re-rendered
-        per call so a test-registered tool is never stale. Static across a
-        session, so providers can prompt-cache it (M1.1's cache_control).
+        per call so a test-registered tool is never stale. ``tier`` selects
+        the M3.2 per-tier guidance block (``complexity.TIER_GUIDANCE``) --
+        the ONLY part of the rendered prompt that varies by tier within one
+        session, so a session that stays on the same tier for its whole turn
+        (the common case: tier is classified once per turn, not per
+        iteration) still lets providers prompt-cache the rest (M1.1's
+        cache_control).
         """
         raw = _read_prompt_file(
             str(self._system_prompt_path), os.path.getmtime(self._system_prompt_path)
         )
         contract = render_contract(registry=self._registry)
         full_contract = (contract + "\n" if contract else "") + _TERMINAL_CONTRACT
-        return raw.replace("{TOOL_CONTRACT}", full_contract)
+        tier_guidance = complexity.TIER_GUIDANCE.get(tier, complexity.TIER_GUIDANCE["simple"])
+        filled = raw.replace("{TOOL_CONTRACT}", full_contract)
+        return filled.replace("{TIER_GUIDANCE}", tier_guidance)
 
     def native_tools(self) -> list[dict[str, Any]]:
         """The native tool defs offered to the provider this milestone:
@@ -248,14 +267,27 @@ class Planner:
         ]
 
     def next_action(self, state: AgentState, language: str) -> PlannerDecision:
-        """One decision for the orchestrator's current iteration."""
+        """One decision for the orchestrator's current iteration.
+
+        M3.2: ``tier`` is classified once per turn (preferably read from
+        ``state.context["tier"]``, set once by ``orchestrator.run_agent_turn``
+        — falling back to a fresh classification keeps this method correct
+        even when called against a bare ``AgentState`` that skipped that
+        step, e.g. a future direct planner-level test). It selects the
+        system prompt's tier guidance, rides along on every returned
+        decision's ``meta["tier"]`` (so every "plan" trace record carries
+        the classified tier per the M3.2 brief), and gates the
+        mandatory-preview diversion below.
+        """
+        tier: complexity.Tier = state.context.get("tier") or complexity.classify_tier(state.goal)
         messages = [{"role": "user", "content": self._state_block(state, language)}]
-        action, meta = self._provider.generate_structured(
-            messages, self.native_tools(), schema=None, system=self.system_prompt()
+        action, raw_meta = self._provider.generate_structured(
+            messages, self.native_tools(), schema=None, system=self.system_prompt(tier)
         )
         if action is None:
-            return self._rule_fallback(state, language, meta)
+            return self._rule_fallback(state, language, raw_meta, tier)
 
+        meta = {**(raw_meta or {}), "tier": tier}
         params = dict(action.get("params") or {})
         # summary is planner metadata — strip it BEFORE it could reach
         # toolkit.dispatch's strict validation; truncate defensively.
@@ -268,7 +300,13 @@ class Planner:
                 # An empty/whitespace terminal answer would render as a
                 # blank bubble in the UI; treat it the same as a provider
                 # failure and fall through to the deterministic ladder.
-                return self._rule_fallback(state, language, meta)
+                return self._rule_fallback(state, language, raw_meta, tier)
+            if tier in complexity.MANDATORY_PREVIEW_TIERS and not state.history:
+                # M3.2 "mandatory preview": complex/agentic may not conclude
+                # the turn as their very first decision -- divert into a
+                # grounding read instead (deterministic, no extra provider
+                # call, same discipline as the rule-fallback ladder).
+                return self._mandatory_preview_decision(tier, language, meta)
             return PlannerDecision(
                 kind="respond",
                 summary=summary,
@@ -278,7 +316,7 @@ class Planner:
         if tool_name == "ask_user":
             question = str(params.get("question", ""))
             if not question.strip():
-                return self._rule_fallback(state, language, meta)
+                return self._rule_fallback(state, language, raw_meta, tier)
             return PlannerDecision(
                 kind="ask_user",
                 summary=summary,
@@ -310,7 +348,11 @@ class Planner:
         return "\n".join(lines)
 
     def _rule_fallback(
-        self, state: AgentState, language: str, provider_meta: dict[str, Any] | None
+        self,
+        state: AgentState,
+        language: str,
+        provider_meta: dict[str, Any] | None,
+        tier: complexity.Tier,
     ) -> PlannerDecision:
         """Ladder rung 3: a deterministic safe decision when the provider's
         own retry ladder gave up — grounding read first, then ask_user."""
@@ -318,6 +360,7 @@ class Planner:
             "rule_fallback": True,
             "rung": 3,
             "provider_meta": dict(provider_meta or {}),
+            "tier": tier,
         }
         if not state.history:
             return PlannerDecision(
@@ -332,4 +375,24 @@ class Planner:
             params={"question": pick_language_text(_FALLBACK_QUESTION, language)},
             summary=pick_language_text(_FALLBACK_ASK_SUMMARY, language),
             meta=meta,
+        )
+
+    def _mandatory_preview_decision(
+        self, tier: complexity.Tier, language: str, meta: dict[str, Any]
+    ) -> PlannerDecision:
+        """M3.2 "mandatory preview" (complex/agentic tiers, see
+        ``complexity.MANDATORY_PREVIEW_TIERS``): the planner may not end the
+        turn via `respond` as its very first decision. Diverted into the
+        same safe grounding read the rule-fallback ladder uses, deterministic
+        and provider-call-free — the discarded `respond` was never dispatched
+        or shown to the user, so nothing it claimed leaks out ungrounded.
+        ``meta`` already carries ``tier`` (set by the caller); this only adds
+        the diversion flag so the trace shows WHY this step happened.
+        """
+        return PlannerDecision(
+            kind="tool",
+            tool=_FALLBACK_GROUNDING_TOOL,
+            params={},
+            summary=pick_language_text(_MANDATORY_PREVIEW_SUMMARY, language),
+            meta={**meta, "mandatory_preview_forced": True},
         )

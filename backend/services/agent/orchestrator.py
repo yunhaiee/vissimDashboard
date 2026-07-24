@@ -74,6 +74,7 @@ import services.agent.tools_edit  # noqa: F401
 import services.agent.tools_metrics  # noqa: F401
 import services.agent.tools_network  # noqa: F401
 import services.agent.tools_run  # noqa: F401
+from services.agent import complexity
 from services.agent.gates import ApprovalRequired
 from services.agent.guardrails import GuardrailEngine, GuardrailReport
 from services.agent.planner import Planner, PlannerDecision, pick_language_text
@@ -117,6 +118,24 @@ _CANCELLED_ANSWER = {
     "ko": "요청이 취소되어 중단했습니다.",
     "en": "The request was cancelled and has been stopped.",
     "ja": "リクエストがキャンセルされたため中断しました。",
+}
+
+# M3.2: the agentic-tier anti-exploit safety net's notice header — see
+# _append_agentic_warning_notice below. Assembled without any further LLM
+# call, same discipline as the deterministic texts above.
+_AGENTIC_WARNING_NOTICE_HEADER = {
+    "ko": (
+        "참고: 이번 요청 처리 중 다음 경고가 발생했습니다. 위 결과는 반드시 아래 내용과 "
+        "함께 해석해야 합니다:"
+    ),
+    "en": (
+        "Note: the following warning(s) fired while handling this request. The result "
+        "above must be read together with these, not in isolation:"
+    ),
+    "ja": (
+        "注意: 今回のリクエスト処理中に以下の警告が発生しました。上記の結果は必ずこれらと"
+        "合わせて解釈してください:"
+    ),
 }
 
 # M2.3: the approval-pause result's short proposal line — assembled without
@@ -317,6 +336,58 @@ def _approval_proposal_answer(
     return "\n".join(lines)
 
 
+def _collect_history_warnings(history: list[StepRecord]) -> list[dict[str, Any]]:
+    """Every accumulated ``guardrail_warnings`` entry across ``history``'s
+    observations, in first-seen order, de-duplicated by ``constraint_id``.
+
+    This is the M3.2 agentic-tier safety net's source of truth for what must
+    ride along on the final answer regardless of what the model's own answer
+    text said — see ``_append_agentic_warning_notice``. Observations that
+    are not dicts (never happens today — every dispatch/refusal envelope and
+    every rule-fallback observation is a dict — but StepRecord.observation is
+    typed ``Any``) are skipped defensively rather than raising.
+    """
+    seen: set[Any] = set()
+    collected: list[dict[str, Any]] = []
+    for record in history:
+        observation = record.observation
+        if not isinstance(observation, dict):
+            continue
+        for warning in observation.get("guardrail_warnings") or []:
+            constraint_id = warning.get("constraint_id")
+            if constraint_id in seen:
+                continue
+            seen.add(constraint_id)
+            collected.append(warning)
+    return collected
+
+
+def _append_agentic_warning_notice(
+    language: str, answer: str, warnings: list[dict[str, Any]]
+) -> str:
+    """M3.2 agentic-tier safety net for the "may not exploit an improvement
+    that coexists with a fired constraint warning" prompt rule
+    (docs/phase2/02-ROADMAP.md M3.2): every accumulated guardrail warning is
+    appended to the agent's final answer verbatim, UNCONDITIONALLY —
+    regardless of whether the model's own answer text mentioned it. This is
+    a structural guarantee, not a prompt hope: a fired warning (e.g.
+    ``vehicles_deleted_in_run`` on the run that produced the "best" reported
+    delay) can never be silently absent from what the user actually reads
+    next to a claimed improvement. Deterministic, assembled without any
+    further LLM call, same discipline as ``_postwrite_abort_answer``/
+    ``_forced_completion_answer``. A no-op (returns ``answer`` unchanged)
+    when ``warnings`` is empty.
+    """
+    if not warnings:
+        return answer
+    header = pick_language_text(_AGENTIC_WARNING_NOTICE_HEADER, language)
+    lines = [f"- {warning.get('message', '')}" for warning in warnings]
+    notice = header + "\n" + "\n".join(lines)
+    if not answer.strip():
+        return notice
+    return answer + "\n\n" + notice
+
+
 def _forced_completion_answer(
     language: str, steps: list[dict[str, Any]], max_iterations: int
 ) -> str:
@@ -411,7 +482,16 @@ def run_agent_turn(
     target_registry = registry if registry is not None else default_registry
     target_gate: WriteGate = gate if gate is not None else RefuseAllWriteGate()
     target_engine = engine if engine is not None else GuardrailEngine()
-    state = AgentState(goal=message, artifacts={}, history=[], context={"language": language})
+    # M3.2: classified ONCE per turn from the original message (not
+    # re-classified per iteration/per compacted state block — see
+    # complexity.py's module docstring) and threaded through state.context so
+    # the planner (system-prompt selection, meta["tier"] on every decision,
+    # the mandatory-preview diversion) and this loop (the agentic-tier
+    # warning-notice safety net below) share the exact same value.
+    tier = complexity.classify_tier(message)
+    state = AgentState(
+        goal=message, artifacts={}, history=[], context={"language": language, "tier": tier}
+    )
     tracer = TraceWriter(work_dir, session_id)
     planner = Planner(provider, registry=target_registry)
     steps: list[dict[str, Any]] = []
@@ -443,11 +523,19 @@ def run_agent_turn(
         )
 
         if decision.kind == "respond":
+            answer = decision.params.get("answer", "")
+            if tier == "agentic":
+                # M3.2 anti-exploit safety net: never let a fired warning go
+                # missing from the final answer, regardless of what the
+                # model's own text said — see _append_agentic_warning_notice.
+                answer = _append_agentic_warning_notice(
+                    language, answer, _collect_history_warnings(state.history)
+                )
             _emit_step(
                 steps, {"summary": decision.summary, "tool": "respond", "status": "ok"}, on_step
             )
             return AgentTurnResult(
-                answer=decision.params.get("answer", ""),
+                answer=answer,
                 kind="answer",
                 steps=steps,
                 trace_path=tracer.path,

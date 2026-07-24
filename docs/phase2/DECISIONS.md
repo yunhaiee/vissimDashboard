@@ -527,3 +527,21 @@ through the real job queue via RunContinuous → SIMULATIONRUN row verified → 
 `results_missing_kpi_tables` warning FIRED on a genuine short run — the detector proven
 against real Vissim behavior. Trace: plan → preflight → action_start → action_end → postrun
 → warning.
+
+---
+
+## 2026-07-24 — M3.2 decision batch (complexity tiers)
+
+- **Tier classification is deterministic ko/en/ja keyword matching, not an LLM call** — zero
+  per-turn cost, testable with canned providers; a "simple" misclassification is never unsafe
+  (write/run approval is tier-independent). Promote to LLM-assisted only if misclassification
+  proves real.
+- **"Mandatory preview" is enforced structurally**: for complex/agentic tiers the planner
+  refuses to let `respond` be a turn's FIRST decision — it substitutes a deterministic
+  grounding read at zero provider cost. Simple tier exempt by design.
+- **Agentic anti-exploit is a code-level answer post-processor**: every accumulated
+  guardrail warning is unconditionally appended to an agentic turn's final answer regardless
+  of the model's own text — a fired lie-detector can never be silently separated from a
+  claimed improvement. Deliberately does NOT force guardrails on under
+  AGENT_GUARDRAILS_DISABLED (that flag is the M5.3 ablation arm; the net degrades correctly
+  to a no-op when ablated).
