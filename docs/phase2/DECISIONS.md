@@ -567,3 +567,25 @@ against real Vissim behavior. Trace: plan → preflight → action_start → act
   fields like volume vs "None = parser-blind" for cycle_time), flipping the fixture to
   caught. Lands right after the M3.1 catalog commit.
 - PyYAML pinned in requirements.txt (was transitive-only; tasks_loader depends on it).
+
+---
+
+## 2026-07-24 — M3.1 decision batch (constraint catalog port, 8 → 43)
+
+- **27 of 35 new constraints are CATALOG-GAP forward-ready checks**: fully implemented and
+  fixture-tested against a documented-but-unpopulated field (conflict_areas, routes,
+  evaluations, driving_behaviors, per-object optionals, run_result extras), silently
+  skipping in production until the field exists — the #4/#5 pattern generalized. Anyone
+  extending tools_network/signal_parser/tools_run should grep CATALOG-GAP first: the field
+  names and shapes are already specified at each check.
+- **Two §7 catalog items excluded by design** (cannot-run-as-service; naive-loop-is-slow):
+  deployment/ops invariants with no per-action datum — enforcement lives in
+  license_guard.py and the RunContinuous convention. Coverage is 42/42 by decision, not
+  40/42 by omission.
+- **single_seed_run_not_statistically_valid is live and fires on <5 seeds** — M2.4's test
+  fixtures were updated to 5-seed runs (original assertion targets preserved); future
+  run_simulation tests should default to 5+ seeds unless testing the warning itself.
+- Live-check highlights among the real (non-gap) additions: conflicting_greens_in_signal_plan
+  (the catalog's most dangerous silent failure), signal_cycle_change_may_break_corridor_sync,
+  evaluation_change_deletes_results (unconditional refuse), driving_behavior_shared_object_edit
+  (unconditional refuse), agency_restricted_parameter_write.

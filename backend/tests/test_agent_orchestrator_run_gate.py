@@ -88,6 +88,13 @@ def _register_rigged_run_tool(
         model_config = ConfigDict(extra="forbid")
 
         duration_s: int
+        # Mirrors tools_run.py's real RunSimulationParams shape (optional,
+        # default None) -- M3.1 added constraints.py's
+        # single_seed_run_not_statistically_valid, which reads this field
+        # from the action's own params at preflight; tests that need to
+        # isolate OTHER postrun/gating behavior pass 5+ seeds so that new,
+        # unrelated (but correct) warning doesn't also fire.
+        random_seeds: list[int] | None = None
 
     @tool(name="run_simulation", tier="run", provider="run", params=Params, registry=registry)
     def _run(params: Params) -> dict[str, Any]:
@@ -115,8 +122,18 @@ def test_propose_gate_pauses_for_run_tier_with_approval_request(tmp_path: Path):
     artifact_manager.clone()
     calls = _register_rigged_run_tool(registry, run_result={"tables": ["SIMULATIONRUN"], "deleted_vehicles": 0})
 
+    # 5 seeds: enough to stay clear of constraints.py's (M3.1)
+    # single_seed_run_not_statistically_valid, which is not what this test
+    # is isolating (it's testing the ApprovalRequired pause mechanics).
     provider = FakeStructuredProvider(
-        [_action("run_simulation", summary="5분 시뮬레이션 실행 제안", duration_s=300)]
+        [
+            _action(
+                "run_simulation",
+                summary="5분 시뮬레이션 실행 제안",
+                duration_s=300,
+                random_seeds=[1, 2, 3, 4, 5],
+            )
+        ]
     )
 
     result = run_agent_turn(
@@ -137,7 +154,7 @@ def test_propose_gate_pauses_for_run_tier_with_approval_request(tmp_path: Path):
 
     assert result.pending_approval == {
         "tool": "run_simulation",
-        "params": {"duration_s": 300},
+        "params": {"duration_s": 300, "random_seeds": [1, 2, 3, 4, 5]},
         "summary": "5분 시뮬레이션 실행 제안",
         "warnings": [],
     }
@@ -147,7 +164,7 @@ def test_propose_gate_pauses_for_run_tier_with_approval_request(tmp_path: Path):
     assert [r["kind"] for r in records] == ["plan", "preflight", "user_confirm"]
     user_confirm_payload = records[2]["payload"]
     assert user_confirm_payload["tool"] == "run_simulation"
-    assert user_confirm_payload["params"] == {"duration_s": 300}
+    assert user_confirm_payload["params"] == {"duration_s": 300, "random_seeds": [1, 2, 3, 4, 5]}
 
 
 def test_propose_gate_pauses_for_run_tier_without_artifact_manager(tmp_path: Path):
@@ -197,7 +214,12 @@ def test_allowed_run_dispatches_and_calls_postrun_cleanly(tmp_path: Path):
 
     provider = FakeStructuredProvider(
         [
-            _action("run_simulation", summary="시뮬레이션을 실행합니다", duration_s=3600),
+            _action(
+                "run_simulation",
+                summary="시뮬레이션을 실행합니다",
+                duration_s=3600,
+                random_seeds=[1, 2, 3, 4, 5],
+            ),
             _action("respond", summary="실행을 완료했습니다", answer="시뮬레이션 실행을 완료했습니다."),
         ]
     )
@@ -285,7 +307,12 @@ def test_postrun_missing_kpi_tables_warning_attaches_to_observation(tmp_path: Pa
 
     provider = FakeStructuredProvider(
         [
-            _action("run_simulation", summary="5분 시뮬레이션을 실행합니다", duration_s=300),
+            _action(
+                "run_simulation",
+                summary="5분 시뮬레이션을 실행합니다",
+                duration_s=300,
+                random_seeds=[1, 2, 3, 4, 5],
+            ),
             _action("respond", summary="실행을 완료했습니다", answer="5분 실행을 완료했습니다."),
         ]
     )
@@ -343,7 +370,12 @@ def test_postrun_vehicles_deleted_warning_attaches_to_observation(tmp_path: Path
 
     provider = FakeStructuredProvider(
         [
-            _action("run_simulation", summary="시뮬레이션을 실행합니다", duration_s=3600),
+            _action(
+                "run_simulation",
+                summary="시뮬레이션을 실행합니다",
+                duration_s=3600,
+                random_seeds=[1, 2, 3, 4, 5],
+            ),
             _action("respond", summary="완료", answer="실행을 완료했습니다."),
         ]
     )

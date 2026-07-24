@@ -114,10 +114,23 @@ def _propose(client, monkeypatch, provider) -> tuple[Any, list[dict[str, Any]]]:
 
 
 def test_full_propose_pending_file_approve_dispatch_run_verified_answer(client, monkeypatch):
+    # 5 seeds: enough to stay clear of constraints.py's (M3.1)
+    # single_seed_run_not_statistically_valid, which is not what this test is
+    # isolating (it's testing the no-VissimEditSession propose->approve wiring).
     provider = FakeStructuredProvider(
         [
-            _action("run_simulation", summary="5분 시뮬레이션 실행 제안", duration_s=300),
-            _action("run_simulation", summary="승인된 실행을 시작합니다", duration_s=300),
+            _action(
+                "run_simulation",
+                summary="5분 시뮬레이션 실행 제안",
+                duration_s=300,
+                random_seeds=[1, 2, 3, 4, 5],
+            ),
+            _action(
+                "run_simulation",
+                summary="승인된 실행을 시작합니다",
+                duration_s=300,
+                random_seeds=[1, 2, 3, 4, 5],
+            ),
             _action("respond", summary="실행을 완료했습니다", answer="5분 시뮬레이션 실행을 완료했습니다."),
         ]
     )
@@ -131,7 +144,11 @@ def test_full_propose_pending_file_approve_dispatch_run_verified_answer(client, 
     assert propose_done["response"]["kind"] == "approval_request"
 
     assert approval_event["actions"] == [
-        {"tool": "run_simulation", "params": {"duration_s": 300}, "summary": "5분 시뮬레이션 실행 제안"}
+        {
+            "tool": "run_simulation",
+            "params": {"duration_s": 300, "random_seeds": [1, 2, 3, 4, 5]},
+            "summary": "5분 시뮬레이션 실행 제안",
+        }
     ]
     assert approval_event["warnings"] == []
 
