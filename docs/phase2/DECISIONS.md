@@ -683,3 +683,26 @@ against real Vissim behavior. Trace: plan → preflight → action_start → act
   echoes payload.session_id unconditionally. Possibly sandbox/proxy-specific. Rehearsal
   caution noted in docs/demo-script.md §0.4 (retry the turn); investigate with server-side
   request logging if it recurs.
+
+---
+
+## 2026-07-24 — Live-rehearsal bug batch: session race resolved; stale run prose fixed
+
+- **The "fresh session after approve" anomaly was a concurrent same-session lost-update
+  race, NOT session-id threading** (proven: the strictly-sequential repro passes, ruling
+  out every path/echo/rollback/regex candidate). Two overlapping run_agent_turn calls for
+  one session each load the same stale state.json and last-writer-wins on save, while an
+  ArtifactManager version snapshotted at construction lets a stale rollback_to(0) revert
+  the working copy under an in-flight write — one mechanism, both observed symptoms.
+  Fix: per-session_id lock around the ensure-working-copy → run_agent_turn critical
+  section (300s timeout → SessionBusyError) + ArtifactManager.refresh_version() rescans
+  under the lock. In-process only, matching the single-instance file-based design;
+  multi-worker deployment would need a file lock. Pinned by a two-stage-red race test.
+- **v1_system.md §5's run prose was pre-M2.4 stale** — the model refused a supported
+  capability. Rewritten: run_simulation supported behind the same approval pause, with
+  ≥5-seed statistical-validity guidance and short-run KPI-warning behavior folded in;
+  lane-closure and genuine refusals untouched.
+- 9 scenario/KPI test failures observed during this work are environmental (the live
+  rehearsal left the Beijing example as the active dataset + run artifacts in runtime/) —
+  restore the demo dataset via 기본값 복원; a follow-up chip exists to pin those tests'
+  dataset dependencies.

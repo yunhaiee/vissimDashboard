@@ -8,9 +8,10 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, Iterator
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -316,6 +317,84 @@ def _delete_pending_approval(work_dir: Path) -> None:
     _pending_approval_path(work_dir).unlink(missing_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# Bug 1 root-cause fix (docs/phase2/DECISIONS.md): per-session_id turn lock
+# ---------------------------------------------------------------------------
+#
+# ``run_agent_turn`` is only crash-safe against a SEQUENCE of calls sharing
+# a ``work_dir``/``session_id`` -- ``session_store.load_state`` and
+# ``ArtifactManager.__init__``'s version scan both read whatever is on disk
+# at the moment they run, and ``session_store.save_state``/
+# ``ArtifactManager.save_version``/``rollback_to`` both write unconditionally
+# ("version counter is single-instance by design", "no cross-process lock" --
+# state.py's own docstring). Two ``run_agent_turn`` calls for the SAME
+# session_id running on OVERLAPPING background threads (e.g. a client that
+# fires its next message before the previous turn's NDJSON stream has fully
+# resolved on the server -- entirely possible for a write/run turn, which can
+# take many real seconds of Vissim COM time) each independently load the SAME
+# stale ``state.json``/work-dir snapshot, mutate their OWN in-memory copy, and
+# independently persist at the end -- whichever turn's ``save_state``/
+# ``ArtifactManager`` write lands LAST silently clobbers the other's, and a
+# turn that constructs its own ``ArtifactManager`` while a concurrent write is
+# still in flight can see version 0 and roll ``working.inpx`` back to the
+# pristine clone out from under it. This reproduced deterministically with
+# controlled thread timing (see test_agent_approval_endpoint.py's
+# ``test_concurrent_turn_after_approve_does_not_lose_state_or_working_copy``)
+# and explains BOTH halves of the live-rehearsal symptom (an apparently
+# "fresh" session history AND a working copy that shows the pre-edit value)
+# from one mechanism, without requiring any of the id/path-mismatch
+# candidates (which a serial repro shows are NOT broken) to be at fault.
+#
+# Fix: serialize every ``run_agent_turn`` call for one ``session_id`` behind
+# a per-session lock covering the whole ensure-working-copy -> run_agent_turn
+# critical section (including the ``tools_network``/``tools_run``/edit-session
+# module-global context those calls set), so a same-session turn always
+# starts from the PRIOR turn's fully-persisted state instead of racing it.
+# This is in-process only (matches the file-based-storage, single-instance
+# design everywhere else in this module) -- it does not, and does not need
+# to, solve cross-process or multi-worker deployment, which this app does not
+# run under today.
+
+_SESSION_LOCKS_GUARD = threading.Lock()
+_session_turn_locks: dict[str, threading.Lock] = {}
+
+#: Generous: must comfortably exceed a real Vissim COM write/run turn so a
+#: legitimately slow (not stuck) prior turn is never mistaken for a deadlock.
+_SESSION_LOCK_TIMEOUT_S = 300.0
+
+
+class SessionBusyError(RuntimeError):
+    """A second turn for the same ``session_id`` could not acquire the
+    session lock within :data:`_SESSION_LOCK_TIMEOUT_S`. Surfaces through
+    ``_stream_agent_turn``'s existing generic exception handling as a clear,
+    apologetic refusal -- never a silent data race."""
+
+
+def _get_session_turn_lock(session_id: str) -> threading.Lock:
+    with _SESSION_LOCKS_GUARD:
+        lock = _session_turn_locks.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            _session_turn_locks[session_id] = lock
+        return lock
+
+
+@contextmanager
+def _session_turn_scope(session_id: str) -> Iterator[None]:
+    """Serializes ``run_agent_turn`` calls sharing ``session_id`` -- see the
+    module-level rationale above. Raises :class:`SessionBusyError` (never
+    hangs forever) if the prior turn does not release within the timeout."""
+    lock = _get_session_turn_lock(session_id)
+    if not lock.acquire(timeout=_SESSION_LOCK_TIMEOUT_S):
+        raise SessionBusyError(
+            f"Timed out waiting for an earlier turn on session {session_id!r} to finish."
+        )
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def _build_edit_session(working_inpx: Path) -> VissimEditSession:
     """Construct the ``VissimEditSession`` for an approved write turn.
 
@@ -347,7 +426,19 @@ def _ensure_working_copy(artifact_manager: ArtifactManager) -> None:
     ``rollback_to(0)`` is public API that achieves the same
     outcome (working copy re-synced from ``source_inpx`` + a freshly
     reparsed shadow model) without touching that guard at all.
+
+    Bug 1 fix (docs/phase2/DECISIONS.md): the caller constructs
+    ``artifact_manager`` synchronously in the request handler, BEFORE
+    ``_session_turn_scope`` is acquired — if an earlier turn for the same
+    session was still mid-write at that moment, the ``.version`` this
+    instance captured at construction can already be stale by the time this
+    function actually runs (which only happens once the earlier turn's lock
+    is released, i.e. once it has FULLY persisted). ``refresh_version()``
+    re-scans the work dir right here, under the lock, so ``rollback_to()``
+    below always targets the true latest saved version instead of whatever
+    was on disk a request-handling-thread's-worth of time ago.
     """
+    artifact_manager.refresh_version()
     if artifact_manager.working_path.exists():
         # Restore the latest GOOD state, not blindly the pristine clone:
         # today every stream mints a fresh session id so version is always 0
@@ -443,47 +534,54 @@ async def _stream_agent_turn(
 
     def run() -> None:
         try:
-            _ensure_working_copy(artifact_manager)
-            # M1-inherited module-global session context (tools_network.py's
-            # own documented caveat): points every read tool at THIS turn's
-            # working copy, not the source dataset, so an edit made earlier
-            # in this session is visible to subsequent reads within it.
-            # Reset in `finally` so a later, unrelated request never
-            # inherits it — hygiene on top of the pre-existing, tracked
-            # concurrency limitation (docs/phase2/DECISIONS.md, "Future
-            # multi-dataset work"), not a fix for it.
-            tools_network.set_active_inpx(artifact_manager.working_path)
-            # M2.4: tools_run.py's run_simulation submits THIS turn's working
-            # copy to the simulation job queue — a SEPARATE module-global
-            # from tools_network's (mirrors edit_session.py's own active-
-            # session pattern rather than reaching into tools_network's
-            # private resolver; see tools_run.py's module docstring). Reset
-            # in `finally` alongside tools_network's, same hygiene rationale.
-            tools_run.set_active_run_source(artifact_manager.working_path)
-            if edit_session is not None:
-                set_active_edit_session(edit_session)
-            try:
-                holder["result"] = run_agent_turn(
-                    message,
-                    provider=_default_provider(),
-                    work_dir=work_dir,
-                    session_id=session_id,
-                    language=language,
-                    on_step=on_step,
-                    gate=gate,
-                    engine=engine,
-                    artifact_manager=artifact_manager,
-                    should_cancel=should_cancel,
-                )
-            finally:
+            # Bug 1 root-cause fix (see _session_turn_scope's docstring):
+            # serialize the ENTIRE ensure-working-copy -> run_agent_turn
+            # critical section per session_id, so a same-session turn
+            # started while an earlier one (e.g. an in-flight approve) is
+            # still persisting can never race it and silently lose the
+            # other's state.json history or working-copy write.
+            with _session_turn_scope(session_id):
+                _ensure_working_copy(artifact_manager)
+                # M1-inherited module-global session context (tools_network.py's
+                # own documented caveat): points every read tool at THIS turn's
+                # working copy, not the source dataset, so an edit made earlier
+                # in this session is visible to subsequent reads within it.
+                # Reset in `finally` so a later, unrelated request never
+                # inherits it — hygiene on top of the pre-existing, tracked
+                # concurrency limitation (docs/phase2/DECISIONS.md, "Future
+                # multi-dataset work"), not a fix for it.
+                tools_network.set_active_inpx(artifact_manager.working_path)
+                # M2.4: tools_run.py's run_simulation submits THIS turn's working
+                # copy to the simulation job queue — a SEPARATE module-global
+                # from tools_network's (mirrors edit_session.py's own active-
+                # session pattern rather than reaching into tools_network's
+                # private resolver; see tools_run.py's module docstring). Reset
+                # in `finally` alongside tools_network's, same hygiene rationale.
+                tools_run.set_active_run_source(artifact_manager.working_path)
                 if edit_session is not None:
-                    clear_active_edit_session()
-                    edit_session.close()
+                    set_active_edit_session(edit_session)
+                try:
+                    holder["result"] = run_agent_turn(
+                        message,
+                        provider=_default_provider(),
+                        work_dir=work_dir,
+                        session_id=session_id,
+                        language=language,
+                        on_step=on_step,
+                        gate=gate,
+                        engine=engine,
+                        artifact_manager=artifact_manager,
+                        should_cancel=should_cancel,
+                    )
+                finally:
+                    if edit_session is not None:
+                        clear_active_edit_session()
+                        edit_session.close()
+                    tools_network.set_active_inpx(None)
+                    tools_run.clear_active_run_source()
         except Exception as exc:  # noqa: BLE001 - surfaced as an apologetic `done`, never raised
             holder["error"] = exc
         finally:
-            tools_network.set_active_inpx(None)
-            tools_run.clear_active_run_source()
             step_queue.put(("end", None))
 
     threading.Thread(target=run, name=f"agent-stream-{stream_id}", daemon=True).start()

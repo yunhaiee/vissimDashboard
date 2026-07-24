@@ -185,6 +185,34 @@ def test_version_property_starts_at_zero_and_tracks_saves(tmp_path: Path):
     assert manager.version == 2
 
 
+def test_refresh_version_picks_up_a_save_made_by_a_different_instance(tmp_path: Path):
+    """Bug 1 root cause (docs/phase2/DECISIONS.md): ``.version`` is
+    snapshotted once at ``__init__`` and never automatically notices a
+    version a DIFFERENT ``ArtifactManager`` instance over the SAME work_dir
+    has since saved (e.g. a concurrent turn for the same session, still
+    mid-write when this instance was constructed). ``refresh_version()`` is
+    the caller-invoked escape hatch — routers/assistant.py's
+    ``_ensure_working_copy`` calls it right after acquiring the per-session
+    lock, once no turn can still be concurrently writing."""
+    first = ArtifactManager(source_inpx=DEMO_INPX, work_dir=tmp_path)
+    first.clone()
+
+    # A second instance constructed BEFORE `first` saves anything -- this is
+    # the exact "constructed synchronously in the request handler while an
+    # earlier turn is still mid-write" moment.
+    stale = ArtifactManager(source_inpx=DEMO_INPX, work_dir=tmp_path)
+    assert stale.version == 0
+
+    first.save_version()
+    assert first.version == 1
+
+    # `stale.version` does NOT update on its own...
+    assert stale.version == 0
+    # ...until refresh_version() re-scans the work dir.
+    assert stale.refresh_version() == 1
+    assert stale.version == 1
+
+
 # ---------------------------------------------------------------------------
 # ArtifactManager — clone-precondition guard (docs/phase2/DECISIONS.md,
 # M2.2 deferred finding: "decide on shadow_model defensive copying" AND the

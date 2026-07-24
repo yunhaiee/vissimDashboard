@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -79,13 +81,25 @@ class FakeEditSession:
     it.
     """
 
-    def __init__(self, working_inpx: Path, *, readback: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        working_inpx: Path,
+        *,
+        readback: dict[str, Any] | None = None,
+        persist_delay_s: float = 0.0,
+    ) -> None:
         self.working_inpx = Path(working_inpx)
         self.calls: list[tuple[Any, ...]] = []
         self._readback = readback or {}
         self._pending_volume: dict[int, float] = {}
         self.persist_calls = 0
         self.closed = False
+        # Widens the propose/approve write's real-world window (a real
+        # Vissim COM SaveNetAs takes real wall-clock seconds) so a
+        # concurrency test can deterministically land a second turn's
+        # request WHILE this turn's write is still in flight -- see
+        # test_concurrent_turn_after_approve_does_not_lose_state_or_working_copy.
+        self._persist_delay_s = persist_delay_s
 
     def set_vehicle_input_volume(self, input_no: int, volume: float) -> None:
         self.calls.append(("set_vehicle_input_volume", input_no, volume))
@@ -124,6 +138,8 @@ class FakeEditSession:
         return self._readback.get("random_seed", 0)
 
     def persist(self) -> None:
+        if self._persist_delay_s:
+            time.sleep(self._persist_delay_s)
         self.persist_calls += 1
         if not self._pending_volume:
             return
@@ -409,3 +425,236 @@ def test_approving_twice_the_second_call_404s(client, monkeypatch):
         json={"session_id": session_id, "approval_id": approval_id, "approved": True},
     )
     assert second.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# (d) BUG 1 repro: the turn AFTER approve must resume the SAME session, not
+# start fresh -- docs/phase2/DECISIONS.md 2026-07-24 "QUEUED (server-side
+# investigation)" entry (M4 batch).
+# ---------------------------------------------------------------------------
+
+
+def test_turn_after_approve_resumes_history_and_written_value_not_fresh(client, monkeypatch):
+    """Full propose -> approve -> THIRD turn, carrying the id from approve's
+    own ``done.response.session_id`` (exactly what a real client would
+    thread forward, per the router's own docstring for
+    ``AgentQueryRequest.session_id``). Turn B must NOT behave like a brand
+    new session: its reloaded ``state.history`` must contain the write, and
+    a read tool dispatched THIS turn must see the WRITTEN value (600), not
+    the pre-edit network."""
+    provider = FakeStructuredProvider(
+        [
+            _action(
+                "set_vehicle_input_volume",
+                summary="교통량을 600으로 변경 제안",
+                input_no="1",
+                volume=600,
+            ),
+            _action(
+                "set_vehicle_input_volume",
+                summary="승인된 변경을 적용합니다",
+                input_no="1",
+                volume=600,
+            ),
+            _action(
+                "respond", summary="변경을 완료했습니다", answer="1번 입력 교통량을 600으로 변경했습니다."
+            ),
+        ]
+    )
+
+    _, propose_events = _propose(client, monkeypatch, provider)
+    propose_done = propose_events[-1]
+    session_id = propose_done["response"]["session_id"]
+    approval_id = propose_done["response"]["approval"]["approval_id"]
+
+    work_dir = assistant_endpoint._agent_session_work_dir(session_id)
+    fake_session = FakeEditSession(work_dir / "working.inpx", readback={"vehicle_input_volume": 600.0})
+    monkeypatch.setattr(assistant_endpoint, "_build_edit_session", lambda working_path: fake_session)
+
+    approve_response = client.post(
+        "/api/assistant/agent/approve",
+        json={"session_id": session_id, "approval_id": approval_id, "approved": True},
+    )
+    assert approve_response.status_code == 200
+    approve_events = _stream_events(approve_response)
+    approve_done = approve_events[-1]
+    assert approve_done["type"] == "done"
+    assert approve_done["response"]["kind"] == "answer"
+
+    # This is the id a real client threads into the NEXT turn (the router's
+    # own AgentQueryRequest.session_id docstring: "a client that supplies
+    # the session_id from an earlier turn's `done.response.session_id`
+    # resumes that SAME work dir").
+    resumed_session_id = approve_done["response"]["session_id"]
+    assert resumed_session_id == session_id
+
+    # --- turn B: same session_id, a fresh FakeStructuredProvider queue ---
+    turn_b_provider = FakeStructuredProvider(
+        [
+            _action("get_vehicle_inputs", summary="현재 교통량을 확인합니다"),
+            _action(
+                "respond",
+                summary="현재 값을 알려드립니다",
+                answer="현재 1번 입력 교통량은 600입니다.",
+            ),
+        ]
+    )
+    monkeypatch.setattr(assistant_endpoint, "_default_provider", lambda: turn_b_provider)
+
+    turn_b_response = client.post(
+        "/api/assistant/agent/query/stream",
+        json={
+            "message": "지금 교통량이 얼마야?",
+            "response_language": "ko",
+            "session_id": resumed_session_id,
+        },
+    )
+    assert turn_b_response.status_code == 200
+    turn_b_events = _stream_events(turn_b_response)
+    turn_b_done = turn_b_events[-1]
+    assert turn_b_done["type"] == "done"
+    assert turn_b_done["response"]["session_id"] == session_id
+
+    # (1) The reloaded state.json's history must carry the write StepRecord
+    # from the approve turn -- NOT an empty history (the "fresh session"
+    # symptom).
+    from services.agent import session_store
+
+    persisted = session_store.load_state(work_dir, session_id)
+    assert persisted is not None, "state.json failed to reload for the resumed session_id"
+    write_records = [r for r in persisted.history if r.action == "set_vehicle_input_volume"]
+    assert len(write_records) == 1, (
+        f"expected the approved write in reloaded history, got actions="
+        f"{[r.action for r in persisted.history]}"
+    )
+
+    # (2) The read tool dispatched THIS turn must see the WRITTEN value
+    # (600), not the pre-edit network (input 1 has no volume at all in the
+    # source practice.inpx -- see FakeEditSession's docstring -- so a
+    # reverted working copy would show None/absent here, not merely a
+    # different number).
+    read_step = next(e for e in turn_b_events if e.get("type") == "step" and e.get("tool") == "get_vehicle_inputs")
+    assert read_step["status"] == "ok"
+
+    verify_manager = ArtifactManager(source_inpx=DEMO_INPX, work_dir=work_dir)
+    saved_shadow = build_shadow_model(work_dir / "working.inpx")
+    saved_volume = next(v["volume"] for v in saved_shadow["vehicle_inputs"] if v["no"] == "1")
+    assert saved_volume == 600.0, (
+        "turn B's working copy lost the approved write -- rolled back to the pre-edit clone"
+    )
+    assert verify_manager.version >= 1, "turn B's ArtifactManager lost the saved version history"
+
+
+# ---------------------------------------------------------------------------
+# (e) BUG 1 root cause, pinned: a turn fired WHILE the approve turn's write
+# is still in flight must not race it and silently lose state/artifacts.
+#
+# docs/phase2/DECISIONS.md's 2026-07-24 "QUEUED" entry ("the turn after an
+# /agent/approve started a FRESH session despite the request verifiably
+# carrying the correct session_id") does NOT reproduce from a strictly
+# SEQUENTIAL propose -> approve -> next-turn call sequence (see the previous
+# test) -- session_id threading, state.json reload, and the ArtifactManager
+# version-aware rollback are all individually correct. It DOES reproduce
+# once a second turn for the SAME session_id is fired while the first
+# (write) turn is still mid-flight (entirely plausible in the live app: a
+# real Vissim COM write/run can take real wall-clock seconds, and nothing
+# blocks a client from sending its next message before the previous turn's
+# stream has resolved). Both `run_agent_turn` calls independently
+# `session_store.load_state`/scan the SAME stale on-disk snapshot and
+# independently persist at the end -- last-writer-wins silently drops
+# whichever turn's history/version was NOT the last one saved.
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_turn_after_approve_does_not_lose_state_or_working_copy(client, monkeypatch):
+    provider = FakeStructuredProvider(
+        [
+            _action(
+                "set_vehicle_input_volume", summary="교통량을 600으로 변경 제안", input_no="1", volume=600
+            ),
+            _action(
+                "set_vehicle_input_volume", summary="승인된 변경을 적용합니다", input_no="1", volume=600
+            ),
+            _action("respond", summary="변경을 완료했습니다", answer="600으로 변경했습니다."),
+        ]
+    )
+    _, propose_events = _propose(client, monkeypatch, provider)
+    propose_done = propose_events[-1]
+    session_id = propose_done["response"]["session_id"]
+    approval_id = propose_done["response"]["approval"]["approval_id"]
+
+    work_dir = assistant_endpoint._agent_session_work_dir(session_id)
+    # A slow persist() widens the write's in-flight window so the second
+    # turn below deterministically lands WHILE the approve turn still holds
+    # (or is about to acquire) the session lock, instead of relying on luck.
+    fake_session = FakeEditSession(
+        work_dir / "working.inpx", readback={"vehicle_input_volume": 600.0}, persist_delay_s=0.3
+    )
+    monkeypatch.setattr(assistant_endpoint, "_build_edit_session", lambda working_path: fake_session)
+
+    approve_result: dict[str, Any] = {}
+
+    def do_approve() -> None:
+        approve_result["response"] = client.post(
+            "/api/assistant/agent/approve",
+            json={"session_id": session_id, "approval_id": approval_id, "approved": True},
+        )
+
+    approve_thread = threading.Thread(target=do_approve)
+    approve_thread.start()
+    # Give the approve request just enough head start to enter the endpoint
+    # (past pending-approval validation) but well before the slow persist()
+    # finishes -- lands turn B squarely inside the write's in-flight window.
+    time.sleep(0.05)
+
+    turn_b_provider = FakeStructuredProvider(
+        [
+            _action("get_vehicle_inputs", summary="현재 교통량을 확인합니다"),
+            _action("respond", summary="답변합니다", answer="현재 값을 알려드립니다."),
+        ]
+    )
+    monkeypatch.setattr(assistant_endpoint, "_default_provider", lambda: turn_b_provider)
+
+    turn_b_response = client.post(
+        "/api/assistant/agent/query/stream",
+        json={
+            "message": "지금 교통량이 얼마야?",
+            "response_language": "ko",
+            "session_id": session_id,
+        },
+    )
+    approve_thread.join(timeout=10)
+    assert not approve_thread.is_alive(), "approve turn did not finish"
+
+    assert approve_result["response"].status_code == 200
+    assert turn_b_response.status_code == 200
+
+    turn_b_events = _stream_events(turn_b_response)
+    for event in turn_b_events:
+        _assert_no_path_like_strings(event)
+
+    # Both turns' history must survive -- neither silently clobbered the
+    # other's save_state() call. Order is not asserted (which turn's lock
+    # wait resolves first is not the contract), only that nothing is LOST.
+    from services.agent import session_store
+
+    persisted = session_store.load_state(work_dir, session_id)
+    assert persisted is not None
+    actions = [r.action for r in persisted.history]
+    assert "set_vehicle_input_volume" in actions, (
+        f"the approved write vanished from the session's persisted history: {actions!r}"
+    )
+    assert "get_vehicle_inputs" in actions, (
+        f"turn B's own read vanished from the session's persisted history: {actions!r}"
+    )
+
+    # The working copy must reflect the write, not a mid-race revert to the
+    # pristine clone (input 1 has no volume at all in the source network --
+    # see FakeEditSession's docstring -- so any revert shows up as a missing
+    # value, not merely a different number).
+    saved_shadow = build_shadow_model(work_dir / "working.inpx")
+    saved_volume = next(v["volume"] for v in saved_shadow["vehicle_inputs"] if v["no"] == "1")
+    assert saved_volume == 600.0, "the concurrent turn reverted the working copy mid-write"
+
+    verify_manager = ArtifactManager(source_inpx=DEMO_INPX, work_dir=work_dir)
+    assert verify_manager.version >= 1, "the concurrent turn lost the saved version history"

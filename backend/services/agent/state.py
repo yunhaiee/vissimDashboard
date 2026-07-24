@@ -178,7 +178,36 @@ class ArtifactManager:
         write, to know what to ``rollback_to()`` if postwrite verification
         fails (``rollback_to(0)`` restores the pristine clone — see
         ``rollback_to``).
+
+        Snapshotted once at ``__init__`` (from a ``work_dir`` scan) and
+        otherwise only ever advanced by THIS instance's own
+        ``save_version()``/``rollback_to()`` calls — it does NOT
+        automatically notice a version another ``ArtifactManager`` instance
+        for the SAME ``work_dir`` has since saved. See :meth:`refresh_version`
+        for a caller (e.g. a resumed HTTP turn) that needs an up-to-date
+        read.
         """
+        return self._version
+
+    def refresh_version(self) -> int:
+        """Re-scan ``work_dir`` and update :attr:`version` to the latest
+        ``edit_NNN.inpx`` actually on disk, returning the new value.
+
+        docs/phase2/DECISIONS.md's Bug 1 entry: a caller across separate HTTP
+        requests (``routers/assistant.py``) constructs a FRESH
+        ``ArtifactManager`` per request, synchronously, in the request
+        handler — before any per-session serialization lock is acquired. If
+        an EARLIER turn for the same session is still mid-write on another
+        thread at that moment, the new instance's ``__init__``-time version
+        scan can capture a version that is about to become stale the instant
+        the earlier turn's own ``save_version()`` lands. Calling this
+        (``routers/assistant.py``'s ``_ensure_working_copy`` does, right
+        after the per-session lock is acquired — i.e. once no turn can still
+        be concurrently writing) guarantees ``rollback_to(self.version)``
+        targets the TRUE latest saved version instead of whatever was on
+        disk at construction time.
+        """
+        self._version = self._max_existing_version()
         return self._version
 
     def _refresh_shadow_model(self) -> None:
