@@ -176,6 +176,32 @@ _AGENTIC_WARNING_NOTICE_HEADER = {
     ),
 }
 
+# Post-incident fix (2026-07-24): the message a PreapprovedWriteGate-scoped
+# action gets when its approval signature was ALREADY consumed earlier in
+# THIS SAME re-run (services.agent.gates.PreapprovedWriteGate.authorize now
+# consumes on success — see its docstring for the live-demo incident this
+# closes: one approval driving six real Vissim runs). Deliberately DISTINCT
+# from _tier_refusal_envelope's generic "arrives in a later milestone" text
+# below, which would actively mislead the model here: the action WAS
+# approved and DID run once; it just cannot run again on the strength of
+# that same approval. Assembled without any further LLM call, same
+# discipline as every other deterministic text in this module.
+_APPROVAL_CONSUMED_MESSAGE = {
+    "ko": (
+        "이 작업({tool})은 이번 승인으로 이미 한 번 실행되었습니다. 같은 작업을 다시 "
+        "요청하지 말고, 지금까지 확인한 내용을 바탕으로 사용자에게 답변하세요."
+    ),
+    "en": (
+        "This action ({tool}) has already been dispatched once under this approval. "
+        "Do not re-issue it — respond to the user with what has been found so far "
+        "instead."
+    ),
+    "ja": (
+        "この操作（{tool}）は今回の承認で既に一度実行されました。同じ操作を再度要求せず、"
+        "これまでに確認した内容をもとにユーザーに回答してください。"
+    ),
+}
+
 # M2.3: the approval-pause result's short proposal line — assembled without
 # any further LLM call, same discipline as the deterministic texts above.
 _APPROVAL_PROPOSAL_HEADER = {
@@ -316,6 +342,24 @@ def _tier_refusal_envelope(tool_name: str, tier: str) -> dict[str, Any]:
             "this stage. Edits and runs arrive with the approval flow in a later "
             "milestone — tell the user instead of retrying."
         ),
+        "artifacts": None,
+        "suggested_fix": None,
+        "verification": None,
+        "data": None,
+    }
+
+
+def _approval_consumed_envelope(tool_name: str, language: str) -> dict[str, Any]:
+    """The structured observation for a gate refusal whose
+    ``refusal_reason`` came back ``"approval_consumed"`` (post-incident fix
+    — see ``services.agent.gates.PreapprovedWriteGate`` and
+    ``_APPROVAL_CONSUMED_MESSAGE`` above). Same 7-key envelope shape as
+    ``_tier_refusal_envelope``, distinct ``error_type`` so trace/eval
+    consumers can tell the two refusal reasons apart."""
+    return {
+        "status": "error",
+        "error_type": "approval_consumed",
+        "message": pick_language_text(_APPROVAL_CONSUMED_MESSAGE, language).format(tool=tool_name),
         "artifacts": None,
         "suggested_fix": None,
         "verification": None,
@@ -965,15 +1009,34 @@ def run_agent_turn(
                     )
             else:
                 if not action_authorized:
-                    # Tier gate refused: unchanged M1 behavior, never dispatched.
-                    envelope = _tier_refusal_envelope(decision.tool, spec.tier)
+                    # Tier gate refused: unchanged M1 behavior, never
+                    # dispatched -- UNLESS the gate can tell us THIS action's
+                    # own approval was already consumed earlier in this same
+                    # re-run (PreapprovedWriteGate, post-incident fix: an
+                    # approved signature now authorizes exactly one
+                    # dispatch). In that case the generic "arrives in a
+                    # later milestone" tier-refusal text would mislead the
+                    # model -- the action WAS approved and DID run -- so a
+                    # distinct message is used instead. `refusal_reason` is
+                    # an optional protocol extension (see
+                    # PreapprovedWriteGate's docstring); gates that don't
+                    # define it (RefuseAllWriteGate, ProposeWriteGate) fall
+                    # back to the unchanged generic envelope.
+                    refusal_reason_fn = getattr(target_gate, "refusal_reason", None)
+                    refusal_reason = (
+                        refusal_reason_fn(action, spec) if refusal_reason_fn is not None else None
+                    )
+                    if refusal_reason == "approval_consumed":
+                        envelope = _approval_consumed_envelope(decision.tool, language)
+                    else:
+                        envelope = _tier_refusal_envelope(decision.tool, spec.tier)
                     tracer.write(
                         "refusal",
                         {
                             "iteration": iteration,
                             "tool": decision.tool,
                             "tier": spec.tier,
-                            "error_type": "tool_tier_forbidden",
+                            "error_type": envelope["error_type"],
                             "message": envelope["message"],
                         },
                     )

@@ -137,12 +137,43 @@ def test_preapproved_write_gate_refuses_when_signature_set_is_empty():
     assert gate.authorize({"tool": "set_random_seed", "params": {"seed": 1}}, spec=None) is False
 
 
-def test_preapproved_write_gate_membership_is_not_consumed_on_use():
+def test_preapproved_write_gate_consumes_signature_on_success():
+    # Post-incident fix (2026-07-24): an approved signature authorizes
+    # EXACTLY ONE dispatch -- a repeat attempt in the same turn must be
+    # refused, not silently authorized again. (Previously pinned the
+    # opposite as "not a one-shot token"; that was the root cause of one
+    # user approval driving six real Vissim runs.)
     action = {"tool": "set_random_seed", "params": {"seed": 42}}
     gate = PreapprovedWriteGate({signature(action["tool"], action["params"])})
 
     assert gate.authorize(action, spec=None) is True
-    assert gate.authorize(action, spec=None) is True  # still authorized -- not a one-shot token
+    assert gate.authorize(action, spec=None) is False  # consumed -- one-shot
+
+
+def test_preapproved_write_gate_consumption_removes_signature_from_the_set():
+    action = {"tool": "set_random_seed", "params": {"seed": 42}}
+    sig = signature(action["tool"], action["params"])
+    gate = PreapprovedWriteGate({sig})
+
+    assert gate.authorize(action, spec=None) is True
+    assert sig not in gate.signatures
+
+
+def test_preapproved_write_gate_multi_signature_consumption_is_independent():
+    action_a = {"tool": "set_vehicle_input_volume", "params": {"input_no": "1", "volume": 600}}
+    action_b = {"tool": "set_signal_cycle", "params": {"sc_no": "1", "cycle": 90}}
+    gate = PreapprovedWriteGate(
+        {
+            signature(action_a["tool"], action_a["params"]),
+            signature(action_b["tool"], action_b["params"]),
+        }
+    )
+
+    # Consuming action_a's signature must not affect action_b's.
+    assert gate.authorize(action_a, spec=None) is True
+    assert gate.authorize(action_a, spec=None) is False  # a's signature is spent
+    assert gate.authorize(action_b, spec=None) is True  # b's is untouched
+    assert gate.authorize(action_b, spec=None) is False  # now b's is spent too
 
 
 def test_preapproved_write_gate_never_raises():
@@ -150,3 +181,52 @@ def test_preapproved_write_gate_never_raises():
     gate = PreapprovedWriteGate(set())
     result = gate.authorize({"tool": "anything", "params": {}}, spec=None)
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# PreapprovedWriteGate.refusal_reason — distinguishes "already consumed"
+# from "never approved" for orchestrator.py's distinct-message branch.
+# ---------------------------------------------------------------------------
+
+
+def test_refusal_reason_is_none_before_any_authorize_call():
+    action = {"tool": "set_random_seed", "params": {"seed": 42}}
+    gate = PreapprovedWriteGate({signature(action["tool"], action["params"])})
+
+    assert gate.refusal_reason(action, spec=None) is None
+
+
+def test_refusal_reason_is_none_for_a_never_approved_action():
+    gate = PreapprovedWriteGate(set())
+    action = {"tool": "set_random_seed", "params": {"seed": 42}}
+
+    assert gate.authorize(action, spec=None) is False
+    assert gate.refusal_reason(action, spec=None) is None
+
+
+def test_refusal_reason_is_approval_consumed_after_a_granted_repeat():
+    action = {"tool": "set_random_seed", "params": {"seed": 42}}
+    gate = PreapprovedWriteGate({signature(action["tool"], action["params"])})
+
+    assert gate.authorize(action, spec=None) is True
+    assert gate.authorize(action, spec=None) is False
+    assert gate.refusal_reason(action, spec=None) == "approval_consumed"
+
+
+def test_refusal_reason_does_not_leak_across_distinct_signatures():
+    action_a = {"tool": "set_vehicle_input_volume", "params": {"input_no": "1", "volume": 600}}
+    action_b = {"tool": "set_signal_cycle", "params": {"sc_no": "1", "cycle": 90}}
+    gate = PreapprovedWriteGate(
+        {
+            signature(action_a["tool"], action_a["params"]),
+            signature(action_b["tool"], action_b["params"]),
+        }
+    )
+
+    gate.authorize(action_a, spec=None)
+    gate.authorize(action_a, spec=None)  # consumes a, refused
+
+    # b was never even attempted -- never approved from refusal_reason's POV
+    # despite being IN the original signature set (authorize() was simply
+    # never called for it).
+    assert gate.refusal_reason(action_b, spec=None) is None

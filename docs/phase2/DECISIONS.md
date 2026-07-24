@@ -706,3 +706,19 @@ against real Vissim behavior. Trace: plan → preflight → action_start → act
   rehearsal left the Beijing example as the active dataset + run artifacts in runtime/) —
   restore the demo dataset via 기본값 복원; a follow-up chip exists to pin those tests'
   dataset dependencies.
+
+---
+
+## 2026-07-24 — Live-demo fix: PreapprovedWriteGate consumes its signature on authorize
+
+**Context:** one approval click drove SIX real 300s Vissim runs — authorize() checked
+signature-set membership only, so a live planner re-issuing the same approved
+run_simulation inside one turn (retrying on the expected short-run warning instead of
+reporting it) was re-authorized until the K=6 cap.
+
+**Decision:** an approved signature is good for exactly ONE dispatch (discarded on grant);
+a same-turn repeat refuses via a new distinct approval_consumed envelope (ko/en/ja) — the
+generic tier text would lie about an action that WAS approved and DID run. RefuseAll/
+Propose gates unchanged (getattr fallback). Distinct signatures consume independently;
+eval/runner's fresh-gate-per-round convention unaffected. A future batch-N-dispatches
+design must be explicit, never a silent regression to always-True.

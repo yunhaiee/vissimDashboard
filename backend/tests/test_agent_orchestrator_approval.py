@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from services.agent.gates import ProposeWriteGate
+from services.agent.gates import PreapprovedWriteGate, ProposeWriteGate, signature
 from services.agent.guardrails import GuardrailEngine
 from services.agent.orchestrator import run_agent_turn
 from services.agent.state import ArtifactManager
@@ -87,6 +87,48 @@ def _register_rigged_write_tool(registry: ToolRegistry) -> dict[str, int]:
     def _set_volume(params: Params) -> dict[str, Any]:
         """Set a vehicle input's volume (fake/test double)."""
         calls["count"] += 1
+        return {"verification": {"written_value": params.volume, "readback_value": params.volume}}
+
+    return calls
+
+
+def _register_persisting_write_tool(
+    registry: ToolRegistry, artifact_manager: ArtifactManager
+) -> dict[str, int]:
+    """A rigged ``set_vehicle_input_volume`` that ALSO persists the written
+    value into the working copy's XML (same technique as
+    test_agent_orchestrator_write_gate.py's identically-purposed fixture) --
+    required by the section (e) test below, which (unlike every other test
+    in this file) exercises a REAL successful dispatch through
+    ``PreapprovedWriteGate`` and must survive the real
+    ``GuardrailEngine.postwrite`` target-persisted check rather than stop
+    before dispatch."""
+    calls = {"count": 0}
+
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        input_no: str
+        volume: float
+
+    @tool(
+        name="set_vehicle_input_volume",
+        tier="write",
+        provider="edit",
+        params=Params,
+        registry=registry,
+    )
+    def _set_volume(params: Params) -> dict[str, Any]:
+        from eval.fake_edit_session import set_vehicle_input_volume_in_xml
+
+        calls["count"] += 1
+        working = artifact_manager.working_path
+        working.write_text(
+            set_vehicle_input_volume_in_xml(
+                working.read_text(encoding="utf-8"), str(params.input_no), params.volume
+            ),
+            encoding="utf-8",
+        )
         return {"verification": {"written_value": params.volume, "readback_value": params.volume}}
 
     return calls
@@ -321,3 +363,109 @@ def test_propose_gate_without_artifact_manager_preflights_against_empty_model_an
     records = read_trace(result.trace_path)
     assert [r["kind"] for r in records] == ["plan", "preflight", "refusal", "plan"]
     assert records[2]["payload"]["error_type"] == "object_not_found"
+
+
+# ---------------------------------------------------------------------------
+# (e) post-incident regression: PreapprovedWriteGate re-run, planner
+# re-issues the SAME already-dispatched action a second time in the SAME
+# turn -- docs/phase2/DECISIONS.md 2026-07-24 live-demo bug ("one user
+# approval authorized SIX executions of run_simulation"). First attempt must
+# dispatch and postwrite-verify normally; the SECOND must be refused via the
+# distinct approval_consumed message (never silently re-authorized, never
+# re-dispatched); the turn must still end in a normal `respond` answer, not
+# the forced K-cap completion.
+# ---------------------------------------------------------------------------
+
+
+def test_preapproved_gate_refuses_a_same_turn_reissue_of_an_already_consumed_action(
+    tmp_path: Path,
+):
+    registry = ToolRegistry()
+    work_dir = tmp_path / "session"
+    artifact_manager = ArtifactManager(source_inpx=DEMO_INPX, work_dir=work_dir)
+    artifact_manager.clone()
+    calls = _register_persisting_write_tool(registry, artifact_manager)
+
+    # NOTE: decision.params never carries "summary" (planner.py pops it into
+    # PlannerDecision.summary before the tool params dict is built -- see
+    # the pending_approval assertions elsewhere in this file), and the raw
+    # value type from the fake provider's queue (int 600, not float) is
+    # exactly what reaches the gate's authorize() call -- signature()
+    # distinguishes int/float (see gates.py's own docstring), so this must
+    # match the `_action(..., volume=600)` call below byte-for-byte.
+    approved_action = {
+        "tool": "set_vehicle_input_volume",
+        "params": {"input_no": "1", "volume": 600},
+    }
+    gate = PreapprovedWriteGate({signature(approved_action["tool"], approved_action["params"])})
+
+    provider = FakeStructuredProvider(
+        [
+            _action(
+                "set_vehicle_input_volume",
+                summary="승인된 변경을 적용합니다",
+                input_no="1",
+                volume=600,
+            ),
+            _action(
+                # The buggy behavior this fix closes: the planner reacts to
+                # something (e.g. a KPI/warning-shaped observation) by
+                # re-issuing the IDENTICAL already-approved write again,
+                # instead of reporting the result to the user.
+                "set_vehicle_input_volume",
+                summary="다시 한 번 적용을 시도합니다",
+                input_no="1",
+                volume=600,
+            ),
+            _action(
+                "respond",
+                summary="완료 보고",
+                answer="1번 입력 교통량을 600으로 변경했습니다.",
+            ),
+        ]
+    )
+
+    result = run_agent_turn(
+        "1번 입력 교통량을 600으로 바꿔줘",
+        provider=provider,
+        work_dir=work_dir,
+        session_id="s-approval-consumed",
+        language="ko",
+        registry=registry,
+        gate=gate,
+        engine=GuardrailEngine(),
+        artifact_manager=artifact_manager,
+    )
+
+    # Dispatched exactly once -- the re-issued second attempt never reached
+    # the tool, and the turn resolved normally (not the K-cap).
+    assert calls["count"] == 1
+    assert result.kind == "answer"
+    assert len(provider.calls) == 3
+    assert "600" in result.answer
+
+    records = read_trace(result.trace_path)
+    assert [r["kind"] for r in records] == [
+        "plan",
+        "preflight",
+        "action_start",
+        "action_end",
+        "postwrite",
+        "plan",
+        "refusal",
+        "plan",
+    ]
+    refusal_record = records[6]
+    assert refusal_record["payload"]["error_type"] == "approval_consumed"
+    assert refusal_record["payload"]["tool"] == "set_vehicle_input_volume"
+
+    # The refused re-issue's structured observation reached the planner via
+    # history (not silently dropped), and the distinct message -- not the
+    # generic "later milestone" tier_tool_forbidden text -- is what it saw.
+    reissue_observation = result.state.history[-1].observation
+    assert reissue_observation["error_type"] == "approval_consumed"
+    assert "이미 한 번 실행" in reissue_observation["message"]
+
+    # The first (legitimate) dispatch still fully landed and postwrite-
+    # verified: version advanced, and the volume is actually persisted.
+    assert artifact_manager.version == 1

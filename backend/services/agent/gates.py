@@ -12,10 +12,15 @@ implementations live here; ``RefuseAllWriteGate`` stays defined in
   silently refusing OR silently writing.
 - :class:`PreapprovedWriteGate` -- used for the ``/agent/approve`` re-run
   after the user says yes. Authorizes ONLY actions whose canonical
-  :func:`signature` was in the set the user actually approved; anything
-  else (a re-proposed different action, or a second write attempt in the
-  same re-run) is refused through the ordinary ``tool_tier_forbidden``
-  path, exactly like ``RefuseAllWriteGate`` would.
+  :func:`signature` was in the set the user actually approved, and
+  **consumes** that signature the moment it authorizes it -- an approved
+  signature is good for exactly ONE dispatch. Anything else (a re-proposed
+  different action, or a SECOND attempt at the same already-dispatched
+  action later in the same re-run) is refused through the ordinary
+  ``tool_tier_forbidden``-shaped path, exactly like ``RefuseAllWriteGate``
+  would (``orchestrator.py`` additionally recognizes the
+  already-consumed case via :meth:`PreapprovedWriteGate.refusal_reason`
+  and swaps in a distinct, non-misleading message -- see there).
 
 :func:`signature` is the one canonicalization both the gate and
 ``routers/assistant.py`` (when persisting/reading ``pending_approval.json``)
@@ -85,29 +90,68 @@ class ProposeWriteGate:
 
 class PreapprovedWriteGate:
     """Authorizes exactly the write action(s) matching a pre-approved
-    signature set.
+    signature set -- ONCE each.
 
     Constructed from the signatures persisted at proposal time (see
     :func:`signature` and ``routers/assistant.py``'s ``pending_approval.json``
     handling). Used for the ``/agent/approve`` re-run so ONLY the action(s)
     the user actually approved can dispatch -- a planner call that proposes
-    anything else (including a second, different write later in the same
-    re-run) is refused through the ordinary ``tool_tier_forbidden`` path,
-    same as the default ``RefuseAllWriteGate``. Membership is checked, not
-    consumed: authorizing does not remove a signature from the set, so a
-    planner that (redundantly) proposes the SAME approved action twice in
-    one re-run would be authorized both times -- an accepted edge case,
-    since nothing in this milestone's scripted flows produces it (the
-    planner normally moves on to ``respond`` after a clean write, per
-    ``test_agent_orchestrator_write_gate.py``'s established pattern).
+    anything else (including a different write later in the same re-run) is
+    refused through the ordinary ``tool_tier_forbidden`` path, same as the
+    default ``RefuseAllWriteGate``.
+
+    **Consume-on-success (post-incident fix).** A live-demo incident showed
+    the real planner re-issuing the SAME already-approved+dispatched action
+    again later in the same turn (it saw a short-run KPI warning with no
+    tables and, instead of reporting that to the user, tried re-running the
+    simulation) -- and the previous membership-only check authorized every
+    repeat, so one user click drove six real 300s Vissim runs before the
+    iteration cap (K=6) forced the turn to stop. ``authorize()`` now removes
+    a signature from :attr:`signatures` the moment it grants it: an approved
+    signature is good for exactly ONE dispatch. A same-signature retry later
+    in the same re-run gets ``False`` -- refused through the ordinary
+    tier-refusal envelope, same shape as a never-approved action, so the
+    planner is told (not silently allowed) and must respond to the user
+    instead of looping. :meth:`refusal_reason` lets the caller
+    (``orchestrator.py``) distinguish "already used this approval" from
+    "never approved at all" for a clearer message, without changing the
+    ``bool``-returning ``authorize()`` contract other gates/tests rely on.
+
+    Multiple DISTINCT approved actions in one signature set remain
+    independent: consuming one never affects another's membership.
     """
 
     def __init__(self, signatures: set[str]) -> None:
         self.signatures = set(signatures)
+        # Every signature this instance has ever granted -- superset of the
+        # (now-removed-from `signatures`) ones already dispatched this
+        # re-run. Powers `refusal_reason` below; never consulted by
+        # `authorize` itself.
+        self._consumed: set[str] = set()
 
     def authorize(self, action: dict[str, Any], spec: "ToolSpec") -> bool:
         del spec
-        return signature(action.get("tool", ""), action.get("params", {})) in self.signatures
+        sig = signature(action.get("tool", ""), action.get("params", {}))
+        if sig not in self.signatures:
+            return False
+        self.signatures.discard(sig)
+        self._consumed.add(sig)
+        return True
+
+    def refusal_reason(self, action: dict[str, Any], spec: "ToolSpec") -> str | None:
+        """Best-effort refusal detail for a ``False`` verdict from
+        :meth:`authorize` on this same ``action``: ``"approval_consumed"``
+        when ``action``'s signature WAS approved and already granted once by
+        THIS instance (a repeat within the same re-run), ``None`` when it
+        was never approved at all (an ordinary tier refusal). Optional
+        protocol extension -- ``orchestrator.py`` probes for this method via
+        ``getattr`` and falls back to the generic refusal message when a
+        gate (``RefuseAllWriteGate``, ``ProposeWriteGate``) doesn't define
+        it.
+        """
+        del spec
+        sig = signature(action.get("tool", ""), action.get("params", {}))
+        return "approval_consumed" if sig in self._consumed else None
 
 
 __all__ = [
