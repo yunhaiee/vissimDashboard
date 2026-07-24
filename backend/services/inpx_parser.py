@@ -89,10 +89,13 @@ def _parse_links(root: ET.Element) -> list:
 
         length = _polyline_length(points)
 
-        is_connector = (
-            link.find("fromLinkEndPt") is not None
-            or link.find("toLinkEndPt") is not None
-        )
+        from_pt_el = link.find("fromLinkEndPt")
+        to_pt_el = link.find("toLinkEndPt")
+        is_connector = from_pt_el is not None or to_pt_el is not None
+
+        from_link, from_pos = _parse_connector_endpoint(from_pt_el)
+        to_link, to_pos = _parse_connector_endpoint(to_pt_el)
+
         result.append({
             "id": link_id,
             "name": name,
@@ -100,8 +103,44 @@ def _parse_links(root: ET.Element) -> list:
             "lanes": lane_count,
             "length": round(length, 2),
             "is_connector": is_connector,
+            # Connector topology (Phase 3): the link id (as a string) each
+            # endpoint attaches to, plus the arc-length position along that
+            # link. ``None`` for both non-connectors and any endpoint we
+            # couldn't parse — never absent, so callers can rely on the key.
+            "from_link": from_link,
+            "to_link": to_link,
+            "from_pos": from_pos,
+            "to_pos": to_pos,
         })
     return result
+
+
+def _parse_connector_endpoint(end_pt: ET.Element | None) -> tuple[str | None, float | None]:
+    """Extract ``(link_id, pos)`` from a connector's ``fromLinkEndPt``/``toLinkEndPt``.
+
+    Vissim's convention is a ``lane`` attribute shaped ``"linkNo laneNo"``
+    (e.g. ``lane="1234 1"``); some exports instead (or additionally) carry an
+    explicit ``link`` attribute, which takes precedence when present. Never
+    raises — any missing/malformed attribute yields ``None`` for that field.
+    """
+    if end_pt is None:
+        return None, None
+
+    link_id = end_pt.get("link")
+    if not link_id:
+        lane = end_pt.get("lane", "") or ""
+        tokens = lane.strip().split()
+        link_id = tokens[0] if tokens else None
+
+    pos: float | None = None
+    pos_raw = end_pt.get("pos")
+    if pos_raw is not None:
+        try:
+            pos = float(pos_raw)
+        except (TypeError, ValueError):
+            pos = None
+
+    return link_id, pos
 
 
 def _parse_nodes(root: ET.Element, links: list | None = None) -> list:

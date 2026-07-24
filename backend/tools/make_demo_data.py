@@ -50,6 +50,21 @@ NODES = [
     (2, "Central & Park", [(385, -15), (415, -15), (415, 15), (385, 15)]),
 ]
 
+# Connector links (Phase 3): Vissim represents intersection-internal geometry
+# as <link> elements carrying fromLinkEndPt/toLinkEndPt children instead of a
+# lanes-only body. Each bridges a real "from" link's downstream end to a real
+# "to" link's upstream end via the lane="linkNo laneNo" schema, chosen to
+# mirror an actual MOVEMENTS entry at that node so the topology is plausible:
+#   - 301 mirrors MOVEMENTS (1, 101, 140, ...) — Node 1's EB through movement.
+#   - 302 mirrors MOVEMENTS (2, 140, 208, ...) — Node 2's EB through movement.
+# from_pos/to_pos are the arc-length position on the referenced link where the
+# connector attaches (end of the upstream link, start of the downstream one).
+CONNECTORS = [
+    # (no, name, points, lanes, from_link, from_lane, from_pos, to_link, to_lane, to_pos)
+    (301, "Central & Main EB through connector", [(-20, 0), (20, 0)], 3, 101, 1, 280.0, 140, 1, 0.0),
+    (302, "Central & Park EB through connector", [(380, 0), (420, 0)], 3, 140, 1, 360.0, 208, 1, 0.0),
+]
+
 # (node, from_link, to_link, base hourly volume, base movement delay s)
 MOVEMENTS = [
     (1, 101, 140, 780, 28.0),  # W in, through
@@ -123,6 +138,17 @@ def build_inpx(out: Path) -> None:
             f'<link no="{no}" name="{escape(name)}">'
             f"<geometry>{pts(points, 'linkPolyPts', 'linkPolyPoint')}</geometry>"
             f"<lanes>{lanes_xml}</lanes>"
+            f"</link>"
+        )
+
+    for no, name, points, lanes, from_link, from_lane, from_pos, to_link, to_lane, to_pos in CONNECTORS:
+        lanes_xml = "".join('<lane width="3.5"/>' for _ in range(lanes))
+        link_xml.append(
+            f'<link no="{no}" name="{escape(name)}">'
+            f"<geometry>{pts(points, 'linkPolyPts', 'linkPolyPoint')}</geometry>"
+            f"<lanes>{lanes_xml}</lanes>"
+            f'<fromLinkEndPt lane="{from_link} {from_lane}" pos="{from_pos}"/>'
+            f'<toLinkEndPt lane="{to_link} {to_lane}" pos="{to_pos}"/>'
             f"</link>"
         )
 

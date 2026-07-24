@@ -792,3 +792,41 @@ rewrites() has no timeout knob (verified) — heartbeat is the only available fi
 
 **Consequence:** no intermediary can ever see >15s of stream silence; any残 dropped
 connection surfaces visibly instead of an eternal spinner.
+
+---
+
+## 2026-07-24 — Phase 3: connector from/to topology parsed defensively
+
+**Context:** `inpx_parser._parse_links` (backend/services/inpx_parser.py) has always set a
+boolean `is_connector` per link but never read which link ids a connector's
+`fromLinkEndPt`/`toLinkEndPt` reference. Phase 3 needs that topology. No `.inpx` on this
+machine contains connector elements (`data/practice.inpx` and
+`backend/tests/fixtures/korean_object_names.inpx` both have zero), so the exact real-world
+schema variant a given Vissim export uses cannot be validated locally. The schema is inferred
+from Vissim's documented convention: a connector `<link>` carries child elements like
+`<fromLinkEndPt lane="1234 1" pos="221.9"/>` and `<toLinkEndPt lane="5678 2" pos="3.5"/>`,
+where `lane` encodes `"linkNo laneNo"`; some exports may instead (or additionally) carry an
+explicit `link` attribute. A guardrails test comment references Beijing.CN's auto-computed
+connectors (links 10039/10051) as a real example, but that file isn't on this machine either.
+
+**Decision:** `_parse_connector_endpoint` extracts `from_link`/`to_link` (string link id or
+`None`) and `from_pos`/`to_pos` (float or `None`) from each endpoint element, preferring an
+explicit `link` attribute when present and otherwise falling back to the first
+whitespace-separated token of `lane`. Every link dict now carries all four keys
+unconditionally (never absent) — `None` for both non-connectors and any endpoint that fails
+to parse; the function never raises. `is_connector` itself is unchanged (geojson.py's
+`if link.get("is_connector"): continue` keeps working as-is). The demo network
+(`backend/tools/make_demo_data.py`) gained two connectors (link ids 301, 302) built with the
+`lane=` form, mirroring real MOVEMENTS entries so their from/to topology is plausible
+(301: 101→140 at Node 1; 302: 140→208 at Node 2) — this pushed the demo network's link count
+from 14 to 16, so the pinned counts in `test_agent_orchestrator.py` and
+`test_agent_read_tools.py` were updated accordingly. The explicit `link=` attribute form is
+covered only by inline XML fixtures in the new `backend/tests/test_inpx_connectors.py`, since
+no demo/tracked `.inpx` needs it.
+
+**Deferred note:** validate this against a real connector-bearing network (e.g. the
+Beijing.CN example referenced in the guardrails tests) on the Windows/Vissim box before
+trusting the topology downstream — in particular, whether any real export actually uses the
+explicit `link=` form, and whether `pos` is reliably present. Until then, downstream
+consumers should treat `from_link`/`to_link`/`from_pos`/`to_pos` as best-effort, not verified
+ground truth.

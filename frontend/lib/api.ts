@@ -296,7 +296,18 @@ export interface ScenarioMeta {
 }
 
 export interface NetworkData {
-  links: { id: string; name: string; points: [number, number][]; lanes: number; length: number }[];
+  links: {
+    id: string;
+    name: string;
+    points: [number, number][];
+    lanes: number;
+    length: number;
+    is_connector?: boolean;
+    from_link?: string | null;
+    to_link?: string | null;
+    from_pos?: number | null;
+    to_pos?: number | null;
+  }[];
   nodes: { id: string; name: string; x: number; y: number; polygon: [number, number][] }[];
   detectors: { id: string; name: string }[];
   traveltime_sections: { id: string; name: string }[];
