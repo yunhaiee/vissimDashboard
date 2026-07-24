@@ -1991,6 +1991,17 @@ function buildRouteAssistantContext(pathname: string, t: Translate): RouteAssist
     };
   }
 
+  if (pathname.startsWith("/network")) {
+    return {
+      label: t("\ub124\ud2b8\uc6cc\ud06c \ud504\ub9ac\ubdf0 \ucee8\ud14d\uc2a4\ud2b8", "Network preview context"),
+      starters: [
+        t("\ud604\uc7ac \uc120\ud0dd\ub41c \uad50\ucc28\ub85c\uc640 \ub9c1\ud06c\uac00 \ubb34\uc5c7\uc778\uc9c0 \uc54c\ub824\uc918.", "Tell me which intersections and links are currently selected."),
+        t("\uc774 \ub370\uc774\ud130\uc14b\uc758 \ub124\ud2b8\uc6cc\ud06c \uad6c\uc870\ub97c \uc694\uc57d\ud574\uc918.", "Summarize the network structure of this dataset."),
+        t("\ub3c4\uc2dd\uc5d0\uc11c \uc5b4\ub5a4 \ub178\ub4dc\ub97c \ud074\ub9ad\ud574\uc57c \uad50\ucc28\ub85c \uc131\ub2a5\uc744 \ube44\uad50\ud560 \uc218 \uc788\ub294\uc9c0 \uc54c\ub824\uc918.", "Tell me which nodes I should click to compare intersection performance."),
+      ],
+    };
+  }
+
   return {
     label: t("\ud398\uc774\uc9c0 \ucee8\ud14d\uc2a4\ud2b8", "Page context"),
     starters: DEFAULT_STARTERS.map((starter) => t(starter.ko, starter.en)),

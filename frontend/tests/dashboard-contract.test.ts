@@ -280,3 +280,15 @@ test("selected intersection panel omits scenario total volume chart", () => {
     "expected selected-intersection panel to avoid scenario total volume calculations",
   );
 });
+
+test("network preview page publishes assistant page context", () => {
+  const page = read("app/network/page.tsx");
+
+  assert.match(page, /vissim:page-context/, "expected network preview page to publish assistant page context");
+  assert.match(
+    page,
+    /vissim:assistant-context-request/,
+    "expected network preview page to republish context when the floating assistant asks for it",
+  );
+  assert.match(page, /route: "\/network"/, "expected network preview page context to identify its own route");
+});

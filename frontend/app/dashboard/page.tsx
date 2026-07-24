@@ -161,6 +161,7 @@ export default function DashboardPage() {
   // refetched whenever the active dataset changes.
   const [mapView, setMapView] = useState<"map" | "diagram">("map");
   const [hasRequestedDiagram, setHasRequestedDiagram] = useState(false);
+  const [selectedLinkInfo, setSelectedLinkInfo] = useState<{ id: string; name: string; isConnector: boolean } | null>(null);
   const [network, setNetwork] = useState<NetworkData | null>(null);
   const [networkLoading, setNetworkLoading] = useState(false);
   const [networkError, setNetworkError] = useState<string | null>(null);
@@ -416,6 +417,13 @@ export default function DashboardPage() {
     setSelectedNodeIds((prev) => prev.filter((id) => id !== nodeId));
   }, []);
 
+  // Link/connector clicks in the diagram view are UI-only context for the
+  // floating assistant (a chip/note) — unlike node clicks they never flow
+  // into the backend request shape (selected_scenario_ids/selected_node_ids).
+  const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean) => {
+    setSelectedLinkInfo((prev) => (prev && prev.id === linkId ? null : { id: linkId, name: linkName, isConnector }));
+  }, []);
+
   const handleMapViewChange = useCallback((view: "map" | "diagram") => {
     setMapView(view);
     // First switch to the diagram arms the fetch effect below; once armed it
@@ -491,6 +499,20 @@ export default function DashboardPage() {
                     `The dashboard is currently focused by a user question (AI answer: "${curationSpec.headline || "n/a"}"). Only these sections are shown: ${curationSpec.charts.join(", ") || "none"}. The user can click "Show everything" in the curation bar to see all sections again.`,
                   ]
                 : []),
+              // Link/connector selection in the diagram view is UI-only context
+              // (never sent as selected_scenario_ids/selected_node_ids) — surfaced
+              // here only so the assistant can describe what is currently
+              // highlighted on screen when asked.
+              ...(selectedLinkInfo
+                ? [
+                    [
+                      t("도식에서", "In the diagram,"),
+                      t(selectedLinkInfo.isConnector ? "연결로" : "링크", selectedLinkInfo.isConnector ? "connector" : "link"),
+                      selectedLinkInfo.name,
+                      t("선택됨", "selected"),
+                    ].join(" "),
+                  ]
+                : []),
             ],
             updatedAt: Date.now(),
           },
@@ -503,7 +525,7 @@ export default function DashboardPage() {
     return () => {
       window.removeEventListener("vissim:assistant-context-request", publishAssistantContext);
     };
-  }, [activeDataset, activeScenarios, curationSpec, hasData, hasUploadedDataset, nodeNamesById, selected, selectedNodeIds]);
+  }, [activeDataset, activeScenarios, curationSpec, hasData, hasUploadedDataset, nodeNamesById, selected, selectedLinkInfo, selectedNodeIds, t]);
 
   return (
     <div className="mx-auto w-full max-w-[104rem] space-y-6 pb-16">
@@ -594,7 +616,9 @@ export default function DashboardPage() {
                     loading={networkLoading}
                     error={networkError}
                     selectedNodeIds={selectedNodeIds}
+                    selectedLinkId={selectedLinkInfo?.id ?? null}
                     onNodeClick={handleNodeClick}
+                    onLinkClick={handleLinkClick}
                     onRetry={() => setNetworkReloadNonce((nonce) => nonce + 1)}
                   />
                 ) : (
@@ -1761,14 +1785,18 @@ function NetworkDiagramView({
   loading,
   error,
   selectedNodeIds,
+  selectedLinkId,
   onNodeClick,
+  onLinkClick,
   onRetry,
 }: {
   network: NetworkData | null;
   loading: boolean;
   error: string | null;
   selectedNodeIds: string[];
+  selectedLinkId: string | null;
   onNodeClick: (nodeId: string, nodeName: string) => void;
+  onLinkClick: (linkId: string, linkName: string, isConnector: boolean) => void;
   onRetry: () => void;
 }) {
   const { t } = useLanguage();
@@ -1796,7 +1824,15 @@ function NetworkDiagramView({
     );
   }
 
-  return <NetworkViewer network={network} selectedNodeIds={selectedNodeIds} onNodeClick={onNodeClick} />;
+  return (
+    <NetworkViewer
+      network={network}
+      selectedNodeIds={selectedNodeIds}
+      selectedLinkId={selectedLinkId}
+      onNodeClick={onNodeClick}
+      onLinkClick={onLinkClick}
+    />
+  );
 }
 
 function DashboardScenarioPicker({

@@ -20,8 +20,9 @@ export default function NetworkPage() {
   const [error, setError] = useState<string | null>(null);
   const [datasetRevision, setDatasetRevision] = useState("default");
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [activeDataset, setActiveDataset] = useState<ActiveDataset | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
-  const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
+  const [selectedLinkInfo, setSelectedLinkInfo] = useState<{ id: string; name: string; isConnector: boolean } | null>(null);
 
   // Load the raw-coordinate network on mount, and again whenever the active
   // dataset changes or a retry is requested.
@@ -46,8 +47,9 @@ export default function NetworkPage() {
   }, [datasetRevision, reloadNonce, t]);
 
   const handleDatasetChange = useCallback((dataset?: ActiveDataset) => {
+    setActiveDataset(dataset ?? null);
     setSelectedNodeIds([]);
-    setSelectedLinkId(null);
+    setSelectedLinkInfo(null);
     setDatasetRevision(dataset?.revision ?? String(Date.now()));
   }, []);
 
@@ -63,9 +65,74 @@ export default function NetworkPage() {
     });
   }, []);
 
-  const handleLinkClick = useCallback((linkId: string) => {
-    setSelectedLinkId((prev) => (prev === linkId ? null : linkId));
+  // Link/connector clicks are UI-only context for the floating assistant (a
+  // chip/note) — unlike node clicks they never flow into the backend request
+  // shape (selected_scenario_ids/selected_node_ids).
+  const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean) => {
+    setSelectedLinkInfo((prev) => (prev && prev.id === linkId ? null : { id: linkId, name: linkName, isConnector }));
   }, []);
+
+  // Mirrors the dashboard/base-model pages' assistant page-context dispatch:
+  // publish on mount/change and again whenever the floating assistant asks
+  // (vissim:assistant-context-request), matching FloatingAssistant's listener
+  // in components/FloatingAssistant.tsx. Neither of those pages dispatches a
+  // `clear: true` event on unmount — FloatingAssistant already treats stale
+  // context as inert once the pathname no longer starts with its route (see
+  // the `pathname.startsWith(pageContext.route)` guard before the assistant
+  // reads it), so this page matches that existing convention rather than
+  // adding a new one.
+  useEffect(() => {
+    const publishAssistantContext = () => {
+      window.dispatchEvent(
+        new CustomEvent("vissim:page-context", {
+          detail: {
+            route: "/network",
+            label: t("네트워크 프리뷰 컨텍스트", "Network preview context"),
+            selectedNodeIds,
+            selectedNodeNames: selectedNodeIds.map((nodeId) => {
+              const node = network?.nodes.find((candidate) => candidate.id === nodeId);
+              return node?.name || `Node ${nodeId}`;
+            }),
+            dataset: activeDataset
+              ? {
+                  filename: activeDataset.filename,
+                  source: activeDataset.source,
+                  revision: activeDataset.revision,
+                }
+              : null,
+            notes: [
+              selectedNodeIds.length > 0
+                ? t(
+                    `선택된 교차로 ${selectedNodeIds.length}개`,
+                    `${selectedNodeIds.length} intersection${selectedNodeIds.length > 1 ? "s" : ""} selected`,
+                  )
+                : t("선택된 교차로 없음", "No intersections selected"),
+              // Link/connector selection is UI-only context (never sent as
+              // selected_scenario_ids/selected_node_ids) — surfaced here only
+              // so the assistant can describe what is currently highlighted.
+              ...(selectedLinkInfo
+                ? [
+                    [
+                      t("도식에서", "In the diagram,"),
+                      t(selectedLinkInfo.isConnector ? "연결로" : "링크", selectedLinkInfo.isConnector ? "connector" : "link"),
+                      selectedLinkInfo.name,
+                      t("선택됨", "selected"),
+                    ].join(" "),
+                  ]
+                : []),
+            ],
+            updatedAt: Date.now(),
+          },
+        }),
+      );
+    };
+
+    publishAssistantContext();
+    window.addEventListener("vissim:assistant-context-request", publishAssistantContext);
+    return () => {
+      window.removeEventListener("vissim:assistant-context-request", publishAssistantContext);
+    };
+  }, [activeDataset, network, selectedLinkInfo, selectedNodeIds, t]);
 
   return (
     <div className="mx-auto w-full max-w-[96rem] space-y-6 pb-16">
@@ -110,7 +177,7 @@ export default function NetworkPage() {
           <NetworkViewer
             network={network}
             selectedNodeIds={selectedNodeIds}
-            selectedLinkId={selectedLinkId}
+            selectedLinkId={selectedLinkInfo?.id ?? null}
             onNodeClick={handleNodeClick}
             onLinkClick={handleLinkClick}
           />
