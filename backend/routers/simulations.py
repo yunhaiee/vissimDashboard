@@ -531,6 +531,35 @@ def _run_agent_simulation_job(
                 if seed is not None:
                     ctrl.set_random_seed(seed)
 
+                # Evaluations are not retroactive (docs/phase2/
+                # 00-EXECUTION-GUIDE.md SS3.1) -- must run after load_network,
+                # before RunContinuous, and once per seed: each seed loop
+                # iteration gets its OWN VissimController/load_network (never
+                # a persisted-across-seeds instance), so a loaded network's
+                # evaluation config never carries over from a prior seed.
+                # Without this, a completed run's result .db contains ONLY
+                # the SIMULATIONRUN table (live-verified on this network at
+                # every duration tried) -- a silent KPI-less "success" is
+                # exactly the failure mode the guardrail doctrine forbids, so
+                # a configuration failure here is never swallowed: it
+                # propagates out of this try block as a real job error
+                # (caught by the outer except below), never a silent run.
+                try:
+                    eval_config = ctrl.configure_network_performance_evaluation(
+                        duration_s=duration_s
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Could not configure network-performance evaluation for seed "
+                        f"{seed!r} (index {index}): {exc}"
+                    ) from exc
+                logger.info(
+                    "Seed %d (job %s): network-performance evaluation configured: %s",
+                    index,
+                    job_id,
+                    eval_config,
+                )
+
                 # RunContinuous is a single COM call that runs to SimPeriod
                 # internally (~7.3x realtime observed) — RunSingleStep in a
                 # Python loop costs minutes for 60 sim-seconds and is
@@ -564,7 +593,19 @@ def _run_agent_simulation_job(
 
             _update_job(job_id, progress=(index + 1) / len(random_seeds))
 
-        _update_job(job_id, status="done", progress=1.0, result_tables=sorted(all_tables))
+        _update_job(
+            job_id,
+            status="done",
+            progress=1.0,
+            result_tables=sorted(all_tables),
+            # Reachable only when every seed's configure_network_performance_evaluation
+            # call above succeeded (any failure raises out of the seed loop and lands
+            # in the except-block below as a job error, never a silent "done") -- so
+            # this is trivially True here, not a fresh COM read. Kept explicit on the
+            # job record (rather than implied by "status == done") so tools_run.py's
+            # run_simulation can state it in the tool envelope without re-deriving it.
+            evaluation_configured=True,
+        )
         logger.info("Agent simulation job %s completed (%d seed run(s))", job_id, len(random_seeds))
     except Exception as exc:
         logger.exception("Agent simulation job %s failed", job_id)

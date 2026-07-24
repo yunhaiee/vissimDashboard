@@ -128,7 +128,7 @@ NOT encoded here — see "Excluded from this module" below.
 §5 Results
 -----------
 - Evaluations are not retroactive -> ``evaluation_not_configured_before_run``
-  (test_evaluation_not_configured_before_run_fires_when_empty_list)
+  (test_evaluation_not_configured_before_run_fires_when_run_result_says_false)
 - Adding an evaluation deletes the results you already have ->
   ``evaluation_change_deletes_results``
   (test_evaluation_change_deletes_results_always_refuses)
@@ -1236,13 +1236,41 @@ register(
 
 
 # ---------------------------------------------------------------------------
-# #15 evaluation_not_configured_before_run (warn, preflight)
+# #15 evaluation_not_configured_before_run (warn, postrun)
 #
 # Catalog §5 "Evaluations are not retroactive": Vissim records only into
-# measurements armed before the run starts. CATALOG-GAP: no "evaluations"
-# manifest exists in the {links, nodes, vehicle_inputs, signals} shadow-model
-# contract today, so this reads shadow_model["evaluations"] defensively;
-# always absent in production until an evaluation-manifest parser lands.
+# measurements armed before the run starts.
+#
+# Originally specified (M3.1) as a PREFLIGHT check against
+# shadow_model["evaluations"] -- a CATALOG-GAP field that could never be
+# populated in practice: the M2/M2.4 job runner submits each seed on its OWN
+# fresh clone in its own job work dir (routers.simulations.
+# _run_agent_simulation_job), never the agent turn's ArtifactManager working
+# copy a preflight shadow-model reparse would see, so there was no way for
+# this check to ever see "evaluations" before dispatch.
+#
+# Superseded by the fix that makes the underlying gap real (docs/phase2/
+# DECISIONS.md, 2026-07-24 "run job configures evaluation itself" entry):
+# the job runner now calls VissimController.configure_network_performance_
+# evaluation() itself, once per seed, right after load_network and before
+# RunContinuous -- and tools_run.py's run_simulation now reports whether
+# that configuration actually landed as extra["run_result"]["evaluation_
+# configured"] (postrun-only information; it cannot exist before the tool
+# dispatches). Moved this check from preflight to postrun and pointed it at
+# that field so it can actually fire in production instead of only in a
+# synthetic fixture. Tier/id/applies_to are unchanged; this is a field-source
+# + phase correction, not a new constraint.
+#
+# In practice, per the job runner's own hard-fail policy ("failure to
+# configure evaluation aborts the whole job, never a silent KPI-less run" —
+# routers/simulations.py), a "done" job record's evaluation_configured is
+# always True today, so this warning is currently unreachable via the
+# production job path; it stays a live, tested detector (both branches, via
+# an injected extra["run_result"]) for any FUTURE run tool/job path that
+# reports evaluation_configured: False instead of hard-failing outright, and
+# as a defensive backstop if a job runner regression stops setting the field
+# at all (tools_run.py's own defensive ``.get(..., False)`` default) — see
+# docs/phase2/DECISIONS.md for the entry.
 # ---------------------------------------------------------------------------
 
 
@@ -1252,16 +1280,18 @@ def _check_evaluation_not_configured_before_run(
     if action.get("tool") != "run_simulation":
         return None
 
-    evaluations = shadow_model.get("evaluations")  # CATALOG-GAP: not part of the shadow-model contract
-    if evaluations is None:
+    run_result = extra.get("run_result")
+    if run_result is None:
         return None
-    if len(evaluations) > 0:
+    if "evaluation_configured" not in run_result:
+        return None  # unmapped/older run tool -- no claim either way
+    if run_result.get("evaluation_configured"):
         return None
 
     return Finding(
         constraint_id="evaluation_not_configured_before_run",
         tier="warn",
-        phase="preflight",
+        phase="postrun",
         messages=_render("evaluation_not_configured_before_run"),
         suggested_fix=None,
         details={},
@@ -1272,7 +1302,7 @@ register(
     Constraint(
         id="evaluation_not_configured_before_run",
         applies_to=["run_simulation"],
-        phase="preflight",
+        phase="postrun",
         tier="warn",
         check=_check_evaluation_not_configured_before_run,
         message_ko="이 네트워크에는 활성화된 평가(evaluation)가 없습니다. Vissim은 실행 전에 켜둔 "

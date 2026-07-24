@@ -722,3 +722,28 @@ generic tier text would lie about an action that WAS approved and DID run. Refus
 Propose gates unchanged (getattr fallback). Distinct signatures consume independently;
 eval/runner's fresh-gate-per-round convention unaffected. A future batch-N-dispatches
 design must be explicit, never a silent regression to always-True.
+
+---
+
+## 2026-07-24 — Run jobs arm evaluation themselves; constraint moved to postrun
+
+**Context:** runs completed at every duration with SIMULATIONRUN-only result DBs — example
+networks ship with every evaluation type disarmed (collectData=false); duration was never
+the variable.
+
+**Decision:** configure_network_performance_evaluation() arms ALL FOUR evaluation types
+results_reader unconditionally queries (vehNetPerf, nodeResults, vehTravTms, queues) on
+each per-seed clone before RunContinuous, with read-back verification; configuration
+failure hard-fails the job — never a silent KPI-less "done". run_result/verification carry
+evaluation_configured. evaluation_not_configured_before_run moved preflight → postrun: its
+old shadow-model field could never be populated (jobs run on per-seed clones, not the
+turn's working copy); it now reads the real datum and stays as a tested backstop
+(unreachable today by the hard-fail policy).
+
+**Empirical trap recorded:** COM id prefixes do NOT reliably mirror .inpx element names —
+vehNetPerf/vehTravTms/queues matched, nodeResults' real prefix is NodeRes. An extrapolated
+vehNetPerf-only version passed its own probe and failed live acceptance (kpis None,
+_read_db raising on the missing MOVEMENT table). Verify every id independently and live.
+
+**Deferred note:** results_reader ERROR-log spam on legacy KPI-less artifacts — demote
+OperationalError to warning-without-traceback or extend the existing fallback pattern.

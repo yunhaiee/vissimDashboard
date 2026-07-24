@@ -295,11 +295,25 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
             "SIMULATIONRUN row -- refusing to treat this as a completed run."
         )
 
+    # The job runner (routers.simulations._run_agent_simulation_job) now
+    # configures Vissim's network-performance evaluation itself, once per
+    # seed, before RunContinuous -- and hard-fails the WHOLE job (never
+    # reaches "done") if that configuration fails, so a job record read here
+    # with status == "done" always carries evaluation_configured == True in
+    # production. The ``.get(..., False)`` default is defensive, not a live
+    # branch: a job record written before this field existed, or a future
+    # regression in the job runner that starts returning "done" without
+    # setting it, must read as "not proven configured" here rather than
+    # silently defaulting to True and hiding the gap from
+    # evaluation_not_configured_before_run's postrun check below.
+    evaluation_configured = bool(record.get("evaluation_configured", False))
+
     run_result = {
         "tables": sorted(tables),
         # Not obtainable from the result .db schema today — see this
         # module's docstring and the drafted DECISIONS.md entry.
         "deleted_vehicles": None,
+        "evaluation_configured": evaluation_configured,
     }
 
     kpis: dict[str, Any] | None = None
@@ -309,10 +323,11 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
         kpis = _summarize_kpis(job_dir(job_id))
 
     tables_text = ", ".join(run_result["tables"]) or "none"
+    eval_text = "configured" if evaluation_configured else "NOT configured (KPIs may be unavailable)"
     return {
         "message": (
             f"Simulation ran for {params.duration_s}s across {len(seeds)} seed(s); "
-            f"result tables: {tables_text}."
+            f"result tables: {tables_text}; network-performance evaluation {eval_text}."
         ),
         "verification": {
             "job_id": job_id,
@@ -320,6 +335,7 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
             "duration_s": params.duration_s,
             "random_seeds": seeds,
             "tables": run_result["tables"],
+            "evaluation_configured": evaluation_configured,
         },
         "run_result": run_result,
         "kpis": kpis,

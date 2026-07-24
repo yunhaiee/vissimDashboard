@@ -226,6 +226,7 @@ def test_run_simulation_clean_run_returns_ok_envelope_with_kpis(
                 "SIMULATIONRUN",
                 "VEHICLENETWORKPERFORMANCEMEASUREMENT_EVALUATIONTIMEINTERVALCLASS",
             ],
+            "evaluation_configured": True,
         }
     )
     monkeypatch.setattr(tools_run, "_run_job_and_wait", fake_runner)
@@ -243,6 +244,7 @@ def test_run_simulation_clean_run_returns_ok_envelope_with_kpis(
             "SIMULATIONRUN",
             "VEHICLENETWORKPERFORMANCEMEASUREMENT_EVALUATIONTIMEINTERVALCLASS",
         ],
+        "evaluation_configured": True,
     }
     assert envelope["data"]["run_result"] == {
         "tables": [
@@ -250,8 +252,10 @@ def test_run_simulation_clean_run_returns_ok_envelope_with_kpis(
             "VEHICLENETWORKPERFORMANCEMEASUREMENT_EVALUATIONTIMEINTERVALCLASS",
         ],
         "deleted_vehicles": None,
+        "evaluation_configured": True,
     }
     assert envelope["data"]["kpis"]["metrics"]["avg_delay_s"] == 32.4
+    assert "network-performance evaluation configured" in envelope["message"]
 
     # The fake runner received the SESSION's active source, the exact
     # duration, and the default one-seed list ([None] -- "don't override").
@@ -268,7 +272,14 @@ def test_run_simulation_short_run_reports_missing_kpi_tables_and_no_kpis(
     """A 5-minute run: the job runner marks it "done" (SIMULATIONRUN row
     present), but the results .db carries ONLY that table -- run_result and
     the KPI summary must both reflect that honestly, since this is the exact
-    shape guardrails.postrun's results_missing_kpi_tables detector fires on."""
+    shape guardrails.postrun's results_missing_kpi_tables detector fires on.
+
+    ``evaluation_configured`` is still True here -- the job runner now
+    hard-fails the whole job (never reaches "done") if configuration itself
+    failed, so a "done"-but-KPI-less run means "configured, but the window
+    was too short for any interval to elapse", a DIFFERENT failure mode from
+    "never configured at all". results_missing_kpi_tables (not
+    evaluation_not_configured_before_run) is the detector for THIS shape."""
     source = _source_inpx(tmp_path)
     tools_run.set_active_run_source(source)
 
@@ -278,15 +289,53 @@ def test_run_simulation_short_run_reports_missing_kpi_tables_and_no_kpis(
     monkeypatch.setattr(simulation_runs, "job_dir", lambda job_id: job_work_dir)
 
     fake_runner = _FakeJobRunner(
-        {"id": "fake-job-2", "status": "done", "result_tables": ["SIMULATIONRUN"]}
+        {
+            "id": "fake-job-2",
+            "status": "done",
+            "result_tables": ["SIMULATIONRUN"],
+            "evaluation_configured": True,
+        }
     )
     monkeypatch.setattr(tools_run, "_run_job_and_wait", fake_runner)
 
     envelope = dispatch("run_simulation", {"duration_s": 300}, registry=default_registry)
 
     assert envelope["status"] == "ok"
-    assert envelope["data"]["run_result"] == {"tables": ["SIMULATIONRUN"], "deleted_vehicles": None}
+    assert envelope["data"]["run_result"] == {
+        "tables": ["SIMULATIONRUN"],
+        "deleted_vehicles": None,
+        "evaluation_configured": True,
+    }
     assert envelope["data"]["kpis"] is None
+
+
+def test_run_simulation_missing_evaluation_configured_field_defaults_to_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Defensive default (module comment in tools_run.py): a "done" job
+    record that omits ``evaluation_configured`` entirely (e.g. written by a
+    future/older job-runner variant) must read as "not proven configured"
+    here, never silently as True -- this is what lets
+    evaluation_not_configured_before_run's postrun check actually fire."""
+    source = _source_inpx(tmp_path)
+    tools_run.set_active_run_source(source)
+
+    job_work_dir = tmp_path / "job-no-eval-field"
+    job_work_dir.mkdir()
+    _write_simulationrun_only_db(job_work_dir / "run_001.db")
+    monkeypatch.setattr(simulation_runs, "job_dir", lambda job_id: job_work_dir)
+
+    fake_runner = _FakeJobRunner(
+        {"id": "fake-job-6", "status": "done", "result_tables": ["SIMULATIONRUN"]}
+    )
+    monkeypatch.setattr(tools_run, "_run_job_and_wait", fake_runner)
+
+    envelope = dispatch("run_simulation", {"duration_s": 300}, registry=default_registry)
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"]["run_result"]["evaluation_configured"] is False
+    assert envelope["verification"]["evaluation_configured"] is False
+    assert "NOT configured" in envelope["message"]
 
 
 def test_run_simulation_multi_seed_submits_one_job_with_all_seeds(

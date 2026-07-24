@@ -17,6 +17,69 @@ class VissimObjectNotFoundError(ValueError):
     pass
 
 
+# ---------------------------------------------------------------------------
+# Network-performance evaluation configuration
+#
+# COM attribute ids verified EMPIRICALLY against live Vissim 2026
+# (backend/tools/evaluation_probe.py, run against the "Urban Intersection
+# Beijing.CN" example -- see docs/phase2/DECISIONS.md's M2.1 CycTm entry for
+# why this can never be trusted from docs/memory alone: a plausible-looking
+# id ("CycleTime") has already been proven wrong once in this codebase).
+# The probe cross-checked each candidate's pre-edit read-back against the
+# example's own .inpx ground truth (<vehNetPerf collectData="false"
+# fromTime="0" interval="999999" toTime="99999"/> and its 3 siblings below)
+# before accepting it.
+#
+# FOUR evaluation types are configured together, not just "vehicle network
+# performance" alone: services/results_reader.py's _read_db plain-executes
+# (no fallback/degrade-to-empty) against FOUR result tables, and raises --
+# losing even a successfully-read "network" dict -- if ANY ONE of them is
+# missing from the result .db. Discovered live: an earlier version of this
+# fix that armed only vehicle-network-performance made a real run's KPIs
+# come back None because MOVEMENT_EvaluationTimeIntervalClass didn't exist.
+# See docs/phase2/DECISIONS.md.
+#
+#   internal key                  -> .inpx element  -> result table (via _read_db)
+#   vehicle_network_performance   -> <vehNetPerf>    -> VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeIntervalClass
+#   node_results                  -> <nodeResults>   -> MOVEMENT_EvaluationTimeIntervalClass
+#   vehicle_travel_time           -> <vehTravTms>    -> VEHICLETRAVELTIMEMEASUREMENT_EvaluationTimeIntervalClass
+#   queue_counters                -> <queues>        -> MOVEMENT_EvaluationTimeInterval
+#
+# The COM id prefix does NOT reliably match the .inpx element name (the
+# whole reason this must be verified live, not assumed): vehNetPerf,
+# vehTravTms, and queues happened to match their xml tag name exactly
+# (VehNetPerf/VehTravTms/Queues), but nodeResults did NOT -- its real COM
+# prefix is the shorter "NodeRes", not "NodeResults".
+# ---------------------------------------------------------------------------
+
+_EVAL_TYPE_ATTR_IDS: dict[str, dict[str, str]] = {
+    "vehicle_network_performance": {
+        "collect_data": "VehNetPerfCollectData",
+        "from_time": "VehNetPerfFromTime",
+        "to_time": "VehNetPerfToTime",
+        "interval": "VehNetPerfInterval",
+    },
+    "node_results": {
+        "collect_data": "NodeResCollectData",
+        "from_time": "NodeResFromTime",
+        "to_time": "NodeResToTime",
+        "interval": "NodeResInterval",
+    },
+    "vehicle_travel_time": {
+        "collect_data": "VehTravTmsCollectData",
+        "from_time": "VehTravTmsFromTime",
+        "to_time": "VehTravTmsToTime",
+        "interval": "VehTravTmsInterval",
+    },
+    "queue_counters": {
+        "collect_data": "QueuesCollectData",
+        "from_time": "QueuesFromTime",
+        "to_time": "QueuesToTime",
+        "interval": "QueuesInterval",
+    },
+}
+
+
 class VissimController:
     def __init__(self) -> None:
         self.vissim = None
@@ -114,6 +177,95 @@ class VissimController:
             self.vissim.SaveNetAs(str(target))
         except Exception as exc:
             raise RuntimeError(f"Could not save network to {target}: {exc}") from exc
+
+    def configure_network_performance_evaluation(
+        self, *, duration_s: int, from_time: int = 0
+    ) -> dict[str, dict[str, Any]]:
+        """Arm the FOUR Vissim evaluation types
+        ``services/results_reader.py``'s ``_read_db`` unconditionally
+        requires (see the module-level comment above
+        :data:`_EVAL_TYPE_ATTR_IDS` for the full table -- vehicle network
+        performance, node results, vehicle travel time, and queue counters)
+        on the LOADED network, so a completed run's result .db contains
+        every table ``_read_db`` needs without raising partway through and
+        losing the KPI dict it already read.
+
+        Evaluations are NOT retroactive (docs/phase2/00-EXECUTION-GUIDE.md
+        SS3.1) -- this must run after ``load_network`` and before
+        ``RunContinuous``/``RunSingleStep``, every time a network is loaded
+        fresh (there is nothing to "reuse" across separate loads/instances).
+        Reconfiguring evaluation DOES delete any existing results
+        (docs/phase2/DECISIONS.md's ``evaluation_change_deletes_results``
+        constraint) -- safe here because every caller in this codebase runs
+        on its own per-job/per-seed clone that has no prior results to lose.
+
+        ``interval`` is deliberately set equal to ``to_time`` for every type
+        (one single aggregated bucket spanning the whole run): this
+        guarantees at least one result row regardless of how short
+        ``duration_s`` is, mirroring the untouched network default itself
+        (``vehNetPerf``'s own default is ``interval=999999 > toTime=99999``
+        -- Vissim already treats an interval longer than the window as "one
+        bucket", verified by ``tools/evaluation_probe.py`` against the
+        Beijing example's on-disk defaults before this method ever touches
+        them).
+
+        Raises ``RuntimeError`` (never returns a lie) if any SetAttValue
+        call fails OR if the paired read-back
+        (:meth:`get_network_performance_evaluation_config`) doesn't match
+        what was just written -- the M2.1 doctrine's "every setter has a
+        paired reader used for post-write verification".
+        """
+        to_time = max(int(duration_s), 1)
+        target_values: dict[str, dict[str, Any]] = {
+            eval_type: {
+                "collect_data": True,
+                "from_time": int(from_time),
+                "to_time": to_time,
+                "interval": to_time,
+            }
+            for eval_type in _EVAL_TYPE_ATTR_IDS
+        }
+        try:
+            evaluation = self.vissim.Evaluation
+            for eval_type, fields in _EVAL_TYPE_ATTR_IDS.items():
+                for field, attr_id in fields.items():
+                    evaluation.SetAttValue(attr_id, target_values[eval_type][field])
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not configure network-performance evaluation: {exc}"
+            ) from exc
+
+        config = self.get_network_performance_evaluation_config()
+        if config != target_values:
+            raise RuntimeError(
+                "Network-performance evaluation read-back mismatch after "
+                f"configuration: wrote {target_values}, read back {config}."
+            )
+        return config
+
+    def get_network_performance_evaluation_config(self) -> dict[str, dict[str, Any]]:
+        """Paired getter for :meth:`configure_network_performance_evaluation`.
+
+        Also usable standalone to check whether a loaded network already has
+        every required evaluation type armed (e.g. before deciding to
+        reconfigure it). Returns ``{eval_type: {"collect_data", "from_time",
+        "to_time", "interval"}}`` for every key in :data:`_EVAL_TYPE_ATTR_IDS`.
+        """
+        try:
+            evaluation = self.vissim.Evaluation
+            return {
+                eval_type: {
+                    "collect_data": bool(int(evaluation.AttValue(fields["collect_data"]))),
+                    "from_time": int(evaluation.AttValue(fields["from_time"])),
+                    "to_time": int(evaluation.AttValue(fields["to_time"])),
+                    "interval": int(evaluation.AttValue(fields["interval"])),
+                }
+                for eval_type, fields in _EVAL_TYPE_ATTR_IDS.items()
+            }
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read network-performance evaluation config: {exc}"
+            ) from exc
 
     def set_vehicle_input(self, input_no: int, volume: float) -> None:
         vehicle_input = self._item_by_key(

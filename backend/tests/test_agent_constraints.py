@@ -769,35 +769,56 @@ def test_demand_scale_route_double_count_gap_skipped_when_routes_absent():
     )
 
 
-def test_evaluation_not_configured_before_run_fires_when_empty_list():
+def test_evaluation_not_configured_before_run_fires_when_run_result_says_false():
     shadow = _shadow_model()
-    shadow["evaluations"] = []
     action = _action("run_simulation", duration_s=300)
+    extra = {"run_result": {"tables": ["SIMULATIONRUN"], "evaluation_configured": False}}
 
-    findings = run_checks("preflight", action, shadow, {})
+    findings = run_checks("postrun", action, shadow, extra)
 
     matches = [f for f in findings if f.constraint_id == "evaluation_not_configured_before_run"]
     assert len(matches) == 1
     assert matches[0].tier == "warn"
 
 
-def test_evaluation_not_configured_before_run_silent_when_armed():
+def test_evaluation_not_configured_before_run_silent_when_run_result_says_true():
     shadow = _shadow_model()
-    shadow["evaluations"] = [{"type": "node", "armed": True}]
     action = _action("run_simulation", duration_s=300)
+    extra = {
+        "run_result": {
+            "tables": ["SIMULATIONRUN", "VEHICLENETWORKPERFORMANCEMEASUREMENT_EVALUATIONTIMEINTERVALCLASS"],
+            "evaluation_configured": True,
+        }
+    }
 
-    findings = run_checks("preflight", action, shadow, {})
+    findings = run_checks("postrun", action, shadow, extra)
 
     assert not any(
         f.constraint_id == "evaluation_not_configured_before_run" for f in findings
     )
 
 
-def test_evaluation_not_configured_before_run_skipped_when_manifest_absent():
-    shadow = _shadow_model()  # no "evaluations" key at all — today's production reality
+def test_evaluation_not_configured_before_run_skipped_when_field_absent():
+    """An older/unmapped run tool's run_result carries no evaluation_configured
+    key at all -- no claim can be made either way, so this stays silent
+    (distinct from tools_run.py's OWN defensive default at the tool-envelope
+    layer, which reads a missing key as False before it ever reaches here)."""
+    shadow = _shadow_model()
+    action = _action("run_simulation", duration_s=300)
+    extra = {"run_result": {"tables": ["SIMULATIONRUN"]}}
+
+    findings = run_checks("postrun", action, shadow, extra)
+
+    assert not any(
+        f.constraint_id == "evaluation_not_configured_before_run" for f in findings
+    )
+
+
+def test_evaluation_not_configured_before_run_skipped_when_run_result_absent():
+    shadow = _shadow_model()  # no run_result in extra at all -- preflight-shaped call
     action = _action("run_simulation", duration_s=300)
 
-    findings = run_checks("preflight", action, shadow, {})
+    findings = run_checks("postrun", action, shadow, {})
 
     assert not any(
         f.constraint_id == "evaluation_not_configured_before_run" for f in findings
