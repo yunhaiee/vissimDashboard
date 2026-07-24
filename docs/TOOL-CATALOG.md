@@ -23,8 +23,11 @@ KPI summary ✅
 shared driving-behavior edits · CC1-as-scalar · agency-restricted calibration params ·
 unknown objects · out-of-range values
 
-**V1 close-out:** controller-type parsing ✅ · reduced-speed area ✅ (both 2026-07-24) ·
-network-check read verb 🔜 (v2 queue unit ③).
+**V1 close-out:** controller-type parsing ✅ · reduced-speed area ✅ ·
+load-validity check ✅ (`load_check`, tier=run — LoadNet + one init step only, NOT a full
+consistency check: no COM consistency-check surface exists anywhere in the type library,
+verified exhaustively 2026-07-24; semantic landmines stay invisible to it and the prompt
+forbids overclaiming). V1 close-out complete.
 
 ## V2a — more parameters (same machinery, new plumbing + live probing per verb)
 

@@ -847,3 +847,28 @@ SIMULATIONRUN row.
 (reduced-speed area is now agent-editable — same staleness class as the run-prose bug);
 TOOL-CATALOG bumped (offsets unlocked ✓, speed areas ✓; v1 close-out done except the
 network-check verb = queue unit ③).
+
+---
+
+## 2026-07-24 — v2 unit ③: no COM network-check surface exists; load_check ships as the closest verifiable subset
+
+**Context:** exhaustive proof — static scan of ALL 996 interfaces in the Vissim 26.0 type
+library (zero methods matching any check/consistency/validation vocabulary) plus live
+dir()/AttValue probing. NEW LANDMINE recorded alongside CycTm: **Net.AttValue fails OPEN**
+— it returns None for ANY unknown attribute id (including a deliberately bogus control
+string) instead of raising, so it can never serve as an existence probe.
+
+**Decision:** load_check (new module tools_check.py, tier=run, provider=check — it costs a
+licence seat and must never be free-dispatch): throwaway attach_to_running=False connect →
+LoadNet → ONE RunSingleStep (empirically reproduces a full run's init failure + identical
+.err content, ~200× cheaper than a real duration) on the active working copy, reporting
+load_ok/init_ok/init_error/err_content. Output key is load_check_result, deliberately
+never run_result, so postrun constraints cannot misread a probe as a completed run
+(regression-pinned). Not put in tools_run.py: synchronous-on-caller thread (edit_session
+shape), not job-queue-async — the module's own documented design forbids it.
+
+**Consequence:** catches two empirically-confirmed corruption classes (load-time refusal
+on severed references; init refusal on broken routes with the .err naming the object) —
+and is explicitly NOT a consistency check: the prompt guidance forbids describing a clean
+result as "valid/consistent" since semantic landmines (passive conflict areas, intergreen
+violations) are invisible to it. vissim_com.py needed zero changes. V1 close-out complete.

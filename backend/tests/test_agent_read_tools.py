@@ -51,9 +51,13 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_reduced_speed_area",
 }
 
-# M2.4's single run-gate tool (docs/phase2/02-ROADMAP.md M2.4).
+# M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
+# M2.4; docs/phase2/DECISIONS.md's v2 unit (3) entry). Both cost a real Vissim
+# instance so both are tier="run", but they are NOT the same provider — see
+# test_run_tools_are_tier_run_with_their_own_providers below.
 EXPECTED_RUN_TOOL_NAMES = {
     "run_simulation",
+    "load_check",
 }
 
 
@@ -106,12 +110,20 @@ def test_all_five_write_tools_are_tier_write():
         assert spec.tier == "write"
 
 
-def test_run_simulation_is_tier_run_and_run_provider():
+def test_run_tools_are_tier_run_with_their_own_providers():
+    """Both run-tier tools cost a real Vissim instance, so both are
+    tier="run" — but provider stays a per-MODULE label (same convention as
+    tools_network's "inspect" vs tools_metrics' "metrics" below), and
+    load_check is deliberately its OWN module (tools_check.py), not folded
+    into tools_run.py, so it gets its own provider rather than inheriting
+    run_simulation's "run"."""
     for name in EXPECTED_RUN_TOOL_NAMES:
         spec = default_registry.get(name)
         assert spec is not None, f"{name} not registered"
         assert spec.tier == "run"
-        assert spec.provider == "run"
+
+    assert default_registry.get("run_simulation").provider == "run"
+    assert default_registry.get("load_check").provider == "check"
 
 
 def test_network_tools_use_inspect_provider_and_metrics_tools_use_metrics_provider():

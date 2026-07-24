@@ -108,6 +108,7 @@ from typing import Any, Callable, Protocol
 # tools, and the M2.4 run tool onto default_registry at decoration time (see
 # toolkit.py's module docstring) — the orchestrator is the session entry
 # point, so it guarantees the default registry is fully populated.
+import services.agent.tools_check  # noqa: F401
 import services.agent.tools_edit  # noqa: F401
 import services.agent.tools_metrics  # noqa: F401
 import services.agent.tools_network  # noqa: F401

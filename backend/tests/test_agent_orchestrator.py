@@ -47,8 +47,12 @@ EXPECTED_WRITE_TOOLS = {
 # M2.4: the run tool is offered too — same rationale as the write tools
 # above (the dispatch-side gate + postrun detectors are the safety layer,
 # not withholding the definition), and render_contract() already narrated
-# it, so offering it also closes a prompt/capability mismatch.
-EXPECTED_RUN_TOOLS = {"run_simulation"}
+# it, so offering it also closes a prompt/capability mismatch. v2 unit (3)
+# adds load_check (tier="run" -- costs a real Vissim instance, same as
+# run_simulation, even though it never mutates the network; see
+# tools_check.py's module docstring for why no COM network-consistency
+# check exists to wrap instead).
+EXPECTED_RUN_TOOLS = {"run_simulation", "load_check"}
 
 
 @pytest.fixture(autouse=True)
