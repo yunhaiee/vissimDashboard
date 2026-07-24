@@ -589,3 +589,20 @@ against real Vissim behavior. Trace: plan → preflight → action_start → act
   (the catalog's most dangerous silent failure), signal_cycle_change_may_break_corridor_sync,
   evaluation_change_deletes_results (unconditional refuse), driving_behavior_shared_object_edit
   (unconditional refuse), agency_restricted_parameter_write.
+
+---
+
+## 2026-07-24 — M5.4 decision batch (failure injection + tables)
+
+- 5 seeded deterministic injectors (wrong_param_name, hallucinated_object_id, clamped_write,
+  ignored_write, kpi_tables_stripped) wrap the runner's existing seams; Wilson CIs (not
+  Wald), per-injector + pooled tables, deterministic rendering. Demo N=80 run shows the RQ2
+  contrast: pooled detection 60% full-stack vs 0% ablated.
+- **QUEUED (controller): wrong_param_name is invisible to detect_silent_failure under both
+  arms** — toolkit.dispatch's invalid_params rejection fires before the guardrail sandwich
+  and is never traced as a "refusal" kind. Fix direction: tag dispatch-level rejections as
+  refusal-kind trace records (they ARE refusals-with-reason), lands with the
+  target-persisted none-policy fix.
+- hallucinated_object_id's ablation-arm scoring deliberately counts only the
+  object_not_found guardrail signal, not the CI-fake's accidental failures — the fake's
+  no-dispatch asymmetry is not guaranteed by real COM; live-Vissim follow-up noted.
