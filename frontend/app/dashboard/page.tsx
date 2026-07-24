@@ -12,11 +12,13 @@ import {
   fetchActiveDataset,
   fetchCompare,
   fetchCompareSummary,
+  fetchNetwork,
   fetchRealCounts,
   fetchScenarios,
   type ActiveDataset,
   type CompareSummaryResponse,
   type DashboardCurationSpec,
+  type NetworkData,
   type NodeRealCounts,
   type ScenarioMeta,
   type ScenarioResults,
@@ -25,6 +27,9 @@ import { getScenarioDisplayColor } from "@/lib/scenarioPalette";
 import { errorTone, gehTone, toneBadgeClass, type ValidationTone } from "@/lib/validationThresholds";
 
 const DashboardMap = dynamic(() => import("@/components/DashboardMap"), { ssr: false });
+// NetworkViewer draws the raw-coordinate diagram with d3, which touches the
+// DOM directly, so it (like DashboardMap/Leaflet) must stay client-only.
+const NetworkViewer = dynamic(() => import("@/components/NetworkViewer"), { ssr: false });
 
 const KPI_METRICS = [
   // isTotal metrics (whole-network sums) scale with vehicle count, so their
@@ -150,6 +155,16 @@ export default function DashboardPage() {
   const [datasetRevision, setDatasetRevision] = useState("default");
   const [curationSpec, setCurationSpec] = useState<DashboardCurationSpec | null>(null);
   const [audience, setAudience] = useState<"plain" | "expert">("plain");
+  // Map section 지도/도식 toggle. Leaflet ("map") stays the default; "diagram"
+  // mounts NetworkViewer over the raw .inpx coordinates. The network is fetched
+  // lazily — only once the diagram has been requested at least once — and then
+  // refetched whenever the active dataset changes.
+  const [mapView, setMapView] = useState<"map" | "diagram">("map");
+  const [hasRequestedDiagram, setHasRequestedDiagram] = useState(false);
+  const [network, setNetwork] = useState<NetworkData | null>(null);
+  const [networkLoading, setNetworkLoading] = useState(false);
+  const [networkError, setNetworkError] = useState<string | null>(null);
+  const [networkReloadNonce, setNetworkReloadNonce] = useState(0);
   const requestSerial = useRef(0);
   const loadSerial = useRef(0);
   // Auto-seed a default intersection once per dataset so the performance and
@@ -401,6 +416,38 @@ export default function DashboardPage() {
     setSelectedNodeIds((prev) => prev.filter((id) => id !== nodeId));
   }, []);
 
+  const handleMapViewChange = useCallback((view: "map" | "diagram") => {
+    setMapView(view);
+    // First switch to the diagram arms the fetch effect below; once armed it
+    // stays armed so later dataset changes keep the diagram in sync even while
+    // the map view is showing.
+    if (view === "diagram") setHasRequestedDiagram(true);
+  }, []);
+
+  // Lazily load the raw-coordinate network for the diagram view, and refetch it
+  // whenever the active dataset (datasetRevision) changes or a retry is
+  // requested. Stays inert until the diagram has been opened at least once.
+  useEffect(() => {
+    if (!hasRequestedDiagram) return;
+    let cancelled = false;
+    setNetwork(null);
+    setNetworkError(null);
+    setNetworkLoading(true);
+    fetchNetwork()
+      .then((data) => {
+        if (!cancelled) setNetwork(data);
+      })
+      .catch(() => {
+        if (!cancelled) setNetworkError(t("네트워크 도식을 불러오지 못했습니다.", "Failed to load the network diagram."));
+      })
+      .finally(() => {
+        if (!cancelled) setNetworkLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetRevision, hasRequestedDiagram, networkReloadNonce, t]);
+
   const handleDatasetChange = useCallback((dataset?: ActiveDataset) => {
     setActiveDataset(dataset ?? null);
     clearDashboardData();
@@ -529,31 +576,47 @@ export default function DashboardPage() {
 
       {hasUploadedDataset && !sectionVisible("map-selection") ? null : hasUploadedDataset ? (
         <section id="map-selection" className="scroll-mt-6">
-          <SectionHeader
-            title={t("지도 기반 교차로 선택", "Map-Based Intersection Selection")}
-            subtitle={t("기존 대시보드 지도를 그대로 사용해 비교할 교차로를 최대 6개까지 선택합니다.", "Use the existing dashboard map to select up to six intersections for comparison.")}
-          />
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <SectionHeader
+              title={t("지도 기반 교차로 선택", "Map-Based Intersection Selection")}
+              subtitle={t("지도 또는 도식 보기에서 비교할 교차로를 최대 6개까지 선택합니다.", "Select up to six intersections to compare, in map or diagram view.")}
+            />
+            <MapViewToggle view={mapView} onChange={handleMapViewChange} />
+          </div>
           <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_460px]">
             <div className="relative">
               {hasData && <SectionJumpIndex showValidation={realCounts.length > 0} sectionVisible={sectionVisible} />}
 
               <div className="relative h-[520px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[60vh]">
-                <DashboardMap
-                  summary={summary}
-                  selectedNodeId={activeNodeId}
-                  selectedNodeIds={selectedNodeIds}
-                  selectedScenarioIds={selected}
-                  results={results}
-                  datasetRevision={datasetRevision}
-                  onNodeClick={handleNodeClick}
-                />
-                {loading && (
-                  <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-blue-50/75 backdrop-blur-sm">
-                    <div className="flex items-center gap-2 rounded-full border border-slate-300/70 bg-surface/90 px-4 py-2 text-sm font-medium text-slate-700">
-                      <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
-                      {t("지도 데이터 로딩 중", "Loading map data")}
-                    </div>
-                  </div>
+                {mapView === "diagram" ? (
+                  <NetworkDiagramView
+                    network={network}
+                    loading={networkLoading}
+                    error={networkError}
+                    selectedNodeIds={selectedNodeIds}
+                    onNodeClick={handleNodeClick}
+                    onRetry={() => setNetworkReloadNonce((nonce) => nonce + 1)}
+                  />
+                ) : (
+                  <>
+                    <DashboardMap
+                      summary={summary}
+                      selectedNodeId={activeNodeId}
+                      selectedNodeIds={selectedNodeIds}
+                      selectedScenarioIds={selected}
+                      results={results}
+                      datasetRevision={datasetRevision}
+                      onNodeClick={handleNodeClick}
+                    />
+                    {loading && (
+                      <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-blue-50/75 backdrop-blur-sm">
+                        <div className="flex items-center gap-2 rounded-full border border-slate-300/70 bg-surface/90 px-4 py-2 text-sm font-medium text-slate-700">
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+                          {t("지도 데이터 로딩 중", "Loading map data")}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -1650,6 +1713,90 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle: string })
       <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>
     </div>
   );
+}
+
+// Segmented text control that swaps the map section between the Leaflet map and
+// the raw-coordinate NetworkViewer diagram. Mirrors the CurationBar audience
+// toggle's styling so it reads as the same family of control.
+function MapViewToggle({
+  view,
+  onChange,
+}: {
+  view: "map" | "diagram";
+  onChange: (view: "map" | "diagram") => void;
+}) {
+  const { t } = useLanguage();
+  const options: Array<{ key: "map" | "diagram"; label: string }> = [
+    { key: "map", label: t("지도", "Map", "地図") },
+    { key: "diagram", label: t("도식", "Diagram", "ダイアグラム") },
+  ];
+
+  return (
+    <div className="flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-xs font-medium">
+      {options.map((option) => {
+        const active = view === option.key;
+        return (
+          <button
+            key={option.key}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(option.key)}
+            className={`flex h-full items-center rounded-md px-3 transition-colors ${
+              active ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Diagram-view content inside the map wrapper: its own loading and fetch-failure
+// states (muted text + a retry affordance matching the page's other controls),
+// falling through to NetworkViewer once the network is loaded.
+function NetworkDiagramView({
+  network,
+  loading,
+  error,
+  selectedNodeIds,
+  onNodeClick,
+  onRetry,
+}: {
+  network: NetworkData | null;
+  loading: boolean;
+  error: string | null;
+  selectedNodeIds: string[];
+  onNodeClick: (nodeId: string, nodeName: string) => void;
+  onRetry: () => void;
+}) {
+  const { t } = useLanguage();
+
+  if (error) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+        <p className="text-sm text-slate-400">{error}</p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-lg border border-slate-300/70 bg-surface/90 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-surface"
+        >
+          {t("다시 시도", "Retry")}
+        </button>
+      </div>
+    );
+  }
+
+  if (loading || !network) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center">
+        <p className="text-sm text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
+      </div>
+    );
+  }
+
+  return <NetworkViewer network={network} selectedNodeIds={selectedNodeIds} onNodeClick={onNodeClick} />;
 }
 
 function DashboardScenarioPicker({
