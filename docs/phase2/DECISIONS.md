@@ -747,3 +747,26 @@ _read_db raising on the missing MOVEMENT table). Verify every id independently a
 
 **Deferred note:** results_reader ERROR-log spam on legacy KPI-less artifacts — demote
 OperationalError to warning-without-traceback or extend the existing fallback pattern.
+
+---
+
+## 2026-07-24 — Live-demo fix: provider-ladder wall-clock ceiling + per-attempt logging
+
+**Context:** a completed 5-seed run's answer-composition call stalled 10+ minutes with zero
+server-visible output — per-call bounds existed (timeout=90, max_retries=1) but nothing
+capped the WALK across ladder rungs, no attempt failure was ever logged, and the Qwen
+worker-attempts loop had the identical shape (worse: ~420s worker-restart waits between
+attempts).
+
+**Decision:** services.agent.structured.ladder_ceiling_seconds() (default 240s,
+AGENT_PROVIDER_LADDER_CEILING_S) is the one shared total-elapsed budget both ladders check
+before every attempt; a trip logs one ERROR and returns the structured failure the planner
+already maps to a visible apologetic/clarification answer. Every attempt failure logs
+WARNING (rung/attempt, exception class, elapsed); recovery after failure logs INFO.
+Claude's transport-exception path now retries once (was give-up-instantly, asymmetric with
+the validation-retry path); mirrored onto the Qwen loop.
+
+**Consequence:** a dead provider surfaces a grep-able ERROR within the ceiling instead of
+an unbounded silent wait. Residual: the ceiling bounds the walk, not a single pathological
+call ignoring its SDK timeout (would need thread preemption); the orchestrator's own
+iterations each get a fresh ceiling, converging via the rule-fallback to ask_user.

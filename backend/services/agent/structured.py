@@ -20,6 +20,7 @@ provider module.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
@@ -320,6 +321,45 @@ def build_strict_json_prompt(
         'this shape: {"tool": "<tool name>", "params": {...}}'
     )
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Provider-ladder wall-clock ceiling (live-demo resilience fix, 2026-07-24)
+#
+# Both providers' generate_structured/generate can internally retry a
+# bounded-but-lengthy call across more than one attempt (Claude:
+# generate_structured's own rung-0/rung-1 tool_use retry; Qwen: generate()'s
+# stdio-worker QWEN_GENERATION_ATTEMPTS loop, which can also pay a fresh
+# worker-restart wait between attempts). Before this fix, NEITHER ladder
+# logged a failed attempt (a timed-out HTTP/IPC call logs nothing on its
+# own) nor bounded the WALK across attempts -- only each individual attempt
+# had its own timeout. A live turn was observed stalled 10+ minutes with
+# zero server-visible log output as a result. `ladder_ceiling_seconds()` is
+# the one shared total-elapsed budget both providers' ladders check between
+# attempts; see docs/phase2/DECISIONS.md for the dated entry and each
+# provider module for how its own ladder logs per-attempt WARNING/INFO and
+# enforces this ceiling.
+# ---------------------------------------------------------------------------
+
+DEFAULT_LADDER_CEILING_S = 240.0
+
+
+def ladder_ceiling_seconds() -> float:
+    """The total wall-clock budget (seconds) a provider's structured-generation
+    ladder may spend across ALL of its rungs/attempts combined, read fresh on
+    every call (never cached) so a test or an ops override via
+    ``AGENT_PROVIDER_LADDER_CEILING_S`` always takes effect immediately.
+    Falls back to :data:`DEFAULT_LADDER_CEILING_S` on anything unset,
+    unparsable, or non-positive -- a misconfigured env var must never disable
+    the ceiling outright."""
+    raw = os.getenv("AGENT_PROVIDER_LADDER_CEILING_S", "").strip()
+    if not raw:
+        return DEFAULT_LADDER_CEILING_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_LADDER_CEILING_S
+    return value if value > 0 else DEFAULT_LADDER_CEILING_S
 
 
 def build_meta(

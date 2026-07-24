@@ -13,7 +13,9 @@ small max_tokens).
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 import types
 from typing import Any
 
@@ -21,6 +23,8 @@ import pytest
 
 import config  # noqa: F401 - importing triggers load_dotenv of backend/.env
 
+from services import claude_provider as claude_provider_module
+from services.agent import structured as structured_module
 from services.agent.structured import salvage_tool_params, validate_action
 from services.claude_provider import ClaudeProvider
 
@@ -72,13 +76,21 @@ def _response(content: list[Any]) -> types.SimpleNamespace:
 
 
 class _StubMessages:
+    """Pops one queued item per ``create()`` call. An item that is a
+    ``BaseException`` instance is RAISED (simulating a transport/timeout
+    failure); anything else is returned (the existing canned-response
+    convention)."""
+
     def __init__(self, responses: list[Any]) -> None:
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
 
     def create(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
-        return self._responses.pop(0)
+        item = self._responses.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
 
 class _StubClient:
@@ -221,6 +233,149 @@ def test_claude_generate_structured_gives_up_after_one_retry(monkeypatch: pytest
     assert len(stub.messages.calls) == 2
 
 
+# ---------------------------------------------------------------------------
+# 3b. Live-demo resilience fix (2026-07-24): per-attempt logging + a hard
+# wall-clock ceiling across the whole rung ladder, so a stalled/timing-out
+# provider call can never silently walk for minutes with zero log output.
+# See docs/phase2/DECISIONS.md for the dated entry and
+# services/claude_provider.py's module docstring for the incident.
+# ---------------------------------------------------------------------------
+
+_CLAUDE_PROVIDER_LOGGER = "services.claude_provider"
+
+
+def test_claude_generate_structured_fails_once_then_succeeds_logs_warning_then_info(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A transport-level exception (e.g. a timed-out request) on rung 0,
+    followed by a clean tool_use on rung 1: the ladder recovers (unlike the
+    pre-fix code, which gave up immediately on ANY exception, never trying a
+    second rung), logs one WARNING for the failed attempt and one INFO for
+    the recovery, and returns the normal answer -- not a hang, not silence.
+    """
+    second = _response([_tool_use_block("get_link_volume", {"link_id": "404"})])
+    provider, stub = _provider_with_stub(monkeypatch, [TimeoutError("request timed out"), second])
+
+    with caplog.at_level(logging.INFO, logger=_CLAUDE_PROVIDER_LOGGER):
+        action, meta = provider.generate_structured(
+            messages=[{"role": "user", "content": "check link 404"}],
+            tools=TOOLS,
+        )
+
+    assert action == {"tool": "get_link_volume", "params": {"link_id": "404"}}
+    assert meta["fallback_rung"] == 1
+    assert len(stub.messages.calls) == 2
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(warnings) == 1
+    assert "rung=0" in warnings[0].message
+    assert "TimeoutError" in warnings[0].message
+    assert len(infos) == 1
+    assert "recovered" in infos[0].message
+    assert "rung=1" in infos[0].message
+
+
+def test_claude_generate_structured_every_call_times_out_gives_up_without_hanging(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A client whose every call raises TimeoutError: the ladder still
+    concludes (both rungs attempted, per the existing 2-rung shape) with a
+    structured failure the planner's rule-fallback ladder turns into a
+    visible answer -- never an unbounded/silent walk. Each attempt logs a
+    WARNING (server-visible even though httpx itself never logs a timeout)."""
+    provider, stub = _provider_with_stub(
+        monkeypatch, [TimeoutError("request timed out"), TimeoutError("request timed out again")]
+    )
+
+    with caplog.at_level(logging.WARNING, logger=_CLAUDE_PROVIDER_LOGGER):
+        action, meta = provider.generate_structured(
+            messages=[{"role": "user", "content": "check link 505"}],
+            tools=TOOLS,
+        )
+
+    assert action is None
+    assert meta["fallback_rung"] == 2
+    assert "request timed out again" in meta["error"]
+    assert len(stub.messages.calls) == 2  # both rungs attempted -- no silent extra walk
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2
+    assert "rung=0" in warnings[0].message and "TimeoutError" in warnings[0].message
+    assert "rung=1" in warnings[1].message and "TimeoutError" in warnings[1].message
+
+
+def test_claude_generate_structured_ceiling_stops_the_walk_before_a_further_call(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AGENT_PROVIDER_LADDER_CEILING_S is read fresh on every call (env
+    override respected) and enforced BETWEEN attempts: once the elapsed
+    budget is used up, the ladder logs one ERROR line and returns the
+    failure immediately instead of starting another bounded-but-lengthy
+    call. A deterministic fake clock (not real sleeps) drives the elapsed
+    time so this test is fast and reproducible."""
+    monkeypatch.setenv("AGENT_PROVIDER_LADDER_CEILING_S", "0.15")
+
+    # Advances by 0.1s on every time.monotonic() call. Sequence for this
+    # code path: ladder_start=0.0, elapsed_before(rung0)=0.1s (< 0.15,
+    # proceeds), attempt_start=0.2s, the raise, attempt_elapsed=0.1s ->
+    # WARNING logged, continue to rung=1; elapsed_before(rung1)=0.4s (0.4 -
+    # 0.0) >= ceiling(0.15s) -> ceiling trips, NO second client call is made.
+    counter = {"t": -0.1}
+
+    def fake_monotonic() -> float:
+        counter["t"] += 0.1
+        return counter["t"]
+
+    monkeypatch.setattr(claude_provider_module.time, "monotonic", fake_monotonic)
+
+    provider, stub = _provider_with_stub(monkeypatch, [TimeoutError("slow request")])
+
+    with caplog.at_level(logging.WARNING, logger=_CLAUDE_PROVIDER_LOGGER):
+        action, meta = provider.generate_structured(
+            messages=[{"role": "user", "content": "check link 606"}],
+            tools=TOOLS,
+        )
+
+    assert action is None
+    assert meta["fallback_rung"] == 2
+    assert "ceiling" in meta["error"].lower()
+    assert len(stub.messages.calls) == 1  # the walk stopped -- rung 1 never attempted
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "ceiling" in errors[0].message.lower()
+    assert "rung=1" in errors[0].message
+
+
+def test_ladder_ceiling_seconds_env_override_and_safe_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ladder_ceiling_seconds`` (services.agent.structured) is the ONE
+    shared helper both providers' ladders read -- exercised here once rather
+    than duplicated per provider."""
+    monkeypatch.delenv("AGENT_PROVIDER_LADDER_CEILING_S", raising=False)
+    assert (
+        structured_module.ladder_ceiling_seconds()
+        == structured_module.DEFAULT_LADDER_CEILING_S
+    )
+
+    monkeypatch.setenv("AGENT_PROVIDER_LADDER_CEILING_S", "12.5")
+    assert structured_module.ladder_ceiling_seconds() == 12.5
+
+    # Unparsable or non-positive overrides must never disable the ceiling.
+    monkeypatch.setenv("AGENT_PROVIDER_LADDER_CEILING_S", "not-a-number")
+    assert (
+        structured_module.ladder_ceiling_seconds()
+        == structured_module.DEFAULT_LADDER_CEILING_S
+    )
+    monkeypatch.setenv("AGENT_PROVIDER_LADDER_CEILING_S", "-5")
+    assert (
+        structured_module.ladder_ceiling_seconds()
+        == structured_module.DEFAULT_LADDER_CEILING_S
+    )
+
+
 def test_claude_generate_structured_no_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = ClaudeProvider()
     monkeypatch.setattr(provider, "_api_key_present", lambda: False)
@@ -291,6 +446,116 @@ def test_qwen_generate_structured_garbage(monkeypatch: pytest.MonkeyPatch) -> No
     assert action is None
     assert meta["fallback_rung"] == 2
     assert meta["error"]
+
+
+# ---------------------------------------------------------------------------
+# 4b. Qwen mirror: generate()'s own stdio-worker attempts loop is a second
+# bounded-but-lengthy ladder generate_structured feeds through (see
+# services/assistant_router.py's docstring above the loop and
+# docs/phase2/DECISIONS.md). Exercised directly against ``generate()``
+# (generate_structured always calls it exactly once and would otherwise
+# never surface this loop's own retry behavior).
+# ---------------------------------------------------------------------------
+
+
+def _worker_ready_provider(monkeypatch: pytest.MonkeyPatch):
+    from services.assistant_router import LocalQwenProvider
+
+    provider = LocalQwenProvider()
+    # Bypass the two guards that keep this branch inert under pytest by
+    # design (PYTEST_CURRENT_TEST + real model/python paths) -- this test
+    # exercises ONLY the attempts-loop bookkeeping, never a real subprocess.
+    monkeypatch.setattr(provider, "_worker_auto_start_enabled", lambda: True)
+    monkeypatch.setattr(type(provider.model_dir), "exists", lambda self: True)
+    monkeypatch.setattr(type(provider.python_path), "exists", lambda self: True)
+    monkeypatch.setattr(provider, "_restart_worker_after_failure", lambda: None)
+    return provider
+
+
+def test_qwen_generate_worker_ladder_fails_once_then_succeeds_logs_warning_then_info(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    provider = _worker_ready_provider(monkeypatch)
+    calls: list[int] = []
+
+    def fake_generate_with_worker(prompt: str, on_token: Any = None) -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError("worker timed out")
+        return "final answer text"
+
+    monkeypatch.setattr(provider, "_generate_with_worker", fake_generate_with_worker)
+
+    with caplog.at_level(logging.INFO, logger="services.assistant_router"):
+        answer, meta = provider.generate("hi")
+
+    assert answer == "final answer text"
+    assert meta == {"mode": "stdio-worker", "attempts": 2}
+    assert len(calls) == 2
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(warnings) == 1
+    assert "attempt=1/2" in warnings[0].message
+    assert "TimeoutError" in warnings[0].message
+    assert len(infos) == 1
+    assert "recovered" in infos[0].message
+    assert "attempt=2/2" in infos[0].message
+
+
+def test_qwen_generate_worker_ladder_every_attempt_fails_gives_up_without_hanging(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    provider = _worker_ready_provider(monkeypatch)
+
+    def always_times_out(prompt: str, on_token: Any = None) -> str:
+        raise TimeoutError("worker timed out")
+
+    monkeypatch.setattr(provider, "_generate_with_worker", always_times_out)
+
+    with caplog.at_level(logging.WARNING, logger="services.assistant_router"):
+        answer, meta = provider.generate("hi")
+
+    assert answer is None
+    assert meta["mode"] == "fallback"
+    assert "worker timed out" in meta["error"]
+    assert meta["attempts"] == 2
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2
+    assert "attempt=1/2" in warnings[0].message
+    assert "attempt=2/2" in warnings[1].message
+
+
+def test_qwen_generate_worker_ladder_ceiling_stops_the_walk_before_a_further_attempt(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    provider = _worker_ready_provider(monkeypatch)
+    monkeypatch.setenv("AGENT_PROVIDER_LADDER_CEILING_S", "0.15")
+
+    counter = {"t": -0.1}
+
+    def fake_monotonic() -> float:
+        counter["t"] += 0.1
+        return counter["t"]
+
+    monkeypatch.setattr(time, "monotonic", fake_monotonic)
+
+    def always_times_out(prompt: str, on_token: Any = None) -> str:
+        raise TimeoutError("worker timed out")
+
+    monkeypatch.setattr(provider, "_generate_with_worker", always_times_out)
+
+    with caplog.at_level(logging.WARNING, logger="services.assistant_router"):
+        answer, meta = provider.generate("hi")
+
+    assert answer is None
+    assert meta["mode"] == "fallback"
+    assert "ceiling" in meta["error"].lower()
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "ceiling" in errors[0].message.lower()
 
 
 # ---------------------------------------------------------------------------

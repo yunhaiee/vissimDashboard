@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import json
+import logging
 import os
 from pathlib import Path
 from queue import Empty, Queue
@@ -24,6 +25,8 @@ from services.validation import geh as compute_geh, load_real_counts
 from services.results_reader import get_compare_summary, get_selected_node_details, list_scenarios
 from services.simulation_runs import list_job_records
 from services.vissim_tool import get_vissim_com_capabilities, get_vissim_status
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_QWEN_MODEL_DIR = r"C:\Users\kaistys\models\Qwen3.5-9B"
 DEFAULT_QWEN_PYTHON = r"C:\Users\kaistys\anaconda3\envs\Qwen\python.exe"
@@ -197,17 +200,69 @@ class LocalQwenProvider:
                 return None, {"mode": "fallback", "error": str(exc)}
 
         if self._worker_auto_start_enabled() and self.model_dir.exists() and self.python_path.exists():
+            # Live-demo resilience mirror (see services/claude_provider.py's
+            # generate_structured and docs/phase2/DECISIONS.md, dated entry):
+            # this loop is Qwen's own bounded-but-lengthy retry ladder --
+            # each attempt is bounded by QWEN_GENERATION_TIMEOUT_SEC (default
+            # 240s) and a failed attempt before the last also pays a fresh
+            # worker-restart wait (_restart_worker_after_failure ->
+            # QWEN_WORKER_START_TIMEOUT_SEC, default 420s) -- so two attempts
+            # could previously walk silently for the better part of 15
+            # minutes with zero log output. ladder_ceiling_seconds() (shared
+            # with the Claude path) bounds the total walk; every attempt
+            # failure now logs at WARNING, a recovery after a prior failure
+            # logs at INFO, and a ceiling trip logs one ERROR line before
+            # returning the same (None, meta) shape callers already handle.
+            from services.agent.structured import ladder_ceiling_seconds
+
             attempts = max(1, int(os.getenv("QWEN_GENERATION_ATTEMPTS", "2")))
+            ceiling = ladder_ceiling_seconds()
+            ladder_start = time.monotonic()
             last_error: Exception | None = None
+            had_prior_failure = False
             for attempt in range(1, attempts + 1):
+                elapsed_before = time.monotonic() - ladder_start
+                if elapsed_before >= ceiling:
+                    logger.error(
+                        "LocalQwenProvider.generate: worker ladder ceiling exceeded "
+                        "(elapsed=%.1fs >= ceiling=%.1fs) before attempt=%d/%d -- "
+                        "aborting without a further attempt",
+                        elapsed_before, ceiling, attempt, attempts,
+                    )
+                    return None, {
+                        "mode": "fallback",
+                        "error": (
+                            f"provider ladder ceiling ({ceiling:.0f}s) exceeded after "
+                            f"{elapsed_before:.1f}s; aborted before attempt {attempt}"
+                        ),
+                        "attempts": attempt - 1,
+                    }
+
+                attempt_start = time.monotonic()
                 try:
-                    return self._generate_with_worker(prompt, on_token), {"mode": "stdio-worker", "attempts": attempt}
+                    text = self._generate_with_worker(prompt, on_token)
                 except Exception as exc:
+                    attempt_elapsed = time.monotonic() - attempt_start
+                    logger.warning(
+                        "LocalQwenProvider.generate: worker attempt failed "
+                        "(attempt=%d/%d elapsed=%.1fs exception=%s): %s",
+                        attempt, attempts, attempt_elapsed, type(exc).__name__, exc,
+                    )
                     last_error = exc
+                    had_prior_failure = True
                     self._worker_error = str(exc)
                     self._worker_state = "failed"
                     if attempt < attempts:
                         self._restart_worker_after_failure()
+                    continue
+
+                if had_prior_failure:
+                    logger.info(
+                        "LocalQwenProvider.generate: worker recovered on attempt=%d/%d "
+                        "after a prior failure (total elapsed=%.1fs)",
+                        attempt, attempts, time.monotonic() - ladder_start,
+                    )
+                return text, {"mode": "stdio-worker", "attempts": attempt}
             return None, {"mode": "fallback", "error": str(last_error or "Qwen generation failed."), "attempts": attempts}
 
         return None, {"mode": "fallback", "error": "Local Qwen worker is not available."}

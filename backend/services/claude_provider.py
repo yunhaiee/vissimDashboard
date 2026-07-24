@@ -8,10 +8,36 @@ to force the local model even when an API key is present.
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Any, Callable
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
+
+# Live-demo incident (2026-07-24): a 5-seed simulation job completed
+# successfully, but the turn's final answer-composition generate_structured
+# call then stalled for 10+ minutes with ZERO log output -- a timed-out HTTP
+# request logs nothing on its own (httpx logs only completions), and the
+# rung-retry ladder below silently re-attempted a second bounded-but-lengthy
+# call after the first. The client-level bound (`timeout=90.0,
+# max_retries=1`, see `_get_client` above) already caps any ONE
+# `messages.create()` call, but nothing previously capped the WALK across
+# this method's own rungs, and no attempt failure was ever logged --
+# `on_step`/the NDJSON stream just showed "Preparing answer..." with nothing
+# server-side to grep. ``services.agent.structured.ladder_ceiling_seconds()``
+# (imported lazily inside the method, matching this module's existing lazy
+# ``import anthropic`` / ``from services.agent.structured import
+# build_meta, salvage_and_validate`` pattern) is the hard wall-clock budget
+# across every rung/attempt in `generate_structured`, shared with the Qwen
+# provider's own worker-attempts ladder (assistant_router.py); each attempt
+# failure is now logged at WARNING (rung, attempt, exception class, elapsed
+# seconds) and a ceiling trip logs one clear ERROR line before returning the
+# same structured failure shape the planner's rule-fallback ladder already
+# turns into a visible apologetic/clarification answer -- see
+# docs/phase2/DECISIONS.md for the dated entry.
 
 
 class ClaudeProvider:
@@ -125,11 +151,24 @@ class ClaudeProvider:
         contamination, then validates) before being accepted. On a missing/
         invalid tool_use block, retries once with an appended assistant+user
         turn stating the validation error (``fallback_rung`` 1); giving up after
-        that returns ``(None, meta)`` with the error (``fallback_rung`` 2). No
-        streaming. See :mod:`services.agent.structured` for the shared
-        salvage/validation/meta-building both providers use.
+        that returns ``(None, meta)`` with the error (``fallback_rung`` 2). A
+        transport-level exception (timeout, connection error, ...) also gets
+        one retry of the SAME request (no assistant response to echo/correct),
+        immediately giving up on the second failure. No streaming. See
+        :mod:`services.agent.structured` for the shared salvage/validation/
+        meta-building both providers use.
+
+        The whole rung ladder is bounded by
+        ``services.agent.structured.ladder_ceiling_seconds()`` (default 240s,
+        ``AGENT_PROVIDER_LADDER_CEILING_S``-overridable): the
+        elapsed wall-clock time is checked before every attempt, and exceeding
+        the ceiling stops the walk immediately (one ERROR log line) instead of
+        starting another bounded-but-lengthy call. Every attempt failure logs
+        at WARNING (rung, attempt, exception class or invalid-response reason,
+        elapsed seconds); a rung that succeeds after an earlier failure logs
+        at INFO. See the module docstring for the incident this closes.
         """
-        from services.agent.structured import build_meta, salvage_and_validate
+        from services.agent.structured import build_meta, ladder_ceiling_seconds, salvage_and_validate
 
         if not self._api_key_present():
             return None, build_meta(
@@ -160,14 +199,51 @@ class ClaudeProvider:
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
             ]
 
+        ceiling = ladder_ceiling_seconds()
+        ladder_start = time.monotonic()
         last_error = "Claude did not return a valid action."
+        had_prior_failure = False
+
         for rung in (0, 1):
+            attempt = rung + 1  # this ladder makes exactly one call per rung
+            elapsed_before = time.monotonic() - ladder_start
+            if elapsed_before >= ceiling:
+                logger.error(
+                    "generate_structured: provider ladder ceiling exceeded "
+                    "(elapsed=%.1fs >= ceiling=%.1fs) before rung=%d attempt=%d -- "
+                    "aborting without a further provider call",
+                    elapsed_before, ceiling, rung, attempt,
+                )
+                return None, build_meta(
+                    mode="claude-api",
+                    fallback_rung=2,
+                    model=self.model,
+                    error=(
+                        f"provider ladder ceiling ({ceiling:.0f}s) exceeded after "
+                        f"{elapsed_before:.1f}s; aborted before rung {rung}"
+                    ),
+                )
+
+            attempt_start = time.monotonic()
             try:
                 response = client.messages.create(**kwargs)
             except Exception as exc:
-                return None, build_meta(
-                    mode="claude-api", fallback_rung=2, model=self.model, error=str(exc)
+                attempt_elapsed = time.monotonic() - attempt_start
+                logger.warning(
+                    "generate_structured: provider attempt failed "
+                    "(rung=%d attempt=%d elapsed=%.1fs exception=%s): %s",
+                    rung, attempt, attempt_elapsed, type(exc).__name__, exc,
                 )
+                last_error = str(exc)
+                had_prior_failure = True
+                if rung == 1:
+                    return None, build_meta(
+                        mode="claude-api", fallback_rung=2, model=self.model, error=last_error
+                    )
+                # Transport/timeout failure, not a bad model response -- retry
+                # the identical request on the next rung rather than building
+                # a correction turn (there is no assistant response to echo).
+                continue
 
             tool_use_block = next(
                 (block for block in response.content if getattr(block, "type", "") == "tool_use"),
@@ -177,10 +253,24 @@ class ClaudeProvider:
                 raw_action = {"tool": tool_use_block.name, "params": tool_use_block.input}
                 action, reason = salvage_and_validate(raw_action, tools, schema)
                 if reason is None:
+                    if had_prior_failure:
+                        logger.info(
+                            "generate_structured: provider recovered on rung=%d attempt=%d "
+                            "after a prior failure (total elapsed=%.1fs)",
+                            rung, attempt, time.monotonic() - ladder_start,
+                        )
                     return action, build_meta(mode="claude-api", fallback_rung=rung, model=self.model)
                 last_error = reason
             else:
                 last_error = "Claude response contained no tool_use block."
+
+            attempt_elapsed = time.monotonic() - attempt_start
+            logger.warning(
+                "generate_structured: provider attempt returned an invalid action "
+                "(rung=%d attempt=%d elapsed=%.1fs reason=%s)",
+                rung, attempt, attempt_elapsed, last_error,
+            )
+            had_prior_failure = True
 
             if rung == 0:
                 retry_notice = (
