@@ -34,7 +34,9 @@ forbids overclaiming). V1 close-out complete.
 time-varying demand profiles (multi-interval inputs) · vehicle composition shares ·
 static route relative flows · desired-speed decision PAIRS (set+restore atomic) ·
 desired-speed distribution assignment · desired-speed/time DISTRIBUTION curve editing
-(the legitimate CC1 route) · conflict-area status (passive↔active) · priority-rule
+(the legitimate CC1 route) · conflict-area status ✅(shipped 2026-07-24: get_conflict_areas
++ set_conflict_area_status, number-addressed with link-pair echo on the card; the
+conflict_area_data_unavailable gap-check now live) · priority-rule
 gap/headway params · driving-behavior params via duplicate-then-edit (expert-gated) ·
 dwell-time distributions · signal green-splits within a program (needs blob writer) ·
 vehicle type properties (accel/decel curves, lengths, weight/power)

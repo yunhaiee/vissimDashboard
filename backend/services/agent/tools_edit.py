@@ -14,7 +14,8 @@ replace onto the working copy), then return an envelope whose
 actually reached the saved file (the "target-persisted" check,
 docs/phase2/DECISIONS.md, "postwrite gains a target-persisted check").
 
-Param names for the three object-targeting tools match
+Param names for the four object-targeting tools (vehicle input, signal cycle,
+signal offset, conflict area status) match
 ``guardrails._WRITE_TARGET_FIELD_SPEC`` EXACTLY (tool name AND field names)
 -- that table is what lets the postwrite "nothing else moved" diff exempt
 each tool's own intended target field; drifting a name here silently
@@ -59,7 +60,7 @@ exists for an XML-injected object).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -237,6 +238,54 @@ def set_random_seed(params: SetRandomSeedParams) -> dict[str, Any]:
     return {
         "message": f"Random seed set to {params.seed}.",
         "verification": {"written_value": params.seed, "readback_value": readback},
+    }
+
+
+# ---------------------------------------------------------------------------
+# set_conflict_area_status(conflict_area_no, status)
+#
+# v2 unit (4): the catalog's single most dangerous silent failure -- conflict
+# areas default to Passive (no right-of-way control at all; vehicles drive
+# through each other and the run finishes and reports confident numbers) --
+# finally becomes fixable. COM attribute ids (No/LinkA/LinkB/Status) verified
+# live against Vissim 2026 by backend/tools/conflict_area_probe.py: they
+# match the .inpx XML attribute names exactly, unlike CycTm/NodeRes. Status
+# is restricted to the 4 values actually observed across the .inpx XML of
+# ALL 25 real Vissim 2026 example networks (7294+574+334+292 conflict areas
+# tallied) -- a value outside that set is a structured invalid_params
+# rejection, never reaches COM. Conflict areas have NO Add/Remove via COM
+# (docs/phase2/00-EXECUTION-GUIDE.md SS3.2, derived from geometry) -- this
+# tool can only ever mutate an EXISTING conflict area's status.
+# ---------------------------------------------------------------------------
+
+
+class SetConflictAreaStatusParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conflict_area_no: str
+    status: Literal["PASSIVE", "AHASRIGHTOFWAY", "BHASRIGHTOFWAY", "UNDETERMINED"]
+
+
+@tool(
+    name="set_conflict_area_status",
+    tier="write",
+    provider="edit",
+    params=SetConflictAreaStatusParams,
+)
+def set_conflict_area_status(params: SetConflictAreaStatusParams) -> dict[str, Any]:
+    """Set a conflict area's right-of-way status (PASSIVE/AHASRIGHTOFWAY/BHASRIGHTOFWAY/UNDETERMINED; COM attribute Status) on the active edit session's working network -- fixes the catalog's most dangerous silent failure: Passive conflict areas let vehicles drive through each other while the run reports clean results."""
+    session = _require_session()
+    conflict_area_no = _coerce_id(params.conflict_area_no, "conflict_area_no")
+    session.set_conflict_area_status(conflict_area_no, params.status)
+    after = session.get_conflict_area(conflict_area_no)
+    session.persist()
+    return {
+        "message": (
+            f"Conflict area {params.conflict_area_no} (link {after['link_a']} vs link "
+            f"{after['link_b']}) status set to {params.status}."
+        ),
+        "verification": {"written_value": params.status, "readback_value": after["status"]},
+        "artifacts": {"link_a": after["link_a"], "link_b": after["link_b"]},
     }
 
 

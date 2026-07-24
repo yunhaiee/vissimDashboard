@@ -63,6 +63,12 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     "nodes": "id",
     "vehicle_inputs": "no",
     "signals": "sc_no",
+    # v2 unit (4): required by BOTH postwrite checks below, not diff-only --
+    # _target_not_persisted_finding looks this up directly (a KeyError
+    # without it, verified), and _nothing_else_moved_diff also gains
+    # conflict_areas coverage as an unavoidable consequence of the same
+    # entry (same shared table both mechanisms read).
+    "conflict_areas": "no",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -101,6 +107,17 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "id_param": "sc_no",
         "value_field": "offset",
         "none_means": "parser_blind",
+    },
+    # v2 unit (4): status is a plain XML attribute the parser can always see
+    # whenever the conflictArea element itself exists (verified live --
+    # backend/tools/conflict_area_probe.py -- no opaque-blob case like
+    # signal cycle_time) -- so, like volume, a None after a write IS evidence
+    # the write never reached the file.
+    "set_conflict_area_status": {
+        "object_class": "conflict_areas",
+        "id_param": "conflict_area_no",
+        "value_field": "status",
+        "none_means": "not_persisted",
     },
 }
 

@@ -26,6 +26,7 @@ EXPECTED_READ_TOOLS = {
     "resolve_object",
     "get_vehicle_inputs",
     "get_signal_controllers",
+    "get_conflict_areas",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -35,6 +36,7 @@ EXPECTED_READ_TOOLS = {
 # the dispatch-side WriteGate + guardrail engine, not to withholding the
 # tool definition from the model. v2 unit (2) adds set_reduced_speed_area
 # (XML-injection, not COM — see tools_edit.py's own docstring), the sixth.
+# v2 unit (4) adds set_conflict_area_status, the seventh.
 EXPECTED_WRITE_TOOLS = {
     "set_vehicle_input_volume",
     "set_signal_cycle",
@@ -42,6 +44,7 @@ EXPECTED_WRITE_TOOLS = {
     "set_sim_duration",
     "set_random_seed",
     "set_reduced_speed_area",
+    "set_conflict_area_status",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

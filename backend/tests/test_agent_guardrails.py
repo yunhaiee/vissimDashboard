@@ -24,6 +24,7 @@ def _shadow_model(
     vehicle_inputs: list[dict[str, Any]] | None = None,
     signals: list[dict[str, Any]] | None = None,
     nodes: list[dict[str, Any]] | None = None,
+    conflict_areas: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -34,6 +35,7 @@ def _shadow_model(
         else [{"no": "1", "name": "Main St EB", "link": "101", "volume": 500.0}],
         "signals": signals if signals is not None else [],
         "nodes": nodes if nodes is not None else [],
+        "conflict_areas": conflict_areas if conflict_areas is not None else [],
     }
 
 
@@ -213,6 +215,63 @@ def test_postwrite_diff_is_silent_when_only_the_target_field_changed():
     assert report.blocking is False
 
 
+def test_postwrite_diff_is_silent_when_only_the_conflict_area_status_changed():
+    # v2 unit (4): same exemption shape as the other three object-targeting
+    # tools, but on the new conflict_areas object class (required wiring:
+    # _SHADOW_OBJECT_ID_FIELDS["conflict_areas"] is a dependency of the
+    # target-persisted check too, not diff-only -- see that dict's comment).
+    action = _action("set_conflict_area_status", conflict_area_no="3", status="AHASRIGHTOFWAY")
+    before = _shadow_model(
+        conflict_areas=[{"no": "3", "link_a": "3", "link_b": "12", "status": "PASSIVE"}]
+    )
+    after = _shadow_model(
+        conflict_areas=[{"no": "3", "link_a": "3", "link_b": "12", "status": "AHASRIGHTOFWAY"}]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": "AHASRIGHTOFWAY", "readback_value": "AHASRIGHTOFWAY"}
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_flags_an_unrelated_conflict_area_status_change_as_evidence():
+    # The target conflict area's own status IS exempt, but some OTHER
+    # conflict area's status silently changing too must still be evidence —
+    # exactly the "nothing else moved" guarantee this diff exists for.
+    action = _action("set_conflict_area_status", conflict_area_no="3", status="AHASRIGHTOFWAY")
+    before = _shadow_model(
+        conflict_areas=[
+            {"no": "3", "link_a": "3", "link_b": "12", "status": "PASSIVE"},
+            {"no": "7", "link_a": "3", "link_b": "21", "status": "PASSIVE"},
+        ]
+    )
+    after = _shadow_model(
+        conflict_areas=[
+            {"no": "3", "link_a": "3", "link_b": "12", "status": "AHASRIGHTOFWAY"},
+            {"no": "7", "link_a": "3", "link_b": "21", "status": "BHASRIGHTOFWAY"},  # unrelated drift
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": "AHASRIGHTOFWAY", "readback_value": "AHASRIGHTOFWAY"}
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {
+        "object_class": "conflict_areas",
+        "object_id": "7",
+        "change": "field_changed",
+        "field": "status",
+        "before": "PASSIVE",
+        "after": "BHASRIGHTOFWAY",
+    } in diff
+
+
 def test_postwrite_diff_flags_an_unrelated_field_change_as_evidence():
     action = _action("set_vehicle_input_volume", input_no="1", volume=600)
     before = _shadow_model()
@@ -348,6 +407,33 @@ def test_postwrite_persisted_value_numeric_tolerance_is_clean():
     report = engine.postwrite(action, before, after, {"written_value": 600, "readback_value": 600})
 
     assert report.findings == []
+
+
+def test_postwrite_unpersisted_conflict_area_status_is_blocking():
+    # v2 unit (4): status is "not_persisted" semantics (a plain XML attribute
+    # the parser can always see -- no opaque-blob case like signal
+    # cycle_time), so a None-vs-unchanged AFTER value is evidence the write
+    # never reached the file, same as vehicle-input volume.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        conflict_areas=[{"no": "3", "link_a": "3", "link_b": "12", "status": "PASSIVE"}]
+    )
+    after = _shadow_model(
+        conflict_areas=[{"no": "3", "link_a": "3", "link_b": "12", "status": "PASSIVE"}]
+    )  # unchanged -- the write never reached the file
+    action = _action("set_conflict_area_status", conflict_area_no="3", status="AHASRIGHTOFWAY")
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": "AHASRIGHTOFWAY", "readback_value": "AHASRIGHTOFWAY"}
+    )
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "conflict_areas"
+    assert check["object_id"] == "3"
+    assert check["field"] == "status"
+    assert check["written_value"] == "AHASRIGHTOFWAY"
+    assert check["saved_value"] == "PASSIVE"
 
 
 def test_postwrite_persisted_check_skips_none_parsed_field():

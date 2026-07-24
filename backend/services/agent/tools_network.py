@@ -1,5 +1,5 @@
 """Read tools over the network shadow model: overview, lexical object
-resolution, vehicle inputs, and signal controllers.
+resolution, vehicle inputs, signal controllers, and conflict areas.
 
 These are the first real tools registered through the M0.4 registry
 (``services.agent.toolkit`` — see docs/phase2/02-ROADMAP.md M1.2); importing
@@ -9,14 +9,18 @@ this module registers them onto ``default_registry`` at decoration time.
 constraints.py expects (see that module's docstring): links/nodes from
 ``services.inpx_parser.parse_network`` plus ``vehicle_inputs`` (parsed here
 directly from the .inpx — no/name/link/volume, volume ``None`` when the demo
-file's ``<vehicleInput>`` carries no ``timeIntervalVehVolume`` child) and
+file's ``<vehicleInput>`` carries no ``timeIntervalVehVolume`` child),
 ``signals`` (from ``services.signal_parser.parse_signal_controllers``, mapped
 down to the contract shape — ``controller_type`` is now populated for real
 (v2 unit ①, 2026-07-24: ``signal_parser.py`` extracts the verbatim
 ``<signalController type="...">`` attribute, e.g. ``"FIXEDTIME"``/
 ``"FIXEDTIMESIMPLE"``/``"unknown"``). ``min_green_intergreen_sum`` remains
 deliberately OMITTED, not set to ``None``: the parser still doesn't expose
-it; see docs/phase2/DECISIONS.md's #5 gap entry.
+it; see docs/phase2/DECISIONS.md's #5 gap entry. ``conflict_areas`` (v2 unit
+④, 2026-07-24: parsed here directly from the .inpx — no/link_a/link_b/
+link_pair/status/name — closing the M3.1 CATALOG-GAP so
+``conflict_area_data_unavailable`` finally fires for real; see
+:func:`_parse_conflict_areas`'s own docstring for the live-verified findings).
 
 ``resolve_object`` is the "network-RAG" pattern (research-digest #10): a
 small, deterministic lexical top-k retrieval over the shadow model's objects.
@@ -46,7 +50,7 @@ from services.agent.toolkit import tool
 from services.inpx_parser import parse_network
 from services.signal_parser import parse_signal_controllers
 
-ObjectType = Literal["link", "node", "vehicle_input", "signal"]
+ObjectType = Literal["link", "node", "vehicle_input", "signal", "conflict_area"]
 
 # {object_type: {shadow_key, id_field, name_field}} — the one place that maps
 # a planner-facing object_type onto the shadow model's (differently-named)
@@ -56,6 +60,7 @@ _OBJECT_TYPE_SPECS: dict[str, dict[str, str]] = {
     "node": {"shadow_key": "nodes", "id_field": "id", "name_field": "name"},
     "vehicle_input": {"shadow_key": "vehicle_inputs", "id_field": "no", "name_field": "name"},
     "signal": {"shadow_key": "signals", "id_field": "sc_no", "name_field": "sc_name"},
+    "conflict_area": {"shadow_key": "conflict_areas", "id_field": "no", "name_field": "name"},
 }
 
 _TOP_K = 5
@@ -122,6 +127,47 @@ def _parse_vehicle_inputs(root: ET.Element) -> list[dict[str, Any]]:
     return result
 
 
+def _parse_conflict_areas(root: ET.Element) -> list[dict[str, Any]]:
+    """{no, link_a, link_b, link_pair, status, name} per ``<conflictArea>``.
+
+    v2 unit (4): closes the M3.1 CATALOG-GAP on ``shadow_model["conflict_areas"]``
+    (docs/phase2/DECISIONS.md, ``conflict_area_data_unavailable``). Verified
+    live against Vissim 2026 (``backend/tools/conflict_area_probe.py``, Urban
+    Intersection Beijing.CN, 224 real conflict areas): the .inpx XML DOES
+    serialize conflict areas -- ``no``/``linkA``/``linkB``/``status`` --
+    matching the COM ``AttValue`` ids of the same names exactly (unlike the
+    CycTm/NodeRes landmines). Conflict area NUMBERS are NOT stable identity
+    across geometry edits (docs/phase2/00-EXECUTION-GUIDE.md SS3.2), so every
+    entry also carries ``link_pair`` -- the unordered-in-spirit (but here
+    always ``(link_a, link_b)`` ordered) pair callers should snapshot/key on
+    instead of the number when comparing across edits, per the catalog's own
+    "Do" guidance. ``name`` is a synthetic, display-only "Link A vs Link B"
+    label (conflict areas have no name attribute of their own) so
+    ``resolve_object``/``get_network_overview`` can list them usefully.
+
+    The demo network's ``.inpx`` has no ``<conflictArea>`` elements at all
+    (verified: zero matches), so this returns ``[]`` there -- not absent,
+    not ``None`` -- which is exactly the "no passive areas" shape
+    ``conflict_area_data_unavailable`` already treats as silent (``not
+    conflict_areas`` is ``True`` for an empty list too).
+    """
+    result: list[dict[str, Any]] = []
+    for ca in root.findall(".//conflictArea"):
+        link_a = ca.get("linkA", "")
+        link_b = ca.get("linkB", "")
+        result.append(
+            {
+                "no": ca.get("no", ""),
+                "link_a": link_a,
+                "link_b": link_b,
+                "link_pair": (link_a, link_b),
+                "status": ca.get("status", ""),
+                "name": f"Link {link_a} vs Link {link_b}",
+            }
+        )
+    return result
+
+
 def _signal_to_contract_shape(info: dict[str, Any]) -> dict[str, Any]:
     """Map a signal_parser SignalInfo down to the M0.3 contract shape.
 
@@ -150,6 +196,7 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         "nodes": net["nodes"],
         "vehicle_inputs": _parse_vehicle_inputs(root),
         "signals": [_signal_to_contract_shape(info) for info in signals_by_sc_no.values()],
+        "conflict_areas": _parse_conflict_areas(root),
     }
 
 
@@ -334,3 +381,20 @@ def get_signal_controllers(params: GetSignalControllersParams) -> dict[str, Any]
     del params  # no fields
     signals = _current_shadow_model()["signals"]
     return {"count": len(signals), "signals": signals}
+
+
+# ---------------------------------------------------------------------------
+# get_conflict_areas — v2 unit (4)
+# ---------------------------------------------------------------------------
+
+
+class GetConflictAreasParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+@tool(name="get_conflict_areas", tier="read", provider="inspect", params=GetConflictAreasParams)
+def get_conflict_areas(params: GetConflictAreasParams) -> dict[str, Any]:
+    """Return the network's conflict areas (id, link pair, right-of-way status) -- conflict areas default to Passive (no right-of-way control, vehicles drive through each other) and this is how the agent sees which ones are Passive before deciding whether to fix any with set_conflict_area_status."""
+    del params  # no fields
+    conflict_areas = _current_shadow_model()["conflict_areas"]
+    return {"count": len(conflict_areas), "conflict_areas": conflict_areas}

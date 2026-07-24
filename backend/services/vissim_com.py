@@ -396,6 +396,71 @@ class VissimController:
         except Exception as exc:
             raise RuntimeError(f"Could not read signal controller {sc_no} offset: {exc}") from exc
 
+    def set_conflict_area_status(self, conflict_area_no: int, status: str) -> None:
+        """Set a conflict area's right-of-way status (COM attribute id
+        ``Status`` -- verified empirically live against Vissim 2026 via
+        ``backend/tools/conflict_area_probe.py`` on the Urban Intersection
+        Beijing.CN example: unlike the CycTm/NodeRes landmines in
+        docs/phase2/DECISIONS.md, this id matches the .inpx XML attribute
+        name exactly).
+
+        Conflict areas have **no Add/Remove via COM** -- they are derived
+        from geometry (docs/phase2/00-EXECUTION-GUIDE.md SS3.2). This method
+        only ever mutates an EXISTING conflict area's status; it can never
+        create or delete one. The empirically-observed status vocabulary
+        (all 25 real Vissim 2026 example networks) is exactly ``PASSIVE``
+        (no right-of-way control -- the catalog's most dangerous silent
+        failure), ``AHASRIGHTOFWAY``, ``BHASRIGHTOFWAY``, and
+        ``UNDETERMINED``; the caller (``tools_edit.py``) restricts the param
+        to that literal set before this method is ever reached.
+        """
+        try:
+            conflict_area = self._item_by_key(
+                self.vissim.Net.ConflictAreas,
+                conflict_area_no,
+                "Conflict area",
+                self.available_conflict_area_nos(),
+            )
+            conflict_area.SetAttValue("Status", status)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set conflict area {conflict_area_no} status to {status}: {exc}"
+            ) from exc
+
+    def get_conflict_area(self, conflict_area_no: int) -> dict[str, Any]:
+        """Paired getter for :meth:`set_conflict_area_status`.
+
+        Also returns the link pair (``LinkA``/``LinkB``, the same COM ids
+        the probe confirmed) in the SAME read, not a separate call --
+        conflict-area NUMBERS are not stable identity across geometry ops
+        (docs/phase2/00-EXECUTION-GUIDE.md SS3.2), so every caller that acts
+        on a conflict area number should have the link pair on hand to
+        confirm it is really the junction the user meant, without a second
+        COM round trip.
+        """
+        try:
+            conflict_area = self._item_by_key(
+                self.vissim.Net.ConflictAreas,
+                conflict_area_no,
+                "Conflict area",
+                self.available_conflict_area_nos(),
+            )
+            return {
+                "no": conflict_area_no,
+                "link_a": str(conflict_area.AttValue("LinkA")),
+                "link_b": str(conflict_area.AttValue("LinkB")),
+                "status": str(conflict_area.AttValue("Status")),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read conflict area {conflict_area_no}: {exc}") from exc
+
+    def available_conflict_area_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.ConflictAreas)
+
     def get_sim_sec(self) -> float:
         try:
             value = float(self.vissim.Simulation.AttValue("SimSec"))

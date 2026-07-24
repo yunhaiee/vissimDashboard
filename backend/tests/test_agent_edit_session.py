@@ -101,6 +101,18 @@ def test_verb_call_raises_file_not_found_before_touching_com_when_working_copy_m
         session.get_vehicle_input_volume(1)
 
 
+def test_conflict_area_verb_call_raises_file_not_found_before_touching_com_when_working_copy_missing(
+    tmp_path: Path,
+):
+    # v2 unit (4): the newest paired verb gets the same pre-connect guard as
+    # every other one -- a representative spot-check, not exhaustive
+    # per-verb coverage (the test above already establishes the pattern).
+    session = VissimEditSession(tmp_path / "missing.inpx")
+
+    with pytest.raises(FileNotFoundError, match="missing.inpx"):
+        session.get_conflict_area(3)
+
+
 def test_persist_raises_file_not_found_before_touching_com_when_working_copy_missing(
     tmp_path: Path,
 ):

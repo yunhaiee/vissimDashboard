@@ -20,7 +20,11 @@ below). Constraint #4's twin gap (``controller_type``) was CLOSED in v2 unit
 ① (2026-07-24): ``signal_parser.py`` now extracts the real
 ``<signalController type="...">`` attribute (verified against all 25 real
 PTV Vissim 2026 example networks), so #4 reads a genuinely populated field,
-not a forward-declared one.
+not a forward-declared one. Constraint #18's twin gap (``conflict_areas``)
+was CLOSED in v2 unit ④ (2026-07-24): ``tools_network.build_shadow_model``
+now parses real conflict-area data straight from the .inpx (verified live
+against Vissim 2026), so ``conflict_area_data_unavailable`` fires for real
+too.
 
 This module is intentionally stdlib-only, like trace.py, and does not import
 state.py or trace.py — it only consumes the shadow-model dict shape they
@@ -345,12 +349,25 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "link_id",
     },
+    # v2 unit (4): set_conflict_area_status added to the object_not_found /
+    # _TOOL_TARGET_SPEC lockstep table (conflict_areas object class). Conflict
+    # areas have no name field of their own -- name_field points at the
+    # tools_network.py-synthesized display "name" ("Link A vs Link B"), which
+    # _check_object_not_found already handles gracefully via its `if name:`
+    # guard when the field happens to be absent from a caller-built fixture.
+    "set_conflict_area_status": {
+        "object_class": "conflict_areas",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "conflict_area_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "vehicle_inputs": {"ko": "차량 입력", "en": "vehicle input", "ja": "車両インプット"},
     "signals": {"ko": "신호제어기", "en": "signal controller", "ja": "信号制御機"},
     "links": {"ko": "링크", "en": "link", "ja": "リンク"},
+    "conflict_areas": {"ko": "충돌구간", "en": "conflict area", "ja": "錯綜区間"},
 }
 
 
@@ -441,6 +458,7 @@ register(
             "set_signal_cycle",
             "set_signal_offset",
             "set_reduced_speed_area",
+            "set_conflict_area_status",
         ],
         phase="preflight",
         tier="refuse",
@@ -1479,17 +1497,31 @@ register(
 # Catalog §1 "Conflict areas default to inactive" + §3 "Conflict area
 # numbers are not stable identity": conflict areas are geometry-derived, have
 # no COM add/remove, default to Passive right-of-way, and are destroyed
-# silently by any geometry edit. CATALOG-GAP: "conflict_areas" is not part of
-# the {links, nodes, vehicle_inputs, signals} shadow-model contract (docs/
-# phase2/DECISIONS.md) and no M2 tool edits geometry, so this reads
-# shadow_model["conflict_areas"] defensively; always absent today.
+# silently by any geometry edit.
+#
+# GAP CLOSED in v2 unit ④ (2026-07-24): tools_network.build_shadow_model now
+# populates shadow_model["conflict_areas"] for real (parsed straight from the
+# .inpx -- verified live against Vissim 2026 via
+# backend/tools/conflict_area_probe.py: the XML DOES serialize conflict
+# areas, and the COM AttValue ids match the XML attribute names exactly). The
+# defensive ``shadow_model.get("conflict_areas")`` read below is UNCHANGED
+# (still correct and still needed -- the demo network's .inpx carries zero
+# conflictArea elements, so this check must keep degrading silently to an
+# empty list there, and any shadow model built by an older/synthetic fixture
+# without the key at all must keep degrading too), but this check now fires
+# for real, live, on any real network with Passive conflict areas -- it is no
+# longer a forward-declared no-op.
 # ---------------------------------------------------------------------------
 
 
 def _check_conflict_area_data_unavailable(
     action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
 ) -> Finding | None:
-    conflict_areas = shadow_model.get("conflict_areas")  # CATALOG-GAP: not in the shadow-model contract
+    # .get(...) stays defensive on purpose: real networks populate this for
+    # real now (v2 unit ④), but the demo network legitimately has zero
+    # conflict areas (empty list -- falsy, same silent-skip path), and older
+    # synthetic fixtures may omit the key entirely.
+    conflict_areas = shadow_model.get("conflict_areas")
     if not conflict_areas:
         return None
 
@@ -1532,6 +1564,85 @@ register(
         "VissimはこれらをCOM経由で追加/削除できず、ジオメトリ編集時に設定が静かに失われます — "
         "番号ではなくリンクペアでスナップショットし、Passiveの件数が増えないことを回帰指標として"
         "追跡してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# #new conflict_area_status_change_confirm (warn, preflight) — v2 unit ④
+#
+# Not a §-numbered catalog entry; a defensive addition specific to
+# set_conflict_area_status motivated directly by SS3.2's identity-instability
+# landmine: "conflict area NUMBERS ARE NOT STABLE IDENTITY". A number alone
+# in a tool call is not enough for a human approver to know which junction is
+# about to change — this ALWAYS fires (whenever the target resolves; a
+# missing target is object_not_found's job, #1) so the link pair and the
+# CURRENT status are unconditionally echoed into the approval card's warning
+# list (orchestrator.py's pending_approval["warnings"] / the rendered
+# approval-request answer), regardless of whether the planner's own free-text
+# summary happens to mention them. Deliberately warn-tier, not refuse: this
+# is a confirmation aid, not a problem with the write itself.
+# ---------------------------------------------------------------------------
+
+
+def _check_conflict_area_status_change_confirm(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_conflict_area_status":
+        return None
+
+    params = action.get("params", {})
+    no = str(params.get("conflict_area_no", ""))
+    new_status = params.get("status", "")
+
+    conflict_area = _find_by_field(shadow_model.get("conflict_areas", []), "no", no)
+    if conflict_area is None:
+        return None  # missing target is object_not_found's job (#1)
+
+    link_a = conflict_area.get("link_a", "?")
+    link_b = conflict_area.get("link_b", "?")
+    old_status = conflict_area.get("status", "?")
+
+    return Finding(
+        constraint_id="conflict_area_status_change_confirm",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "conflict_area_status_change_confirm",
+            no=no,
+            link_a=link_a,
+            link_b=link_b,
+            old_status=old_status,
+            new_status=new_status,
+        ),
+        suggested_fix=None,
+        details={
+            "no": no,
+            "link_a": link_a,
+            "link_b": link_b,
+            "old_status": old_status,
+            "new_status": new_status,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="conflict_area_status_change_confirm",
+        applies_to=["set_conflict_area_status"],
+        phase="preflight",
+        tier="warn",
+        check=_check_conflict_area_status_change_confirm,
+        message_ko="충돌구간 '{no}'은(는) 링크 {link_a}와(과) 링크 {link_b} 사이에 있으며, 현재 상태는 "
+        "{old_status}입니다. {new_status}(으)로 변경을 제안합니다 — 충돌구간 번호는 지오메트리 편집 "
+        "시 바뀔 수 있으므로, 승인 전에 의도한 교차로가 맞는지 확인해 주세요.",
+        message_en="Conflict area '{no}' sits between link {link_a} and link {link_b}, currently "
+        "status {old_status}. Proposing to change it to {new_status} — conflict area numbers are "
+        "not stable identity across geometry edits, so confirm this is the intended junction "
+        "before approving.",
+        message_ja="錯綜区間 '{no}' はリンク{link_a}とリンク{link_b}の間にあり、現在の状態は"
+        "{old_status}です。{new_status}への変更を提案します — 錯綜区間の番号はジオメトリ編集で"
+        "変わる可能性があるため、承認前に意図した交差点であることをご確認ください。",
     )
 )
 

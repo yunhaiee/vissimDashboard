@@ -85,6 +85,13 @@ class FakeEditSession:
         self._record("get_random_seed")
         return self._readback["random_seed"]
 
+    def set_conflict_area_status(self, conflict_area_no: int, status: str) -> None:
+        self._record("set_conflict_area_status", conflict_area_no=conflict_area_no, status=status)
+
+    def get_conflict_area(self, conflict_area_no: int) -> dict[str, Any]:
+        self._record("get_conflict_area", conflict_area_no=conflict_area_no)
+        return self._readback["conflict_area"]
+
     def persist(self) -> None:
         self.persist_calls += 1
 
@@ -120,6 +127,7 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
             "set_reduced_speed_area",
             {"link_id": "101", "speed_kmh": 40.0, "from_m": 0.0, "length_m": 20.0},
         ),
+        ("set_conflict_area_status", {"conflict_area_no": "3", "status": "AHASRIGHTOFWAY"}),
     ],
 )
 def test_no_active_session_yields_structured_error_never_a_crash(tool_name, params):
@@ -253,6 +261,62 @@ def test_set_random_seed_happy_path():
     assert envelope["verification"] == {"written_value": 7, "readback_value": 7}
     assert session.persist_calls == 1
     assert session.calls[0] == {"op": "set_random_seed", "seed": 7}
+
+
+# ---------------------------------------------------------------------------
+# set_conflict_area_status — v2 unit (4)
+# ---------------------------------------------------------------------------
+
+
+def test_set_conflict_area_status_happy_path():
+    session = FakeEditSession(
+        readback={"conflict_area": {"no": 3, "link_a": "3", "link_b": "12", "status": "AHASRIGHTOFWAY"}}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_conflict_area_status", conflict_area_no="3", status="AHASRIGHTOFWAY")
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": "AHASRIGHTOFWAY", "readback_value": "AHASRIGHTOFWAY"}
+    assert envelope["artifacts"] == {"link_a": "3", "link_b": "12"}
+    assert "link 3 vs link 12" in envelope["message"]
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {"op": "set_conflict_area_status", "conflict_area_no": 3, "status": "AHASRIGHTOFWAY"},
+        {"op": "get_conflict_area", "conflict_area_no": 3},
+    ]
+    # conflict_area_no was coerced str -> int at the COM boundary.
+    assert isinstance(session.calls[0]["conflict_area_no"], int)
+
+
+def test_set_conflict_area_status_readback_mismatch_still_reports_ok_envelope():
+    # Same discipline as the other tools: comparing written vs read-back is
+    # guardrails.py's postwrite job, not this tool's.
+    session = FakeEditSession(
+        readback={"conflict_area": {"no": 3, "link_a": "3", "link_b": "12", "status": "PASSIVE"}}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_conflict_area_status", conflict_area_no="3", status="AHASRIGHTOFWAY")
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": "AHASRIGHTOFWAY", "readback_value": "PASSIVE"}
+
+
+def test_set_conflict_area_status_rejects_a_status_outside_the_verified_vocabulary():
+    # Empirically-verified vocabulary (backend/tools/conflict_area_probe.py,
+    # all 25 real example networks): PASSIVE/AHASRIGHTOFWAY/BHASRIGHTOFWAY/
+    # UNDETERMINED only -- anything else never reaches COM.
+    session = FakeEditSession(
+        readback={"conflict_area": {"no": 3, "link_a": "3", "link_b": "12", "status": "PASSIVE"}}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_conflict_area_status", conflict_area_no="3", status="ACTIVE")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
 
 
 # ---------------------------------------------------------------------------

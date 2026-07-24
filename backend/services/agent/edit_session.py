@@ -190,6 +190,12 @@ class VissimEditSession:
     def get_random_seed(self) -> int:
         return self._ensure_connected().get_random_seed()
 
+    def set_conflict_area_status(self, conflict_area_no: int, status: str) -> None:
+        self._ensure_connected().set_conflict_area_status(conflict_area_no, status)
+
+    def get_conflict_area(self, conflict_area_no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_conflict_area(conflict_area_no)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

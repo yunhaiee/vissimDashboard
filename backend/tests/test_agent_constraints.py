@@ -18,8 +18,9 @@ def _shadow_model(
     vehicle_inputs: list[dict[str, Any]] | None = None,
     signals: list[dict[str, Any]] | None = None,
     nodes: list[dict[str, Any]] | None = None,
+    conflict_areas: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    return {
+    shadow = {
         "links": links
         if links is not None
         else [{"id": "101", "name": "Main St EB approach", "lanes": 3, "length": 280.0}],
@@ -40,6 +41,15 @@ def _shadow_model(
         ],
         "nodes": nodes if nodes is not None else [],
     }
+    # conflict_areas is deliberately OMITTED by default (not set to []) --
+    # most tests in this file exercise checks that have nothing to do with
+    # conflict areas, and the real production shadow model can legitimately
+    # omit the key too on an older/synthetic build path (see
+    # conflict_area_data_unavailable's own defensive .get()). Only tests
+    # that explicitly pass conflict_areas=[...] get the key at all.
+    if conflict_areas is not None:
+        shadow["conflict_areas"] = conflict_areas
+    return shadow
 
 
 def _action(tool: str, **params: Any) -> dict[str, Any]:
@@ -218,6 +228,55 @@ def test_object_not_found_silent_when_link_present_for_reduced_speed_area():
     action = _action(
         "set_reduced_speed_area", link_id="101", speed_kmh=40.0, from_m=0.0, length_m=20.0
     )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+# --- v2 unit (4): set_conflict_area_status added to the object_not_found /
+# _TOOL_TARGET_SPEC lockstep table (conflict_areas object class) -----------
+
+
+def _conflict_area(no: str, link_a: str, link_b: str, status: str) -> dict[str, Any]:
+    return {
+        "no": no,
+        "link_a": link_a,
+        "link_b": link_b,
+        "link_pair": (link_a, link_b),
+        "status": status,
+        "name": f"Link {link_a} vs Link {link_b}",
+    }
+
+
+def test_object_not_found_fires_for_missing_conflict_area():
+    shadow = _shadow_model(conflict_areas=[_conflict_area("3", "3", "12", "PASSIVE")])
+    action = _action("set_conflict_area_status", conflict_area_no="999", status="AHASRIGHTOFWAY")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    assert finding.phase == "preflight"
+    _assert_well_formed_messages(finding, must_contain_ko="999")
+
+
+def test_object_not_found_suggested_fix_resolves_near_miss_conflict_area_no():
+    shadow = _shadow_model(conflict_areas=[_conflict_area("30", "3", "12", "PASSIVE")])
+    action = _action("set_conflict_area_status", conflict_area_no="3", status="AHASRIGHTOFWAY")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert "30" in matches[0].suggested_fix
+
+
+def test_object_not_found_silent_when_conflict_area_present():
+    shadow = _shadow_model(conflict_areas=[_conflict_area("3", "3", "12", "PASSIVE")])
+    action = _action("set_conflict_area_status", conflict_area_no="3", status="AHASRIGHTOFWAY")
 
     findings = run_checks("preflight", action, shadow, {})
 
@@ -971,6 +1030,14 @@ def test_speed_limit_edit_ambiguous_silent_without_speed_param():
 
 
 def test_conflict_area_data_unavailable_fires_when_passive_present():
+    # Placeholder-shape fixture kept exactly as M3.1 wrote it (title-case
+    # "Passive"/"Active", no "no" field) — the check's own
+    # ``.strip().lower() == "passive"`` compare is case-insensitive by
+    # design, and this pins that the check never required the richer v2
+    # unit ④ shape to work. See
+    # test_conflict_area_data_unavailable_fires_on_real_parsed_shape below
+    # for the shape tools_network.py actually produces now that the gap is
+    # closed (upper-case "PASSIVE", "no"/"link_a"/"link_b" present too).
     shadow = _shadow_model()
     shadow["conflict_areas"] = [
         {"link_pair": ("10", "20"), "status": "Passive"},
@@ -988,6 +1055,27 @@ def test_conflict_area_data_unavailable_fires_when_passive_present():
     _assert_well_formed_messages(finding, must_contain_ko="1")
 
 
+def test_conflict_area_data_unavailable_fires_on_real_parsed_shape():
+    # v2 unit ④: the REAL shape tools_network._parse_conflict_areas produces
+    # (uppercase status, no/link_a/link_b/name present alongside link_pair) —
+    # closes the gap this check has waited on since M3.1.
+    shadow = _shadow_model(
+        conflict_areas=[
+            _conflict_area("3", "3", "12", "PASSIVE"),
+            _conflict_area("6", "3", "23", "BHASRIGHTOFWAY"),
+        ]
+    )
+    action = _action("set_signal_cycle", sc_no="1", cycle=90)
+    extra = {"written_value": 90, "readback_value": 90}
+
+    findings = run_checks("postwrite", action, shadow, extra)
+
+    matches = [f for f in findings if f.constraint_id == "conflict_area_data_unavailable"]
+    assert len(matches) == 1
+    assert matches[0].details["passive_count"] == 1
+    assert "3-12" in matches[0].details["link_pairs"]
+
+
 def test_conflict_area_data_unavailable_silent_when_all_active():
     shadow = _shadow_model()
     shadow["conflict_areas"] = [{"link_pair": ("10", "20"), "status": "Active"}]
@@ -998,13 +1086,76 @@ def test_conflict_area_data_unavailable_silent_when_all_active():
     assert not any(f.constraint_id == "conflict_area_data_unavailable" for f in findings)
 
 
-def test_conflict_area_data_unavailable_skipped_when_data_absent():
-    shadow = _shadow_model()  # no "conflict_areas" key — today's production reality
+def test_conflict_area_data_unavailable_silent_when_data_is_empty_list():
+    # v2 unit ④: the demo network's real production shape — the key IS
+    # present (tools_network.py always sets it now) but the list is empty
+    # (zero <conflictArea> elements in the .inpx) — must degrade the same as
+    # "key absent" (falsy either way), not crash or misreport.
+    shadow = _shadow_model(conflict_areas=[])
     action = _action("set_signal_cycle", sc_no="1", cycle=90)
 
     findings = run_checks("postwrite", action, shadow, {})
 
     assert not any(f.constraint_id == "conflict_area_data_unavailable" for f in findings)
+
+
+def test_conflict_area_data_unavailable_skipped_when_data_absent():
+    # Older/synthetic shadow-model shape (key omitted entirely) must still
+    # degrade silently — the check's defensive .get() is unchanged even
+    # though production always populates the key now.
+    shadow = _shadow_model()  # no "conflict_areas" key at all
+    action = _action("set_signal_cycle", sc_no="1", cycle=90)
+
+    findings = run_checks("postwrite", action, shadow, {})
+
+    assert not any(f.constraint_id == "conflict_area_data_unavailable" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# #new conflict_area_status_change_confirm — v2 unit (4)
+# ---------------------------------------------------------------------------
+
+
+def test_conflict_area_status_change_confirm_fires_and_echoes_the_link_pair():
+    shadow = _shadow_model(conflict_areas=[_conflict_area("3", "3", "12", "PASSIVE")])
+    action = _action("set_conflict_area_status", conflict_area_no="3", status="AHASRIGHTOFWAY")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "conflict_area_status_change_confirm"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "warn"
+    assert finding.phase == "preflight"
+    assert finding.details == {
+        "no": "3",
+        "link_a": "3",
+        "link_b": "12",
+        "old_status": "PASSIVE",
+        "new_status": "AHASRIGHTOFWAY",
+    }
+    for lang in LANGS:
+        assert "3" in finding.messages[lang]
+        assert "12" in finding.messages[lang]
+
+
+def test_conflict_area_status_change_confirm_does_not_apply_to_unrelated_tool():
+    shadow = _shadow_model(conflict_areas=[_conflict_area("3", "3", "12", "PASSIVE")])
+    action = _action("set_signal_cycle", sc_no="1", cycle=90)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "conflict_area_status_change_confirm" for f in findings)
+
+
+def test_conflict_area_status_change_confirm_silent_when_target_missing():
+    # missing target is object_not_found's job (#1), not this one's.
+    shadow = _shadow_model(conflict_areas=[_conflict_area("3", "3", "12", "PASSIVE")])
+    action = _action("set_conflict_area_status", conflict_area_no="999", status="AHASRIGHTOFWAY")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "conflict_area_status_change_confirm" for f in findings)
 
 
 def _signal_with_phases(phases: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1993,8 +2144,11 @@ def test_unbounded_com_dialog_risk_skipped_when_environment_data_absent():
 def test_registry_size_matches_m3_1_catalog_port():
     # 8 (M0.3 seed) + 9 (batch 1: M2 verb set) + 3 (batch 2: conflict-area /
     # intergreen) + 9 (batch 3: post-run lie detectors) + 14 (batch 4: the
-    # remainder) == 43. Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 43
+    # remainder) == 43, + 1 (v2 unit ④'s conflict_area_status_change_confirm,
+    # not a §-numbered catalog entry -- a defensive addition specific to
+    # set_conflict_area_status, see that constraint's own docstring) == 44.
+    # Regression pin -- bump deliberately, not by accident.
+    assert len(get_registry()) == 44
 
 
 def test_registry_has_unique_ids():

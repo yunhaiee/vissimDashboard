@@ -28,6 +28,7 @@ EXPECTED_TOOL_NAMES = {
     "resolve_object",
     "get_vehicle_inputs",
     "get_signal_controllers",
+    "get_conflict_areas",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -42,6 +43,7 @@ EXPECTED_TOOL_NAMES = {
 # registration side effect) -- that held for full-suite runs but made the
 # three registry-shape tests fail whenever this file ran in isolation.
 # v2 unit (2) adds set_reduced_speed_area (XML-injection, not COM), the sixth.
+# v2 unit (4) adds set_conflict_area_status, the seventh.
 EXPECTED_WRITE_TOOL_NAMES = {
     "set_vehicle_input_volume",
     "set_signal_cycle",
@@ -49,6 +51,7 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_sim_duration",
     "set_random_seed",
     "set_reduced_speed_area",
+    "set_conflict_area_status",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -59,6 +62,9 @@ EXPECTED_RUN_TOOL_NAMES = {
     "run_simulation",
     "load_check",
 }
+
+# v2 unit (4) adds set_conflict_area_status: the seventh write-tier tool, and
+# get_conflict_areas above: the seventh read-tier tool.
 
 
 @pytest.fixture(autouse=True)
@@ -96,14 +102,14 @@ def test_default_registry_has_exactly_the_expected_read_write_and_run_tools():
     assert set(headings) == EXPECTED_TOOL_NAMES | EXPECTED_WRITE_TOOL_NAMES | EXPECTED_RUN_TOOL_NAMES
 
 
-def test_all_six_read_tools_are_tier_read():
+def test_all_read_tools_are_tier_read():
     for name in EXPECTED_TOOL_NAMES:
         spec = default_registry.get(name)
         assert spec is not None, f"{name} not registered"
         assert spec.tier == "read"
 
 
-def test_all_five_write_tools_are_tier_write():
+def test_all_write_tools_are_tier_write():
     for name in EXPECTED_WRITE_TOOL_NAMES:
         spec = default_registry.get(name)
         assert spec is not None, f"{name} not registered"
@@ -127,7 +133,13 @@ def test_run_tools_are_tier_run_with_their_own_providers():
 
 
 def test_network_tools_use_inspect_provider_and_metrics_tools_use_metrics_provider():
-    for name in ("get_network_overview", "resolve_object", "get_vehicle_inputs", "get_signal_controllers"):
+    for name in (
+        "get_network_overview",
+        "resolve_object",
+        "get_vehicle_inputs",
+        "get_signal_controllers",
+        "get_conflict_areas",
+    ):
         assert default_registry.get(name).provider == "inspect"
     for name in ("get_run_kpis", "compare_scenarios"):
         assert default_registry.get(name).provider == "metrics"
@@ -143,7 +155,7 @@ def test_get_network_overview_returns_counts_and_compact_lists_for_demo_data():
 
     assert envelope["status"] == "ok"
     data = envelope["data"]
-    for key in ("links", "nodes", "vehicle_inputs", "signals"):
+    for key in ("links", "nodes", "vehicle_inputs", "signals", "conflict_areas"):
         assert key in data
         section = data[key]
         assert set(section.keys()) == {"count", "items", "truncated"}
@@ -152,11 +164,14 @@ def test_get_network_overview_returns_counts_and_compact_lists_for_demo_data():
             assert set(item.keys()) == {"id", "name"}  # compact: no geometry/points/etc.
 
     # demo dataset facts (data/practice.inpx): 14 links, 2 nodes, 6 vehicle
-    # inputs, 0 working signal controllers (no intSupplyData in the demo file)
+    # inputs, 0 working signal controllers (no intSupplyData in the demo file),
+    # 0 conflict areas (the demo .inpx carries no <conflictArea> elements at
+    # all -- v2 unit ④)
     assert data["links"]["count"] == 14
     assert data["nodes"]["count"] == 2
     assert data["vehicle_inputs"]["count"] == 6
     assert data["signals"]["count"] == 0
+    assert data["conflict_areas"]["count"] == 0
     assert data["links"]["truncated"] is False
 
 
@@ -296,6 +311,99 @@ def test_get_signal_controllers_on_demo_data_is_empty_but_well_formed():
     assert data == {"count": 0, "signals": []}
 
 
+def test_get_conflict_areas_on_demo_data_is_empty_but_well_formed():
+    """The demo .inpx carries no <conflictArea> elements at all — the tool
+    must return an empty, well-formed list rather than erroring (v2 unit ④)."""
+    envelope = _dispatch("get_conflict_areas")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data == {"count": 0, "conflict_areas": []}
+
+
+# ---------------------------------------------------------------------------
+# get_conflict_areas / _parse_conflict_areas — synthetic fixture with real
+# conflictArea elements (v2 unit ④; the demo network has none)
+# ---------------------------------------------------------------------------
+
+_CONFLICT_AREA_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links>
+    <link no="3" name="Main St EB"><lanes><lane width="3.5"/></lanes></link>
+    <link no="12" name="Side St N"><lanes><lane width="3.5"/></lanes></link>
+    <link no="21" name="Side St S"><lanes><lane width="3.5"/></lanes></link>
+  </links>
+  <conflictAreas>
+    <conflictArea no="3" linkA="3" linkB="12" status="PASSIVE"/>
+    <conflictArea no="7" linkA="3" linkB="21" status="AHASRIGHTOFWAY"/>
+  </conflictAreas>
+</network>
+"""
+
+
+@pytest.fixture()
+def conflict_area_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "conflict_areas.inpx"
+    path.write_text(_CONFLICT_AREA_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_conflict_areas_on_real_conflict_area_elements(conflict_area_fixture_inpx: Path):
+    tools_network.set_active_inpx(conflict_area_fixture_inpx)
+
+    envelope = _dispatch("get_conflict_areas")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 2
+    by_no = {ca["no"]: ca for ca in data["conflict_areas"]}
+    assert by_no["3"] == {
+        "no": "3",
+        "link_a": "3",
+        "link_b": "12",
+        "link_pair": ("3", "12"),  # dispatch() is in-process, no JSON round-trip yet
+        "status": "PASSIVE",
+        "name": "Link 3 vs Link 12",
+    }
+    assert by_no["7"]["status"] == "AHASRIGHTOFWAY"
+    assert by_no["7"]["link_pair"] == ("3", "21")
+
+
+def test_build_shadow_model_parses_conflict_areas_from_real_xml(conflict_area_fixture_inpx: Path):
+    shadow = tools_network.build_shadow_model(conflict_area_fixture_inpx)
+
+    assert len(shadow["conflict_areas"]) == 2
+    passive = [ca for ca in shadow["conflict_areas"] if ca["status"] == "PASSIVE"]
+    assert len(passive) == 1
+    assert passive[0]["link_pair"] == ("3", "12")  # a real tuple at the unit level (pre-JSON)
+
+
+def test_resolve_object_finds_conflict_area_by_display_name(conflict_area_fixture_inpx: Path):
+    """The synthesized 'Link A vs Link B' display name makes conflict areas
+    reachable through the same lexical resolution every other object type
+    gets — part of "make conflict areas visible to the agent"."""
+    tools_network.set_active_inpx(conflict_area_fixture_inpx)
+
+    envelope = _dispatch("resolve_object", query="Link 3 vs Link 12", object_type="conflict_area")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["found"] is True
+    assert data["candidates"][0]["id"] == "3"
+    assert data["candidates"][0]["object_type"] == "conflict_area"
+
+
+def test_get_network_overview_includes_conflict_areas_section(conflict_area_fixture_inpx: Path):
+    tools_network.set_active_inpx(conflict_area_fixture_inpx)
+
+    envelope = _dispatch("get_network_overview")
+
+    data = envelope["data"]
+    assert data["conflict_areas"]["count"] == 2
+    ids = {item["id"] for item in data["conflict_areas"]["items"]}
+    assert ids == {"3", "7"}
+
+
 # ---------------------------------------------------------------------------
 # build_shadow_model — the extended shadow model builder (unit-level)
 # ---------------------------------------------------------------------------
@@ -304,11 +412,15 @@ def test_get_signal_controllers_on_demo_data_is_empty_but_well_formed():
 def test_build_shadow_model_has_exactly_the_contract_keys():
     shadow = tools_network.build_shadow_model(Path(tools_network._active_inpx_path()))
 
-    assert set(shadow.keys()) == {"links", "nodes", "vehicle_inputs", "signals"}
+    assert set(shadow.keys()) == {"links", "nodes", "vehicle_inputs", "signals", "conflict_areas"}
     assert len(shadow["links"]) == 14
     assert len(shadow["nodes"]) == 2
     assert len(shadow["vehicle_inputs"]) == 6
     assert shadow["signals"] == []
+    # v2 unit ④: the demo .inpx carries no <conflictArea> elements at all —
+    # the shadow key must still be present and well-formed (empty list, not
+    # absent/None), the same "no signal controllers" shape signals already has.
+    assert shadow["conflict_areas"] == []
 
 
 def test_build_shadow_model_is_mtime_cached_across_repeat_calls():

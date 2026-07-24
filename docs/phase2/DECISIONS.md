@@ -872,3 +872,32 @@ on severed references; init refusal on broken routes with the .err naming the ob
 and is explicitly NOT a consistency check: the prompt guidance forbids describing a clean
 result as "valid/consistent" since semantic landmines (passive conflict areas, intergreen
 violations) are invisible to it. vissim_com.py needed zero changes. V1 close-out complete.
+
+---
+
+## 2026-07-24 — v2 unit ④: conflict-area status shipped; the dormant gap-check fires live
+
+**Context:** probed all 224 conflict areas on Beijing live. Findings: the .inpx DOES
+serialize conflict areas; COM ids No/LinkA/LinkB/Status match the XML names exactly (no
+CycTm-class trap here); status vocabulary PASSIVE/AHASRIGHTOFWAY/BHASRIGHTOFWAY/
+UNDETERMINED (tallied across all 25 example networks); numbering stable within-session
+incl. across SaveNetAs+reload. NEW LANDMINE PAIR: per-object ConflictArea.AttValue fails
+CLOSED (raises on unknown ids) — the exact opposite of Net.AttValue's fail-OPEN (unit ③);
+never assume one object's AttValue error behavior generalizes.
+
+**Decision:** shadow_model["conflict_areas"] now populated for real (closing the M3.1
+CATALOG-GAP — conflict_area_data_unavailable fired live in acceptance, reporting the 144
+other still-PASSIVE areas). set_conflict_area_status(conflict_area_no, status) addresses
+by number (COM's own ItemByKey; stable per probe) with two safeguards against the
+unstable-identity landmine: object_not_found preflight + a new
+conflict_area_status_change_confirm warn constraint that unconditionally echoes the link
+pair + old/new status onto the approval card regardless of planner summary text (registry
+43→44). Guardrails gained the not_persisted mapping (status is a plain attribute) and
+conflict_areas in the shared id-field table. get_conflict_areas read tool added.
+
+**Consequence:** the catalog's most dangerous silent failure — vehicles driving through
+each other at PASSIVE conflict areas while results look clean — is now inspectable and
+fixable end to end, live-verified (preflight → COM write+readback → persisted XML →
+load_check still clean). Controller review: TOOL-CATALOG bumped; supported-verbs prompt
+section updated with the PASSIVE-danger explanation. Executor disclosed running read-only
+git commands against instructions (stash/pop for a baseline diff; verified harmless).
