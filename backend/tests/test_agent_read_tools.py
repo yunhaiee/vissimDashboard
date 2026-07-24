@@ -14,8 +14,10 @@ from typing import Any
 
 import pytest
 
+import services.agent.tools_edit as tools_edit  # noqa: F401 - import registers tools
 import services.agent.tools_metrics as tools_metrics  # noqa: F401 - import registers tools
 import services.agent.tools_network as tools_network  # noqa: F401 - import registers tools
+import services.agent.tools_run as tools_run  # noqa: F401 - import registers tools
 from services.agent.toolkit import default_registry, dispatch, render_contract
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -32,15 +34,13 @@ EXPECTED_TOOL_NAMES = {
 
 # M2.3's tools_edit.py registers these write-tier tools, and M2.4's
 # tools_run.py registers the one run-tier tool below, onto the SAME
-# default_registry. This file only imports tools_metrics/tools_network
-# directly, but pytest's collection phase imports every test module up
-# front -- including ones that import services.agent.orchestrator, which
-# imports tools_edit.py and tools_run.py purely for their registration side
-# effect (see that module's docstring) -- so by the time any test in THIS
-# file runs, default_registry already carries all 12 tools regardless of
-# this file's own imports or test execution order. The anti-drift test
-# below has to know about them too, or it would (correctly, but
-# confusingly) fail on every run.
+# default_registry, so the anti-drift test has to know about them too, or
+# it would (correctly, but confusingly) fail on every run. Both modules are
+# imported directly at the top of this file: an earlier revision relied on
+# pytest's collection phase importing other test modules (which import
+# services.agent.orchestrator, which imports tools_edit/tools_run for their
+# registration side effect) -- that held for full-suite runs but made the
+# three registry-shape tests fail whenever this file ran in isolation.
 EXPECTED_WRITE_TOOL_NAMES = {
     "set_vehicle_input_volume",
     "set_signal_cycle",

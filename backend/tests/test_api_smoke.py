@@ -1,10 +1,12 @@
-﻿from pathlib import Path
+﻿import random
 
 import pytest
 from fastapi.testclient import TestClient
 
 import main
+import services.simulation_runs as simulation_runs
 from routers import simulations
+from tools.make_demo_data import build_result_db
 
 
 @pytest.fixture(scope="module")
@@ -31,15 +33,19 @@ def scenario_with_results(client: TestClient, scenarios: list[dict]) -> str:
     pytest.skip("No scenario with readable results was available")
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def runtime_job_id() -> str:
-    runtime_root = Path(__file__).resolve().parents[2] / "runtime" / "simulations"
-    if not runtime_root.is_dir():
-        pytest.skip("No runtime simulation result database was found")
-    for candidate in sorted(runtime_root.iterdir()):
-        if candidate.is_dir() and list(candidate.rglob("*.db")):
-            return candidate.name
-    pytest.skip("No runtime simulation result database was found")
+    """Synthesize a completed runtime job under the (conftest-isolated)
+    ``SIMULATION_ROOT``, mirroring the seed_NN/working.results layout the job
+    queue writes. An earlier revision scavenged whatever leftover job dirs the
+    dev machine happened to hold — which always skipped on CI and failed
+    outright on real leftovers from a network with no evaluation configured
+    (Vissim silently writes a results db with no KPI tables)."""
+    job_id = "smokejob1"
+    results_dir = simulation_runs.job_dir(job_id) / "seed_00" / "working.results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    build_result_db(results_dir / "1.db", 1.0, 1.0, random.Random(1))
+    return job_id
 
 
 def test_root_endpoint(client: TestClient):
