@@ -1,0 +1,36 @@
+# M5.1 seed task: the M2 happy-path write -- set_vehicle_input_volume within
+# capacity (link 101 has 3 lanes -> rough capacity 3*1900 = 5700 veh/h; 600
+# is well inside it, so no latent_demand_overflow warning fires).
+id: T004_vehicle_input_volume_happy
+category: edit
+user_message: "1번 입력 교통량을 600으로 바꿔줘"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  # Round 1: proposes the write -> ProposeWriteGate pauses for approval.
+  - tool: set_vehicle_input_volume
+    params: {input_no: "1", volume: 600}
+    summary: "교통량을 600으로 변경 제안"
+  # Round 2 (after auto-approval): the SAME action re-issued, per
+  # prompts/v1_system.md §2 -- must match round 1's params exactly (same
+  # types) so gates.signature() matches the approved signature.
+  - tool: set_vehicle_input_volume
+    params: {input_no: "1", volume: 600}
+    summary: "교통량을 600으로 변경합니다"
+  - tool: respond
+    params:
+      answer: "1번 차량 입력의 교통량을 600 veh/h로 변경했습니다. 읽어온 값도 600으로 확인되었습니다."
+    summary: "완료를 보고합니다"
+expected:
+  post_state:
+    - object: "vehicle_input:1"
+      attr: volume
+      value: 600
+  must_warn: []
+  must_refuse: false
+notes: >
+  End-to-end through the REAL tools_edit.set_vehicle_input_volume, backed by
+  eval.fake_edit_session.FakeEditSession (no COM). Exercises
+  preflight -> approval_request -> PreapprovedWriteGate re-run ->
+  dispatch -> postwrite (read-back + nothing-else-moved + target-persisted
+  checks) -> save_version(), matching the M2.3 acceptance path.

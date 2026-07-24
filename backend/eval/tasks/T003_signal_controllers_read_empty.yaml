@@ -1,0 +1,30 @@
+# M5.1 seed task: a read tool that legitimately returns an EMPTY result
+# (v1_system.md §2's "empty list" lifecycle rail) -- the demo network's two
+# <signalController> elements carry no intSupplyData, so
+# services.signal_parser.parse_signal_controllers (and therefore
+# tools_network.build_shadow_model's "signals" key) is empty for this
+# network. See this task's drafted DECISIONS.md entry.
+id: T003_signal_controllers_read_empty
+category: read
+user_message: "신호제어기 목록을 보여줘"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  - tool: get_signal_controllers
+    params: {}
+    summary: "신호제어기 목록을 확인합니다"
+  - tool: respond
+    params:
+      answer: "이 네트워크에서는 파싱 가능한 신호제어기 데이터를 찾을 수 없었습니다."
+    summary: "결과 없음을 보고합니다"
+expected:
+  answer_contains:
+    - "찾을 수 없"
+notes: >
+  Demonstrates the agent correctly reporting an empty tool result rather
+  than fabricating signal data (v1_system.md: "Never substitute fabricated
+  data for a missing dataset"). Documents a real interface gap: the
+  synthetic demo network's signalController elements have no intSupplyData,
+  so build_shadow_model's "signals" list is always [] for this network --
+  this is why T011 (signal-cycle edit) can only demonstrate object_not_found,
+  not signal_controller_type_unsupported.

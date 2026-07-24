@@ -1,0 +1,35 @@
+# M5.1 seed task: constraint #7 (results_missing_kpi_tables, warn-tier
+# postrun) -- a run whose result database carries only the SIMULATIONRUN
+# table (too short for evaluation intervals to have produced KPI tables;
+# docs/phase2/00-EXECUTION-GUIDE.md §3.1). fake_run_result pins the canned
+# terminal job record eval.fake_run_job installs for this task's
+# run_simulation call.
+id: T012_run_short_duration_kpi_warning
+category: run
+user_message: "5분 시뮬레이션 돌려줘"
+network: demo_two_intersection
+max_turns: 6
+fake_run_result:
+  tables: ["SIMULATIONRUN"]
+scripted_turns:
+  - tool: run_simulation
+    params: {duration_s: 300}
+    summary: "5분 시뮬레이션 실행 제안"
+  - tool: run_simulation
+    params: {duration_s: 300}
+    summary: "5분 시뮬레이션을 실행합니다"
+  - tool: respond
+    params:
+      answer: >
+        5분 시뮬레이션을 실행했습니다. 다만 결과 데이터베이스에 SIMULATIONRUN
+        테이블만 있어 평가 구간이 적용되기에는 실행 시간이 너무 짧았을 수
+        있습니다.
+    summary: "완료 및 경고를 보고합니다"
+expected:
+  must_warn:
+    - results_missing_kpi_tables
+  must_refuse: false
+notes: >
+  Live acceptance for this exact detector (real Vissim 2026, Beijing clone)
+  is already recorded in docs/phase2/DECISIONS.md's M2.4 entry; this task is
+  the CI-safe, scripted-provider regression pin for the same behavior.

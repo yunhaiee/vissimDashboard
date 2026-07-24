@@ -1,0 +1,36 @@
+# M5.1 seed task: the lane-closure refusal (prompts/v1_system.md §5) -- a
+# PLANNER-vocabulary refusal, not a guardrail constraint id: there is no
+# lane-closure tool in the registry at all (Vissim links carry no
+# COM-reachable lane-count attribute; docs/phase2/01-ARCHITECTURE.md §4's
+# "Deferred to v2+" list), so a correctly-behaving planner never emits a
+# tool call for this request in the first place -- it goes straight to
+# `respond` with an explicit refusal. refuse_constraint_id is left unset
+# (None): "any refusal reason is acceptable" is the right expectation here,
+# since there is no constraint id to match against.
+id: T014_lane_closure_refusal
+category: refusal
+user_message: "Main St 동쪽 진입로 차로를 하나 막아줘"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  - tool: respond
+    params:
+      answer: >
+        차로 폐쇄는 이 에이전트로 편집할 수 없습니다. Vissim 링크에는 COM으로
+        접근 가능한 차로 수 속성이 없기 때문입니다(차로 수는 링크 생성 시
+        지오메트리에 고정됩니다). 대안으로 해당 링크에 감속 구간을 적용하는
+        방법이 있지만 이 역시 아직 에이전트로 편집할 수 있는 기능은 아니며,
+        Vissim GUI에서 직접 수정해야 합니다.
+    summary: "차로 폐쇄 불가를 안내합니다"
+expected:
+  must_refuse: true
+  refuse_constraint_id: null
+  answer_contains:
+    - "차로"
+notes: >
+  No guardrail constraint fires for this task (no tool call is ever
+  attempted) -- scoring.check_refusal's "no_write_or_run_dispatched" check
+  is satisfied trivially since scripted_turns never names a write/run tool
+  at all. This is the exact "planner-side soft refusal" shape scoring.py's
+  category-independent design was built to handle uniformly alongside
+  guardrail-driven refusals (T005/T006/T007/T011).

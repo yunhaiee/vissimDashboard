@@ -1,0 +1,29 @@
+# M5.1 seed task: a run long enough to produce KPI tables -- the "happy"
+# sibling of T012, proving results_missing_kpi_tables stays silent when the
+# result database carries more than just SIMULATIONRUN.
+id: T013_run_normal_duration_happy
+category: run
+user_message: "1시간 시뮬레이션 돌려줘"
+network: demo_two_intersection
+max_turns: 6
+fake_run_result:
+  tables:
+    - "SIMULATIONRUN"
+    - "VEHICLENETWORKPERFORMANCEMEASUREMENT_EVALUATIONTIMEINTERVALCLASS"
+scripted_turns:
+  - tool: run_simulation
+    params: {duration_s: 3600}
+    summary: "1시간 시뮬레이션 실행 제안"
+  - tool: run_simulation
+    params: {duration_s: 3600}
+    summary: "1시간 시뮬레이션을 실행합니다"
+  - tool: respond
+    params:
+      answer: "1시간 시뮬레이션 실행을 완료했습니다. 평가 결과 테이블이 정상적으로 생성되었습니다."
+    summary: "완료를 보고합니다"
+expected:
+  must_warn: []
+  must_not_warn:
+    - results_missing_kpi_tables
+  must_refuse: false
+notes: "The must_not_warn baseline paired with T012's warn case."

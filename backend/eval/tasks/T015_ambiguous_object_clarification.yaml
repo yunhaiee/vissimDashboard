@@ -1,0 +1,29 @@
+# M5.1 seed task: multi-turn under-specification. resolve_object("Main",
+# object_type="vehicle_input") against the demo network ties at score 2.0
+# (substring tier) between vehicle inputs 1 ("Main St EB") and 2 ("Main St
+# WB") -- a genuinely ambiguous reference the planner must clarify rather
+# than guess (prompts/v1_system.md §4: "Never guess a missing parameter
+# silently").
+id: T015_ambiguous_object_clarification
+category: clarification
+user_message: "Main 입력 교통량을 700으로 바꿔줘"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  - tool: resolve_object
+    params: {query: "Main", object_type: "vehicle_input"}
+    summary: "Main 관련 차량 입력을 찾는 중"
+  - tool: ask_user
+    params:
+      question: "'Main' 입력이 두 개 있습니다: 1번(Main St EB) 또는 2번(Main St WB) 중 어느 것을 변경할까요?"
+    summary: "어느 입력인지 확인합니다"
+expected:
+  clarification_expected: true
+  answer_contains:
+    - "Main St EB"
+    - "Main St WB"
+notes: >
+  resolve_object returns candidates {id:1, id:2} tied at score 2.0 for
+  query="Main" against the real demo-network shadow model (verified
+  directly while authoring this suite) -- a genuine ambiguity, not a
+  contrived one.

@@ -7,3 +7,4 @@ pywin32
 anthropic
 python-dotenv==310; platform_system == "Windows"
 scikit-learn==1.7.2
+PyYAML>=6.0

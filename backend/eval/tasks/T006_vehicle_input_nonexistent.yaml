@@ -1,0 +1,21 @@
+# M5.1 seed task: constraint #1 (object_not_found) on a vehicle input id
+# that does not exist in the demo network (valid ids are 1-6).
+id: T006_vehicle_input_nonexistent
+category: refusal
+user_message: "999번 입력 교통량을 600으로 바꿔줘"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  - tool: set_vehicle_input_volume
+    params: {input_no: "999", volume: 600}
+    summary: "999번 입력 교통량 변경 제안"
+  - tool: respond
+    params:
+      answer: "999번 차량 입력을 찾을 수 없습니다. 1~6번 입력 중에서 다시 확인해 주세요."
+    summary: "대상 없음을 안내합니다"
+expected:
+  must_refuse: true
+  refuse_constraint_id: object_not_found
+  answer_contains:
+    - "찾을 수 없"
+notes: "constraints.py #1 against a genuinely absent vehicle-input id."

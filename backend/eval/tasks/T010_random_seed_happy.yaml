@@ -1,0 +1,27 @@
+# M5.1 seed task: set_random_seed happy path (same "verification-sourced
+# post_state" shape as T009 -- random seed is not a shadow-model field).
+id: T010_random_seed_happy
+category: edit
+user_message: "랜덤 시드를 77로 바꿔줘"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  - tool: set_random_seed
+    params: {seed: 77}
+    summary: "랜덤 시드를 77로 변경 제안"
+  - tool: set_random_seed
+    params: {seed: 77}
+    summary: "랜덤 시드를 77로 변경합니다"
+  - tool: respond
+    params:
+      answer: "랜덤 시드를 77로 변경했습니다."
+    summary: "완료를 보고합니다"
+expected:
+  post_state:
+    - source: verification
+      tool: set_random_seed
+      attr: readback_value
+      value: 77
+  must_warn: []
+  must_refuse: false
+notes: "Mirrors T009's shape for the second no-shadow-model-target write verb."

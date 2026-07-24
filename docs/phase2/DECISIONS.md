@@ -545,3 +545,25 @@ against real Vissim behavior. Trace: plan → preflight → action_start → act
   claimed improvement. Deliberately does NOT force guardrails on under
   AGENT_GUARDRAILS_DISABLED (that flag is the M5.3 ablation arm; the net degrades correctly
   to a no-op when ablated).
+
+---
+
+## 2026-07-24 — M5.1+M5.2 decision batch (eval suite + runner)
+
+- **Task YAML gained provider-agnostic extensions**: optional `scripted_turns` for the CI
+  provider (ignored under --real-provider), `refuse_constraint_id`, `must_not_warn`,
+  `clarification_expected`, `answer_contains`, and a `source: verification` post-state
+  variant for fields with no shadow-model presence (sim duration, random seed).
+- **Write/run actions appear twice in scripted_turns** (propose, then re-issue after the
+  approval pause re-runs a fresh planner) — preflight-refused actions once.
+- **Demo network's signal controllers carry no intSupplyData** → shadow "signals" is []
+  on the synthetic network; signal-edit tasks refuse via object_not_found as the closest
+  verifiable substitute. Closing needs a make_demo_data extension or a fixture network.
+- **CONFIRMED BLIND SPOT (queued fix, controller-owned):** the postwrite target-persisted
+  check's degrade-silently-on-None policy misses a write silently DROPPED against a field
+  whose parsed value was already None (demo vehicle-input volumes) — even with guardrails
+  ON. Pinned by test_eval_runner's genuine-blind-spot fixture. Fix direction: per-field
+  none-semantics in _WRITE_TARGET_FIELD_SPEC ("None = not persisted" for parseable-but-unset
+  fields like volume vs "None = parser-blind" for cycle_time), flipping the fixture to
+  caught. Lands right after the M3.1 catalog commit.
+- PyYAML pinned in requirements.txt (was transitive-only; tasks_loader depends on it).

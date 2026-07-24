@@ -1,0 +1,21 @@
+# M5.1 seed task: a pure read, no object grounding needed.
+id: T001_network_overview_read
+category: read
+user_message: "이 네트워크에 뭐가 있어?"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  - tool: get_network_overview
+    params: {}
+    summary: "네트워크 개요를 확인합니다"
+  - tool: respond
+    params:
+      answer: "이 네트워크에는 차량 입력 6개, 링크 14개, 노드 2개, 신호제어기 데이터가 있습니다."
+    summary: "개요를 보고합니다"
+expected:
+  answer_contains:
+    - "차량 입력"
+notes: >
+  M1.2 get_network_overview smoke test against the synthetic demo network
+  (data/practice.inpx via the demo_two_intersection alias). Pure read tier;
+  no gate/artifact_manager write path exercised.

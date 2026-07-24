@@ -1,0 +1,24 @@
+# M5.1 seed task: grounded read (resolve_object -> get_vehicle_inputs ->
+# respond), the v1_system.md §2 grounding rule exercised end to end.
+id: T002_vehicle_input_read
+category: read
+user_message: "1번 차량 입력의 정보를 알려줘"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  - tool: resolve_object
+    params: {query: "1", object_type: "vehicle_input"}
+    summary: "1번 입력을 찾는 중"
+  - tool: get_vehicle_inputs
+    params: {}
+    summary: "차량 입력 목록을 확인합니다"
+  - tool: respond
+    params:
+      answer: "1번 차량 입력은 'Main St EB'이며 링크 101에 연결되어 있습니다."
+    summary: "결과를 보고합니다"
+expected:
+  answer_contains:
+    - "Main St EB"
+notes: >
+  Exercises resolve_object's exact-match tier (score 3.0 for query="1") plus
+  get_vehicle_inputs, both against the real demo-network shadow model.

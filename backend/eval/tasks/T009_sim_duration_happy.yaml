@@ -1,0 +1,33 @@
+# M5.1 seed task: set_sim_duration happy path. No shadow-model object
+# target (sim duration is not part of the {links,nodes,vehicle_inputs,
+# signals} shadow model), so post_state is asserted against the write's own
+# verification evidence (source: verification) rather than the shadow model
+# -- see this task's drafted DECISIONS.md entry.
+id: T009_sim_duration_happy
+category: edit
+user_message: "시뮬레이션 시간을 5400초로 바꿔줘"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  - tool: set_sim_duration
+    params: {seconds: 5400}
+    summary: "시뮬레이션 시간을 5400초로 변경 제안"
+  - tool: set_sim_duration
+    params: {seconds: 5400}
+    summary: "시뮬레이션 시간을 5400초로 변경합니다"
+  - tool: respond
+    params:
+      answer: "시뮬레이션 시간을 5400초로 변경했습니다."
+    summary: "완료를 보고합니다"
+expected:
+  post_state:
+    - source: verification
+      tool: set_sim_duration
+      attr: readback_value
+      value: 5400
+  must_warn: []
+  must_refuse: false
+notes: >
+  No object_not_found/latent_demand screen applies to this tool (constraints
+  _TOOL_TARGET_SPEC has no set_sim_duration entry), so preflight is always
+  clean for this task.

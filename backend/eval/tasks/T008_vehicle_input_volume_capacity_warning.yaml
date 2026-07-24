@@ -1,0 +1,35 @@
+# M5.1 seed task: constraint #3 (latent_demand_overflow, warn-tier) -- link
+# 101 (vehicle input 1's link) has 3 lanes, rough capacity 3*1900 = 5700
+# veh/h. 6000 exceeds it but stays within the hard 0-20000 range, so this
+# WARNS (not refuses): the write still proceeds and lands.
+id: T008_vehicle_input_volume_capacity_warning
+category: edit
+user_message: "1번 입력 교통량을 6000으로 바꿔줘"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  - tool: set_vehicle_input_volume
+    params: {input_no: "1", volume: 6000}
+    summary: "교통량을 6000으로 변경 제안"
+  - tool: set_vehicle_input_volume
+    params: {input_no: "1", volume: 6000}
+    summary: "교통량을 6000으로 변경합니다"
+  - tool: respond
+    params:
+      answer: >
+        1번 차량 입력의 교통량을 6000 veh/h로 변경했습니다. 다만 링크 101의
+        대략적 용량(5700 veh/h)을 초과하므로 초과분이 잠재 수요로 대기할 수
+        있습니다.
+    summary: "완료 및 경고를 보고합니다"
+expected:
+  post_state:
+    - object: "vehicle_input:1"
+      attr: volume
+      value: 6000
+  must_warn:
+    - latent_demand_overflow
+  must_refuse: false
+notes: >
+  Proves warn-tier findings do not block the write (docs/phase2/
+  00-EXECUTION-GUIDE.md §4 tier 2, "Allowed-with-warning") while still
+  attaching the constraint id to the trace and the observation.

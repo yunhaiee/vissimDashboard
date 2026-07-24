@@ -1,0 +1,21 @@
+# M5.1 seed task: constraint #2 (volume_out_of_range), low side -- a
+# parameter-variant sibling of T005 (negative volume instead of too-high).
+id: T007_vehicle_input_volume_negative
+category: refusal
+user_message: "1번 입력 교통량을 -100으로 바꿔줘"
+network: demo_two_intersection
+max_turns: 6
+scripted_turns:
+  - tool: set_vehicle_input_volume
+    params: {input_no: "1", volume: -100}
+    summary: "교통량을 -100으로 변경 제안"
+  - tool: respond
+    params:
+      answer: "교통량은 음수가 될 수 없습니다(허용 범위 0-20000 veh/h). -100은 변경할 수 없습니다."
+    summary: "범위 초과를 안내합니다"
+expected:
+  must_refuse: true
+  refuse_constraint_id: volume_out_of_range
+  answer_contains:
+    - "음수"
+notes: "constraints.py #2, low-side branch (volume < 0)."
