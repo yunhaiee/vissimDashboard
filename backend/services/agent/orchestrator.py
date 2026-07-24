@@ -276,6 +276,34 @@ class AgentTurnResult:
     pending_approval: dict[str, Any] | None = None
 
 
+#: Dispatch-level error types that ARE refusals-with-reason (the registry
+#: rejected the call before any execution): a hallucinated param or tool
+#: name never lands, and the eval layer's silent-failure detector keys on
+#: "refusal"-kind trace records — without this tagging a rejected call
+#: scored as an undetected lie under BOTH arms (DECISIONS 2026-07-24, M5.4
+#: batch). tool_execution_error is deliberately excluded: a crash is a
+#: failure, not a refusal.
+_DISPATCH_REFUSAL_ERROR_TYPES = frozenset({"invalid_params", "unknown_tool"})
+
+
+def _trace_dispatch_refusal(
+    tracer: "TraceWriter", iteration: int, tool: str | None, envelope: dict[str, Any]
+) -> None:
+    """Write a "refusal"-kind trace record for validation-class dispatch
+    rejections, right after the action_end record."""
+    if envelope.get("status") == "error" and envelope.get("error_type") in _DISPATCH_REFUSAL_ERROR_TYPES:
+        tracer.write(
+            "refusal",
+            {
+                "iteration": iteration,
+                "tool": tool,
+                "error_type": envelope.get("error_type"),
+                "message": envelope.get("message"),
+                "phase": "dispatch",
+            },
+        )
+
+
 def _tier_refusal_envelope(tool_name: str, tier: str) -> dict[str, Any]:
     """The structured observation a forbidden-tier decision produces —
     same 7-key shape as toolkit.dispatch envelopes, so the planner reads it
@@ -1031,6 +1059,7 @@ def run_agent_turn(
                                 "error_type": envelope["error_type"],
                             },
                         )
+                        _trace_dispatch_refusal(tracer, iteration, decision.tool, envelope)
 
                         if preflight_warnings:
                             envelope = _attach_guardrail_warnings(
@@ -1220,6 +1249,7 @@ def run_agent_turn(
                     "error_type": envelope["error_type"],
                 },
             )
+            _trace_dispatch_refusal(tracer, iteration, decision.tool, envelope)
 
         state.history.append(
             StepRecord(

@@ -644,3 +644,22 @@ against real Vissim behavior. Trace: plan → preflight → action_start → act
 - Persistence goes through one _finalize_turn choke point (state.json on EVERY terminal
   kind); session resume validated at the endpoint (400 on malformed). Frontend threading of
   session_id (api.ts + FloatingAssistant) is deliberately left to M4.
+
+---
+
+## 2026-07-24 — Controller fix-batch: both queued eval-surfaced gaps closed
+
+- **Target-persisted none-policy**: _WRITE_TARGET_FIELD_SPEC entries carry "none_means" —
+  volume is parseable-but-unset ("not_persisted": None after a write IS evidence of a
+  dropped write → refuse + rollback); cycle_time/offset are "parser_blind" (degrade
+  silently, per the CycTm finding). The eval blind-spot fixture flipped from
+  documents-the-gap to proves-the-catch; the ignored_write injector now shows the intended
+  RQ2 contrast (detected under full stack, missed under ablation).
+- **Dispatch-level rejections trace as refusals**: invalid_params/unknown_tool envelopes
+  now also write a "refusal"-kind record (phase: dispatch) — they are refusals-with-reason
+  from the typed registry. tool_execution_error deliberately excluded (a crash is a
+  failure, not a refusal). wrong_param_name is now detected under BOTH arms — correct,
+  since ablation ablates the guardrail engine, not the registry's schema validation.
+- Write-gate integration fixtures now persist the written volume into the working copy
+  (via eval's XML helper) — required under the stricter engine, matching what real write
+  tools do.

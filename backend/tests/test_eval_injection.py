@@ -259,7 +259,12 @@ def test_mini_run_three_trials_one_injector_ablation_misses_the_clamp(tmp_path: 
     assert all(r.task_result["observed_refusal_constraint_ids"] == [] for r in results)
 
 
-def test_ignored_write_is_undetected_under_both_arms_the_documented_blind_spot(tmp_path: Path):
+def test_ignored_write_is_detected_only_under_full_stack_after_none_policy_fix(tmp_path: Path):
+    """Was the documented blind spot; the controller's per-field
+    none-semantics fix (volume None after a write = not persisted =
+    write_verification_failed) means the full stack now catches a fully
+    dropped write while the ablated arm still misses it -- exactly the RQ2
+    contrast this injector exists to measure."""
     specs = load_tasks()
     full_stack = run_injection_suite(
         "ignored_write", specs, n=2, seed=1, work_root=tmp_path / "full", guardrails_disabled=False
@@ -268,7 +273,7 @@ def test_ignored_write_is_undetected_under_both_arms_the_documented_blind_spot(t
         "ignored_write", specs, n=2, seed=1, work_root=tmp_path / "ablation", guardrails_disabled=True
     )
 
-    assert all(r.detected is False for r in full_stack), "documented blind spot: full stack still misses this"
+    assert all(r.detected is True for r in full_stack)
     assert all(r.detected is False for r in ablation)
 
 
@@ -303,12 +308,15 @@ def test_kpi_tables_stripped_detected_only_under_full_stack(tmp_path: Path):
     assert all(r.detected is False for r in ablation)
 
 
-def test_wrong_param_name_is_undetected_under_both_arms(tmp_path: Path):
-    """The dispatch-level invalid_params gap this task's brief asks us to
-    surface: no trace 'refusal' record is ever written for a pydantic
-    schema rejection, so RQ2's silent-failure detector reads this as an
-    undetected lie regardless of the guardrails flag -- guardrails never
-    even get a chance to run (dispatch fails before postwrite)."""
+def test_wrong_param_name_is_detected_under_both_arms(tmp_path: Path):
+    """Was the trace-completeness gap this suite surfaced: a pydantic
+    schema rejection produced no 'refusal'-kind trace record, so the
+    detector misread a cleanly-rejected call as an undetected lie. The
+    controller fix tags dispatch-level invalid_params/unknown_tool
+    rejections as refusal records. Detection under BOTH arms is correct:
+    the typed tool registry rejects hallucinated params regardless of the
+    guardrails flag -- ablation ablates the guardrail engine, not the
+    registry's schema validation."""
     specs = load_tasks()
     full_stack = run_injection_suite(
         "wrong_param_name", specs, n=2, seed=11, work_root=tmp_path / "full", guardrails_disabled=False
@@ -317,8 +325,8 @@ def test_wrong_param_name_is_undetected_under_both_arms(tmp_path: Path):
         "wrong_param_name", specs, n=2, seed=11, work_root=tmp_path / "ablation", guardrails_disabled=True
     )
 
-    assert all(r.detected is False for r in full_stack)
-    assert all(r.detected is False for r in ablation)
+    assert all(r.detected is True for r in full_stack)
+    assert all(r.detected is True for r in ablation)
     assert all(r.success is False for r in full_stack)  # post_state correctly fails
 
 

@@ -282,32 +282,31 @@ def test_silent_failure_fixture_detected_under_guardrails_disabled_ablation(tmp_
     assert failing_post_state and failing_post_state[0].actual == 300.0
 
 
-def test_silent_failure_fixture_ignored_write_is_a_genuine_blind_spot_even_with_guardrails_enabled(
+def test_silent_failure_fixture_ignored_write_is_caught_by_the_none_persistence_policy(
     tmp_path: Path,
 ):
     """A DIFFERENT, more insidious failure shape: the write is never
-    persisted at all (not even clamped to some other value) -- and because
-    the demo network's vehicle inputs start with NO volume data at all
-    (verified directly against data/practice.inpx while building this
-    suite; see tools_network.py's docstring), "never persisted" reparses as
-    volume: None, not "the old value". guardrails.py's target-persisted
-    check explicitly degrades silently whenever the parsed field is None
-    (by design -- see its own docstring: avoiding a false positive against
-    a genuine parser gap, e.g. a program-driven signal's opaque cycle
-    time). The consequence: THIS specific shape slips past the full stack
-    too, guardrails enabled or not -- a confirmed gap, not a hypothetical
-    one. See this task's drafted DECISIONS.md entry."""
+    persisted at all (not even clamped to some other value) -- the demo
+    network's vehicle inputs start with NO volume data, so "never
+    persisted" reparses as volume: None. This WAS a confirmed blind spot
+    (guardrails' target-persisted check degraded silently on any None)
+    until the controller fix added per-field none-semantics: volume is a
+    parseable-but-unset field ("none_means": "not_persisted"), so a None
+    after a write is now itself the evidence the write was dropped --
+    write_verification_failed fires and the change is rolled back, even
+    though the parsed value never showed a wrong number. See DECISIONS.md
+    2026-07-24 (M5 batch: queued fix, landed)."""
     spec = _silent_failure_fixture_spec()
     result = run_task(
         spec,
         work_root=tmp_path / "work",
-        guardrails_disabled=False,  # full stack -- and it STILL doesn't catch this
+        guardrails_disabled=False,  # full stack -- catches the drop via none-policy
         provider_factory=_scripted_provider_factory,
         edit_session_factory=_ignored_edit_session_factory,
     )
 
     assert result.kind == "answer"
     assert result.success is False
-    assert result.silent_failure_detected is True
-    assert result.observed_refusal_constraint_ids == []
+    assert result.silent_failure_detected is False
+    assert "write_verification_failed" in result.observed_refusal_constraint_ids
     assert "set_vehicle_input_volume" in result.observed_write_run_dispatches

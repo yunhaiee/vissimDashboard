@@ -75,20 +75,32 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
 # doctrine (docs/phase2/00-EXECUTION-GUIDE.md §4). Kept independent from
 # constraints.py's private _TOOL_TARGET_SPEC for the same reason as above.
 _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
+    # "none_means" fixes the confirmed blind spot (DECISIONS 2026-07-24, M5
+    # batch): a parsed value of None is AMBIGUOUS — for "not_persisted"
+    # fields the parser CAN see the attribute whenever the file carries it
+    # (vehicle-input volume: live-verified in M2.1's smoke), so None after a
+    # write means the write never reached the file → refuse. For
+    # "parser_blind" fields the parser structurally cannot see the value on
+    # some objects (signal cycle_time inside opaque program blobs; offset is
+    # absent from the shadow signal shape entirely) → no claim can be made,
+    # degrade silently.
     "set_vehicle_input_volume": {
         "object_class": "vehicle_inputs",
         "id_param": "input_no",
         "value_field": "volume",
+        "none_means": "not_persisted",
     },
     "set_signal_cycle": {
         "object_class": "signals",
         "id_param": "sc_no",
         "value_field": "cycle_time",
+        "none_means": "parser_blind",
     },
     "set_signal_offset": {
         "object_class": "signals",
         "id_param": "sc_no",
         "value_field": "offset",
+        "none_means": "parser_blind",
     },
 }
 
@@ -382,11 +394,18 @@ def _target_not_persisted_finding(
         return None
 
     saved_value = target.get(spec["value_field"])
-    if saved_value is None:
-        return None
-
     written_value = com_result["written_value"]
-    if not _values_differ(written_value, saved_value):
+    if saved_value is None:
+        if spec.get("none_means") != "not_persisted":
+            # Parser-blind field: no file-level claim can be made either
+            # way (e.g. cycle_time on opaque program-driven controllers per
+            # the M2.1 CycTm finding) — a refusal here would be a false
+            # positive, not caution.
+            return None
+        # Parseable-but-unset field: the parser WOULD show the value had the
+        # write reached the file, so None after a write IS the evidence the
+        # write was silently dropped — fall through to the finding.
+    elif not _values_differ(written_value, saved_value):
         return None
 
     field = spec["value_field"]

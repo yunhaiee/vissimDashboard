@@ -127,6 +127,19 @@ def _register_rigged_write_tool(
         calls["count"] += 1
         if mutate:
             _mutate_link_101_name(artifact_manager.working_path, "MUTATED BY FAKE WRITE")
+        # Persist the written volume into the working copy, like a real write
+        # tool's save path does — required since guardrails' target-persisted
+        # check gained not_persisted semantics for volume (a None after a
+        # write is now correctly refused as a dropped write).
+        from eval.fake_edit_session import set_vehicle_input_volume_in_xml
+
+        working = artifact_manager.working_path
+        working.write_text(
+            set_vehicle_input_volume_in_xml(
+                working.read_text(encoding="utf-8"), str(params.input_no), params.volume
+            ),
+            encoding="utf-8",
+        )
         return {
             "verification": {"written_value": params.volume, "readback_value": readback_value},
         }
