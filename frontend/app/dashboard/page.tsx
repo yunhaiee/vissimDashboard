@@ -23,6 +23,7 @@ import {
   type ScenarioMeta,
   type ScenarioResults,
 } from "@/lib/api";
+import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, objectBelongsToNode, resolveLosGrade, type LosGrade } from "@/lib/los";
 import { getScenarioDisplayColor } from "@/lib/scenarioPalette";
 import { errorTone, gehTone, toneBadgeClass, type ValidationTone } from "@/lib/validationThresholds";
 
@@ -48,7 +49,6 @@ const MAX_SELECTED_NODES = 6;
 
 type NodeDirectionRow = NonNullable<ScenarioResults["node_directions"]>[number];
 type DirectionKey = "north" | "east" | "south" | "west";
-type LosGrade = "A" | "B" | "C" | "D" | "E" | "F";
 type IntersectionMetricBarValue = {
   nodeId: string;
   nodeName: string;
@@ -109,24 +109,6 @@ const DIRECTION_COLORS: Record<DirectionKey, string> = {
 // so the bar itself only needs to encode magnitude — a single neutral steel
 // keeps it from echoing either the scenario or the direction palettes.
 const METRIC_BAR_COLOR = "#7f8ba0";
-const LOS_COLORS: Record<LosGrade, string> = {
-  A: "#22c55e",
-  B: "#a3d977",
-  C: "#e5c76b",
-  D: "#ee9b5c",
-  E: "#e4574d",
-  F: "#a83a32",
-};
-// Delay-second bands behind resolveLosGrade(), spelled out for the legend so
-// "LOS" isn't shown as an unexplained letter anywhere it appears.
-const LOS_GRADE_THRESHOLDS: Array<{ grade: LosGrade; label: string }> = [
-  { grade: "A", label: "≤10s" },
-  { grade: "B", label: "≤20s" },
-  { grade: "C", label: "≤35s" },
-  { grade: "D", label: "≤55s" },
-  { grade: "E", label: "≤80s" },
-  { grade: "F", label: ">80s" },
-];
 
 // Every chart on this page must color a scenario the SAME way the picker
 // legend does, regardless of which other scenarios are currently selected
@@ -615,6 +597,8 @@ export default function DashboardPage() {
                     network={network}
                     loading={networkLoading}
                     error={networkError}
+                    results={results}
+                    selectedScenario={activeScenarios[0]?.id}
                     selectedNodeIds={selectedNodeIds}
                     selectedLinkId={selectedLinkInfo?.id ?? null}
                     onNodeClick={handleNodeClick}
@@ -1784,6 +1768,8 @@ function NetworkDiagramView({
   network,
   loading,
   error,
+  results,
+  selectedScenario,
   selectedNodeIds,
   selectedLinkId,
   onNodeClick,
@@ -1793,6 +1779,8 @@ function NetworkDiagramView({
   network: NetworkData | null;
   loading: boolean;
   error: string | null;
+  results?: Record<string, ScenarioResults>;
+  selectedScenario?: string;
   selectedNodeIds: string[];
   selectedLinkId: string | null;
   onNodeClick: (nodeId: string, nodeName: string) => void;
@@ -1827,6 +1815,8 @@ function NetworkDiagramView({
   return (
     <NetworkViewer
       network={network}
+      results={results}
+      selectedScenario={selectedScenario}
       selectedNodeIds={selectedNodeIds}
       selectedLinkId={selectedLinkId}
       onNodeClick={onNodeClick}
@@ -2287,33 +2277,6 @@ function normalizeDirectionTotals(values: Record<string, number> | undefined): R
   };
 }
 
-function resolveLosGrade(delay: number): LosGrade {
-  if (delay <= 10) return "A";
-  if (delay <= 20) return "B";
-  if (delay <= 35) return "C";
-  if (delay <= 55) return "D";
-  if (delay <= 80) return "E";
-  return "F";
-}
-
-function calculateNodeAverageDelay(result: ScenarioResults, nodeId: string): number | null {
-  const rows = result.movements.filter((row) => objectBelongsToNode(row.OBJECT_ID, nodeId));
-  let weightedDelay = 0;
-  let weightTotal = 0;
-
-  for (const row of rows) {
-    const delay = toFiniteNumber(row["VEHDELAY_MEAN"] ?? row["VEHDELAY"]);
-    if (delay == null) continue;
-
-    const vehs = toFiniteNumber(row["VEHS_MEAN"] ?? row["VEHS"]);
-    const weight = vehs != null && vehs > 0 ? vehs : 1;
-    weightedDelay += delay * weight;
-    weightTotal += weight;
-  }
-
-  return weightTotal > 0 ? weightedDelay / weightTotal : null;
-}
-
 function calculateWorstApproachDelay(result: ScenarioResults, nodeId: string): number | null {
   const delays = result.movements
     .filter((row) => objectBelongsToNode(row.OBJECT_ID, nodeId))
@@ -2338,12 +2301,6 @@ function calculateNodeMaxQueue(result: ScenarioResults, nodeId: string): number 
 
 function sumDirectionMap(values: Record<string, number> | undefined): number {
   return Object.values(values ?? {}).reduce((sum, value) => sum + Number(value ?? 0), 0);
-}
-
-function objectBelongsToNode(objectId: unknown, nodeId: string): boolean {
-  const text = String(objectId ?? "").trim();
-  const normalizedNodeId = String(nodeId).trim();
-  return text === normalizedNodeId || text.startsWith(`${normalizedNodeId}-`) || text.startsWith(`${normalizedNodeId}:`);
 }
 
 const TRAVEL_TIME_MAX_POINTS = 18;

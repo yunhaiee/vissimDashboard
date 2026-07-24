@@ -2,15 +2,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
 import { NetworkData, ScenarioResults } from "@/lib/api";
+import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, resolveLosGrade, type LosGrade } from "@/lib/los";
 import { useLanguage } from "@/components/LanguageProvider";
-
-type Metric = "delay" | "speed" | "queue";
 
 interface Props {
   network: NetworkData;
   results?: Record<string, ScenarioResults>;
   selectedScenario?: string;
-  metric?: Metric;
   selectedNodeIds?: string[];
   selectedLinkId?: string | null;
   onNodeClick?: (nodeId: string, nodeName: string) => void;
@@ -27,7 +25,6 @@ export default function NetworkViewer({
   network,
   results,
   selectedScenario,
-  metric = "delay",
   selectedNodeIds,
   selectedLinkId,
   onNodeClick,
@@ -38,7 +35,27 @@ export default function NetworkViewer({
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
   const [sizeNonce, setSizeNonce] = useState(0);
 
-  // Persist zoom across redraws (metric/selection/resize); reset when the
+  // Per-node average delay + LOS grade, from real movement data only. Per-link
+  // metrics do not exist anywhere in this system (a movement OBJECT_ID is
+  // shaped "{node_id}-{from_link}-{pos}-{to_link}-{pos}" and can never equal a
+  // link id), so links never carry a metric color — see
+  // docs/phase2/DECISIONS.md. This mirrors calculateNodeAverageDelay, the same
+  // VEHS-weighted helper the dashboard's intersection panels use, so the
+  // diagram never disagrees with them.
+  const nodeLosMap = useMemo(() => {
+    const map = new Map<string, { delay: number; los: LosGrade }>();
+    const result = results && selectedScenario ? results[selectedScenario] : undefined;
+    if (!result) return map;
+    for (const node of network.nodes) {
+      const nodeId = String(node.id);
+      const delay = calculateNodeAverageDelay(result, nodeId);
+      if (delay == null) continue;
+      map.set(nodeId, { delay, los: resolveLosGrade(delay) });
+    }
+    return map;
+  }, [network, results, selectedScenario]);
+
+  // Persist zoom across redraws (LOS data/selection/resize); reset when the
   // underlying network changes.
   const zoomTransformRef = useRef<d3.ZoomTransform>(d3.zoomIdentity);
   const prevNetworkRef = useRef<NetworkData | null>(null);
@@ -96,41 +113,11 @@ export default function NetworkViewer({
     const scX = d3.scaleLinear().domain([xMin, xMin + spanX]).range([pad, W - pad]);
     const scY = d3.scaleLinear().domain([yMin, yMin + spanY]).range([H - pad, pad]);
 
-    // Build metric lookup: link_id → value
-    const metricMap = new Map<string, number>();
-    if (results && selectedScenario && results[selectedScenario]) {
-      const r = results[selectedScenario];
-      if (metric === "delay") {
-        r.movements.forEach((m) => {
-          metricMap.set(String(m.OBJECT_ID), m.VEHDELAY_MEAN as number);
-        });
-      } else if (metric === "speed") {
-        r.datacollection.forEach((d) => {
-          metricMap.set(String(d.OBJECT_ID), d.SPEEDAVGARITH_MEAN as number);
-        });
-      } else if (metric === "queue") {
-        r.datacollection.forEach((d) => {
-          metricMap.set(String(d.OBJECT_ID), d.QUEUEDELAY_MEAN as number);
-        });
-      }
-    }
-
-    const vals = Array.from(metricMap.values()).filter((v) => v != null && !isNaN(v));
-    const colorScale = d3.scaleSequential(d3.interpolateRdYlGn).domain(
-      metric === "speed"
-        ? [Math.min(...vals) || 0, Math.max(...vals) || 60]
-        : [Math.max(...vals) || 60, Math.min(...vals) || 0]
-    );
-
     const linkLabel = t("링크", "Link");
     const nodeLabel = t("노드", "Node");
     const connectorLabel = t("연결로", "Connector");
-    const noData = t("데이터 없음", "No data");
-    const metricLabels: Record<Metric, string> = {
-      delay: t("평균지연 (초)", "Avg delay (s)"),
-      speed: t("평균속도 (km/h)", "Avg speed (km/h)"),
-      queue: t("대기열지연 (초)", "Queue delay (s)"),
-    };
+    const delayLabel = t("평균지연", "Avg delay");
+    const secondsUnit = t("초", "s");
 
     const g = svg.append("g");
 
@@ -152,9 +139,10 @@ export default function NetworkViewer({
       const pointsAttr = pts.map((p) => p.join(",")).join(" ");
       const isConn = !!link.is_connector;
       const isSel = selectedLinkId != null && String(selectedLinkId) === String(link.id);
-      const val = metricMap.get(link.id);
-      const metricColor = val != null && vals.length > 0 ? colorScale(val) : REGULAR_LINK_COLOR;
-      const stroke = isSel ? ACCENT : isConn ? CONNECTOR_COLOR : metricColor;
+      // Links always render neutral: per-link result metrics do not exist
+      // anywhere in this system (see docs/phase2/DECISIONS.md), so there is no
+      // real value to color a link by.
+      const stroke = isSel ? ACCENT : isConn ? CONNECTOR_COLOR : REGULAR_LINK_COLOR;
       const baseWidth = isConn ? Math.max(1, link.lanes * 0.8) : Math.max(1.5, link.lanes * 1.2);
       const width = isSel ? baseWidth + 1.6 : baseWidth;
 
@@ -177,9 +165,7 @@ export default function NetworkViewer({
             ? `${connectorLabel} ${link.id}: ${link.from_link} → ${link.to_link}`
             : `${connectorLabel} ${link.id}`;
         }
-        return val != null
-          ? `${linkLabel} ${link.id} | ${metricLabels[metric]}: ${val.toFixed(2)}`
-          : `${linkLabel} ${link.id} | ${noData}`;
+        return linkName;
       };
 
       const hit = g.append("polyline")
@@ -206,6 +192,11 @@ export default function NetworkViewer({
       const cy = scY(node.y);
       const selected = selectedNodeSet.has(String(node.id));
       const nodeName = node.name || `${nodeLabel} ${node.id}`;
+      const nodeMetric = nodeLosMap.get(String(node.id));
+      const nodeFill = nodeMetric ? LOS_COLORS[nodeMetric.los] : NODE_FILL;
+      const nodeTooltipText = nodeMetric
+        ? `${nodeName} · ${delayLabel} ${nodeMetric.delay.toFixed(1)}${secondsUnit} · LOS ${nodeMetric.los}`
+        : nodeName;
 
       if (selected) {
         g.append("circle")
@@ -222,7 +213,7 @@ export default function NetworkViewer({
         .attr("cx", cx)
         .attr("cy", cy)
         .attr("r", selected ? 7 : 6)
-        .attr("fill", selected ? ACCENT : NODE_FILL)
+        .attr("fill", nodeFill)
         .attr("stroke", selected ? ACCENT : NODE_STROKE)
         .attr("stroke-width", 1.5)
         .style("pointer-events", "none");
@@ -234,7 +225,7 @@ export default function NetworkViewer({
         .attr("fill", "transparent")
         .style("cursor", onNodeClick ? "pointer" : "default")
         .on("mousemove", (event: MouseEvent) => {
-          setTooltip({ x: event.clientX, y: event.clientY, text: nodeName });
+          setTooltip({ x: event.clientX, y: event.clientY, text: nodeTooltipText });
         })
         .on("mouseleave", () => setTooltip(null));
       if (onNodeClick) {
@@ -254,7 +245,7 @@ export default function NetworkViewer({
       });
     svg.call(zoom);
     svg.call(zoom.transform, zoomTransformRef.current);
-  }, [network, results, selectedScenario, metric, selectedNodeSet, selectedLinkId, onNodeClick, onLinkClick, t, sizeNonce]);
+  }, [network, nodeLosMap, selectedNodeSet, selectedLinkId, onNodeClick, onLinkClick, t, sizeNonce]);
 
   return (
     <div className="relative w-full h-full">
@@ -287,6 +278,17 @@ export default function NetworkViewer({
               </svg>
               <span>{t("노드", "Node")}</span>
             </div>
+            {nodeLosMap.size > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-200/70 pt-1.5">
+                <span className="font-semibold text-slate-500">LOS</span>
+                {LOS_GRADE_THRESHOLDS.map(({ grade }) => (
+                  <span key={grade} className="inline-flex items-center gap-0.5">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: LOS_COLORS[grade] }} />
+                    <span>{grade}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

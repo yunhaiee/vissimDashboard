@@ -830,3 +830,71 @@ trusting the topology downstream — in particular, whether any real export actu
 explicit `link=` form, and whether `pos` is reliably present. Until then, downstream
 consumers should treat `from_link`/`to_link`/`from_pos`/`to_pos` as best-effort, not verified
 ground truth.
+
+---
+
+## 2026-07-24 — Phase 3 (final unit): NetworkViewer's link metric coloring removed; node LOS coloring added instead
+
+**Context:** `frontend/components/NetworkViewer.tsx` carried a `metric`/`metricMap`/
+`colorScale` block that colored regular links by looking up `results[selectedScenario]`
+movement/datacollection rows keyed on `OBJECT_ID` and matching them against `link.id`. Verified
+reality: a movement `OBJECT_ID` is shaped `"{node_id}-{from_link}-{pos}-{to_link}-{pos}"` (per
+`objectBelongsToNode`'s prefix convention already used by the dashboard's intersection panels)
+and can never equal a bare link id — the lookup has always missed, so every regular link has
+always rendered `REGULAR_LINK_COLOR` (gray) regardless of `metric`/`results`. Per-link result
+metrics do not exist anywhere in this system. Per-NODE delay does exist and is real: prefix-
+matching a movement's `OBJECT_ID` against `"{node_id}-"` (or an exact match) correctly attributes
+it, which is exactly what `calculateNodeAverageDelay`/`objectBelongsToNode`
+(`frontend/app/dashboard/page.tsx`) already do for the dashboard's intersection-performance
+panels and `DashboardMap`'s `los_delay` overlay.
+
+**Decision:** the dead link-coloring block (`metric` prop, `METRIC_LABELS`, `metricMap`,
+`colorScale`) is removed outright — links always render `REGULAR_LINK_COLOR` (regular) or
+`CONNECTOR_COLOR` (connector), never a fabricated per-link value. In its place, NetworkViewer
+now computes a real per-node average delay from `results[selectedScenario]` and colors each
+node's fill by the LOS grade that delay resolves to (`resolveLosGrade`), falling back to the
+existing neutral `NODE_FILL` when no value exists. The LOS palette/thresholds
+(`LOS_COLORS`/`LOS_GRADE_THRESHOLDS`/`resolveLosGrade`) and the node-delay aggregation
+(`objectBelongsToNode`/`calculateNodeAverageDelay`, VEHS-weighted mean) were extracted from
+`app/dashboard/page.tsx` into a new shared module `frontend/lib/los.ts` — both the dashboard's
+own panels and NetworkViewer now import the same functions, so the diagram can never disagree
+with the dashboard's intersection cards or map overlay over the same node. The dashboard mount
+(`NetworkDiagramView` in `app/dashboard/page.tsx`) now passes `results={results}` and
+`selectedScenario={activeScenarios[0]?.id}` — `activeScenarios` is the already-established
+"currently selected, in canonical scenario-list order" derivation (same ordering
+`scenarioColorById` uses), the closest available analogue to a primary scenario since
+`DashboardMap` itself has no singular-scenario concept (it blends every selected scenario's
+movements together for its own `los_delay` overlay, a different aggregation shape than
+NetworkViewer's single-`selectedScenario` design retained here). The `/network` page mount is
+unchanged (no `results`/`selectedScenario` passed), so its nodes stay neutral exactly as before.
+
+**Consequence:** the diagram no longer implies a per-link measurement that was never real.
+Node coloring is honest and now agrees with the rest of the dashboard for whichever scenario is
+first in the current selection; if a future unit wants the diagram to blend delay across
+*every* selected scenario (matching `DashboardMap`'s own aggregation instead of picking one),
+`NetworkViewer` would need a `selectedScenarioIds`-style prop and a multi-scenario variant of
+the aggregation — not implemented here since the task scope kept the existing singular
+`selectedScenario` prop. Link coloring stays deferred until genuine per-link result data exists
+in this system (it currently does not, anywhere).
+
+---
+
+## 2026-07-24 — Phase 3 wrap: user-approved UX decisions for the network preview
+
+**Context:** Phase 3 (revive NetworkViewer, branch phase3-render) needed three UX calls that
+were the user's to make. Yunha picked, from presented options: (1) placement — BOTH a
+지도/도식 toggle inside the dashboard's #map-selection section AND a dedicated /network
+full-page viewer (one component, two mounts); (2) dashboard default — Leaflet stays default
+(correct for the calibrated SouthSt dataset demos; the raw-coordinate 도식 is one click away);
+(3) link/connector clicks reach the assistant as page-context chips/notes ONLY — the backend
+request shape (selected_scenario_ids/selected_node_ids) is unchanged; node clicks ride the
+existing selected_node_ids pipeline untouched.
+
+**Verification story (this Mac, no Vissim):** all units verified against the synthetic demo
+dataset — typecheck + dashboard-contract (9 pass / 1 known base-model fail) per unit, plus a
+live browser pass: /network renders 16 links + 2 dashed connectors with legend; node/link
+click-selection highlights and feeds the assistant panel (네트워크 프리뷰 컨텍스트 + notes);
+dashboard toggle swaps Leaflet↔diagram both ways sharing selection state; diagram nodes color
+LOS C (#e5c76b) from the demo's ~28s real movement delays. Remaining for the Windows/Vissim
+box: connector-schema validation against a real network (see the earlier connector entry) and
+the merge-to-main decision (Yunha's call).
