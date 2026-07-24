@@ -366,6 +366,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Restrict the run to one task id (repeatable).",
     )
+    parser.add_argument(
+        "--baseline",
+        choices=["full", "regex", "ablation"],
+        default="full",
+        help="M5.3: run the SAME suite through a named baseline adapter "
+        "(eval.baselines.BASELINE_ADAPTERS) instead of the full agent. "
+        "'regex' wraps the pre-agent parse_prompt_simulation_command parser; "
+        "'ablation' is the full agent with guardrails forced off (equivalent "
+        "to --guardrails-disabled, exposed here as a named arm). 'full' "
+        "(default) is unchanged existing behavior.",
+    )
     return parser
 
 
@@ -392,15 +403,29 @@ def main(argv: list[str] | None = None) -> int:
     work_root = args.out_dir / "work"
     work_root.mkdir(parents=True, exist_ok=True)
 
-    results = run_suite(
-        specs,
-        work_root=work_root,
-        guardrails_disabled=args.guardrails_disabled,
-        provider_factory=provider_factory,
-    )
+    if args.baseline == "full":
+        results = run_suite(
+            specs,
+            work_root=work_root,
+            guardrails_disabled=args.guardrails_disabled,
+            provider_factory=provider_factory,
+        )
+        summary_guardrails_disabled = args.guardrails_disabled
+    else:
+        # M5.3 baseline arms — lazy import, same discipline as this
+        # function's own --real-provider import above: avoid paying for
+        # eval.baselines' extra import surface (services.assistant_router)
+        # on the common `full` path that never touches it. eval.baselines
+        # itself lazy-imports eval.runner.run_task (only inside
+        # AblationBaselineAdapter.run), so this is also cycle-safe either
+        # way.
+        from eval.baselines import BASELINE_ADAPTERS, run_baseline_suite
+
+        results = run_baseline_suite(BASELINE_ADAPTERS[args.baseline], specs, work_root=work_root)
+        summary_guardrails_disabled = args.baseline == "ablation"
 
     write_results_jsonl(results, args.out_dir / "results.jsonl")
-    summary = render_markdown_summary(results, guardrails_disabled=args.guardrails_disabled)
+    summary = render_markdown_summary(results, guardrails_disabled=summary_guardrails_disabled)
     (args.out_dir / "summary.md").write_text(summary, encoding="utf-8")
     print(summary)
 

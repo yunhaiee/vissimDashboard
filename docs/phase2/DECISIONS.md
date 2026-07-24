@@ -606,3 +606,22 @@ against real Vissim behavior. Trace: plan → preflight → action_start → act
 - hallucinated_object_id's ablation-arm scoring deliberately counts only the
   object_not_found guardrail signal, not the CI-fake's accidental failures — the fake's
   no-dispatch asymmetry is not guaranteed by real COM; live-Vissim follow-up noted.
+
+---
+
+## 2026-07-24 — M5.3 decision batch (baselines)
+
+- Regex baseline recognizes 1/15 seed tasks — verified as a real word-order/vocabulary gap
+  (term-then-id order + mandatory run-word), NOT a strawman: a message in its expected order
+  is genuinely recognized and applied (dedicated test). Distinct from, and compounding, its
+  total lack of refusal/clarification vocabulary.
+- detect_silent_failure cannot distinguish confidently-wrong from honestly-unrecognized
+  (generic "didn't understand" answers count) — measurement caveat for the report, recorded
+  as data, not special-cased away.
+- must_not_warn-only tasks are trivially "passed" by doing nothing; refusal_correct catches
+  it — report code must read refusal_correct alongside success for edit/run tasks.
+- Ablation runs of the guardrail-refusal seed tasks (T005-7, T011) are a scripted-corpus
+  artifact (canned refusal text consumed as the post-approval turn) — ablation refusal
+  tables need scripted twins or exclusion; the real RQ2 scenario is proven by a dedicated
+  twice-scripted fixture where the unsafe write genuinely lands under ablation.
+- Naive LLM-codegen baseline deferred (roadmap-optional; needs its own sandbox + taxonomy).
