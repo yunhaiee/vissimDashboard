@@ -295,12 +295,161 @@ export interface ScenarioMeta {
   color: string;
 }
 
+// Phase 3 Tier 1: static network elements resolved server-side (inpx_parser.py's
+// point_at_pos/lane_offset_point) to absolute placement, so the frontend never
+// has to reimplement polyline/lane math. Every list on NetworkElements is
+// always present (possibly empty); elements referencing unknown links are
+// dropped server-side rather than shipped with null coordinates.
+export interface NetworkElementEndpoint {
+  link: string;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface SignalHeadElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+  sg: string | null;
+  sc: string | null;
+}
+
+export interface VehicleInputElement {
+  id: string;
+  name: string;
+  link: string;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface ReducedSpeedAreaElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+  length: number | null;
+  end_x?: number;
+  end_y?: number;
+}
+
+export interface DesSpeedDecisionElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface DetectorElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+  length: number | null;
+  end_x?: number;
+  end_y?: number;
+}
+
+export interface DataCollectionPointElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface TravelTimeSectionGeoElement {
+  id: string;
+  name: string;
+  start: NetworkElementEndpoint;
+  end: NetworkElementEndpoint;
+}
+
+export interface QueueCounterElement {
+  id: string;
+  name: string;
+  link: string;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface StopSignElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface PtStopElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+  length: number | null;
+  end_x?: number;
+  end_y?: number;
+}
+
+export interface PedAreaElement {
+  id: string;
+  name: string;
+  polygon: [number, number][];
+}
+
+export interface NetworkElements {
+  signal_heads: SignalHeadElement[];
+  vehicle_inputs: VehicleInputElement[];
+  reduced_speed_areas: ReducedSpeedAreaElement[];
+  des_speed_decisions: DesSpeedDecisionElement[];
+  detectors: DetectorElement[];
+  data_collection_points: DataCollectionPointElement[];
+  traveltime_sections_geo: TravelTimeSectionGeoElement[];
+  queue_counters: QueueCounterElement[];
+  stop_signs: StopSignElement[];
+  pt_stops: PtStopElement[];
+  ped_areas: PedAreaElement[];
+}
+
 export interface NetworkData {
   links: {
     id: string;
     name: string;
     points: [number, number][];
     lanes: number;
+    lane_widths?: number[];
+    width_total?: number;
     length: number;
     is_connector?: boolean;
     from_link?: string | null;
@@ -311,6 +460,7 @@ export interface NetworkData {
   nodes: { id: string; name: string; x: number; y: number; polygon: [number, number][] }[];
   detectors: { id: string; name: string }[];
   traveltime_sections: { id: string; name: string }[];
+  elements?: NetworkElements;
 }
 
 export interface ActiveDataset {

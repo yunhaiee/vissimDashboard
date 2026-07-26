@@ -62,6 +62,7 @@ def parse_network_root(root: ET.Element) -> dict:
         "nodes": _parse_nodes(root, links),
         "detectors": _parse_named_elements(root, ".//dataCollectionMeasurements", "dataCollectionMeasurement"),
         "traveltime_sections": _parse_named_elements(root, ".//vehicleTravelTimeMeasurements", "vehicleTravelTimeMeasurement"),
+        "elements": parse_network_elements(root, links),
     }
 
 
@@ -77,6 +78,8 @@ def _parse_links(root: ET.Element) -> list:
 
         lanes_el = link.find("lanes")
         lane_count = len(lanes_el.findall("lane")) if lanes_el is not None else 1
+        lane_widths = _parse_lane_widths(lanes_el, lane_count)
+        width_total = round(sum(lane_widths), 2)
 
         geom = link.find("geometry")
         pts_el = geom.find("linkPolyPts") if geom is not None else None
@@ -101,6 +104,8 @@ def _parse_links(root: ET.Element) -> list:
             "name": name,
             "points": points,
             "lanes": lane_count,
+            "lane_widths": lane_widths,
+            "width_total": width_total,
             "length": round(length, 2),
             "is_connector": is_connector,
             # Connector topology (Phase 3): the link id (as a string) each
@@ -113,6 +118,29 @@ def _parse_links(root: ET.Element) -> list:
             "to_pos": to_pos,
         })
     return result
+
+
+def _parse_lane_widths(lanes_el: ET.Element | None, lane_count: int) -> list:
+    """Per-lane widths (meters) for a link, in Vissim's lane-1..N order.
+
+    Each ``<lane width="...">`` contributes its own width; a missing/malformed
+    ``width`` attribute falls back to Vissim's common default of 3.5 m rather
+    than raising or dropping the lane. When the link has no ``<lanes>``
+    element at all, ``_parse_links`` already defaults ``lane_count`` to 1, so
+    this returns a single 3.5 m lane to match.
+    """
+    widths = []
+    if lanes_el is not None:
+        for lane_el in lanes_el.findall("lane"):
+            raw = lane_el.get("width")
+            try:
+                width = float(raw) if raw is not None else 3.5
+            except (TypeError, ValueError):
+                width = 3.5
+            widths.append(width)
+    if not widths:
+        widths = [3.5] * max(lane_count, 0)
+    return widths
 
 
 def _parse_connector_endpoint(end_pt: ET.Element | None) -> tuple[str | None, float | None]:
@@ -325,3 +353,406 @@ def routing_decisions_by_node(root: ET.Element) -> dict:
             continue
         by_node.setdefault(nid, []).append(rd)
     return by_node
+
+
+# ============================================================================
+# Phase 3 Tier 1: geometry resolver + static network element extraction
+# ============================================================================
+#
+# Vissim places every static network element (signal heads, detectors, PT
+# stops, ...) by reference: a link id (+ optionally a lane number) and an
+# arc-length ``pos`` along that link. None of that is an absolute (x, y) —
+# resolving it requires walking the referenced link's centerline polyline.
+# The helpers below do that resolution once, server-side, so the frontend
+# NetworkViewer never has to reimplement polyline math in TypeScript.
+
+
+def point_at_pos(points: list, pos) -> tuple[float, float, float] | None:
+    """Resolve an absolute ``(x, y, angle_deg)`` placement at arc-length
+    ``pos`` along a link's centerline polyline.
+
+    ``pos`` is clamped into ``[0, length]`` — Vissim positions are always
+    meant to lie on the link, but upstream data can carry float noise or go
+    stale after an edit, and clamping is safer than refusing outright.
+    ``angle_deg`` is the direction of travel of the polyline segment
+    containing ``pos``, in the standard math convention (0 deg along +x,
+    increasing counter-clockwise, range ``(-180, 180]``).
+
+    Returns ``None`` when ``points`` has fewer than two vertices or ``pos``
+    isn't a finite number — this function never raises.
+    """
+    if points is None or len(points) < 2:
+        return None
+    pos_f = _to_float(pos)
+    if pos_f is None:
+        return None
+
+    length = _polyline_length(points)
+    pos_f = max(0.0, min(pos_f, length))
+
+    acc = 0.0
+    last_point = (points[0][0], points[0][1])
+    last_angle = 0.0
+    for i in range(1, len(points)):
+        x0, y0 = points[i - 1]
+        x1, y1 = points[i]
+        seg_len = math.hypot(x1 - x0, y1 - y0)
+        if seg_len <= 0:
+            continue
+        angle = math.degrees(math.atan2(y1 - y0, x1 - x0))
+        last_point = (x1, y1)
+        last_angle = angle
+        if acc + seg_len >= pos_f:
+            t = max(0.0, min((pos_f - acc) / seg_len, 1.0))
+            x = x0 + (x1 - x0) * t
+            y = y0 + (y1 - y0) * t
+            return (round(x, 4), round(y, 4), round(angle, 2))
+        acc += seg_len
+
+    # Every segment was zero-length (coincident points) or float slack left
+    # ``pos_f`` a hair past the summed length: fall back to the last real
+    # point/heading found rather than raising.
+    return (round(last_point[0], 4), round(last_point[1], 4), round(last_angle, 2))
+
+
+def lane_offset_point(points: list, pos, lane_no, lane_widths: list | None = None) -> tuple[float, float, float] | None:
+    """Resolve an absolute ``(x, y, angle_deg)`` placement offset laterally
+    from a link's centerline polyline to the middle of a specific lane.
+
+    **Assumptions (Vissim-convention, not independently verified on a real
+    Vissim box — see docs/phase2/DECISIONS.md):**
+      - the link ``points`` polyline is the *centerline* of the whole lane
+        group (not lane 1's own edge), and lanes sit side by side across
+        that width with no gap between them;
+      - lanes are numbered 1..N from the rightmost lane (relative to the
+        link's direction of travel) to the leftmost — this matches Vissim's
+        own lane-numbering convention (lane 1 = curb lane in a
+        right-hand-drive-style network);
+      - "right" is defined purely by rotating the local direction-of-travel
+        vector -90 deg (clockwise) in the link's own (x, y) coordinate
+        system — i.e. the segment normal, not a real-world compass
+        direction. Whether that matches the true physical curb side on any
+        given real network is unverified.
+
+    ``lane_widths`` defaults to a single 3.5 m lane when omitted/empty.
+    ``lane_no`` is clamped into ``[1, len(lane_widths)]`` (defensive, never
+    raises) — an out-of-range lane number still gets a best-effort placement
+    rather than being dropped. Returns ``None`` when the base centerline
+    point can't be resolved (delegates to :func:`point_at_pos`) or
+    ``lane_no`` isn't a positive integer at all.
+    """
+    base = point_at_pos(points, pos)
+    if base is None:
+        return None
+    x, y, angle = base
+
+    widths = [w for w in (lane_widths or []) if w is not None] or [3.5]
+
+    try:
+        lane_no_i = int(lane_no)
+    except (TypeError, ValueError):
+        return None
+    if lane_no_i < 1:
+        return None
+    lane_no_i = min(lane_no_i, len(widths))
+
+    total_width = sum(widths)
+    offset_from_right_edge = sum(widths[: lane_no_i - 1]) + widths[lane_no_i - 1] / 2.0
+    s_center = total_width / 2.0 - offset_from_right_edge  # signed; + = right of travel direction
+
+    angle_rad = math.radians(angle)
+    dx, dy = math.cos(angle_rad), math.sin(angle_rad)
+    nx, ny = dy, -dx  # right-hand normal of the (dx, dy) travel direction
+
+    ox = x + nx * s_center
+    oy = y + ny * s_center
+    return (round(ox, 4), round(oy, 4), round(angle, 2))
+
+
+def _to_float(raw) -> float | None:
+    """Best-effort ``float(raw)``; ``None``/malformed/non-finite -> ``None``."""
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _lane_ref(el: ET.Element) -> tuple[str | None, int | None]:
+    """Extract ``(link_id, lane_no)`` from an element's lane reference.
+
+    Vissim elements express "which lane of which link" in one of two shapes:
+      (a) a single ``lane="LINKNO LANENO"`` attribute (the common form, also
+          used by connector endpoints — see ``_parse_connector_endpoint``);
+      (b) an explicit ``link="LINKNO"`` attribute plus a ``lane="LANENO"``
+          attribute holding just the lane number.
+    An explicit ``link`` attribute takes precedence and switches parsing
+    into form (b); otherwise ``lane`` is parsed as form (a). Missing or
+    malformed attributes yield ``None`` for the piece that failed — this
+    function never raises, and callers skip the element rather than
+    fabricate placement.
+    """
+    if el is None:
+        return None, None
+
+    link_id = el.get("link") or None
+    lane_raw = (el.get("lane") or "").strip()
+
+    if link_id:
+        if not lane_raw:
+            return link_id, None
+        try:
+            return link_id, int(float(lane_raw))
+        except ValueError:
+            return link_id, None
+
+    tokens = lane_raw.split()
+    if len(tokens) >= 2:
+        tok_link = tokens[0] or None
+        try:
+            return tok_link, int(float(tokens[1]))
+        except ValueError:
+            return tok_link, None
+    if len(tokens) == 1:
+        return tokens[0] or None, None
+    return None, None
+
+
+def _sg_ref(el: ET.Element) -> tuple[str | None, str | None]:
+    """Split a ``<signalHead>``'s ``sg="<sc_no> <sg_no>"`` attribute into
+    ``(sc_no, sg_no)``. Same schema ``signal_parser._build_sg_lane_index``
+    already relies on. Missing/malformed -> ``(None, None)``, never raises.
+    """
+    tokens = (el.get("sg") or "").strip().split()
+    if len(tokens) != 2:
+        return None, None
+    return (tokens[0] or None), (tokens[1] or None)
+
+
+def _element_length(el: ET.Element) -> float | None:
+    """``length`` attribute, falling back to ``len`` (some exports use the
+    shorter name); ``None`` when neither parses."""
+    length = _to_float(el.get("length"))
+    if length is None:
+        length = _to_float(el.get("len"))
+    return length
+
+
+def _parse_lane_pos_elements(root: ET.Element, xpath: str, link_index: dict, *, with_length: bool = False) -> list:
+    """Shared extraction for the "lane + pos" family of static elements
+    (signal heads minus their sg/sc fields, reduced speed areas, desired
+    speed decisions, detectors, data collection points, stop signs, PT
+    stops). Any element whose link/lane/pos can't all be resolved — unknown
+    link, missing/malformed lane or pos — is skipped outright rather than
+    included with null coordinates."""
+    result = []
+    for el in root.findall(xpath):
+        link_id, lane_no = _lane_ref(el)
+        pos = _to_float(el.get("pos"))
+        link = link_index.get(link_id) if link_id else None
+        if link is None or lane_no is None or pos is None:
+            continue
+        resolved = lane_offset_point(link.get("points"), pos, lane_no, link.get("lane_widths"))
+        if resolved is None:
+            continue
+        x, y, angle = resolved
+        item = {
+            "id": el.get("no", ""),
+            "name": el.get("name", ""),
+            "link": link_id,
+            "lane": lane_no,
+            "pos": pos,
+            "x": x,
+            "y": y,
+            "angle": angle,
+        }
+        if with_length:
+            length = _element_length(el)
+            item["length"] = length
+            if length is not None:
+                end = lane_offset_point(link.get("points"), pos + length, lane_no, link.get("lane_widths"))
+                if end is not None:
+                    item["end_x"], item["end_y"] = end[0], end[1]
+        result.append(item)
+    return result
+
+
+def _parse_link_pos_elements(root: ET.Element, xpath: str, link_index: dict) -> list:
+    """Elements placed on a link (not a specific lane) via ``link``/``pos``
+    attributes — currently just queue counters."""
+    result = []
+    for el in root.findall(xpath):
+        link_id = el.get("link") or None
+        pos = _to_float(el.get("pos"))
+        link = link_index.get(link_id) if link_id else None
+        if link is None or pos is None:
+            continue
+        resolved = point_at_pos(link.get("points"), pos)
+        if resolved is None:
+            continue
+        x, y, angle = resolved
+        result.append({
+            "id": el.get("no", ""),
+            "name": el.get("name", ""),
+            "link": link_id,
+            "pos": pos,
+            "x": x,
+            "y": y,
+            "angle": angle,
+        })
+    return result
+
+
+def _parse_vehicle_inputs(root: ET.Element, link_index: dict) -> list:
+    result = []
+    for el in root.findall(".//vehicleInputs/vehicleInput"):
+        link_id = el.get("link") or None
+        link = link_index.get(link_id) if link_id else None
+        if link is None:
+            continue
+        resolved = point_at_pos(link.get("points"), 0)
+        if resolved is None:
+            continue
+        x, y, angle = resolved
+        result.append({
+            "id": el.get("no", ""),
+            "name": el.get("name", ""),
+            "link": link_id,
+            "x": x,
+            "y": y,
+            "angle": angle,
+        })
+    return result
+
+
+def _parse_signal_heads(root: ET.Element, link_index: dict) -> list:
+    result = []
+    for el in root.findall(".//signalHeads/signalHead"):
+        link_id, lane_no = _lane_ref(el)
+        pos = _to_float(el.get("pos"))
+        link = link_index.get(link_id) if link_id else None
+        if link is None or lane_no is None or pos is None:
+            continue
+        resolved = lane_offset_point(link.get("points"), pos, lane_no, link.get("lane_widths"))
+        if resolved is None:
+            continue
+        x, y, angle = resolved
+        sc_no, sg_no = _sg_ref(el)
+        result.append({
+            "id": el.get("no", ""),
+            "name": el.get("name", ""),
+            "link": link_id,
+            "lane": lane_no,
+            "pos": pos,
+            "x": x,
+            "y": y,
+            "angle": angle,
+            "sg": sg_no,
+            "sc": sc_no,
+        })
+    return result
+
+
+def _resolve_tt_endpoint(el: ET.Element, child_tag: str, flat_link_attr: str, flat_pos_attr: str, link_index: dict) -> dict | None:
+    """Resolve one end of a ``vehicleTravelTimeMeasurement``. The real
+    attribute schema for this element is unverified on this machine (no
+    travel-time-measurement-bearing .inpx available), so three plausible
+    shapes are tried in order: a child element (``<start link="" pos=""/>``),
+    flat attributes (``startLink``/``startPos``), and a combined
+    ``start="LINK POS"`` string. Whichever resolves first wins; ``None`` when
+    none do."""
+    link_id = None
+    pos = None
+
+    child = el.find(child_tag)
+    if child is not None:
+        link_id = child.get("link") or None
+        pos = _to_float(child.get("pos"))
+
+    if link_id is None:
+        link_id = el.get(flat_link_attr) or None
+    if pos is None:
+        pos = _to_float(el.get(flat_pos_attr))
+
+    if link_id is None or pos is None:
+        combined = (el.get(child_tag) or "").strip()
+        tokens = combined.split()
+        if len(tokens) >= 2:
+            if link_id is None:
+                link_id = tokens[0] or None
+            if pos is None:
+                pos = _to_float(tokens[1])
+
+    if not link_id or pos is None:
+        return None
+    link = link_index.get(link_id)
+    if link is None:
+        return None
+    resolved = point_at_pos(link.get("points"), pos)
+    if resolved is None:
+        return None
+    x, y, angle = resolved
+    return {"link": link_id, "pos": pos, "x": x, "y": y, "angle": angle}
+
+
+def _parse_traveltime_sections_geo(root: ET.Element, link_index: dict) -> list:
+    result = []
+    for el in root.findall(".//vehicleTravelTimeMeasurements/vehicleTravelTimeMeasurement"):
+        start = _resolve_tt_endpoint(el, "start", "startLink", "startPos", link_index)
+        end = _resolve_tt_endpoint(el, "end", "endLink", "endPos", link_index)
+        if start is None or end is None:
+            continue
+        result.append({
+            "id": el.get("no", ""),
+            "name": el.get("name", ""),
+            "start": start,
+            "end": end,
+        })
+    return result
+
+
+def _parse_ped_areas(root: ET.Element) -> list:
+    """Viswalk pedestrian areas: ``<areas><area no name><points><point x y/>
+    ...</points></area></areas>``. Polygon coordinates are used verbatim —
+    they're already absolute, no link/pos resolution needed."""
+    result = []
+    for el in root.findall(".//areas/area"):
+        points_el = el.find("points")
+        polygon = []
+        if points_el is not None:
+            for pt in points_el.findall("point"):
+                x = _to_float(pt.get("x"))
+                y = _to_float(pt.get("y"))
+                if x is None or y is None:
+                    continue
+                polygon.append([x, y])
+        if not polygon:
+            continue
+        result.append({"id": el.get("no", ""), "name": el.get("name", ""), "polygon": polygon})
+    return result
+
+
+def parse_network_elements(root: ET.Element, links: list | None = None) -> dict:
+    """Extract every Tier-1 static network element type Vissim renders in its
+    2D editor, resolved to absolute placement. Every list is always present
+    (possibly empty); elements referencing unknown/unresolvable links are
+    skipped rather than included with null coordinates. Never raises —
+    malformed attributes on any single element just drop that element."""
+    links = links if links is not None else _parse_links(root)
+    link_index = {lk["id"]: lk for lk in links if lk.get("id")}
+
+    return {
+        "signal_heads": _parse_signal_heads(root, link_index),
+        "vehicle_inputs": _parse_vehicle_inputs(root, link_index),
+        "reduced_speed_areas": _parse_lane_pos_elements(root, ".//reducedSpeedAreas/reducedSpeedArea", link_index, with_length=True),
+        "des_speed_decisions": _parse_lane_pos_elements(root, ".//desSpeedDecisions/desSpeedDecision", link_index),
+        "detectors": _parse_lane_pos_elements(root, ".//detector", link_index, with_length=True),
+        "data_collection_points": _parse_lane_pos_elements(root, ".//dataCollectionPoints/dataCollectionPoint", link_index),
+        "traveltime_sections_geo": _parse_traveltime_sections_geo(root, link_index),
+        "queue_counters": _parse_link_pos_elements(root, ".//queueCounters/queueCounter", link_index),
+        "stop_signs": _parse_lane_pos_elements(root, ".//stopSigns/stopSign", link_index),
+        "pt_stops": _parse_lane_pos_elements(root, ".//ptStops/ptStop", link_index, with_length=True),
+        "ped_areas": _parse_ped_areas(root),
+    }

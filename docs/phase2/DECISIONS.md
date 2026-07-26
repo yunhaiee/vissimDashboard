@@ -898,3 +898,98 @@ dashboard toggle swaps Leaflet↔diagram both ways sharing selection state; diag
 LOS C (#e5c76b) from the demo's ~28s real movement delays. Remaining for the Windows/Vissim
 box: connector-schema validation against a real network (see the earlier connector entry) and
 the merge-to-main decision (Yunha's call).
+
+---
+
+## 2026-07-26 — Phase 3 Tier 1: static network element extraction (signal heads, detectors, PT
+stops, etc.) resolved to absolute placement
+
+**Context:** the frontend NetworkViewer only ever drew links/nodes; every other static element
+Vissim renders in its 2D editor (signal heads, vehicle inputs, reduced speed areas, desired
+speed decisions, detectors, data collection points, travel-time-measurement endpoints, queue
+counters, stop signs, PT stops, Viswalk pedestrian areas) exists in the `.inpx` only as a
+link/lane + arc-length `pos` reference — never an absolute (x, y). No `.inpx` on this machine
+carries any of these element types (`data/practice.inpx` has none; the only real schema
+precedent in this codebase is `signalHead`'s `lane="link lane"`/`sg="sc sg"` attributes, already
+trusted by `signal_parser.py`, and `reducedSpeedArea`'s `lane`/`pos`/`length` attributes, already
+trusted by `simulation_network_builder.py`'s live-COM speed-limit injection). Every other
+element's attribute schema is inferred from Vissim's documented convention and from those two
+verified precedents — same inferred-defensive policy as the 2026-07-24 connector-topology entry,
+not independently verified against a real Vissim box.
+
+**Decision:** two new resolver primitives in `inpx_parser.py` do all the geometry math once,
+server-side: `point_at_pos(points, pos)` walks a link's centerline polyline by arc length
+(clamping `pos` into `[0, length]`, returning `(x, y, angle_deg)` from the containing segment,
+`None` on <2 points or a non-finite `pos`) and `lane_offset_point(points, pos, lane_no,
+lane_widths)` additionally offsets perpendicular to the centerline to a specific lane's middle.
+**Assumptions, made explicit in the function's own docstring:** the link polyline is the
+*centerline* of the whole lane group (not lane 1's own edge); lanes sit side by side with no gap;
+lane 1 is the *rightmost* lane relative to the link's direction of travel (Vissim's own
+numbering convention) with "right" defined as rotating the local travel-direction vector -90 deg
+in the link's own (x, y) coordinate system (the segment normal) — not a verified real-world curb
+side. `lane_no` out of `[1, len(lane_widths)]` is clamped rather than dropped (still gets a
+best-effort placement); only a genuinely non-numeric/non-positive `lane_no`, or an unresolvable
+base point, returns `None`.
+
+A shared `_lane_ref(el)` reads either of Vissim's two lane-reference shapes (`lane="LINKNO
+LANENO"`, or explicit `link="LINKNO"` + `lane="LANENO"`) — malformed/missing pieces yield `None`
+for that piece, never raise. Each of the 11 catalog types is extracted by one of three small
+shared helpers (`_parse_lane_pos_elements` for the lane+pos family, `_parse_link_pos_elements`
+for link+pos-only queue counters, plus bespoke handling for vehicle inputs, signal heads' extra
+sg/sc split, the travel-time-measurement's two-endpoint shape, and ped areas' verbatim polygon)
+and returned under a new `elements` dict key from `parse_network_root`/`parse_network`. Any
+element referencing an unknown link, or missing a required lane/pos, is skipped outright — never
+included with null coordinates — so every list is always present but only ever holds resolved,
+plausible placements. The pre-existing flat `detectors` (`dataCollectionMeasurement`-based) and
+`traveltime_sections` lists are untouched byte-for-byte; the new `elements.detectors` list reads
+actual `<detector>` elements (a different real Vissim object, searched anywhere in the tree per
+the task brief, not confined to a `<detectors>` wrapper) and is a separate concept despite the
+name collision with the old flat list.
+
+The `vehicleTravelTimeMeasurement` geometry is the least certain schema of the eleven — no
+example of any shape exists anywhere in this repo or on this machine — so
+`_resolve_tt_endpoint` tries three plausible attribute shapes in order (child `<start
+link="" pos=""/>`/`<end .../>` elements, flat `startLink`/`startPos`/`endLink`/`endPos`
+attributes, and a combined `start="LINK POS"`/`end="LINK POS"` attribute) and returns `None` for
+that measurement if none resolve. Links also gained `lane_widths` (per-`<lane width="">`,
+falling back to Vissim's common 3.5 m default on a missing/malformed value) and `width_total`.
+
+`backend/tools/make_showcase_network.py` (a new, committed fixture generator — promoted from
+the scratchpad prototype used to draft the geometry-variety showcase network in an earlier
+Phase 3 unit) now places one instance of every catalog type on the existing showcase network:
+3 signal heads on the crossroads' signalized legs (Harbor Rd EB, Hill Ave SB, River Arterial
+WB — Dock Lane is deliberately left stop-sign-controlled instead, so no leg carries both a
+signal and a stop sign), 1 reduced speed area on the arterial's sharpest curve, 2 desired speed
+decisions, 2 detectors at the same stop lines as the signal heads, 2 data collection points
+mid-link, 1 travel-time measurement spanning the crossroads exit to the roundabout entry (link
+403 pos 0 → link 423 pos 15, matching the existing connector 511's own attachment point), 1
+queue counter on the Harbor Rd approach, 1 stop sign on Dock Lane, 1 PT stop on Ridge Rd, and 1
+small pedestrian-area polygon near the crossroads. `backend/tests/test_inpx_elements.py` covers
+the resolver math directly (straight line, right-angle turn, clamping, degenerate/coincident
+points, lane offsets on east- and north-bound links, out-of-range/invalid lane numbers),
+`_lane_ref`/`_sg_ref` in isolation, inline-XML fixtures per element type (including the
+malformed/missing-attribute cases: unknown link, missing pos, malformed lane number, missing
+length, all three travel-time-measurement attribute shapes), and an end-to-end generate→parse of
+the showcase network asserting every `elements` list is non-empty with finite coordinates inside
+the network's bounding box.
+
+**Consequence:** `frontend/lib/api.ts`'s `NetworkData` gained `lane_widths`/`width_total` on
+links and a full `NetworkElements` interface (types only, no component changes in this unit —
+`NetworkViewer.tsx` doesn't read `elements` yet). The dev backend process on this machine
+(`:8001`, started without `--reload`, per the unit's explicit "do not restart" constraint) is
+still running the pre-this-unit code, so a live `curl .../api/network` reflects the *new*
+uploaded `showcase.inpx` but *not* the new parser fields — verified equivalence instead by
+parsing the exact uploaded file (`runtime/uploads/current/current.inpx`) offline with the
+updated `parse_network`, which returns the full populated `elements` dict. Whoever restarts the
+backend next (the orchestrator, on review) will see it live at `:8001` with no further action
+needed — the uploaded dataset already persists the showcase network. **Deferred, not
+implemented:** priority rules (no catalog entry requested this unit; also lack a settled
+attribute schema anywhere in this repo), parking lots (same — zero precedent, lower value for
+the TR-C substrate than the signal/detector family), background images (raster, not vector
+geometry — a different rendering path entirely, out of scope for a geometry resolver), 3D models
+(Vissim's `.v3d`-referencing static-object type; irrelevant to a 2D top-down NetworkViewer), and
+pavement markings (cosmetic-only overlay Vissim derives from lane geometry rather than storing
+as an independent placed object — no new information over what links already carry). Validation
+of every inferred schema (all ten types beyond signal heads/reduced speed areas) against a real
+Vissim-exported `.inpx` remains pending the Windows/Vissim box, per the same caveat the
+2026-07-24 connector entry already carries.
