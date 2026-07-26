@@ -1613,3 +1613,58 @@ export async function uploadBaseWorkbook(file: File): Promise<BaseWorkbookRespon
   const detail = lastNetworkError instanceof Error ? lastNetworkError.message : String(lastNetworkError ?? "unknown error");
   throw new Error(`Failed to upload validation workbook. Tried API: ${triedBases}. Last network error: ${detail}`);
 }
+
+// Phase 3 P3: resolved vehicle-trajectory playback frames
+// (backend/services/trajectory_reader.py + backend/routers/trajectories.py).
+// Positions are resolved server-side (lane_offset_point/point_at_pos) against
+// the active dataset's network geometry -- same "server resolves geometry,
+// frontend never reimplements polyline math" pattern as NetworkElements.
+export interface TrajectoryVehicleFrame {
+  id: number;
+  link: string;
+  lane: number | null;
+  pos: number;
+  speed: number;
+  // Present once resolved against known network geometry; absent when the
+  // vehicle's link couldn't be resolved (dropped from the frame instead, so
+  // in practice every vehicle present here already has these).
+  x?: number;
+  y?: number;
+  angle?: number;
+}
+
+export interface TrajectoryFrame {
+  t: number;
+  vehicles: TrajectoryVehicleFrame[];
+}
+
+export interface TrajectoryMeta {
+  t0: number | null;
+  t1: number | null;
+  step: number | null;
+  vehicle_count: number;
+  skipped_rows: number;
+  source_file?: string;
+  source_path?: string;
+  skipped_unresolved_vehicles?: number;
+  returned_frame_count?: number;
+  stride?: number;
+  t0_filter?: number;
+  t1_filter?: number;
+}
+
+export interface TrajectoryFrames {
+  meta: TrajectoryMeta;
+  frames: TrajectoryFrame[];
+}
+
+export async function fetchTrajectories(params?: { t0?: number; t1?: number; stride?: number }): Promise<TrajectoryFrames> {
+  const query = new URLSearchParams();
+  if (params?.t0 !== undefined) query.set("t0", String(params.t0));
+  if (params?.t1 !== undefined) query.set("t1", String(params.t1));
+  if (params?.stride !== undefined) query.set("stride", String(params.stride));
+  const qs = query.toString();
+  const r = await apiFetch(`/api/trajectories${qs ? `?${qs}` : ""}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}

@@ -1090,3 +1090,90 @@ is purely informational, not a diff view. `scenario_id` + `session_id` passed to
 accepted without special-casing (scenario modifications are resolved from the *active*
 dataset's `Scenarios`/`Modifications` dirs regardless of which `.inpx` is the base tree), since
 the frontend never sends that combination today.
+
+---
+
+## 2026-07-26 — P3: synthetic .fzp generator + resolved trajectory-frames endpoint
+
+**Context:** vehicle-trajectory playback (P4 builds the UI next) needs per-timestep vehicle
+positions, which Vissim exports as a `.fzp` file — one attribute-list header line
+(`$VEHICLE:SIMSEC;NO;LINK;LANE;POS;...`) followed by one semicolon-separated data row per
+vehicle per timestep. No real `.fzp` exists on this machine (no COM, no lab box) and column
+order varies per export configuration, so — same inferred-defensive policy as the
+Phase 3 connector/element-topology entries above — the schema is implemented from Vissim's
+documented convention rather than a captured sample, with the header itself driving column
+mapping so a reordered export still parses correctly.
+
+**Decision — header-driven parsing, never raise on a bad row.** `services/trajectory_reader.py`'s
+`parse_fzp` builds a name→index map from whichever `$VEHICLE:` line it finds (any other
+`$...` line is tolerated as generic export metadata and skipped, same as a `*` comment line);
+a data row is only attempted once the header has resolved every column in `REQUIRED_COLUMNS`
+(`SIMSEC, NO, LINK, POS, SPEED`). `LANE` is deliberately *not* required — a real export can
+plausibly leave it blank for a vehicle mid lane-change, and `resolve_frames` already has a
+defined fallback for that case (below), so a missing/malformed `LANE` degrades to `lane: None`
+rather than discarding an otherwise-good row. Every other required field's parse failure (bad
+float/int, a row with too few fields) skips just that row and increments `meta.skipped_rows` —
+the function itself never raises. Rows are grouped into `frames` (one per distinct `SIMSEC`,
+vehicles sorted by id for deterministic output) rather than left as a flat row list, matching
+how a playback UI will actually consume them (`state.get(t)`, not a per-row scan). Parsing is
+cached by `(path, mtime)` via `lru_cache`, the same idiom `routers/geojson.py`'s
+`_load_transform` already uses, so re-requesting an unchanged file is free and regenerating it
+(new mtime) invalidates automatically.
+
+**Decision — resolution reuses Tier 1's geometry resolver, never fabricates placement.**
+`resolve_frames(frames, network_links)` turns each vehicle's `(link, lane, pos)` into absolute
+`(x, y, angle)` using the exact `lane_offset_point`/`point_at_pos` primitives Tier 1 already
+resolves static elements with — no new geometry math, no divergent assumptions about lane
+numbering or link centerlines. `lane_offset_point` is tried first when a lane is known, falling
+back to `point_at_pos` (plain centerline) when it isn't or when the lane placement can't be
+resolved; a vehicle referencing a link id absent from the active network is dropped from its
+frame outright (never given a fabricated position) and counted in a returned `skipped` total.
+A frame is never dropped even if every vehicle in it becomes unresolvable — an empty
+`vehicles` list is still a valid frame, matching this repo's "never worse than a degraded
+response" fallback doctrine (P2's session-view entry above).
+
+**Decision — file-next-to-dataset convention, demo file as fallback.**
+`GET /api/trajectories` (`routers/trajectories.py`) looks for `trajectories.fzp` beside the
+*active* dataset's `.inpx` first (e.g. `runtime/uploads/current/trajectories.fzp`, the natural
+home for a real Vissim export dropped in after an upload), falling back to
+`data/demo_trajectories.fzp` when that doesn't exist — so a fresh checkout with no COM and no
+real export still has *something* to serve. 404 only when neither path exists anywhere.
+Resolution is always against `parse_network(get_active_inpx_path())`'s `links`; if that active
+`.inpx` is itself missing or malformed, the endpoint logs and degrades to unresolved
+(link/lane/pos-only, no x/y) frames rather than 500ing the whole response — same policy as the
+resolver's own unknown-link handling, one level up. `t0`/`t1` trim the frame window and `stride`
+decimates frames (`frames[::stride]`); response `meta` carries the parser's own fields
+(`t0, t1, step, vehicle_count, skipped_rows`) plus `source_file`/`source_path`,
+`skipped_unresolved_vehicles`, `returned_frame_count`, and `stride`.
+
+**Synthetic demo data — `tools/make_demo_trajectories.py`.** 32 vehicles over a 180s/0.5s-step
+window, round-robined across 5 hand-defined routes over the showcase network (all 7 of its
+connectors get exercised): `harbor_roundabout_eastgate` (401→503→403→511→423→424→512→427, the
+Harbor→arterial→roundabout→East Gate movement named in the P3 brief), `harbor_hill_rightturn`
+(401→501→407), `ridge_t_route` (409→521→408→502→403, the T-intersection movement), a single-link
+`dock_lane_stopsign` (406) that must stop at its stop sign, and `summit_roundabout_eastgate`
+(425→513→421→422→423→424→512→427). Every position that reflects real network topology
+(connector attach points, the reduced-speed-area bounds, signal/stop-sign positions) is read
+directly from `tools/make_showcase_network.py`'s own source tuples rather than duplicated as a
+literal, so the two files can't silently drift apart; only the per-link cruise speeds (km/h)
+are authored, since the fixture carries no speed data. Kinematics are piecewise-constant speed
+per link with an authored slowdown across the arterial's reduced-speed area and a full stop
+(speed 0) wherever a route passes a signal-head stop line (a trivial fixed 40s-cycle, two-phase
+signal — sg1/sg2 run complementary phases) or the Dock Lane stop sign (fixed 3s dwell) — this is
+demo-grade for visual plausibility, explicitly not a traffic-realistic car-following model (no
+acceleration ramps; speed steps discretely to 0 and back).
+
+**Simplifying assumption, flagged for lab-box validation:** the showcase network's four
+roundabout quarter-arc links (421–424) are treated as chaining directly into one another at
+their shared endpoints, with no dedicated connector link between them — the fixture only
+defines connectors into/out of the roundabout (511/512/513), not between adjacent arcs. This is
+schema-safe (the resolver only needs a valid `(link, lane, pos)` per row) but unconfirmed
+against how a real Vissim roundabout export links its arc segments.
+
+**Deferred, not implemented:** validation of the whole `.fzp` schema (this generator's own
+assumptions, and `trajectory_reader.py`'s parsing of it) against a real Vissim-exported `.fzp`
+remains pending the Windows/Vissim box, same caveat every other Phase 3 inferred-defensive
+entry above carries. No car-following/acceleration modeling, no lane-changing, no interaction
+between vehicles on shared links (routes overlap on the roundabout arcs and East Gate exit by
+design, with no collision avoidance) — acceptable for a visual-plausibility demo, not a
+substitute for a real simulation export.
