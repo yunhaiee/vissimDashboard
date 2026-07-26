@@ -1,9 +1,10 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import TrajectoryLayer, { createProjectionStore, PLAYBACK_SPEEDS, useTrajectoryPlayback } from "@/components/TrajectoryLayer";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import { fetchNetwork, type ActiveDataset, type NetworkData } from "@/lib/api";
 
@@ -12,6 +13,19 @@ import { fetchNetwork, type ActiveDataset, type NetworkData } from "@/lib/api";
 const NetworkViewer = dynamic(() => import("@/components/NetworkViewer"), { ssr: false });
 
 const MAX_SELECTED_NODES = 6;
+
+// Transport glyphs with U+FE0E (text presentation selector) so platforms that
+// would otherwise substitute a colour emoji keep them as plain glyphs.
+const PLAY_GLYPH = "▶︎";
+const PAUSE_GLYPH = "⏸︎";
+
+// m:ss for the scrubber readout. Sim clocks can start at a non-zero t0, so the
+// caller passes an already-relative offset; absolute sim seconds are shown
+// separately next to it.
+function formatClock(seconds: number): string {
+  const total = Number.isFinite(seconds) ? Math.max(0, Math.round(seconds)) : 0;
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
 
 export default function NetworkPage() {
   const { t } = useLanguage();
@@ -28,6 +42,23 @@ export default function NetworkPage() {
   // that session's in-progress edited working copy on demand -- see
   // docs/phase2/DECISIONS.md's P2 entry.
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
+
+  // P3/P4: vehicle-trajectory playback. `projection` is the only channel
+  // between NetworkViewer's live zoom transform and the canvas overlay — it is
+  // deliberately not React state, because zoom emits once per animation frame
+  // and re-rendering this page that often would be wasteful. The playback hook
+  // owns the clock and fetches lazily (nothing is requested until the user
+  // presses 재생 준비).
+  const projection = useMemo(() => createProjectionStore(), []);
+  const playback = useTrajectoryPlayback();
+  const playbackEngine = playback.engine;
+
+  // Trajectories belong to the active dataset, so swapping datasets drops the
+  // loaded frames back to the load affordance rather than animating vehicles
+  // over a network they were never resolved against.
+  useEffect(() => {
+    playbackEngine.reset();
+  }, [playbackEngine, datasetRevision]);
 
   // Load the raw-coordinate network on mount, and again whenever the active
   // dataset changes or a retry is requested.
@@ -208,15 +239,122 @@ export default function NetworkPage() {
             <p className="text-sm text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
           </div>
         ) : (
-          <NetworkViewer
-            network={network}
-            selectedNodeIds={selectedNodeIds}
-            selectedLinkId={selectedLinkInfo?.id ?? null}
-            onNodeClick={handleNodeClick}
-            onLinkClick={handleLinkClick}
-          />
+          <>
+            <NetworkViewer
+              network={network}
+              selectedNodeIds={selectedNodeIds}
+              selectedLinkId={selectedLinkInfo?.id ?? null}
+              onNodeClick={handleNodeClick}
+              onLinkClick={handleLinkClick}
+              onProjectionChange={projection.set}
+            />
+            {/* Canvas overlay: same box as the viewer's SVG, pointer-events
+                none so zoom/pan/click all still land on the SVG beneath it. */}
+            {playback.frames && (
+              <TrajectoryLayer engine={playbackEngine} frames={playback.frames} projection={projection} />
+            )}
+          </>
         )}
       </div>
+
+      {/* Playback controls only exist once there is a network to draw over. */}
+      {!error && !loading && network && (
+        <section className="px-1">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+            {t("차량 궤적 재생", "Vehicle playback")}
+          </p>
+
+          {playback.status === "idle" ? (
+            <button
+              type="button"
+              onClick={playbackEngine.load}
+              className="mt-2 flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+            >
+              {t("재생 준비", "Load playback")}
+            </button>
+          ) : playback.status === "loading" ? (
+            <p className="mt-2 text-xs text-slate-500">{t("궤적 데이터를 불러오는 중…", "Loading trajectory data…")}</p>
+          ) : playback.status === "error" ? (
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <p className="text-xs text-slate-500">
+                {t(
+                  "궤적 데이터를 불러오지 못했습니다. 이 데이터셋에 .fzp 파일이 없을 수 있습니다.",
+                  "Couldn't load trajectory data. This dataset may have no .fzp file.",
+                )}
+              </p>
+              <button
+                type="button"
+                onClick={playbackEngine.load}
+                className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+              >
+                {t("다시 시도", "Retry")}
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 flex flex-col gap-2.5">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={playbackEngine.togglePlay}
+                  aria-pressed={playback.playing}
+                  className="flex h-9 min-w-[6.5rem] shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+                >
+                  <span aria-hidden="true">{playback.playing ? PAUSE_GLYPH : PLAY_GLYPH}</span>
+                  {playback.playing ? t("일시정지", "Pause") : t("재생", "Play")}
+                </button>
+                <span className="text-xs tabular-nums text-slate-700">
+                  {formatClock(playback.time - playback.t0)} / {formatClock(playback.t1 - playback.t0)}
+                </span>
+                <span className="text-[11px] tabular-nums text-slate-500">
+                  {t("시뮬레이션", "sim")} {playback.time.toFixed(1)}
+                  {t("초", "s")}
+                </span>
+                <div
+                  role="group"
+                  aria-label={t("재생 속도", "Playback speed")}
+                  className="ml-auto flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-xs font-medium"
+                >
+                  {PLAYBACK_SPEEDS.map((option) => {
+                    const active = playback.speed === option;
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => playbackEngine.setSpeed(option)}
+                        className={`flex h-full items-center rounded-md px-3 transition-colors ${
+                          active ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"
+                        }`}
+                      >
+                        ×{option}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <input
+                type="range"
+                aria-label={t("재생 위치", "Playback position")}
+                min={playback.t0}
+                max={playback.t1}
+                step={0.1}
+                value={playback.time}
+                onChange={(event) => playbackEngine.seek(Number(event.target.value))}
+                className="w-full accent-[#4c8dff]"
+              />
+
+              <p className="text-[11px] text-slate-500">
+                {t(
+                  `차량 ${playback.vehicleCount}대`,
+                  `${playback.vehicleCount} vehicle${playback.vehicleCount === 1 ? "" : "s"}`,
+                  `車両 ${playback.vehicleCount}台`,
+                )}
+              </p>
+            </div>
+          )}
+        </section>
+      )}
 
       {selectedNodeIds.length > 0 && (
         <p className="px-1 text-xs text-slate-500">

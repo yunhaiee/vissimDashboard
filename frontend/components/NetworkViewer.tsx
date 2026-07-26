@@ -5,6 +5,28 @@ import { NetworkData, NetworkElements, ScenarioResults } from "@/lib/api";
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, resolveLosGrade, type LosGrade } from "@/lib/los";
 import { useLanguage } from "@/components/LanguageProvider";
 
+// Phase 3 P4 — the viewer's screen projection, published so an overlay (the
+// canvas vehicle-playback layer) can draw in EXACTLY the same space without
+// duplicating the fit math or reaching into the SVG. Everything here is plain
+// numbers (no d3 objects), so consumers need no d3 dependency:
+//
+//   screenX = tx + k * (offsetX + (x    - xMin) * s)
+//   screenY = ty + k * (offsetY + (yMax - y   ) * s)     // s === px per metre
+//
+// `s`/`offsetX`/`offsetY`/`xMin`/`yMax` are the base uniform fit (recomputed on
+// redraw + resize); `k`/`tx`/`ty` are the live d3.zoom transform. On-screen
+// px-per-metre is therefore `s * k`.
+export interface ViewProjection {
+  xMin: number;
+  yMax: number;
+  s: number;
+  offsetX: number;
+  offsetY: number;
+  k: number;
+  tx: number;
+  ty: number;
+}
+
 interface Props {
   network: NetworkData;
   results?: Record<string, ScenarioResults>;
@@ -13,6 +35,11 @@ interface Props {
   selectedLinkId?: string | null;
   onNodeClick?: (nodeId: string, nodeName: string) => void;
   onLinkClick?: (linkId: string, linkName: string, isConnector: boolean) => void;
+  // P4 (optional, purely additive): receives the current ViewProjection after
+  // every redraw/resize and on every zoom/pan frame (rAF-throttled), and null
+  // when there is nothing drawn. Held in a ref internally so passing it never
+  // becomes a redraw dependency — with the prop absent nothing below changes.
+  onProjectionChange?: (projection: ViewProjection | null) => void;
 }
 
 // Road-surface palette — all drawn from the file's existing slate family; no new
@@ -266,6 +293,7 @@ export default function NetworkViewer({
   selectedLinkId,
   onNodeClick,
   onLinkClick,
+  onProjectionChange,
 }: Props) {
   const { t } = useLanguage();
   const svgRef = useRef<SVGSVGElement>(null);
@@ -332,6 +360,22 @@ export default function NetworkViewer({
     applyLayerVisibility(svgRef.current, hidden);
   }, [hidden]);
 
+  // P4 projection publishing. The callback lives in a ref so the draw effect
+  // never takes it as a dependency (a parent re-creating the callback must not
+  // force a full d3 redraw); the rAF handle throttles zoom/pan emissions to one
+  // per frame.
+  const onProjectionChangeRef = useRef(onProjectionChange);
+  useEffect(() => {
+    onProjectionChangeRef.current = onProjectionChange;
+  }, [onProjectionChange]);
+  const projectionRafRef = useRef(0);
+  useEffect(
+    () => () => {
+      if (projectionRafRef.current) cancelAnimationFrame(projectionRafRef.current);
+    },
+    [],
+  );
+
   // Re-render on container resize (rAF-throttled).
   useEffect(() => {
     const el = svgRef.current;
@@ -356,7 +400,10 @@ export default function NetworkViewer({
 
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
-    if (!network.links.length) return;
+    if (!network.links.length) {
+      onProjectionChangeRef.current?.(null);
+      return;
+    }
 
     if (prevNetworkRef.current !== network) {
       zoomTransformRef.current = d3.zoomIdentity;
@@ -391,6 +438,13 @@ export default function NetworkViewer({
     const offsetY = pad + (availH - spanY * s) / 2;
     const projX = (x: number) => offsetX + (x - xMin) * s;
     const projY = (y: number) => offsetY + (yMax - y) * s;
+
+    // P4 — same fit params the projX/projY closures above use, packaged for the
+    // overlay layer. Emitted once at the end of this redraw and again on every
+    // (rAF-throttled) zoom frame.
+    const emitProjection = (transform: d3.ZoomTransform) => {
+      onProjectionChangeRef.current?.({ xMin, yMax, s, offsetX, offsetY, k: transform.k, tx: transform.x, ty: transform.y });
+    };
 
     const linkLabel = t("링크", "Link");
     const nodeLabel = t("노드", "Node");
@@ -1034,9 +1088,20 @@ export default function NetworkViewer({
       .on("zoom", (event) => {
         g.attr("transform", event.transform);
         zoomTransformRef.current = event.transform;
+        // One projection emit per animation frame while zooming/panning, so an
+        // overlay redraw can never outpace the browser's paint rate.
+        if (onProjectionChangeRef.current && !projectionRafRef.current) {
+          projectionRafRef.current = requestAnimationFrame(() => {
+            projectionRafRef.current = 0;
+            emitProjection(zoomTransformRef.current);
+          });
+        }
       });
     svg.call(zoom);
     svg.call(zoom.transform, zoomTransformRef.current);
+    // Synchronous emit so the overlay has the fresh fit immediately after a
+    // redraw/resize (the rAF path above only covers live zoom/pan gestures).
+    emitProjection(zoomTransformRef.current);
 
     // Reapply layer visibility after this fresh redraw (groups were just rebuilt);
     // read the ref so this effect never depends on `hidden` (toggling stays a
