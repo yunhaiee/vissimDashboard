@@ -17,11 +17,9 @@ interface Props {
 
 // Road-surface palette — all drawn from the file's existing slate family; no new
 // saturated hues, gradients or shadows (Vissim-style flat asphalt ribbons).
-const ASPHALT_FILL = "#3a4150";   // road surface (mid slate)
+const ASPHALT_FILL = "#3a4150";   // road surface (mid slate) — links AND connectors
 const ROAD_CASING = "#232a36";    // darker slate under the asphalt (road edge)
-const MARKING_COLOR = "#94a3b8";  // muted light slate — lane dividers, chevrons, junction outline
-const CONNECTOR_COLOR = "#6a6862";
-const NODE_POLY_FILL = "#475569"; // neutral translucent slate for junctions without LOS
+const MARKING_COLOR = "#94a3b8";  // muted light slate — lane dividers, chevrons, stop lines, junction outline
 const NODE_FILL = "#1e293b";
 const NODE_STROKE = "#f8fafc";
 const ACCENT = "#4c8dff";
@@ -46,6 +44,15 @@ const MITER_COS_MIN = 0.5;         // clamp miter to ≤ 2× so sharp bends neve
 const MIN_ROAD_PX = 2.5;           // asphalt floor at base fit (scales up with zoom)
 const CHEVRON_SPACING_PX = 120;    // one direction chevron per ~this many base-fit px
 const MAX_CHEVRONS = 8;            // cap per link (keeps SVG node count modest)
+
+// Element-glyph size floors (P1 junction-polish pass). These only bite when
+// pxPerMeter is small (base fit on a wide network); keeping them near-invisible
+// is deliberate — at mid zoom the floors used to dominate the metre-true sizes
+// and made the furniture louder than the roads. Everything above the floor is
+// still metre-true and scales with zoom.
+const GLYPH_MIN_PX = 2.5;          // half-widths, radii
+const GLYPH_MIN_STROKE_PX = 1.5;   // glyph stroke widths
+const SIGNAL_BAR_OFFSET_M = 0.8;   // red signal bar sits this far downstream of its stop line
 
 type NetworkLink = NetworkData["links"][number];
 type Pt = [number, number];
@@ -205,8 +212,23 @@ const ELEMENT_LAYERS: { key: keyof NetworkElements; ko: string; en: string }[] =
   { key: "ped_areas", ko: "보행자 구역", en: "Pedestrian area" },
 ];
 
+// Non-element ("map furniture") layer rows: road markings drawn by the base
+// render rather than by a NetworkElements class, so they have no count column.
 const LANE_MARKINGS_KEY = "lane_markings";
-const ALL_LAYER_KEYS: string[] = [...ELEMENT_LAYERS.map((l) => l.key), LANE_MARKINGS_KEY];
+const CONNECTOR_MARKS_KEY = "connector_marks";
+const NODE_AREAS_KEY = "node_areas";
+const MAP_LAYERS: { key: string; ko: string; en: string }[] = [
+  { key: LANE_MARKINGS_KEY, ko: "차선 표시", en: "Lane markings" },
+  { key: CONNECTOR_MARKS_KEY, ko: "연결로 표시", en: "Connector markers" },
+  { key: NODE_AREAS_KEY, ko: "교차로 영역", en: "Node areas" },
+];
+
+const ALL_LAYER_KEYS: string[] = [...ELEMENT_LAYERS.map((l) => l.key), ...MAP_LAYERS.map((l) => l.key)];
+
+// Layer rows that start unchecked. Connectors now render as continuous pavement
+// in the road passes, so the junction footprint outline is diagnostic-only
+// chrome — opt-in rather than the default. Every other layer defaults visible.
+const DEFAULT_HIDDEN_LAYERS: readonly string[] = [NODE_AREAS_KEY];
 
 // Bottom-to-top z within the element layer: area fills, then bands/bays, then
 // line/point glyphs, with signal/stop bars on top. Each key becomes its own
@@ -278,11 +300,13 @@ export default function NetworkViewer({
   const selectedNodeSet = useMemo(() => new Set((selectedNodeIds ?? []).map(String)), [selectedNodeIds]);
   const isEmpty = network.links.length === 0;
 
-  // Static-element layer visibility. `hidden` holds hidden layer keys (default
-  // all visible). hiddenRef mirrors it so the draw effect can reapply visibility
-  // after a redraw WITHOUT taking `hidden` as a dependency (toggling must not
-  // re-render the data). panelOpen drives the collapsible layers panel.
-  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  // Layer visibility. `hidden` holds hidden layer keys — seeded from
+  // DEFAULT_HIDDEN_LAYERS so a row can ship default-off without any extra
+  // per-row state (the checkbox is `!hidden.has(key)`, so seeding the set is
+  // the whole mechanism). hiddenRef mirrors it so the draw effect can reapply
+  // visibility after a redraw WITHOUT taking `hidden` as a dependency (toggling
+  // must not re-render the data). panelOpen drives the collapsible panel.
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set(DEFAULT_HIDDEN_LAYERS));
   const [panelOpen, setPanelOpen] = useState(true);
   const hiddenRef = useRef(hidden);
 
@@ -376,14 +400,16 @@ export default function NetworkViewer({
 
     const g = svg.append("g");
     // Z-order layers (bottom -> top): casings -> asphalt fills -> lane markings
-    // & chevrons -> connectors -> node polygons -> selection rings & dots ->
-    // invisible hit targets. Drawing all casings before all fills lets touching
-    // links' surfaces merge at junctions instead of showing casing seams.
+    // & chevrons -> connector centre dashes -> node outlines -> selection rings
+    // & dots -> invisible hit targets. Casings and fills carry BOTH links and
+    // connectors: drawing every casing before every fill lets touching surfaces
+    // merge into one continuous pavement across a junction instead of showing
+    // casing seams or a separate connector treatment.
     const gCasing = g.append("g");
     const gFill = g.append("g");
     const gMarking = g.append("g").attr("data-layer", LANE_MARKINGS_KEY);
-    const gConnector = g.append("g");
-    const gNodePoly = g.append("g");
+    const gConnector = g.append("g").attr("data-layer", CONNECTOR_MARKS_KEY);
+    const gNodePoly = g.append("g").attr("data-layer", NODE_AREAS_KEY);
     const gElements = g.append("g"); // static elements: above roads/junctions, below selection
     const gOverlay = g.append("g");
     const gHit = g.append("g");
@@ -410,7 +436,9 @@ export default function NetworkViewer({
         const isConn = !!l.is_connector;
         const isSel = selectedLinkId != null && String(selectedLinkId) === String(l.id);
         const widthPx = linkWidthMeters(l) * pxPerMeter;
-        const roadW = isConn ? Math.max(widthPx * 0.85, 2) : Math.max(widthPx, MIN_ROAD_PX);
+        // Connectors use the SAME width rule and floor as links — they are
+        // pavement, not annotation, so a junction reads as one road surface.
+        const roadW = Math.max(widthPx, MIN_ROAD_PX);
         const linkName = l.name || `${isConn ? connectorLabel : linkLabel} ${l.id}`;
         const tooltipText = isConn
           ? l.from_link != null && l.to_link != null
@@ -423,8 +451,9 @@ export default function NetworkViewer({
     const roads = drawn.filter((d) => !d.isConn);
     const connectors = drawn.filter((d) => d.isConn);
 
-    // Layer 1 — casings (all roads first, so junctions merge cleanly).
-    roads.forEach(({ pointsAttr, roadW }) => {
+    // Layer 1 — casings for every surface (links AND connectors) first, so
+    // junction interiors merge cleanly instead of showing internal edges.
+    drawn.forEach(({ pointsAttr, roadW }) => {
       gCasing.append("polyline")
         .attr("points", pointsAttr)
         .attr("stroke", ROAD_CASING)
@@ -435,8 +464,10 @@ export default function NetworkViewer({
         .style("pointer-events", "none");
     });
 
-    // Layer 2 — asphalt fills. Selection recolors the fill stroke to accent.
-    roads.forEach(({ pointsAttr, roadW, isSel }) => {
+    // Layer 2 — asphalt fills for every surface, same colour for links and
+    // connectors. Selection recolors the fill stroke to accent (connectors
+    // included — that is now their selected treatment).
+    drawn.forEach(({ pointsAttr, roadW, isSel }) => {
       gFill.append("polyline")
         .attr("points", pointsAttr)
         .attr("stroke", isSel ? ACCENT : ASPHALT_FILL)
@@ -488,35 +519,39 @@ export default function NetworkViewer({
       }
     });
 
-    // Layer 4 — connectors: width-true, muted, dashed, slightly translucent.
-    connectors.forEach(({ pointsAttr, roadW, isSel }) => {
+    // Layer 4 — connector identity cue only. The connector's pavement is already
+    // drawn in the casing/fill passes above; all that is left here is a thin,
+    // muted centre dashline so an engineer can still tell which pavement inside
+    // a junction is a connector. Its dash pattern is deliberately shorter and
+    // fainter than the lane dividers so it never competes with them.
+    connectors.forEach(({ pointsAttr, roadW }) => {
       gConnector.append("polyline")
         .attr("points", pointsAttr)
-        .attr("stroke", isSel ? ACCENT : CONNECTOR_COLOR)
-        .attr("stroke-width", roadW)
-        .attr("stroke-dasharray", "6 5")
-        .attr("opacity", isSel ? 0.95 : 0.7)
+        .attr("stroke", MARKING_COLOR)
+        .attr("stroke-width", Math.max(roadW * 0.07, 0.7))
+        .attr("stroke-dasharray", "3 4")
+        .attr("stroke-opacity", 0.42)
         .attr("fill", "none")
         .attr("stroke-linecap", "round")
         .attr("stroke-linejoin", "round")
         .style("pointer-events", "none");
     });
 
-    // Layer 5 — node polygons (junction footprints), above the road layer.
-    // LOS color moves here as a low-opacity fill where a polygon exists; a
-    // neutral translucent slate stands in when the node has no metric.
+    // Layer 5 — node areas (junction footprints): outline ONLY, never filled.
+    // The translucent box used to dominate the junction and fight the pavement,
+    // so LOS colour moved back to the node centre dot (below) and what remains
+    // here is a thin, non-scaling light-slate boundary. This whole group is a
+    // default-off layer row (NODE_AREAS_KEY) — opt-in diagnostic chrome.
     network.nodes.forEach((node) => {
       const poly = node.polygon && node.polygon.length >= 3 ? node.polygon.map((p) => [projX(p[0]), projY(p[1])] as Pt) : null;
       if (!poly) return;
       const selected = selectedNodeSet.has(String(node.id));
-      const nodeMetric = nodeLosMap.get(String(node.id));
       gNodePoly.append("polygon")
         .attr("points", poly.map((p) => p.join(",")).join(" "))
-        .attr("fill", nodeMetric ? LOS_COLORS[nodeMetric.los] : NODE_POLY_FILL)
-        .attr("fill-opacity", nodeMetric ? 0.32 : 0.26)
+        .attr("fill", "none")
         .attr("stroke", selected ? ACCENT : MARKING_COLOR)
-        .attr("stroke-opacity", selected ? 0.95 : 0.7)
-        .attr("stroke-width", selected ? 2 : 1.2)
+        .attr("stroke-opacity", selected ? 0.9 : 0.55)
+        .attr("stroke-width", selected ? 1.6 : 1)
         .attr("stroke-linejoin", "round")
         .attr("vector-effect", "non-scaling-stroke")
         .style("pointer-events", "none");
@@ -582,12 +617,16 @@ export default function NetworkViewer({
         );
       };
 
-      // signal_heads — short bar perpendicular across the lane, muted red, ~1 lane wide.
+      // signal_heads — a light painted stop line across the lane at the head
+      // position, plus a slim red signal bar SIGNAL_BAR_OFFSET_M downstream of
+      // it along the travel direction. The old single chunky red bar read as a
+      // cartoon marker; splitting it into "pavement marking + thin signal bar"
+      // matches how the Vissim editor draws a stop line + signal head.
       for (const s of els.signal_heads ?? []) {
         if (!finite(s.x) || !finite(s.y)) continue;
         const c = P(s.x, s.y);
-        const { across } = dirsFromAngle(s.angle);
-        const half = Math.max((laneWidthMFor(s.link) * pxM) / 2, 5);
+        const { along, across } = dirsFromAngle(s.angle);
+        const half = Math.max((laneWidthMFor(s.link) * pxM) / 2, GLYPH_MIN_PX);
         const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
         const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
         sub.signal_heads
@@ -596,19 +635,32 @@ export default function NetworkViewer({
           .attr("y1", a[1])
           .attr("x2", b[0])
           .attr("y2", b[1])
+          .attr("stroke", MARKING_COLOR)
+          .attr("stroke-width", Math.max(pxM * 0.3, 1))
+          .attr("stroke-opacity", 0.8)
+          .attr("stroke-linecap", "butt")
+          .style("pointer-events", "none");
+        const barOff = SIGNAL_BAR_OFFSET_M * pxM;
+        sub.signal_heads
+          .append("line")
+          .attr("x1", a[0] + along[0] * barOff)
+          .attr("y1", a[1] + along[1] * barOff)
+          .attr("x2", b[0] + along[0] * barOff)
+          .attr("y2", b[1] + along[1] * barOff)
           .attr("stroke", SIGNAL_RED)
-          .attr("stroke-width", Math.max(pxM * 0.6, 2.5))
-          .attr("stroke-linecap", "round")
+          .attr("stroke-width", Math.max(pxM * 0.35, GLYPH_MIN_STROKE_PX))
+          .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
         hitSegment("signal_heads", a, b, `${typeLabel.signal_heads} ${s.id} · ${s.name}`);
       }
 
-      // vehicle_inputs — small filled entry arrow at link start, pointing along travel.
+      // vehicle_inputs — small filled entry arrow at link start, pointing along
+      // travel. Scaled ~30% down from Unit C so it reads as a cue, not a badge.
       for (const v of els.vehicle_inputs ?? []) {
         if (!finite(v.x) || !finite(v.y)) continue;
         const c = P(v.x, v.y);
         const { along, across } = dirsFromAngle(v.angle);
-        const L = Math.max(roadWidthMFor(v.link) * pxM * 0.7, 11);
+        const L = Math.max(roadWidthMFor(v.link) * pxM * 0.49, 7.5);
         const w = L * 0.42;
         const tip: Pt = [c[0] + along[0] * L, c[1] + along[1] * L];
         const bl: Pt = [c[0] + across[0] * w, c[1] + across[1] * w];
@@ -642,7 +694,7 @@ export default function NetworkViewer({
           .attr("x2", p2[0])
           .attr("y2", p2[1])
           .attr("stroke", RSA_AMBER)
-          .attr("stroke-width", Math.max(laneWidthMFor(r.link) * pxM, 6))
+          .attr("stroke-width", Math.max(laneWidthMFor(r.link) * pxM, 4))
           .attr("stroke-opacity", 0.22)
           .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
@@ -654,7 +706,7 @@ export default function NetworkViewer({
         if (!finite(d.x) || !finite(d.y)) continue;
         const c = P(d.x, d.y);
         const { across } = dirsFromAngle(d.angle);
-        const half = Math.max((roadWidthMFor(d.link) * pxM) / 2, 6);
+        const half = Math.max((roadWidthMFor(d.link) * pxM) / 2, GLYPH_MIN_PX);
         const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
         const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
         sub.des_speed_decisions
@@ -664,7 +716,7 @@ export default function NetworkViewer({
           .attr("x2", b[0])
           .attr("y2", b[1])
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.3)
+          .attr("stroke-width", 1.1)
           .attr("stroke-dasharray", "4 3")
           .attr("stroke-opacity", 0.85)
           .attr("stroke-linecap", "round")
@@ -672,7 +724,9 @@ export default function NetworkViewer({
         hitSegment("des_speed_decisions", a, b, `${typeLabel.des_speed_decisions} ${d.id} · ${d.name}`);
       }
 
-      // detectors — small outlined rectangle on the lane (length along, ~lane across).
+      // detectors — small outlined rectangle on the lane. The ALONG dimension
+      // stays metre-true (it is real geometry: end_x/end_y or `length`); only the
+      // across dimension, which is a drawing choice, is scaled ~30% down.
       for (const dt of els.detectors ?? []) {
         if (!finite(dt.x) || !finite(dt.y)) continue;
         const p1 = P(dt.x, dt.y);
@@ -687,9 +741,9 @@ export default function NetworkViewer({
         } else {
           lenPx = (dt.length ?? 2) * pxM;
         }
-        lenPx = Math.max(lenPx, 6);
+        lenPx = Math.max(lenPx, 4);
         const acrossVec: Pt = [-alongVec[1], alongVec[0]];
-        const half = Math.max((laneWidthMFor(dt.link) * pxM) / 2, 4);
+        const half = Math.max((laneWidthMFor(dt.link) * pxM) / 2 * 0.7, GLYPH_MIN_PX);
         const center: Pt = [p1[0] + alongVec[0] * (lenPx / 2), p1[1] + alongVec[1] * (lenPx / 2)];
         const hx = alongVec[0] * (lenPx / 2);
         const hy = alongVec[1] * (lenPx / 2);
@@ -706,7 +760,7 @@ export default function NetworkViewer({
           .attr("points", corners.map((p) => p.join(",")).join(" "))
           .attr("fill", "none")
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.2)
+          .attr("stroke-width", 1)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
         hitPoint("detectors", center, Math.max(half, 9), `${typeLabel.detectors} ${dt.id} · ${dt.name}`);
@@ -717,7 +771,7 @@ export default function NetworkViewer({
         if (!finite(dc.x) || !finite(dc.y)) continue;
         const c = P(dc.x, dc.y);
         const { across } = dirsFromAngle(dc.angle);
-        const half = Math.max((laneWidthMFor(dc.link) * pxM) / 2, 5);
+        const half = Math.max((laneWidthMFor(dc.link) * pxM) / 2, GLYPH_MIN_PX);
         const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
         const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
         sub.data_collection_points
@@ -727,7 +781,7 @@ export default function NetworkViewer({
           .attr("x2", b[0])
           .attr("y2", b[1])
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", Math.max(pxM * 0.35, 1.6))
+          .attr("stroke-width", Math.max(pxM * 0.28, 1.3))
           .attr("stroke-linecap", "round")
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
@@ -741,7 +795,7 @@ export default function NetworkViewer({
           if (!ep || !finite(ep.x) || !finite(ep.y)) return;
           const c = P(ep.x, ep.y);
           const { across, along } = dirsFromAngle(ep.angle);
-          const half = Math.max((roadWidthMFor(ep.link) * pxM) / 2, 6);
+          const half = Math.max((roadWidthMFor(ep.link) * pxM) / 2, GLYPH_MIN_PX);
           const line = (off: number): [Pt, Pt] => {
             const cc: Pt = [c[0] + along[0] * off, c[1] + along[1] * off];
             const a: Pt = [cc[0] - across[0] * half, cc[1] - across[1] * half];
@@ -753,28 +807,28 @@ export default function NetworkViewer({
               .attr("x2", b[0])
               .attr("y2", b[1])
               .attr("stroke", TTS_CYAN)
-              .attr("stroke-width", 1.6)
+              .attr("stroke-width", 1.2)
               .attr("stroke-opacity", 0.9)
               .attr("stroke-linecap", "round")
               .style("pointer-events", "none");
             return [a, b];
           };
           const [a, b] = line(0);
-          if (doubled) line(Math.max(pxM * 1.2, 3));
+          if (doubled) line(Math.max(pxM * 1.2, 2.5));
           hitSegment("traveltime_sections_geo", a, b, `${typeLabel.traveltime_sections_geo} ${tt.id} · ${tt.name}`);
         };
         drawGate(tt.start, false);
         drawGate(tt.end, true);
       }
 
-      // queue_counters — small hollow circle + short upstream stem.
+      // queue_counters — small hollow circle + short upstream stem (~30% down).
       for (const q of els.queue_counters ?? []) {
         if (!finite(q.x) || !finite(q.y)) continue;
         const c = P(q.x, q.y);
         const { along } = dirsFromAngle(q.angle);
         const laneW = laneWidthMFor(q.link);
-        const r = Math.max(laneW * pxM * 0.28, 3);
-        const stem = Math.max(laneW * pxM * 0.5, 5);
+        const r = Math.max(laneW * pxM * 0.196, 2.1);
+        const stem = Math.max(laneW * pxM * 0.35, 3.5);
         sub.queue_counters
           .append("circle")
           .attr("cx", c[0])
@@ -782,7 +836,7 @@ export default function NetworkViewer({
           .attr("r", r)
           .attr("fill", "none")
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.3)
+          .attr("stroke-width", 1.1)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
         const s0: Pt = [c[0] - along[0] * r, c[1] - along[1] * r];
@@ -794,20 +848,21 @@ export default function NetworkViewer({
           .attr("x2", s1[0])
           .attr("y2", s1[1])
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.3)
+          .attr("stroke-width", 1.1)
           .attr("stroke-opacity", 0.9)
           .attr("stroke-linecap", "round")
           .style("pointer-events", "none");
         hitPoint("queue_counters", c, Math.max(r, 9), `${typeLabel.queue_counters} ${q.id} · ${q.name}`);
       }
 
-      // stop_signs — short thick bar across the lane, muted red (thicker + shorter
-      // than a signal head so the two read differently).
+      // stop_signs — short bar across the lane, muted red. Slimmed with the same
+      // pass as the signal bar but kept a step thicker + shorter, so the two
+      // still read differently without either looking chunky.
       for (const st of els.stop_signs ?? []) {
         if (!finite(st.x) || !finite(st.y)) continue;
         const c = P(st.x, st.y);
         const { across } = dirsFromAngle(st.angle);
-        const half = Math.max(((laneWidthMFor(st.link) * pxM) / 2) * 0.7, 4);
+        const half = Math.max(((laneWidthMFor(st.link) * pxM) / 2) * 0.7, GLYPH_MIN_PX);
         const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
         const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
         sub.stop_signs
@@ -817,7 +872,7 @@ export default function NetworkViewer({
           .attr("x2", b[0])
           .attr("y2", b[1])
           .attr("stroke", SIGNAL_RED)
-          .attr("stroke-width", Math.max(pxM * 0.9, 3.5))
+          .attr("stroke-width", Math.max(pxM * 0.5, 2.2))
           .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
         hitSegment("stop_signs", a, b, `${typeLabel.stop_signs} ${st.id} · ${st.name}`);
@@ -838,11 +893,11 @@ export default function NetworkViewer({
         } else {
           lenPx = (pt.length ?? 15) * pxM;
         }
-        lenPx = Math.max(lenPx, 8);
+        lenPx = Math.max(lenPx, 6);
         const acrossVec: Pt = [-alongVec[1], alongVec[0]];
         const laneW = laneWidthMFor(pt.link);
-        const bayW = Math.max(laneW * pxM * 0.8, 4);
-        const off = Math.max(laneW * pxM * 0.55, 4); // offset sideways so it sits alongside the lane
+        const bayW = Math.max(laneW * pxM * 0.8, 3);
+        const off = Math.max(laneW * pxM * 0.55, 3); // offset sideways so it sits alongside the lane
         const ov: Pt = [acrossVec[0] * off, acrossVec[1] * off];
         const base1: Pt = [p1[0] + ov[0], p1[1] + ov[1]];
         const base2: Pt = [p1[0] + alongVec[0] * lenPx + ov[0], p1[1] + alongVec[1] * lenPx + ov[1]];
@@ -858,7 +913,7 @@ export default function NetworkViewer({
           .attr("points", corners.map((p) => p.join(",")).join(" "))
           .attr("fill", "none")
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.2)
+          .attr("stroke-width", 1)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
         hitSegment("pt_stops", base1, base2, `${typeLabel.pt_stops} ${pt.id} · ${pt.name}`);
@@ -876,10 +931,10 @@ export default function NetworkViewer({
           .append("polygon")
           .attr("points", pointsAttr)
           .attr("fill", PED_FILL)
-          .attr("fill-opacity", 0.16)
+          .attr("fill-opacity", 0.12)
           .attr("stroke", PED_FILL)
           .attr("stroke-opacity", 0.85)
-          .attr("stroke-width", 1.2)
+          .attr("stroke-width", 1)
           .attr("stroke-dasharray", "2 2")
           .attr("stroke-linejoin", "round")
           .style("pointer-events", "none");
@@ -890,12 +945,14 @@ export default function NetworkViewer({
       }
     }
 
-    // Layer 6 — selection rings + center dots. Dot keeps its LOS fill only when
-    // the node has no polygon; polygon nodes get a small neutral center marker.
+    // Layer 6 — selection rings + center dots. LOS colour lives on the dot for
+    // EVERY node again (the pre-polygon behaviour): dot fill = the node's LOS
+    // colour when a metric exists, else the neutral NODE_FILL. With node areas
+    // default-off the dot is the only LOS carrier, so it is no longer shrunk
+    // for polygon nodes.
     network.nodes.forEach((node) => {
       const cx = projX(node.x);
       const cy = projY(node.y);
-      const hasPoly = !!(node.polygon && node.polygon.length >= 3);
       const selected = selectedNodeSet.has(String(node.id));
       const nodeMetric = nodeLosMap.get(String(node.id));
 
@@ -911,11 +968,11 @@ export default function NetworkViewer({
           .style("pointer-events", "none");
       }
 
-      const dotFill = hasPoly ? NODE_FILL : nodeMetric ? LOS_COLORS[nodeMetric.los] : NODE_FILL;
+      const dotFill = nodeMetric ? LOS_COLORS[nodeMetric.los] : NODE_FILL;
       gOverlay.append("circle")
         .attr("cx", cx)
         .attr("cy", cy)
-        .attr("r", hasPoly ? 4.5 : selected ? 7 : 6)
+        .attr("r", selected ? 7 : 6)
         .attr("fill", dotFill)
         .attr("stroke", selected ? ACCENT : NODE_STROKE)
         .attr("stroke-width", 1.5)
@@ -1010,14 +1067,16 @@ export default function NetworkViewer({
             </div>
             <div className="flex items-center gap-2">
               <svg width="18" height="12" aria-hidden="true">
-                <line x1="0" y1="6" x2="18" y2="6" stroke={CONNECTOR_COLOR} strokeWidth="2" strokeDasharray="4 3" strokeLinecap="round" opacity="0.7" />
+                <line x1="0" y1="6" x2="18" y2="6" stroke={ROAD_CASING} strokeWidth="8" strokeLinecap="round" />
+                <line x1="0" y1="6" x2="18" y2="6" stroke={ASPHALT_FILL} strokeWidth="6" strokeLinecap="round" />
+                <line x1="1" y1="6" x2="17" y2="6" stroke={MARKING_COLOR} strokeWidth="0.9" strokeDasharray="2 3" strokeOpacity="0.42" />
               </svg>
               <span>{t("연결로", "Connector")}</span>
             </div>
             <div className="flex items-center gap-2">
               <svg width="18" height="14" aria-hidden="true">
-                <polygon points="3,7 5,3 13,3 15,7 13,11 5,11" fill={NODE_POLY_FILL} fillOpacity="0.32" stroke={MARKING_COLOR} strokeWidth="1" strokeLinejoin="round" />
-                <circle cx="9" cy="7" r="1.7" fill={NODE_FILL} stroke={NODE_STROKE} strokeWidth="0.8" />
+                <polygon points="3,7 5,3 13,3 15,7 13,11 5,11" fill="none" stroke={MARKING_COLOR} strokeWidth="1" strokeOpacity="0.55" strokeLinejoin="round" />
+                <circle cx="9" cy="7" r="2.6" fill={NODE_FILL} stroke={NODE_STROKE} strokeWidth="0.8" />
               </svg>
               <span>{t("노드", "Node")}</span>
             </div>
@@ -1061,15 +1120,19 @@ export default function NetworkViewer({
                   <span className="ml-auto tabular-nums text-slate-400">{elementCounts[key]}</span>
                 </label>
               ))}
-              <label className="mt-0.5 flex cursor-pointer items-center gap-2 border-t border-slate-200/70 pt-1.5">
-                <input
-                  type="checkbox"
-                  className="h-3 w-3 accent-[#4c8dff]"
-                  checked={!hidden.has(LANE_MARKINGS_KEY)}
-                  onChange={() => toggleLayer(LANE_MARKINGS_KEY)}
-                />
-                <span>{t("차선 표시", "Lane markings")}</span>
-              </label>
+              <div className="mt-0.5 flex flex-col gap-1 border-t border-slate-200/70 pt-1.5">
+                {MAP_LAYERS.map(({ key, ko, en }) => (
+                  <label key={key} className="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      className="h-3 w-3 accent-[#4c8dff]"
+                      checked={!hidden.has(key)}
+                      onChange={() => toggleLayer(key)}
+                    />
+                    <span>{t(ko, en)}</span>
+                  </label>
+                ))}
+              </div>
             </div>
           )}
         </div>
