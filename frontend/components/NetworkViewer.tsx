@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
 import { NetworkData, NetworkElements, ScenarioResults } from "@/lib/api";
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, resolveLosGrade, type LosGrade } from "@/lib/los";
+import { ELEMENT_TYPE_LABELS, type NetworkElementRef } from "@/lib/networkElements";
 import { useLanguage } from "@/components/LanguageProvider";
 
 // Phase 3 P4 — the viewer's screen projection, published so an overlay (the
@@ -35,6 +36,13 @@ interface Props {
   selectedLinkId?: string | null;
   onNodeClick?: (nodeId: string, nodeName: string) => void;
   onLinkClick?: (linkId: string, linkName: string, isConnector: boolean) => void;
+  // P6 (optional, purely additive): a click on any static element glyph
+  // (signal head, detector, …). Absent, the element hit targets keep their
+  // pre-P6 hover-only behaviour — tooltips, default cursor, no click handler.
+  onElementClick?: (ref: NetworkElementRef) => void;
+  // P6: `{type, id}` of the element currently selected by the page, drawn as a
+  // thin accent ring around its hit shape. Null/absent draws nothing.
+  selectedElement?: { type: string; id: string } | null;
   // P4 (optional, purely additive): receives the current ViewProjection after
   // every redraw/resize and on every zoom/pan frame (rAF-throttled), and null
   // when there is nothing drawn. Held in a ref internally so passing it never
@@ -228,20 +236,10 @@ function dirsFromAngle(angleDeg: number | null | undefined): { along: Pt; across
 
 // Element layer catalogue — panel order + i18n labels (ko primary, en via t();
 // ja is appended to JA_UI). One row per class; labels double as the tooltip type
-// label ("<label> <id> · <name>").
-const ELEMENT_LAYERS: { key: keyof NetworkElements; ko: string; en: string }[] = [
-  { key: "signal_heads", ko: "신호등", en: "Signal head" },
-  { key: "vehicle_inputs", ko: "차량 입력", en: "Vehicle input" },
-  { key: "reduced_speed_areas", ko: "감속 구역", en: "Reduced speed area" },
-  { key: "des_speed_decisions", ko: "희망속도 결정", en: "Desired speed decision" },
-  { key: "detectors", ko: "검지기", en: "Detector" },
-  { key: "data_collection_points", ko: "데이터 수집 지점", en: "Data collection point" },
-  { key: "traveltime_sections_geo", ko: "통행시간 구간", en: "Travel time section" },
-  { key: "queue_counters", ko: "대기행렬 카운터", en: "Queue counter" },
-  { key: "stop_signs", ko: "정지 표지", en: "Stop sign" },
-  { key: "pt_stops", ko: "정류장", en: "PT stop" },
-  { key: "ped_areas", ko: "보행자 구역", en: "Pedestrian area" },
-];
+// label ("<label> <id> · <name>"). The catalogue itself lives in
+// lib/networkElements so the pages and the floating assistant can label a
+// clicked element without importing this (d3, ssr:false) module.
+const ELEMENT_LAYERS = ELEMENT_TYPE_LABELS;
 
 // Non-element ("map furniture") layer rows: road markings drawn by the base
 // render rather than by a NetworkElements class, so they have no count column.
@@ -297,6 +295,8 @@ export default function NetworkViewer({
   selectedLinkId,
   onNodeClick,
   onLinkClick,
+  onElementClick,
+  selectedElement,
   onProjectionChange,
 }: Props) {
   const { t } = useLanguage();
@@ -330,6 +330,9 @@ export default function NetworkViewer({
   const prevNetworkRef = useRef<NetworkData | null>(null);
 
   const selectedNodeSet = useMemo(() => new Set((selectedNodeIds ?? []).map(String)), [selectedNodeIds]);
+  // Stable scalar identity for the selected element, so a page re-rendering with
+  // a fresh `{type, id}` object literal never forces a full redraw.
+  const selectedElementKey = selectedElement ? `${selectedElement.type}:${selectedElement.id}` : "";
   const isEmpty = network.links.length === 0;
 
   // Layer visibility. `hidden` holds hidden layer keys — seeded from
@@ -652,15 +655,69 @@ export default function NetworkViewer({
         subHit[key] = gElementsHit.append("g").attr("data-layer", key);
       }
 
-      function attachTip<GE extends d3.BaseType>(sel: d3.Selection<GE, unknown, null, undefined>, text: string) {
+      // P6: every element hit target now also carries a click that publishes a
+      // {type,id,name,link} reference (the same guard link/node clicks use, so a
+      // pan that ends over a glyph never registers as a selection). With
+      // onElementClick absent this is a no-op — hover-only, exactly as before.
+      const elementRef = (
+        key: keyof NetworkElements,
+        id: unknown,
+        name: unknown,
+        link?: unknown,
+      ): NetworkElementRef => ({
+        type: String(key),
+        id: String(id ?? ""),
+        name: String(name ?? ""),
+        link: link == null ? null : String(link),
+      });
+      const isSelectedElement = (ref: NetworkElementRef) =>
+        selectedElementKey !== "" && selectedElementKey === `${ref.type}:${ref.id}`;
+      // Selection feedback without a per-class highlight glyph: ring the hit
+      // shape's own bounding box (hit shapes already sit exactly on the element).
+      // getBBox can throw on a detached/undisplayed node — never let it break a draw.
+      const ringSelected = (node: SVGGraphicsElement | null) => {
+        if (!node) return;
+        try {
+          const box = node.getBBox();
+          gOverlay
+            .append("circle")
+            .attr("cx", box.x + box.width / 2)
+            .attr("cy", box.y + box.height / 2)
+            .attr("r", Math.max(Math.hypot(box.width, box.height) / 2, 9))
+            .attr("fill", "none")
+            .attr("stroke", ACCENT)
+            .attr("stroke-width", 1.5)
+            .attr("vector-effect", "non-scaling-stroke")
+            .style("pointer-events", "none");
+        } catch {
+          // no ring for this element; the tooltip and the published ref still work
+        }
+      };
+      function attachTip<GE extends d3.BaseType>(
+        sel: d3.Selection<GE, unknown, null, undefined>,
+        text: string,
+        ref?: NetworkElementRef,
+      ) {
         sel
           .on("mousemove", (event: MouseEvent) => setTooltip({ x: event.clientX, y: event.clientY, text }))
           .on("mouseleave", () => setTooltip(null));
+        if (!ref) return;
+        if (onElementClick) {
+          sel.style("cursor", "pointer").on("click", (event: MouseEvent) => {
+            if (isDragClick(event)) return;
+            onElementClick(ref);
+          });
+        }
+        if (isSelectedElement(ref)) ringSelected(sel.node() as SVGGraphicsElement | null);
       }
-      const hitPoint = (key: keyof NetworkElements, pt: Pt, rPx: number, text: string) => {
-        attachTip(subHit[key].append("circle").attr("cx", pt[0]).attr("cy", pt[1]).attr("r", Math.max(rPx, 9)).attr("fill", "transparent"), text);
+      const hitPoint = (key: keyof NetworkElements, pt: Pt, rPx: number, text: string, ref: NetworkElementRef) => {
+        attachTip(
+          subHit[key].append("circle").attr("cx", pt[0]).attr("cy", pt[1]).attr("r", Math.max(rPx, 9)).attr("fill", "transparent"),
+          text,
+          ref,
+        );
       };
-      const hitSegment = (key: keyof NetworkElements, a: Pt, b: Pt, text: string) => {
+      const hitSegment = (key: keyof NetworkElements, a: Pt, b: Pt, text: string, ref: NetworkElementRef) => {
         attachTip(
           subHit[key]
             .append("line")
@@ -672,6 +729,7 @@ export default function NetworkViewer({
             .attr("stroke-width", 14)
             .attr("stroke-linecap", "round"),
           text,
+          ref,
         );
       };
 
@@ -709,7 +767,7 @@ export default function NetworkViewer({
           .attr("stroke-width", Math.max(pxM * 0.35, GLYPH_MIN_STROKE_PX))
           .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
-        hitSegment("signal_heads", a, b, `${typeLabel.signal_heads} ${s.id} · ${s.name}`);
+        hitSegment("signal_heads", a, b, `${typeLabel.signal_heads} ${s.id} · ${s.name}`, elementRef("signal_heads", s.id, s.name, s.link));
       }
 
       // vehicle_inputs — small filled entry arrow at link start, pointing along
@@ -729,7 +787,7 @@ export default function NetworkViewer({
           .attr("fill", ELEMENT_SLATE)
           .attr("fill-opacity", 0.85)
           .style("pointer-events", "none");
-        hitPoint("vehicle_inputs", [(c[0] + tip[0]) / 2, (c[1] + tip[1]) / 2], Math.max(w, 9), `${typeLabel.vehicle_inputs} ${v.id} · ${v.name}`);
+        hitPoint("vehicle_inputs", [(c[0] + tip[0]) / 2, (c[1] + tip[1]) / 2], Math.max(w, 9), `${typeLabel.vehicle_inputs} ${v.id} · ${v.name}`, elementRef("vehicle_inputs", v.id, v.name, v.link));
       }
 
       // reduced_speed_areas — translucent amber band along the lane (x,y)->(end).
@@ -756,7 +814,7 @@ export default function NetworkViewer({
           .attr("stroke-opacity", 0.22)
           .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
-        hitSegment("reduced_speed_areas", p1, p2, `${typeLabel.reduced_speed_areas} ${r.id} · ${r.name}`);
+        hitSegment("reduced_speed_areas", p1, p2, `${typeLabel.reduced_speed_areas} ${r.id} · ${r.name}`, elementRef("reduced_speed_areas", r.id, r.name, r.link));
       }
 
       // des_speed_decisions — thin dashed gate line across the full roadway.
@@ -779,7 +837,7 @@ export default function NetworkViewer({
           .attr("stroke-opacity", 0.85)
           .attr("stroke-linecap", "round")
           .style("pointer-events", "none");
-        hitSegment("des_speed_decisions", a, b, `${typeLabel.des_speed_decisions} ${d.id} · ${d.name}`);
+        hitSegment("des_speed_decisions", a, b, `${typeLabel.des_speed_decisions} ${d.id} · ${d.name}`, elementRef("des_speed_decisions", d.id, d.name, d.link));
       }
 
       // detectors — small outlined rectangle on the lane. The ALONG dimension
@@ -821,7 +879,7 @@ export default function NetworkViewer({
           .attr("stroke-width", 1)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
-        hitPoint("detectors", center, Math.max(half, 9), `${typeLabel.detectors} ${dt.id} · ${dt.name}`);
+        hitPoint("detectors", center, Math.max(half, 9), `${typeLabel.detectors} ${dt.id} · ${dt.name}`, elementRef("detectors", dt.id, dt.name, dt.link));
       }
 
       // data_collection_points — short solid tick across the lane.
@@ -843,7 +901,7 @@ export default function NetworkViewer({
           .attr("stroke-linecap", "round")
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
-        hitSegment("data_collection_points", a, b, `${typeLabel.data_collection_points} ${dc.id} · ${dc.name}`);
+        hitSegment("data_collection_points", a, b, `${typeLabel.data_collection_points} ${dc.id} · ${dc.name}`, elementRef("data_collection_points", dc.id, dc.name, dc.link));
       }
 
       // traveltime_sections_geo — paired gates across the road: start = single
@@ -873,7 +931,7 @@ export default function NetworkViewer({
           };
           const [a, b] = line(0);
           if (doubled) line(Math.max(pxM * 1.2, 2.5));
-          hitSegment("traveltime_sections_geo", a, b, `${typeLabel.traveltime_sections_geo} ${tt.id} · ${tt.name}`);
+          hitSegment("traveltime_sections_geo", a, b, `${typeLabel.traveltime_sections_geo} ${tt.id} · ${tt.name}`, elementRef("traveltime_sections_geo", tt.id, tt.name, ep.link));
         };
         drawGate(tt.start, false);
         drawGate(tt.end, true);
@@ -910,7 +968,7 @@ export default function NetworkViewer({
           .attr("stroke-opacity", 0.9)
           .attr("stroke-linecap", "round")
           .style("pointer-events", "none");
-        hitPoint("queue_counters", c, Math.max(r, 9), `${typeLabel.queue_counters} ${q.id} · ${q.name}`);
+        hitPoint("queue_counters", c, Math.max(r, 9), `${typeLabel.queue_counters} ${q.id} · ${q.name}`, elementRef("queue_counters", q.id, q.name, q.link));
       }
 
       // stop_signs — short bar across the lane, muted red. Slimmed with the same
@@ -933,7 +991,7 @@ export default function NetworkViewer({
           .attr("stroke-width", Math.max(pxM * 0.5, 2.2))
           .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
-        hitSegment("stop_signs", a, b, `${typeLabel.stop_signs} ${st.id} · ${st.name}`);
+        hitSegment("stop_signs", a, b, `${typeLabel.stop_signs} ${st.id} · ${st.name}`, elementRef("stop_signs", st.id, st.name, st.link));
       }
 
       // pt_stops — elongated hollow rectangle (bus bay) alongside the lane.
@@ -974,7 +1032,7 @@ export default function NetworkViewer({
           .attr("stroke-width", 1)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
-        hitSegment("pt_stops", base1, base2, `${typeLabel.pt_stops} ${pt.id} · ${pt.name}`);
+        hitSegment("pt_stops", base1, base2, `${typeLabel.pt_stops} ${pt.id} · ${pt.name}`, elementRef("pt_stops", pt.id, pt.name, pt.link));
       }
 
       // ped_areas — translucent warm-slate polygon + dotted outline (distinct from
@@ -999,6 +1057,7 @@ export default function NetworkViewer({
         attachTip(
           subHit.ped_areas.append("polygon").attr("points", pointsAttr).attr("fill", "transparent"),
           `${typeLabel.ped_areas} ${pa.id} · ${pa.name}`,
+          elementRef("ped_areas", pa.id, pa.name),
         );
       }
     }
@@ -1111,7 +1170,7 @@ export default function NetworkViewer({
     // read the ref so this effect never depends on `hidden` (toggling stays a
     // pure display flip, not a data re-render).
     applyLayerVisibility(svgRef.current, hiddenRef.current);
-  }, [network, nodeLosMap, selectedNodeSet, selectedLinkId, onNodeClick, onLinkClick, t, sizeNonce]);
+  }, [network, nodeLosMap, selectedNodeSet, selectedLinkId, selectedElementKey, onNodeClick, onLinkClick, onElementClick, t, sizeNonce]);
 
   return (
     <div className="relative w-full h-full">

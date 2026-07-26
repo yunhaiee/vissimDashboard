@@ -1,7 +1,7 @@
 """Query router and local Qwen adapter for dashboard prompting."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 import json
 import logging
@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from config import REPO_ROOT
 from services.datasets import get_active_dataset, get_active_inpx_path, get_active_real_counts_excel
+from services.network_selection import resolve_selected_element, resolve_selected_links
 from services.rag_documents import get_rag_status, search_rag
 from services.validation import geh as compute_geh, load_real_counts
 from services.results_reader import get_compare_summary, get_selected_node_details, list_scenarios
@@ -45,6 +46,8 @@ INTERNAL_ANSWER_TERMS = (
     "selected_intersection_details",
     "selected_scenario_ids",
     "selected_node_ids",
+    "selected_links",
+    "selected_element",
     "simulation_jobs",
     "vissim_com",
     "rag_chunks",
@@ -105,6 +108,12 @@ class AssistantRequestContext:
     message: str
     selected_scenario_ids: list[str]
     selected_node_ids: list[str]
+    # P6 -- what the user clicked in the rendered network diagram, already
+    # sanitized at the request boundary (routers/assistant.py's
+    # _SelectionFieldsMixin). Both default to "nothing selected" so every
+    # pre-P6 caller -- and every existing test -- is unaffected.
+    selected_link_ids: list[str] = field(default_factory=list)
+    selected_element: dict[str, Any] | None = None
     allow_tool_execution: bool = False
     response_language: str = "auto"
 
@@ -847,6 +856,23 @@ class VissimAssistantRouter:
         if selected_node_ids:
             tool_results["selected_intersection_details"] = selected_intersections
 
+        # P6: the diagram selection. Deliberately NOT gated on
+        # has_uploaded_dataset the way the node/scenario blocks are -- links and
+        # elements come from the active .inpx, which exists for the bundled demo
+        # dataset too, so clicking a road on a fresh checkout still gives the
+        # model something real to answer about. Each block degrades on its own:
+        # an unparseable network yields "missing" entries, never a failed answer.
+        if request.selected_link_ids:
+            try:
+                tool_results["selected_links"] = resolve_selected_links(request.selected_link_ids)
+            except Exception:
+                logger.exception("Assistant context: selected link details failed")
+        if request.selected_element:
+            try:
+                tool_results["selected_element"] = resolve_selected_element(request.selected_element)
+            except Exception:
+                logger.exception("Assistant context: selected element details failed")
+
         if intent in {"status", "diagnostic"}:
             compacted_jobs = compact_jobs(jobs, response_language)
             tool_results["simulation_jobs"] = compacted_jobs
@@ -879,6 +905,8 @@ class VissimAssistantRouter:
         sources = [{"kind": "dashboard", "title": "Active dataset and scenario summary"}, *doc_sources]
         if tool_results.get("selected_intersection_details"):
             sources.append({"kind": "dashboard", "title": "Selected intersection dashboard details"})
+        if tool_results.get("selected_links") or tool_results.get("selected_element"):
+            sources.append({"kind": "dashboard", "title": "Selected network diagram objects"})
         if intent in {"status", "diagnostic"}:
             sources.append({"kind": "tool", "title": "Simulation job registry"})
             sources.append({"kind": "tool", "title": "Vissim COM Tool"})

@@ -24,6 +24,7 @@ import {
   type ScenarioResults,
 } from "@/lib/api";
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, objectBelongsToNode, resolveLosGrade, type LosGrade } from "@/lib/los";
+import { elementTypeLabel, linkKindLabel, type NetworkElementRef } from "@/lib/networkElements";
 import { getScenarioDisplayColor } from "@/lib/scenarioPalette";
 import { errorTone, gehTone, toneBadgeClass, type ValidationTone } from "@/lib/validationThresholds";
 
@@ -144,6 +145,9 @@ export default function DashboardPage() {
   const [mapView, setMapView] = useState<"map" | "diagram">("map");
   const [hasRequestedDiagram, setHasRequestedDiagram] = useState(false);
   const [selectedLinkInfo, setSelectedLinkInfo] = useState<{ id: string; name: string; isConnector: boolean } | null>(null);
+  // P6: the one static element (signal head, detector, …) clicked in the diagram
+  // view, if any — single-select with the same toggle semantics as the link.
+  const [selectedElementInfo, setSelectedElementInfo] = useState<NetworkElementRef | null>(null);
   const [network, setNetwork] = useState<NetworkData | null>(null);
   const [networkLoading, setNetworkLoading] = useState(false);
   const [networkError, setNetworkError] = useState<string | null>(null);
@@ -421,11 +425,18 @@ export default function DashboardPage() {
     setSelectedNodeIds((prev) => prev.filter((id) => id !== nodeId));
   }, []);
 
-  // Link/connector clicks in the diagram view are UI-only context for the
-  // floating assistant (a chip/note) — unlike node clicks they never flow
-  // into the backend request shape (selected_scenario_ids/selected_node_ids).
+  // P6: link/connector and element clicks in the diagram view are published as
+  // STRUCTURED context (selectedLinks/selectedElement, forwarded by
+  // FloatingAssistant as selected_link_ids/selected_element), not just as a
+  // human-readable note — see docs/phase2/DECISIONS.md's P6 entry. They stay
+  // separate from selected_node_ids: node ids key result/metric lookups, while
+  // link and element ids key the parsed network.
   const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean) => {
     setSelectedLinkInfo((prev) => (prev && prev.id === linkId ? null : { id: linkId, name: linkName, isConnector }));
+  }, []);
+
+  const handleElementClick = useCallback((ref: NetworkElementRef) => {
+    setSelectedElementInfo((prev) => (prev && prev.type === ref.type && prev.id === ref.id ? null : ref));
   }, []);
 
   const handleMapViewChange = useCallback((view: "map" | "diagram") => {
@@ -463,6 +474,11 @@ export default function DashboardPage() {
   const handleDatasetChange = useCallback((dataset?: ActiveDataset) => {
     setActiveDataset(dataset ?? null);
     clearDashboardData();
+    // Selections reference objects of the previous network — clear them so a
+    // stale link/element can't be sent to the assistant against a new dataset
+    // (matches /network's handleDatasetChange).
+    setSelectedLinkInfo(null);
+    setSelectedElementInfo(null);
     setDatasetRevision(dataset?.revision ?? String(Date.now()));
     setDatasetLoading(false);
     setError(null);
@@ -492,6 +508,13 @@ export default function DashboardPage() {
                   revision: activeDataset.revision,
                 }
               : null,
+            // P6: structured diagram selection, forwarded by FloatingAssistant as
+            // selected_link_ids/selected_element so the agent resolves the real
+            // link/element instead of guessing what "this road" meant. Always
+            // 0-or-1 entries today (single-select); the array shape leaves room
+            // for a future multi-select without another context-shape change.
+            selectedLinks: selectedLinkInfo ? [selectedLinkInfo] : [],
+            selectedElement: selectedElementInfo,
             notes: [
               hasUploadedDataset ? "Uploaded VISSIM dataset is active." : "Dashboard analysis is waiting for an uploaded VISSIM dataset.",
               hasData ? "Scenario comparison results are loaded." : "Scenario comparison results are not loaded yet.",
@@ -503,16 +526,24 @@ export default function DashboardPage() {
                     `The dashboard is currently focused by a user question (AI answer: "${curationSpec.headline || "n/a"}"). Only these sections are shown: ${curationSpec.charts.join(", ") || "none"}. The user can click "Show everything" in the curation bar to see all sections again.`,
                   ]
                 : []),
-              // Link/connector selection in the diagram view is UI-only context
-              // (never sent as selected_scenario_ids/selected_node_ids) — surfaced
-              // here only so the assistant can describe what is currently
-              // highlighted on screen when asked.
+              // The human-readable mirror of selectedLinks/selectedElement above,
+              // kept so an answer can quote what is highlighted on screen.
               ...(selectedLinkInfo
                 ? [
                     [
                       t("도식에서", "In the diagram,"),
-                      t(selectedLinkInfo.isConnector ? "연결로" : "링크", selectedLinkInfo.isConnector ? "connector" : "link"),
+                      linkKindLabel(selectedLinkInfo.isConnector, t),
                       selectedLinkInfo.name,
+                      t("선택됨", "selected"),
+                    ].join(" "),
+                  ]
+                : []),
+              ...(selectedElementInfo
+                ? [
+                    [
+                      t("도식에서", "In the diagram,"),
+                      elementTypeLabel(selectedElementInfo.type, t),
+                      selectedElementInfo.name || selectedElementInfo.id,
                       t("선택됨", "selected"),
                     ].join(" "),
                   ]
@@ -529,7 +560,7 @@ export default function DashboardPage() {
     return () => {
       window.removeEventListener("vissim:assistant-context-request", publishAssistantContext);
     };
-  }, [activeDataset, activeScenarios, curationSpec, hasData, hasUploadedDataset, nodeNamesById, selected, selectedLinkInfo, selectedNodeIds, t]);
+  }, [activeDataset, activeScenarios, curationSpec, hasData, hasUploadedDataset, nodeNamesById, selected, selectedElementInfo, selectedLinkInfo, selectedNodeIds, t]);
 
   return (
     <div className="mx-auto w-full max-w-[104rem] space-y-6 pb-16">
@@ -643,8 +674,10 @@ export default function DashboardPage() {
                     selectedScenario={activeScenarios[0]?.id}
                     selectedNodeIds={selectedNodeIds}
                     selectedLinkId={selectedLinkInfo?.id ?? null}
+                    selectedElement={selectedElementInfo}
                     onNodeClick={handleNodeClick}
                     onLinkClick={handleLinkClick}
+                    onElementClick={handleElementClick}
                     onRetry={() => setNetworkReloadNonce((nonce) => nonce + 1)}
                   />
                 ) : (
@@ -1814,8 +1847,10 @@ function NetworkDiagramView({
   selectedScenario,
   selectedNodeIds,
   selectedLinkId,
+  selectedElement,
   onNodeClick,
   onLinkClick,
+  onElementClick,
   onRetry,
 }: {
   network: NetworkData | null;
@@ -1825,8 +1860,10 @@ function NetworkDiagramView({
   selectedScenario?: string;
   selectedNodeIds: string[];
   selectedLinkId: string | null;
+  selectedElement: NetworkElementRef | null;
   onNodeClick: (nodeId: string, nodeName: string) => void;
   onLinkClick: (linkId: string, linkName: string, isConnector: boolean) => void;
+  onElementClick: (ref: NetworkElementRef) => void;
   onRetry: () => void;
 }) {
   const { t } = useLanguage();
@@ -1861,8 +1898,10 @@ function NetworkDiagramView({
       selectedScenario={selectedScenario}
       selectedNodeIds={selectedNodeIds}
       selectedLinkId={selectedLinkId}
+      selectedElement={selectedElement}
       onNodeClick={onNodeClick}
       onLinkClick={onLinkClick}
+      onElementClick={onElementClick}
     />
   );
 }

@@ -25,6 +25,7 @@ import {
   type SimulationResultsResponse,
   type VissimComToolStatus,
 } from "@/lib/api";
+import { elementTypeLabel, linkKindLabel, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 
 // M2.3: lifecycle of a write-approval card attached to an agent-mode
 // message. "pending" -> user has not acted yet (Run/Cancel both enabled);
@@ -72,6 +73,14 @@ type AssistantPageContext = {
   selectedScenarioNames?: string[];
   selectedNodeIds?: string[];
   selectedNodeNames?: string[];
+  // P6: what the user clicked in the rendered network. Both are published by
+  // /network and /dashboard and forwarded to the backend as
+  // selected_link_ids/selected_element, so "이 도로" / "this signal" resolves to
+  // a real object instead of the user having to type an id. `selectedLinks`
+  // carries 0-or-1 entries today (single-select) but is an array so a future
+  // multi-select needs no context-shape change.
+  selectedLinks?: NetworkLinkRef[];
+  selectedElement?: NetworkElementRef | null;
   dataset?: {
     filename?: string;
     source?: string;
@@ -443,6 +452,12 @@ export default function FloatingAssistant() {
           message: text,
           selected_scenario_ids: activePageContext?.selectedScenarioIds ?? [],
           selected_node_ids: activePageContext?.selectedNodeIds ?? [],
+          // P6: whatever the user clicked in the rendered network travels with
+          // the message, so "이 도로 차로 수 알려줘" needs no id typed by hand.
+          // The backend re-resolves these against the parsed .inpx and caps/
+          // sanitizes them at its own boundary — nothing here is trusted.
+          selected_link_ids: activePageContext?.selectedLinks?.map((link) => link.id) ?? [],
+          selected_element: activePageContext?.selectedElement ?? null,
           // Consent to run a real VISSIM change is never inferred from the
           // wording of the message (that used to be a client-side keyword
           // match a suggested starter chip could trigger by accident). The
@@ -2041,6 +2056,16 @@ function buildContextChips(context: AssistantPageContext | null, t: Translate): 
   }
   if (context.selectedNodeIds?.length) {
     chips.push(t(`${context.selectedNodeIds.length}\uac1c \ub178\ub4dc`, `${context.selectedNodeIds.length} nodes`, `${context.selectedNodeIds.length} \u30ce\u30fc\u30c9`));
+  }
+  // P6: one chip per clicked diagram object, so the user can see exactly what
+  // the next message will carry. Labels reuse the viewer's own type vocabulary
+  // (lib/networkElements) — 연결로/링크 and the 11 element-class labels.
+  for (const link of context.selectedLinks ?? []) {
+    chips.push(`${linkKindLabel(link.isConnector, t)} ${link.name || link.id}`);
+  }
+  if (context.selectedElement) {
+    const element = context.selectedElement;
+    chips.push(`${elementTypeLabel(element.type, t)} ${element.name || element.id}`);
   }
   if (context.selectedScenarioNames?.length === 1) {
     chips.push(context.selectedScenarioNames[0]);

@@ -715,6 +715,19 @@ export interface AssistantQueryRequest {
   message: string;
   selected_scenario_ids?: string[];
   selected_node_ids?: string[];
+  // P6 — what the user clicked in the rendered network diagram. The backend
+  // re-resolves both against the parsed active .inpx (links get lanes/length/
+  // connector endpoints; an unknown id comes back as {"id", "missing": true})
+  // and sanitizes/caps them at its own request boundary, so these are hints,
+  // never trusted payload. Both askAssistant and streamAssistant JSON.stringify
+  // this whole object, so no per-field plumbing is needed below.
+  selected_link_ids?: string[];
+  selected_element?: {
+    type: string;
+    id: string;
+    name?: string;
+    link?: string | null;
+  } | null;
   allow_tool_execution?: boolean;
   response_language?: "ko" | "en" | "ja";
 }

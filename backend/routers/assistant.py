@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Callable, Iterator
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from config import REPO_ROOT
 from services.agent.edit_session import (
@@ -41,6 +41,12 @@ from services.assistant_router import (
 )
 from services.dashboard_curator import curate_dashboard
 from services.datasets import get_active_inpx_path
+from services.network_selection import (
+    resolve_selected_element,
+    resolve_selected_links,
+    sanitize_selected_element,
+    sanitize_selected_link_ids,
+)
 from services.results_reader import get_compare_summary, get_selected_node_details
 from services.vissim_tool import get_vissim_status
 
@@ -84,7 +90,29 @@ def _preload_assistant_model() -> None:
 _preload_assistant_model()
 
 
-class AssistantQueryRequest(BaseModel):
+# P6 — the diagram selection every chat request may carry. Both fields are
+# CLIENT strings that end up inside a model prompt, so they are normalized at
+# this boundary (whitelisted keys, str/None values, per-field length caps, link
+# list capped at services.network_selection.MAX_SELECTED_LINKS) before any
+# service sees them; the values themselves are then re-resolved against the
+# parsed active .inpx rather than believed. Shared by both request models below
+# via this mixin so the two can never drift apart.
+class _SelectionFieldsMixin(BaseModel):
+    selected_link_ids: list[str] = Field(default_factory=list)
+    selected_element: dict | None = None
+
+    @field_validator("selected_link_ids", mode="before")
+    @classmethod
+    def _clean_link_ids(cls, value: Any) -> list[str]:
+        return sanitize_selected_link_ids(value)
+
+    @field_validator("selected_element", mode="before")
+    @classmethod
+    def _clean_element(cls, value: Any) -> dict | None:
+        return sanitize_selected_element(value)
+
+
+class AssistantQueryRequest(_SelectionFieldsMixin):
     message: str = Field(min_length=1)
     selected_scenario_ids: list[str] = Field(default_factory=list)
     selected_node_ids: list[str] = Field(default_factory=list)
@@ -123,7 +151,7 @@ class AgentApproveRequest(BaseModel):
     approved: bool
 
 
-class CurateRequest(BaseModel):
+class CurateRequest(_SelectionFieldsMixin):
     message: str = Field(min_length=1)
     selected_scenario_ids: list[str] = Field(default_factory=list)
     selected_node_ids: list[str] = Field(default_factory=list)
@@ -151,6 +179,19 @@ def curate(payload: CurateRequest):
             )
         except Exception:
             logger.exception("Curation context: node details failed")
+    # P6: the same diagram selection the chat path gets, resolved the same way.
+    # Each block degrades independently — a bad/missing .inpx must never 500 a
+    # curation request that would otherwise have answered fine.
+    if payload.selected_link_ids:
+        try:
+            context["selected_links"] = resolve_selected_links(payload.selected_link_ids)
+        except Exception:
+            logger.exception("Curation context: selected link details failed")
+    if payload.selected_element:
+        try:
+            context["selected_element"] = resolve_selected_element(payload.selected_element)
+        except Exception:
+            logger.exception("Curation context: selected element details failed")
 
     result = curate_dashboard(
         provider=assistant_router.provider,
@@ -964,6 +1005,10 @@ def run_assistant_query(
                 message=payload_message,
                 selected_scenario_ids=payload.selected_scenario_ids,
                 selected_node_ids=payload.selected_node_ids,
+                # P6: already sanitized by AssistantQueryRequest's validators;
+                # the router resolves them against the parsed active network.
+                selected_link_ids=payload.selected_link_ids,
+                selected_element=payload.selected_element,
                 allow_tool_execution=payload.allow_tool_execution,
                 response_language=payload.response_language,
             ),

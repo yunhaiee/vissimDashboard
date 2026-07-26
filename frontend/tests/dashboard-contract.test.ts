@@ -291,6 +291,55 @@ test("network preview page publishes assistant page context", () => {
     "expected network preview page to republish context when the floating assistant asks for it",
   );
   assert.match(page, /route: "\/network"/, "expected network preview page context to identify its own route");
+  // P6: diagram clicks publish STRUCTURED selection, not only a prose note —
+  // these two keys are what FloatingAssistant turns into selected_link_ids /
+  // selected_element on the request.
+  assert.match(
+    page,
+    /selectedLinks: selectedLinkInfo \? \[selectedLinkInfo\] : \[\]/,
+    "expected the network preview page to publish the clicked link as structured context",
+  );
+  assert.match(
+    page,
+    /selectedElement: selectedElementInfo/,
+    "expected the network preview page to publish the clicked element as structured context",
+  );
+});
+
+test("P6: diagram selection reaches the assistant request instead of stopping at a chip", () => {
+  const networkPage = read("app/network/page.tsx");
+  const dashboardPage = read("app/dashboard/page.tsx");
+  const networkViewer = read("components/NetworkViewer.tsx");
+  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const api = read("lib/api.ts");
+
+  // Element glyphs are clickable, guarded by the same click-vs-drag check the
+  // link/node hit targets use, so a pan that ends over a glyph is not a click.
+  assert.match(networkViewer, /onElementClick\?: \(ref: NetworkElementRef\) => void/, "expected the viewer to expose element clicks");
+  assert.match(
+    networkViewer,
+    /sel\.style\("cursor", "pointer"\)\.on\("click", \(event: MouseEvent\) => \{\s*if \(isDragClick\(event\)\) return;\s*onElementClick\(ref\);/,
+    "expected element clicks to reuse the drag guard before publishing a reference",
+  );
+
+  for (const [label, page] of [["network preview", networkPage], ["dashboard", dashboardPage]] as const) {
+    assert.match(page, /onElementClick=\{handleElementClick\}/, `expected ${label} to wire element clicks`);
+    assert.match(page, /selectedLinks: selectedLinkInfo \? \[selectedLinkInfo\] : \[\]/, `expected ${label} to publish selected links`);
+    assert.match(page, /selectedElement: selectedElementInfo/, `expected ${label} to publish the selected element`);
+  }
+
+  assert.match(
+    floatingAssistant,
+    /selected_link_ids: activePageContext\?\.selectedLinks\?\.map\(\(link\) => link\.id\) \?\? \[\]/,
+    "expected the floating assistant to send clicked links to the assistant API",
+  );
+  assert.match(
+    floatingAssistant,
+    /selected_element: activePageContext\?\.selectedElement \?\? null/,
+    "expected the floating assistant to send the clicked element to the assistant API",
+  );
+  assert.match(api, /selected_link_ids\?: string\[\]/, "expected the assistant request type to carry clicked link ids");
+  assert.match(api, /selected_element\?: \{/, "expected the assistant request type to carry the clicked element");
 });
 
 test("P2: agent session id is broadcast and consumed for the edited-network view", () => {

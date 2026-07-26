@@ -7,6 +7,7 @@ import { useLanguage } from "@/components/LanguageProvider";
 import TrajectoryLayer, { createProjectionStore, PLAYBACK_SPEEDS, useTrajectoryPlayback } from "@/components/TrajectoryLayer";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import { fetchNetwork, type ActiveDataset, type NetworkData } from "@/lib/api";
+import { elementTypeLabel, linkKindLabel, type NetworkElementRef } from "@/lib/networkElements";
 
 // NetworkViewer draws with d3 straight against the DOM, so it must stay
 // client-only (same reason DashboardMap/Leaflet is dynamically imported).
@@ -37,6 +38,10 @@ export default function NetworkPage() {
   const [activeDataset, setActiveDataset] = useState<ActiveDataset | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedLinkInfo, setSelectedLinkInfo] = useState<{ id: string; name: string; isConnector: boolean } | null>(null);
+  // P6: the one static element (signal head, detector, …) clicked in the
+  // diagram, if any. Single-select — clicking another replaces it, clicking the
+  // same one again clears it — same toggle semantics as the link selection.
+  const [selectedElementInfo, setSelectedElementInfo] = useState<NetworkElementRef | null>(null);
   // P2: the floating assistant's current agent session id, mirrored here via
   // the "vissim:agent-session" event so this page's refresh button can show
   // that session's in-progress edited working copy on demand -- see
@@ -101,6 +106,7 @@ export default function NetworkPage() {
     setActiveDataset(dataset ?? null);
     setSelectedNodeIds([]);
     setSelectedLinkInfo(null);
+    setSelectedElementInfo(null);
     setDatasetRevision(dataset?.revision ?? String(Date.now()));
   }, []);
 
@@ -116,11 +122,18 @@ export default function NetworkPage() {
     });
   }, []);
 
-  // Link/connector clicks are UI-only context for the floating assistant (a
-  // chip/note) — unlike node clicks they never flow into the backend request
-  // shape (selected_scenario_ids/selected_node_ids).
+  // P6: link/connector and element clicks are published as STRUCTURED context
+  // (selectedLinks/selectedElement, which FloatingAssistant forwards as
+  // selected_link_ids/selected_element), not just as a human-readable note —
+  // that upgrade is recorded in docs/phase2/DECISIONS.md. They stay separate
+  // from selected_node_ids because node ids key result/metric lookups while
+  // links and elements key the parsed network.
   const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean) => {
     setSelectedLinkInfo((prev) => (prev && prev.id === linkId ? null : { id: linkId, name: linkName, isConnector }));
+  }, []);
+
+  const handleElementClick = useCallback((ref: NetworkElementRef) => {
+    setSelectedElementInfo((prev) => (prev && prev.type === ref.type && prev.id === ref.id ? null : ref));
   }, []);
 
   // Mirrors the dashboard/base-model pages' assistant page-context dispatch:
@@ -151,6 +164,13 @@ export default function NetworkPage() {
                   revision: activeDataset.revision,
                 }
               : null,
+            // P6: structured selection, forwarded by FloatingAssistant as
+            // selected_link_ids/selected_element so the agent resolves the real
+            // link/element instead of guessing what "this road" meant. Always
+            // 0-or-1 entries today (single-select); the array shape leaves room
+            // for a future multi-select without another context-shape change.
+            selectedLinks: selectedLinkInfo ? [selectedLinkInfo] : [],
+            selectedElement: selectedElementInfo,
             notes: [
               selectedNodeIds.length > 0
                 ? t(
@@ -158,15 +178,24 @@ export default function NetworkPage() {
                     `${selectedNodeIds.length} intersection${selectedNodeIds.length > 1 ? "s" : ""} selected`,
                   )
                 : t("선택된 교차로 없음", "No intersections selected"),
-              // Link/connector selection is UI-only context (never sent as
-              // selected_scenario_ids/selected_node_ids) — surfaced here only
-              // so the assistant can describe what is currently highlighted.
+              // The human-readable mirror of selectedLinks/selectedElement above,
+              // kept so an answer can quote what is highlighted on screen.
               ...(selectedLinkInfo
                 ? [
                     [
                       t("도식에서", "In the diagram,"),
-                      t(selectedLinkInfo.isConnector ? "연결로" : "링크", selectedLinkInfo.isConnector ? "connector" : "link"),
+                      linkKindLabel(selectedLinkInfo.isConnector, t),
                       selectedLinkInfo.name,
+                      t("선택됨", "selected"),
+                    ].join(" "),
+                  ]
+                : []),
+              ...(selectedElementInfo
+                ? [
+                    [
+                      t("도식에서", "In the diagram,"),
+                      elementTypeLabel(selectedElementInfo.type, t),
+                      selectedElementInfo.name || selectedElementInfo.id,
                       t("선택됨", "selected"),
                     ].join(" "),
                   ]
@@ -183,7 +212,7 @@ export default function NetworkPage() {
     return () => {
       window.removeEventListener("vissim:assistant-context-request", publishAssistantContext);
     };
-  }, [activeDataset, network, selectedLinkInfo, selectedNodeIds, t]);
+  }, [activeDataset, network, selectedElementInfo, selectedLinkInfo, selectedNodeIds, t]);
 
   return (
     <div className="mx-auto w-full max-w-[96rem] space-y-6 pb-16">
@@ -244,14 +273,16 @@ export default function NetworkPage() {
               network={network}
               selectedNodeIds={selectedNodeIds}
               selectedLinkId={selectedLinkInfo?.id ?? null}
+              selectedElement={selectedElementInfo}
               onNodeClick={handleNodeClick}
               onLinkClick={handleLinkClick}
+              onElementClick={handleElementClick}
               onProjectionChange={projection.set}
             />
             {/* Canvas overlay: same box as the viewer's SVG, pointer-events
                 none so zoom/pan/click all still land on the SVG beneath it. */}
             {playback.frames && (
-              <TrajectoryLayer engine={playbackEngine} frames={playback.frames} projection={projection} />
+              <TrajectoryLayer engine={playbackEngine} frames={playback.frames} projection={projection} network={network} />
             )}
           </>
         )}

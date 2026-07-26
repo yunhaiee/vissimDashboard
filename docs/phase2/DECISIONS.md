@@ -1177,3 +1177,63 @@ entry above carries. No car-following/acceleration modeling, no lane-changing, n
 between vehicles on shared links (routes overlap on the roundabout arcs and East Gate exit by
 design, with no collision avoidance) — acceptable for a visual-plausibility demo, not a
 substitute for a real simulation export.
+
+---
+
+## 2026-07-26 — P6: diagram selection becomes a real request field (Unit-4 chips-only scope, upgraded)
+
+**Scope change, on the user's explicit call.** The 2026-07-24 "Phase 3 wrap" entry above
+recorded decision (3): link/connector clicks reach the assistant as page-context **chips/notes
+ONLY**, leaving the backend request shape untouched. That was a deliberate scope limit, not an
+oversight. It is now **superseded**: Yunha asked that clicking any component in the rendered
+network — link, connector, or element glyph — be referenced automatically in the chat, so the
+agent knows what "이 도로 / this intersection / this signal" means without an id being typed.
+Prose in a `notes[]` string cannot carry that; a model has to re-derive an id from free text
+and can silently answer about the wrong object. So the selection is now **structured request
+data**: `AssistantQueryRequest`/`CurateRequest` gained `selected_link_ids: list[str]` and
+`selected_element: dict | None`, published by /network and /dashboard as `selectedLinks` /
+`selectedElement` on the existing `vissim:page-context` event. The human-readable notes are
+**kept alongside**, not replaced — they still let an answer quote what is highlighted on screen.
+
+**Node ids stay a separate channel.** `selected_node_ids` keys result/metric lookups
+(`get_selected_node_details`, movement records); link and element ids key the parsed `.inpx`.
+Folding the new ids into `selected_node_ids` would have silently corrupted every intersection
+lookup, so they travel as their own fields with their own resolver.
+
+**Validation lives at the request boundary, because these strings end up in a prompt.**
+`services/network_selection.py` owns it and both models share it via one `_SelectionFieldsMixin`
+so they cannot drift: link ids are stripped, de-duplicated and capped at
+`MAX_SELECTED_LINKS = 6` (matching the node cap the assistant router already applies) with each
+id capped at 64 chars; `selected_element` is reduced to exactly four whitelisted keys
+(`type`, `id`, `name`, `link`), values must be `str`/`None` (numbers are deliberately NOT
+coerced, so a nested object can never leak through), `name` capped at 120 chars, and control
+characters — newlines included — are stripped from every field, since a name carrying newlines
+could otherwise break the JSON context block into text the model reads as instructions. A
+reference without a usable `type` AND `id` is refused outright rather than forwarded.
+
+**Client claims are re-resolved, never believed.** A link id becomes the parsed network's
+`{id, name, lanes, length, is_connector, from_link, to_link}`; an element becomes its parsed
+record (server-side `name`/`link` win over the client's, plus `link_name`, `lane`, `pos` when
+available). An id the active network does not contain resolves to `{"id": ..., "missing": true}`
+rather than being dropped — the model must be able to say "that link isn't in this network"
+instead of quietly answering about nothing. Parsing reuses `parse_network` behind an
+`lru_cache` keyed on `(path, mtime)`, the same cache-key shape `routers/network.py` uses, and a
+missing/unparseable `.inpx` degrades to "everything is missing" rather than 500ing a chat
+request — the same degrade-don't-fail policy as the P2 session view and the P3 trajectory
+endpoint. Not gated on `has_uploaded_dataset` (unlike the node/scenario blocks): links and
+elements come from the active `.inpx`, which exists for the bundled demo dataset too.
+
+**Element references are context-only — no new capability.** Nothing here grants the agent a
+new tool, a new write path, or a new permission. A clicked signal head tells the agent *which*
+object the sentence is about; acting on it still goes through the existing gated
+propose→approve tools with their unchanged guardrails. This is deliberately a naming aid, not
+an authorization channel.
+
+**Known gap, deliberately not closed here.** `selected_node_ids` has never reached the agent
+orchestrator — `AgentQueryRequest` carries only `{message, response_language, session_id}`, and
+`run_agent_turn` has no context parameter (grep: zero hits for `selected_node` anywhere under
+`backend/services/agent/`). So the new fields reach the **plain assistant path** and `/curate`
+exactly the way node ids do, and reach agent mode exactly as far as node ids do: not at all.
+Wiring page selection into the agent turn is a real feature (new request fields, a
+`run_agent_turn` parameter, planner-prompt surface), not a mirror of an existing pattern, and is
+left as its own unit rather than smuggled in here.
