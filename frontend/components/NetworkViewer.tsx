@@ -64,11 +64,15 @@ const RSA_AMBER = "#b9975a";     // muted amber — reduced-speed band
 const TTS_CYAN = "#6f97a3";      // muted cyan-slate — travel-time gate lines
 const PED_FILL = "#b9b2a3";      // warm light slate — pedestrian areas
 
-// Geometry constants for the road/marking math.
-const DEFAULT_LANE_M = 3.5;        // fallback lane width when a link carries none
+// Geometry constants for the road/marking math. DEFAULT_LANE_M / MIN_ROAD_PX
+// and linkWidthMeters() below are exported because the P5 vehicle overlay
+// (TrajectoryLayer) has to reproduce the EXACT on-screen road width this file
+// draws in order to size cars proportionally to their lane — re-deriving them
+// there would let the two drift apart silently.
+export const DEFAULT_LANE_M = 3.5; // fallback lane width when a link carries none
 const EPS = 1e-6;
 const MITER_COS_MIN = 0.5;         // clamp miter to ≤ 2× so sharp bends never spike offsets
-const MIN_ROAD_PX = 2.5;           // asphalt floor at base fit (scales up with zoom)
+export const MIN_ROAD_PX = 2.5;    // asphalt floor at base fit (scales up with zoom)
 const CHEVRON_SPACING_PX = 120;    // one direction chevron per ~this many base-fit px
 const MAX_CHEVRONS = 8;            // cap per link (keeps SVG node count modest)
 
@@ -86,7 +90,7 @@ type Pt = [number, number];
 
 // Total roadway width in metres, tolerant of the three shapes Unit A can emit
 // (explicit total → summed lane widths → lane-count × default).
-function linkWidthMeters(l: NetworkLink): number {
+export function linkWidthMeters(l: NetworkLink): number {
   if (l.width_total != null && l.width_total > 0) return l.width_total;
   if (l.lane_widths && l.lane_widths.length) {
     const sum = l.lane_widths.reduce((a, b) => a + b, 0);

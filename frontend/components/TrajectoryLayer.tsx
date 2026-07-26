@@ -1,8 +1,8 @@
 "use client";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
-import { fetchTrajectories, type TrajectoryFrame, type TrajectoryVehicleFrame } from "@/lib/api";
-import type { ViewProjection } from "@/components/NetworkViewer";
+import { fetchTrajectories, type NetworkData, type TrajectoryFrame, type TrajectoryVehicleFrame } from "@/lib/api";
+import { DEFAULT_LANE_M, MIN_ROAD_PX, linkWidthMeters, type ViewProjection } from "@/components/NetworkViewer";
 
 // Phase 3 P4 — vehicle playback overlay for the network viewer.
 //
@@ -22,6 +22,12 @@ import type { ViewProjection } from "@/components/NetworkViewer";
 // Vehicle coordinates arrive as RAW network metres with a math-convention angle
 // (0 = +x, CCW positive). The viewer flips Y, which negates the angle on
 // screen — the same rule NetworkViewer's dirsFromAngle() documents.
+//
+// P5 (playback fidelity) added a fourth piece between (2) and (3):
+//   buildLinkGeometryIndex() + pointAtPos() + interpolateOnLink(), which
+//   interpolate along the link's real centreline instead of chording between
+//   frames, and the lane-relative sizing in drawVehicles(). Both need the
+//   `network` prop; without it the layer degrades to exactly its P4 behaviour.
 
 // --- projection store -------------------------------------------------------
 
@@ -308,14 +314,217 @@ export function useTrajectoryPlayback(): Playback {
   return { ...snapshot, engine };
 }
 
+// --- link geometry (P5 path-accurate interpolation) -------------------------
+
+// The server resolves every frame's x/y as
+//   point_at_pos(link.points, pos)  +  lane offset along that segment's normal
+// (backend/services/trajectory_reader.py -> inpx_parser.lane_offset_point).
+// Frames are 0.5 s apart, so lerping the resulting x/y directly draws a straight
+// CHORD between two points on a curve — on a roundabout or a junction turn that
+// chord leaves the pavement. The fix is to interpolate the Vissim-native `pos`
+// scalar along the real polyline instead, and carry the server's lane offset
+// across as a separate 2-vector (see interpolateOnLink below).
+//
+// LinkGeometry is the precompute that makes that cheap: the link's NON-degenerate
+// segments in raw metre space, their cumulative arc-length starts, and their
+// headings — plus the two numbers the sizing pass needs. Zero-length segments are
+// dropped exactly like backend point_at_pos() skips them, so identical inputs
+// resolve to identical centreline points on both sides.
+export interface LinkGeometry {
+  /** Segment start/end coordinates, raw network metres. */
+  ax: Float64Array;
+  ay: Float64Array;
+  bx: Float64Array;
+  by: Float64Array;
+  /** Arc length at each segment START; length = segments + 1, last entry = total. */
+  cum: Float64Array;
+  /** Per-segment heading in degrees, math convention (0 = +x, CCW positive). */
+  ang: Float64Array;
+  /** Total polyline length in metres (the clamp bound, like the backend's). */
+  length: number;
+  /** Total roadway width — same three-shape tolerance the road render uses. */
+  widthTotalM: number;
+  lanes: number;
+}
+
+export type LinkGeometryIndex = Map<string, LinkGeometry>;
+
+const GEOM_EPS = 1e-9;
+
+// Build the per-link index once per network. Links that can't support the walk
+// (fewer than two vertices, non-finite coordinates, every segment degenerate)
+// are simply absent from the map — callers fall back to the plain x/y lerp for
+// those rather than guessing.
+export function buildLinkGeometryIndex(network: NetworkData | null | undefined): LinkGeometryIndex | null {
+  if (!network || !network.links?.length) return null;
+  const index: LinkGeometryIndex = new Map();
+  for (const link of network.links) {
+    const pts = link.points;
+    if (!pts || pts.length < 2) continue;
+    const ax: number[] = [];
+    const ay: number[] = [];
+    const bx: number[] = [];
+    const by: number[] = [];
+    const cum: number[] = [];
+    const ang: number[] = [];
+    let acc = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const x0 = pts[i - 1][0];
+      const y0 = pts[i - 1][1];
+      const x1 = pts[i][0];
+      const y1 = pts[i][1];
+      if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(x1) || !Number.isFinite(y1)) continue;
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      const segLen = Math.hypot(dx, dy);
+      if (!(segLen > GEOM_EPS)) continue; // coincident vertices — backend skips these too
+      ax.push(x0);
+      ay.push(y0);
+      bx.push(x1);
+      by.push(y1);
+      cum.push(acc);
+      ang.push((Math.atan2(dy, dx) * 180) / Math.PI);
+      acc += segLen;
+    }
+    if (!ax.length) continue; // fully degenerate polyline
+    cum.push(acc);
+    index.set(String(link.id), {
+      ax: Float64Array.from(ax),
+      ay: Float64Array.from(ay),
+      bx: Float64Array.from(bx),
+      by: Float64Array.from(by),
+      cum: Float64Array.from(cum),
+      ang: Float64Array.from(ang),
+      length: acc,
+      widthTotalM: linkWidthMeters(link),
+      lanes: Math.max(Math.round(link.lanes ?? 1), 1),
+    });
+  }
+  return index.size ? index : null;
+}
+
+interface Placement {
+  x: number;
+  y: number;
+  angle: number;
+}
+
+// Reusable output cell — pointAtPos() runs up to three times per vehicle per
+// animation frame, and allocating a fresh object each time would churn the GC at
+// 60 Hz. Callers copy the scalars out immediately.
+const placement: Placement = { x: 0, y: 0, angle: 0 };
+
+// Client mirror of backend inpx_parser.point_at_pos(): absolute (x, y, heading)
+// at arc-length `pos` along the centreline. `pos` is clamped into [0, length]
+// (same reason the backend clamps: float noise / stale positions), and the angle
+// is the heading of the segment CONTAINING pos — the backend picks the first
+// segment whose END reaches pos, and the binary search below picks the same one,
+// so a position landing exactly on a vertex resolves identically on both sides.
+// O(log n) per call; writes into `out` and returns false only for a bad pos.
+function pointAtPos(geom: LinkGeometry, pos: number, out: Placement): boolean {
+  if (!Number.isFinite(pos)) return false;
+  const m = geom.ang.length;
+  const p = Math.min(Math.max(pos, 0), geom.length);
+  let lo = 0;
+  let hi = m - 1;
+  let j = m - 1; // fallthrough = last segment, mirroring the backend's tail case
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (geom.cum[mid + 1] >= p) {
+      j = mid;
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  const segLen = geom.cum[j + 1] - geom.cum[j];
+  const tt = segLen > GEOM_EPS ? Math.min(Math.max((p - geom.cum[j]) / segLen, 0), 1) : 0;
+  out.x = geom.ax[j] + (geom.bx[j] - geom.ax[j]) * tt;
+  out.y = geom.ay[j] + (geom.by[j] - geom.ay[j]) * tt;
+  out.angle = geom.ang[j];
+  return true;
+}
+
+// Path-accurate pose for a vehicle whose bracketing frames sit on the SAME link.
+//
+//   1. recover each frame's lane offset as the 2-vector from the centreline
+//      point at that frame's `pos` to the server-resolved x/y (this is exactly
+//      lane_offset_point's normal * s_center, so nothing about the server's lane
+//      placement is re-derived or assumed here);
+//   2. interpolate the `pos` SCALAR and walk the real polyline to it — this is
+//      what stops the car cutting the corner on a curve;
+//   3. lerp the offset 2-vector and re-scale it to the lerped offset LENGTH,
+//      then add it to the interpolated centreline point.
+//
+// Step 3's re-scale is the lane-flip guard. A straight lerp of the two offset
+// vectors is a chord between them, so when the segment normal rotates inside one
+// 0.5 s bracket (a sharp vertex, a roundabout) the offset shortens by up to
+// (1 - cos(theta/2)) and the car drifts toward the centreline mid-interval — ~1 m
+// at a 90 deg vertex. Renormalising to the lerped length keeps the lateral
+// distance exact while still landing on the server's own x/y at u = 0 and u = 1
+// (the scale factor is 1 at both ends), so frames stay continuous across bracket
+// boundaries. The alternative — re-applying the offset along the interpolated
+// segment's normal — is rejected: that normal is discontinuous at every vertex
+// and would TELEPORT the car sideways there.
+//
+// Returns false (caller falls back to the straight x/y lerp) when the link is
+// unknown/degenerate, either pos is non-finite, or `pos` moves backwards — the
+// last case means a wrap-around onto the same link (or noise), never real travel.
+function interpolateOnLink(
+  geom: LinkGeometry,
+  posA: number,
+  xA: number,
+  yA: number,
+  posB: number,
+  xB: number,
+  yB: number,
+  u: number,
+  out: Placement,
+): boolean {
+  if (!Number.isFinite(posA) || !Number.isFinite(posB) || posB < posA) return false;
+  if (!pointAtPos(geom, posA, out)) return false;
+  const offAx = xA - out.x;
+  const offAy = yA - out.y;
+  if (!pointAtPos(geom, posB, out)) return false;
+  const offBx = xB - out.x;
+  const offBy = yB - out.y;
+  if (!pointAtPos(geom, posA + (posB - posA) * u, out)) return false;
+
+  let ox = offAx + (offBx - offAx) * u;
+  let oy = offAy + (offBy - offAy) * u;
+  const lenA = Math.hypot(offAx, offAy);
+  const lenB = Math.hypot(offBx, offBy);
+  const want = lenA + (lenB - lenA) * u;
+  const have = Math.hypot(ox, oy);
+  // `have` only collapses when the two offsets are near-opposite (a ~180 deg
+  // normal flip inside one bracket); leave the chord alone rather than divide by
+  // ~zero and fling the car across the road.
+  if (have > GEOM_EPS) {
+    const f = want / have;
+    ox *= f;
+    oy *= f;
+  }
+  out.x += ox;
+  out.y += oy;
+  return true;
+}
+
 // --- canvas rendering -------------------------------------------------------
 
-// Metre-true car footprint, drawn as a capsule at the viewer's live scale. The
-// floor keeps vehicles visible when the whole network is fitted to the viewport
-// (aspect ratio is preserved because both dimensions share one scale).
+// Vehicle footprint. Metre-true (4.5 m x 1.8 m) is the FLOOR of the visual size,
+// not the whole story: at a wide base fit the roads themselves are drawn at
+// max(width * s, MIN_ROAD_PX), so a metre-true car ends up a sub-pixel speck
+// inside a floored-open road. Vehicles therefore also scale off the same
+// on-screen lane width the road render implies (see laneOnScreenPx), which is
+// what makes them read like Vissim's 2D view at every zoom.
 const VEHICLE_LENGTH_M = 4.5;
-const VEHICLE_WIDTH_M = 1.8;
-const MIN_VEHICLE_LENGTH_PX = 3;
+// 1.8 / 4.5 — applying it to the final length keeps the true 4.5x1.8 footprint in
+// the metre-true regime and scales it proportionally in the lane-driven one.
+const VEHICLE_ASPECT = 0.4;
+// A car occupies this many lane-widths of LENGTH (so VEHICLE_ASPECT * this = 0.72
+// lane widths across — a car sitting properly inside its lane, not filling it).
+const VEHICLE_LANE_LENGTHS = 1.8;
+const MIN_VEHICLE_LENGTH_PX = 7;
 // Palette: light slate body on the #3a4150 asphalt, outlined in the existing
 // road-casing slate. Stopped vehicles take a muted warm tint (a sibling of the
 // reduced-speed amber) so queues read at a glance without a new loud hue.
@@ -365,6 +574,7 @@ function drawVehicles(
   projection: ViewProjection,
   frames: TrajectoryFrame[],
   time: number,
+  links: LinkGeometryIndex | null,
 ) {
   const index = bracketIndex(frames, time);
   const current = frames[index];
@@ -374,34 +584,70 @@ function drawVehicles(
   const nextById = nextFrame && u > 0 ? vehicleMap(nextFrame) : null;
 
   const { k, s, tx, ty, offsetX, offsetY, xMin, yMax } = projection;
-  const pxPerMeter = s * k;
-  const drawScale = Math.max(pxPerMeter, MIN_VEHICLE_LENGTH_PX / VEHICLE_LENGTH_M);
-  const lengthPx = VEHICLE_LENGTH_M * drawScale;
-  const widthPx = VEHICLE_WIDTH_M * drawScale;
-  const outlined = lengthPx >= OUTLINE_MIN_LENGTH_PX;
+  const metreLengthPx = VEHICLE_LENGTH_M * s * k;
 
-  ctx.lineWidth = Math.min(Math.max(lengthPx * 0.09, 0.5), 1.4);
+  // The on-screen width of ONE lane of a link, reproducing NetworkViewer's road
+  // rule exactly: it draws each surface at max(widthTotal * s, MIN_ROAD_PX) in
+  // the un-zoomed group, which the d3 transform then scales by k. Dividing by the
+  // lane count gives the lane the vehicle is actually sitting in. An unknown link
+  // falls back to a single default-width lane — the same number a 3.5 m one-lane
+  // link would produce, floor included, so sizing never jumps at the boundary.
+  const laneOnScreenPx = (widthTotalM: number, lanes: number) => (Math.max(widthTotalM * s, MIN_ROAD_PX) * k) / lanes;
+  const fallbackLanePx = laneOnScreenPx(DEFAULT_LANE_M, 1);
+
   ctx.strokeStyle = VEHICLE_STROKE;
+  let appliedLineWidth = -1;
 
   for (const vehicle of current.vehicles) {
     if (vehicle.x == null || vehicle.y == null) continue;
+    const geom = links?.get(String(vehicle.link)) ?? null;
+
     let x = vehicle.x;
     let y = vehicle.y;
     let angle = vehicle.angle ?? 0;
 
-    // Linear interpolation toward the bracketing next frame. A vehicle missing
-    // from that frame has left the network mid-interval, so it simply holds its
-    // last known pose until the playhead crosses the boundary and drops it.
+    // Interpolation toward the bracketing next frame. A vehicle missing from that
+    // frame has left the network mid-interval, so it simply holds its last known
+    // pose until the playhead crosses the boundary and drops it.
     const ahead = nextById?.get(vehicle.id);
     if (ahead && ahead.x != null && ahead.y != null) {
-      x += (ahead.x - x) * u;
-      y += (ahead.y - y) * u;
-      angle = lerpAngleDeg(angle, ahead.angle ?? angle, u);
+      // Same link -> walk the real centreline (see interpolateOnLink). Different
+      // links -> the straight x/y lerp: those transitions last a single 0.5 s
+      // bracket and happen inside junction pavement, where a chord stays on the
+      // road. Heading then comes from the polyline segment at the interpolated
+      // pos rather than a frame-to-frame lerp, which is what removes the
+      // corner-cut headings on the roundabout.
+      const sameLink = geom != null && String(ahead.link) === String(vehicle.link);
+      const walked =
+        sameLink &&
+        interpolateOnLink(geom, vehicle.pos, vehicle.x, vehicle.y, ahead.pos, ahead.x, ahead.y, u, placement);
+      if (walked) {
+        x = placement.x;
+        y = placement.y;
+        angle = placement.angle;
+      } else {
+        x += (ahead.x - x) * u;
+        y += (ahead.y - y) * u;
+        angle = lerpAngleDeg(angle, ahead.angle ?? angle, u);
+      }
     }
+
+    const lanePx = geom ? laneOnScreenPx(geom.widthTotalM, geom.lanes) : fallbackLanePx;
+    const lengthPx = Math.max(metreLengthPx, lanePx * VEHICLE_LANE_LENGTHS, MIN_VEHICLE_LENGTH_PX);
+    const widthPx = lengthPx * VEHICLE_ASPECT;
 
     const sx = tx + k * (offsetX + (x - xMin) * s);
     const sy = ty + k * (offsetY + (yMax - y) * s);
-    if (sx < -CULL_PAD_PX || sy < -CULL_PAD_PX || sx > cssW + CULL_PAD_PX || sy > cssH + CULL_PAD_PX) continue;
+    const pad = CULL_PAD_PX + lengthPx;
+    if (sx < -pad || sy < -pad || sx > cssW + pad || sy > cssH + pad) continue;
+
+    // Vehicles on one link share a size, so this only really re-assigns at link
+    // boundaries — cheaper than setting canvas state per car.
+    const lineWidth = Math.min(Math.max(lengthPx * 0.09, 0.5), 1.4);
+    if (lineWidth !== appliedLineWidth) {
+      ctx.lineWidth = lineWidth;
+      appliedLineWidth = lineWidth;
+    }
 
     ctx.save();
     ctx.translate(sx, sy);
@@ -411,7 +657,10 @@ function drawVehicles(
     capsulePath(ctx, lengthPx, widthPx);
     ctx.fillStyle = (vehicle.speed ?? 0) <= 0 ? VEHICLE_FILL_STOPPED : VEHICLE_FILL;
     ctx.fill();
-    if (outlined) ctx.stroke();
+    // Retained guard: MIN_VEHICLE_LENGTH_PX now sits above this threshold, so it
+    // passes in practice — it stays as the rule for "too small to outline" rather
+    // than being silently dropped along with the old 3 px floor.
+    if (lengthPx >= OUTLINE_MIN_LENGTH_PX) ctx.stroke();
     ctx.restore();
   }
 }
@@ -420,12 +669,21 @@ export default function TrajectoryLayer({
   engine,
   frames,
   projection,
+  network,
 }: {
   engine: PlaybackEngine;
   frames: TrajectoryFrame[] | null;
   projection: ProjectionStore;
+  // P5 (optional, purely additive): the same network the viewer drew. Supplies
+  // the centreline polylines that make interpolation path-accurate and the
+  // per-link widths that size vehicles against their lane. With it absent the
+  // layer behaves exactly as before — straight x/y lerp, default lane width.
+  network?: NetworkData | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Rebuilt only when the network object identity changes (the page replaces it
+  // wholesale on load / dataset swap), never per frame.
+  const linkGeometry = useMemo(() => buildLinkGeometryIndex(network), [network]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -454,7 +712,7 @@ export default function TrajectoryLayer({
       ctx.clearRect(0, 0, cssW, cssH);
       const current = projection.get();
       if (!current || !frames || !frames.length) return;
-      drawVehicles(ctx, cssW, cssH, current, frames, time);
+      drawVehicles(ctx, cssW, cssH, current, frames, time, linkGeometry);
     };
 
     engine.registerRenderer(draw);
@@ -489,7 +747,7 @@ export default function TrajectoryLayer({
       if (resizeRaf) cancelAnimationFrame(resizeRaf);
       engine.registerRenderer(null);
     };
-  }, [engine, frames, projection]);
+  }, [engine, frames, projection, linkGeometry]);
 
   return <canvas ref={canvasRef} aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full" />;
 }
