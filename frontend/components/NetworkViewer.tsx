@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
-import { NetworkData, ScenarioResults } from "@/lib/api";
+import { NetworkData, NetworkElements, ScenarioResults } from "@/lib/api";
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, resolveLosGrade, type LosGrade } from "@/lib/los";
 import { useLanguage } from "@/components/LanguageProvider";
 
@@ -25,6 +25,19 @@ const NODE_POLY_FILL = "#475569"; // neutral translucent slate for junctions wit
 const NODE_FILL = "#1e293b";
 const NODE_STROKE = "#f8fafc";
 const ACCENT = "#4c8dff";
+
+// Static-element glyph palette. Restricted, muted variants that read inside the
+// dark theme. Signal-head + stop-sign bars use a restrained red (Vissim draws
+// stop bars red, but DashboardMap's loud #f3161d is dropped for a muted family);
+// reduced-speed a very muted amber; travel-time a cyan-leaning slate; everything
+// else a light slate a touch brighter than MARKING_COLOR so furniture reads above
+// the lane lines. These three named hues are the spec-sanctioned additions beyond
+// the slate family — see Unit C notes.
+const ELEMENT_SLATE = "#9aa7ba"; // light slate — most element furniture
+const SIGNAL_RED = "#c25450";    // muted red — signal-head + stop-sign bars
+const RSA_AMBER = "#b9975a";     // muted amber — reduced-speed band
+const TTS_CYAN = "#6f97a3";      // muted cyan-slate — travel-time gate lines
+const PED_FILL = "#b9b2a3";      // warm light slate — pedestrian areas
 
 // Geometry constants for the road/marking math.
 const DEFAULT_LANE_M = 3.5;        // fallback lane width when a link carries none
@@ -153,6 +166,76 @@ function sampleAlong(pts: Pt[], count: number): { p: Pt; dir: Pt }[] {
   return res;
 }
 
+// --- Static network elements (Phase 3 Tier 1, Unit C) -----------------------
+
+// Per-lane width in metres for one link (total roadway / lane count).
+function laneWidthMeters(l: NetworkLink): number {
+  return linkWidthMeters(l) / Math.max(Math.round(l.lanes ?? 1), 1);
+}
+
+// Screen-space unit vectors from a RAW element angle. angle is math convention
+// (0 = +x, CCW positive) in raw network coords; the viewer flips Y (projY uses
+// yMax - y), which reflects the plane and NEGATES the angle on screen. So the
+// screen travel direction is (cos a, -sin a) — the -sin is the Y-flip. `across`
+// is the on-screen 90° perpendicular used to draw stop bars / gate lines across
+// the road. Sanity: the Harbor EB signal head (angle 0) → along = (1, 0) (east,
+// the EB travel direction), across = (0, 1) (vertical), i.e. a vertical bar
+// perpendicular across the horizontal eastbound road — as required.
+function dirsFromAngle(angleDeg: number | null | undefined): { along: Pt; across: Pt } {
+  const rad = ((Number.isFinite(angleDeg as number) ? (angleDeg as number) : 0) * Math.PI) / 180;
+  const along: Pt = [Math.cos(rad), -Math.sin(rad)];
+  const across: Pt = [-along[1], along[0]];
+  return { along, across };
+}
+
+// Element layer catalogue — panel order + i18n labels (ko primary, en via t();
+// ja is appended to JA_UI). One row per class; labels double as the tooltip type
+// label ("<label> <id> · <name>").
+const ELEMENT_LAYERS: { key: keyof NetworkElements; ko: string; en: string }[] = [
+  { key: "signal_heads", ko: "신호등", en: "Signal head" },
+  { key: "vehicle_inputs", ko: "차량 입력", en: "Vehicle input" },
+  { key: "reduced_speed_areas", ko: "감속 구역", en: "Reduced speed area" },
+  { key: "des_speed_decisions", ko: "희망속도 결정", en: "Desired speed decision" },
+  { key: "detectors", ko: "검지기", en: "Detector" },
+  { key: "data_collection_points", ko: "데이터 수집 지점", en: "Data collection point" },
+  { key: "traveltime_sections_geo", ko: "통행시간 구간", en: "Travel time section" },
+  { key: "queue_counters", ko: "대기행렬 카운터", en: "Queue counter" },
+  { key: "stop_signs", ko: "정지 표지", en: "Stop sign" },
+  { key: "pt_stops", ko: "정류장", en: "PT stop" },
+  { key: "ped_areas", ko: "보행자 구역", en: "Pedestrian area" },
+];
+
+const LANE_MARKINGS_KEY = "lane_markings";
+const ALL_LAYER_KEYS: string[] = [...ELEMENT_LAYERS.map((l) => l.key), LANE_MARKINGS_KEY];
+
+// Bottom-to-top z within the element layer: area fills, then bands/bays, then
+// line/point glyphs, with signal/stop bars on top. Each key becomes its own
+// data-layer sub-group so visibility toggling is a display flip, not a redraw.
+const ELEMENT_Z_ORDER: (keyof NetworkElements)[] = [
+  "ped_areas",
+  "reduced_speed_areas",
+  "pt_stops",
+  "traveltime_sections_geo",
+  "detectors",
+  "des_speed_decisions",
+  "data_collection_points",
+  "queue_counters",
+  "vehicle_inputs",
+  "signal_heads",
+  "stop_signs",
+];
+
+// Flip each layer group's display attribute from a hidden-key Set. Selects by the
+// data-layer tag so it works on freshly-redrawn groups too — called both after a
+// redraw (with the current ref) and on toggle (from the [hidden] effect).
+function applyLayerVisibility(svgEl: SVGSVGElement | null, hidden: Set<string>) {
+  if (!svgEl) return;
+  const sel = d3.select(svgEl);
+  for (const key of ALL_LAYER_KEYS) {
+    sel.selectAll(`[data-layer='${key}']`).attr("display", hidden.has(key) ? "none" : null);
+  }
+}
+
 export default function NetworkViewer({
   network,
   results,
@@ -194,6 +277,36 @@ export default function NetworkViewer({
 
   const selectedNodeSet = useMemo(() => new Set((selectedNodeIds ?? []).map(String)), [selectedNodeIds]);
   const isEmpty = network.links.length === 0;
+
+  // Static-element layer visibility. `hidden` holds hidden layer keys (default
+  // all visible). hiddenRef mirrors it so the draw effect can reapply visibility
+  // after a redraw WITHOUT taking `hidden` as a dependency (toggling must not
+  // re-render the data). panelOpen drives the collapsible layers panel.
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  const [panelOpen, setPanelOpen] = useState(true);
+  const hiddenRef = useRef(hidden);
+
+  const elementCounts = useMemo(() => {
+    const els = network.elements;
+    const out: Record<string, number> = {};
+    for (const { key } of ELEMENT_LAYERS) out[key] = els?.[key]?.length ?? 0;
+    return out;
+  }, [network]);
+  const availableLayers = useMemo(() => ELEMENT_LAYERS.filter((l) => elementCounts[l.key] > 0), [elementCounts]);
+
+  const toggleLayer = (key: string) =>
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
+  // Reapply visibility on toggle only (no data redraw); keep the ref current.
+  useEffect(() => {
+    hiddenRef.current = hidden;
+    applyLayerVisibility(svgRef.current, hidden);
+  }, [hidden]);
 
   // Re-render on container resize (rAF-throttled).
   useEffect(() => {
@@ -268,11 +381,16 @@ export default function NetworkViewer({
     // links' surfaces merge at junctions instead of showing casing seams.
     const gCasing = g.append("g");
     const gFill = g.append("g");
-    const gMarking = g.append("g");
+    const gMarking = g.append("g").attr("data-layer", LANE_MARKINGS_KEY);
     const gConnector = g.append("g");
     const gNodePoly = g.append("g");
+    const gElements = g.append("g"); // static elements: above roads/junctions, below selection
     const gOverlay = g.append("g");
     const gHit = g.append("g");
+    // Element hover targets sit ABOVE gHit so a glyph's tooltip wins over the
+    // wide (invisible) link/node hit shapes it overlaps. Same data-layer tags as
+    // the visible groups, so one visibility flip hides both.
+    const gElementsHit = g.append("g");
 
     // Click-vs-drag guard: d3.zoom swallows most post-drag clicks, but track the
     // pointer-down position as a belt-and-suspenders check.
@@ -404,6 +522,374 @@ export default function NetworkViewer({
         .style("pointer-events", "none");
     });
 
+    // Element layer — static network furniture (signal heads, detectors, PT
+    // stops, …), above roads/junctions and below selection. Each class is a
+    // data-layer sub-group so the layers panel toggles it by display flip.
+    // Everything is projected with the SAME uniform fit as the roads (projX/
+    // projY, pxPerMeter) and sized in metres so it scales with zoom like road
+    // furniture. angle handling: dirsFromAngle() returns SCREEN-space vectors
+    // (the Y-flip negates the raw angle). Guards: skip non-finite coords; fall
+    // back to angle 0 / default lane width; never crash on missing lists.
+    const els = network.elements;
+    if (els) {
+      const pxM = pxPerMeter;
+      const linkById = new Map(network.links.map((l) => [String(l.id), l]));
+      const laneWidthMFor = (linkId?: string | null): number => {
+        const l = linkId != null ? linkById.get(String(linkId)) : undefined;
+        return l ? laneWidthMeters(l) : DEFAULT_LANE_M;
+      };
+      const roadWidthMFor = (linkId?: string | null): number => {
+        const l = linkId != null ? linkById.get(String(linkId)) : undefined;
+        return l ? linkWidthMeters(l) : DEFAULT_LANE_M;
+      };
+      const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+      const P = (x: number, y: number): Pt => [projX(x), projY(y)];
+
+      // Type labels for tooltips (also the panel labels).
+      const typeLabel: Record<string, string> = {};
+      for (const l of ELEMENT_LAYERS) typeLabel[l.key] = t(l.ko, l.en);
+
+      // One visible sub-group per class in gElements, plus a matching hover-target
+      // sub-group per class in gElementsHit — both tagged with the same data-layer
+      // key so a single visibility flip toggles the glyph and its hit shape.
+      const sub: Record<string, d3.Selection<SVGGElement, unknown, null, undefined>> = {};
+      const subHit: Record<string, d3.Selection<SVGGElement, unknown, null, undefined>> = {};
+      for (const key of ELEMENT_Z_ORDER) {
+        sub[key] = gElements.append("g").attr("data-layer", key);
+        subHit[key] = gElementsHit.append("g").attr("data-layer", key);
+      }
+
+      function attachTip<GE extends d3.BaseType>(sel: d3.Selection<GE, unknown, null, undefined>, text: string) {
+        sel
+          .on("mousemove", (event: MouseEvent) => setTooltip({ x: event.clientX, y: event.clientY, text }))
+          .on("mouseleave", () => setTooltip(null));
+      }
+      const hitPoint = (key: keyof NetworkElements, pt: Pt, rPx: number, text: string) => {
+        attachTip(subHit[key].append("circle").attr("cx", pt[0]).attr("cy", pt[1]).attr("r", Math.max(rPx, 9)).attr("fill", "transparent"), text);
+      };
+      const hitSegment = (key: keyof NetworkElements, a: Pt, b: Pt, text: string) => {
+        attachTip(
+          subHit[key]
+            .append("line")
+            .attr("x1", a[0])
+            .attr("y1", a[1])
+            .attr("x2", b[0])
+            .attr("y2", b[1])
+            .attr("stroke", "transparent")
+            .attr("stroke-width", 14)
+            .attr("stroke-linecap", "round"),
+          text,
+        );
+      };
+
+      // signal_heads — short bar perpendicular across the lane, muted red, ~1 lane wide.
+      for (const s of els.signal_heads ?? []) {
+        if (!finite(s.x) || !finite(s.y)) continue;
+        const c = P(s.x, s.y);
+        const { across } = dirsFromAngle(s.angle);
+        const half = Math.max((laneWidthMFor(s.link) * pxM) / 2, 5);
+        const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
+        const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
+        sub.signal_heads
+          .append("line")
+          .attr("x1", a[0])
+          .attr("y1", a[1])
+          .attr("x2", b[0])
+          .attr("y2", b[1])
+          .attr("stroke", SIGNAL_RED)
+          .attr("stroke-width", Math.max(pxM * 0.6, 2.5))
+          .attr("stroke-linecap", "round")
+          .style("pointer-events", "none");
+        hitSegment("signal_heads", a, b, `${typeLabel.signal_heads} ${s.id} · ${s.name}`);
+      }
+
+      // vehicle_inputs — small filled entry arrow at link start, pointing along travel.
+      for (const v of els.vehicle_inputs ?? []) {
+        if (!finite(v.x) || !finite(v.y)) continue;
+        const c = P(v.x, v.y);
+        const { along, across } = dirsFromAngle(v.angle);
+        const L = Math.max(roadWidthMFor(v.link) * pxM * 0.7, 11);
+        const w = L * 0.42;
+        const tip: Pt = [c[0] + along[0] * L, c[1] + along[1] * L];
+        const bl: Pt = [c[0] + across[0] * w, c[1] + across[1] * w];
+        const br: Pt = [c[0] - across[0] * w, c[1] - across[1] * w];
+        sub.vehicle_inputs
+          .append("polygon")
+          .attr("points", `${tip[0]},${tip[1]} ${bl[0]},${bl[1]} ${br[0]},${br[1]}`)
+          .attr("fill", ELEMENT_SLATE)
+          .attr("fill-opacity", 0.85)
+          .style("pointer-events", "none");
+        hitPoint("vehicle_inputs", [(c[0] + tip[0]) / 2, (c[1] + tip[1]) / 2], Math.max(w, 9), `${typeLabel.vehicle_inputs} ${v.id} · ${v.name}`);
+      }
+
+      // reduced_speed_areas — translucent amber band along the lane (x,y)->(end).
+      for (const r of els.reduced_speed_areas ?? []) {
+        if (!finite(r.x) || !finite(r.y)) continue;
+        const p1 = P(r.x, r.y);
+        let p2: Pt;
+        if (finite(r.end_x) && finite(r.end_y)) {
+          p2 = P(r.end_x as number, r.end_y as number);
+        } else if (r.length != null) {
+          const { along } = dirsFromAngle(r.angle);
+          p2 = [p1[0] + along[0] * r.length * pxM, p1[1] + along[1] * r.length * pxM];
+        } else {
+          continue;
+        }
+        sub.reduced_speed_areas
+          .append("line")
+          .attr("x1", p1[0])
+          .attr("y1", p1[1])
+          .attr("x2", p2[0])
+          .attr("y2", p2[1])
+          .attr("stroke", RSA_AMBER)
+          .attr("stroke-width", Math.max(laneWidthMFor(r.link) * pxM, 6))
+          .attr("stroke-opacity", 0.22)
+          .attr("stroke-linecap", "butt")
+          .style("pointer-events", "none");
+        hitSegment("reduced_speed_areas", p1, p2, `${typeLabel.reduced_speed_areas} ${r.id} · ${r.name}`);
+      }
+
+      // des_speed_decisions — thin dashed gate line across the full roadway.
+      for (const d of els.des_speed_decisions ?? []) {
+        if (!finite(d.x) || !finite(d.y)) continue;
+        const c = P(d.x, d.y);
+        const { across } = dirsFromAngle(d.angle);
+        const half = Math.max((roadWidthMFor(d.link) * pxM) / 2, 6);
+        const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
+        const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
+        sub.des_speed_decisions
+          .append("line")
+          .attr("x1", a[0])
+          .attr("y1", a[1])
+          .attr("x2", b[0])
+          .attr("y2", b[1])
+          .attr("stroke", ELEMENT_SLATE)
+          .attr("stroke-width", 1.3)
+          .attr("stroke-dasharray", "4 3")
+          .attr("stroke-opacity", 0.85)
+          .attr("stroke-linecap", "round")
+          .style("pointer-events", "none");
+        hitSegment("des_speed_decisions", a, b, `${typeLabel.des_speed_decisions} ${d.id} · ${d.name}`);
+      }
+
+      // detectors — small outlined rectangle on the lane (length along, ~lane across).
+      for (const dt of els.detectors ?? []) {
+        if (!finite(dt.x) || !finite(dt.y)) continue;
+        const p1 = P(dt.x, dt.y);
+        let alongVec = dirsFromAngle(dt.angle).along;
+        let lenPx: number;
+        if (finite(dt.end_x) && finite(dt.end_y)) {
+          const pe = P(dt.end_x as number, dt.end_y as number);
+          const dxp = pe[0] - p1[0];
+          const dyp = pe[1] - p1[1];
+          lenPx = Math.hypot(dxp, dyp);
+          if (lenPx > EPS) alongVec = [dxp / lenPx, dyp / lenPx];
+        } else {
+          lenPx = (dt.length ?? 2) * pxM;
+        }
+        lenPx = Math.max(lenPx, 6);
+        const acrossVec: Pt = [-alongVec[1], alongVec[0]];
+        const half = Math.max((laneWidthMFor(dt.link) * pxM) / 2, 4);
+        const center: Pt = [p1[0] + alongVec[0] * (lenPx / 2), p1[1] + alongVec[1] * (lenPx / 2)];
+        const hx = alongVec[0] * (lenPx / 2);
+        const hy = alongVec[1] * (lenPx / 2);
+        const wx = acrossVec[0] * half;
+        const wy = acrossVec[1] * half;
+        const corners: Pt[] = [
+          [center[0] - hx - wx, center[1] - hy - wy],
+          [center[0] + hx - wx, center[1] + hy - wy],
+          [center[0] + hx + wx, center[1] + hy + wy],
+          [center[0] - hx + wx, center[1] - hy + wy],
+        ];
+        sub.detectors
+          .append("polygon")
+          .attr("points", corners.map((p) => p.join(",")).join(" "))
+          .attr("fill", "none")
+          .attr("stroke", ELEMENT_SLATE)
+          .attr("stroke-width", 1.2)
+          .attr("stroke-opacity", 0.9)
+          .style("pointer-events", "none");
+        hitPoint("detectors", center, Math.max(half, 9), `${typeLabel.detectors} ${dt.id} · ${dt.name}`);
+      }
+
+      // data_collection_points — short solid tick across the lane.
+      for (const dc of els.data_collection_points ?? []) {
+        if (!finite(dc.x) || !finite(dc.y)) continue;
+        const c = P(dc.x, dc.y);
+        const { across } = dirsFromAngle(dc.angle);
+        const half = Math.max((laneWidthMFor(dc.link) * pxM) / 2, 5);
+        const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
+        const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
+        sub.data_collection_points
+          .append("line")
+          .attr("x1", a[0])
+          .attr("y1", a[1])
+          .attr("x2", b[0])
+          .attr("y2", b[1])
+          .attr("stroke", ELEMENT_SLATE)
+          .attr("stroke-width", Math.max(pxM * 0.35, 1.6))
+          .attr("stroke-linecap", "round")
+          .attr("stroke-opacity", 0.9)
+          .style("pointer-events", "none");
+        hitSegment("data_collection_points", a, b, `${typeLabel.data_collection_points} ${dc.id} · ${dc.name}`);
+      }
+
+      // traveltime_sections_geo — paired gates across the road: start = single
+      // solid line, end = doubled (second parallel line) to distinguish it.
+      for (const tt of els.traveltime_sections_geo ?? []) {
+        const drawGate = (ep: NetworkElements["traveltime_sections_geo"][number]["start"] | undefined, doubled: boolean) => {
+          if (!ep || !finite(ep.x) || !finite(ep.y)) return;
+          const c = P(ep.x, ep.y);
+          const { across, along } = dirsFromAngle(ep.angle);
+          const half = Math.max((roadWidthMFor(ep.link) * pxM) / 2, 6);
+          const line = (off: number): [Pt, Pt] => {
+            const cc: Pt = [c[0] + along[0] * off, c[1] + along[1] * off];
+            const a: Pt = [cc[0] - across[0] * half, cc[1] - across[1] * half];
+            const b: Pt = [cc[0] + across[0] * half, cc[1] + across[1] * half];
+            sub.traveltime_sections_geo
+              .append("line")
+              .attr("x1", a[0])
+              .attr("y1", a[1])
+              .attr("x2", b[0])
+              .attr("y2", b[1])
+              .attr("stroke", TTS_CYAN)
+              .attr("stroke-width", 1.6)
+              .attr("stroke-opacity", 0.9)
+              .attr("stroke-linecap", "round")
+              .style("pointer-events", "none");
+            return [a, b];
+          };
+          const [a, b] = line(0);
+          if (doubled) line(Math.max(pxM * 1.2, 3));
+          hitSegment("traveltime_sections_geo", a, b, `${typeLabel.traveltime_sections_geo} ${tt.id} · ${tt.name}`);
+        };
+        drawGate(tt.start, false);
+        drawGate(tt.end, true);
+      }
+
+      // queue_counters — small hollow circle + short upstream stem.
+      for (const q of els.queue_counters ?? []) {
+        if (!finite(q.x) || !finite(q.y)) continue;
+        const c = P(q.x, q.y);
+        const { along } = dirsFromAngle(q.angle);
+        const laneW = laneWidthMFor(q.link);
+        const r = Math.max(laneW * pxM * 0.28, 3);
+        const stem = Math.max(laneW * pxM * 0.5, 5);
+        sub.queue_counters
+          .append("circle")
+          .attr("cx", c[0])
+          .attr("cy", c[1])
+          .attr("r", r)
+          .attr("fill", "none")
+          .attr("stroke", ELEMENT_SLATE)
+          .attr("stroke-width", 1.3)
+          .attr("stroke-opacity", 0.9)
+          .style("pointer-events", "none");
+        const s0: Pt = [c[0] - along[0] * r, c[1] - along[1] * r];
+        const s1: Pt = [c[0] - along[0] * (r + stem), c[1] - along[1] * (r + stem)];
+        sub.queue_counters
+          .append("line")
+          .attr("x1", s0[0])
+          .attr("y1", s0[1])
+          .attr("x2", s1[0])
+          .attr("y2", s1[1])
+          .attr("stroke", ELEMENT_SLATE)
+          .attr("stroke-width", 1.3)
+          .attr("stroke-opacity", 0.9)
+          .attr("stroke-linecap", "round")
+          .style("pointer-events", "none");
+        hitPoint("queue_counters", c, Math.max(r, 9), `${typeLabel.queue_counters} ${q.id} · ${q.name}`);
+      }
+
+      // stop_signs — short thick bar across the lane, muted red (thicker + shorter
+      // than a signal head so the two read differently).
+      for (const st of els.stop_signs ?? []) {
+        if (!finite(st.x) || !finite(st.y)) continue;
+        const c = P(st.x, st.y);
+        const { across } = dirsFromAngle(st.angle);
+        const half = Math.max(((laneWidthMFor(st.link) * pxM) / 2) * 0.7, 4);
+        const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
+        const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
+        sub.stop_signs
+          .append("line")
+          .attr("x1", a[0])
+          .attr("y1", a[1])
+          .attr("x2", b[0])
+          .attr("y2", b[1])
+          .attr("stroke", SIGNAL_RED)
+          .attr("stroke-width", Math.max(pxM * 0.9, 3.5))
+          .attr("stroke-linecap", "butt")
+          .style("pointer-events", "none");
+        hitSegment("stop_signs", a, b, `${typeLabel.stop_signs} ${st.id} · ${st.name}`);
+      }
+
+      // pt_stops — elongated hollow rectangle (bus bay) alongside the lane.
+      for (const pt of els.pt_stops ?? []) {
+        if (!finite(pt.x) || !finite(pt.y)) continue;
+        const p1 = P(pt.x, pt.y);
+        let alongVec = dirsFromAngle(pt.angle).along;
+        let lenPx: number;
+        if (finite(pt.end_x) && finite(pt.end_y)) {
+          const pe = P(pt.end_x as number, pt.end_y as number);
+          const dxp = pe[0] - p1[0];
+          const dyp = pe[1] - p1[1];
+          lenPx = Math.hypot(dxp, dyp);
+          if (lenPx > EPS) alongVec = [dxp / lenPx, dyp / lenPx];
+        } else {
+          lenPx = (pt.length ?? 15) * pxM;
+        }
+        lenPx = Math.max(lenPx, 8);
+        const acrossVec: Pt = [-alongVec[1], alongVec[0]];
+        const laneW = laneWidthMFor(pt.link);
+        const bayW = Math.max(laneW * pxM * 0.8, 4);
+        const off = Math.max(laneW * pxM * 0.55, 4); // offset sideways so it sits alongside the lane
+        const ov: Pt = [acrossVec[0] * off, acrossVec[1] * off];
+        const base1: Pt = [p1[0] + ov[0], p1[1] + ov[1]];
+        const base2: Pt = [p1[0] + alongVec[0] * lenPx + ov[0], p1[1] + alongVec[1] * lenPx + ov[1]];
+        const w2: Pt = [acrossVec[0] * (bayW / 2), acrossVec[1] * (bayW / 2)];
+        const corners: Pt[] = [
+          [base1[0] - w2[0], base1[1] - w2[1]],
+          [base2[0] - w2[0], base2[1] - w2[1]],
+          [base2[0] + w2[0], base2[1] + w2[1]],
+          [base1[0] + w2[0], base1[1] + w2[1]],
+        ];
+        sub.pt_stops
+          .append("polygon")
+          .attr("points", corners.map((p) => p.join(",")).join(" "))
+          .attr("fill", "none")
+          .attr("stroke", ELEMENT_SLATE)
+          .attr("stroke-width", 1.2)
+          .attr("stroke-opacity", 0.9)
+          .style("pointer-events", "none");
+        hitSegment("pt_stops", base1, base2, `${typeLabel.pt_stops} ${pt.id} · ${pt.name}`);
+      }
+
+      // ped_areas — translucent warm-slate polygon + dotted outline (distinct from
+      // the node junction polygons). A matching transparent polygon in the top hit
+      // layer carries the tooltip (the visible one stays pointer-events:none).
+      for (const pa of els.ped_areas ?? []) {
+        if (!pa.polygon || pa.polygon.length < 3) continue;
+        const proj = pa.polygon.filter((p) => finite(p[0]) && finite(p[1])).map((p) => P(p[0], p[1]));
+        if (proj.length < 3) continue;
+        const pointsAttr = proj.map((p) => p.join(",")).join(" ");
+        sub.ped_areas
+          .append("polygon")
+          .attr("points", pointsAttr)
+          .attr("fill", PED_FILL)
+          .attr("fill-opacity", 0.16)
+          .attr("stroke", PED_FILL)
+          .attr("stroke-opacity", 0.85)
+          .attr("stroke-width", 1.2)
+          .attr("stroke-dasharray", "2 2")
+          .attr("stroke-linejoin", "round")
+          .style("pointer-events", "none");
+        attachTip(
+          subHit.ped_areas.append("polygon").attr("points", pointsAttr).attr("fill", "transparent"),
+          `${typeLabel.ped_areas} ${pa.id} · ${pa.name}`,
+        );
+      }
+    }
+
     // Layer 6 — selection rings + center dots. Dot keeps its LOS fill only when
     // the node has no polygon; polygon nodes get a small neutral center marker.
     network.nodes.forEach((node) => {
@@ -494,6 +980,11 @@ export default function NetworkViewer({
       });
     svg.call(zoom);
     svg.call(zoom.transform, zoomTransformRef.current);
+
+    // Reapply layer visibility after this fresh redraw (groups were just rebuilt);
+    // read the ref so this effect never depends on `hidden` (toggling stays a
+    // pure display flip, not a data re-render).
+    applyLayerVisibility(svgRef.current, hiddenRef.current);
   }, [network, nodeLosMap, selectedNodeSet, selectedLinkId, onNodeClick, onLinkClick, t, sizeNonce]);
 
   return (
@@ -542,6 +1033,45 @@ export default function NetworkViewer({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {!isEmpty && (
+        <div className="absolute right-3 top-3 z-10 select-none rounded-lg border border-slate-200 bg-surface/80 text-[11px] text-slate-600 backdrop-blur-sm">
+          <button
+            type="button"
+            onClick={() => setPanelOpen((o) => !o)}
+            aria-expanded={panelOpen}
+            className="flex w-full items-center justify-between gap-4 px-3 py-2 text-left font-semibold text-slate-500"
+          >
+            <span>{t("표시 레이어", "Layers")}</span>
+            <span aria-hidden="true" className="text-slate-400">{panelOpen ? "−" : "+"}</span>
+          </button>
+          {panelOpen && (
+            <div className="flex flex-col gap-1 border-t border-slate-200/70 px-3 py-2">
+              {availableLayers.map(({ key, ko, en }) => (
+                <label key={key} className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    className="h-3 w-3 accent-[#4c8dff]"
+                    checked={!hidden.has(key)}
+                    onChange={() => toggleLayer(key)}
+                  />
+                  <span>{t(ko, en)}</span>
+                  <span className="ml-auto tabular-nums text-slate-400">{elementCounts[key]}</span>
+                </label>
+              ))}
+              <label className="mt-0.5 flex cursor-pointer items-center gap-2 border-t border-slate-200/70 pt-1.5">
+                <input
+                  type="checkbox"
+                  className="h-3 w-3 accent-[#4c8dff]"
+                  checked={!hidden.has(LANE_MARKINGS_KEY)}
+                  onChange={() => toggleLayer(LANE_MARKINGS_KEY)}
+                />
+                <span>{t("차선 표시", "Lane markings")}</span>
+              </label>
+            </div>
+          )}
         </div>
       )}
 

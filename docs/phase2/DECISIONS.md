@@ -993,3 +993,27 @@ as an independent placed object — no new information over what links already c
 of every inferred schema (all ten types beyond signal heads/reduced speed areas) against a real
 Vissim-exported `.inpx` remains pending the Windows/Vissim box, per the same caveat the
 2026-07-24 connector entry already carries.
+
+---
+
+## 2026-07-26 — Tier 1 B+C: road-surface + element-layer rendering decisions
+
+- **Uniform-scale fit** replaced NetworkViewer's independent x/y linear fit — the old fit
+  anisotropically stretched every network; widths/angles are only correct under one scale.
+- **Meter-true widths**: road stroke = width_total × pxPerMeter (2.5px floor at base fit),
+  living inside the zoomed <g> so zoom widens roads (Vissim behavior). Casing-under-fill
+  drawn per-layer (all casings, then all fills) so touching surfaces merge at junctions.
+  Lane dividers via offset polylines (averaged segment normals, miter clamped ≤2×); edge
+  lines deliberately skipped (casing reads as edge). Per-lane dividers shipped — no
+  centerline fallback needed on the showcase geometry incl. roundabout arcs.
+- **Palette addition (sanctioned)**: four muted non-slate hues for element semantics only —
+  SIGNAL_RED #c25450 (signal heads/stop signs), RSA_AMBER #b9975a, TTS_CYAN #6f97a3,
+  PED_FILL #b9b2a3. Everything else stays slate + ACCENT + LOS_COLORS.
+- **Element hover targets live in a separate top z-group** (gElementsHit, data-layer-tagged
+  same as their glyph groups) because link/node hit-lines above them would swallow hover.
+  Layer toggling flips the SVG display attribute on both groups — no redraw; draw effect
+  reapplies visibility from a ref so redraws never fight toggles.
+- **Angle convention**: element angles are raw math-convention degrees; screen rendering
+  negates via along=(cos a, −sin a) to account for the Y-flip. Verified against the Harbor
+  EB signal head (angle 0 → vertical bar across the EB road) and the NB stop sign (90 →
+  horizontal bar).
