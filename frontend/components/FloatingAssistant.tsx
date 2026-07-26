@@ -565,7 +565,22 @@ export default function FloatingAssistant() {
         // turn in this open conversation, if any (see agentSessionId's own
         // comment) -- this is what makes a multi-turn clarification actually
         // work in the UI instead of every send starting a fresh session.
-        { message: text, response_language: lang, session_id: agentSessionId ?? undefined },
+        {
+          message: text,
+          response_language: lang,
+          session_id: agentSessionId ?? undefined,
+          // P7: the same on-screen selection the plain assistant path sends
+          // (P6), now also reaching the tool-executing agent -- so "이거 고쳐줘"
+          // has a referent. Re-sent on every turn (the backend replaces, never
+          // merges, so deselecting really deselects), and re-resolved server-
+          // side against this session's working copy when it has one. Context
+          // only: it names objects, it authorizes nothing -- every edit still
+          // goes through the same propose->approve card.
+          selected_scenario_ids: activePageContext?.selectedScenarioIds ?? [],
+          selected_node_ids: activePageContext?.selectedNodeIds ?? [],
+          selected_link_ids: activePageContext?.selectedLinks?.map((link) => link.id) ?? [],
+          selected_element: activePageContext?.selectedElement ?? null,
+        },
         {
           onStep: (event) => {
             hasAgentSteps = true;

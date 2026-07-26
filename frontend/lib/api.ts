@@ -806,6 +806,23 @@ export interface AgentQueryRequest {
   // here since the only source is a prior done.response.session_id, never
   // free-typed by the client.
   session_id?: string;
+  // P7: what the user has clicked in the rendered network / selected on the
+  // dashboard, forwarded so the agent knows what "이 링크 / this intersection"
+  // refers to. Same fields, same sanitization and the same re-resolution as
+  // AssistantQueryRequest's (backend/services/network_selection.py), except
+  // the agent path resolves them against THIS session's working copy when it
+  // has one, so an edited link reads back post-edit. Omitted/empty is the
+  // pre-P7 behavior exactly. Context only -- the selection never widens what
+  // the agent may do; every edit still goes through the approval card.
+  selected_scenario_ids?: string[];
+  selected_node_ids?: string[];
+  selected_link_ids?: string[];
+  selected_element?: {
+    type: string;
+    id: string;
+    name?: string;
+    link?: string | null;
+  } | null;
 }
 
 export interface AgentStep {

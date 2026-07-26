@@ -115,7 +115,12 @@ import services.agent.tools_run  # noqa: F401
 from services.agent import complexity, session_store
 from services.agent.gates import ApprovalRequired
 from services.agent.guardrails import GuardrailEngine, GuardrailReport
-from services.agent.planner import Planner, PlannerDecision, pick_language_text
+from services.agent.planner import (
+    SELECTION_CONTEXT_KEY,
+    Planner,
+    PlannerDecision,
+    pick_language_text,
+)
 from services.agent.state import AgentState, ArtifactManager, StepRecord
 from services.agent.toolkit import ToolRegistry, ToolSpec, default_registry, dispatch
 from services.agent.trace import TraceWriter
@@ -739,6 +744,7 @@ def run_agent_turn(
     engine: GuardrailEngine | None = None,
     artifact_manager: ArtifactManager | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    selection: dict[str, Any] | None = None,
 ) -> AgentTurnResult:
     """Run one full agent turn for ``message`` and return the result.
 
@@ -785,6 +791,23 @@ def run_agent_turn(
     context (including ``accumulated_warnings``), while a brand-new
     session/work dir (no ``state.json`` yet) is a no-op reload — every
     pre-M3.3 caller's behavior is unaffected.
+
+    P7 addition, optional: ``selection`` is what the user has CLICKED in the
+    rendered network for THIS turn — the compact structure
+    ``services.network_selection.build_selection_context`` produces
+    (``{"nodes", "links", "element", "scenario_ids"}``, every key optional).
+    It is surfaced to the PLANNER as one delimited block in the per-turn
+    state block (``planner.render_selection_block``) so "이 링크 차로 수
+    알려줘" has a referent.
+
+    **Selection is CONTEXT ONLY.** It deliberately does not touch the write
+    gate, the tool offer, the tier classification, or the guardrail engine's
+    preflight/postwrite: the planner must still name explicit targets in its
+    tool params, and those params are still validated exactly as before. A
+    clicked object tells the agent *which* object the sentence is about; it
+    never authorizes an action on it. ``None`` (the default, and every
+    pre-P7 caller) stores nothing and renders nothing — the prompt is
+    byte-identical to pre-P7.
     """
     target_registry = registry if registry is not None else default_registry
     target_gate: WriteGate = gate if gate is not None else RefuseAllWriteGate()
@@ -831,6 +854,17 @@ def run_agent_turn(
         state = AgentState(
             goal=message, artifacts={}, history=[], context={"language": language, "tier": tier}
         )
+
+    # P7: THIS turn's on-screen selection, set unconditionally (set-or-clear).
+    # A resumed session's state.json carries the PREVIOUS turn's selection in
+    # `context`, and the user may have clicked elsewhere — or deselected —
+    # since; the client re-sends its current selection on every turn, so the
+    # stored value is always replaced, never merged, and an absent selection
+    # actively clears the stale one rather than letting it haunt the prompt.
+    if selection:
+        state.context[SELECTION_CONTEXT_KEY] = selection
+    else:
+        state.context.pop(SELECTION_CONTEXT_KEY, None)
 
     # Snapshot BEFORE this turn's own findings can append to it, so the
     # cross-turn suffix (_append_carried_forward_warnings) only ever shows

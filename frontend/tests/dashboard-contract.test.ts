@@ -306,7 +306,7 @@ test("network preview page publishes assistant page context", () => {
   );
 });
 
-test("P6: diagram selection reaches the assistant request instead of stopping at a chip", () => {
+test("P6/P7: diagram selection reaches the assistant request AND the agent turn, not just a chip", () => {
   const networkPage = read("app/network/page.tsx");
   const dashboardPage = read("app/dashboard/page.tsx");
   const networkViewer = read("components/NetworkViewer.tsx");
@@ -340,6 +340,21 @@ test("P6: diagram selection reaches the assistant request instead of stopping at
   );
   assert.match(api, /selected_link_ids\?: string\[\]/, "expected the assistant request type to carry clicked link ids");
   assert.match(api, /selected_element\?: \{/, "expected the assistant request type to carry the clicked element");
+
+  // P7: agent mode sends the SAME selection (plus node/scenario ids, which had
+  // never reached the agent at all) on its own streamAgentQuery payload — the
+  // agent-mode branch is a separate request builder, so the P6 assertions
+  // above pass whether or not it was wired.
+  assert.match(
+    floatingAssistant,
+    /session_id: agentSessionId \?\? undefined,[\s\S]*?selected_node_ids: activePageContext\?\.selectedNodeIds \?\? \[\],\s*selected_link_ids: activePageContext\?\.selectedLinks\?\.map\(\(link\) => link\.id\) \?\? \[\],\s*selected_element: activePageContext\?\.selectedElement \?\? null,/,
+    "expected agent mode to send the on-screen selection with the agent turn",
+  );
+  assert.match(
+    api,
+    /export interface AgentQueryRequest \{[\s\S]*?selected_link_ids\?: string\[\];/,
+    "expected the agent request type to carry the on-screen selection",
+  );
 });
 
 test("P2: agent session id is broadcast and consumed for the edited-network view", () => {

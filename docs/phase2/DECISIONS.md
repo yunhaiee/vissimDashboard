@@ -1237,3 +1237,69 @@ exactly the way node ids do, and reach agent mode exactly as far as node ids do:
 Wiring page selection into the agent turn is a real feature (new request fields, a
 `run_agent_turn` parameter, planner-prompt surface), not a mirror of an existing pattern, and is
 left as its own unit rather than smuggled in here.
+
+---
+
+## 2026-07-27 — P7: the on-screen selection reaches AGENT mode (the P6 entry's "known gap", closed)
+
+**What changed.** `AgentQueryRequest` now carries the same selection the plain assistant path has
+carried since P6 — `selected_link_ids` + `selected_element` via the shared `_SelectionFieldsMixin`
+— **plus `selected_node_ids` and `selected_scenario_ids`, which had never reached the agent at
+all**. That is genuinely new capability, not a mirror of an existing path: before this, clicking
+an intersection did nothing whatsoever in agent mode (`run_agent_turn` had no context parameter;
+zero `selected_*` hits under `backend/services/agent/`). `run_agent_turn` gained one optional
+keyword, `selection: dict | None = None`, and the planner renders it as one delimited block in the
+per-turn state block.
+
+**Context only — deliberately no gate, tool, or preflight change.** The selection names objects;
+it never authorizes anything. The write gate, the tool offer, the tier classification and the
+guardrail engine's preflight/postwrite are untouched, and the planner still has to put explicit
+ids in its tool params, which the guardrails still validate. Tests pin both halves: with a link
+selected, the system prompt and the offered native tool defs are byte-identical to the
+no-selection run, and a write decision under the default refuse-all gate is still refused
+(`tool_tier_forbidden`, nothing dispatched). This is the same line P6 drew ("a naming aid, not an
+authorization channel"), restated where it now actually matters — the agent can execute.
+
+**Resolution precedence: the session's working copy, else the active dataset.** Once a session has
+a `working.inpx` (its clone plus any approved+verified edit), that is the file the user is looking
+at (P2's `/api/network?session_id=` renders exactly it) and the file every read tool in the turn is
+pointed at (`tools_network.set_active_inpx(artifact_manager.working_path)`). Resolving the
+selection against the pristine dataset instead would let the planner be told a link's *pre-edit*
+identity while its own tools report the post-edit one — the exact class of quiet inconsistency
+this repo's validation layer exists to prevent. A brand-new session has no working copy at request
+time (`_ensure_working_copy` runs later, on the worker thread under the session lock) and falls
+back to the active dataset, which is byte-identical to the clone about to be made from it. The
+resolution runs in the request handler, before the stream: pure file reads, must not sit inside the
+per-session turn lock, and its failure mode is trivially "no selection, turn proceeds".
+`network_selection.resolve_*` therefore gained an optional `inpx_path` (`None` = active, i.e. P6's
+behavior unchanged), and its parse cache went from `maxsize=2` to `4` now that working copies join
+the active dataset as resolution targets.
+
+**Compactness is a real constraint here, unlike P6.** The plain path dumps resolved selections into
+a JSON context block built ONCE per request; the planner's state block is rebuilt on EVERY loop
+iteration (up to `max_iterations`), so the same payload would be paid for repeatedly. Hence one
+short line per object rather than raw JSON — `- link 101 "Main St EB approach" lanes=3 length=280m`,
+`- node 1 "Central & Main"`, `- element vehicle_inputs 1 "Main St EB" link=101` — names truncated at
+60 chars, and worst case (6 links + 6 nodes + 1 element + 1 scenario line) still a handful of
+tokens. Ids the network does not contain are stated (`- link 9999: not found in this network`),
+never dropped, for P6's reason: the agent must be able to say "that link isn't in this network".
+Nodes resolve to `{id, name}` from the parsed `.inpx`, NOT through
+`results_reader.get_selected_node_details` (the plain path's per-direction KPI detail) — the agent
+needs the compact identity, and the KPI detail belongs in a tool result if it is wanted at all.
+The block header is ko (`[사용자가 화면에서 선택한 객체]`, the user's own UI vocabulary) with an
+English "context only — still name explicit ids in tool params" gloss on the same line, carrying
+the context-only rule into the prompt itself.
+
+**Set-or-clear, never merge.** The client re-sends its current selection on every turn. M3.3 reloads
+`state.json`, whose `context` carries the PREVIOUS turn's selection, so a turn arriving WITHOUT a
+selection actively clears the stored one — otherwise a link the user deselected would haunt every
+later prompt in that conversation. Persistence needed no new storage shape: `state.context` is
+already JSON-serialized by `session_store`, so the selection rides along with it.
+
+**`/agent/approve` replays the proposal turn's selection.** It is written into
+`pending_approval.json` next to `message`/`language` (the same "faithfully replay this exact
+request" rationale that entry above already records) and passed back into the approved re-run, so
+the approve turn's planner sees the context the proposal did. `AgentApproveRequest` deliberately
+stays as-is — the approve request identifies a pending approval, it does not re-describe the turn —
+and the replayed selection authorizes nothing: `PreapprovedWriteGate` still scopes the re-run to
+the one approved action's signature.
