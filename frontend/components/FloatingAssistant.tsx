@@ -363,6 +363,20 @@ export default function FloatingAssistant() {
     previousAgentModeRef.current = agentMode;
   }, [agentMode]);
 
+  // P2 (edited-network view + refresh): broadcast the current agent session
+  // id to the rest of the app whenever it changes -- a fresh session minted
+  // from `done.response.session_id`, an explicit reset via resetConversation
+  // (대화 초기화), or the agent-mode off->on toggle above all already call
+  // `setAgentSessionId`, so watching the state here is the one place that
+  // needs to notify listeners rather than duplicating a dispatch at every
+  // call site. Network-viewing pages (app/dashboard/page.tsx,
+  // app/network/page.tsx) listen for this to know which session's *working
+  // copy* of the network (if any) to show on refresh -- see
+  // docs/phase2/DECISIONS.md's P2 entry.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("vissim:agent-session", { detail: { sessionId: agentSessionId } }));
+  }, [agentSessionId]);
+
   // M4: explicit "start over" control -- the "panel's conversation is
   // cleared" reset trigger session continuity depends on. Aborts any
   // in-flight request first so a stale stream can never repopulate the

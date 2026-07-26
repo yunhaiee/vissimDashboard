@@ -1017,3 +1017,76 @@ Vissim-exported `.inpx` remains pending the Windows/Vissim box, per the same cav
   negates via along=(cos a, −sin a) to account for the Y-flip. Verified against the Harbor
   EB signal head (angle 0 → vertical bar across the EB road) and the NB stop sign (90 →
   horizontal bar).
+
+---
+
+## 2026-07-26 — P2: edited-network view + refresh
+
+**Context:** the agent (FloatingAssistant chat) edits a *working copy* of the active network
+at `runtime/agent_sessions/<session_id>/working.inpx` (`services.agent.state.
+ArtifactManager`); the uploaded/default `.inpx` under `runtime/uploads/current/` is never
+touched. `GET /api/network` only ever parsed that untouched active file, so an in-progress
+agent edit (e.g. an injected `reducedSpeedArea` from a speed change) was invisible in both
+network viewers (`/dashboard`'s diagram tab, `/network`). Users need a way to *see* the
+edited network without it silently overriding the default view.
+
+**Decision — session-id must be explicit, never inferred from disk.** `GET /api/network`
+gained an optional `session_id` query param; when present and it resolves to a real
+`runtime/agent_sessions/<session_id>/working.inpx`, that file is parsed instead of the active
+dataset and the response carries `"source": {"view": "working", "session_id": "<id>"}`;
+otherwise (no param, invalid param, or no working copy yet) the response is
+`"source": {"view": "active"}` exactly as before. The obvious alternative — "just parse
+whichever `working.inpx` under `runtime/agent_sessions/` has the newest mtime" — was rejected
+outright: that directory holds one subdirectory per agent turn across every eval run this
+repo has ever executed (~60 stale directories on this dev machine at the time of this unit,
+per `services/agent/sessions.py`'s TTL-sweep docstring, which only reclaims entries older
+than its 7-day-default TTL). "Most recent on disk" would routinely resolve to an unrelated
+eval/CI session instead of the user's own open chat, silently showing a stranger's edits. The
+frontend therefore threads the *specific* session id it already tracks (FloatingAssistant's
+`agentSessionId` state) through explicitly on every request.
+
+**Strict validation + no-escape guarantee.** `routers/network.py`'s new `_SESSION_ID_RE =
+re.compile(r"^[0-9a-f]{8,32}$")` is deliberately hex-only and length-capped — tighter than
+`routers/assistant.py`'s own client-input-boundary `_SESSION_ID_RE` (`^[0-9a-f]{8,64}$`),
+since this endpoint has no legitimate reason to accept anything looser than a real
+`uuid.uuid4().hex[:12]` id. A hex-only character class cannot itself encode a path separator
+or a `..` segment, so path traversal is structurally impossible before any path is even
+constructed. `_resolve_working_inpx` additionally re-checks the resolved directory with
+`Path.relative_to(SESSIONS_ROOT.resolve())` as defense in depth (never trust one guard alone
+against path construction) and never hardcodes the sessions directory — it imports
+`SESSIONS_ROOT` from `services.agent.sessions` (the same constant `main.py`'s startup TTL
+sweep already uses) rather than re-deriving `runtime/agent_sessions` a third time.
+
+**Fallback-never-500 policy.** Every failure mode — no `session_id`, a malformed one, a
+nonexistent session directory, a session with no `working.inpx` yet (e.g. one that has only
+asked read-only questions), or the file vanishing between resolution and `os.path.getmtime`
+(a race with a concurrent agent turn rewriting/rolling back the working copy) — degrades to
+`source.view == "active"` and a normal 200 response. Only a missing *active* dataset can still
+404, exactly as before this unit. A viewer asking to see an edited copy must never break worse
+than "show the default network" for any bad/missing session; "a refused edit with a clear
+reason beats a completed edit with wrong numbers" (this repo's own guardrail doctrine) reads
+equally as "a viewer falling back to the known-good default beats a 500."
+
+**On-demand only, no push/auto-sync.** The viewer shows the working copy only when the user
+explicitly clicks the new 새로고침/Refresh button next to the map/diagram toggle (dashboard) or
+the dataset banner (`/network`) — there is no live subscription, polling, or push from an
+in-progress agent turn to the open viewer. `FloatingAssistant.tsx` broadcasts its current
+`agentSessionId` via a `window` `CustomEvent("vissim:agent-session", { detail: { sessionId } })`
+whenever that state changes (new session minted from a response, an explicit 대화 초기화 reset,
+or the agent-mode off→on toggle) so the pages always know *which* session to ask for, but
+merely knowing the id does not by itself trigger a refetch — the user still has to ask to see
+it. This keeps the blast radius of a bad in-progress edit contained to "stale until the user
+asks again," never "a silently changing map underneath whatever the user is currently looking
+at."
+
+**Cache key.** The existing `_cache` dict (keyed on `(mtime, str(inpx_path), scenario_id)`)
+already differentiates by resolved path, so no separate `view` component was needed in the
+key — a working copy's path (inside its own session directory) can never collide with the
+active dataset's path or another session's working copy.
+
+**Deferred, not implemented:** no attempt to reconcile or diff the working copy against the
+active dataset beyond "which one gets parsed" — the badge (편집본 표시 중/Showing edited copy)
+is purely informational, not a diff view. `scenario_id` + `session_id` passed together is
+accepted without special-casing (scenario modifications are resolved from the *active*
+dataset's `Scenarios`/`Modifications` dirs regardless of which `.inpx` is the base tree), since
+the frontend never sends that combination today.

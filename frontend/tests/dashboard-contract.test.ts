@@ -292,3 +292,19 @@ test("network preview page publishes assistant page context", () => {
   );
   assert.match(page, /route: "\/network"/, "expected network preview page context to identify its own route");
 });
+
+test("P2: agent session id is broadcast and consumed for the edited-network view", () => {
+  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const networkPage = read("app/network/page.tsx");
+
+  assert.match(
+    floatingAssistant,
+    /window\.dispatchEvent\(new CustomEvent\("vissim:agent-session", \{ detail: \{ sessionId: agentSessionId \} \}\)\)/,
+    "expected the floating assistant to broadcast its current agent session id whenever it changes",
+  );
+  assert.match(
+    networkPage,
+    /window\.addEventListener\("vissim:agent-session", handleAgentSession\)/,
+    "expected the network preview page to listen for the broadcast agent session id",
+  );
+});

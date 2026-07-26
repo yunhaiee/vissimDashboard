@@ -23,6 +23,11 @@ export default function NetworkPage() {
   const [activeDataset, setActiveDataset] = useState<ActiveDataset | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedLinkInfo, setSelectedLinkInfo] = useState<{ id: string; name: string; isConnector: boolean } | null>(null);
+  // P2: the floating assistant's current agent session id, mirrored here via
+  // the "vissim:agent-session" event so this page's refresh button can show
+  // that session's in-progress edited working copy on demand -- see
+  // docs/phase2/DECISIONS.md's P2 entry.
+  const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
 
   // Load the raw-coordinate network on mount, and again whenever the active
   // dataset changes or a retry is requested.
@@ -31,7 +36,7 @@ export default function NetworkPage() {
     setNetwork(null);
     setError(null);
     setLoading(true);
-    fetchNetwork()
+    fetchNetwork(agentSessionId ?? undefined)
       .then((data) => {
         if (!cancelled) setNetwork(data);
       })
@@ -44,7 +49,22 @@ export default function NetworkPage() {
     return () => {
       cancelled = true;
     };
-  }, [datasetRevision, reloadNonce, t]);
+  }, [datasetRevision, reloadNonce, agentSessionId, t]);
+
+  // P2: mirror the floating assistant's current agent session id -- see
+  // FloatingAssistant.tsx's own "vissim:agent-session" dispatch effect and
+  // app/dashboard/page.tsx's matching listener.
+  useEffect(() => {
+    function handleAgentSession(event: Event) {
+      const detail = (event as CustomEvent<{ sessionId: string | null }>).detail;
+      setAgentSessionId(detail?.sessionId ?? null);
+    }
+
+    window.addEventListener("vissim:agent-session", handleAgentSession);
+    return () => {
+      window.removeEventListener("vissim:agent-session", handleAgentSession);
+    };
+  }, []);
 
   const handleDatasetChange = useCallback((dataset?: ActiveDataset) => {
     setActiveDataset(dataset ?? null);
@@ -139,9 +159,16 @@ export default function NetworkPage() {
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-[22px] font-semibold tracking-tight text-white">
-              {t("네트워크 프리뷰", "Network Preview")}
-            </h1>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-[22px] font-semibold tracking-tight text-white">
+                {t("네트워크 프리뷰", "Network Preview")}
+              </h1>
+              {network?.source?.view === "working" && (
+                <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-600">
+                  {t("편집본 표시 중", "Showing edited copy")}
+                </span>
+              )}
+            </div>
             <p className="mt-1 text-sm text-slate-600">
               {t(
                 "활성 VISSIM 데이터셋(.inpx)의 원좌표를 그대로 렌더링합니다.",
@@ -150,7 +177,14 @@ export default function NetworkPage() {
             </p>
           </div>
         </div>
-        <div className="mt-4 flex justify-end">
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => setReloadNonce((nonce) => nonce + 1)}
+            className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+          >
+            {t("새로고침", "Refresh")}
+          </button>
           <div className="w-full lg:max-w-[320px]">
             <VissimDatasetBanner onDatasetChange={handleDatasetChange} fullWidth className="h-full" />
           </div>

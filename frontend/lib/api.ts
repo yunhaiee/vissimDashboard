@@ -461,6 +461,11 @@ export interface NetworkData {
   detectors: { id: string; name: string }[];
   traveltime_sections: { id: string; name: string }[];
   elements?: NetworkElements;
+  // P2: which .inpx this response was parsed from -- "working" when a
+  // session_id was passed and that agent session has an in-progress working
+  // copy (runtime/agent_sessions/<session_id>/working.inpx), "active"
+  // otherwise (the uploaded/default dataset, unchanged).
+  source?: { view: "working" | "active"; session_id?: string };
 }
 
 export interface ActiveDataset {
@@ -1300,8 +1305,9 @@ function sleepForRetry(ms: number): Promise<void> {
   });
 }
 
-export async function fetchNetwork(): Promise<NetworkData> {
-  const r = await apiFetch("/api/network", { cache: "no-store" });
+export async function fetchNetwork(sessionId?: string): Promise<NetworkData> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  const r = await apiFetch(`/api/network${query}`, { cache: "no-store" });
   if (!r.ok) throw new Error(await readApiError(r));
   return r.json();
 }

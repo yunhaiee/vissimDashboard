@@ -148,6 +148,11 @@ export default function DashboardPage() {
   const [networkLoading, setNetworkLoading] = useState(false);
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [networkReloadNonce, setNetworkReloadNonce] = useState(0);
+  // P2: the floating assistant's current agent session id, mirrored here via
+  // the "vissim:agent-session" event so the diagram viewer can show that
+  // session's in-progress edited working copy on demand (refresh) -- see
+  // docs/phase2/DECISIONS.md's P2 entry.
+  const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
   const requestSerial = useRef(0);
   const loadSerial = useRef(0);
   // Auto-seed a default intersection once per dataset so the performance and
@@ -246,6 +251,23 @@ export default function DashboardPage() {
   }, [clearDashboardData, reloadScenariosAndValidation, t]);
 
   useEffect(() => loadActiveDataset(), [loadActiveDataset]);
+
+  // P2: mirror the floating assistant's current agent session id -- set on a
+  // fresh agent turn, cleared on a session reset/agent-mode toggle -- so the
+  // diagram viewer's refresh button knows which session's working copy (if
+  // any) to request. See FloatingAssistant.tsx's own "vissim:agent-session"
+  // dispatch effect.
+  useEffect(() => {
+    function handleAgentSession(event: Event) {
+      const detail = (event as CustomEvent<{ sessionId: string | null }>).detail;
+      setAgentSessionId(detail?.sessionId ?? null);
+    }
+
+    window.addEventListener("vissim:agent-session", handleAgentSession);
+    return () => {
+      window.removeEventListener("vissim:agent-session", handleAgentSession);
+    };
+  }, []);
 
   // The AI curation answer (headline + insight cards + focus mode) is only
   // valid for the scenario set it was computed against; changing which
@@ -423,7 +445,7 @@ export default function DashboardPage() {
     setNetwork(null);
     setNetworkError(null);
     setNetworkLoading(true);
-    fetchNetwork()
+    fetchNetwork(agentSessionId ?? undefined)
       .then((data) => {
         if (!cancelled) setNetwork(data);
       })
@@ -436,7 +458,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [datasetRevision, hasRequestedDiagram, networkReloadNonce, t]);
+  }, [datasetRevision, hasRequestedDiagram, networkReloadNonce, agentSessionId, t]);
 
   const handleDatasetChange = useCallback((dataset?: ActiveDataset) => {
     setActiveDataset(dataset ?? null);
@@ -585,7 +607,27 @@ export default function DashboardPage() {
               title={t("지도 기반 교차로 선택", "Map-Based Intersection Selection")}
               subtitle={t("지도 또는 도식 보기에서 비교할 교차로를 최대 6개까지 선택합니다.", "Select up to six intersections to compare, in map or diagram view.")}
             />
-            <MapViewToggle view={mapView} onChange={handleMapViewChange} />
+            <div className="flex shrink-0 items-center gap-2">
+              {network?.source?.view === "working" && (
+                <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-600">
+                  {t("편집본 표시 중", "Showing edited copy")}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  // Also arms the (otherwise lazy) diagram fetch effect, so a
+                  // refresh click works even before the diagram view has
+                  // ever been opened.
+                  setHasRequestedDiagram(true);
+                  setNetworkReloadNonce((nonce) => nonce + 1);
+                }}
+                className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+              >
+                {t("새로고침", "Refresh")}
+              </button>
+              <MapViewToggle view={mapView} onChange={handleMapViewChange} />
+            </div>
           </div>
           <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_460px]">
             <div className="relative">
