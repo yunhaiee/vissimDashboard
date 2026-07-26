@@ -25,6 +25,7 @@ import {
   type SimulationResultsResponse,
   type VissimComToolStatus,
 } from "@/lib/api";
+import { elementTypeLabel, linkKindLabel, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 
 // M2.3: lifecycle of a write-approval card attached to an agent-mode
 // message. "pending" -> user has not acted yet (Run/Cancel both enabled);
@@ -72,6 +73,14 @@ type AssistantPageContext = {
   selectedScenarioNames?: string[];
   selectedNodeIds?: string[];
   selectedNodeNames?: string[];
+  // P6: what the user clicked in the rendered network. Both are published by
+  // /network and /dashboard and forwarded to the backend as
+  // selected_link_ids/selected_element, so "이 도로" / "this signal" resolves to
+  // a real object instead of the user having to type an id. `selectedLinks`
+  // carries 0-or-1 entries today (single-select) but is an array so a future
+  // multi-select needs no context-shape change.
+  selectedLinks?: NetworkLinkRef[];
+  selectedElement?: NetworkElementRef | null;
   dataset?: {
     filename?: string;
     source?: string;
@@ -363,6 +372,20 @@ export default function FloatingAssistant() {
     previousAgentModeRef.current = agentMode;
   }, [agentMode]);
 
+  // P2 (edited-network view + refresh): broadcast the current agent session
+  // id to the rest of the app whenever it changes -- a fresh session minted
+  // from `done.response.session_id`, an explicit reset via resetConversation
+  // (대화 초기화), or the agent-mode off->on toggle above all already call
+  // `setAgentSessionId`, so watching the state here is the one place that
+  // needs to notify listeners rather than duplicating a dispatch at every
+  // call site. Network-viewing pages (app/dashboard/page.tsx,
+  // app/network/page.tsx) listen for this to know which session's *working
+  // copy* of the network (if any) to show on refresh -- see
+  // docs/phase2/DECISIONS.md's P2 entry.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("vissim:agent-session", { detail: { sessionId: agentSessionId } }));
+  }, [agentSessionId]);
+
   // M4: explicit "start over" control -- the "panel's conversation is
   // cleared" reset trigger session continuity depends on. Aborts any
   // in-flight request first so a stale stream can never repopulate the
@@ -429,6 +452,12 @@ export default function FloatingAssistant() {
           message: text,
           selected_scenario_ids: activePageContext?.selectedScenarioIds ?? [],
           selected_node_ids: activePageContext?.selectedNodeIds ?? [],
+          // P6: whatever the user clicked in the rendered network travels with
+          // the message, so "이 도로 차로 수 알려줘" needs no id typed by hand.
+          // The backend re-resolves these against the parsed .inpx and caps/
+          // sanitizes them at its own boundary — nothing here is trusted.
+          selected_link_ids: activePageContext?.selectedLinks?.map((link) => link.id) ?? [],
+          selected_element: activePageContext?.selectedElement ?? null,
           // Consent to run a real VISSIM change is never inferred from the
           // wording of the message (that used to be a client-side keyword
           // match a suggested starter chip could trigger by accident). The
@@ -536,7 +565,22 @@ export default function FloatingAssistant() {
         // turn in this open conversation, if any (see agentSessionId's own
         // comment) -- this is what makes a multi-turn clarification actually
         // work in the UI instead of every send starting a fresh session.
-        { message: text, response_language: lang, session_id: agentSessionId ?? undefined },
+        {
+          message: text,
+          response_language: lang,
+          session_id: agentSessionId ?? undefined,
+          // P7: the same on-screen selection the plain assistant path sends
+          // (P6), now also reaching the tool-executing agent -- so "이거 고쳐줘"
+          // has a referent. Re-sent on every turn (the backend replaces, never
+          // merges, so deselecting really deselects), and re-resolved server-
+          // side against this session's working copy when it has one. Context
+          // only: it names objects, it authorizes nothing -- every edit still
+          // goes through the same propose->approve card.
+          selected_scenario_ids: activePageContext?.selectedScenarioIds ?? [],
+          selected_node_ids: activePageContext?.selectedNodeIds ?? [],
+          selected_link_ids: activePageContext?.selectedLinks?.map((link) => link.id) ?? [],
+          selected_element: activePageContext?.selectedElement ?? null,
+        },
         {
           onStep: (event) => {
             hasAgentSteps = true;
@@ -1991,6 +2035,17 @@ function buildRouteAssistantContext(pathname: string, t: Translate): RouteAssist
     };
   }
 
+  if (pathname.startsWith("/network")) {
+    return {
+      label: t("\ub124\ud2b8\uc6cc\ud06c \ud504\ub9ac\ubdf0 \ucee8\ud14d\uc2a4\ud2b8", "Network preview context"),
+      starters: [
+        t("\ud604\uc7ac \uc120\ud0dd\ub41c \uad50\ucc28\ub85c\uc640 \ub9c1\ud06c\uac00 \ubb34\uc5c7\uc778\uc9c0 \uc54c\ub824\uc918.", "Tell me which intersections and links are currently selected."),
+        t("\uc774 \ub370\uc774\ud130\uc14b\uc758 \ub124\ud2b8\uc6cc\ud06c \uad6c\uc870\ub97c \uc694\uc57d\ud574\uc918.", "Summarize the network structure of this dataset."),
+        t("\ub3c4\uc2dd\uc5d0\uc11c \uc5b4\ub5a4 \ub178\ub4dc\ub97c \ud074\ub9ad\ud574\uc57c \uad50\ucc28\ub85c \uc131\ub2a5\uc744 \ube44\uad50\ud560 \uc218 \uc788\ub294\uc9c0 \uc54c\ub824\uc918.", "Tell me which nodes I should click to compare intersection performance."),
+      ],
+    };
+  }
+
   return {
     label: t("\ud398\uc774\uc9c0 \ucee8\ud14d\uc2a4\ud2b8", "Page context"),
     starters: DEFAULT_STARTERS.map((starter) => t(starter.ko, starter.en)),
@@ -2016,6 +2071,16 @@ function buildContextChips(context: AssistantPageContext | null, t: Translate): 
   }
   if (context.selectedNodeIds?.length) {
     chips.push(t(`${context.selectedNodeIds.length}\uac1c \ub178\ub4dc`, `${context.selectedNodeIds.length} nodes`, `${context.selectedNodeIds.length} \u30ce\u30fc\u30c9`));
+  }
+  // P6: one chip per clicked diagram object, so the user can see exactly what
+  // the next message will carry. Labels reuse the viewer's own type vocabulary
+  // (lib/networkElements) — 연결로/링크 and the 11 element-class labels.
+  for (const link of context.selectedLinks ?? []) {
+    chips.push(`${linkKindLabel(link.isConnector, t)} ${link.name || link.id}`);
+  }
+  if (context.selectedElement) {
+    const element = context.selectedElement;
+    chips.push(`${elementTypeLabel(element.type, t)} ${element.name || element.id}`);
   }
   if (context.selectedScenarioNames?.length === 1) {
     chips.push(context.selectedScenarioNames[0]);

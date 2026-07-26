@@ -295,11 +295,177 @@ export interface ScenarioMeta {
   color: string;
 }
 
+// Phase 3 Tier 1: static network elements resolved server-side (inpx_parser.py's
+// point_at_pos/lane_offset_point) to absolute placement, so the frontend never
+// has to reimplement polyline/lane math. Every list on NetworkElements is
+// always present (possibly empty); elements referencing unknown links are
+// dropped server-side rather than shipped with null coordinates.
+export interface NetworkElementEndpoint {
+  link: string;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface SignalHeadElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+  sg: string | null;
+  sc: string | null;
+}
+
+export interface VehicleInputElement {
+  id: string;
+  name: string;
+  link: string;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface ReducedSpeedAreaElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+  length: number | null;
+  end_x?: number;
+  end_y?: number;
+}
+
+export interface DesSpeedDecisionElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface DetectorElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+  length: number | null;
+  end_x?: number;
+  end_y?: number;
+}
+
+export interface DataCollectionPointElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface TravelTimeSectionGeoElement {
+  id: string;
+  name: string;
+  start: NetworkElementEndpoint;
+  end: NetworkElementEndpoint;
+}
+
+export interface QueueCounterElement {
+  id: string;
+  name: string;
+  link: string;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface StopSignElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+export interface PtStopElement {
+  id: string;
+  name: string;
+  link: string;
+  lane: number;
+  pos: number;
+  x: number;
+  y: number;
+  angle: number;
+  length: number | null;
+  end_x?: number;
+  end_y?: number;
+}
+
+export interface PedAreaElement {
+  id: string;
+  name: string;
+  polygon: [number, number][];
+}
+
+export interface NetworkElements {
+  signal_heads: SignalHeadElement[];
+  vehicle_inputs: VehicleInputElement[];
+  reduced_speed_areas: ReducedSpeedAreaElement[];
+  des_speed_decisions: DesSpeedDecisionElement[];
+  detectors: DetectorElement[];
+  data_collection_points: DataCollectionPointElement[];
+  traveltime_sections_geo: TravelTimeSectionGeoElement[];
+  queue_counters: QueueCounterElement[];
+  stop_signs: StopSignElement[];
+  pt_stops: PtStopElement[];
+  ped_areas: PedAreaElement[];
+}
+
 export interface NetworkData {
-  links: { id: string; name: string; points: [number, number][]; lanes: number; length: number }[];
+  links: {
+    id: string;
+    name: string;
+    points: [number, number][];
+    lanes: number;
+    lane_widths?: number[];
+    width_total?: number;
+    length: number;
+    is_connector?: boolean;
+    from_link?: string | null;
+    to_link?: string | null;
+    from_pos?: number | null;
+    to_pos?: number | null;
+  }[];
   nodes: { id: string; name: string; x: number; y: number; polygon: [number, number][] }[];
   detectors: { id: string; name: string }[];
   traveltime_sections: { id: string; name: string }[];
+  elements?: NetworkElements;
+  // P2: which .inpx this response was parsed from -- "working" when a
+  // session_id was passed and that agent session has an in-progress working
+  // copy (runtime/agent_sessions/<session_id>/working.inpx), "active"
+  // otherwise (the uploaded/default dataset, unchanged).
+  source?: { view: "working" | "active"; session_id?: string };
 }
 
 export interface ActiveDataset {
@@ -549,6 +715,19 @@ export interface AssistantQueryRequest {
   message: string;
   selected_scenario_ids?: string[];
   selected_node_ids?: string[];
+  // P6 — what the user clicked in the rendered network diagram. The backend
+  // re-resolves both against the parsed active .inpx (links get lanes/length/
+  // connector endpoints; an unknown id comes back as {"id", "missing": true})
+  // and sanitizes/caps them at its own request boundary, so these are hints,
+  // never trusted payload. Both askAssistant and streamAssistant JSON.stringify
+  // this whole object, so no per-field plumbing is needed below.
+  selected_link_ids?: string[];
+  selected_element?: {
+    type: string;
+    id: string;
+    name?: string;
+    link?: string | null;
+  } | null;
   allow_tool_execution?: boolean;
   response_language?: "ko" | "en" | "ja";
 }
@@ -627,6 +806,23 @@ export interface AgentQueryRequest {
   // here since the only source is a prior done.response.session_id, never
   // free-typed by the client.
   session_id?: string;
+  // P7: what the user has clicked in the rendered network / selected on the
+  // dashboard, forwarded so the agent knows what "이 링크 / this intersection"
+  // refers to. Same fields, same sanitization and the same re-resolution as
+  // AssistantQueryRequest's (backend/services/network_selection.py), except
+  // the agent path resolves them against THIS session's working copy when it
+  // has one, so an edited link reads back post-edit. Omitted/empty is the
+  // pre-P7 behavior exactly. Context only -- the selection never widens what
+  // the agent may do; every edit still goes through the approval card.
+  selected_scenario_ids?: string[];
+  selected_node_ids?: string[];
+  selected_link_ids?: string[];
+  selected_element?: {
+    type: string;
+    id: string;
+    name?: string;
+    link?: string | null;
+  } | null;
 }
 
 export interface AgentStep {
@@ -1139,8 +1335,9 @@ function sleepForRetry(ms: number): Promise<void> {
   });
 }
 
-export async function fetchNetwork(): Promise<NetworkData> {
-  const r = await apiFetch("/api/network", { cache: "no-store" });
+export async function fetchNetwork(sessionId?: string): Promise<NetworkData> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  const r = await apiFetch(`/api/network${query}`, { cache: "no-store" });
   if (!r.ok) throw new Error(await readApiError(r));
   return r.json();
 }
@@ -1445,4 +1642,59 @@ export async function uploadBaseWorkbook(file: File): Promise<BaseWorkbookRespon
   const triedBases = triedBaseList.join(", ");
   const detail = lastNetworkError instanceof Error ? lastNetworkError.message : String(lastNetworkError ?? "unknown error");
   throw new Error(`Failed to upload validation workbook. Tried API: ${triedBases}. Last network error: ${detail}`);
+}
+
+// Phase 3 P3: resolved vehicle-trajectory playback frames
+// (backend/services/trajectory_reader.py + backend/routers/trajectories.py).
+// Positions are resolved server-side (lane_offset_point/point_at_pos) against
+// the active dataset's network geometry -- same "server resolves geometry,
+// frontend never reimplements polyline math" pattern as NetworkElements.
+export interface TrajectoryVehicleFrame {
+  id: number;
+  link: string;
+  lane: number | null;
+  pos: number;
+  speed: number;
+  // Present once resolved against known network geometry; absent when the
+  // vehicle's link couldn't be resolved (dropped from the frame instead, so
+  // in practice every vehicle present here already has these).
+  x?: number;
+  y?: number;
+  angle?: number;
+}
+
+export interface TrajectoryFrame {
+  t: number;
+  vehicles: TrajectoryVehicleFrame[];
+}
+
+export interface TrajectoryMeta {
+  t0: number | null;
+  t1: number | null;
+  step: number | null;
+  vehicle_count: number;
+  skipped_rows: number;
+  source_file?: string;
+  source_path?: string;
+  skipped_unresolved_vehicles?: number;
+  returned_frame_count?: number;
+  stride?: number;
+  t0_filter?: number;
+  t1_filter?: number;
+}
+
+export interface TrajectoryFrames {
+  meta: TrajectoryMeta;
+  frames: TrajectoryFrame[];
+}
+
+export async function fetchTrajectories(params?: { t0?: number; t1?: number; stride?: number }): Promise<TrajectoryFrames> {
+  const query = new URLSearchParams();
+  if (params?.t0 !== undefined) query.set("t0", String(params.t0));
+  if (params?.t1 !== undefined) query.set("t1", String(params.t1));
+  if (params?.stride !== undefined) query.set("stride", String(params.stride));
+  const qs = query.toString();
+  const r = await apiFetch(`/api/trajectories${qs ? `?${qs}` : ""}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
 }

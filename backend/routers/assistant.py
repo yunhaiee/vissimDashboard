@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Callable, Iterator
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from config import REPO_ROOT
 from services.agent.edit_session import (
@@ -41,6 +41,15 @@ from services.assistant_router import (
 )
 from services.dashboard_curator import curate_dashboard
 from services.datasets import get_active_inpx_path
+from services.network_selection import (
+    build_selection_context,
+    resolve_selected_element,
+    resolve_selected_links,
+    sanitize_selected_element,
+    sanitize_selected_link_ids,
+    sanitize_selected_node_ids,
+    sanitize_selected_scenario_ids,
+)
 from services.results_reader import get_compare_summary, get_selected_node_details
 from services.vissim_tool import get_vissim_status
 
@@ -84,7 +93,29 @@ def _preload_assistant_model() -> None:
 _preload_assistant_model()
 
 
-class AssistantQueryRequest(BaseModel):
+# P6 — the diagram selection every chat request may carry. Both fields are
+# CLIENT strings that end up inside a model prompt, so they are normalized at
+# this boundary (whitelisted keys, str/None values, per-field length caps, link
+# list capped at services.network_selection.MAX_SELECTED_LINKS) before any
+# service sees them; the values themselves are then re-resolved against the
+# parsed active .inpx rather than believed. Shared by both request models below
+# via this mixin so the two can never drift apart.
+class _SelectionFieldsMixin(BaseModel):
+    selected_link_ids: list[str] = Field(default_factory=list)
+    selected_element: dict | None = None
+
+    @field_validator("selected_link_ids", mode="before")
+    @classmethod
+    def _clean_link_ids(cls, value: Any) -> list[str]:
+        return sanitize_selected_link_ids(value)
+
+    @field_validator("selected_element", mode="before")
+    @classmethod
+    def _clean_element(cls, value: Any) -> dict | None:
+        return sanitize_selected_element(value)
+
+
+class AssistantQueryRequest(_SelectionFieldsMixin):
     message: str = Field(min_length=1)
     selected_scenario_ids: list[str] = Field(default_factory=list)
     selected_node_ids: list[str] = Field(default_factory=list)
@@ -92,7 +123,23 @@ class AssistantQueryRequest(BaseModel):
     response_language: str = "auto"
 
 
-class AgentQueryRequest(BaseModel):
+class AgentQueryRequest(_SelectionFieldsMixin):
+    """P7: the agent turn carries the SAME on-screen selection the plain
+    assistant path has carried since P6 — plus node/scenario ids, which had
+    never reached the agent at all (see docs/phase2/DECISIONS.md's P6 entry,
+    "Known gap"). Every field defaults to empty, so a pre-P7 client's request
+    body is unchanged and produces a byte-identical turn.
+
+    ``selected_link_ids``/``selected_element`` are validated by the shared
+    mixin. ``selected_node_ids``/``selected_scenario_ids`` get the same
+    treatment here (stripped, de-duplicated, char-capped, count-capped at
+    ``MAX_SELECTED_NODES``/``MAX_SELECTED_SCENARIOS``) rather than in the
+    mixin, because ``AssistantQueryRequest``'s own copies of those two fields
+    are consumed by a DIFFERENT downstream (``results_reader``'s node-detail
+    lookups, which do their own compaction) and tightening them here would be
+    an unrelated behavior change to the plain path.
+    """
+
     message: str = Field(min_length=1)
     response_language: str | None = "ko"
     # M3.3: optional session reuse -- omitted/None (every pre-M3.3 client)
@@ -107,6 +154,19 @@ class AgentQueryRequest(BaseModel):
     # check `/agent/approve` already applies, now shared by both endpoints
     # via that one module-level pattern.
     session_id: str | None = None
+    # P7: the other two selection channels (links/element come from the mixin).
+    selected_scenario_ids: list[str] = Field(default_factory=list)
+    selected_node_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("selected_node_ids", mode="before")
+    @classmethod
+    def _clean_node_ids(cls, value: Any) -> list[str]:
+        return sanitize_selected_node_ids(value)
+
+    @field_validator("selected_scenario_ids", mode="before")
+    @classmethod
+    def _clean_scenario_ids(cls, value: Any) -> list[str]:
+        return sanitize_selected_scenario_ids(value)
 
 
 class AgentApproveRequest(BaseModel):
@@ -123,7 +183,7 @@ class AgentApproveRequest(BaseModel):
     approved: bool
 
 
-class CurateRequest(BaseModel):
+class CurateRequest(_SelectionFieldsMixin):
     message: str = Field(min_length=1)
     selected_scenario_ids: list[str] = Field(default_factory=list)
     selected_node_ids: list[str] = Field(default_factory=list)
@@ -151,6 +211,19 @@ def curate(payload: CurateRequest):
             )
         except Exception:
             logger.exception("Curation context: node details failed")
+    # P6: the same diagram selection the chat path gets, resolved the same way.
+    # Each block degrades independently — a bad/missing .inpx must never 500 a
+    # curation request that would otherwise have answered fine.
+    if payload.selected_link_ids:
+        try:
+            context["selected_links"] = resolve_selected_links(payload.selected_link_ids)
+        except Exception:
+            logger.exception("Curation context: selected link details failed")
+    if payload.selected_element:
+        try:
+            context["selected_element"] = resolve_selected_element(payload.selected_element)
+        except Exception:
+            logger.exception("Curation context: selected element details failed")
 
     result = curate_dashboard(
         provider=assistant_router.provider,
@@ -453,6 +526,43 @@ def _ensure_working_copy(artifact_manager: ArtifactManager) -> None:
         artifact_manager.clone()
 
 
+def _resolve_agent_selection(
+    payload: AgentQueryRequest, artifact_manager: ArtifactManager
+) -> dict[str, Any] | None:
+    """P7: the compact "what the user clicked" structure for this agent turn.
+
+    **Resolution precedence: this session's working copy, else the active
+    dataset.** Once a session has a ``working.inpx`` (its clone, plus any
+    approved+verified edit), that file — not the pristine source dataset — is
+    what the user is looking at (``routers/network.py``'s P2 session view
+    renders exactly this file) and what every read tool in the turn will see
+    (``tools_network.set_active_inpx(artifact_manager.working_path)`` in
+    ``_stream_agent_turn``). Resolving the selection anywhere else would let
+    the planner be told a link's pre-edit identity while its own tools report
+    the post-edit one. A brand-new session has no working copy yet at this
+    point (``_ensure_working_copy`` runs later, on the turn's worker thread,
+    under the session lock), so it falls back to the active dataset — which
+    is byte-identical to the clone that is about to be made from it.
+
+    Returns ``None`` when nothing is selected. Never raises: a selection that
+    cannot be resolved is dropped (the turn still runs, just without the
+    reference) rather than 500ing a chat request.
+    """
+    try:
+        working_path = artifact_manager.working_path
+        inpx_path = working_path if working_path.is_file() else None
+        return build_selection_context(
+            node_ids=payload.selected_node_ids,
+            link_ids=payload.selected_link_ids,
+            element=payload.selected_element,
+            scenario_ids=payload.selected_scenario_ids,
+            inpx_path=inpx_path,
+        )
+    except Exception:  # noqa: BLE001 - context is a nice-to-have, never a 500
+        logger.exception("Agent selection context could not be resolved; continuing without it")
+        return None
+
+
 _APPROVAL_DECLINED_TEXT = {
     "ko": "요청하신 작업을 취소했습니다. 네트워크는 변경되지 않았습니다.",
     "en": "The requested action was cancelled. The network was left unchanged.",
@@ -538,6 +648,7 @@ async def _stream_agent_turn(
     gate: Any,
     engine: GuardrailEngine,
     edit_session: "VissimEditSession | None" = None,
+    selection: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     """NDJSON event body shared by ``/agent/query/stream`` (a fresh
     proposal, ``ProposeWriteGate``) and ``/agent/approve``'s approved path
@@ -608,6 +719,13 @@ async def _stream_agent_turn(
                         engine=engine,
                         artifact_manager=artifact_manager,
                         should_cancel=should_cancel,
+                        # P7: context only — the planner learns WHICH objects
+                        # the user clicked. It changes no gate, no tool
+                        # permission and no preflight (see run_agent_turn's
+                        # own `selection` docs); the same ProposeWriteGate /
+                        # GuardrailEngine still authorize and validate every
+                        # action, on explicitly named targets.
+                        selection=selection,
                     )
                 finally:
                     if edit_session is not None:
@@ -729,6 +847,15 @@ async def _stream_agent_turn(
             "actions": [action_entry],
             "warnings": warnings,
         }
+        # P7: replayed verbatim by the approve turn, for the same reason
+        # `message`/`language` are — the approved re-run must reconstruct the
+        # SAME turn, and the approve request has no selection of its own
+        # (AgentApproveRequest deliberately carries only the ids that identify
+        # the pending approval). Already resolved + sanitized when this turn
+        # started, and it authorizes nothing: the re-run is scoped to the
+        # approved action's signature by PreapprovedWriteGate regardless.
+        if selection:
+            pending_file_payload["selection"] = selection
         _write_pending_approval(work_dir, pending_file_payload)
         approval_payload = {
             "approval_id": approval_id,
@@ -790,6 +917,13 @@ def stream_agent_query(payload: AgentQueryRequest, request: Request):
     ``done`` event still carries ``response.session_id`` regardless of
     whether it was client-supplied or freshly minted, so a client can always
     resume the returned id on its next message.
+
+    P7: the request may also carry what the user has CLICKED in the rendered
+    network (``selected_node_ids``/``selected_link_ids``/``selected_element``/
+    ``selected_scenario_ids``) — resolved by ``_resolve_agent_selection``
+    against this session's working copy when it has one, else the active
+    dataset, and handed to ``run_agent_turn`` as planner context. Context
+    only: no gate, tool permission, or preflight behavior changes with it.
     """
     message = payload.message.strip()
     if not message:
@@ -815,6 +949,11 @@ def stream_agent_query(payload: AgentQueryRequest, request: Request):
     artifact_manager = ArtifactManager(source_inpx=get_active_inpx_path(), work_dir=work_dir)
     engine = GuardrailEngine()
     gate = ProposeWriteGate()
+    # P7: resolved HERE, in the request handler, rather than on the streaming
+    # worker thread — it is pure file reads (parse + lru_cache), it must not
+    # sit inside the per-session turn lock, and resolving before the turn
+    # starts keeps the failure mode trivial (no selection, turn proceeds).
+    selection = _resolve_agent_selection(payload, artifact_manager)
 
     async def generate_events() -> AsyncIterator[str]:
         async for event in _stream_agent_turn(
@@ -826,6 +965,7 @@ def stream_agent_query(payload: AgentQueryRequest, request: Request):
             artifact_manager=artifact_manager,
             gate=gate,
             engine=engine,
+            selection=selection,
         ):
             yield event
 
@@ -942,6 +1082,10 @@ def approve_agent_action(payload: AgentApproveRequest, request: Request):
             gate=gate,
             engine=engine,
             edit_session=edit_session,
+            # P7: the ORIGINAL turn's selection, replayed from
+            # pending_approval.json (see where it is written) so the approved
+            # re-run's planner sees exactly the context the proposal did.
+            selection=pending.get("selection") if isinstance(pending.get("selection"), dict) else None,
         ):
             yield event
 
@@ -964,6 +1108,10 @@ def run_assistant_query(
                 message=payload_message,
                 selected_scenario_ids=payload.selected_scenario_ids,
                 selected_node_ids=payload.selected_node_ids,
+                # P6: already sanitized by AssistantQueryRequest's validators;
+                # the router resolves them against the parsed active network.
+                selected_link_ids=payload.selected_link_ids,
+                selected_element=payload.selected_element,
                 allow_tool_execution=payload.allow_tool_execution,
                 response_language=payload.response_language,
             ),

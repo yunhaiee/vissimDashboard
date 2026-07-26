@@ -97,8 +97,12 @@ in chat + dashboard). Six live-rehearsal defects found and fixed same-day — se
 docs/phase2/DECISIONS.md 2026-07-24 entries. Eval headline: 60% vs 0% silent-failure
 detection (full stack vs ablation).
 
-Remaining: Phase 3 (network preview — runs on the laptop, branch phase3-render),
-Phase 4 completion (real Dochak .inpx + live eval runs + ground-truth tasks),
+Phase 3 code-complete on branch phase3-render (2026-07-24, laptop): NetworkViewer revived —
+dashboard 지도/도식 toggle + /network page, dataset-change refetch, connector from/to
+topology, click-selection → vissim:page-context, node LOS coloring from real per-node delay.
+Browser-verified against synthetic demo data; connector XML schema still needs validation
+against a real network on the Vissim box (see DECISIONS.md), merge to main pending Yunha's
+review. Remaining: Phase 4 completion (real Dochak .inpx + live eval runs + ground-truth tasks),
 TR-C paper (deadline ~09-05), then v2 tool expansion per docs/TOOL-CATALOG.md
 (the definitive v1/v2 capability matrix; v2 work runs on the Vissim box, branch
 v2-tools, one verified verb per commit).

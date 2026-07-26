@@ -167,12 +167,13 @@ def test_get_network_overview_returns_counts_and_compact_lists_for_demo_data():
         for item in section["items"]:
             assert set(item.keys()) == {"id", "name"}  # compact: no geometry/points/etc.
 
-    # demo dataset facts (data/practice.inpx): 14 links, 2 nodes, 6 vehicle
-    # inputs, 0 working signal controllers (no intSupplyData in the demo file),
-    # 0 conflict areas (the demo .inpx carries no <conflictArea> elements at
-    # all -- v2 unit ④), 2 static routing decisions (v2 unit ⑥ -- unlike
-    # signals/conflict_areas, the demo .inpx DOES carry these)
-    assert data["links"]["count"] == 14
+    # demo dataset facts (data/practice.inpx): 16 links (14 real + 2 Phase 3
+    # connectors), 2 nodes, 6 vehicle inputs, 0 working signal controllers (no
+    # intSupplyData in the demo file), 0 conflict areas (the demo .inpx carries
+    # no <conflictArea> elements at all -- v2 unit ④), 2 static routing
+    # decisions (v2 unit ⑥ -- unlike signals/conflict_areas, the demo .inpx
+    # DOES carry these)
+    assert data["links"]["count"] == 16
     assert data["nodes"]["count"] == 2
     assert data["vehicle_inputs"]["count"] == 6
     assert data["signals"]["count"] == 0
@@ -706,7 +707,7 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "routing_decisions",
         "routes",
     }
-    assert len(shadow["links"]) == 14
+    assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
     assert len(shadow["vehicle_inputs"]) == 6
     assert shadow["signals"] == []

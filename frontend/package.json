@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint app/page.tsx app/dashboard/page.tsx app/base-model/page.tsx components/CorridorSectionComparison.tsx components/NodeDirectionTable.tsx lib/api.ts tests\\dashboard-contract.test.ts",
-    "test:dashboard-contract": "node --test --experimental-strip-types tests\\dashboard-contract.test.ts",
+    "lint": "eslint app/page.tsx app/dashboard/page.tsx app/base-model/page.tsx components/CorridorSectionComparison.tsx components/NodeDirectionTable.tsx lib/api.ts tests/dashboard-contract.test.ts",
+    "test:dashboard-contract": "node --test --experimental-strip-types tests/dashboard-contract.test.ts",
     "build": "next build",
     "start": "next start"
   },

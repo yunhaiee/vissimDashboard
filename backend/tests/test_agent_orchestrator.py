@@ -128,7 +128,7 @@ def test_overview_conversation_answers_from_tools_and_writes_trace(tmp_path):
             _action(
                 "respond",
                 summary="확인한 내용을 정리했습니다",
-                answer="이 네트워크에는 링크 14개, 노드 2개, 차량 입력 6개, 신호기 0개가 있습니다.",
+                answer="이 네트워크에는 링크 16개, 노드 2개, 차량 입력 6개, 신호기 0개가 있습니다.",
             ),
         ]
     )
@@ -142,13 +142,14 @@ def test_overview_conversation_answers_from_tools_and_writes_trace(tmp_path):
     )
 
     assert result.kind == "answer"
-    assert "링크 14개" in result.answer
+    assert "링크 16개" in result.answer
 
     # The answer's facts are grounded in the ACTUAL envelope from demo data:
-    # the dispatched overview really counted 14 links.
+    # the dispatched overview really counted 16 links (14 real + 2 Phase 3
+    # connectors — see data/practice.inpx's CONNECTORS in make_demo_data.py).
     overview = result.state.history[0].observation
     assert overview["status"] == "ok"
-    assert overview["data"]["links"]["count"] == 14
+    assert overview["data"]["links"]["count"] == 16
 
     # Steps narrated, in the user's language, in order.
     assert [step["tool"] for step in result.steps] == ["get_network_overview", "respond"]

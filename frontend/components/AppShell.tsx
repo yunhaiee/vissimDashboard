@@ -7,12 +7,22 @@ import FloatingAssistant from "@/components/FloatingAssistant";
 import { useLanguage } from "@/components/LanguageProvider";
 import type { Language } from "@/lib/i18n";
 
-function NavIcon({ name }: { name: "dashboard" | "validation" | "downloads" | "report" }) {
+function NavIcon({ name }: { name: "dashboard" | "network" | "validation" | "downloads" | "report" }) {
   const paths: Record<string, React.ReactNode> = {
     dashboard: (
       <>
         <path d="M3 10.5 12 3l9 7.5" />
         <path d="M5.5 9.5V21h4.75v-5.25h3.5V21h4.75V9.5" />
+      </>
+    ),
+    network: (
+      <>
+        <circle cx="6" cy="6" r="2.4" />
+        <circle cx="18" cy="8" r="2.4" />
+        <circle cx="9" cy="18" r="2.4" />
+        <path d="M8.1 6.8 15.8 7.9" />
+        <path d="M7.2 8.1 8.3 15.7" />
+        <path d="M16.4 9.9 10.8 16.3" />
       </>
     ),
     validation: (
@@ -51,9 +61,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // Dashboard listed first: it's the landing page (root redirects here) and
   // the page most users need first; the more specialist calibration page
   // follows it instead of leading.
-  const links: Array<{ href: string; label: string; icon: "dashboard" | "validation" | "downloads" | "report" }> = [
+  const links: Array<{ href: string; label: string; icon: "dashboard" | "network" | "validation" | "downloads" | "report" }> = [
     { href: "/dashboard", label: t("대시보드", "Dashboard", "ダッシュボード"), icon: "dashboard" },
     { href: "/base-model", label: t("베이스모델 검증", "Base Model Validation", "ベースモデル検証"), icon: "validation" },
+    { href: "/network", label: t("네트워크", "Network", "ネットワーク"), icon: "network" },
     { href: "/downloads", label: t("데이터 다운로드", "Data Downloads", "データダウンロード"), icon: "downloads" },
     { href: "/report", label: t("보고서 작성", "Report Builder", "レポート作成"), icon: "report" },
   ];

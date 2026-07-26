@@ -12,19 +12,26 @@ import {
   fetchActiveDataset,
   fetchCompare,
   fetchCompareSummary,
+  fetchNetwork,
   fetchRealCounts,
   fetchScenarios,
   type ActiveDataset,
   type CompareSummaryResponse,
   type DashboardCurationSpec,
+  type NetworkData,
   type NodeRealCounts,
   type ScenarioMeta,
   type ScenarioResults,
 } from "@/lib/api";
+import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, objectBelongsToNode, resolveLosGrade, type LosGrade } from "@/lib/los";
+import { elementTypeLabel, linkKindLabel, type NetworkElementRef } from "@/lib/networkElements";
 import { getScenarioDisplayColor } from "@/lib/scenarioPalette";
 import { errorTone, gehTone, toneBadgeClass, type ValidationTone } from "@/lib/validationThresholds";
 
 const DashboardMap = dynamic(() => import("@/components/DashboardMap"), { ssr: false });
+// NetworkViewer draws the raw-coordinate diagram with d3, which touches the
+// DOM directly, so it (like DashboardMap/Leaflet) must stay client-only.
+const NetworkViewer = dynamic(() => import("@/components/NetworkViewer"), { ssr: false });
 
 const KPI_METRICS = [
   // isTotal metrics (whole-network sums) scale with vehicle count, so their
@@ -43,7 +50,6 @@ const MAX_SELECTED_NODES = 6;
 
 type NodeDirectionRow = NonNullable<ScenarioResults["node_directions"]>[number];
 type DirectionKey = "north" | "east" | "south" | "west";
-type LosGrade = "A" | "B" | "C" | "D" | "E" | "F";
 type IntersectionMetricBarValue = {
   nodeId: string;
   nodeName: string;
@@ -104,24 +110,6 @@ const DIRECTION_COLORS: Record<DirectionKey, string> = {
 // so the bar itself only needs to encode magnitude — a single neutral steel
 // keeps it from echoing either the scenario or the direction palettes.
 const METRIC_BAR_COLOR = "#7f8ba0";
-const LOS_COLORS: Record<LosGrade, string> = {
-  A: "#22c55e",
-  B: "#a3d977",
-  C: "#e5c76b",
-  D: "#ee9b5c",
-  E: "#e4574d",
-  F: "#a83a32",
-};
-// Delay-second bands behind resolveLosGrade(), spelled out for the legend so
-// "LOS" isn't shown as an unexplained letter anywhere it appears.
-const LOS_GRADE_THRESHOLDS: Array<{ grade: LosGrade; label: string }> = [
-  { grade: "A", label: "≤10s" },
-  { grade: "B", label: "≤20s" },
-  { grade: "C", label: "≤35s" },
-  { grade: "D", label: "≤55s" },
-  { grade: "E", label: "≤80s" },
-  { grade: "F", label: ">80s" },
-];
 
 // Every chart on this page must color a scenario the SAME way the picker
 // legend does, regardless of which other scenarios are currently selected
@@ -150,6 +138,25 @@ export default function DashboardPage() {
   const [datasetRevision, setDatasetRevision] = useState("default");
   const [curationSpec, setCurationSpec] = useState<DashboardCurationSpec | null>(null);
   const [audience, setAudience] = useState<"plain" | "expert">("plain");
+  // Map section 지도/도식 toggle. Leaflet ("map") stays the default; "diagram"
+  // mounts NetworkViewer over the raw .inpx coordinates. The network is fetched
+  // lazily — only once the diagram has been requested at least once — and then
+  // refetched whenever the active dataset changes.
+  const [mapView, setMapView] = useState<"map" | "diagram">("map");
+  const [hasRequestedDiagram, setHasRequestedDiagram] = useState(false);
+  const [selectedLinkInfo, setSelectedLinkInfo] = useState<{ id: string; name: string; isConnector: boolean } | null>(null);
+  // P6: the one static element (signal head, detector, …) clicked in the diagram
+  // view, if any — single-select with the same toggle semantics as the link.
+  const [selectedElementInfo, setSelectedElementInfo] = useState<NetworkElementRef | null>(null);
+  const [network, setNetwork] = useState<NetworkData | null>(null);
+  const [networkLoading, setNetworkLoading] = useState(false);
+  const [networkError, setNetworkError] = useState<string | null>(null);
+  const [networkReloadNonce, setNetworkReloadNonce] = useState(0);
+  // P2: the floating assistant's current agent session id, mirrored here via
+  // the "vissim:agent-session" event so the diagram viewer can show that
+  // session's in-progress edited working copy on demand (refresh) -- see
+  // docs/phase2/DECISIONS.md's P2 entry.
+  const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
   const requestSerial = useRef(0);
   const loadSerial = useRef(0);
   // Auto-seed a default intersection once per dataset so the performance and
@@ -248,6 +255,23 @@ export default function DashboardPage() {
   }, [clearDashboardData, reloadScenariosAndValidation, t]);
 
   useEffect(() => loadActiveDataset(), [loadActiveDataset]);
+
+  // P2: mirror the floating assistant's current agent session id -- set on a
+  // fresh agent turn, cleared on a session reset/agent-mode toggle -- so the
+  // diagram viewer's refresh button knows which session's working copy (if
+  // any) to request. See FloatingAssistant.tsx's own "vissim:agent-session"
+  // dispatch effect.
+  useEffect(() => {
+    function handleAgentSession(event: Event) {
+      const detail = (event as CustomEvent<{ sessionId: string | null }>).detail;
+      setAgentSessionId(detail?.sessionId ?? null);
+    }
+
+    window.addEventListener("vissim:agent-session", handleAgentSession);
+    return () => {
+      window.removeEventListener("vissim:agent-session", handleAgentSession);
+    };
+  }, []);
 
   // The AI curation answer (headline + insight cards + focus mode) is only
   // valid for the scenario set it was computed against; changing which
@@ -401,9 +425,60 @@ export default function DashboardPage() {
     setSelectedNodeIds((prev) => prev.filter((id) => id !== nodeId));
   }, []);
 
+  // P6: link/connector and element clicks in the diagram view are published as
+  // STRUCTURED context (selectedLinks/selectedElement, forwarded by
+  // FloatingAssistant as selected_link_ids/selected_element), not just as a
+  // human-readable note — see docs/phase2/DECISIONS.md's P6 entry. They stay
+  // separate from selected_node_ids: node ids key result/metric lookups, while
+  // link and element ids key the parsed network.
+  const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean) => {
+    setSelectedLinkInfo((prev) => (prev && prev.id === linkId ? null : { id: linkId, name: linkName, isConnector }));
+  }, []);
+
+  const handleElementClick = useCallback((ref: NetworkElementRef) => {
+    setSelectedElementInfo((prev) => (prev && prev.type === ref.type && prev.id === ref.id ? null : ref));
+  }, []);
+
+  const handleMapViewChange = useCallback((view: "map" | "diagram") => {
+    setMapView(view);
+    // First switch to the diagram arms the fetch effect below; once armed it
+    // stays armed so later dataset changes keep the diagram in sync even while
+    // the map view is showing.
+    if (view === "diagram") setHasRequestedDiagram(true);
+  }, []);
+
+  // Lazily load the raw-coordinate network for the diagram view, and refetch it
+  // whenever the active dataset (datasetRevision) changes or a retry is
+  // requested. Stays inert until the diagram has been opened at least once.
+  useEffect(() => {
+    if (!hasRequestedDiagram) return;
+    let cancelled = false;
+    setNetwork(null);
+    setNetworkError(null);
+    setNetworkLoading(true);
+    fetchNetwork(agentSessionId ?? undefined)
+      .then((data) => {
+        if (!cancelled) setNetwork(data);
+      })
+      .catch(() => {
+        if (!cancelled) setNetworkError(t("네트워크 도식을 불러오지 못했습니다.", "Failed to load the network diagram."));
+      })
+      .finally(() => {
+        if (!cancelled) setNetworkLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetRevision, hasRequestedDiagram, networkReloadNonce, agentSessionId, t]);
+
   const handleDatasetChange = useCallback((dataset?: ActiveDataset) => {
     setActiveDataset(dataset ?? null);
     clearDashboardData();
+    // Selections reference objects of the previous network — clear them so a
+    // stale link/element can't be sent to the assistant against a new dataset
+    // (matches /network's handleDatasetChange).
+    setSelectedLinkInfo(null);
+    setSelectedElementInfo(null);
     setDatasetRevision(dataset?.revision ?? String(Date.now()));
     setDatasetLoading(false);
     setError(null);
@@ -433,6 +508,13 @@ export default function DashboardPage() {
                   revision: activeDataset.revision,
                 }
               : null,
+            // P6: structured diagram selection, forwarded by FloatingAssistant as
+            // selected_link_ids/selected_element so the agent resolves the real
+            // link/element instead of guessing what "this road" meant. Always
+            // 0-or-1 entries today (single-select); the array shape leaves room
+            // for a future multi-select without another context-shape change.
+            selectedLinks: selectedLinkInfo ? [selectedLinkInfo] : [],
+            selectedElement: selectedElementInfo,
             notes: [
               hasUploadedDataset ? "Uploaded VISSIM dataset is active." : "Dashboard analysis is waiting for an uploaded VISSIM dataset.",
               hasData ? "Scenario comparison results are loaded." : "Scenario comparison results are not loaded yet.",
@@ -442,6 +524,28 @@ export default function DashboardPage() {
               ...(curationSpec
                 ? [
                     `The dashboard is currently focused by a user question (AI answer: "${curationSpec.headline || "n/a"}"). Only these sections are shown: ${curationSpec.charts.join(", ") || "none"}. The user can click "Show everything" in the curation bar to see all sections again.`,
+                  ]
+                : []),
+              // The human-readable mirror of selectedLinks/selectedElement above,
+              // kept so an answer can quote what is highlighted on screen.
+              ...(selectedLinkInfo
+                ? [
+                    [
+                      t("도식에서", "In the diagram,"),
+                      linkKindLabel(selectedLinkInfo.isConnector, t),
+                      selectedLinkInfo.name,
+                      t("선택됨", "selected"),
+                    ].join(" "),
+                  ]
+                : []),
+              ...(selectedElementInfo
+                ? [
+                    [
+                      t("도식에서", "In the diagram,"),
+                      elementTypeLabel(selectedElementInfo.type, t),
+                      selectedElementInfo.name || selectedElementInfo.id,
+                      t("선택됨", "selected"),
+                    ].join(" "),
                   ]
                 : []),
             ],
@@ -456,7 +560,7 @@ export default function DashboardPage() {
     return () => {
       window.removeEventListener("vissim:assistant-context-request", publishAssistantContext);
     };
-  }, [activeDataset, activeScenarios, curationSpec, hasData, hasUploadedDataset, nodeNamesById, selected, selectedNodeIds]);
+  }, [activeDataset, activeScenarios, curationSpec, hasData, hasUploadedDataset, nodeNamesById, selected, selectedElementInfo, selectedLinkInfo, selectedNodeIds, t]);
 
   return (
     <div className="mx-auto w-full max-w-[104rem] space-y-6 pb-16">
@@ -529,31 +633,73 @@ export default function DashboardPage() {
 
       {hasUploadedDataset && !sectionVisible("map-selection") ? null : hasUploadedDataset ? (
         <section id="map-selection" className="scroll-mt-6">
-          <SectionHeader
-            title={t("지도 기반 교차로 선택", "Map-Based Intersection Selection")}
-            subtitle={t("기존 대시보드 지도를 그대로 사용해 비교할 교차로를 최대 6개까지 선택합니다.", "Use the existing dashboard map to select up to six intersections for comparison.")}
-          />
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <SectionHeader
+              title={t("지도 기반 교차로 선택", "Map-Based Intersection Selection")}
+              subtitle={t("지도 또는 도식 보기에서 비교할 교차로를 최대 6개까지 선택합니다.", "Select up to six intersections to compare, in map or diagram view.")}
+            />
+            <div className="flex shrink-0 items-center gap-2">
+              {network?.source?.view === "working" && (
+                <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-600">
+                  {t("편집본 표시 중", "Showing edited copy")}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  // Also arms the (otherwise lazy) diagram fetch effect, so a
+                  // refresh click works even before the diagram view has
+                  // ever been opened.
+                  setHasRequestedDiagram(true);
+                  setNetworkReloadNonce((nonce) => nonce + 1);
+                }}
+                className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+              >
+                {t("새로고침", "Refresh")}
+              </button>
+              <MapViewToggle view={mapView} onChange={handleMapViewChange} />
+            </div>
+          </div>
           <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_460px]">
             <div className="relative">
               {hasData && <SectionJumpIndex showValidation={realCounts.length > 0} sectionVisible={sectionVisible} />}
 
               <div className="relative h-[520px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[60vh]">
-                <DashboardMap
-                  summary={summary}
-                  selectedNodeId={activeNodeId}
-                  selectedNodeIds={selectedNodeIds}
-                  selectedScenarioIds={selected}
-                  results={results}
-                  datasetRevision={datasetRevision}
-                  onNodeClick={handleNodeClick}
-                />
-                {loading && (
-                  <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-blue-50/75 backdrop-blur-sm">
-                    <div className="flex items-center gap-2 rounded-full border border-slate-300/70 bg-surface/90 px-4 py-2 text-sm font-medium text-slate-700">
-                      <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
-                      {t("지도 데이터 로딩 중", "Loading map data")}
-                    </div>
-                  </div>
+                {mapView === "diagram" ? (
+                  <NetworkDiagramView
+                    network={network}
+                    loading={networkLoading}
+                    error={networkError}
+                    results={results}
+                    selectedScenario={activeScenarios[0]?.id}
+                    selectedNodeIds={selectedNodeIds}
+                    selectedLinkId={selectedLinkInfo?.id ?? null}
+                    selectedElement={selectedElementInfo}
+                    onNodeClick={handleNodeClick}
+                    onLinkClick={handleLinkClick}
+                    onElementClick={handleElementClick}
+                    onRetry={() => setNetworkReloadNonce((nonce) => nonce + 1)}
+                  />
+                ) : (
+                  <>
+                    <DashboardMap
+                      summary={summary}
+                      selectedNodeId={activeNodeId}
+                      selectedNodeIds={selectedNodeIds}
+                      selectedScenarioIds={selected}
+                      results={results}
+                      datasetRevision={datasetRevision}
+                      onNodeClick={handleNodeClick}
+                    />
+                    {loading && (
+                      <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-blue-50/75 backdrop-blur-sm">
+                        <div className="flex items-center gap-2 rounded-full border border-slate-300/70 bg-surface/90 px-4 py-2 text-sm font-medium text-slate-700">
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+                          {t("지도 데이터 로딩 중", "Loading map data")}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -1652,6 +1798,114 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle: string })
   );
 }
 
+// Segmented text control that swaps the map section between the Leaflet map and
+// the raw-coordinate NetworkViewer diagram. Mirrors the CurationBar audience
+// toggle's styling so it reads as the same family of control.
+function MapViewToggle({
+  view,
+  onChange,
+}: {
+  view: "map" | "diagram";
+  onChange: (view: "map" | "diagram") => void;
+}) {
+  const { t } = useLanguage();
+  const options: Array<{ key: "map" | "diagram"; label: string }> = [
+    { key: "map", label: t("지도", "Map", "地図") },
+    { key: "diagram", label: t("도식", "Diagram", "ダイアグラム") },
+  ];
+
+  return (
+    <div className="flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-xs font-medium">
+      {options.map((option) => {
+        const active = view === option.key;
+        return (
+          <button
+            key={option.key}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(option.key)}
+            className={`flex h-full items-center rounded-md px-3 transition-colors ${
+              active ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Diagram-view content inside the map wrapper: its own loading and fetch-failure
+// states (muted text + a retry affordance matching the page's other controls),
+// falling through to NetworkViewer once the network is loaded.
+function NetworkDiagramView({
+  network,
+  loading,
+  error,
+  results,
+  selectedScenario,
+  selectedNodeIds,
+  selectedLinkId,
+  selectedElement,
+  onNodeClick,
+  onLinkClick,
+  onElementClick,
+  onRetry,
+}: {
+  network: NetworkData | null;
+  loading: boolean;
+  error: string | null;
+  results?: Record<string, ScenarioResults>;
+  selectedScenario?: string;
+  selectedNodeIds: string[];
+  selectedLinkId: string | null;
+  selectedElement: NetworkElementRef | null;
+  onNodeClick: (nodeId: string, nodeName: string) => void;
+  onLinkClick: (linkId: string, linkName: string, isConnector: boolean) => void;
+  onElementClick: (ref: NetworkElementRef) => void;
+  onRetry: () => void;
+}) {
+  const { t } = useLanguage();
+
+  if (error) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+        <p className="text-sm text-slate-400">{error}</p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-lg border border-slate-300/70 bg-surface/90 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-surface"
+        >
+          {t("다시 시도", "Retry")}
+        </button>
+      </div>
+    );
+  }
+
+  if (loading || !network) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center">
+        <p className="text-sm text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
+      </div>
+    );
+  }
+
+  return (
+    <NetworkViewer
+      network={network}
+      results={results}
+      selectedScenario={selectedScenario}
+      selectedNodeIds={selectedNodeIds}
+      selectedLinkId={selectedLinkId}
+      selectedElement={selectedElement}
+      onNodeClick={onNodeClick}
+      onLinkClick={onLinkClick}
+      onElementClick={onElementClick}
+    />
+  );
+}
+
 function DashboardScenarioPicker({
   scenarios,
   selected,
@@ -2104,33 +2358,6 @@ function normalizeDirectionTotals(values: Record<string, number> | undefined): R
   };
 }
 
-function resolveLosGrade(delay: number): LosGrade {
-  if (delay <= 10) return "A";
-  if (delay <= 20) return "B";
-  if (delay <= 35) return "C";
-  if (delay <= 55) return "D";
-  if (delay <= 80) return "E";
-  return "F";
-}
-
-function calculateNodeAverageDelay(result: ScenarioResults, nodeId: string): number | null {
-  const rows = result.movements.filter((row) => objectBelongsToNode(row.OBJECT_ID, nodeId));
-  let weightedDelay = 0;
-  let weightTotal = 0;
-
-  for (const row of rows) {
-    const delay = toFiniteNumber(row["VEHDELAY_MEAN"] ?? row["VEHDELAY"]);
-    if (delay == null) continue;
-
-    const vehs = toFiniteNumber(row["VEHS_MEAN"] ?? row["VEHS"]);
-    const weight = vehs != null && vehs > 0 ? vehs : 1;
-    weightedDelay += delay * weight;
-    weightTotal += weight;
-  }
-
-  return weightTotal > 0 ? weightedDelay / weightTotal : null;
-}
-
 function calculateWorstApproachDelay(result: ScenarioResults, nodeId: string): number | null {
   const delays = result.movements
     .filter((row) => objectBelongsToNode(row.OBJECT_ID, nodeId))
@@ -2155,12 +2382,6 @@ function calculateNodeMaxQueue(result: ScenarioResults, nodeId: string): number 
 
 function sumDirectionMap(values: Record<string, number> | undefined): number {
   return Object.values(values ?? {}).reduce((sum, value) => sum + Number(value ?? 0), 0);
-}
-
-function objectBelongsToNode(objectId: unknown, nodeId: string): boolean {
-  const text = String(objectId ?? "").trim();
-  const normalizedNodeId = String(nodeId).trim();
-  return text === normalizedNodeId || text.startsWith(`${normalizedNodeId}-`) || text.startsWith(`${normalizedNodeId}:`);
 }
 
 const TRAVEL_TIME_MAX_POINTS = 18;

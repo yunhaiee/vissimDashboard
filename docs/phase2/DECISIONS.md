@@ -959,3 +959,514 @@ byte-untouched → load_check clean). Route-identity stability verified within-s
 (no structural edit tool exists yet to stress it across geometry ops). THE SIX-UNIT
 UNATTENDED QUEUE IS COMPLETE — controller review pass bumped TOOL-CATALOG + the
 supported-verbs prompt (present the share, never the raw weight alone).
+
+---
+
+## 2026-07-24 — Phase 3: connector from/to topology parsed defensively
+
+**Context:** `inpx_parser._parse_links` (backend/services/inpx_parser.py) has always set a
+boolean `is_connector` per link but never read which link ids a connector's
+`fromLinkEndPt`/`toLinkEndPt` reference. Phase 3 needs that topology. No `.inpx` on this
+machine contains connector elements (`data/practice.inpx` and
+`backend/tests/fixtures/korean_object_names.inpx` both have zero), so the exact real-world
+schema variant a given Vissim export uses cannot be validated locally. The schema is inferred
+from Vissim's documented convention: a connector `<link>` carries child elements like
+`<fromLinkEndPt lane="1234 1" pos="221.9"/>` and `<toLinkEndPt lane="5678 2" pos="3.5"/>`,
+where `lane` encodes `"linkNo laneNo"`; some exports may instead (or additionally) carry an
+explicit `link` attribute. A guardrails test comment references Beijing.CN's auto-computed
+connectors (links 10039/10051) as a real example, but that file isn't on this machine either.
+
+**Decision:** `_parse_connector_endpoint` extracts `from_link`/`to_link` (string link id or
+`None`) and `from_pos`/`to_pos` (float or `None`) from each endpoint element, preferring an
+explicit `link` attribute when present and otherwise falling back to the first
+whitespace-separated token of `lane`. Every link dict now carries all four keys
+unconditionally (never absent) — `None` for both non-connectors and any endpoint that fails
+to parse; the function never raises. `is_connector` itself is unchanged (geojson.py's
+`if link.get("is_connector"): continue` keeps working as-is). The demo network
+(`backend/tools/make_demo_data.py`) gained two connectors (link ids 301, 302) built with the
+`lane=` form, mirroring real MOVEMENTS entries so their from/to topology is plausible
+(301: 101→140 at Node 1; 302: 140→208 at Node 2) — this pushed the demo network's link count
+from 14 to 16, so the pinned counts in `test_agent_orchestrator.py` and
+`test_agent_read_tools.py` were updated accordingly. The explicit `link=` attribute form is
+covered only by inline XML fixtures in the new `backend/tests/test_inpx_connectors.py`, since
+no demo/tracked `.inpx` needs it.
+
+**Deferred note:** validate this against a real connector-bearing network (e.g. the
+Beijing.CN example referenced in the guardrails tests) on the Windows/Vissim box before
+trusting the topology downstream — in particular, whether any real export actually uses the
+explicit `link=` form, and whether `pos` is reliably present. Until then, downstream
+consumers should treat `from_link`/`to_link`/`from_pos`/`to_pos` as best-effort, not verified
+ground truth.
+
+---
+
+## 2026-07-24 — Phase 3 (final unit): NetworkViewer's link metric coloring removed; node LOS coloring added instead
+
+**Context:** `frontend/components/NetworkViewer.tsx` carried a `metric`/`metricMap`/
+`colorScale` block that colored regular links by looking up `results[selectedScenario]`
+movement/datacollection rows keyed on `OBJECT_ID` and matching them against `link.id`. Verified
+reality: a movement `OBJECT_ID` is shaped `"{node_id}-{from_link}-{pos}-{to_link}-{pos}"` (per
+`objectBelongsToNode`'s prefix convention already used by the dashboard's intersection panels)
+and can never equal a bare link id — the lookup has always missed, so every regular link has
+always rendered `REGULAR_LINK_COLOR` (gray) regardless of `metric`/`results`. Per-link result
+metrics do not exist anywhere in this system. Per-NODE delay does exist and is real: prefix-
+matching a movement's `OBJECT_ID` against `"{node_id}-"` (or an exact match) correctly attributes
+it, which is exactly what `calculateNodeAverageDelay`/`objectBelongsToNode`
+(`frontend/app/dashboard/page.tsx`) already do for the dashboard's intersection-performance
+panels and `DashboardMap`'s `los_delay` overlay.
+
+**Decision:** the dead link-coloring block (`metric` prop, `METRIC_LABELS`, `metricMap`,
+`colorScale`) is removed outright — links always render `REGULAR_LINK_COLOR` (regular) or
+`CONNECTOR_COLOR` (connector), never a fabricated per-link value. In its place, NetworkViewer
+now computes a real per-node average delay from `results[selectedScenario]` and colors each
+node's fill by the LOS grade that delay resolves to (`resolveLosGrade`), falling back to the
+existing neutral `NODE_FILL` when no value exists. The LOS palette/thresholds
+(`LOS_COLORS`/`LOS_GRADE_THRESHOLDS`/`resolveLosGrade`) and the node-delay aggregation
+(`objectBelongsToNode`/`calculateNodeAverageDelay`, VEHS-weighted mean) were extracted from
+`app/dashboard/page.tsx` into a new shared module `frontend/lib/los.ts` — both the dashboard's
+own panels and NetworkViewer now import the same functions, so the diagram can never disagree
+with the dashboard's intersection cards or map overlay over the same node. The dashboard mount
+(`NetworkDiagramView` in `app/dashboard/page.tsx`) now passes `results={results}` and
+`selectedScenario={activeScenarios[0]?.id}` — `activeScenarios` is the already-established
+"currently selected, in canonical scenario-list order" derivation (same ordering
+`scenarioColorById` uses), the closest available analogue to a primary scenario since
+`DashboardMap` itself has no singular-scenario concept (it blends every selected scenario's
+movements together for its own `los_delay` overlay, a different aggregation shape than
+NetworkViewer's single-`selectedScenario` design retained here). The `/network` page mount is
+unchanged (no `results`/`selectedScenario` passed), so its nodes stay neutral exactly as before.
+
+**Consequence:** the diagram no longer implies a per-link measurement that was never real.
+Node coloring is honest and now agrees with the rest of the dashboard for whichever scenario is
+first in the current selection; if a future unit wants the diagram to blend delay across
+*every* selected scenario (matching `DashboardMap`'s own aggregation instead of picking one),
+`NetworkViewer` would need a `selectedScenarioIds`-style prop and a multi-scenario variant of
+the aggregation — not implemented here since the task scope kept the existing singular
+`selectedScenario` prop. Link coloring stays deferred until genuine per-link result data exists
+in this system (it currently does not, anywhere).
+
+---
+
+## 2026-07-24 — Phase 3 wrap: user-approved UX decisions for the network preview
+
+**Context:** Phase 3 (revive NetworkViewer, branch phase3-render) needed three UX calls that
+were the user's to make. Yunha picked, from presented options: (1) placement — BOTH a
+지도/도식 toggle inside the dashboard's #map-selection section AND a dedicated /network
+full-page viewer (one component, two mounts); (2) dashboard default — Leaflet stays default
+(correct for the calibrated SouthSt dataset demos; the raw-coordinate 도식 is one click away);
+(3) link/connector clicks reach the assistant as page-context chips/notes ONLY — the backend
+request shape (selected_scenario_ids/selected_node_ids) is unchanged; node clicks ride the
+existing selected_node_ids pipeline untouched.
+
+**Verification story (this Mac, no Vissim):** all units verified against the synthetic demo
+dataset — typecheck + dashboard-contract (9 pass / 1 known base-model fail) per unit, plus a
+live browser pass: /network renders 16 links + 2 dashed connectors with legend; node/link
+click-selection highlights and feeds the assistant panel (네트워크 프리뷰 컨텍스트 + notes);
+dashboard toggle swaps Leaflet↔diagram both ways sharing selection state; diagram nodes color
+LOS C (#e5c76b) from the demo's ~28s real movement delays. Remaining for the Windows/Vissim
+box: connector-schema validation against a real network (see the earlier connector entry) and
+the merge-to-main decision (Yunha's call).
+
+---
+
+## 2026-07-26 — Phase 3 Tier 1: static network element extraction (signal heads, detectors, PT
+stops, etc.) resolved to absolute placement
+
+**Context:** the frontend NetworkViewer only ever drew links/nodes; every other static element
+Vissim renders in its 2D editor (signal heads, vehicle inputs, reduced speed areas, desired
+speed decisions, detectors, data collection points, travel-time-measurement endpoints, queue
+counters, stop signs, PT stops, Viswalk pedestrian areas) exists in the `.inpx` only as a
+link/lane + arc-length `pos` reference — never an absolute (x, y). No `.inpx` on this machine
+carries any of these element types (`data/practice.inpx` has none; the only real schema
+precedent in this codebase is `signalHead`'s `lane="link lane"`/`sg="sc sg"` attributes, already
+trusted by `signal_parser.py`, and `reducedSpeedArea`'s `lane`/`pos`/`length` attributes, already
+trusted by `simulation_network_builder.py`'s live-COM speed-limit injection). Every other
+element's attribute schema is inferred from Vissim's documented convention and from those two
+verified precedents — same inferred-defensive policy as the 2026-07-24 connector-topology entry,
+not independently verified against a real Vissim box.
+
+**Decision:** two new resolver primitives in `inpx_parser.py` do all the geometry math once,
+server-side: `point_at_pos(points, pos)` walks a link's centerline polyline by arc length
+(clamping `pos` into `[0, length]`, returning `(x, y, angle_deg)` from the containing segment,
+`None` on <2 points or a non-finite `pos`) and `lane_offset_point(points, pos, lane_no,
+lane_widths)` additionally offsets perpendicular to the centerline to a specific lane's middle.
+**Assumptions, made explicit in the function's own docstring:** the link polyline is the
+*centerline* of the whole lane group (not lane 1's own edge); lanes sit side by side with no gap;
+lane 1 is the *rightmost* lane relative to the link's direction of travel (Vissim's own
+numbering convention) with "right" defined as rotating the local travel-direction vector -90 deg
+in the link's own (x, y) coordinate system (the segment normal) — not a verified real-world curb
+side. `lane_no` out of `[1, len(lane_widths)]` is clamped rather than dropped (still gets a
+best-effort placement); only a genuinely non-numeric/non-positive `lane_no`, or an unresolvable
+base point, returns `None`.
+
+A shared `_lane_ref(el)` reads either of Vissim's two lane-reference shapes (`lane="LINKNO
+LANENO"`, or explicit `link="LINKNO"` + `lane="LANENO"`) — malformed/missing pieces yield `None`
+for that piece, never raise. Each of the 11 catalog types is extracted by one of three small
+shared helpers (`_parse_lane_pos_elements` for the lane+pos family, `_parse_link_pos_elements`
+for link+pos-only queue counters, plus bespoke handling for vehicle inputs, signal heads' extra
+sg/sc split, the travel-time-measurement's two-endpoint shape, and ped areas' verbatim polygon)
+and returned under a new `elements` dict key from `parse_network_root`/`parse_network`. Any
+element referencing an unknown link, or missing a required lane/pos, is skipped outright — never
+included with null coordinates — so every list is always present but only ever holds resolved,
+plausible placements. The pre-existing flat `detectors` (`dataCollectionMeasurement`-based) and
+`traveltime_sections` lists are untouched byte-for-byte; the new `elements.detectors` list reads
+actual `<detector>` elements (a different real Vissim object, searched anywhere in the tree per
+the task brief, not confined to a `<detectors>` wrapper) and is a separate concept despite the
+name collision with the old flat list.
+
+The `vehicleTravelTimeMeasurement` geometry is the least certain schema of the eleven — no
+example of any shape exists anywhere in this repo or on this machine — so
+`_resolve_tt_endpoint` tries three plausible attribute shapes in order (child `<start
+link="" pos=""/>`/`<end .../>` elements, flat `startLink`/`startPos`/`endLink`/`endPos`
+attributes, and a combined `start="LINK POS"`/`end="LINK POS"` attribute) and returns `None` for
+that measurement if none resolve. Links also gained `lane_widths` (per-`<lane width="">`,
+falling back to Vissim's common 3.5 m default on a missing/malformed value) and `width_total`.
+
+`backend/tools/make_showcase_network.py` (a new, committed fixture generator — promoted from
+the scratchpad prototype used to draft the geometry-variety showcase network in an earlier
+Phase 3 unit) now places one instance of every catalog type on the existing showcase network:
+3 signal heads on the crossroads' signalized legs (Harbor Rd EB, Hill Ave SB, River Arterial
+WB — Dock Lane is deliberately left stop-sign-controlled instead, so no leg carries both a
+signal and a stop sign), 1 reduced speed area on the arterial's sharpest curve, 2 desired speed
+decisions, 2 detectors at the same stop lines as the signal heads, 2 data collection points
+mid-link, 1 travel-time measurement spanning the crossroads exit to the roundabout entry (link
+403 pos 0 → link 423 pos 15, matching the existing connector 511's own attachment point), 1
+queue counter on the Harbor Rd approach, 1 stop sign on Dock Lane, 1 PT stop on Ridge Rd, and 1
+small pedestrian-area polygon near the crossroads. `backend/tests/test_inpx_elements.py` covers
+the resolver math directly (straight line, right-angle turn, clamping, degenerate/coincident
+points, lane offsets on east- and north-bound links, out-of-range/invalid lane numbers),
+`_lane_ref`/`_sg_ref` in isolation, inline-XML fixtures per element type (including the
+malformed/missing-attribute cases: unknown link, missing pos, malformed lane number, missing
+length, all three travel-time-measurement attribute shapes), and an end-to-end generate→parse of
+the showcase network asserting every `elements` list is non-empty with finite coordinates inside
+the network's bounding box.
+
+**Consequence:** `frontend/lib/api.ts`'s `NetworkData` gained `lane_widths`/`width_total` on
+links and a full `NetworkElements` interface (types only, no component changes in this unit —
+`NetworkViewer.tsx` doesn't read `elements` yet). The dev backend process on this machine
+(`:8001`, started without `--reload`, per the unit's explicit "do not restart" constraint) is
+still running the pre-this-unit code, so a live `curl .../api/network` reflects the *new*
+uploaded `showcase.inpx` but *not* the new parser fields — verified equivalence instead by
+parsing the exact uploaded file (`runtime/uploads/current/current.inpx`) offline with the
+updated `parse_network`, which returns the full populated `elements` dict. Whoever restarts the
+backend next (the orchestrator, on review) will see it live at `:8001` with no further action
+needed — the uploaded dataset already persists the showcase network. **Deferred, not
+implemented:** priority rules (no catalog entry requested this unit; also lack a settled
+attribute schema anywhere in this repo), parking lots (same — zero precedent, lower value for
+the TR-C substrate than the signal/detector family), background images (raster, not vector
+geometry — a different rendering path entirely, out of scope for a geometry resolver), 3D models
+(Vissim's `.v3d`-referencing static-object type; irrelevant to a 2D top-down NetworkViewer), and
+pavement markings (cosmetic-only overlay Vissim derives from lane geometry rather than storing
+as an independent placed object — no new information over what links already carry). Validation
+of every inferred schema (all ten types beyond signal heads/reduced speed areas) against a real
+Vissim-exported `.inpx` remains pending the Windows/Vissim box, per the same caveat the
+2026-07-24 connector entry already carries.
+
+---
+
+## 2026-07-26 — Tier 1 B+C: road-surface + element-layer rendering decisions
+
+- **Uniform-scale fit** replaced NetworkViewer's independent x/y linear fit — the old fit
+  anisotropically stretched every network; widths/angles are only correct under one scale.
+- **Meter-true widths**: road stroke = width_total × pxPerMeter (2.5px floor at base fit),
+  living inside the zoomed <g> so zoom widens roads (Vissim behavior). Casing-under-fill
+  drawn per-layer (all casings, then all fills) so touching surfaces merge at junctions.
+  Lane dividers via offset polylines (averaged segment normals, miter clamped ≤2×); edge
+  lines deliberately skipped (casing reads as edge). Per-lane dividers shipped — no
+  centerline fallback needed on the showcase geometry incl. roundabout arcs.
+- **Palette addition (sanctioned)**: four muted non-slate hues for element semantics only —
+  SIGNAL_RED #c25450 (signal heads/stop signs), RSA_AMBER #b9975a, TTS_CYAN #6f97a3,
+  PED_FILL #b9b2a3. Everything else stays slate + ACCENT + LOS_COLORS.
+- **Element hover targets live in a separate top z-group** (gElementsHit, data-layer-tagged
+  same as their glyph groups) because link/node hit-lines above them would swallow hover.
+  Layer toggling flips the SVG display attribute on both groups — no redraw; draw effect
+  reapplies visibility from a ref so redraws never fight toggles.
+- **Angle convention**: element angles are raw math-convention degrees; screen rendering
+  negates via along=(cos a, −sin a) to account for the Y-flip. Verified against the Harbor
+  EB signal head (angle 0 → vertical bar across the EB road) and the NB stop sign (90 →
+  horizontal bar).
+
+---
+
+## 2026-07-26 — P2: edited-network view + refresh
+
+**Context:** the agent (FloatingAssistant chat) edits a *working copy* of the active network
+at `runtime/agent_sessions/<session_id>/working.inpx` (`services.agent.state.
+ArtifactManager`); the uploaded/default `.inpx` under `runtime/uploads/current/` is never
+touched. `GET /api/network` only ever parsed that untouched active file, so an in-progress
+agent edit (e.g. an injected `reducedSpeedArea` from a speed change) was invisible in both
+network viewers (`/dashboard`'s diagram tab, `/network`). Users need a way to *see* the
+edited network without it silently overriding the default view.
+
+**Decision — session-id must be explicit, never inferred from disk.** `GET /api/network`
+gained an optional `session_id` query param; when present and it resolves to a real
+`runtime/agent_sessions/<session_id>/working.inpx`, that file is parsed instead of the active
+dataset and the response carries `"source": {"view": "working", "session_id": "<id>"}`;
+otherwise (no param, invalid param, or no working copy yet) the response is
+`"source": {"view": "active"}` exactly as before. The obvious alternative — "just parse
+whichever `working.inpx` under `runtime/agent_sessions/` has the newest mtime" — was rejected
+outright: that directory holds one subdirectory per agent turn across every eval run this
+repo has ever executed (~60 stale directories on this dev machine at the time of this unit,
+per `services/agent/sessions.py`'s TTL-sweep docstring, which only reclaims entries older
+than its 7-day-default TTL). "Most recent on disk" would routinely resolve to an unrelated
+eval/CI session instead of the user's own open chat, silently showing a stranger's edits. The
+frontend therefore threads the *specific* session id it already tracks (FloatingAssistant's
+`agentSessionId` state) through explicitly on every request.
+
+**Strict validation + no-escape guarantee.** `routers/network.py`'s new `_SESSION_ID_RE =
+re.compile(r"^[0-9a-f]{8,32}$")` is deliberately hex-only and length-capped — tighter than
+`routers/assistant.py`'s own client-input-boundary `_SESSION_ID_RE` (`^[0-9a-f]{8,64}$`),
+since this endpoint has no legitimate reason to accept anything looser than a real
+`uuid.uuid4().hex[:12]` id. A hex-only character class cannot itself encode a path separator
+or a `..` segment, so path traversal is structurally impossible before any path is even
+constructed. `_resolve_working_inpx` additionally re-checks the resolved directory with
+`Path.relative_to(SESSIONS_ROOT.resolve())` as defense in depth (never trust one guard alone
+against path construction) and never hardcodes the sessions directory — it imports
+`SESSIONS_ROOT` from `services.agent.sessions` (the same constant `main.py`'s startup TTL
+sweep already uses) rather than re-deriving `runtime/agent_sessions` a third time.
+
+**Fallback-never-500 policy.** Every failure mode — no `session_id`, a malformed one, a
+nonexistent session directory, a session with no `working.inpx` yet (e.g. one that has only
+asked read-only questions), or the file vanishing between resolution and `os.path.getmtime`
+(a race with a concurrent agent turn rewriting/rolling back the working copy) — degrades to
+`source.view == "active"` and a normal 200 response. Only a missing *active* dataset can still
+404, exactly as before this unit. A viewer asking to see an edited copy must never break worse
+than "show the default network" for any bad/missing session; "a refused edit with a clear
+reason beats a completed edit with wrong numbers" (this repo's own guardrail doctrine) reads
+equally as "a viewer falling back to the known-good default beats a 500."
+
+**On-demand only, no push/auto-sync.** The viewer shows the working copy only when the user
+explicitly clicks the new 새로고침/Refresh button next to the map/diagram toggle (dashboard) or
+the dataset banner (`/network`) — there is no live subscription, polling, or push from an
+in-progress agent turn to the open viewer. `FloatingAssistant.tsx` broadcasts its current
+`agentSessionId` via a `window` `CustomEvent("vissim:agent-session", { detail: { sessionId } })`
+whenever that state changes (new session minted from a response, an explicit 대화 초기화 reset,
+or the agent-mode off→on toggle) so the pages always know *which* session to ask for, but
+merely knowing the id does not by itself trigger a refetch — the user still has to ask to see
+it. This keeps the blast radius of a bad in-progress edit contained to "stale until the user
+asks again," never "a silently changing map underneath whatever the user is currently looking
+at."
+
+**Cache key.** The existing `_cache` dict (keyed on `(mtime, str(inpx_path), scenario_id)`)
+already differentiates by resolved path, so no separate `view` component was needed in the
+key — a working copy's path (inside its own session directory) can never collide with the
+active dataset's path or another session's working copy.
+
+**Deferred, not implemented:** no attempt to reconcile or diff the working copy against the
+active dataset beyond "which one gets parsed" — the badge (편집본 표시 중/Showing edited copy)
+is purely informational, not a diff view. `scenario_id` + `session_id` passed together is
+accepted without special-casing (scenario modifications are resolved from the *active*
+dataset's `Scenarios`/`Modifications` dirs regardless of which `.inpx` is the base tree), since
+the frontend never sends that combination today.
+
+---
+
+## 2026-07-26 — P3: synthetic .fzp generator + resolved trajectory-frames endpoint
+
+**Context:** vehicle-trajectory playback (P4 builds the UI next) needs per-timestep vehicle
+positions, which Vissim exports as a `.fzp` file — one attribute-list header line
+(`$VEHICLE:SIMSEC;NO;LINK;LANE;POS;...`) followed by one semicolon-separated data row per
+vehicle per timestep. No real `.fzp` exists on this machine (no COM, no lab box) and column
+order varies per export configuration, so — same inferred-defensive policy as the
+Phase 3 connector/element-topology entries above — the schema is implemented from Vissim's
+documented convention rather than a captured sample, with the header itself driving column
+mapping so a reordered export still parses correctly.
+
+**Decision — header-driven parsing, never raise on a bad row.** `services/trajectory_reader.py`'s
+`parse_fzp` builds a name→index map from whichever `$VEHICLE:` line it finds (any other
+`$...` line is tolerated as generic export metadata and skipped, same as a `*` comment line);
+a data row is only attempted once the header has resolved every column in `REQUIRED_COLUMNS`
+(`SIMSEC, NO, LINK, POS, SPEED`). `LANE` is deliberately *not* required — a real export can
+plausibly leave it blank for a vehicle mid lane-change, and `resolve_frames` already has a
+defined fallback for that case (below), so a missing/malformed `LANE` degrades to `lane: None`
+rather than discarding an otherwise-good row. Every other required field's parse failure (bad
+float/int, a row with too few fields) skips just that row and increments `meta.skipped_rows` —
+the function itself never raises. Rows are grouped into `frames` (one per distinct `SIMSEC`,
+vehicles sorted by id for deterministic output) rather than left as a flat row list, matching
+how a playback UI will actually consume them (`state.get(t)`, not a per-row scan). Parsing is
+cached by `(path, mtime)` via `lru_cache`, the same idiom `routers/geojson.py`'s
+`_load_transform` already uses, so re-requesting an unchanged file is free and regenerating it
+(new mtime) invalidates automatically.
+
+**Decision — resolution reuses Tier 1's geometry resolver, never fabricates placement.**
+`resolve_frames(frames, network_links)` turns each vehicle's `(link, lane, pos)` into absolute
+`(x, y, angle)` using the exact `lane_offset_point`/`point_at_pos` primitives Tier 1 already
+resolves static elements with — no new geometry math, no divergent assumptions about lane
+numbering or link centerlines. `lane_offset_point` is tried first when a lane is known, falling
+back to `point_at_pos` (plain centerline) when it isn't or when the lane placement can't be
+resolved; a vehicle referencing a link id absent from the active network is dropped from its
+frame outright (never given a fabricated position) and counted in a returned `skipped` total.
+A frame is never dropped even if every vehicle in it becomes unresolvable — an empty
+`vehicles` list is still a valid frame, matching this repo's "never worse than a degraded
+response" fallback doctrine (P2's session-view entry above).
+
+**Decision — file-next-to-dataset convention, demo file as fallback.**
+`GET /api/trajectories` (`routers/trajectories.py`) looks for `trajectories.fzp` beside the
+*active* dataset's `.inpx` first (e.g. `runtime/uploads/current/trajectories.fzp`, the natural
+home for a real Vissim export dropped in after an upload), falling back to
+`data/demo_trajectories.fzp` when that doesn't exist — so a fresh checkout with no COM and no
+real export still has *something* to serve. 404 only when neither path exists anywhere.
+Resolution is always against `parse_network(get_active_inpx_path())`'s `links`; if that active
+`.inpx` is itself missing or malformed, the endpoint logs and degrades to unresolved
+(link/lane/pos-only, no x/y) frames rather than 500ing the whole response — same policy as the
+resolver's own unknown-link handling, one level up. `t0`/`t1` trim the frame window and `stride`
+decimates frames (`frames[::stride]`); response `meta` carries the parser's own fields
+(`t0, t1, step, vehicle_count, skipped_rows`) plus `source_file`/`source_path`,
+`skipped_unresolved_vehicles`, `returned_frame_count`, and `stride`.
+
+**Synthetic demo data — `tools/make_demo_trajectories.py`.** 32 vehicles over a 180s/0.5s-step
+window, round-robined across 5 hand-defined routes over the showcase network (all 7 of its
+connectors get exercised): `harbor_roundabout_eastgate` (401→503→403→511→423→424→512→427, the
+Harbor→arterial→roundabout→East Gate movement named in the P3 brief), `harbor_hill_rightturn`
+(401→501→407), `ridge_t_route` (409→521→408→502→403, the T-intersection movement), a single-link
+`dock_lane_stopsign` (406) that must stop at its stop sign, and `summit_roundabout_eastgate`
+(425→513→421→422→423→424→512→427). Every position that reflects real network topology
+(connector attach points, the reduced-speed-area bounds, signal/stop-sign positions) is read
+directly from `tools/make_showcase_network.py`'s own source tuples rather than duplicated as a
+literal, so the two files can't silently drift apart; only the per-link cruise speeds (km/h)
+are authored, since the fixture carries no speed data. Kinematics are piecewise-constant speed
+per link with an authored slowdown across the arterial's reduced-speed area and a full stop
+(speed 0) wherever a route passes a signal-head stop line (a trivial fixed 40s-cycle, two-phase
+signal — sg1/sg2 run complementary phases) or the Dock Lane stop sign (fixed 3s dwell) — this is
+demo-grade for visual plausibility, explicitly not a traffic-realistic car-following model (no
+acceleration ramps; speed steps discretely to 0 and back).
+
+**Simplifying assumption, flagged for lab-box validation:** the showcase network's four
+roundabout quarter-arc links (421–424) are treated as chaining directly into one another at
+their shared endpoints, with no dedicated connector link between them — the fixture only
+defines connectors into/out of the roundabout (511/512/513), not between adjacent arcs. This is
+schema-safe (the resolver only needs a valid `(link, lane, pos)` per row) but unconfirmed
+against how a real Vissim roundabout export links its arc segments.
+
+**Deferred, not implemented:** validation of the whole `.fzp` schema (this generator's own
+assumptions, and `trajectory_reader.py`'s parsing of it) against a real Vissim-exported `.fzp`
+remains pending the Windows/Vissim box, same caveat every other Phase 3 inferred-defensive
+entry above carries. No car-following/acceleration modeling, no lane-changing, no interaction
+between vehicles on shared links (routes overlap on the roundabout arcs and East Gate exit by
+design, with no collision avoidance) — acceptable for a visual-plausibility demo, not a
+substitute for a real simulation export.
+
+---
+
+## 2026-07-26 — P6: diagram selection becomes a real request field (Unit-4 chips-only scope, upgraded)
+
+**Scope change, on the user's explicit call.** The 2026-07-24 "Phase 3 wrap" entry above
+recorded decision (3): link/connector clicks reach the assistant as page-context **chips/notes
+ONLY**, leaving the backend request shape untouched. That was a deliberate scope limit, not an
+oversight. It is now **superseded**: Yunha asked that clicking any component in the rendered
+network — link, connector, or element glyph — be referenced automatically in the chat, so the
+agent knows what "이 도로 / this intersection / this signal" means without an id being typed.
+Prose in a `notes[]` string cannot carry that; a model has to re-derive an id from free text
+and can silently answer about the wrong object. So the selection is now **structured request
+data**: `AssistantQueryRequest`/`CurateRequest` gained `selected_link_ids: list[str]` and
+`selected_element: dict | None`, published by /network and /dashboard as `selectedLinks` /
+`selectedElement` on the existing `vissim:page-context` event. The human-readable notes are
+**kept alongside**, not replaced — they still let an answer quote what is highlighted on screen.
+
+**Node ids stay a separate channel.** `selected_node_ids` keys result/metric lookups
+(`get_selected_node_details`, movement records); link and element ids key the parsed `.inpx`.
+Folding the new ids into `selected_node_ids` would have silently corrupted every intersection
+lookup, so they travel as their own fields with their own resolver.
+
+**Validation lives at the request boundary, because these strings end up in a prompt.**
+`services/network_selection.py` owns it and both models share it via one `_SelectionFieldsMixin`
+so they cannot drift: link ids are stripped, de-duplicated and capped at
+`MAX_SELECTED_LINKS = 6` (matching the node cap the assistant router already applies) with each
+id capped at 64 chars; `selected_element` is reduced to exactly four whitelisted keys
+(`type`, `id`, `name`, `link`), values must be `str`/`None` (numbers are deliberately NOT
+coerced, so a nested object can never leak through), `name` capped at 120 chars, and control
+characters — newlines included — are stripped from every field, since a name carrying newlines
+could otherwise break the JSON context block into text the model reads as instructions. A
+reference without a usable `type` AND `id` is refused outright rather than forwarded.
+
+**Client claims are re-resolved, never believed.** A link id becomes the parsed network's
+`{id, name, lanes, length, is_connector, from_link, to_link}`; an element becomes its parsed
+record (server-side `name`/`link` win over the client's, plus `link_name`, `lane`, `pos` when
+available). An id the active network does not contain resolves to `{"id": ..., "missing": true}`
+rather than being dropped — the model must be able to say "that link isn't in this network"
+instead of quietly answering about nothing. Parsing reuses `parse_network` behind an
+`lru_cache` keyed on `(path, mtime)`, the same cache-key shape `routers/network.py` uses, and a
+missing/unparseable `.inpx` degrades to "everything is missing" rather than 500ing a chat
+request — the same degrade-don't-fail policy as the P2 session view and the P3 trajectory
+endpoint. Not gated on `has_uploaded_dataset` (unlike the node/scenario blocks): links and
+elements come from the active `.inpx`, which exists for the bundled demo dataset too.
+
+**Element references are context-only — no new capability.** Nothing here grants the agent a
+new tool, a new write path, or a new permission. A clicked signal head tells the agent *which*
+object the sentence is about; acting on it still goes through the existing gated
+propose→approve tools with their unchanged guardrails. This is deliberately a naming aid, not
+an authorization channel.
+
+**Known gap, deliberately not closed here.** `selected_node_ids` has never reached the agent
+orchestrator — `AgentQueryRequest` carries only `{message, response_language, session_id}`, and
+`run_agent_turn` has no context parameter (grep: zero hits for `selected_node` anywhere under
+`backend/services/agent/`). So the new fields reach the **plain assistant path** and `/curate`
+exactly the way node ids do, and reach agent mode exactly as far as node ids do: not at all.
+Wiring page selection into the agent turn is a real feature (new request fields, a
+`run_agent_turn` parameter, planner-prompt surface), not a mirror of an existing pattern, and is
+left as its own unit rather than smuggled in here.
+
+---
+
+## 2026-07-27 — P7: the on-screen selection reaches AGENT mode (the P6 entry's "known gap", closed)
+
+**What changed.** `AgentQueryRequest` now carries the same selection the plain assistant path has
+carried since P6 — `selected_link_ids` + `selected_element` via the shared `_SelectionFieldsMixin`
+— **plus `selected_node_ids` and `selected_scenario_ids`, which had never reached the agent at
+all**. That is genuinely new capability, not a mirror of an existing path: before this, clicking
+an intersection did nothing whatsoever in agent mode (`run_agent_turn` had no context parameter;
+zero `selected_*` hits under `backend/services/agent/`). `run_agent_turn` gained one optional
+keyword, `selection: dict | None = None`, and the planner renders it as one delimited block in the
+per-turn state block.
+
+**Context only — deliberately no gate, tool, or preflight change.** The selection names objects;
+it never authorizes anything. The write gate, the tool offer, the tier classification and the
+guardrail engine's preflight/postwrite are untouched, and the planner still has to put explicit
+ids in its tool params, which the guardrails still validate. Tests pin both halves: with a link
+selected, the system prompt and the offered native tool defs are byte-identical to the
+no-selection run, and a write decision under the default refuse-all gate is still refused
+(`tool_tier_forbidden`, nothing dispatched). This is the same line P6 drew ("a naming aid, not an
+authorization channel"), restated where it now actually matters — the agent can execute.
+
+**Resolution precedence: the session's working copy, else the active dataset.** Once a session has
+a `working.inpx` (its clone plus any approved+verified edit), that is the file the user is looking
+at (P2's `/api/network?session_id=` renders exactly it) and the file every read tool in the turn is
+pointed at (`tools_network.set_active_inpx(artifact_manager.working_path)`). Resolving the
+selection against the pristine dataset instead would let the planner be told a link's *pre-edit*
+identity while its own tools report the post-edit one — the exact class of quiet inconsistency
+this repo's validation layer exists to prevent. A brand-new session has no working copy at request
+time (`_ensure_working_copy` runs later, on the worker thread under the session lock) and falls
+back to the active dataset, which is byte-identical to the clone about to be made from it. The
+resolution runs in the request handler, before the stream: pure file reads, must not sit inside the
+per-session turn lock, and its failure mode is trivially "no selection, turn proceeds".
+`network_selection.resolve_*` therefore gained an optional `inpx_path` (`None` = active, i.e. P6's
+behavior unchanged), and its parse cache went from `maxsize=2` to `4` now that working copies join
+the active dataset as resolution targets.
+
+**Compactness is a real constraint here, unlike P6.** The plain path dumps resolved selections into
+a JSON context block built ONCE per request; the planner's state block is rebuilt on EVERY loop
+iteration (up to `max_iterations`), so the same payload would be paid for repeatedly. Hence one
+short line per object rather than raw JSON — `- link 101 "Main St EB approach" lanes=3 length=280m`,
+`- node 1 "Central & Main"`, `- element vehicle_inputs 1 "Main St EB" link=101` — names truncated at
+60 chars, and worst case (6 links + 6 nodes + 1 element + 1 scenario line) still a handful of
+tokens. Ids the network does not contain are stated (`- link 9999: not found in this network`),
+never dropped, for P6's reason: the agent must be able to say "that link isn't in this network".
+Nodes resolve to `{id, name}` from the parsed `.inpx`, NOT through
+`results_reader.get_selected_node_details` (the plain path's per-direction KPI detail) — the agent
+needs the compact identity, and the KPI detail belongs in a tool result if it is wanted at all.
+The block header is ko (`[사용자가 화면에서 선택한 객체]`, the user's own UI vocabulary) with an
+English "context only — still name explicit ids in tool params" gloss on the same line, carrying
+the context-only rule into the prompt itself.
+
+**Set-or-clear, never merge.** The client re-sends its current selection on every turn. M3.3 reloads
+`state.json`, whose `context` carries the PREVIOUS turn's selection, so a turn arriving WITHOUT a
+selection actively clears the stored one — otherwise a link the user deselected would haunt every
+later prompt in that conversation. Persistence needed no new storage shape: `state.context` is
+already JSON-serialized by `session_store`, so the selection rides along with it.
+
+**`/agent/approve` replays the proposal turn's selection.** It is written into
+`pending_approval.json` next to `message`/`language` (the same "faithfully replay this exact
+request" rationale that entry above already records) and passed back into the approved re-run, so
+the approve turn's planner sees the context the proposal did. `AgentApproveRequest` deliberately
+stays as-is — the approve request identifies a pending approval, it does not re-describe the turn —
+and the replayed selection authorizes nothing: `PreapprovedWriteGate` still scopes the re-run to
+the one approved action's signature.

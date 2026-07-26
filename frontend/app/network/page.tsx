@@ -1,5 +1,397 @@
-import { notFound } from "next/navigation";
+"use client";
+
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { useLanguage } from "@/components/LanguageProvider";
+import TrajectoryLayer, { createProjectionStore, PLAYBACK_SPEEDS, useTrajectoryPlayback } from "@/components/TrajectoryLayer";
+import VissimDatasetBanner from "@/components/VissimDatasetBanner";
+import { fetchNetwork, type ActiveDataset, type NetworkData } from "@/lib/api";
+import { elementTypeLabel, linkKindLabel, type NetworkElementRef } from "@/lib/networkElements";
+
+// NetworkViewer draws with d3 straight against the DOM, so it must stay
+// client-only (same reason DashboardMap/Leaflet is dynamically imported).
+const NetworkViewer = dynamic(() => import("@/components/NetworkViewer"), { ssr: false });
+
+const MAX_SELECTED_NODES = 6;
+
+// Transport glyphs with U+FE0E (text presentation selector) so platforms that
+// would otherwise substitute a colour emoji keep them as plain glyphs.
+const PLAY_GLYPH = "▶︎";
+const PAUSE_GLYPH = "⏸︎";
+
+// m:ss for the scrubber readout. Sim clocks can start at a non-zero t0, so the
+// caller passes an already-relative offset; absolute sim seconds are shown
+// separately next to it.
+function formatClock(seconds: number): string {
+  const total = Number.isFinite(seconds) ? Math.max(0, Math.round(seconds)) : 0;
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
 
 export default function NetworkPage() {
-  notFound();
+  const { t } = useLanguage();
+  const [network, setNetwork] = useState<NetworkData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [datasetRevision, setDatasetRevision] = useState("default");
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const [activeDataset, setActiveDataset] = useState<ActiveDataset | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [selectedLinkInfo, setSelectedLinkInfo] = useState<{ id: string; name: string; isConnector: boolean } | null>(null);
+  // P6: the one static element (signal head, detector, …) clicked in the
+  // diagram, if any. Single-select — clicking another replaces it, clicking the
+  // same one again clears it — same toggle semantics as the link selection.
+  const [selectedElementInfo, setSelectedElementInfo] = useState<NetworkElementRef | null>(null);
+  // P2: the floating assistant's current agent session id, mirrored here via
+  // the "vissim:agent-session" event so this page's refresh button can show
+  // that session's in-progress edited working copy on demand -- see
+  // docs/phase2/DECISIONS.md's P2 entry.
+  const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
+
+  // P3/P4: vehicle-trajectory playback. `projection` is the only channel
+  // between NetworkViewer's live zoom transform and the canvas overlay — it is
+  // deliberately not React state, because zoom emits once per animation frame
+  // and re-rendering this page that often would be wasteful. The playback hook
+  // owns the clock and fetches lazily (nothing is requested until the user
+  // presses 재생 준비).
+  const projection = useMemo(() => createProjectionStore(), []);
+  const playback = useTrajectoryPlayback();
+  const playbackEngine = playback.engine;
+
+  // Trajectories belong to the active dataset, so swapping datasets drops the
+  // loaded frames back to the load affordance rather than animating vehicles
+  // over a network they were never resolved against.
+  useEffect(() => {
+    playbackEngine.reset();
+  }, [playbackEngine, datasetRevision]);
+
+  // Load the raw-coordinate network on mount, and again whenever the active
+  // dataset changes or a retry is requested.
+  useEffect(() => {
+    let cancelled = false;
+    setNetwork(null);
+    setError(null);
+    setLoading(true);
+    fetchNetwork(agentSessionId ?? undefined)
+      .then((data) => {
+        if (!cancelled) setNetwork(data);
+      })
+      .catch(() => {
+        if (!cancelled) setError(t("네트워크 도식을 불러오지 못했습니다.", "Failed to load the network diagram."));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetRevision, reloadNonce, agentSessionId, t]);
+
+  // P2: mirror the floating assistant's current agent session id -- see
+  // FloatingAssistant.tsx's own "vissim:agent-session" dispatch effect and
+  // app/dashboard/page.tsx's matching listener.
+  useEffect(() => {
+    function handleAgentSession(event: Event) {
+      const detail = (event as CustomEvent<{ sessionId: string | null }>).detail;
+      setAgentSessionId(detail?.sessionId ?? null);
+    }
+
+    window.addEventListener("vissim:agent-session", handleAgentSession);
+    return () => {
+      window.removeEventListener("vissim:agent-session", handleAgentSession);
+    };
+  }, []);
+
+  const handleDatasetChange = useCallback((dataset?: ActiveDataset) => {
+    setActiveDataset(dataset ?? null);
+    setSelectedNodeIds([]);
+    setSelectedLinkInfo(null);
+    setSelectedElementInfo(null);
+    setDatasetRevision(dataset?.revision ?? String(Date.now()));
+  }, []);
+
+  // Mirror the dashboard's handleNodeClick semantics: clicking toggles the node
+  // in the comparison set, capped at six with the oldest dropped first.
+  const handleNodeClick = useCallback((nodeId: string) => {
+    setSelectedNodeIds((prev) => {
+      if (prev.includes(nodeId)) {
+        return prev.filter((id) => id !== nodeId);
+      }
+      const next = [...prev, nodeId];
+      return next.length <= MAX_SELECTED_NODES ? next : next.slice(next.length - MAX_SELECTED_NODES);
+    });
+  }, []);
+
+  // P6: link/connector and element clicks are published as STRUCTURED context
+  // (selectedLinks/selectedElement, which FloatingAssistant forwards as
+  // selected_link_ids/selected_element), not just as a human-readable note —
+  // that upgrade is recorded in docs/phase2/DECISIONS.md. They stay separate
+  // from selected_node_ids because node ids key result/metric lookups while
+  // links and elements key the parsed network.
+  const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean) => {
+    setSelectedLinkInfo((prev) => (prev && prev.id === linkId ? null : { id: linkId, name: linkName, isConnector }));
+  }, []);
+
+  const handleElementClick = useCallback((ref: NetworkElementRef) => {
+    setSelectedElementInfo((prev) => (prev && prev.type === ref.type && prev.id === ref.id ? null : ref));
+  }, []);
+
+  // Mirrors the dashboard/base-model pages' assistant page-context dispatch:
+  // publish on mount/change and again whenever the floating assistant asks
+  // (vissim:assistant-context-request), matching FloatingAssistant's listener
+  // in components/FloatingAssistant.tsx. Neither of those pages dispatches a
+  // `clear: true` event on unmount — FloatingAssistant already treats stale
+  // context as inert once the pathname no longer starts with its route (see
+  // the `pathname.startsWith(pageContext.route)` guard before the assistant
+  // reads it), so this page matches that existing convention rather than
+  // adding a new one.
+  useEffect(() => {
+    const publishAssistantContext = () => {
+      window.dispatchEvent(
+        new CustomEvent("vissim:page-context", {
+          detail: {
+            route: "/network",
+            label: t("네트워크 프리뷰 컨텍스트", "Network preview context"),
+            selectedNodeIds,
+            selectedNodeNames: selectedNodeIds.map((nodeId) => {
+              const node = network?.nodes.find((candidate) => candidate.id === nodeId);
+              return node?.name || `Node ${nodeId}`;
+            }),
+            dataset: activeDataset
+              ? {
+                  filename: activeDataset.filename,
+                  source: activeDataset.source,
+                  revision: activeDataset.revision,
+                }
+              : null,
+            // P6: structured selection, forwarded by FloatingAssistant as
+            // selected_link_ids/selected_element so the agent resolves the real
+            // link/element instead of guessing what "this road" meant. Always
+            // 0-or-1 entries today (single-select); the array shape leaves room
+            // for a future multi-select without another context-shape change.
+            selectedLinks: selectedLinkInfo ? [selectedLinkInfo] : [],
+            selectedElement: selectedElementInfo,
+            notes: [
+              selectedNodeIds.length > 0
+                ? t(
+                    `선택된 교차로 ${selectedNodeIds.length}개`,
+                    `${selectedNodeIds.length} intersection${selectedNodeIds.length > 1 ? "s" : ""} selected`,
+                  )
+                : t("선택된 교차로 없음", "No intersections selected"),
+              // The human-readable mirror of selectedLinks/selectedElement above,
+              // kept so an answer can quote what is highlighted on screen.
+              ...(selectedLinkInfo
+                ? [
+                    [
+                      t("도식에서", "In the diagram,"),
+                      linkKindLabel(selectedLinkInfo.isConnector, t),
+                      selectedLinkInfo.name,
+                      t("선택됨", "selected"),
+                    ].join(" "),
+                  ]
+                : []),
+              ...(selectedElementInfo
+                ? [
+                    [
+                      t("도식에서", "In the diagram,"),
+                      elementTypeLabel(selectedElementInfo.type, t),
+                      selectedElementInfo.name || selectedElementInfo.id,
+                      t("선택됨", "selected"),
+                    ].join(" "),
+                  ]
+                : []),
+            ],
+            updatedAt: Date.now(),
+          },
+        }),
+      );
+    };
+
+    publishAssistantContext();
+    window.addEventListener("vissim:assistant-context-request", publishAssistantContext);
+    return () => {
+      window.removeEventListener("vissim:assistant-context-request", publishAssistantContext);
+    };
+  }, [activeDataset, network, selectedElementInfo, selectedLinkInfo, selectedNodeIds, t]);
+
+  return (
+    <div className="mx-auto w-full max-w-[96rem] space-y-6 pb-16">
+      <section className="px-1">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-[22px] font-semibold tracking-tight text-white">
+                {t("네트워크 프리뷰", "Network Preview")}
+              </h1>
+              {network?.source?.view === "working" && (
+                <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-600">
+                  {t("편집본 표시 중", "Showing edited copy")}
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-sm text-slate-600">
+              {t(
+                "활성 VISSIM 데이터셋(.inpx)의 원좌표를 그대로 렌더링합니다.",
+                "Renders the active VISSIM dataset (.inpx) straight from its raw coordinates.",
+              )}
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => setReloadNonce((nonce) => nonce + 1)}
+            className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+          >
+            {t("새로고침", "Refresh")}
+          </button>
+          <div className="w-full lg:max-w-[320px]">
+            <VissimDatasetBanner onDatasetChange={handleDatasetChange} fullWidth className="h-full" />
+          </div>
+        </div>
+      </section>
+
+      <div className="relative h-[70vh] min-h-[420px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)]">
+        {error ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+            <p className="text-sm text-slate-400">{error}</p>
+            <button
+              type="button"
+              onClick={() => setReloadNonce((nonce) => nonce + 1)}
+              className="rounded-lg border border-slate-300/70 bg-surface/90 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-surface"
+            >
+              {t("다시 시도", "Retry")}
+            </button>
+          </div>
+        ) : loading || !network ? (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <p className="text-sm text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
+          </div>
+        ) : (
+          <>
+            <NetworkViewer
+              network={network}
+              selectedNodeIds={selectedNodeIds}
+              selectedLinkId={selectedLinkInfo?.id ?? null}
+              selectedElement={selectedElementInfo}
+              onNodeClick={handleNodeClick}
+              onLinkClick={handleLinkClick}
+              onElementClick={handleElementClick}
+              onProjectionChange={projection.set}
+            />
+            {/* Canvas overlay: same box as the viewer's SVG, pointer-events
+                none so zoom/pan/click all still land on the SVG beneath it. */}
+            {playback.frames && (
+              <TrajectoryLayer engine={playbackEngine} frames={playback.frames} projection={projection} network={network} />
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Playback controls only exist once there is a network to draw over. */}
+      {!error && !loading && network && (
+        <section className="px-1">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+            {t("차량 궤적 재생", "Vehicle playback")}
+          </p>
+
+          {playback.status === "idle" ? (
+            <button
+              type="button"
+              onClick={playbackEngine.load}
+              className="mt-2 flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+            >
+              {t("재생 준비", "Load playback")}
+            </button>
+          ) : playback.status === "loading" ? (
+            <p className="mt-2 text-xs text-slate-500">{t("궤적 데이터를 불러오는 중…", "Loading trajectory data…")}</p>
+          ) : playback.status === "error" ? (
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <p className="text-xs text-slate-500">
+                {t(
+                  "궤적 데이터를 불러오지 못했습니다. 이 데이터셋에 .fzp 파일이 없을 수 있습니다.",
+                  "Couldn't load trajectory data. This dataset may have no .fzp file.",
+                )}
+              </p>
+              <button
+                type="button"
+                onClick={playbackEngine.load}
+                className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+              >
+                {t("다시 시도", "Retry")}
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 flex flex-col gap-2.5">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={playbackEngine.togglePlay}
+                  aria-pressed={playback.playing}
+                  className="flex h-9 min-w-[6.5rem] shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+                >
+                  <span aria-hidden="true">{playback.playing ? PAUSE_GLYPH : PLAY_GLYPH}</span>
+                  {playback.playing ? t("일시정지", "Pause") : t("재생", "Play")}
+                </button>
+                <span className="text-xs tabular-nums text-slate-700">
+                  {formatClock(playback.time - playback.t0)} / {formatClock(playback.t1 - playback.t0)}
+                </span>
+                <span className="text-[11px] tabular-nums text-slate-500">
+                  {t("시뮬레이션", "sim")} {playback.time.toFixed(1)}
+                  {t("초", "s")}
+                </span>
+                <div
+                  role="group"
+                  aria-label={t("재생 속도", "Playback speed")}
+                  className="ml-auto flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-xs font-medium"
+                >
+                  {PLAYBACK_SPEEDS.map((option) => {
+                    const active = playback.speed === option;
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => playbackEngine.setSpeed(option)}
+                        className={`flex h-full items-center rounded-md px-3 transition-colors ${
+                          active ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"
+                        }`}
+                      >
+                        ×{option}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <input
+                type="range"
+                aria-label={t("재생 위치", "Playback position")}
+                min={playback.t0}
+                max={playback.t1}
+                step={0.1}
+                value={playback.time}
+                onChange={(event) => playbackEngine.seek(Number(event.target.value))}
+                className="w-full accent-[#4c8dff]"
+              />
+
+              <p className="text-[11px] text-slate-500">
+                {t(
+                  `차량 ${playback.vehicleCount}대`,
+                  `${playback.vehicleCount} vehicle${playback.vehicleCount === 1 ? "" : "s"}`,
+                  `車両 ${playback.vehicleCount}台`,
+                )}
+              </p>
+            </div>
+          )}
+        </section>
+      )}
+
+      {selectedNodeIds.length > 0 && (
+        <p className="px-1 text-xs text-slate-500">
+          {t(`선택된 교차로 ${selectedNodeIds.length}개`, `${selectedNodeIds.length} intersection${selectedNodeIds.length > 1 ? "s" : ""} selected`)}
+        </p>
+      )}
+    </div>
+  );
 }

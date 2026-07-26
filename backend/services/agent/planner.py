@@ -23,6 +23,15 @@ Three design points from the M1.3 brief live here:
   the planner falls back deterministically: a safe grounding read when the
   history is empty, otherwise ``ask_user`` — so the loop can never wedge
   (architecture §6).
+
+P7 adds one more thing to the per-turn state block: the objects the user
+CLICKED in the rendered network (``state.context["selection"]``, put there by
+``orchestrator.run_agent_turn(selection=...)``), rendered as one compact,
+clearly-delimited block so "이 링크 차로 수 알려줘" has a referent. It is
+context ONLY — it changes no gate, no tool offer and no preflight; the model
+still names explicit ids in its tool params, and the guardrails still validate
+them. No selection renders nothing at all, so every pre-P7 caller's prompt
+stays byte-identical.
 """
 
 from __future__ import annotations
@@ -150,6 +159,128 @@ _MANDATORY_PREVIEW_SUMMARY = {
     "en": "Gathering grounding data before concluding",
     "ja": "結論の前に根拠データを確認します",
 }
+
+# ---------------------------------------------------------------------------
+# P7: the on-screen selection block
+# ---------------------------------------------------------------------------
+
+#: ``state.context`` key ``orchestrator.run_agent_turn`` stores this turn's
+#: on-screen selection under (see its ``selection`` parameter). One name,
+#: shared by writer and reader, so the two can never drift.
+SELECTION_CONTEXT_KEY = "selection"
+
+#: Header of the selection block. The ko label is what the user's own UI calls
+#: the thing; the English half is the instruction that keeps this
+#: CONTEXT-ONLY: the planner must still put explicit ids in its tool params
+#: (which the guardrail engine then validates), exactly as it did pre-P7.
+_SELECTION_BLOCK_HEADER = (
+    "[사용자가 화면에서 선택한 객체] (context only — still name explicit ids in tool params)"
+)
+
+#: Rendered names are truncated here: a name comes from the parsed .inpx, not
+#: the client, but this block is rebuilt on EVERY planner call, so prompt
+#: economy wins over showing a pathological 300-char link name in full.
+_SELECTION_NAME_CHARS = 60
+
+_SELECTION_MISSING_SUFFIX = "not found in this network"
+
+
+def _selection_name(value: Any) -> str:
+    """A quoted, truncated display name, or ``""`` when there is none."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) > _SELECTION_NAME_CHARS:
+        text = text[: _SELECTION_NAME_CHARS - 3] + "..."
+    return f'"{text}"'
+
+
+def _selection_number(value: Any) -> str:
+    """Compact number rendering: ``280.0`` -> ``280``, ``23.75`` -> ``23.75``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+def _selection_link_line(link: dict[str, Any]) -> str:
+    kind = "connector" if link.get("is_connector") else "link"
+    if link.get("missing"):
+        # Stated, never dropped: the agent has to be able to say "that link is
+        # not in this network" instead of silently answering about something
+        # else (same rationale as network_selection.resolve_selected_links).
+        return f"- link {link.get('id')}: {_SELECTION_MISSING_SUFFIX}"
+    parts = [f"- {kind} {link.get('id')}"]
+    name = _selection_name(link.get("name"))
+    if name:
+        parts.append(name)
+    if link.get("lanes") is not None:
+        parts.append(f"lanes={_selection_number(link.get('lanes'))}")
+    if link.get("length") is not None:
+        parts.append(f"length={_selection_number(link.get('length'))}m")
+    if link.get("from_link"):
+        parts.append(f"from={link.get('from_link')}")
+    if link.get("to_link"):
+        parts.append(f"to={link.get('to_link')}")
+    return " ".join(parts)
+
+
+def _selection_node_line(node: dict[str, Any]) -> str:
+    if node.get("missing"):
+        return f"- node {node.get('id')}: {_SELECTION_MISSING_SUFFIX}"
+    name = _selection_name(node.get("name"))
+    return f"- node {node.get('id')}" + (f" {name}" if name else "")
+
+
+def _selection_element_line(element: dict[str, Any]) -> str:
+    head = f"- element {element.get('type')} {element.get('id')}"
+    if element.get("missing"):
+        return f"{head}: {_SELECTION_MISSING_SUFFIX}"
+    parts = [head]
+    name = _selection_name(element.get("name"))
+    if name:
+        parts.append(name)
+    if element.get("link"):
+        link_name = _selection_name(element.get("link_name"))
+        parts.append(f"link={element.get('link')}" + (f" {link_name}" if link_name else ""))
+    if element.get("lane") is not None:
+        parts.append(f"lane={_selection_number(element.get('lane'))}")
+    if element.get("pos") is not None:
+        parts.append(f"pos={_selection_number(element.get('pos'))}")
+    return " ".join(parts)
+
+
+def render_selection_block(selection: dict[str, Any] | None) -> list[str]:
+    """The state block's lines for ``selection`` (empty list when there is none).
+
+    Shape produced by ``services.network_selection.build_selection_context``:
+    ``{"nodes": [...], "links": [...], "element": {...}, "scenario_ids": [...]}``,
+    every key optional. One short line per object — worst case today is 6 links
+    + 6 nodes + 1 element + 1 scenario line, and each line is a handful of
+    tokens, because this whole block is re-sent on every loop iteration.
+    Anything unrecognized is skipped rather than dumped raw.
+    """
+    if not isinstance(selection, dict) or not selection:
+        return []
+
+    lines: list[str] = []
+    for node in selection.get("nodes") or []:
+        if isinstance(node, dict):
+            lines.append(_selection_node_line(node))
+    for link in selection.get("links") or []:
+        if isinstance(link, dict):
+            lines.append(_selection_link_line(link))
+    element = selection.get("element")
+    if isinstance(element, dict):
+        lines.append(_selection_element_line(element))
+    scenario_ids = [str(value) for value in (selection.get("scenario_ids") or [])]
+    if scenario_ids:
+        lines.append("- scenarios: " + ", ".join(scenario_ids))
+
+    if not lines:
+        return []
+    return [_SELECTION_BLOCK_HEADER, *lines]
 
 
 def pick_language_text(table: dict[str, str], language: str) -> str:
@@ -328,12 +459,17 @@ class Planner:
         )
 
     def _state_block(self, state: AgentState, language: str) -> str:
-        """The per-iteration user message: goal + compacted recent history.
+        """The per-iteration user message: goal + on-screen selection (P7) +
+        compacted recent history.
 
         Rebuilt every iteration; the system prompt and tool defs stay static
         so provider-side prompt caching covers them.
         """
         lines = [f"Goal: {state.goal}", f"Language: {language}"]
+        # P7: what the user clicked, right under the goal — "이 링크" in the
+        # goal line is meaningless without it. Context only: it names objects,
+        # it never authorizes anything (see the module docstring).
+        lines.extend(render_selection_block(state.context.get(SELECTION_CONTEXT_KEY)))
         warnings = state.context.get("warnings") or []
         if warnings:
             lines.append("Warnings: " + "; ".join(str(warning) for warning in warnings))
