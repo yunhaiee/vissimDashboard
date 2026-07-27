@@ -173,6 +173,28 @@ v2 and service upgrades are NOT deferred to post-paper; run as queued units)
 - Share links (read-only dashboard/replay) + reviewer/modeler roles on the
   approval gate
 
+**Deployment & persistence** (direction set 2026-07-27):
+- Target model: ON-PREM TEAM SERVER — one Windows box with Vissim + Prism inside the
+  customer's network, engineers connect via browser over LAN. Cloud SaaS rejected
+  near-term (Vissim licensing + confidential .inpx). LLM API stays the only external
+  call; on-prem LLM swap via the existing provider seam if security demands.
+- ① Edited-model download (FIRST — real user-facing gap today): per-version download
+  + "export current edited model" (.inpx + sibling assets like .layx — forces the
+  ArtifactManager sibling-assets fix), surfaced on the downloads page and in chat
+  after an edit.
+- ② Project workspaces: replace the global active-dataset singleton (upload currently
+  rmtree's the previous one) with projects/<id>/ containers holding datasets, runs,
+  chat sessions, artifact versions, audit log — "save my project and come back to my
+  history" becomes structural.
+- ③ Metadata layer: SQLite (WAL) for users/projects/runs/sessions/version-timeline
+  indexes; heavyweight artifacts stay files. Zero-ops, one-file backup, Postgres
+  migration path open if a cloud tier ever lands.
+- ④ Login + roles: session auth with hashed passwords (OIDC/SSO later if customer IT
+  requires; no social OAuth); modeler/reviewer/admin roles mapped onto the existing
+  approval gate.
+- ⑤ Optional later: cloud view-only tier (dashboards, replay, health-check report —
+  none need Vissim) with the runner staying on-prem.
+
 **Platform/service upgrades:**
 - Live rendering during a run (step-streaming mode alongside batch RunContinuous)
 - 3D view (three.js/deck.gl), satellite/OSM map underlay
