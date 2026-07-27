@@ -6,7 +6,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
 import TrajectoryLayer, { createProjectionStore, PLAYBACK_SPEEDS, useTrajectoryPlayback } from "@/components/TrajectoryLayer";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
-import { fetchNetwork, type ActiveDataset, type NetworkData } from "@/lib/api";
+import {
+  fetchActiveDataset,
+  fetchNetwork,
+  fetchSimulationJobs,
+  type ActiveDataset,
+  type NetworkData,
+  type SimulationJob,
+} from "@/lib/api";
 import { elementTypeLabel, linkKindLabel, type NetworkElementRef } from "@/lib/networkElements";
 
 // NetworkViewer draws with d3 straight against the DOM, so it must stay
@@ -26,6 +33,16 @@ const PAUSE_GLYPH = "⏸︎";
 function formatClock(seconds: number): string {
   const total = Number.isFinite(seconds) ? Math.max(0, Math.round(seconds)) : 0;
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+// Label for one entry in the playback-source picker -- job name (falls back
+// to its id) plus a short local-time stamp so multiple runs are distinguishable.
+function formatJobLabel(job: SimulationJob): string {
+  const name = job.name || job.id;
+  if (!job.completed_at) return name;
+  const date = new Date(job.completed_at);
+  if (Number.isNaN(date.getTime())) return name;
+  return `${name} (${date.toLocaleString()})`;
 }
 
 export default function NetworkPage() {
@@ -58,12 +75,65 @@ export default function NetworkPage() {
   const playback = useTrajectoryPlayback();
   const playbackEngine = playback.engine;
 
+  // Real-run replay: completed agent-run jobs that recorded a vehicle
+  // trajectory (routers/simulations.py's _run_agent_simulation_job,
+  // trajectory_recorded=true) and were run against the currently active
+  // dataset -- selecting one replays that run's own recorded .fzp instead of
+  // the default file-next-to-dataset/demo source. `null` = default source.
+  const [replayableJobs, setReplayableJobs] = useState<SimulationJob[]>([]);
+  const [trajectorySourceJobId, setTrajectorySourceJobId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    // Fetches the active dataset independently rather than reading the
+    // `activeDataset` state above: that state is only ever populated by
+    // VissimDatasetBanner's `onDatasetChange` callback, which -- verified
+    // in VissimDatasetBanner.tsx -- fires ONLY on an explicit upload/reset
+    // action, never for the banner's own initial mount fetch. On a normal
+    // page load (no upload this session) `activeDataset` would silently
+    // stay null forever, disabling the revision filter below and showing
+    // every recorded run regardless of which network it actually belongs
+    // to -- the exact "wrong data displayed" risk this filter exists to
+    // prevent.
+    Promise.all([fetchSimulationJobs(), fetchActiveDataset().catch(() => null)])
+      .then(([jobs, dataset]) => {
+        if (cancelled) return;
+        setReplayableJobs(
+          jobs.filter(
+            (job) =>
+              job.status === "done" &&
+              job.trajectory_recorded === true &&
+              (!dataset || job.dataset_revision === dataset.revision),
+          ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setReplayableJobs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetRevision, reloadNonce]);
+
   // Trajectories belong to the active dataset, so swapping datasets drops the
   // loaded frames back to the load affordance rather than animating vehicles
   // over a network they were never resolved against.
   useEffect(() => {
     playbackEngine.reset();
+    setTrajectorySourceJobId(null);
   }, [playbackEngine, datasetRevision]);
+
+  const handleTrajectorySourceChange = useCallback(
+    (jobId: string | null) => {
+      setTrajectorySourceJobId(jobId);
+      playbackEngine.reset();
+      // Selecting a source loads it immediately (rather than requiring a
+      // separate "load" click) -- the picker only appears once at least one
+      // real run is available, so this only ever fires on a deliberate choice.
+      playbackEngine.load(jobId ?? undefined);
+    },
+    [playbackEngine],
+  );
 
   // Load the raw-coordinate network on mount, and again whenever the active
   // dataset changes or a retry is requested.
@@ -295,10 +365,32 @@ export default function NetworkPage() {
             {t("차량 궤적 재생", "Vehicle playback")}
           </p>
 
+          {/* Playback-source picker: the default demo/file source plus any
+              completed agent-run job that recorded a real trajectory for the
+              currently active dataset. Only shown once a real run exists --
+              nothing changes for the common case of no recorded runs yet. */}
+          {replayableJobs.length > 0 && (
+            <label className="mt-2 flex items-center gap-2 text-xs text-slate-600">
+              {t("재생 소스", "Playback source", "再生ソース")}
+              <select
+                value={trajectorySourceJobId ?? ""}
+                onChange={(event) => handleTrajectorySourceChange(event.target.value || null)}
+                className="h-8 rounded-lg border border-slate-200 bg-surface px-2 text-xs text-slate-700"
+              >
+                <option value="">{t("데모 데이터", "Demo data", "デモデータ")}</option>
+                {replayableJobs.map((job) => (
+                  <option key={job.id} value={job.id}>
+                    {formatJobLabel(job)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           {playback.status === "idle" ? (
             <button
               type="button"
-              onClick={playbackEngine.load}
+              onClick={() => playbackEngine.load(trajectorySourceJobId ?? undefined)}
               className="mt-2 flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
             >
               {t("재생 준비", "Load playback")}
@@ -315,7 +407,7 @@ export default function NetworkPage() {
               </p>
               <button
                 type="button"
-                onClick={playbackEngine.load}
+                onClick={() => playbackEngine.load(trajectorySourceJobId ?? undefined)}
                 className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
               >
                 {t("다시 시도", "Retry")}

@@ -1184,8 +1184,8 @@ function AgentStepNarration({ steps }: { steps: AgentStep[] }) {
 function AgentRunDashboardHint({ steps }: { steps?: AgentStep[] }) {
   const pathname = usePathname();
   const { t } = useLanguage();
-  const ranSuccessfully = (steps ?? []).some((step) => step.tool === "run_simulation" && step.status === "ok");
-  if (!ranSuccessfully) return null;
+  const ranStep = (steps ?? []).find((step) => step.tool === "run_simulation" && step.status === "ok");
+  if (!ranStep) return null;
 
   const message = t(
     "결과가 대시보드 시나리오 목록에 추가되었습니다.",
@@ -1193,17 +1193,55 @@ function AgentRunDashboardHint({ steps }: { steps?: AgentStep[] }) {
     "結果はダッシュボードのシナリオ一覧に追加されました。",
   );
 
+  // trajectory_recorded (backend/services/agent/orchestrator.py's
+  // step-emission choke point, read off run_simulation's own returned
+  // data) -- a real completed run's vehicle-by-vehicle replay, extending
+  // Phase 3's playback beyond the demo/synthetic source. Smallest
+  // reasonable wiring: a second, independent note pointing at /network, not
+  // a redesign of the existing dashboard hint above it.
+  const replayMessage = ranStep.trajectory_recorded
+    ? t(
+        "차량 궤적도 기록되었습니다 — 네트워크 프리뷰에서 재생할 수 있습니다.",
+        "Vehicle trajectories were also recorded — replay is available in the network preview.",
+        "車両の軌跡も記録されました — ネットワークプレビューで再生できます。",
+      )
+    : null;
+
   if (pathname.startsWith("/dashboard")) {
-    return <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">{message}</p>;
+    return (
+      <div className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">
+        <p>{message}</p>
+        {replayMessage && (
+          <p className="mt-1">
+            {replayMessage}{" "}
+            <Link href="/network" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
+              {t("네트워크 프리뷰로 이동", "Go to network preview", "ネットワークプレビューへ")}
+            </Link>
+          </p>
+        )}
+      </div>
+    );
   }
 
   return (
-    <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">
-      {message}{" "}
-      <Link href="/dashboard" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
-        {t("대시보드에서 보기", "View in dashboard", "ダッシュボードで見る")}
-      </Link>
-    </p>
+    <div className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">
+      <p>
+        {message}{" "}
+        <Link href="/dashboard" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
+          {t("대시보드에서 보기", "View in dashboard", "ダッシュボードで見る")}
+        </Link>
+      </p>
+      {replayMessage && (
+        <p className="mt-1">
+          {replayMessage}{" "}
+          {!pathname.startsWith("/network") && (
+            <Link href="/network" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
+              {t("네트워크 프리뷰로 이동", "Go to network preview", "ネットワークプレビューへ")}
+            </Link>
+          )}
+        </p>
+      )}
+    </div>
   );
 }
 

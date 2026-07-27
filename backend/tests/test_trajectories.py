@@ -265,3 +265,172 @@ def test_trajectories_endpoint_404_when_no_file_exists(
 
     assert response.status_code == 404
     assert "trajectory" in response.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Real Vissim export format (backend/tools/vehicle_record_probe.py, live-
+# verified against Vissim 2026 -- see docs/phase2/DECISIONS.md): a UTF-8 BOM
+# glued to a "$VISION" marker line, and column names
+# "LANE\LINK\NO"/"LANE\INDEX" instead of bare "LINK"/"LANE", with no SPEED
+# column in the default attribute selection at all.
+# ---------------------------------------------------------------------------
+
+REAL_VEHICLE_HEADER = "$VEHICLE:SIMSEC;NO;LANE\\LINK\\NO;LANE\\INDEX;POS"
+
+
+def _write_real_format_fzp(path: Path) -> None:
+    """A canned fixture mirroring the EXACT verbatim structure captured live
+    (backend/tools/vehicle_record_probe.py's saved probe output): BOM before
+    $VISION, comment block, $VEHICLE: header using the real column names, no
+    SPEED column."""
+    content = (
+        "﻿$VISION\n"
+        "* File:\t\tC:\\some\\path\\Intersection Beijing.inpx\n"
+        "* Comment:\tUrban intersection Beijing\n"
+        "* Table: Vehicles In Network\n"
+        "*\n"
+        f"{REAL_VEHICLE_HEADER}\n"
+        "0.90;1;101;1;0.18\n"
+        "1.00;1;101;1;0.56\n"
+        "1.00;2;999;1;5.00\n"  # unknown link -- exercises resolver drop
+    )
+    path.write_bytes(content.encode("utf-8"))
+
+
+def test_parse_fzp_reads_the_real_vissim_export_format(tmp_path: Path):
+    """Proves format DETECTION (not a second pipeline): the real column
+    names + BOM-glued $VISION line + absent SPEED all parse correctly."""
+    path = tmp_path / "real_format.fzp"
+    _write_real_format_fzp(path)
+
+    result = trajectory_reader.parse_fzp(path)
+
+    assert result["meta"]["skipped_rows"] == 0
+    assert result["meta"]["vehicle_count"] == 2
+    assert len(result["frames"]) == 2
+
+    frame0 = result["frames"][0]
+    assert frame0["t"] == 0.9
+    assert frame0["vehicles"] == [{"id": 1, "link": "101", "lane": 1, "pos": 0.18, "speed": None}]
+
+    frame1 = result["frames"][1]
+    veh_ids = {v["id"] for v in frame1["vehicles"]}
+    assert veh_ids == {1, 2}
+    veh1 = next(v for v in frame1["vehicles"] if v["id"] == 1)
+    assert veh1 == {"id": 1, "link": "101", "lane": 1, "pos": 0.56, "speed": None}
+
+
+def test_trajectories_endpoint_serves_the_real_format_fixture(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """End-to-end (parser + resolver + endpoint) proof against the real
+    Vissim column-name shape, not just the synthetic/original one."""
+    path = tmp_path / "real_format.fzp"
+    _write_real_format_fzp(path)
+    monkeypatch.setattr(trajectories_router, "DEMO_TRAJECTORY_PATH", path)
+
+    response = client.get("/api/trajectories")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["skipped_rows"] == 0
+    assert payload["meta"]["skipped_unresolved_vehicles"] == 1  # link 999
+    frame0 = payload["frames"][0]
+    veh1 = frame0["vehicles"][0]
+    assert veh1["speed"] is None
+    assert {"x", "y", "angle"}.issubset(veh1.keys())  # still resolved via LINK alias
+
+
+# ---------------------------------------------------------------------------
+# GET /api/trajectories?job_id=... -- replaying a completed agent-run job's
+# own recorded trajectory (routers/simulations.py's trajectory_recorded).
+# ---------------------------------------------------------------------------
+
+
+def test_trajectories_endpoint_job_id_404_when_job_not_found(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(trajectories_router, "get_job_record", lambda job_id: None)
+
+    response = client.get("/api/trajectories", params={"job_id": "does-not-exist"})
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_trajectories_endpoint_job_id_409_when_job_not_done(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        trajectories_router, "get_job_record", lambda job_id: {"id": job_id, "status": "running"}
+    )
+
+    response = client.get("/api/trajectories", params={"job_id": "job1"})
+
+    assert response.status_code == 409
+
+
+def test_trajectories_endpoint_job_id_404_when_trajectory_not_recorded(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        trajectories_router,
+        "get_job_record",
+        lambda job_id: {"id": job_id, "status": "done", "trajectory_recorded": False},
+    )
+
+    response = client.get("/api/trajectories", params={"job_id": "job1"})
+
+    assert response.status_code == 404
+    assert "no recorded vehicle trajectory" in response.json()["detail"].lower()
+
+
+def test_trajectories_endpoint_job_id_409_on_dataset_revision_mismatch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        trajectories_router,
+        "get_job_record",
+        lambda job_id: {
+            "id": job_id,
+            "status": "done",
+            "trajectory_recorded": True,
+            "trajectory_paths": ["/some/path.fzp"],
+            "dataset_revision": "old-revision",
+        },
+    )
+    monkeypatch.setattr(trajectories_router, "get_active_dataset", lambda: {"revision": "new-revision"})
+
+    response = client.get("/api/trajectories", params={"job_id": "job1"})
+
+    assert response.status_code == 409
+    assert "different dataset revision" in response.json()["detail"].lower()
+
+
+def test_trajectories_endpoint_job_id_serves_the_recorded_file(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fzp_path = tmp_path / "job_run_001.fzp"
+    _write_real_format_fzp(fzp_path)
+
+    revision = "matching-revision"
+    monkeypatch.setattr(
+        trajectories_router,
+        "get_job_record",
+        lambda job_id: {
+            "id": job_id,
+            "status": "done",
+            "trajectory_recorded": True,
+            "trajectory_paths": [str(fzp_path)],
+            "dataset_revision": revision,
+        },
+    )
+    monkeypatch.setattr(trajectories_router, "get_active_dataset", lambda: {"revision": revision})
+
+    response = client.get("/api/trajectories", params={"job_id": "job1"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["source_file"] == fzp_path.name
+    assert payload["meta"]["job_id"] == "job1"
+    assert payload["meta"]["skipped_rows"] == 0

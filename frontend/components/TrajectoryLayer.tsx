@@ -83,7 +83,9 @@ export interface PlaybackEngine {
   registerRenderer: (render: ((time: number) => void) | null) => void;
   /** Draw exactly one frame at the current sim time (zoom/resize while paused). */
   requestFrame: () => void;
-  load: () => void;
+  /** `jobId` omitted -> default file-next-to-dataset/demo source; given ->
+   * replay that completed agent-run job's own recorded trajectory. */
+  load: (jobId?: string) => void;
   togglePlay: () => void;
   seek: (time: number) => void;
   setSpeed: (speed: number) => void;
@@ -232,11 +234,14 @@ export function createPlaybackEngine(): PlaybackEngine {
     requestFrame,
     // Lazily fetched: the full frame set is hundreds of KB, so nothing is
     // requested until the user asks for playback (or retries after a failure).
-    load() {
+    // `jobId`, when given, replays that completed agent-run job's own
+    // recorded trajectory (backend/routers/trajectories.py's `job_id` query
+    // param) instead of the default file-next-to-dataset/demo source.
+    load(jobId?: string) {
       if (loading) return;
       loading = true;
       commit({ status: "loading" });
-      fetchTrajectories()
+      fetchTrajectories(jobId ? { jobId } : undefined)
         .then((res) => {
           const list = res.frames ?? [];
           if (!list.length) {
@@ -655,7 +660,12 @@ function drawVehicles(
     // header and NetworkViewer's dirsFromAngle).
     ctx.rotate((-angle * Math.PI) / 180);
     capsulePath(ctx, lengthPx, widthPx);
-    ctx.fillStyle = (vehicle.speed ?? 0) <= 0 ? VEHICLE_FILL_STOPPED : VEHICLE_FILL;
+    // A real Vissim export's default attribute selection carries no SPEED
+    // column at all (verified live -- see trajectory_reader.py's module
+    // docstring), so `speed` is genuinely nullable: unknown must render as
+    // the normal (moving) color, never fall back to 0 and misrender a
+    // possibly-moving vehicle as stopped.
+    ctx.fillStyle = vehicle.speed != null && vehicle.speed <= 0 ? VEHICLE_FILL_STOPPED : VEHICLE_FILL;
     ctx.fill();
     // Retained guard: MIN_VEHICLE_LENGTH_PX now sits above this threshold, so it
     // passes in practice — it stays as the rule for "too small to outline" rather

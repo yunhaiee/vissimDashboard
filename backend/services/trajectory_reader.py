@@ -1,14 +1,37 @@
 """Parse Vissim's .fzp per-timestep vehicle-trajectory export and resolve it
 against network geometry.
 
-No real ``.fzp`` file exists on this dev machine (no COM, no lab box), so the
-parser is written from Vissim's documented convention rather than a captured
-sample: a handful of ``*``/``$`` header/comment lines, one ``$VEHICLE:...``
-line listing the semicolon-separated column names present in every data row
-(column order varies per export configuration), followed by one
-semicolon-separated data row per vehicle per timestep. See
-``docs/phase2/DECISIONS.md``'s dated entry for this unit -- same
-inferred-defensive policy as the connector/element-topology entries.
+Originally written from Vissim's documented convention (a handful of
+``*``/``$`` header/comment lines, one ``$VEHICLE:...`` line listing the
+semicolon-separated column names present in every data row, column order
+varying per export configuration, followed by one semicolon-separated data
+row per vehicle per timestep) since no real ``.fzp`` file existed on the
+original dev machine. **Now verified live** against Vissim 2026 (Urban
+Intersection Beijing.CN, ``backend/tools/vehicle_record_probe.py`` --
+findings pasted verbatim in ``docs/phase2/DECISIONS.md``), which surfaced
+real differences from that original assumption, folded in below via format
+DETECTION rather than a second parsing pipeline:
+
+  1. The default vehicle-record attribute selection carries no bare
+     ``LINK``/``LANE`` columns at all -- Vissim exports
+     ``LANE\\LINK\\NO``/``LANE\\INDEX`` (backslash-qualified sub-attribute
+     paths) instead, and no COM-editable way to change that selection was
+     found (``Evaluation.VehRecSelectedAttributes`` exists but every
+     attempted mutation raised -- see ``vehicle_record_attrs_probe*.py``).
+     ``_COLUMN_ALIASES`` below recognizes BOTH the real Vissim names and the
+     original bare names (which the synthetic demo generator,
+     ``tools/make_demo_trajectories.py``, and every existing test fixture
+     already use) for the same canonical field.
+  2. The default selection also carries no ``SPEED`` column at all -- moved
+     from required to optional; a row/vehicle with no resolvable SPEED gets
+     ``speed: None`` (never a fabricated ``0``, which would misrender a
+     genuinely moving vehicle as stopped).
+  3. A real export opens with a UTF-8 BOM immediately followed by a
+     ``$VISION`` marker line. Reading with plain ``"utf-8"`` leaves the BOM
+     glued to whatever text follows it, silently breaking that line's own
+     ``*``/``$`` prefix check; reading with ``"utf-8-sig"`` strips it
+     unconditionally regardless of position, which is what this module now
+     does.
 
 ``parse_fzp`` never raises on a malformed data row -- it is skipped and
 counted in the returned ``meta``. ``resolve_frames`` turns each vehicle's
@@ -25,14 +48,45 @@ from pathlib import Path
 
 from services.inpx_parser import lane_offset_point, point_at_pos
 
-# The minimal column set every data row must resolve via the header before
-# it can be parsed at all. LANE is intentionally excluded -- a real export
-# can legitimately omit/blank it for a vehicle mid lane-change, and
-# ``resolve_frames`` already falls back to ``point_at_pos`` when lane is
-# unknown, so a missing/malformed LANE value degrades gracefully rather than
-# discarding the whole row.
-REQUIRED_COLUMNS = ("SIMSEC", "NO", "LINK", "POS", "SPEED")
-OPTIONAL_COLUMNS = ("LANE",)
+# Canonical field -> real Vissim header names that satisfy it, most-plausible
+# first. Header-driven parsing already tries every column purely by name, so
+# supporting both a real Vissim export's shape AND this codebase's original
+# synthetic/test shape is just a matter of trying multiple candidate names
+# per canonical field -- see the module docstring's live-probe findings.
+_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "SIMSEC": ("SIMSEC",),
+    "NO": ("NO",),
+    "LINK": ("LINK", "LANE\\LINK\\NO"),
+    "LANE": ("LANE", "LANE\\INDEX"),
+    "POS": ("POS",),
+    "SPEED": ("SPEED",),
+}
+
+# The minimal column set every data row must resolve via the header before it
+# can be parsed at all. LANE and SPEED are intentionally excluded -- a real
+# export's default attribute selection carries neither (see module
+# docstring), and ``resolve_frames``/callers already degrade gracefully
+# (falling back to ``point_at_pos`` when lane is unknown; leaving
+# ``speed: None`` when absent) rather than needing either value to render a
+# frame at all.
+REQUIRED_COLUMNS = ("SIMSEC", "NO", "LINK", "POS")
+OPTIONAL_COLUMNS = ("LANE", "SPEED")
+
+
+def _resolve_columns(columns: list[str]) -> dict[str, int]:
+    """Map each canonical field present (via any of its aliases) in
+    ``columns`` to that column's index. A field with no matching alias in
+    this particular header is simply absent from the returned dict --
+    callers use ``.get(...)`` for optional fields and check membership for
+    required ones."""
+    col_index = {name: i for i, name in enumerate(columns) if name}
+    resolved: dict[str, int] = {}
+    for canonical, aliases in _COLUMN_ALIASES.items():
+        for alias in aliases:
+            if alias in col_index:
+                resolved[canonical] = col_index[alias]
+                break
+    return resolved
 
 
 def parse_fzp(path: str | Path) -> dict:
@@ -54,13 +108,17 @@ def _parse_fzp_cached(path_str: str, mtime: float) -> dict:
 
 
 def _parse_fzp_impl(path: Path) -> dict:
-    columns: list[str] | None = None
-    col_index: dict[str, int] = {}
+    resolved: dict[str, int] | None = None
     frame_map: dict[float, dict[int, dict]] = {}
     skipped_rows = 0
     vehicle_ids: set[int] = set()
 
-    text = path.read_text(encoding="utf-8", errors="replace")
+    # utf-8-sig strips a leading UTF-8 BOM unconditionally regardless of
+    # where python thinks "the start of the file" is -- a real Vissim export
+    # opens with one immediately followed by a "$VISION" marker line (see
+    # module docstring point 3); plain "utf-8" would leave it glued to that
+    # line's first character, breaking its "*"/"$" prefix check.
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -71,25 +129,25 @@ def _parse_fzp_impl(path: Path) -> dict:
             if line.upper().startswith("$VEHICLE:"):
                 header = line.split(":", 1)[1] if ":" in line else ""
                 columns = [c.strip().upper() for c in header.split(";")]
-                col_index = {name: i for i, name in enumerate(columns) if name}
-            # Any other '$...' line (e.g. a $SIMRUN/$FILE-style header some
-            # exports carry) is tolerated metadata, not a data row.
+                resolved = _resolve_columns(columns)
+            # Any other '$...' line (e.g. a $VISION/$SIMRUN/$FILE-style
+            # header some exports carry) is tolerated metadata, not a data
+            # row.
             continue
 
         # A data row requires a header that has already resolved every
         # required column; anything before/without that can't be interpreted
         # at all, so it's counted as skipped rather than guessed at.
-        if columns is None or not all(name in col_index for name in REQUIRED_COLUMNS):
+        if resolved is None or not all(name in resolved for name in REQUIRED_COLUMNS):
             skipped_rows += 1
             continue
 
         fields = line.split(";")
         try:
-            simsec = float(fields[col_index["SIMSEC"]])
-            veh_no = int(float(fields[col_index["NO"]].strip()))
-            link = fields[col_index["LINK"]].strip()
-            pos = float(fields[col_index["POS"]])
-            speed = float(fields[col_index["SPEED"]])
+            simsec = float(fields[resolved["SIMSEC"]])
+            veh_no = int(float(fields[resolved["NO"]].strip()))
+            link = fields[resolved["LINK"]].strip()
+            pos = float(fields[resolved["POS"]])
         except (IndexError, ValueError):
             skipped_rows += 1
             continue
@@ -99,7 +157,7 @@ def _parse_fzp_impl(path: Path) -> dict:
             continue
 
         lane: int | None = None
-        lane_idx = col_index.get("LANE")
+        lane_idx = resolved.get("LANE")
         if lane_idx is not None and lane_idx < len(fields):
             lane_raw = fields[lane_idx].strip()
             if lane_raw:
@@ -107,6 +165,20 @@ def _parse_fzp_impl(path: Path) -> dict:
                     lane = int(float(lane_raw))
                 except ValueError:
                     lane = None
+
+        # SPEED is optional (see module docstring point 2) -- a real
+        # export's default attribute selection has no SPEED column at all.
+        # Absent/blank/malformed all degrade to None, never a fabricated 0
+        # (which would misrender a genuinely moving vehicle as stopped).
+        speed: float | None = None
+        speed_idx = resolved.get("SPEED")
+        if speed_idx is not None and speed_idx < len(fields):
+            speed_raw = fields[speed_idx].strip()
+            if speed_raw:
+                try:
+                    speed = float(speed_raw)
+                except ValueError:
+                    speed = None
 
         t_key = round(simsec, 3)
         bucket = frame_map.setdefault(t_key, {})

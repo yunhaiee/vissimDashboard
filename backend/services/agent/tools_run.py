@@ -307,6 +307,12 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
     # silently defaulting to True and hiding the gap from
     # evaluation_not_configured_before_run's postrun check below.
     evaluation_configured = bool(record.get("evaluation_configured", False))
+    # trajectory_recorded: best-effort vehicle-trajectory replay data (see
+    # routers/simulations.py's _run_agent_simulation_job docstring). Unlike
+    # evaluation_configured, a "done" job can legitimately carry False here
+    # (duration exceeded AGENT_RUN_TRAJECTORY_MAX_S, or recording failed for
+    # every seed) -- this is never a run failure, just replay unavailability.
+    trajectory_recorded = bool(record.get("trajectory_recorded", False))
 
     run_result = {
         "tables": sorted(tables),
@@ -314,6 +320,7 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
         # module's docstring and the drafted DECISIONS.md entry.
         "deleted_vehicles": None,
         "evaluation_configured": evaluation_configured,
+        "trajectory_recorded": trajectory_recorded,
     }
 
     kpis: dict[str, Any] | None = None
@@ -324,10 +331,16 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
 
     tables_text = ", ".join(run_result["tables"]) or "none"
     eval_text = "configured" if evaluation_configured else "NOT configured (KPIs may be unavailable)"
+    trajectory_text = (
+        "recorded (vehicle-by-vehicle replay is available in the network preview)"
+        if trajectory_recorded
+        else "not recorded"
+    )
     return {
         "message": (
             f"Simulation ran for {params.duration_s}s across {len(seeds)} seed(s); "
-            f"result tables: {tables_text}; network-performance evaluation {eval_text}."
+            f"result tables: {tables_text}; network-performance evaluation {eval_text}; "
+            f"vehicle trajectories {trajectory_text}."
         ),
         "verification": {
             "job_id": job_id,
@@ -336,6 +349,7 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
             "random_seeds": seeds,
             "tables": run_result["tables"],
             "evaluation_configured": evaluation_configured,
+            "trajectory_recorded": trajectory_recorded,
         },
         "run_result": run_result,
         "kpis": kpis,

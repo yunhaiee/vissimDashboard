@@ -770,17 +770,26 @@ async def _stream_agent_turn(
             summary = value.get("summary", "")
             tool = value.get("tool", "")
             status = value.get("status", "")
-            streamed_steps.append({"summary": summary, "tool": tool, "status": status})
-            yield encode_stream_event(
-                {
-                    "type": "step",
-                    "stream_id": stream_id,
-                    "summary": summary,
-                    "tool": tool,
-                    "status": status,
-                    "index": value.get("index", 0),
-                }
-            )
+            streamed_step: dict[str, Any] = {"summary": summary, "tool": tool, "status": status}
+            step_event: dict[str, Any] = {
+                "type": "step",
+                "stream_id": stream_id,
+                "summary": summary,
+                "tool": tool,
+                "status": status,
+                "index": value.get("index", 0),
+            }
+            # trajectory_recorded/job_id (run_simulation only, orchestrator's
+            # own choke point) -- optional, forwarded as-is when present so
+            # the frontend's replay hint doesn't need to wait for `done`.
+            if "trajectory_recorded" in value:
+                streamed_step["trajectory_recorded"] = value["trajectory_recorded"]
+                step_event["trajectory_recorded"] = value["trajectory_recorded"]
+            if "job_id" in value:
+                streamed_step["job_id"] = value["job_id"]
+                step_event["job_id"] = value["job_id"]
+            streamed_steps.append(streamed_step)
+            yield encode_stream_event(step_event)
     finally:
         # A client that vanishes mid-stream (Starlette abandoning this
         # generator, e.g. via GeneratorExit) must still stop the turn

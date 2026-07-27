@@ -1470,3 +1470,25 @@ the approve turn's planner sees the context the proposal did. `AgentApproveReque
 stays as-is — the approve request identifies a pending approval, it does not re-describe the turn —
 and the replayed selection authorizes nothing: `PreapprovedWriteGate` still scopes the re-run to
 the one approved action's signature.
+
+---
+
+## 2026-07-27 — Trajectory replay: real agent runs extend Phase 3 playback
+
+**Context:** probed live — VehRecWriteFile is the arm toggle (no CollectData exists); the
+real .fzp uses LANE\LINK\NO / LANE\INDEX columns, carries NO SPEED column by default, and
+opens with a BOM-glued $VISION line. VehRecSelectedAttributes has no COM-add path (every
+mutation method raised) — SPEED stays an open gap. SIZE LANDMINE fixed with evidence: the
+default 0.1s resolution made a 300s run's frames JSON 90MB and the browser aborted it;
+VehRecResolution verified as a proportional divisor and armed at 5 (0.5s) by default
+(AGENT_RUN_TRAJECTORY_RESOLUTION), arming capped by AGENT_RUN_TRAJECTORY_MAX_S (1800s)
+and non-fatal on failure — KPIs stay primary; only the first seed's .fzp is served.
+
+**Decision:** trajectory_reader does format-detection column aliasing (one parser, never a
+fork) with SPEED nullable end-to-end; frames endpoint serves completed jobs by id; /network
+gained a playback-source picker (demo + trajectory-recorded runs); the agent's post-run
+answer mentions replay availability. FRONTEND BUG found in live browser verification:
+VissimDatasetBanner.onDatasetChange never fires on initial mount, silently disabling the
+picker's dataset-revision safety filter — the picker now fetches the active dataset itself.
+
+**Deferred:** SPEED from real exports; the duration cap bounds time but not network density.

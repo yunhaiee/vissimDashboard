@@ -650,6 +650,12 @@ export interface SimulationJob {
   started_at?: string | null;
   completed_at?: string | null;
   dataset_filename?: string | null;
+  dataset_revision?: string | null;
+  // Present on agent-run jobs (routers/simulations.py's
+  // _run_agent_simulation_job) once status === "done" -- true when at least
+  // one seed's vehicle-record (.fzp) output was armed AND written; drives
+  // the /network page's real-run playback source picker.
+  trajectory_recorded?: boolean;
 }
 
 export interface SimulationResultsResponse {
@@ -829,6 +835,12 @@ export interface AgentStep {
   summary: string;
   tool: string;
   status: string;
+  // Present only for a successfully-dispatched run_simulation step
+  // (backend/services/agent/orchestrator.py's step-emission choke point,
+  // read off the tool's own returned data, never parsed from `summary`).
+  // Drives AgentRunDashboardHint's replay-availability note.
+  trajectory_recorded?: boolean;
+  job_id?: string;
 }
 
 // M2.3: one proposed write action inside an approval_request/done.approval
@@ -1654,7 +1666,12 @@ export interface TrajectoryVehicleFrame {
   link: string;
   lane: number | null;
   pos: number;
-  speed: number;
+  // A real Vissim export's default vehicle-record attribute selection has
+  // no SPEED column at all (verified live -- see docs/phase2/DECISIONS.md
+  // and backend/services/trajectory_reader.py's module docstring), so this
+  // is genuinely nullable, not just optional -- a renderer must treat
+  // `null` as "unknown speed", never as "stopped" (0).
+  speed: number | null;
   // Present once resolved against known network geometry; absent when the
   // vehicle's link couldn't be resolved (dropped from the frame instead, so
   // in practice every vehicle present here already has these).
@@ -1681,6 +1698,9 @@ export interface TrajectoryMeta {
   stride?: number;
   t0_filter?: number;
   t1_filter?: number;
+  // Present only when the request replayed a completed agent-run job
+  // (see the `job_id` param on fetchTrajectories below).
+  job_id?: string;
 }
 
 export interface TrajectoryFrames {
@@ -1688,11 +1708,20 @@ export interface TrajectoryFrames {
   frames: TrajectoryFrame[];
 }
 
-export async function fetchTrajectories(params?: { t0?: number; t1?: number; stride?: number }): Promise<TrajectoryFrames> {
+export async function fetchTrajectories(params?: {
+  t0?: number;
+  t1?: number;
+  stride?: number;
+  /** Replay a completed agent-run job's own recorded trajectory instead of
+   * the default file-next-to-dataset/demo source (backend/routers/
+   * trajectories.py's `job_id` query param). */
+  jobId?: string;
+}): Promise<TrajectoryFrames> {
   const query = new URLSearchParams();
   if (params?.t0 !== undefined) query.set("t0", String(params.t0));
   if (params?.t1 !== undefined) query.set("t1", String(params.t1));
   if (params?.stride !== undefined) query.set("stride", String(params.stride));
+  if (params?.jobId !== undefined) query.set("job_id", params.jobId);
   const qs = query.toString();
   const r = await apiFetch(`/api/trajectories${qs ? `?${qs}` : ""}`, { cache: "no-store" });
   if (!r.ok) throw new Error(await readApiError(r));

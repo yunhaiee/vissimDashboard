@@ -80,6 +80,81 @@ _EVAL_TYPE_ATTR_IDS: dict[str, dict[str, str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Vehicle-record (.fzp) output configuration -- vehicle-trajectory REPLAY
+# data layer, distinct from the four KPI evaluation types above.
+#
+# COM attribute ids verified EMPIRICALLY against live Vissim 2026
+# (backend/tools/vehicle_record_probe.py, run against "Urban Intersection
+# Beijing.CN" -- same live-first discipline as _EVAL_TYPE_ATTR_IDS above; see
+# docs/phase2/DECISIONS.md's dated entry for this unit for the full findings
+# pasted verbatim). Ground truth from the example's own .inpx:
+#   <vehRec filterType="ALL" fromTime="0" inclParkVehs="false" resolution="1"
+#           toTime="99999" writeDatabase="false" writeFile="false">
+#     <selectedAttributes>
+#       <attributeSelection attributeID="SIMSEC" .../>
+#       <attributeSelection attributeID="NO" .../>
+#       <attributeSelection attributeID="LANE\LINK\NO" .../>
+#       <attributeSelection attributeID="LANE\INDEX" .../>
+#       <attributeSelection attributeID="POS" .../>
+#     </selectedAttributes>
+#   </vehRec>
+#
+# Unlike the four KPI evaluation types, vehRec has NO "CollectData"-suffixed
+# arm toggle -- the verified id is ``VehRecWriteFile`` (writeFile in the XML).
+# ``filterType``/``inclParkVehs`` are left at whatever the source network
+# already has, same "closest verifiable subset" policy as
+# configure_network_performance_evaluation's own field selection.
+#
+# EMPIRICAL FINDING (do not "fix" without re-probing live): the exported
+# .fzp's real column set does NOT match this codebase's original synthetic
+# assumption. Vissim writes ``LANE\LINK\NO``/``LANE\INDEX`` (backslash-
+# qualified sub-attribute paths), never a bare ``LINK``/``LANE`` column, and
+# the network's DEFAULT attribute selection carries no ``SPEED`` column at
+# all. ``Evaluation.VehRecSelectedAttributes`` (an ``IAttributeSelectionContainer``)
+# is READ-accessible over COM but every attempt at adding/replacing its
+# attribute set (``ReplaceAll``, ``SetMultipleAttributes``, ``SetMultiAttValues``,
+# no ``Add``/``AddAttribute`` method exists at all) raised -- their error text
+# suggests these methods are not actually meant for redefining which columns
+# get exported (see backend/tools/vehicle_record_attrs_probe.py/_probe2.py).
+# ``services/trajectory_reader.py``'s parser was adapted (format detection via
+# column-name aliasing, SPEED made optional) rather than this codebase
+# forking a second parsing pipeline -- see that module's own docstring.
+#
+# The real export also opens with a UTF-8 BOM glued to a ``$VISION`` marker
+# line, which ``parse_fzp`` must read with ``utf-8-sig`` to avoid corrupting
+# whatever line happens to be first.
+#
+# SIZE FINDING (live acceptance, tools/trajectory_replay_live_check.py): at
+# the network's DEFAULT resolution (1 -- one row per simulation timestep,
+# 0.1s on Beijing.CN), a real 300s run on a moderately busy real network
+# (Urban Intersection Beijing.CN) produced a 21MB .fzp that resolves to a
+# ~90MB JSON response -- the browser aborted the fetch outright. Verified
+# live (tools/vehicle_record_resolution_probe.py) that ``VehRecResolution``
+# is a genuine, proportional write-cadence divisor: resolution=5 on the SAME
+# 60s run produced EXACTLY a 0.5s step (5.00x coarser) and ~0.2x the file
+# size. ``configure_vehicle_record_evaluation`` therefore also arms
+# ``resolution`` (default 5, i.e. 0.5s cadence -- matching the synthetic demo
+# generator's own step, and a genuine root-cause fix rather than only
+# stride-decimating after the fact at the endpoint).
+# ---------------------------------------------------------------------------
+
+_VEHICLE_RECORD_ATTR_IDS: dict[str, str] = {
+    "write_file": "VehRecWriteFile",
+    "write_database": "VehRecWriteDatabase",
+    "from_time": "VehRecFromTime",
+    "to_time": "VehRecToTime",
+    "resolution": "VehRecResolution",
+}
+
+# Default write cadence divisor (see the SIZE FINDING comment above) --
+# every Nth simulation timestep is written, not every one. 5 matches the
+# synthetic demo generator's own 0.5s step and cut a real 300s/busy-network
+# .fzp roughly 5x, which is what made that run's JSON payload browser-
+# fetchable at all. Callers (routers/simulations.py) may override.
+DEFAULT_VEHICLE_RECORD_RESOLUTION = 5
+
+
 class VissimController:
     def __init__(self) -> None:
         self.vissim = None
@@ -265,6 +340,83 @@ class VissimController:
         except Exception as exc:
             raise RuntimeError(
                 f"Could not read network-performance evaluation config: {exc}"
+            ) from exc
+
+    def configure_vehicle_record_evaluation(
+        self,
+        *,
+        duration_s: int,
+        from_time: int = 0,
+        resolution: int = DEFAULT_VEHICLE_RECORD_RESOLUTION,
+    ) -> dict[str, Any]:
+        """Arm Vissim's vehicle-record (.fzp) output for the duration of a
+        run -- the vehicle-trajectory REPLAY data source, separate from the
+        four KPI evaluation types :meth:`configure_network_performance_evaluation`
+        arms. Ids verified empirically (see the module-level comment above
+        :data:`_VEHICLE_RECORD_ATTR_IDS`); ``write_file`` is the arm toggle
+        (there is no separate "collect data" flag), ``write_database`` is
+        explicitly forced False (this codebase only ever reads the .fzp file,
+        never Vissim's own results database for vehicle records).
+
+        ``resolution`` (default :data:`DEFAULT_VEHICLE_RECORD_RESOLUTION`,
+        i.e. write every 5th simulation timestep) is a genuine, live-verified
+        proportional write-cadence divisor -- NOT left at the network's own
+        default, unlike ``filterType``/``inclParkVehs``. See the module-level
+        SIZE FINDING comment: a real, moderately busy network at the default
+        resolution (1) produced a payload the browser outright aborted.
+
+        Must run after ``load_network`` and before ``RunContinuous``/
+        ``RunSingleStep`` (evaluations are not retroactive -- see
+        docs/phase2/00-EXECUTION-GUIDE.md SS3.1), same timing contract as
+        :meth:`configure_network_performance_evaluation`.
+
+        Raises ``RuntimeError`` (never returns a lie) if any ``SetAttValue``
+        call fails OR if the paired read-back
+        (:meth:`get_vehicle_record_evaluation_config`) doesn't match what was
+        just written -- callers (``routers/simulations.py``'s agent-run job
+        runner) MUST treat this failure as non-fatal to the run itself (KPIs
+        are primary; trajectory recording is best-effort) and simply record
+        ``trajectory_recorded: False`` rather than aborting the job.
+        """
+        to_time = max(int(duration_s), 1)
+        target = {
+            "write_file": True,
+            "write_database": False,
+            "from_time": int(from_time),
+            "to_time": to_time,
+            "resolution": max(int(resolution), 1),
+        }
+        try:
+            evaluation = self.vissim.Evaluation
+            for field, attr_id in _VEHICLE_RECORD_ATTR_IDS.items():
+                evaluation.SetAttValue(attr_id, target[field])
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not configure vehicle-record evaluation: {exc}"
+            ) from exc
+
+        config = self.get_vehicle_record_evaluation_config()
+        if config != target:
+            raise RuntimeError(
+                "Vehicle-record evaluation read-back mismatch after configuration: "
+                f"wrote {target}, read back {config}."
+            )
+        return config
+
+    def get_vehicle_record_evaluation_config(self) -> dict[str, Any]:
+        """Paired getter for :meth:`configure_vehicle_record_evaluation`."""
+        try:
+            evaluation = self.vissim.Evaluation
+            return {
+                "write_file": bool(int(evaluation.AttValue(_VEHICLE_RECORD_ATTR_IDS["write_file"]))),
+                "write_database": bool(int(evaluation.AttValue(_VEHICLE_RECORD_ATTR_IDS["write_database"]))),
+                "from_time": int(evaluation.AttValue(_VEHICLE_RECORD_ATTR_IDS["from_time"])),
+                "to_time": int(evaluation.AttValue(_VEHICLE_RECORD_ATTR_IDS["to_time"])),
+                "resolution": int(evaluation.AttValue(_VEHICLE_RECORD_ATTR_IDS["resolution"])),
+            }
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read vehicle-record evaluation config: {exc}"
             ) from exc
 
     def set_vehicle_input(self, input_no: int, volume: float, interval_no: int = 1) -> None:

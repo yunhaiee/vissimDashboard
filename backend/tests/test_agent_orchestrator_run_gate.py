@@ -291,6 +291,102 @@ def test_allowed_run_never_requires_artifact_manager(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# (b.1) trajectory-replay step wiring: orchestrator's step-emission choke
+# point reads trajectory_recorded/job_id off run_simulation's own returned
+# data (never the LLM's summary text) -- see docs/phase2/DECISIONS.md's
+# dated entry for the real-run-replay unit.
+# ---------------------------------------------------------------------------
+
+
+def test_run_simulation_step_carries_trajectory_recorded_and_job_id(tmp_path: Path):
+    registry = ToolRegistry()
+    work_dir = tmp_path / "session"
+    artifact_manager = ArtifactManager(source_inpx=DEMO_INPX, work_dir=work_dir)
+    artifact_manager.clone()
+    calls = _register_rigged_run_tool(
+        registry,
+        run_result={
+            "tables": ["SIMULATIONRUN", "VEHICLENETWORKPERFORMANCEMEASUREMENT_EVALUATIONTIMEINTERVALCLASS"],
+            "deleted_vehicles": 0,
+            "trajectory_recorded": True,
+        },
+    )
+
+    provider = FakeStructuredProvider(
+        [
+            _action(
+                "run_simulation",
+                summary="시뮬레이션을 실행합니다",
+                duration_s=3600,
+                random_seeds=[1, 2, 3, 4, 5],
+            ),
+            _action("respond", summary="실행을 완료했습니다", answer="시뮬레이션 실행을 완료했습니다."),
+        ]
+    )
+
+    result = run_agent_turn(
+        "1시간 시뮬레이션 돌려줘",
+        provider=provider,
+        work_dir=work_dir,
+        session_id="s-run-traj-step",
+        language="ko",
+        registry=registry,
+        gate=_AllowAllGate(),
+        engine=GuardrailEngine(),
+        artifact_manager=artifact_manager,
+    )
+
+    assert calls["count"] == 1
+    run_step = next(step for step in result.steps if step["tool"] == "run_simulation")
+    assert run_step["status"] == "ok"
+    assert run_step["trajectory_recorded"] is True
+    assert run_step["job_id"] == "fake-job"
+
+
+def test_run_simulation_step_omits_trajectory_recorded_when_not_recorded(tmp_path: Path):
+    """The default/degrade case (no trajectory_recorded in run_result at
+    all, matching tools_run.py's real 'not recorded' shape) must still
+    surface a deterministic False, never a truthy default."""
+    registry = ToolRegistry()
+    work_dir = tmp_path / "session"
+    artifact_manager = ArtifactManager(source_inpx=DEMO_INPX, work_dir=work_dir)
+    artifact_manager.clone()
+    calls = _register_rigged_run_tool(
+        registry,
+        run_result={"tables": ["SIMULATIONRUN"], "deleted_vehicles": 0},
+    )
+
+    provider = FakeStructuredProvider(
+        [
+            _action(
+                "run_simulation",
+                summary="시뮬레이션을 실행합니다",
+                duration_s=3600,
+                random_seeds=[1, 2, 3, 4, 5],
+            ),
+            _action("respond", summary="완료", answer="완료했습니다."),
+        ]
+    )
+
+    result = run_agent_turn(
+        "시뮬레이션 돌려줘",
+        provider=provider,
+        work_dir=work_dir,
+        session_id="s-run-no-traj-step",
+        language="ko",
+        registry=registry,
+        gate=_AllowAllGate(),
+        engine=GuardrailEngine(),
+        artifact_manager=artifact_manager,
+    )
+
+    assert calls["count"] == 1
+    run_step = next(step for step in result.steps if step["tool"] == "run_simulation")
+    assert run_step["trajectory_recorded"] is False
+    assert run_step["job_id"] == "fake-job"  # verification always carries job_id
+
+
+# ---------------------------------------------------------------------------
 # (c) postrun WARN findings attach to the observation (mirrors postwrite's
 #     warning-attachment helper) — missing-KPI-tables and deleted-vehicles
 # ---------------------------------------------------------------------------

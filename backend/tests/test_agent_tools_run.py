@@ -245,6 +245,7 @@ def test_run_simulation_clean_run_returns_ok_envelope_with_kpis(
             "VEHICLENETWORKPERFORMANCEMEASUREMENT_EVALUATIONTIMEINTERVALCLASS",
         ],
         "evaluation_configured": True,
+        "trajectory_recorded": False,
     }
     assert envelope["data"]["run_result"] == {
         "tables": [
@@ -253,6 +254,7 @@ def test_run_simulation_clean_run_returns_ok_envelope_with_kpis(
         ],
         "deleted_vehicles": None,
         "evaluation_configured": True,
+        "trajectory_recorded": False,
     }
     assert envelope["data"]["kpis"]["metrics"]["avg_delay_s"] == 32.4
     assert "network-performance evaluation configured" in envelope["message"]
@@ -305,6 +307,7 @@ def test_run_simulation_short_run_reports_missing_kpi_tables_and_no_kpis(
         "tables": ["SIMULATIONRUN"],
         "deleted_vehicles": None,
         "evaluation_configured": True,
+        "trajectory_recorded": False,
     }
     assert envelope["data"]["kpis"] is None
 
@@ -336,6 +339,43 @@ def test_run_simulation_missing_evaluation_configured_field_defaults_to_false(
     assert envelope["data"]["run_result"]["evaluation_configured"] is False
     assert envelope["verification"]["evaluation_configured"] is False
     assert "NOT configured" in envelope["message"]
+
+
+def test_run_simulation_surfaces_trajectory_recorded_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """trajectory_recorded (the real-run-replay unit) flows from the job
+    record through run_result/verification/message -- read directly off
+    the job runner's own field, never re-derived."""
+    source = _source_inpx(tmp_path)
+    tools_run.set_active_run_source(source)
+
+    job_work_dir = tmp_path / "job-with-trajectory"
+    job_work_dir.mkdir()
+    _write_full_results_db(job_work_dir / "run_001.db")
+    monkeypatch.setattr(simulation_runs, "job_dir", lambda job_id: job_work_dir)
+
+    fake_runner = _FakeJobRunner(
+        {
+            "id": "fake-job-traj",
+            "status": "done",
+            "result_tables": [
+                "SIMULATIONRUN",
+                "VEHICLENETWORKPERFORMANCEMEASUREMENT_EVALUATIONTIMEINTERVALCLASS",
+            ],
+            "evaluation_configured": True,
+            "trajectory_recorded": True,
+            "trajectory_paths": [str(job_work_dir / "run_001.fzp")],
+        }
+    )
+    monkeypatch.setattr(tools_run, "_run_job_and_wait", fake_runner)
+
+    envelope = dispatch("run_simulation", {"duration_s": 60}, registry=default_registry)
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"]["run_result"]["trajectory_recorded"] is True
+    assert envelope["verification"]["trajectory_recorded"] is True
+    assert "trajectories recorded" in envelope["message"]
 
 
 def test_run_simulation_multi_seed_submits_one_job_with_all_seeds(

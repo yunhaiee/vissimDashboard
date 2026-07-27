@@ -1357,11 +1357,29 @@ def run_agent_turn(
                 observation=envelope,
             )
         )
-        _emit_step(
-            steps,
-            {"summary": decision.summary, "tool": decision.tool, "status": envelope["status"]},
-            on_step,
-        )
+        step_payload: dict[str, Any] = {
+            "summary": decision.summary,
+            "tool": decision.tool,
+            "status": envelope["status"],
+        }
+        # Trajectory-replay hint wiring: deterministic, read off the tool's
+        # own returned data (never the LLM's summary text, which is neither
+        # guaranteed to mention it nor guaranteed to be in a frontend-
+        # matchable form) -- mirrors the M4 dashboard-hint precedent's
+        # choice of a generic, code-level signal over parsing prose.
+        if decision.tool == "run_simulation" and envelope["status"] == "ok":
+            tool_data = envelope.get("data") or {}
+            run_result = tool_data.get("run_result") or {}
+            # "verification" is a top-level envelope key (toolkit.dispatch's
+            # _build_success_envelope pulls it out of the tool's returned
+            # dict), never nested under "data" -- see toolkit.py's
+            # _PASSTHROUGH_RESULT_KEYS.
+            verification = envelope.get("verification") or {}
+            step_payload["trajectory_recorded"] = bool(run_result.get("trajectory_recorded", False))
+            job_id = verification.get("job_id")
+            if job_id:
+                step_payload["job_id"] = job_id
+        _emit_step(steps, step_payload, on_step)
 
     return finalize(
         AgentTurnResult(

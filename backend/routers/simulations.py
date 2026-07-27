@@ -444,10 +444,11 @@ def start_agent_simulation_job(
 
 
 def _clear_stale_result_dbs(directory: Path) -> list[Path]:
-    """Delete every ``*.db`` already present under ``directory`` and return
-    what was removed.
+    """Delete every ``*.db``/``*.fzp`` already present under ``directory``
+    and return what was removed.
 
-    A pre-existing result database must never be read as THIS run's result
+    A pre-existing result database (or, since the trajectory-replay unit,
+    vehicle-record export) must never be read as THIS run's result
     (docs/phase2/02-ROADMAP.md M2.4). A fresh, uuid-keyed job/seed directory
     should never already contain one, but this is enforced rather than
     merely assumed — a stray leftover (e.g. a crashed prior attempt that
@@ -457,17 +458,58 @@ def _clear_stale_result_dbs(directory: Path) -> list[Path]:
     removed: list[Path] = []
     if not directory.exists():
         return removed
-    for stale_db in directory.rglob("*.db"):
-        try:
-            stale_db.unlink()
-            removed.append(stale_db)
-        except OSError:
-            logger.warning("Could not remove stale result db %s", stale_db)
+    for pattern in ("*.db", "*.fzp"):
+        for stale_file in directory.rglob(pattern):
+            try:
+                stale_file.unlink()
+                removed.append(stale_file)
+            except OSError:
+                logger.warning("Could not remove stale result file %s", stale_file)
     if removed:
         logger.warning(
-            "Removed %d stale result db(s) from %s before running", len(removed), directory
+            "Removed %d stale result file(s) from %s before running", len(removed), directory
         )
     return removed
+
+
+def _trajectory_max_s() -> float:
+    """The duration cap (sim seconds) under which an agent run also arms
+    vehicle-record (.fzp) output for trajectory replay, so a long batch
+    study (e.g. a 2-hour, 5-seed run) never silently writes gigabytes of
+    per-vehicle rows. Read fresh on every call (not cached at import time)
+    so tests/ops can override ``AGENT_RUN_TRAJECTORY_MAX_S`` without a
+    process restart, mirroring ``services/agent/structured.py``'s
+    ``ladder_ceiling_seconds()`` / ``routers/assistant.py``'s
+    ``_stream_ping_interval_seconds()`` env-fallback pattern.
+    """
+    raw = os.getenv("AGENT_RUN_TRAJECTORY_MAX_S", "").strip()
+    if not raw:
+        return 1800.0
+    try:
+        return float(raw)
+    except ValueError:
+        return 1800.0
+
+
+def _trajectory_resolution() -> int:
+    """Vehicle-record write-cadence divisor (every Nth simulation timestep
+    is written -- see ``services.vissim_com``'s ``DEFAULT_VEHICLE_RECORD_RESOLUTION``
+    and its module-level SIZE FINDING comment: a real, moderately busy
+    network at the network's own default resolution produced a .fzp whose
+    resolved JSON payload the browser outright aborted). Env-overridable
+    (``AGENT_RUN_TRAJECTORY_RESOLUTION``) for the same reason
+    :func:`_trajectory_max_s` is -- ops/tests can tune it without a process
+    restart.
+    """
+    from services.vissim_com import DEFAULT_VEHICLE_RECORD_RESOLUTION
+
+    raw = os.getenv("AGENT_RUN_TRAJECTORY_RESOLUTION", "").strip()
+    if not raw:
+        return DEFAULT_VEHICLE_RECORD_RESOLUTION
+    try:
+        return max(int(raw), 1)
+    except ValueError:
+        return DEFAULT_VEHICLE_RECORD_RESOLUTION
 
 
 def _read_result_table_names(db_path: Path) -> set[str]:
@@ -510,6 +552,8 @@ def _run_agent_simulation_job(
         work_dir = job_dir(job_id)
         work_dir.mkdir(parents=True, exist_ok=True)
         all_tables: set[str] = set()
+        trajectory_paths: list[str] = []
+        trajectory_max_s = _trajectory_max_s()
 
         for index, seed in enumerate(random_seeds):
             seed_dir = work_dir / f"seed_{index:02d}"
@@ -560,6 +604,51 @@ def _run_agent_simulation_job(
                     eval_config,
                 )
 
+                # Vehicle-record (.fzp) output -- the trajectory-REPLAY data
+                # source (extends Phase 3's playback to real completed agent
+                # runs), separate from the four KPI evaluation types above.
+                # GUARDED by duration (AGENT_RUN_TRAJECTORY_MAX_S, default
+                # 1800s) so a long batch study never silently writes
+                # gigabytes of per-vehicle rows (~1.46MB/60s observed live
+                # against Urban Intersection Beijing.CN via
+                # tools/vehicle_record_probe.py -- see docs/phase2/
+                # DECISIONS.md). UNLIKE network-performance evaluation above,
+                # a configuration failure here is deliberately NON-FATAL:
+                # KPIs are this job's primary deliverable, trajectory replay
+                # is a best-effort bonus -- log a warning and continue with
+                # trajectory_configured=False rather than failing the whole
+                # run.
+                trajectory_configured = False
+                if duration_s <= trajectory_max_s:
+                    try:
+                        vehrec_config = ctrl.configure_vehicle_record_evaluation(
+                            duration_s=duration_s, resolution=_trajectory_resolution()
+                        )
+                        trajectory_configured = True
+                        logger.info(
+                            "Seed %d (job %s): vehicle-record evaluation configured: %s",
+                            index,
+                            job_id,
+                            vehrec_config,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Seed %d (job %s): could not arm vehicle-record (.fzp) output -- "
+                            "continuing without trajectory recording for this seed: %s",
+                            index,
+                            job_id,
+                            exc,
+                        )
+                else:
+                    logger.info(
+                        "Seed %d (job %s): duration_s=%s exceeds AGENT_RUN_TRAJECTORY_MAX_S=%s -- "
+                        "skipping trajectory recording for this seed.",
+                        index,
+                        job_id,
+                        duration_s,
+                        trajectory_max_s,
+                    )
+
                 # RunContinuous is a single COM call that runs to SimPeriod
                 # internally (~7.3x realtime observed) — RunSingleStep in a
                 # Python loop costs minutes for 60 sim-seconds and is
@@ -580,6 +669,23 @@ def _run_agent_simulation_job(
                         "SIMULATIONRUN row -- the run did not complete."
                     )
                 all_tables |= tables
+
+                if trajectory_configured:
+                    fzp_paths = sorted(seed_dir.rglob("*.fzp"), key=lambda p: p.stat().st_mtime)
+                    if fzp_paths:
+                        trajectory_paths.append(str(fzp_paths[-1]))
+                    else:
+                        # Armed but nothing materialized -- treat as "not
+                        # recorded" for this seed rather than raising: the
+                        # run itself (proven above via the SIMULATIONRUN
+                        # row) is still a genuine success, and KPIs remain
+                        # available regardless.
+                        logger.warning(
+                            "Seed %d (job %s): vehicle-record output was armed but no .fzp "
+                            "file was found after the run -- not recorded for this seed.",
+                            index,
+                            job_id,
+                        )
             finally:
                 try:
                     ctrl.disconnect()
@@ -605,6 +711,19 @@ def _run_agent_simulation_job(
             # job record (rather than implied by "status == done") so tools_run.py's
             # run_simulation can state it in the tool envelope without re-deriving it.
             evaluation_configured=True,
+            # trajectory_recorded/trajectory_paths: the vehicle-trajectory
+            # replay data source (extends Phase 3 playback to real completed
+            # agent runs). Unlike evaluation_configured, this is genuinely
+            # best-effort -- False whenever duration_s exceeded
+            # AGENT_RUN_TRAJECTORY_MAX_S or arming/writing the .fzp failed
+            # for every seed (logged as warnings above, never a job
+            # failure). trajectory_paths carries one absolute path per seed
+            # that actually recorded one; the frames endpoint
+            # (routers/trajectories.py) reads only trajectory_paths[0] --
+            # trajectories across seeds cannot be meaningfully averaged the
+            # way KPI tables are, so replay shows one representative run.
+            trajectory_recorded=bool(trajectory_paths),
+            trajectory_paths=trajectory_paths,
         )
         logger.info("Agent simulation job %s completed (%d seed run(s))", job_id, len(random_seeds))
     except Exception as exc:
