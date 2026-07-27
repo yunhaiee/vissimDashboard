@@ -1470,6 +1470,40 @@ def test_conflict_area_data_unavailable_skipped_when_data_absent():
     assert not any(f.constraint_id == "conflict_area_data_unavailable" for f in findings)
 
 
+def test_conflict_area_data_unavailable_message_caps_enumerated_pairs():
+    # Live bug (2026-07-27): a real network with 144 Passive conflict-area
+    # pairs enumerated all 144 into the message, and via M3.3's
+    # accumulated-warnings carry-forward that wall of text rode EVERY
+    # subsequent answer in the session. The rendered message must cap the
+    # enumerated pairs and name the remainder count instead; `details` must
+    # keep the FULL, uncapped list so nothing is lost for traces/eval.
+    passive = [_conflict_area(str(i), str(i), str(i + 1), "PASSIVE") for i in range(12)]
+    shadow = _shadow_model(conflict_areas=passive)
+    action = _action("set_signal_cycle", sc_no="1", cycle=90)
+    extra = {"written_value": 90, "readback_value": 90}
+
+    findings = run_checks("postwrite", action, shadow, extra)
+
+    matches = [f for f in findings if f.constraint_id == "conflict_area_data_unavailable"]
+    assert len(matches) == 1
+    finding = matches[0]
+
+    # details: full, uncapped, machine-readable list — all 12 pairs present.
+    assert finding.details["passive_count"] == 12
+    assert len(finding.details["link_pairs"]) == 12
+    assert "11-12" in finding.details["link_pairs"]
+
+    # messages: capped at 8 enumerated pairs + an explicit remainder count,
+    # in every language — never all 12 pairs, and never a bare count with no
+    # sense of what's missing.
+    for lang, remainder_fragment in (("ko", "외 4"), ("en", "4 more"), ("ja", "他4")):
+        message = finding.messages[lang]
+        assert remainder_fragment in message, f"{lang} message missing remainder note: {message!r}"
+        assert "11-12" not in message, f"{lang} message should not enumerate past the cap: {message!r}"
+        for i in range(8):
+            assert f"{i}-{i + 1}" in message, f"{lang} message missing capped pair {i}-{i + 1}: {message!r}"
+
+
 # ---------------------------------------------------------------------------
 # #new conflict_area_status_change_confirm — v2 unit (4)
 # ---------------------------------------------------------------------------
@@ -2140,6 +2174,31 @@ def test_route_integrity_unverifiable_skipped_when_routes_absent():
     findings = run_checks("postwrite", action, shadow, {})
 
     assert not any(f.constraint_id == "route_integrity_unverifiable" for f in findings)
+
+
+def test_route_integrity_unverifiable_message_caps_enumerated_routes():
+    # Same unbounded-enumeration fix as conflict_area_data_unavailable
+    # (2026-07-27): disconnected-route count scales with network size, so
+    # the rendered message must cap it too. `details` keeps the full list.
+    shadow = _shadow_model()
+    shadow["routes"] = [{"id": str(i), "disconnected": True} for i in range(10)]
+    action = _action("set_vehicle_input_volume", input_no="1", volume=600)
+
+    findings = run_checks("postwrite", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "route_integrity_unverifiable"]
+    assert len(matches) == 1
+    finding = matches[0]
+
+    assert finding.details["disconnected_routes"] == [str(i) for i in range(10)]
+
+    for lang, remainder_fragment in (("ko", "외 2"), ("en", "2 more"), ("ja", "他2")):
+        message = finding.messages[lang]
+        assert remainder_fragment in message, f"{lang} message missing remainder note: {message!r}"
+        assert "7" in message, f"{lang} message missing last capped route id 7: {message!r}"
+        assert "8" not in message and "9" not in message, (
+            f"{lang} message should not enumerate past the cap: {message!r}"
+        )
 
 
 def test_stale_route_files_after_edit_fires_when_enabled_and_stale():

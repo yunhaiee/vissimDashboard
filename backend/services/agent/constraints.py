@@ -416,6 +416,38 @@ def _coerce_number(raw: Any, cast: Callable[[Any], Any] = float) -> Any | None:
         return None
 
 
+# Live-bug fix (2026-07-27): a hit list whose size tracks NETWORK size (one
+# entry per conflict-area link pair, per disconnected route, ...) rendered in
+# full into a message used to flood the answer -- 144 conflict-area pairs on
+# one real network -- and, via M3.3's accumulated-warnings carry-forward,
+# that same wall of text then rode EVERY subsequent answer in the session,
+# not just the one that first surfaced it. Cap the ENUMERATED, human-facing
+# text at ``limit`` items with an explicit, localized remainder count; the
+# caller is still responsible for putting the FULL, uncapped list in the
+# Finding's ``details`` (machine-readable, for traces/eval -- nothing here is
+# the only place the complete data lives).
+def _capped_join(
+    items: list[str], unit_ko: str, unit_en: str, unit_ja: str, limit: int = 8
+) -> tuple[str, str, str]:
+    """Join ``items`` for display, capping the enumerated prefix at ``limit``
+    and folding any remainder into a "+N more" suffix per language. Returns
+    ``(ko, en, ja)`` strings, identical (no suffix) when ``len(items) <=
+    limit``. ``unit_*`` names what's being counted in the remainder note
+    (e.g. "쌍"/"pairs"/"件" for conflict-area link pairs) so it reads as a
+    sentence, not a bare number.
+    """
+    if len(items) <= limit:
+        joined = ", ".join(items)
+        return joined, joined, joined
+    shown = ", ".join(items[:limit])
+    remainder = len(items) - limit
+    return (
+        f"{shown} 외 {remainder}{unit_ko}",
+        f"{shown}, and {remainder} more {unit_en}",
+        f"{shown} 他{remainder}{unit_ja}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # #1 object_not_found (refuse, preflight)
 # ---------------------------------------------------------------------------
@@ -1097,6 +1129,12 @@ def _check_signal_cycle_change_may_break_corridor_sync(
     if not siblings:
         return None
 
+    # Capped for the human-facing message only (same fix as
+    # conflict_area_data_unavailable / route_integrity_unverifiable) — a
+    # network-wide common background cycle can leave many controllers
+    # sharing one cycle time. suggested_fix/details below keep the full,
+    # uncapped list; only the rendered sentence is capped.
+    siblings_ko, siblings_en, siblings_ja = _capped_join(siblings, "개", "controllers", "件")
     return Finding(
         constraint_id="signal_cycle_change_may_break_corridor_sync",
         tier="warn",
@@ -1106,7 +1144,9 @@ def _check_signal_cycle_change_may_break_corridor_sync(
             sc_no=sc_no,
             old_cycle=target.get("cycle_time"),
             new_cycle=raw_new_cycle,
-            siblings=", ".join(siblings),
+            siblings_ko=siblings_ko,
+            siblings_en=siblings_en,
+            siblings_ja=siblings_ja,
         ),
         suggested_fix={"coordinated_controllers": siblings},
         details={"sc_no": sc_no, "old_cycle": old_cycle, "new_cycle": new_cycle, "siblings": siblings},
@@ -1121,15 +1161,15 @@ register(
         tier="warn",
         check=_check_signal_cycle_change_may_break_corridor_sync,
         message_ko="신호제어기 '{sc_no}'의 주기를 {old_cycle}초에서 {new_cycle}초로 변경하려 합니다. "
-        "동일한 {old_cycle}초 주기를 공유하는 다른 제어기({siblings})가 있어, 이는 교차로 단위가 "
+        "동일한 {old_cycle}초 주기를 공유하는 다른 제어기({siblings_ko})가 있어, 이는 교차로 단위가 "
         "아니라 코리도 단위의 변경일 수 있습니다 — 이 제어기만 바꾸면 옵셋 연동(green wave)이 "
         "몇 주기 안에 깨질 수 있습니다.",
         message_en="Changing signal controller '{sc_no}' cycle from {old_cycle}s to {new_cycle}s. "
-        "Other controller(s) ({siblings}) currently share the same {old_cycle}s cycle, "
+        "Other controller(s) ({siblings_en}) currently share the same {old_cycle}s cycle, "
         "suggesting this is a corridor-level change, not an intersection-level one — changing "
         "only this controller can break the coordinated green wave within a few cycles.",
         message_ja="信号制御機 '{sc_no}' のサイクルを{old_cycle}秒から{new_cycle}秒に変更しようと"
-        "しています。同じ{old_cycle}秒サイクルを共有する他の制御機({siblings})が存在するため、"
+        "しています。同じ{old_cycle}秒サイクルを共有する他の制御機({siblings_ja})が存在するため、"
         "これは交差点単位ではなくコリドー単位の変更である可能性があります — この制御機のみを"
         "変更すると、連携(グリーンウェーブ)が数サイクル以内に崩れる可能性があります。",
     )
@@ -1590,16 +1630,25 @@ def _check_conflict_area_data_unavailable(
     if not passive:
         return None
 
-    pairs = ", ".join(
+    link_pairs = [
         "-".join(str(x) for x in ca.get("link_pair", ("?", "?"))) for ca in passive
-    )
+    ]
+    # Capped for the human-facing message (see _capped_join); `details`
+    # below keeps the full, uncapped list so traces/eval lose nothing.
+    pairs_ko, pairs_en, pairs_ja = _capped_join(link_pairs, "쌍", "pairs", "件")
     return Finding(
         constraint_id="conflict_area_data_unavailable",
         tier="warn",
         phase="postwrite",
-        messages=_render("conflict_area_data_unavailable", count=len(passive), pairs=pairs),
+        messages=_render(
+            "conflict_area_data_unavailable",
+            count=len(passive),
+            pairs_ko=pairs_ko,
+            pairs_en=pairs_en,
+            pairs_ja=pairs_ja,
+        ),
         suggested_fix=None,
-        details={"passive_count": len(passive), "link_pairs": pairs},
+        details={"passive_count": len(passive), "link_pairs": link_pairs},
     )
 
 
@@ -1610,14 +1659,14 @@ register(
         phase="postwrite",
         tier="warn",
         check=_check_conflict_area_data_unavailable,
-        message_ko="충돌구간(conflict area) {count}개가 Passive(우선권 없음) 상태입니다: {pairs}. "
+        message_ko="충돌구간(conflict area) {count}개가 Passive(우선권 없음) 상태입니다: {pairs_ko}. "
         "Vissim은 이를 COM으로 추가/삭제할 수 없고, 지오메트리 편집 시 설정이 조용히 사라집니다 — "
         "번호가 아니라 링크 쌍으로 스냅샷하고, Passive 개수가 늘지 않는지 회귀 지표로 추적하세요.",
-        message_en="{count} conflict area(s) are Passive (no right-of-way control): {pairs}. "
+        message_en="{count} conflict area(s) are Passive (no right-of-way control): {pairs_en}. "
         "Vissim has no COM add/remove for these, and their configuration is silently lost on "
         "any geometry edit — snapshot by link pair (never by number), and track the count of "
         "Passive conflict areas as a regression metric.",
-        message_ja="{count}件の錯綜区間(conflict area)がPassive(優先権制御なし)状態です: {pairs}。"
+        message_ja="{count}件の錯綜区間(conflict area)がPassive(優先権制御なし)状態です: {pairs_ja}。"
         "VissimはこれらをCOM経由で追加/削除できず、ジオメトリ編集時に設定が静かに失われます — "
         "番号ではなくリンクペアでスナップショットし、Passiveの件数が増えないことを回帰指標として"
         "追跡してください。",
@@ -2571,11 +2620,21 @@ def _check_route_integrity_unverifiable(
     if not disconnected:
         return None
 
+    # Capped for the human-facing message (see _capped_join, same fix as
+    # conflict_area_data_unavailable) -- disconnected-route count scales with
+    # network size just like conflict-area pairs does; `details` below keeps
+    # the full, uncapped list so traces/eval lose nothing.
+    routes_ko, routes_en, routes_ja = _capped_join(disconnected, "개", "routes", "件")
     return Finding(
         constraint_id="route_integrity_unverifiable",
         tier="warn",
         phase="postwrite",
-        messages=_render("route_integrity_unverifiable", routes=", ".join(disconnected)),
+        messages=_render(
+            "route_integrity_unverifiable",
+            routes_ko=routes_ko,
+            routes_en=routes_en,
+            routes_ja=routes_ja,
+        ),
         suggested_fix=None,
         details={"disconnected_routes": disconnected},
     )
@@ -2588,14 +2647,14 @@ register(
         phase="postwrite",
         tier="warn",
         check=_check_route_integrity_unverifiable,
-        message_ko="경로 {routes}이(가) 이번 편집 이후 단절되었습니다. Vissim은 링크를 나눈 뒤 새 "
+        message_ko="경로 {routes_ko}이(가) 이번 편집 이후 단절되었습니다. Vissim은 링크를 나눈 뒤 새 "
         "링크를 삽입해도 기존 경로를 자동 복구하지 않으며, 마지막 남은 경로를 지우면 그 이동은 "
         "암묵적으로 금지됩니다 — 복구 여부와 이동 금지 여부를 사용자에게 확인받으세요.",
-        message_en="Route(s) {routes} are disconnected after this edit. Vissim does not "
+        message_en="Route(s) {routes_en} are disconnected after this edit. Vissim does not "
         "auto-restore a route after splitting/deleting links it ran across (even inserting new "
         "links back doesn't reconnect it), and removing the last route covering a movement "
         "implicitly bans that turn — confirm with the user whether to repair or accept the ban.",
-        message_ja="経路 {routes} が今回の編集後に切断されました。Vissimはリンクを分割/削除した後、"
+        message_ja="経路 {routes_ja} が今回の編集後に切断されました。Vissimはリンクを分割/削除した後、"
         "新しいリンクを挿入しても既存の経路を自動復元しません。また、ある動線をカバーする最後の"
         "経路を削除すると、その動線は暗黙的に禁止されます — 修復するか禁止を受け入れるかユーザーに"
         "確認してください。",

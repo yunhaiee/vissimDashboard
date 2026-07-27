@@ -1539,3 +1539,39 @@ conflict areas truncate honestly and machine-readably; identical retries cost ze
 iterations. test_iteration_cap_forces_deterministic_completion had PINNED the buggy 6×
 dispatch as correct — updated to 1 dispatch + 5 duplicate refusals; that was the bug,
 never the spec.
+
+---
+
+## 2026-07-27 — Live-demo fix: capped enumeration in constraint MESSAGES (not details)
+
+**Context:** distinct from the observation-rendering fix above (that one truncates the
+planner's TOOL-RESULT observations feeding the model; this one is the human-facing Finding
+`messages` `constraints.py` itself renders). `conflict_area_data_unavailable` (#18) joined
+EVERY Passive link pair into its message — 144 pairs on one real network — and via M3.3's
+accumulated-warnings carry-forward that wall of text rode every subsequent answer in the
+session, not just the turn that first surfaced it.
+
+**Decision:** added `_capped_join(items, unit_ko, unit_en, unit_ja, limit=8)` — caps the
+enumerated, human-facing text at 8 items with a localized "+N more" remainder note (ko "...
+외 N개/쌍", en "..., and N more ...", ja "...他N件"); `Finding.details` always keeps the
+FULL, uncapped list (machine-readable, for traces/eval — nothing here is the only place the
+complete data lives). Applied to `conflict_area_data_unavailable` (the reported case) and,
+after grepping every `", ".join(...)` in the constraint catalog for the same shape, to the
+two other checks that enumerate a list whose size tracks NETWORK size rather than the
+current action: `route_integrity_unverifiable` (#31, disconnected routes — live since v2
+unit ⑥) and `signal_cycle_change_may_break_corridor_sync` (siblings sharing a cycle time —
+a network-wide common background cycle can leave many controllers matching). Left uncapped:
+`object_not_found`'s difflib candidates (already `n=5`-capped) and `route_not_found_in_decision`'s
+candidates (bounded to one routing decision's own routes); left as-is (dead CATALOG-GAP code
+that never fires against a real `run_result`/shadow-model shape today, so no live flood risk
+yet — `gridlock_reports_los_a`, `evaluation_warmup_start_at_zero`,
+`delay_measurement_truncated_by_queue`, `demand_scale_route_double_count_gap`,
+`link_geometry_edit_reference_integrity`) but worth revisiting if/when their data sources land.
+
+**Consequence:** `conflict_area_data_unavailable`/`route_integrity_unverifiable`/
+`signal_cycle_change_may_break_corridor_sync` messages now cap at 8 enumerated items + an
+explicit remainder count in all three languages; `details["link_pairs"]`/
+`details["disconnected_routes"]`/`suggested_fix["coordinated_controllers"]` stay full and
+uncapped. New tests pin both the cap and the full-details invariant
+(`test_conflict_area_data_unavailable_message_caps_enumerated_pairs`,
+`test_route_integrity_unverifiable_message_caps_enumerated_routes`).

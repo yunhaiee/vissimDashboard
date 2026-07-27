@@ -352,8 +352,9 @@ export default function FloatingAssistant() {
   // custom-window-event seam as "vissim:page-context" just above (that
   // pattern is the established precedent this follows, per the task brief).
   // Opens the panel if it was closed and prefills the composer with the
-  // ko prompt CurationBar derived from the card's title; the user still has
-  // to press send, so this never sends anything on the user's behalf.
+  // prompt CurationBar derived from the card's title, in the active UI
+  // language (ko/en/ja); the user still has to press send, so this never
+  // sends anything on the user's behalf.
   useEffect(() => {
     function handleAssistantHandoff(event: Event) {
       const detail = (event as CustomEvent<{ prompt?: string }>).detail;

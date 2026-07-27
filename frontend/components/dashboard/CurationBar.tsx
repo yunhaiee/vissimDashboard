@@ -5,6 +5,12 @@ import { useCallback, useRef, useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
 import { curateDashboard, type DashboardCurationSpec, type DashboardInsightCard } from "@/lib/api";
 
+// Matches FloatingAssistant.tsx's local alias for useLanguage()'s `t` --
+// kept as a local type (not exported from LanguageProvider) for the same
+// reason that file defines its own copy: this is the shape callers need,
+// not a shared contract worth centralizing for two call sites.
+type Translate = (ko: string, en: string, ja?: string) => string;
+
 // Handoff to the full agent (FloatingAssistant, globally mounted in
 // AppShell — see components/AppShell.tsx) via the same custom-window-event
 // seam FloatingAssistant already uses for page context (its
@@ -17,12 +23,23 @@ import { curateDashboard, type DashboardCurationSpec, type DashboardInsightCard 
 // into the real conversational/action surface.
 const ASSISTANT_HANDOFF_EVENT = "vissim:assistant-handoff";
 
-function buildHandoffPrompt(card: Pick<DashboardInsightCard, "title">): string {
-  return `"${card.title}"에 대해 자세히 설명해줘. 필요하면 조치도 도와줘.`;
+// Live-demo fix (2026-07-27): this used to hardcode a Korean prompt
+// regardless of the active UI language, so an en/ja user clicking the
+// handoff button got a Korean composer prefill. Routed through the same
+// t()/useLanguage() plumbing every other user-facing string in this file
+// already uses -- `t` is CurationBar's own hook value, passed in rather than
+// read from a module-level `useLanguage()` call (this function lives outside
+// the component so it stays a plain, testable helper).
+function buildHandoffPrompt(card: Pick<DashboardInsightCard, "title">, t: Translate): string {
+  return t(
+    `"${card.title}"에 대해 자세히 설명해줘. 필요하면 조치도 도와줘.`,
+    `Tell me more about "${card.title}" and help me act on it if needed.`,
+    `"${card.title}"について詳しく教えてください。必要であれば対応もお手伝いします。`,
+  );
 }
 
-function requestAgentHandoff(card: Pick<DashboardInsightCard, "title">) {
-  window.dispatchEvent(new CustomEvent(ASSISTANT_HANDOFF_EVENT, { detail: { prompt: buildHandoffPrompt(card) } }));
+function requestAgentHandoff(card: Pick<DashboardInsightCard, "title">, t: Translate) {
+  window.dispatchEvent(new CustomEvent(ASSISTANT_HANDOFF_EVENT, { detail: { prompt: buildHandoffPrompt(card, t) } }));
 }
 
 const TONE_STYLES: Record<string, string> = {
@@ -284,11 +301,12 @@ export default function CurationBar({
                     {/* Handoff affordance (deliverable 3): always shown, small
                         + ghost-styled so it never competes with the card's own
                         content — opens/focuses FloatingAssistant and prefills
-                        a ko prompt derived from this card's title via the
-                        vissim:assistant-handoff window event above. */}
+                        a prompt (in the active UI language, ko/en/ja) derived
+                        from this card's title via the vissim:assistant-handoff
+                        window event above. */}
                     <button
                       type="button"
-                      onClick={() => requestAgentHandoff(card)}
+                      onClick={() => requestAgentHandoff(card, t)}
                       className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-800"
                     >
                       {t("에이전트에게 요청", "Ask the agent", "エージェントに依頼")}
