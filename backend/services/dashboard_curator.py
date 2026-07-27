@@ -13,10 +13,20 @@ The output contract (validated before returning):
         {"title": str, "body": str, "tone": "info"|"success"|"warning",
          "related_chart": chart_id | None}
       ],
+      "kpi_metrics": [metric_key, ...],    # OPTIONAL drill-down into
+                                            # network-kpi-comparison; see
+                                            # chart_catalog.KPI_METRIC_LABELS
+                                            # for the vocabulary. Empty list
+                                            # means "no restriction, show all
+                                            # six" -- same as an absent field
+                                            # or a field full of unknown keys.
     }
 
 On any provider/parsing failure the fallback spec shows the default charts
-with no cards and carries the error, so the dashboard never breaks.
+with no cards and carries the error, so the dashboard never breaks. The
+fallback spec deliberately never carries "kpi_metrics" either: it is a
+generic default, not a real per-metric answer, so the network-kpi section
+must fall back to showing all six rather than half-trusting a guess.
 """
 from __future__ import annotations
 
@@ -25,7 +35,13 @@ import logging
 import re
 from typing import Any
 
-from services.chart_catalog import DEFAULT_VISIBLE_IDS, VALID_CHART_IDS, catalog_prompt_block
+from services.chart_catalog import (
+    DEFAULT_VISIBLE_IDS,
+    VALID_CHART_IDS,
+    VALID_KPI_METRIC_KEYS,
+    catalog_prompt_block,
+    kpi_metric_vocab_prompt_line,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +84,7 @@ def build_curation_prompt(
         "choose ONLY the charts that help answer it, and write short insight cards "
         "that answer the question in plain text using the data provided.\n\n"
         f"Available charts:\n{catalog_prompt_block()}\n\n"
+        f"{kpi_metric_vocab_prompt_line()}\n\n"
         f"Dashboard data (per-scenario comparison):\n{context_json}\n\n"
         f"User question: {message}\n\n"
         "Rules:\n"
@@ -80,11 +97,19 @@ def build_curation_prompt(
         "- Use only numbers present in the data; never invent values. If the data "
         "cannot answer the question, say so in the headline and choose the closest "
         "relevant charts.\n"
-        "- tone: 'warning' for problems/risks, 'success' for improvements, else 'info'.\n\n"
-        "Respond with ONLY a JSON object, no markdown fences, no prose, exactly this shape:\n"
+        "- tone: 'warning' for problems/risks, 'success' for improvements, else 'info'.\n"
+        "- If network-kpi-comparison is one of the charts AND the question is about "
+        "specific network metric(s) (not a general overview), also include an "
+        "optional top-level \"kpi_metrics\" array with the metric key(s) the "
+        "question is about plus any direct causal companion (e.g. speed and delay "
+        "move together, so a speed question should also include DELAYAVG). Omit "
+        "\"kpi_metrics\" entirely when the question is not metric-specific — then "
+        "all six metrics are shown.\n\n"
+        "Respond with ONLY a JSON object, no markdown fences, no prose, exactly this shape "
+        "(the \"kpi_metrics\" key is optional and may be omitted):\n"
         '{"headline": "...", "charts": ["chart_id"], '
         '"insight_cards": [{"title": "...", "body": "...", "tone": "info", '
-        '"related_chart": "chart_id or null"}]}'
+        '"related_chart": "chart_id or null"}], "kpi_metrics": ["METRIC_KEY"]}'
     )
 
 
@@ -160,10 +185,21 @@ def validate_spec(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     if not charts and not cards and not headline:
         return None
 
+    # Optional per-metric drill-down for network-kpi-comparison. Unknown keys
+    # are dropped rather than failing the whole spec (same policy as charts
+    # above) -- an empty/absent/all-unknown field means "no restriction",
+    # which the frontend renders as all six metrics, same as today.
+    kpi_metrics: list[str] = []
+    for metric_key in raw.get("kpi_metrics") or []:
+        normalized = str(metric_key).strip().upper()
+        if normalized in VALID_KPI_METRIC_KEYS and normalized not in kpi_metrics:
+            kpi_metrics.append(normalized)
+
     return {
         "headline": headline,
         "charts": charts or list(DEFAULT_VISIBLE_IDS),
         "insight_cards": cards,
+        "kpi_metrics": kpi_metrics,
     }
 
 

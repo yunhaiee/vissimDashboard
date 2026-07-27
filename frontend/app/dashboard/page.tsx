@@ -138,6 +138,15 @@ export default function DashboardPage() {
   const [datasetRevision, setDatasetRevision] = useState("default");
   const [curationSpec, setCurationSpec] = useState<DashboardCurationSpec | null>(null);
   const [audience, setAudience] = useState<"plain" | "expert">("plain");
+  // Local-only "reveal all six" override for the network-KPI metric filter
+  // below (spec.kpi_metrics narrows which of the six KPI_METRICS render).
+  // Deliberately NOT part of the curation spec: clicking it must not change
+  // what question was asked, only what's visible for the current answer --
+  // mirrors CurationBar's own "Show everything" vs. re-asking distinction.
+  const [kpiMetricsExpanded, setKpiMetricsExpanded] = useState(false);
+  useEffect(() => {
+    setKpiMetricsExpanded(false);
+  }, [curationSpec]);
   // Map section 지도/도식 toggle. Leaflet ("map") stays the default; "diagram"
   // mounts NetworkViewer over the raw .inpx coordinates. The network is fetched
   // lazily — only once the diagram has been requested at least once — and then
@@ -385,6 +394,25 @@ export default function DashboardPage() {
     if (hasData && realCounts.length > 0) ids.push("field-count-validation");
     return ids;
   }, [hasData, realCounts.length]);
+
+  // Metric-level focus mode inside network-kpi-comparison: a spec.kpi_metrics
+  // subset narrows the six KPI cards down to the ones the question was
+  // actually about (e.g. "왜 평균속도가 낮아?" -> speed + its delay companion),
+  // instead of curation only ever being able to filter whole sections.
+  // null here means "no restriction" -- absent/empty spec, or an
+  // unrecognized/full set all fall back to showing every metric, same as
+  // before this field existed.
+  const kpiMetricsFilter = useMemo(() => {
+    const requested = curationSpec?.kpi_metrics;
+    if (!requested || requested.length === 0) return null;
+    const valid = KPI_METRICS.map((metric) => metric.key).filter((key) => requested.includes(key));
+    if (valid.length === 0 || valid.length >= KPI_METRICS.length) return null;
+    return valid;
+  }, [curationSpec]);
+  const visibleKpiMetrics = useMemo(() => {
+    if (!kpiMetricsFilter || kpiMetricsExpanded) return KPI_METRICS;
+    return KPI_METRICS.filter((metric) => kpiMetricsFilter.includes(metric.key));
+  }, [kpiMetricsFilter, kpiMetricsExpanded]);
 
   const minRunCount = useMemo(() => {
     const counts = activeScenarios.map((scenario) => results[scenario.id]?.run_count ?? 1).filter((count) => count > 0);
@@ -745,6 +773,25 @@ export default function DashboardPage() {
             title={t("네트워크 KPI 비교", "Network KPI Comparison")}
             subtitle={t("선택한 시나리오의 주요 네트워크 지표를 상대 막대로 비교합니다.", "Compare key network indicators across selected scenarios using relative bars.")}
           />
+          {kpiMetricsFilter && !kpiMetricsExpanded && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+              <span>
+                {t(
+                  `6개 중 ${kpiMetricsFilter.length}개 지표 표시 중`,
+                  `Showing ${kpiMetricsFilter.length} of 6 metrics`,
+                  `6件中${kpiMetricsFilter.length}件の指標を表示中`,
+                )}
+              </span>
+              <span aria-hidden>·</span>
+              <button
+                type="button"
+                onClick={() => setKpiMetricsExpanded(true)}
+                className="font-semibold text-slate-600 underline decoration-dotted underline-offset-2 hover:text-slate-900"
+              >
+                {t("전체 지표 보기", "Show all metrics", "全指標を表示")}
+              </button>
+            </div>
+          )}
           {minRunCount === 1 && (
             <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800">
               {t(
@@ -754,7 +801,7 @@ export default function DashboardPage() {
             </p>
           )}
           <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {KPI_METRICS.map((metric) => (
+            {visibleKpiMetrics.map((metric) => (
               <KpiCard
                 key={metric.key}
                 label={translateKpiMetricLabel(metric.key, t)}

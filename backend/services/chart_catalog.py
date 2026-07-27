@@ -54,7 +54,10 @@ CHART_CATALOG: list[dict[str, Any]] = [
         "description": (
             "Network-wide KPI cards per scenario: average delay (s/veh), average "
             "speed (km/h), stops per vehicle, total travel time and related totals. "
-            "The core numeric comparison."
+            "The core numeric comparison. This section always shows all six metrics "
+            "by default; set the top-level optional \"kpi_metrics\" field (see "
+            "metric vocabulary below) to narrow it to only the metric(s) the "
+            "question is actually about."
         ),
         "answers": "What are the network-level numbers for each scenario?",
         "default_visible": True,
@@ -83,6 +86,22 @@ CHART_CATALOG: list[dict[str, Any]] = [
 VALID_CHART_IDS = {entry["id"] for entry in CHART_CATALOG}
 DEFAULT_VISIBLE_IDS = [entry["id"] for entry in CHART_CATALOG if entry["default_visible"]]
 
+# Fixed six-metric vocabulary for the network-kpi-comparison section's
+# optional per-metric drill-down (DashboardCurationSpec.kpi_metrics, see
+# dashboard_curator.py). Keys mirror KPI_METRICS in
+# frontend/app/dashboard/page.tsx exactly (both the id strings and the
+# ordering) — keep the two lists in sync when either changes.
+KPI_METRIC_LABELS: dict[str, str] = {
+    "DELAYAVG": "average delay (s/veh)",
+    "SPEEDAVG": "average speed (km/h)",
+    "TRAVTMTOT": "total travel time (s)",
+    "DELAYTOT": "total delay (s)",
+    "VEHARR": "arrived vehicles (veh)",
+    "STOPSAVG": "average stops (stops/veh)",
+}
+KPI_METRIC_KEYS: list[str] = list(KPI_METRIC_LABELS)
+VALID_KPI_METRIC_KEYS = set(KPI_METRIC_KEYS)
+
 
 def catalog_prompt_block() -> str:
     """Render the catalog as a compact prompt block for the curator LLM."""
@@ -93,3 +112,9 @@ def catalog_prompt_block() -> str:
             f"{entry['description']} Answers: {entry['answers']}"
         )
     return "\n".join(lines)
+
+
+def kpi_metric_vocab_prompt_line() -> str:
+    """One-line description of the kpi_metrics vocabulary for the curator prompt."""
+    vocab = ", ".join(f"{key} ({label})" for key, label in KPI_METRIC_LABELS.items())
+    return f"network-kpi-comparison metric vocabulary: {vocab}."

@@ -1040,6 +1040,12 @@ export interface DashboardCurationSpec {
   error?: string;
   model?: string;
   audience?: string;
+  /** Optional per-metric drill-down into the network-kpi-comparison section
+   * (backend/services/chart_catalog.py KPI_METRIC_LABELS is the vocabulary).
+   * Absent, empty, or an unrecognized/full set all mean "no restriction" --
+   * the dashboard shows all six metric cards, same as before this field
+   * existed. A fallback spec (fallback: true) never carries this field. */
+  kpi_metrics?: string[];
 }
 
 export async function curateDashboard(

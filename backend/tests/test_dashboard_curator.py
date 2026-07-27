@@ -6,11 +6,12 @@ from fastapi.testclient import TestClient
 
 import main
 from routers import assistant as assistant_endpoint
-from services.chart_catalog import DEFAULT_VISIBLE_IDS, VALID_CHART_IDS
+from services.chart_catalog import DEFAULT_VISIBLE_IDS, KPI_METRIC_KEYS, VALID_CHART_IDS
 from services.dashboard_curator import (
     build_curation_prompt,
     curate_dashboard,
     extract_json_object,
+    fallback_spec,
     validate_spec,
 )
 
@@ -60,6 +61,57 @@ def test_validate_spec_filters_unknown_charts_and_tones():
     assert spec["insight_cards"][0]["related_chart"] is None
 
 
+def test_validate_spec_keeps_valid_kpi_metrics_subset():
+    spec = validate_spec(
+        {
+            "headline": "h",
+            "charts": ["network-kpi-comparison"],
+            "kpi_metrics": ["SPEEDAVG", "delayavg", "SPEEDAVG"],
+        }
+    )
+    # Case-normalized, deduped, order preserved.
+    assert spec["kpi_metrics"] == ["SPEEDAVG", "DELAYAVG"]
+
+
+def test_validate_spec_drops_unknown_kpi_metrics():
+    spec = validate_spec(
+        {
+            "headline": "h",
+            "charts": ["network-kpi-comparison"],
+            "kpi_metrics": ["SPEEDAVG", "NOT_A_METRIC", "totally_bogus"],
+        }
+    )
+    assert spec["kpi_metrics"] == ["SPEEDAVG"]
+
+
+def test_validate_spec_kpi_metrics_absent_or_empty_is_empty_list():
+    spec_absent = validate_spec({"headline": "h", "charts": ["network-kpi-comparison"]})
+    assert spec_absent["kpi_metrics"] == []
+
+    spec_empty = validate_spec(
+        {"headline": "h", "charts": ["network-kpi-comparison"], "kpi_metrics": []}
+    )
+    assert spec_empty["kpi_metrics"] == []
+
+    spec_all_unknown = validate_spec(
+        {"headline": "h", "charts": ["network-kpi-comparison"], "kpi_metrics": ["nope", "still_no"]}
+    )
+    assert spec_all_unknown["kpi_metrics"] == []
+
+
+def test_validate_spec_accepts_full_kpi_metric_vocabulary():
+    spec = validate_spec(
+        {"headline": "h", "charts": ["network-kpi-comparison"], "kpi_metrics": list(KPI_METRIC_KEYS)}
+    )
+    assert spec["kpi_metrics"] == list(KPI_METRIC_KEYS)
+
+
+def test_fallback_spec_never_carries_kpi_metrics():
+    spec = fallback_spec("boom")
+    assert "kpi_metrics" not in spec
+    assert spec["charts"] == list(DEFAULT_VISIBLE_IDS)
+
+
 def test_curate_dashboard_happy_path():
     payload = json.dumps(
         {
@@ -86,12 +138,31 @@ def test_curate_dashboard_happy_path():
     assert "ONLY a JSON object" in provider.last_prompt
 
 
+def test_curate_dashboard_happy_path_with_kpi_metrics():
+    payload = json.dumps(
+        {
+            "headline": "Average speed is lower because delay rose.",
+            "charts": ["network-kpi-comparison"],
+            "insight_cards": [],
+            "kpi_metrics": ["SPEEDAVG", "DELAYAVG"],
+        }
+    )
+    provider = JsonProvider(payload)
+    result = curate_dashboard(provider, "왜 평균속도가 낮아?", {"compare_summary": {}})
+    assert result["fallback"] is False
+    assert result["kpi_metrics"] == ["SPEEDAVG", "DELAYAVG"]
+    # The prompt must document the metric vocabulary + the optional field.
+    assert "kpi_metrics" in provider.last_prompt
+    assert "SPEEDAVG" in provider.last_prompt
+
+
 def test_curate_dashboard_falls_back_on_garbage():
     provider = JsonProvider("I cannot answer that, sorry!")
     result = curate_dashboard(provider, "question", {})
     assert result["fallback"] is True
     assert result["charts"] == list(DEFAULT_VISIBLE_IDS)
     assert result["insight_cards"] == []
+    assert "kpi_metrics" not in result
 
 
 def test_prompt_language_and_audience_rules():

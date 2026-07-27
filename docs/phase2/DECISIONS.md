@@ -1575,3 +1575,21 @@ explicit remainder count in all three languages; `details["link_pairs"]`/
 uncapped. New tests pin both the cap and the full-details invariant
 (`test_conflict_area_data_unavailable_message_caps_enumerated_pairs`,
 `test_route_integrity_unverifiable_message_caps_enumerated_routes`).
+
+---
+
+## 2026-07-27 — Metric-level curation filter for network-kpi-comparison
+
+**Context:** curation filtered at section granularity only — a metric question still
+rendered all six KPI cards inside the section.
+
+**Decision:** DashboardCurationSpec gains OPTIONAL kpi_metrics (subset of the fixed
+six-key vocabulary, documented in chart_catalog for the LLM: the asked metric + causal
+companions; omitted for non-metric questions). Server validation drops unknown keys
+without failing; absent/empty/full = no restriction; the fallback spec never carries it
+(a curation failure shows everything, never a half-trusted guess). Frontend renders the
+subset + a local-only "전체 지표 보기" reveal whose state resets on each new spec; the
+section pill stays section-scoped.
+
+**Consequence:** fully additive; browser-verified both directions ("왜 평균속도가 낮아?" →
+DELAYAVG/SPEEDAVG/STOPSAVG only; overview question → all six, no note).
