@@ -90,7 +90,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import config
 from services.agent.toolkit import tool
 from services.inpx_parser import parse_network
-from services.signal_parser import parse_signal_controllers
+from services.signal_parser import parse_signal_controllers, parse_signal_programs
 
 ObjectType = Literal[
     "link",
@@ -784,6 +784,47 @@ def _signal_to_contract_shape(info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _flatten_signal_program_splits(signal_programs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A flat, one-entry-per-(controller, program, signal group) view of
+    ``signal_programs``, keyed by a synthesized ``"{sc_no}.{prog_no}.
+    {sg_no}"`` ``id`` — the FIRST three-part identity in this codebase, for
+    the same reason routes/composition entries needed two parts: a green
+    split's real identity is the (controller, program, signal group) triple
+    (the SAME signal group carries a DIFFERENT green window in each program
+    — Beijing's SG 1 is green 1–15 s in program 2 but wraps 130→15 s in
+    program 1). ``green_window`` holds BOTH edges as one dict so
+    ``guardrails.py``'s single ``value_field`` compare (recursive,
+    numeric-tolerant ``_values_differ``) covers the whole split as one
+    write target. ``None`` when the SG's command shape is not a simple
+    one-green-window program (the write path refuses those)."""
+    flat: list[dict[str, Any]] = []
+    for controller in signal_programs:
+        for prog in controller.get("programs", []):
+            for split in prog.get("sg_splits", []):
+                green_window = None
+                if split.get("simple") and split.get("green_start_s") is not None:
+                    green_window = {
+                        "green_start_s": split["green_start_s"],
+                        "green_end_s": split["green_end_s"],
+                    }
+                flat.append(
+                    {
+                        "id": f"{controller['sc_no']}.{prog['prog_no']}.{split['sg_no']}",
+                        "sc_no": controller["sc_no"],
+                        "program_no": prog["prog_no"],
+                        "sg_no": split["sg_no"],
+                        "sg_name": split.get("sg_name", ""),
+                        "green_window": green_window,
+                        "amber_s": split.get("amber_s"),
+                        "min_green_s": split.get("min_green_s"),
+                        "head_count": split.get("head_count", 0),
+                        "cycle_s": prog.get("cycle_s"),
+                        "active": str(prog.get("prog_no")) == str(controller.get("active_program_no") or ""),
+                    }
+                )
+    return flat
+
+
 def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
     net = parse_network(str(inpx_path))
     root = ET.parse(inpx_path).getroot()
@@ -792,6 +833,7 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
     routing_decisions = _parse_routing_decisions(root, link_ids)
     vehicle_compositions = _parse_vehicle_compositions(root)
     des_speed_decisions = _parse_des_speed_decisions(root)
+    signal_programs = parse_signal_programs(inpx_path)
     return {
         "links": net["links"],
         "nodes": net["nodes"],
@@ -806,6 +848,13 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         "des_speed_decisions": des_speed_decisions,
         "des_speed_decision_entries": _flatten_des_speed_decision_entries(des_speed_decisions),
         "des_speed_distributions": _parse_speed_distributions(root),
+        # v2a unit ⑨: fixed-time signal-program green splits — nested for the
+        # planner (get_signal_programs), flat for guardrails.py (the
+        # nothing-else-moved diff + target-persisted check), same split as
+        # routes/composition/des-speed entries. See signal_parser.
+        # parse_signal_programs's docstring for the storage-reality findings.
+        "signal_programs": signal_programs,
+        "signal_program_splits": _flatten_signal_program_splits(signal_programs),
     }
 
 
@@ -1288,4 +1337,73 @@ def get_des_speed_distributions(params: GetDesSpeedDistributionsParams) -> dict[
             f"Showing {len(capped)} of {total} speed distributions. Narrow with distribution_no "
             "to see a specific one instead of the whole list."
         )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# get_signal_programs -- v2a unit ⑨
+#
+# BOUNDED OUTPUT from day one (the 2026-07-27 lesson): a real network can
+# carry many controllers (Karlsruhe 3D: 19), each with up to 22 signal
+# groups per program and multiple programs -- an unfiltered call caps the
+# controller list at _SIGNAL_PROGRAMS_DEFAULT_CAP with an explicit truncated
+# flag + hint, and controller_no narrows to one.
+# ---------------------------------------------------------------------------
+
+#: Controller cap for an UNFILTERED get_signal_programs call. Beijing's one
+#: controller alone renders 2 programs x 22 SGs; ten controllers of that
+#: shape stay inside the recent-observation budget while still covering
+#: every example network's realistic ask in one call.
+_SIGNAL_PROGRAMS_DEFAULT_CAP = 10
+
+_UNSUPPORTED_PROGRAM_NOTE = (
+    "Signal program data is not inspectable for this controller type -- its control "
+    "logic is external (e.g. a .vap/.prbc supply file) or not fixed-time; green splits "
+    "cannot be read or edited here by design."
+)
+
+
+class GetSignalProgramsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    controller_no: str | None = Field(
+        default=None,
+        description="Exact signal controller 'no' to return (narrows to at most one result).",
+    )
+
+
+@tool(name="get_signal_programs", tier="read", provider="inspect", params=GetSignalProgramsParams)
+def get_signal_programs(params: GetSignalProgramsParams) -> dict[str, Any]:
+    """Return each signal controller's fixed-time signal PROGRAMS with per-signal-group green splits: program no/name/cycle_s, active_program_no (the program Vissim actually runs -- a controller can carry several), and each signal group's {sg_no, sg_name, green_start_s, green_end_s, amber_s, min_green_s, head_count}. green_start_s is when the group turns green and green_end_s is when it switches to red (a wrapping window with start > end is valid -- green spans the cycle boundary). Use this BEFORE set_signal_green_split: the write needs the exact (controller, program, signal group) triple, and edits normally target the ACTIVE program. Only FIXEDTIME/FIXEDTIMESIMPLE controllers carry inspectable programs; other types report an empty list with a note. Optionally filter by controller_no -- an unfiltered call on a large network returns only the first 10 controllers (with an explicit truncated flag and a hint)."""
+    controllers = _current_shadow_model()["signal_programs"]
+
+    if params.controller_no is not None:
+        controllers = [c for c in controllers if str(c.get("sc_no")) == str(params.controller_no)]
+
+    total = len(controllers)
+    filtered = params.controller_no is not None
+    if not filtered:
+        capped = controllers[:_SIGNAL_PROGRAMS_DEFAULT_CAP]
+        truncated = total > len(capped)
+        controllers = capped
+    else:
+        truncated = False
+
+    rendered = [
+        (
+            {**c, "note": _UNSUPPORTED_PROGRAM_NOTE}
+            if not c.get("programs") and c.get("controller_type") not in ("FIXEDTIME", "FIXEDTIMESIMPLE")
+            else c
+        )
+        for c in controllers
+    ]
+
+    result: dict[str, Any] = {"count": total, "signal_programs": rendered}
+    if not filtered:
+        result["truncated"] = truncated
+        if truncated:
+            result["hint"] = (
+                f"Showing {len(rendered)} of {total} signal controllers. Narrow with "
+                "controller_no to see a specific one instead of the whole list."
+            )
     return result

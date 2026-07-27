@@ -2,7 +2,7 @@
 
 The definitive list of what the AI agent can do in Vissim, by verification tier.
 Doctrine: **a verb ships only when its verification method does** (00-EXECUTION-GUIDE §4).
-Updated 2026-07-27 (post-Phase-2 + v2 queue units ①–⑧ + conflict-area read filters).
+Updated 2026-07-27 (post-Phase-2 + v2 queue units ①–⑨ + conflict-area read filters).
 
 Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned · 🚫 permanent refusal
 
@@ -27,6 +27,9 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
   `get_des_speed_distributions`, v2a unit ⑧)
   - 40-cap + `decision_no`/`link_no` filters; distributions as a separate 60-cap
     lookup read (shared table, not needed on every decisions read)
+- ✅ Signal programs (`get_signal_programs`, v2a unit ⑨)
+  - Per controller: programs (active marked), per-SG green windows/amber/min-green;
+    10-controller cap + `controller_no` filter
 
 ### Edits
 - ✅ Vehicle input volume
@@ -45,6 +48,7 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ⚠️ Signal cycle
   - `CycTm` only — disconnected from a program-driven controller's real cycle by
     Vissim design; refusal message explains the limitation
+  - Real per-program cycle/green data now readable via `get_signal_programs` (unit ⑨)
 - ✅ Reduced-speed area (`set_reduced_speed_area`, v2 unit ②)
   - First non-COM verb: XML injection + reparse read-back + live LoadNet/run oracle
 - ✅ Conflict-area status (`set_conflict_area_status`, v2 unit ④)
@@ -70,6 +74,15 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
     no grouping attribute — the tool never infers pairs from geometry
   - Distributions live on `Net.SpeedDistributions` (shared with reduced-speed
     areas); no `DesSpeedDistributions` collection exists
+- ✅ Signal green splits (`set_signal_green_split`, v2a unit ⑨)
+  - The "blob writer": FIXEDTIME programs are edited through the COM-writable
+    `IntSupplyData` Vissig XML (no COM program interface exists — verified against
+    the whole type library); FIXEDTIMESIMPLE via plain EndRed/EndGreen
+  - `program_no` REQUIRED — only the ProgNo-selected program is simulated; editing
+    an inactive program warns loudly
+  - Behavior-oracle-verified (SimBreakAt + SigState flip), not just readback/XML
+  - Vissim silently accepts beyond-cycle values AND conflicting greens (live-proven)
+    — `green_split_outside_cycle` refuses, the always-on confirm educates
 
 ### Runs
 - ✅ Multi-seed simulation with auto-armed evaluation (all four evaluation types)
@@ -104,10 +117,11 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ⬜ Priority-rule gap/headway parameters
 - ⬜ Driving-behavior params via duplicate-then-edit (expert-gated)
 - ⬜ Dwell-time distributions
-- ⬜ Signal green-splits within a program (needs the signal-program blob writer)
+- ✅ Signal green-splits within a program — shipped, see V1 edits (the blob writer
+  turned out to be a COM-writable attribute, not an offline XML rewrite)
 - ⬜ Vehicle type properties (accel/decel curves, lengths, weight/power)
 
-**Status: 6 of 12 bullets shipped (one tool, `set_des_speed_decision`, satisfies both
+**Status: 7 of 12 bullets shipped (one tool, `set_des_speed_decision`, satisfies both
 the PAIRS and distribution-assignment line items).**
 
 ---

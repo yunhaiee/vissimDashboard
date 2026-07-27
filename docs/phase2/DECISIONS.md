@@ -1868,3 +1868,50 @@ decisions → persisted XML with both writes and both siblings byte-correct → 
 clean). TOOL-CATALOG v2a: 6 of 12 bullets shipped (one tool satisfies both the PAIRS
 and distribution-assignment items). Full suite 1096 passed / 1 skipped / known RAG
 failure only.
+
+---
+
+## 2026-07-27 — v2a unit ⑨: green splits shipped; the "opaque blob" is a COM-writable attribute
+
+**Context:** probed live on Beijing.CN (FIXEDTIME) + Air Taxi Vertiport (FIXEDTIMESIMPLE).
+The 26.0 type library has NO signal-program interface (35 signal interfaces scanned, zero
+program ones); SG EndGreen/EndRed are real ids but read disconnected 0.0 and REFUSE
+writes on program-driven controllers ("Attribute End of green cannot be changed" —
+CycTm's exact pattern). CENTRAL FINDING: IntSupplyData (the base64 Vissig <sc> XML
+embedding the entire program: progs→prog(cycletime ms)→sgs→cmds with display 3=green-on
+1=red-on, ms units) is itself readable AND writable via SetAttValue; LoadNet does not
+validate the blob's stale checkSum, SaveNetAs neither recomputes it nor drops the edit,
+and a SimBreakAt+SigState oracle proved the edited program DRIVES simulated behavior
+(SG1 GREEN→RED at t=11 after moving red-begin 15→8 s). FIXEDTIMESIMPLE green windows are
+plain endRed/endGreen attributes. Constraint physics live-proven: Vissim refuses
+negatives but silently ACCEPTS beyond-cycle values and fully-overlapping greens;
+Beijing's intergreenmatrices is EMPTY (no conflict data exists to check against).
+SC ProgNo is writable (program switch — not exposed as a verb this unit). Landmines:
+SGs.ItemByKey exists and fails closed (unlike units ⑦/⑧'s child collections); progNo
+selects the simulated program while signal_parser's dashboard phases read progs[0]
+(pre-existing gap, spun off as a chip).
+
+**Decision:** set_signal_green_split(sc_no, sg_no, program_no, green_start_s,
+green_end_s) — program_no REQUIRED (first THREE-part identity {sc}.{prog}.{sg}; only
+ProgNo's program is simulated — forcing the triple kills the wrong-program silent
+failure); FIXEDTIME writes rewrite the decoded blob's one cmd pair and SetAttValue it
+back, SIMPLE writes EndRed/EndGreen; wrapping windows (start > end) valid, never
+refused. New parse_signal_programs (active program marked; non-simple cmd shapes
+flagged, never guessed; min-green claimed only where a real datum exists) feeds shadow
+signal_programs + flat signal_program_splits whose green_window dict is the single
+guardrails value_field (partial-edge persistence still fails the compare). Registry
+54→58: signal_program_split_not_found (refuse, candidates + active marker),
+green_split_outside_cycle (refuse — our screen is the ONLY one, Vissim accepts
+silently), green_split_below_min_green (warn, datum-gated),
+signal_green_split_change_confirm (always-fires: old→new echo, head count, wrap-aware
+overlap list with the honest "overlap ≠ conflict, geometry not in data" caveat, loud
+inactive-program warning, conflicting-greens education). #4 extended in place to gate
+the new tool. get_signal_programs read (10-controller cap + controller_no filter).
+
+**Consequence:** fixed-time green splits are inspectable and editable end to end,
+live-verified through the full pipeline INCLUDING a behavior oracle (the proof class
+CycTm never had) and sibling-untouched blob evidence (prog2/sg2 + all of prog1
+byte-identical after the edit). The blob writer never touches checkSum — if a future
+Vissim version starts validating it, load_check + the persisted check fail loudly, not
+silently. TOOL-CATALOG v2a 7 of 12. Full suite 1129 passed / 1 skipped / known RAG
+failure only.

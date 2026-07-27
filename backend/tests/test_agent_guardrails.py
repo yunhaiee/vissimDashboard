@@ -28,6 +28,7 @@ def _shadow_model(
     routes: list[dict[str, Any]] | None = None,
     vehicle_composition_entries: list[dict[str, Any]] | None = None,
     des_speed_decision_entries: list[dict[str, Any]] | None = None,
+    signal_program_splits: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -50,6 +51,11 @@ def _shadow_model(
         # (id = "{decision_no}.{veh_class_no}") -- see tools_network.
         # _flatten_des_speed_decision_entries for the real shape this mirrors.
         "des_speed_decision_entries": des_speed_decision_entries if des_speed_decision_entries is not None else [],
+        # v2a unit ⑨: the FLAT signal_program_splits list (id =
+        # "{sc_no}.{program_no}.{sg_no}", the first THREE-part identity) --
+        # see tools_network._flatten_signal_program_splits for the real shape
+        # this mirrors.
+        "signal_program_splits": signal_program_splits if signal_program_splits is not None else [],
     }
 
 
@@ -1386,6 +1392,137 @@ def test_postwrite_des_speed_decision_extra_target_check_silent_when_action_is_u
 
     assert report.findings == []
     assert report.blocking is False
+
+
+# ---------------------------------------------------------------------------
+# postwrite — set_signal_green_split (v2a unit ⑨): three-part identity,
+# green_window dict as the single value_field
+# ---------------------------------------------------------------------------
+
+
+def _green_split_entry(
+    sc_no: str,
+    program_no: str,
+    sg_no: str,
+    *,
+    green_start_s: float | None = 10.0,
+    green_end_s: float | None = 40.0,
+    active: bool = True,
+) -> dict[str, Any]:
+    window = None
+    if green_start_s is not None:
+        window = {"green_start_s": green_start_s, "green_end_s": green_end_s}
+    return {
+        "id": f"{sc_no}.{program_no}.{sg_no}",
+        "sc_no": sc_no,
+        "program_no": program_no,
+        "sg_no": sg_no,
+        "sg_name": f"SG{sg_no}",
+        "green_window": window,
+        "amber_s": 3.0,
+        "min_green_s": None,
+        "head_count": 2,
+        "cycle_s": 90.0,
+        "active": active,
+    }
+
+
+def _green_split_verification(start: float, end: float) -> dict[str, Any]:
+    window = {"green_start_s": start, "green_end_s": end}
+    return {"written_value": dict(window), "readback_value": dict(window)}
+
+
+def test_postwrite_signal_green_split_target_persisted_check_happy_path():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        signal_program_splits=[_green_split_entry("1", "2", "1", green_start_s=1.0, green_end_s=15.0)]
+    )
+    after = _shadow_model(
+        signal_program_splits=[_green_split_entry("1", "2", "1", green_start_s=1.0, green_end_s=8.0)]
+    )
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="2", green_start_s=1.0, green_end_s=8.0
+    )
+
+    report = engine.postwrite(action, before, after, _green_split_verification(1.0, 8.0))
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_signal_green_split_target_persisted_check_fires_when_not_persisted():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        signal_program_splits=[_green_split_entry("1", "2", "1", green_start_s=1.0, green_end_s=15.0)]
+    )
+    after = _shadow_model(
+        signal_program_splits=[_green_split_entry("1", "2", "1", green_start_s=1.0, green_end_s=15.0)]
+    )  # unchanged -- the blob write never reached the saved file
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="2", green_start_s=1.0, green_end_s=8.0
+    )
+
+    report = engine.postwrite(action, before, after, _green_split_verification(1.0, 8.0))
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "signal_program_splits"
+    assert check["object_id"] == "1.2.1"
+    assert check["field"] == "green_window"
+    assert check["saved_value"] == {"green_start_s": 1.0, "green_end_s": 15.0}
+
+
+def test_postwrite_signal_green_split_partial_edge_persistence_still_fires():
+    # Only ONE edge of the window reached the file -- the dict-valued
+    # green_window compare must flag it (this is exactly why both edges live
+    # in one value_field).
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        signal_program_splits=[_green_split_entry("1", "2", "1", green_start_s=1.0, green_end_s=15.0)]
+    )
+    after = _shadow_model(
+        signal_program_splits=[_green_split_entry("1", "2", "1", green_start_s=2.0, green_end_s=8.0)]
+    )  # green_end landed, green_start drifted to a different value
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="2", green_start_s=1.0, green_end_s=8.0
+    )
+
+    report = engine.postwrite(action, before, after, _green_split_verification(1.0, 8.0))
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_id"] == "1.2.1"
+
+
+def test_postwrite_signal_green_split_diff_flags_an_unrelated_sgs_window_change():
+    # The blob rewrite touched a DIFFERENT signal group's window too -- the
+    # nothing-else-moved diff must surface it as evidence (the whole reason
+    # signal_program_splits joined _SHADOW_OBJECT_ID_FIELDS).
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        signal_program_splits=[
+            _green_split_entry("1", "2", "1", green_start_s=1.0, green_end_s=15.0),
+            _green_split_entry("1", "2", "2", green_start_s=63.0, green_end_s=105.0),
+        ]
+    )
+    after = _shadow_model(
+        signal_program_splits=[
+            _green_split_entry("1", "2", "1", green_start_s=1.0, green_end_s=8.0),
+            _green_split_entry("1", "2", "2", green_start_s=50.0, green_end_s=105.0),  # NOT the target
+        ]
+    )
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="2", green_start_s=1.0, green_end_s=8.0
+    )
+
+    report = engine.postwrite(action, before, after, _green_split_verification(1.0, 8.0))
+
+    assert report.blocking is True
+    evidence = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        item["object_class"] == "signal_program_splits" and item["object_id"] == "1.2.2"
+        for item in evidence
+    )
 
 
 # ---------------------------------------------------------------------------

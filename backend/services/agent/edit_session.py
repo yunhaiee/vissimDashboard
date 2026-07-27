@@ -242,6 +242,29 @@ class VissimEditSession:
     def get_des_speed_decision(self, decision_no: int, veh_class_no: int) -> str:
         return self._ensure_connected().get_des_speed_decision(decision_no, veh_class_no)
 
+    # v2a unit ⑨: fixed-time signal-program green-split verbs. FIXEDTIME
+    # controllers are written via the COM-writable IntSupplyData program
+    # blob, FIXEDTIMESIMPLE via plain EndRed/EndGreen attributes — both
+    # verified live (backend/tools/probe_signal_programs.py); see
+    # VissimController.set_signal_green_split's docstring.
+
+    def set_signal_green_split(
+        self,
+        sc_no: int,
+        sg_no: int,
+        green_start_s: float,
+        green_end_s: float,
+        program_no: int | None = None,
+    ) -> dict[str, Any]:
+        return self._ensure_connected().set_signal_green_split(
+            sc_no, sg_no, green_start_s, green_end_s, program_no
+        )
+
+    def get_signal_green_split(
+        self, sc_no: int, sg_no: int, program_no: int | None = None
+    ) -> dict[str, Any]:
+        return self._ensure_connected().get_signal_green_split(sc_no, sg_no, program_no)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

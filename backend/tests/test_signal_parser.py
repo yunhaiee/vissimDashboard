@@ -179,3 +179,165 @@ def test_real_air_taxi_fixedtimesimple_controllers_have_no_com_readable_cycle():
 
     assert signals["11"]["cycle_time"] == 0
     assert signals["11"]["phases"] == []
+
+
+
+# ---------------------------------------------------------------------------
+# parse_signal_programs (v2a unit 9) -- synthetic fixtures mirroring the two
+# real storage shapes verified live by backend/tools/probe_signal_programs.py:
+# FIXEDTIME (Vissig program embedded in the base64 intSupplyData blob, cmd
+# display 3 = green-on / 1 = red-on, begins in ms, progNo selects the active
+# program) and FIXEDTIMESIMPLE (plain endRed/endGreen signalGroup attributes).
+# ---------------------------------------------------------------------------
+
+from services.signal_parser import parse_signal_programs  # noqa: E402
+
+_PROGRAM_BLOB_XML = (
+    '<sc version="202001" id="1" name="" checkSum="344017207">'
+    "<sgs>"
+    '<sg id="1" name="01" defaultSignalSequence="3"/>'
+    '<sg id="2" name="02" defaultSignalSequence="3"/>'
+    "</sgs>"
+    "<intergreenmatrices/>"
+    "<progs>"
+    '<prog id="1" cycletime="130000" offset="0" name="Signal program">'
+    "<sgs>"
+    '<sg sg_id="1" signal_sequence="3">'
+    '<cmds><cmd display="1" begin="15000"/><cmd display="3" begin="130000"/></cmds>'
+    '<fixedstates><fixedstate display="2" duration="1000"/>'
+    '<fixedstate display="4" duration="3000"/></fixedstates>'
+    "</sg>"
+    '<sg sg_id="2" signal_sequence="3">'
+    '<cmds><cmd display="3" begin="88000"/><cmd display="1" begin="130000"/></cmds>'
+    '<fixedstates><fixedstate display="4" duration="3000"/></fixedstates>'
+    "</sg>"
+    "</sgs>"
+    "</prog>"
+    '<prog id="2" cycletime="130000" offset="0" name="Test">'
+    "<sgs>"
+    '<sg sg_id="1" signal_sequence="3">'
+    '<cmds><cmd display="3" begin="1000"/><cmd display="1" begin="15000"/></cmds>'
+    '<fixedstates><fixedstate display="4" duration="3000"/></fixedstates>'
+    "</sg>"
+    "</sgs>"
+    "</prog>"
+    "</progs>"
+    "</sc>"
+)
+_PROGRAM_ISD = base64.b64encode(_PROGRAM_BLOB_XML.encode("utf-8")).decode("ascii")
+
+
+def _program_network_xml() -> str:
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        "<network>"
+        "<signalControllers>"
+        f'<signalController no="1" name="Main" type="FIXEDTIME" progNo="2" intSupplyData="{_PROGRAM_ISD}">'
+        '<sgs><signalGroup no="1" name="North"/><signalGroup no="2" name="East"/></sgs>'
+        "</signalController>"
+        '<signalController no="2" name="Gate" type="FIXEDTIMESIMPLE" progNo="1" cycTm="999">'
+        '<sgs><signalGroup no="1" name="" amber="0" redAmber="0" endGreen="0" endRed="998" minGreen="5"/></sgs>'
+        "</signalController>"
+        '<signalController no="3" name="Ext" type="VAP" progNo="1"/>'
+        "</signalControllers>"
+        '<signalHeads>'
+        '<signalHead no="1" sg="1 1" lane="10 1"/>'
+        '<signalHead no="2" sg="1 1" lane="10 2"/>'
+        '<signalHead no="3" sg="1 2" lane="11 1"/>'
+        "</signalHeads>"
+        "</network>"
+    )
+
+
+def test_parse_signal_programs_fixedtime_blob(tmp_path: Path):
+    inpx = _write_inpx(tmp_path, _program_network_xml())
+
+    controllers = {c["sc_no"]: c for c in parse_signal_programs(inpx)}
+
+    sc1 = controllers["1"]
+    assert sc1["controller_type"] == "FIXEDTIME"
+    assert sc1["active_program_no"] == "2"
+    progs = {p["prog_no"]: p for p in sc1["programs"]}
+    assert set(progs) == {"1", "2"}
+    assert progs["1"]["cycle_s"] == 130.0
+
+    # Program 1 SG 1 WRAPS: green-on at 130 s, red-on at 15 s.
+    p1_splits = {s["sg_no"]: s for s in progs["1"]["sg_splits"]}
+    assert p1_splits["1"]["green_start_s"] == 130.0
+    assert p1_splits["1"]["green_end_s"] == 15.0
+    assert p1_splits["1"]["amber_s"] == 3.0
+    assert p1_splits["1"]["red_amber_s"] == 1.0
+    assert p1_splits["1"]["simple"] is True
+    # SG names come from the OUTER <signalGroup name="..."> map.
+    assert p1_splits["1"]["sg_name"] == "North"
+    assert p1_splits["1"]["head_count"] == 2
+    assert p1_splits["2"]["green_start_s"] == 88.0
+    assert p1_splits["2"]["head_count"] == 1
+    # min-green is never claimed for blob programs (unproven datum).
+    assert p1_splits["1"]["min_green_s"] is None
+
+    # Program 2 (the ACTIVE one) SG 1: green 1..15 s.
+    p2_splits = {s["sg_no"]: s for s in progs["2"]["sg_splits"]}
+    assert p2_splits["1"]["green_start_s"] == 1.0
+    assert p2_splits["1"]["green_end_s"] == 15.0
+
+
+def test_parse_signal_programs_fixedtimesimple_plain_attributes(tmp_path: Path):
+    inpx = _write_inpx(tmp_path, _program_network_xml())
+
+    controllers = {c["sc_no"]: c for c in parse_signal_programs(inpx)}
+
+    sc2 = controllers["2"]
+    assert sc2["controller_type"] == "FIXEDTIMESIMPLE"
+    assert len(sc2["programs"]) == 1
+    prog = sc2["programs"][0]
+    assert prog["prog_no"] == "1"
+    assert prog["cycle_s"] == 999.0
+    split = prog["sg_splits"][0]
+    # endRed = green start (end of red), endGreen = green end.
+    assert split["green_start_s"] == 998.0
+    assert split["green_end_s"] == 0.0
+    assert split["min_green_s"] == 5.0
+    assert split["simple"] is True
+
+
+def test_parse_signal_programs_external_controller_reports_empty_programs(tmp_path: Path):
+    inpx = _write_inpx(tmp_path, _program_network_xml())
+
+    controllers = {c["sc_no"]: c for c in parse_signal_programs(inpx)}
+
+    assert controllers["3"]["controller_type"] == "VAP"
+    assert controllers["3"]["programs"] == []
+
+
+def test_parse_signal_programs_non_simple_cmd_shape_flagged_not_guessed(tmp_path: Path):
+    # TWO green windows for one SG -- must surface simple=False with None
+    # edges, never a guessed single window.
+    blob = (
+        '<sc id="9"><progs><prog id="1" cycletime="60000">'
+        '<sgs><sg sg_id="1">'
+        '<cmds><cmd display="3" begin="0"/><cmd display="1" begin="10000"/>'
+        '<cmd display="3" begin="30000"/><cmd display="1" begin="40000"/></cmds>'
+        "</sg></sgs></prog></progs></sc>"
+    )
+    isd = base64.b64encode(blob.encode("utf-8")).decode("ascii")
+    xml_text = _network_xml(
+        f'<signalController no="9" type="FIXEDTIME" progNo="1" intSupplyData="{isd}"/>'
+    )
+    inpx = _write_inpx(tmp_path, xml_text)
+
+    controllers = {c["sc_no"]: c for c in parse_signal_programs(inpx)}
+    split = controllers["9"]["programs"][0]["sg_splits"][0]
+    assert split["simple"] is False
+    assert split["green_start_s"] is None
+    assert split["green_end_s"] is None
+
+
+def test_parse_signal_programs_undecodable_blob_reports_empty_programs(tmp_path: Path):
+    xml_text = _network_xml(
+        '<signalController no="7" type="FIXEDTIME" progNo="1" intSupplyData="!!!notbase64!!!"/>'
+    )
+    inpx = _write_inpx(tmp_path, xml_text)
+
+    controllers = {c["sc_no"]: c for c in parse_signal_programs(inpx)}
+    assert controllers["7"]["programs"] == []

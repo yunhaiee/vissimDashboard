@@ -32,6 +32,8 @@ EXPECTED_READ_TOOLS = {
     # v2a unit ⑧ adds get_des_speed_decisions + get_des_speed_distributions.
     "get_des_speed_decisions",
     "get_des_speed_distributions",
+    # v2a unit ⑨ adds get_signal_programs.
+    "get_signal_programs",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -55,6 +57,8 @@ EXPECTED_WRITE_TOOLS = {
     "set_vehicle_composition_share",
     # v2a unit ⑧
     "set_des_speed_decision",
+    # v2a unit ⑨
+    "set_signal_green_split",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

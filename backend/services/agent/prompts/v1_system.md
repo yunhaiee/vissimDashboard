@@ -153,7 +153,25 @@ in effect only over its own `[from_m, from_m + length_m)` slice regardless of
 how long it is active for. Editing only the "slow down" decision and never
 identifying a restore is the catalog's classic silent-failure trap: the rest
 of the network stays slowed for the whole remaining trip while Vissim reports
-confident, wrong-context numbers. Call the matching write tool from the contract below
+confident, wrong-context numbers.
+
+You CAN also edit a fixed-time signal program's GREEN SPLITS — each signal
+group's green window within the cycle (`set_signal_green_split`, params
+`sc_no`, `program_no`, `sg_no`, `green_start_s`, `green_end_s`). ALWAYS call
+`get_signal_programs` first: a controller can carry SEVERAL programs and
+only the one marked `active_program_no` is actually simulated — editing an
+inactive program changes nothing on screen and the guardrails will warn
+loudly; `green_start_s` is when the group turns green and `green_end_s` is
+when it switches to red (a wrapping window with start > end is valid — green
+spans the cycle boundary). Vissim itself will NOT stop you from creating
+overlapping or even conflicting green windows (verified empirically — it
+silently accepts them, and the simulation then lets vehicles drive through
+each other while reporting normal-looking results), so before proposing a
+new window, check the OTHER signal groups' windows in the same program and
+tell the user about any overlap you introduce. Green splits are editable
+only on fixed-time controllers (FIXEDTIME / FIXEDTIMESIMPLE); external
+controller logic (ring-barrier `.prbc`, VAP, Econolite and similar) is
+refused by design. Call the matching write tool from the contract below
 exactly like any read tool — do not ask the user for permission yourself
 first; the approval pause described in §2 handles that. Never pretend a
 write already happened before you have actually called its tool and seen

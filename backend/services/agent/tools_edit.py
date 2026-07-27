@@ -720,3 +720,88 @@ def set_des_speed_decision(params: SetDesSpeedDecisionParams) -> dict[str, Any]:
     # reach the saved file together or (on an earlier raise) neither does.
     session.persist()
     return {"message": message, "verification": verification}
+
+
+# ---------------------------------------------------------------------------
+# set_signal_green_split(sc_no, sg_no, program_no, green_start_s, green_end_s)
+#
+# v2a unit ⑨. A COM verb -- but NOT a plain SetAttValue on the target object:
+# on a program-driven FIXEDTIME controller the per-SG EndGreen/EndRed
+# attribute ids exist yet REFUSE writes ("Attribute End of green cannot be
+# changed" -- the CycTm pattern, verified live by
+# backend/tools/probe_signal_programs.py), and the Vissim 26.0 type library
+# has NO signal-program interface at all. The real write path, proven live
+# end to end (blob edit -> LoadNet -> SimBreakAt+SigState behavior flip
+# GREEN->RED at t=11 -> SaveNetAs round trip): the whole Vissig program XML
+# is itself a COM-readable AND COM-writable attribute (IntSupplyData), so
+# vissim_com.set_signal_green_split decodes it, rewrites the ONE (program,
+# signal group) pair's green/red command begins, and writes it back. On
+# FIXEDTIMESIMPLE controllers the same verb is a plain EndRed/EndGreen
+# SetAttValue pair (also live-verified, persists to endRed/endGreen XML
+# attributes). program_no is REQUIRED (three-part identity: controller,
+# program, signal group) -- a controller can carry several programs and only
+# ProgNo's is simulated (Beijing ships progNo=2 of {1,2}); forcing the
+# planner to name the program (from get_signal_programs, which marks the
+# active one) kills the wrong-program silent failure and gives guardrails'
+# id_param_parts a fully-determined "{sc}.{prog}.{sg}" target id.
+# ---------------------------------------------------------------------------
+
+
+class SetSignalGreenSplitParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sc_no: str
+    sg_no: str
+    program_no: str
+    green_start_s: float
+    green_end_s: float
+
+
+@tool(
+    name="set_signal_green_split",
+    tier="write",
+    provider="edit",
+    params=SetSignalGreenSplitParams,
+)
+def set_signal_green_split(params: SetSignalGreenSplitParams) -> dict[str, Any]:
+    """Set one signal group's green window inside a fixed-time signal program on the active edit session's working network -- green_start_s is when the group switches to green, green_end_s is when it switches to red (any amber runs immediately before that point per the program's own fixed states; a wrapping window with start > end is valid, green spans the cycle boundary). Use get_signal_programs first: the write needs the exact (sc_no, program_no, sg_no) triple, a controller can carry SEVERAL programs and only the active one (active_program_no) is simulated, and Vissim will NOT stop you from creating overlapping/conflicting green windows -- it accepts them silently, so check the other signal groups' windows yourself before proposing."""
+    session = _require_session()
+    sc_no = _coerce_id(params.sc_no, "sc_no")
+    sg_no = _coerce_id(params.sg_no, "sg_no")
+    program_no = _coerce_id(params.program_no, "program_no")
+
+    written = session.set_signal_green_split(
+        sc_no, sg_no, params.green_start_s, params.green_end_s, program_no
+    )
+    readback = session.get_signal_green_split(sc_no, sg_no, program_no)
+    session.persist()
+
+    # written_value/readback_value carry EXACTLY the same key set (the
+    # set_reduced_speed_area precedent): constraint #6 compares them with a
+    # recursive, numeric-tolerant compare, so the dict shape must agree on
+    # both sides. controller_type/program_no are diagnostics, reported via
+    # artifacts, never inside the compared dicts.
+    verification: dict[str, Any] = {
+        "written_value": {
+            "green_start_s": params.green_start_s,
+            "green_end_s": params.green_end_s,
+        },
+        "readback_value": {
+            "green_start_s": readback["green_start_s"],
+            "green_end_s": readback["green_end_s"],
+        },
+    }
+    return {
+        "message": (
+            f"Signal controller {params.sc_no} program {params.program_no} signal group "
+            f"{params.sg_no} green window set to [{params.green_start_s}s → "
+            f"{params.green_end_s}s] (green_end_s is the switch-to-red point; Vissim does "
+            "not check overlapping or conflicting green windows -- the guardrail warnings "
+            "on this action list any temporal overlaps found)."
+        ),
+        "verification": verification,
+        "artifacts": {
+            "controller_type": written["controller_type"],
+            "program_no": written["program_no"],
+        },
+    }

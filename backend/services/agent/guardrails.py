@@ -87,6 +87,16 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # (decision, vehClass) pair, mirroring "routes"/"vehicle_composition_
     # entries" above exactly).
     "des_speed_decision_entries": "id",
+    # v2a unit ⑨: the FLAT signal_program_splits list
+    # tools_network._flatten_signal_program_splits builds (not the nested
+    # "signal_programs" -- a green split's own identity is the (controller,
+    # program, signal group) TRIPLE, the first three-part id in this table;
+    # required by BOTH postwrite checks, same as every flat entry above --
+    # _target_not_persisted_finding KeyErrors without it, and the
+    # nothing-else-moved diff gains split-level coverage from the same
+    # entry: an IntSupplyData blob write that accidentally moved a DIFFERENT
+    # signal group's window now surfaces as diff evidence).
+    "signal_program_splits": "id",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -227,6 +237,30 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         # -> '10 mph Roundabout HGV'). See _write_target_fields's own
         # docstring for the general "coupled_fields" mechanism this uses.
         "coupled_fields": ("des_speed_distr_name",),
+    },
+    # v2a unit ⑨: fixed-time signal-program green split. The FIRST
+    # THREE-part identity (controller, program, signal group -- the same SG
+    # carries a different window in each program, so two parts would be
+    # ambiguous); id_param_parts joins them into the SAME
+    # "{sc_no}.{program_no}.{sg_no}" id tools_network.
+    # _flatten_signal_program_splits synthesizes. value_field is the
+    # green_window DICT ({green_start_s, green_end_s}) -- one field holding
+    # both edges, compared whole by the recursive numeric-tolerant
+    # _values_differ, so a write that lands only ONE edge in the saved file
+    # still fails the target-persisted compare. none_means "not_persisted":
+    # the parser can always see the window whenever the program data exists
+    # at all (FIXEDTIME: decoded from the intSupplyData blob, verified live
+    # -- backend/tools/probe_signal_programs.py proved Vissim's SaveNetAs
+    # serializes the COM-written blob back out with the edit intact;
+    # FIXEDTIMESIMPLE: plain endRed/endGreen attributes), and preflight's
+    # signal_program_split_not_found refuses targets whose window is not
+    # parseable BEFORE any write -- so a None-window entry after a write IS
+    # evidence the write never reached the file.
+    "set_signal_green_split": {
+        "object_class": "signal_program_splits",
+        "id_param_parts": ("sc_no", "program_no", "sg_no"),
+        "value_field": "green_window",
+        "none_means": "not_persisted",
     },
 }
 

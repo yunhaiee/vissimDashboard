@@ -596,6 +596,236 @@ class VissimController:
         except Exception as exc:
             raise RuntimeError(f"Could not read signal controller {sc_no} offset: {exc}") from exc
 
+    # -----------------------------------------------------------------
+    # v2a unit ⑨: fixed-time signal-program GREEN SPLITS.
+    #
+    # Storage + writability verified live against Vissim 2026
+    # (backend/tools/probe_signal_programs.py, Urban Intersection Beijing.CN
+    # clone for FIXEDTIME + Air Taxi Vertiport clone for FIXEDTIMESIMPLE):
+    #
+    # - The Vissim 26.0 type library has NO signal-program interface at all
+    #   (static scan of every interface name), no SignalPrograms/Progs
+    #   collection exists on SignalController or Net (all candidates raise
+    #   AttributeError live), and the per-SG green-window attribute ids
+    #   EndGreen/EndRed — real ids, confirmed readable — are REFUSED for
+    #   writing on a program-driven FIXEDTIME controller ("Attribute End of
+    #   green cannot be changed", the exact CycTm pattern) and read a
+    #   disconnected 0.0 there.
+    # - BUT the whole program blob IS a plain COM attribute:
+    #   AttValue('IntSupplyData') returns the base64 Vissig <sc> XML
+    #   document verbatim, and SetAttValue('IntSupplyData', ...) is
+    #   accepted. Editing the decoded XML (prog → sg → cmd begins) and
+    #   loading the result was PROVEN to drive real signal behavior
+    #   (SimBreakAt + SigState oracle: SG1 GREEN→RED at t=11 after moving
+    #   its red command from 15 s to 8 s), Vissim does NOT validate the
+    #   blob's checkSum on load and does NOT recompute it on SaveNetAs, and
+    #   a declaration-less ElementTree re-serialization of the inner XML is
+    #   accepted.
+    # - On FIXEDTIMESIMPLE controllers EndRed (green start) / EndGreen
+    #   (green end) are plain writable attributes that persist to the .inpx
+    #   (endRed/endGreen) and survive a fresh reload. Vissim itself refuses
+    #   a NEGATIVE value but silently ACCEPTS a value beyond the cycle time
+    #   and fully-overlapping green windows across signal groups — those
+    #   screens are constraints.py's job, never assumed to be Vissim's.
+    #
+    # display codes inside the blob: 3 = switch-to-green command, 1 =
+    # switch-to-red command; begin values are MILLISECONDS.
+    # -----------------------------------------------------------------
+
+    def set_signal_green_split(
+        self,
+        sc_no: int,
+        sg_no: int,
+        green_start_s: float,
+        green_end_s: float,
+        program_no: int | None = None,
+    ) -> dict[str, Any]:
+        """Set one signal group's green window inside a fixed-time program.
+
+        ``green_start_s`` = when the group switches to green; ``green_end_s``
+        = when it switches to red (amber, if any, runs immediately before
+        that point per the program's own fixed states). A wrapping window
+        (start > end) is valid — real programs use it.
+
+        Returns ``{"controller_type", "program_no"}`` (the RESOLVED program
+        actually written — ``program_no=None`` targets the controller's own
+        active ``ProgNo``) so callers can report exactly what was touched.
+        """
+        signal_controller = self._item_by_key(
+            self.vissim.Net.SignalControllers,
+            sc_no,
+            "Signal controller",
+            self.available_signal_controller_nos(),
+        )
+        controller_type = str(signal_controller.AttValue("Type") or "")
+        resolved_program_no = program_no
+        if resolved_program_no is None:
+            try:
+                resolved_program_no = int(signal_controller.AttValue("ProgNo"))
+            except Exception:
+                resolved_program_no = 1
+
+        if controller_type == "FIXEDTIMESIMPLE":
+            sg = self._signal_group_by_key(signal_controller, sc_no, sg_no)
+            try:
+                sg.SetAttValue("EndRed", green_start_s)
+                sg.SetAttValue("EndGreen", green_end_s)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not set signal controller {sc_no} signal group {sg_no} green "
+                    f"window to [{green_start_s}, {green_end_s}]s: {exc}"
+                ) from exc
+            return {"controller_type": controller_type, "program_no": resolved_program_no}
+
+        if controller_type == "FIXEDTIME":
+            import base64 as _base64
+            import xml.etree.ElementTree as _ET
+
+            try:
+                blob = signal_controller.AttValue("IntSupplyData")
+                inner = _ET.fromstring(_base64.b64decode(blob).decode("utf-8"))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not read signal controller {sc_no}'s internal program data "
+                    f"(IntSupplyData): {exc}"
+                ) from exc
+
+            prog = self._blob_program(inner, sc_no, resolved_program_no)
+            sg_el = self._blob_program_sg(prog, sc_no, resolved_program_no, sg_no)
+            cmds_el = sg_el.find("cmds")
+            green_cmds = [c for c in (list(cmds_el) if cmds_el is not None else []) if c.get("display") == "3"]
+            red_cmds = [c for c in (list(cmds_el) if cmds_el is not None else []) if c.get("display") == "1"]
+            if len(green_cmds) != 1 or len(red_cmds) != 1:
+                raise RuntimeError(
+                    f"Signal controller {sc_no} program {resolved_program_no} signal group "
+                    f"{sg_no} has a non-simple command shape ({len(green_cmds)} green / "
+                    f"{len(red_cmds)} red commands) — only programs with exactly one green "
+                    "window per signal group are supported; edit this program in the Vissim "
+                    "GUI instead."
+                )
+            green_cmds[0].set("begin", str(int(round(green_start_s * 1000))))
+            red_cmds[0].set("begin", str(int(round(green_end_s * 1000))))
+
+            new_blob = _base64.b64encode(
+                _ET.tostring(inner, encoding="unicode").encode("utf-8")
+            ).decode("ascii")
+            try:
+                signal_controller.SetAttValue("IntSupplyData", new_blob)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not write signal controller {sc_no}'s updated program data "
+                    f"(IntSupplyData): {exc}"
+                ) from exc
+            return {"controller_type": controller_type, "program_no": resolved_program_no}
+
+        raise RuntimeError(
+            f"Signal controller {sc_no} has controller type '{controller_type or 'unknown'}' — "
+            "green splits are only editable on FIXEDTIME/FIXEDTIMESIMPLE controllers."
+        )
+
+    def get_signal_green_split(
+        self, sc_no: int, sg_no: int, program_no: int | None = None
+    ) -> dict[str, Any]:
+        """Read back one signal group's green window (see the setter's
+        docstring for semantics). Returns ``{"green_start_s", "green_end_s",
+        "controller_type", "program_no"}``."""
+        signal_controller = self._item_by_key(
+            self.vissim.Net.SignalControllers,
+            sc_no,
+            "Signal controller",
+            self.available_signal_controller_nos(),
+        )
+        controller_type = str(signal_controller.AttValue("Type") or "")
+        resolved_program_no = program_no
+        if resolved_program_no is None:
+            try:
+                resolved_program_no = int(signal_controller.AttValue("ProgNo"))
+            except Exception:
+                resolved_program_no = 1
+
+        if controller_type == "FIXEDTIMESIMPLE":
+            sg = self._signal_group_by_key(signal_controller, sc_no, sg_no)
+            try:
+                return {
+                    "green_start_s": float(sg.AttValue("EndRed")),
+                    "green_end_s": float(sg.AttValue("EndGreen")),
+                    "controller_type": controller_type,
+                    "program_no": resolved_program_no,
+                }
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not read signal controller {sc_no} signal group {sg_no}'s green "
+                    f"window: {exc}"
+                ) from exc
+
+        if controller_type == "FIXEDTIME":
+            import base64 as _base64
+            import xml.etree.ElementTree as _ET
+
+            try:
+                blob = signal_controller.AttValue("IntSupplyData")
+                inner = _ET.fromstring(_base64.b64decode(blob).decode("utf-8"))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not read signal controller {sc_no}'s internal program data "
+                    f"(IntSupplyData): {exc}"
+                ) from exc
+            prog = self._blob_program(inner, sc_no, resolved_program_no)
+            sg_el = self._blob_program_sg(prog, sc_no, resolved_program_no, sg_no)
+            cmds_el = sg_el.find("cmds")
+            green_cmds = [c for c in (list(cmds_el) if cmds_el is not None else []) if c.get("display") == "3"]
+            red_cmds = [c for c in (list(cmds_el) if cmds_el is not None else []) if c.get("display") == "1"]
+            if len(green_cmds) != 1 or len(red_cmds) != 1:
+                raise RuntimeError(
+                    f"Signal controller {sc_no} program {resolved_program_no} signal group "
+                    f"{sg_no} has a non-simple command shape — no single green window to read."
+                )
+            return {
+                "green_start_s": int(green_cmds[0].get("begin", "0")) / 1000.0,
+                "green_end_s": int(red_cmds[0].get("begin", "0")) / 1000.0,
+                "controller_type": controller_type,
+                "program_no": resolved_program_no,
+            }
+
+        raise RuntimeError(
+            f"Signal controller {sc_no} has controller type '{controller_type or 'unknown'}' — "
+            "green splits are only readable on FIXEDTIME/FIXEDTIMESIMPLE controllers."
+        )
+
+    def _signal_group_by_key(self, signal_controller: Any, sc_no: int, sg_no: int) -> Any:
+        """SGs.ItemByKey with a structured not-found error listing the
+        controller's own available signal-group numbers. SGs.ItemByKey exists
+        and fails CLOSED on a bogus key (verified live — unlike the
+        vehicle-composition/des-speed-decision child collections, which have
+        no ItemByKey at all)."""
+        sgs = signal_controller.SGs
+        available = self._collection_nos(sgs)
+        return self._item_by_key(sgs, sg_no, f"Signal controller {sc_no} signal group", available)
+
+    def _blob_program(self, inner: Any, sc_no: int, program_no: int) -> Any:
+        progs_el = inner.find("progs")
+        progs = list(progs_el) if progs_el is not None else []
+        for prog in progs:
+            if (prog.get("id") or "").strip() == str(program_no):
+                return prog
+        available = ", ".join((p.get("id") or "?").strip() for p in progs) or "-"
+        raise VissimObjectNotFoundError(
+            f"Signal controller {sc_no} has no signal program {program_no}. "
+            f"Available program numbers: {available}."
+        )
+
+    def _blob_program_sg(self, prog: Any, sc_no: int, program_no: int, sg_no: int) -> Any:
+        sgs_el = prog.find("sgs")
+        sgs = list(sgs_el) if sgs_el is not None else []
+        for sg in sgs:
+            if (sg.get("sg_id") or "").strip() == str(sg_no):
+                return sg
+        available = ", ".join((s.get("sg_id") or "?").strip() for s in sgs) or "-"
+        raise VissimObjectNotFoundError(
+            f"Signal controller {sc_no} program {program_no} has no signal group {sg_no}. "
+            f"Available signal group numbers: {available}."
+        )
+
     def set_conflict_area_status(self, conflict_area_no: int, status: str) -> None:
         """Set a conflict area's right-of-way status (COM attribute id
         ``Status`` -- verified empirically live against Vissim 2026 via

@@ -422,6 +422,21 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "decision_no",
     },
+    # v2a unit ⑨: set_signal_green_split added to the object_not_found /
+    # _TOOL_TARGET_SPEC lockstep table -- this only covers the
+    # CONTROLLER-level lookup (signals object class, keyed by sc_no); the
+    # deeper lookups (does program_no exist on that controller, does sg_no
+    # exist in that program, is the split shape editable at all) have no
+    # single flat id the generic machinery can check, so they are a
+    # dedicated check (signal_program_split_not_found, below) -- the same
+    # split routes/composition entries/des-speed entries established,
+    # extended to a THREE-part identity.
+    "set_signal_green_split": {
+        "object_class": "signals",
+        "id_field": "sc_no",
+        "name_field": "sc_name",
+        "param": "sc_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -558,6 +573,7 @@ register(
             "set_route_relative_flow",
             "set_vehicle_composition_share",
             "set_des_speed_decision",
+            "set_signal_green_split",
         ],
         phase="preflight",
         tier="refuse",
@@ -723,7 +739,12 @@ def _check_signal_controller_type_unsupported(
     action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
 ) -> Finding | None:
     tool = action.get("tool")
-    if tool not in ("set_signal_cycle", "set_signal_offset"):
+    # v2a unit ⑨: set_signal_green_split joins the gate -- the SAME two-type
+    # editable population (FIXEDTIME via the COM-writable IntSupplyData
+    # program blob, FIXEDTIMESIMPLE via plain EndRed/EndGreen attributes,
+    # both live-verified by backend/tools/probe_signal_programs.py); every
+    # external-controller type keeps refusing here by design.
+    if tool not in ("set_signal_cycle", "set_signal_offset", "set_signal_green_split"):
         return None
 
     params = action.get("params", {})
@@ -752,17 +773,17 @@ def _check_signal_controller_type_unsupported(
 register(
     Constraint(
         id="signal_controller_type_unsupported",
-        applies_to=["set_signal_cycle", "set_signal_offset"],
+        applies_to=["set_signal_cycle", "set_signal_offset", "set_signal_green_split"],
         phase="preflight",
         tier="refuse",
         check=_check_signal_controller_type_unsupported,
         message_ko="신호제어기 '{sc_no}'의 컨트롤러 타입({controller_type})은 지원되지 않습니다. "
-        "고정시간(fixed-time) 제어기만 COM으로 주기/옵셋을 안전하게 수정할 수 있습니다.",
+        "고정시간(fixed-time) 제어기만 주기/옵셋/녹색시간을 안전하게 수정할 수 있습니다.",
         message_en="Signal controller '{sc_no}' has controller type '{controller_type}', which "
-        "is not supported. Only fixed-time controllers can have cycle/offset edited safely "
-        "via COM.",
+        "is not supported. Only fixed-time controllers can have cycle/offset/green splits "
+        "edited safely.",
         message_ja="信号制御機 '{sc_no}' のコントローラタイプ('{controller_type}')はサポートされて"
-        "いません。COM経由でサイクル/オフセットを安全に編集できるのは固定時間式(fixed-time)制御機"
+        "いません。サイクル/オフセット/青時間を安全に編集できるのは固定時間式(fixed-time)制御機"
         "のみです。",
     )
 )
@@ -4386,5 +4407,507 @@ register(
         "Available speed distribution numbers: {candidates}.",
         message_ja="速度分布番号 '{distr_no}'({field})はこのネットワークに存在しません。利用"
         "可能な速度分布番号: {candidates}。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# v2a unit ⑨ -- fixed-time signal-program green splits. Four checks, all
+# probe-informed (backend/tools/probe_signal_programs.py, live Vissim 2026):
+#
+#   signal_program_split_not_found   refuse  (program/SG triple must resolve)
+#   green_split_outside_cycle        refuse  (Vissim ACCEPTS beyond-cycle
+#                                             silently -- live-proven; our
+#                                             refusal is the only screen)
+#   green_split_below_min_green      warn    (fires only when a real
+#                                             min_green datum exists)
+#   signal_green_split_change_confirm warn   (always fires on a resolvable
+#                                             target: echoes old->new window,
+#                                             inactive-program trap, overlap
+#                                             list + the "Vissim will NOT
+#                                             stop conflicting greens"
+#                                             education -- live-proven: two
+#                                             SGs were given fully
+#                                             overlapping greens and Vissim
+#                                             accepted every write)
+# ---------------------------------------------------------------------------
+
+
+def _find_signal_program_split(
+    shadow_model: dict[str, Any], sc_no: str, program_no: str, sg_no: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """(controller, program, split) from shadow_model["signal_programs"],
+    each None from its own level downward when not found."""
+    controller = _find_by_field(shadow_model.get("signal_programs", []), "sc_no", sc_no)
+    if controller is None:
+        return None, None, None
+    program = _find_by_field(controller.get("programs", []), "prog_no", program_no)
+    if program is None:
+        return controller, None, None
+    split = _find_by_field(program.get("sg_splits", []), "sg_no", sg_no)
+    return controller, program, split
+
+
+def _green_window_segments(start_s: float, end_s: float, cycle_s: float) -> list[tuple[float, float]]:
+    """A green window as non-wrapping [start, end) segments within one cycle.
+    A wrapping window (start > end -- real and valid, e.g. Beijing program 1
+    SG 1) splits into its two segments; a degenerate window (start == end)
+    has no extent."""
+    if start_s == end_s:
+        return []
+    if start_s < end_s:
+        return [(start_s, end_s)]
+    return [(start_s, cycle_s), (0.0, end_s)]
+
+
+def _green_windows_overlap(
+    a_start: float, a_end: float, b_start: float, b_end: float, cycle_s: float
+) -> bool:
+    for a0, a1 in _green_window_segments(a_start, a_end, cycle_s):
+        for b0, b1 in _green_window_segments(b_start, b_end, cycle_s):
+            if a0 < b1 and b0 < a1:
+                return True
+    return False
+
+
+def _check_signal_program_split_not_found(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_signal_green_split":
+        return None
+
+    params = action.get("params", {})
+    sc_no = str(params.get("sc_no", ""))
+    program_no = str(params.get("program_no", ""))
+    sg_no = str(params.get("sg_no", ""))
+
+    if _find_by_field(shadow_model.get("signals", []), "sc_no", sc_no) is None:
+        return None  # missing controller is object_not_found's job (#1)
+
+    controller, program, split = _find_signal_program_split(shadow_model, sc_no, program_no, sg_no)
+
+    if controller is None or not controller.get("programs"):
+        # The controller exists but no program data could be parsed for it
+        # (undecodable/absent blob on a FIXEDTIME controller; unsupported
+        # types are #4's job) -- an edit with no visible timing data has no
+        # verification story, so refuse rather than guess.
+        return Finding(
+            constraint_id="signal_program_split_not_found",
+            tier="refuse",
+            phase="preflight",
+            messages=_render(
+                "signal_program_split_not_found",
+                sc_no=sc_no,
+                program_no=program_no,
+                sg_no=sg_no,
+                reason_ko="이 제어기의 신호 프로그램 데이터를 읽을 수 없습니다",
+                reason_en="no signal-program data could be read for this controller",
+                reason_ja="この制御機の信号プログラムデータを読み取れません",
+            ),
+            suggested_fix=None,
+            details={"sc_no": sc_no, "program_no": program_no, "sg_no": sg_no, "reason": "no_program_data"},
+        )
+
+    if program is None:
+        available = [str(p.get("prog_no", "")) for p in controller.get("programs", [])]
+        active = str(controller.get("active_program_no") or "")
+        available_text = ", ".join(available) if available else "-"
+        return Finding(
+            constraint_id="signal_program_split_not_found",
+            tier="refuse",
+            phase="preflight",
+            messages=_render(
+                "signal_program_split_not_found",
+                sc_no=sc_no,
+                program_no=program_no,
+                sg_no=sg_no,
+                reason_ko=f"프로그램 '{program_no}'이(가) 없습니다 (보유 프로그램: {available_text}, "
+                f"활성 프로그램: {active or '-'})",
+                reason_en=f"program '{program_no}' does not exist (available: {available_text}, "
+                f"active: {active or '-'})",
+                reason_ja=f"プログラム '{program_no}' は存在しません(保有プログラム: {available_text}、"
+                f"アクティブ: {active or '-'})",
+            ),
+            suggested_fix={"candidates": available, "active_program_no": active or None},
+            details={
+                "sc_no": sc_no,
+                "program_no": program_no,
+                "sg_no": sg_no,
+                "reason": "program_not_found",
+                "available_program_nos": available,
+                "active_program_no": active or None,
+            },
+        )
+
+    if split is None:
+        candidates = [str(s.get("sg_no", "")) for s in program.get("sg_splits", [])]
+        candidates_text = ", ".join(candidates) if candidates else "-"
+        return Finding(
+            constraint_id="signal_program_split_not_found",
+            tier="refuse",
+            phase="preflight",
+            messages=_render(
+                "signal_program_split_not_found",
+                sc_no=sc_no,
+                program_no=program_no,
+                sg_no=sg_no,
+                reason_ko=f"이 프로그램에 신호그룹 '{sg_no}'이(가) 없습니다 (보유 신호그룹: {candidates_text})",
+                reason_en=f"this program has no signal group '{sg_no}' (available: {candidates_text})",
+                reason_ja=f"このプログラムに信号グループ '{sg_no}' はありません(保有グループ: {candidates_text})",
+            ),
+            suggested_fix={"candidates": candidates},
+            details={
+                "sc_no": sc_no,
+                "program_no": program_no,
+                "sg_no": sg_no,
+                "reason": "sg_not_found",
+                "available_sg_nos": candidates,
+            },
+        )
+
+    if not split.get("simple") or split.get("green_start_s") is None:
+        return Finding(
+            constraint_id="signal_program_split_not_found",
+            tier="refuse",
+            phase="preflight",
+            messages=_render(
+                "signal_program_split_not_found",
+                sc_no=sc_no,
+                program_no=program_no,
+                sg_no=sg_no,
+                reason_ko="이 신호그룹의 프로그램 명령 구조가 단순 단일 녹색창 형태가 아니어서 "
+                "안전하게 편집할 수 없습니다 (Vissim GUI에서 직접 편집하세요)",
+                reason_en="this signal group's program command shape is not a simple single "
+                "green window and cannot be edited safely (edit it in the Vissim GUI instead)",
+                reason_ja="この信号グループのプログラム命令構造は単一の青時間帯ではないため、"
+                "安全に編集できません(Vissim GUIで直接編集してください)",
+            ),
+            suggested_fix=None,
+            details={"sc_no": sc_no, "program_no": program_no, "sg_no": sg_no, "reason": "non_simple_shape"},
+        )
+
+    return None
+
+
+register(
+    Constraint(
+        id="signal_program_split_not_found",
+        applies_to=["set_signal_green_split"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_signal_program_split_not_found,
+        message_ko="신호제어기 '{sc_no}' 프로그램 '{program_no}' 신호그룹 '{sg_no}'의 녹색시간을 "
+        "편집할 수 없습니다: {reason_ko}.",
+        message_en="Cannot edit signal controller '{sc_no}' program '{program_no}' signal group "
+        "'{sg_no}''s green split: {reason_en}.",
+        message_ja="信号制御機 '{sc_no}' プログラム '{program_no}' 信号グループ '{sg_no}' の"
+        "青時間を編集できません: {reason_ja}。",
+    )
+)
+
+
+def _check_green_split_outside_cycle(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_signal_green_split":
+        return None
+
+    params = action.get("params", {})
+    raw_start = params.get("green_start_s")
+    raw_end = params.get("green_end_s")
+    start = _coerce_number(raw_start)
+    end = _coerce_number(raw_end)
+    if start is None or end is None:
+        return None  # missing/mistyped params are the registry's invalid_params job
+
+    sc_no = str(params.get("sc_no", ""))
+    program_no = str(params.get("program_no", ""))
+    sg_no = str(params.get("sg_no", ""))
+    _, program, _ = _find_signal_program_split(shadow_model, sc_no, program_no, sg_no)
+    cycle = _coerce_number(program.get("cycle_s")) if program is not None else None
+
+    problem_ko = problem_en = problem_ja = None
+    if not (math.isfinite(start) and math.isfinite(end)) or start < 0 or end < 0:
+        problem_ko = "녹색 시작/종료 시각은 0 이상의 유한한 값이어야 합니다"
+        problem_en = "green start/end must be finite values >= 0"
+        problem_ja = "青の開始/終了時刻は0以上の有限の値である必要があります"
+    elif start == end:
+        problem_ko = "녹색 시작과 종료가 같아 녹색시간이 0이 됩니다"
+        problem_en = "green start equals green end -- a zero-length green window"
+        problem_ja = "青の開始と終了が同じで、青時間が0になります"
+    elif cycle is not None and cycle > 0 and (start > cycle or end > cycle):
+        problem_ko = f"주기({cycle}초)를 벗어납니다 — Vissim은 이런 값을 거부하지 않고 조용히 받아들이므로(실측 확인) 여기서 차단합니다"
+        problem_en = (
+            f"it falls outside the cycle time ({cycle}s) — Vissim silently ACCEPTS such values "
+            "(live-verified), so this screen is the only protection"
+        )
+        problem_ja = f"サイクル({cycle}秒)の範囲外です — Vissimはこのような値を拒否せず黙って受け入れるため(実測確認済み)、ここでブロックします"
+
+    if problem_ko is None:
+        return None
+
+    return Finding(
+        constraint_id="green_split_outside_cycle",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "green_split_outside_cycle",
+            sc_no=sc_no,
+            program_no=program_no,
+            sg_no=sg_no,
+            green_start_s=raw_start,
+            green_end_s=raw_end,
+            problem_ko=problem_ko,
+            problem_en=problem_en,
+            problem_ja=problem_ja,
+        ),
+        suggested_fix={"cycle_s": cycle} if cycle is not None else None,
+        details={
+            "sc_no": sc_no,
+            "program_no": program_no,
+            "sg_no": sg_no,
+            "green_start_s": start,
+            "green_end_s": end,
+            "cycle_s": cycle,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="green_split_outside_cycle",
+        applies_to=["set_signal_green_split"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_green_split_outside_cycle,
+        message_ko="요청한 녹색창 [{green_start_s}초 → {green_end_s}초]은(는) 유효하지 않습니다: "
+        "{problem_ko}. (신호제어기 '{sc_no}' 프로그램 '{program_no}' 신호그룹 '{sg_no}')",
+        message_en="Requested green window [{green_start_s}s → {green_end_s}s] is invalid: "
+        "{problem_en}. (signal controller '{sc_no}' program '{program_no}' signal group '{sg_no}')",
+        message_ja="指定された青時間帯 [{green_start_s}秒 → {green_end_s}秒] は無効です: "
+        "{problem_ja}。(信号制御機 '{sc_no}' プログラム '{program_no}' 信号グループ '{sg_no}')",
+    )
+)
+
+
+def _check_green_split_below_min_green(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_signal_green_split":
+        return None
+
+    params = action.get("params", {})
+    start = _coerce_number(params.get("green_start_s"))
+    end = _coerce_number(params.get("green_end_s"))
+    if start is None or end is None or not (math.isfinite(start) and math.isfinite(end)):
+        return None
+
+    sc_no = str(params.get("sc_no", ""))
+    program_no = str(params.get("program_no", ""))
+    sg_no = str(params.get("sg_no", ""))
+    _, program, split = _find_signal_program_split(shadow_model, sc_no, program_no, sg_no)
+    if split is None:
+        return None  # missing target is signal_program_split_not_found's job
+
+    min_green = _coerce_number(split.get("min_green_s"))
+    if min_green is None or min_green <= 0:
+        return None  # datum absent (blob programs) or not constraining — no claim
+
+    cycle = _coerce_number(program.get("cycle_s")) if program is not None else None
+    if start < end:
+        duration = end - start
+    elif cycle is not None and cycle > 0:
+        duration = (cycle - start) + end  # wrapping window
+    else:
+        return None  # wrap without a known cycle — duration unknowable, no claim
+
+    if duration >= min_green:
+        return None
+
+    return Finding(
+        constraint_id="green_split_below_min_green",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "green_split_below_min_green",
+            sc_no=sc_no,
+            program_no=program_no,
+            sg_no=sg_no,
+            duration=round(duration, 3),
+            min_green=min_green,
+        ),
+        suggested_fix={"min_green_s": min_green},
+        details={
+            "sc_no": sc_no,
+            "program_no": program_no,
+            "sg_no": sg_no,
+            "green_duration_s": duration,
+            "min_green_s": min_green,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="green_split_below_min_green",
+        applies_to=["set_signal_green_split"],
+        phase="preflight",
+        tier="warn",
+        check=_check_green_split_below_min_green,
+        message_ko="요청한 녹색시간 {duration}초가 신호그룹 '{sg_no}'의 최소 녹색시간 "
+        "{min_green}초보다 짧습니다 (신호제어기 '{sc_no}' 프로그램 '{program_no}').",
+        message_en="Requested green duration of {duration}s is below signal group '{sg_no}''s "
+        "minimum green of {min_green}s (signal controller '{sc_no}' program '{program_no}').",
+        message_ja="指定された青時間 {duration}秒 は信号グループ '{sg_no}' の最小青時間 "
+        "{min_green}秒 を下回っています(信号制御機 '{sc_no}' プログラム '{program_no}')。",
+    )
+)
+
+
+def _check_signal_green_split_change_confirm(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_signal_green_split":
+        return None
+
+    params = action.get("params", {})
+    start = _coerce_number(params.get("green_start_s"))
+    end = _coerce_number(params.get("green_end_s"))
+    if start is None or end is None or not (math.isfinite(start) and math.isfinite(end)):
+        return None
+
+    sc_no = str(params.get("sc_no", ""))
+    program_no = str(params.get("program_no", ""))
+    sg_no = str(params.get("sg_no", ""))
+    controller, program, split = _find_signal_program_split(shadow_model, sc_no, program_no, sg_no)
+    if controller is None or program is None or split is None:
+        return None  # unresolvable target is signal_program_split_not_found's job
+
+    old_start = split.get("green_start_s")
+    old_end = split.get("green_end_s")
+    sg_name = str(split.get("sg_name", "") or f"SG{sg_no}")
+    head_count = split.get("head_count", 0)
+
+    # Temporal overlap against every OTHER signal group's current window in
+    # the SAME program. Temporal overlap is NOT automatically a conflict
+    # (parallel movements legitimately share green) -- but whether two
+    # overlapping groups genuinely conflict is GEOMETRY, and Beijing's blob
+    # carries an EMPTY <intergreenmatrices> (no conflict relationships in
+    # the data at all), so the honest claim is: here is every overlap, and
+    # Vissim will NOT stop you (live-proven: fully-overlapping greens on two
+    # signal groups were accepted without any complaint).
+    cycle = _coerce_number(program.get("cycle_s"))
+    overlapping: list[str] = []
+    if cycle is not None and cycle > 0:
+        for other in program.get("sg_splits", []):
+            if str(other.get("sg_no", "")) == sg_no:
+                continue
+            other_start = _coerce_number(other.get("green_start_s"))
+            other_end = _coerce_number(other.get("green_end_s"))
+            if other_start is None or other_end is None:
+                continue
+            if _green_windows_overlap(start, end, other_start, other_end, cycle):
+                overlapping.append(str(other.get("sg_no", "")))
+
+    overlap_ko, overlap_en, overlap_ja = _capped_join(overlapping, "개", "signal groups", "件")
+    if overlapping:
+        overlap_note_ko = (
+            f" 새 녹색창은 신호그룹 {overlap_ko}의 현재 녹색창과 시간상 겹칩니다 — 겹침이 곧 "
+            "상충은 아니지만(평행 이동류는 정상적으로 동시 녹색), 상충 여부는 기하구조의 문제이며 "
+            "이 데이터에는 없습니다."
+        )
+        overlap_note_en = (
+            f" The new window temporally overlaps signal group(s) {overlap_en}'s current green "
+            "-- overlap is not automatically a conflict (parallel movements legitimately share "
+            "green), but which overlaps genuinely conflict is a geometry question this data "
+            "does not answer."
+        )
+        overlap_note_ja = (
+            f" 新しい青時間帯は信号グループ {overlap_ja} の現在の青時間帯と時間的に重なります — "
+            "重なりが即ち錯綜ではありませんが(並行動線は正常に同時青)、実際に錯綜するかは幾何構造の"
+            "問題であり、このデータには含まれていません。"
+        )
+    else:
+        overlap_note_ko = " 다른 신호그룹의 현재 녹색창과 시간상 겹치지 않습니다."
+        overlap_note_en = " No temporal overlap with any other signal group's current green window."
+        overlap_note_ja = " 他の信号グループの現在の青時間帯との時間的な重なりはありません。"
+
+    active_no = str(controller.get("active_program_no") or "")
+    inactive_note_ko = inactive_note_en = inactive_note_ja = ""
+    if active_no and str(program_no) != active_no:
+        inactive_note_ko = (
+            f" ⚠ 이 프로그램은 활성 프로그램이 아닙니다(활성: {active_no}) — 활성 프로그램을 바꾸지 "
+            "않는 한 이 수정은 시뮬레이션 동작에 반영되지 않습니다."
+        )
+        inactive_note_en = (
+            f" ⚠ This is NOT the active program (active: {active_no}) — this edit will not "
+            "affect simulated behavior unless the active program is changed."
+        )
+        inactive_note_ja = (
+            f" ⚠ これはアクティブなプログラムではありません(アクティブ: {active_no}) — アクティブな"
+            "プログラムを変更しない限り、この編集はシミュレーション挙動に反映されません。"
+        )
+
+    return Finding(
+        constraint_id="signal_green_split_change_confirm",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "signal_green_split_change_confirm",
+            sc_no=sc_no,
+            program_no=program_no,
+            sg_no=sg_no,
+            sg_name=sg_name,
+            head_count=head_count,
+            old_start=old_start,
+            old_end=old_end,
+            new_start=params.get("green_start_s"),
+            new_end=params.get("green_end_s"),
+            overlap_note_ko=overlap_note_ko,
+            overlap_note_en=overlap_note_en,
+            overlap_note_ja=overlap_note_ja,
+            inactive_note_ko=inactive_note_ko,
+            inactive_note_en=inactive_note_en,
+            inactive_note_ja=inactive_note_ja,
+        ),
+        suggested_fix=None,
+        details={
+            "sc_no": sc_no,
+            "program_no": program_no,
+            "sg_no": sg_no,
+            "sg_name": sg_name,
+            "head_count": head_count,
+            "old_green_window": {"green_start_s": old_start, "green_end_s": old_end},
+            "new_green_window": {"green_start_s": start, "green_end_s": end},
+            "overlapping_sg_nos": overlapping,
+            "active_program_no": active_no or None,
+            "targets_active_program": not active_no or str(program_no) == active_no,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="signal_green_split_change_confirm",
+        applies_to=["set_signal_green_split"],
+        phase="preflight",
+        tier="warn",
+        check=_check_signal_green_split_change_confirm,
+        message_ko="신호제어기 '{sc_no}' 프로그램 '{program_no}' 신호그룹 '{sg_no}'({sg_name}, "
+        "신호등 {head_count}개)의 녹색창을 [{old_start}초 → {old_end}초]에서 [{new_start}초 → "
+        "{new_end}초]로 변경합니다.{inactive_note_ko}{overlap_note_ko} 주의: Vissim은 상충하는 "
+        "이동류에 동시 녹색을 주어도 이를 막지 않습니다(실측 확인) — 결과는 정상처럼 보이지만 "
+        "차량이 서로 통과하는 무의미한 시뮬레이션이 될 수 있습니다.",
+        message_en="Changing signal controller '{sc_no}' program '{program_no}' signal group "
+        "'{sg_no}' ({sg_name}, {head_count} signal head(s)) green window from [{old_start}s → "
+        "{old_end}s] to [{new_start}s → {new_end}s].{inactive_note_en}{overlap_note_en} "
+        "Caution: Vissim will NOT stop you from giving conflicting movements simultaneous "
+        "green (live-verified) — the run would look normal while vehicles drive through each "
+        "other, producing meaningless results.",
+        message_ja="信号制御機 '{sc_no}' プログラム '{program_no}' 信号グループ '{sg_no}'"
+        "({sg_name}、信号灯 {head_count}基)の青時間帯を [{old_start}秒 → {old_end}秒] から "
+        "[{new_start}秒 → {new_end}秒] に変更します。{inactive_note_ja}{overlap_note_ja} "
+        "注意: Vissimは錯綜する動線への同時青を防ぎません(実測確認済み) — 結果は正常に見えても"
+        "車両が互いをすり抜ける無意味なシミュレーションになる恐れがあります。",
     )
 )

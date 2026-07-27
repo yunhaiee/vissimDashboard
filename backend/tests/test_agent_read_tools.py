@@ -34,6 +34,8 @@ EXPECTED_TOOL_NAMES = {
     # v2a unit ⑧ adds get_des_speed_decisions + get_des_speed_distributions.
     "get_des_speed_decisions",
     "get_des_speed_distributions",
+    # v2a unit ⑨ adds get_signal_programs.
+    "get_signal_programs",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -52,6 +54,7 @@ EXPECTED_TOOL_NAMES = {
 # v2 unit (6) adds set_route_relative_flow, the eighth.
 # v2 unit (7) adds set_vehicle_composition_share, the ninth.
 # v2a unit ⑧ adds set_des_speed_decision, the tenth.
+# v2a unit ⑨ adds set_signal_green_split, the eleventh.
 EXPECTED_WRITE_TOOL_NAMES = {
     "set_vehicle_input_volume",
     "set_signal_cycle",
@@ -63,6 +66,7 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_route_relative_flow",
     "set_vehicle_composition_share",
     "set_des_speed_decision",
+    "set_signal_green_split",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -1315,6 +1319,9 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "des_speed_decisions",
         "des_speed_decision_entries",
         "des_speed_distributions",
+        # v2a unit ⑨
+        "signal_programs",
+        "signal_program_splits",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -1576,6 +1583,134 @@ def test_compare_scenarios_empty_scenario_ids_is_graceful_not_a_crash():
 
 def test_compare_scenarios_rejects_unexpected_params():
     envelope = _dispatch("compare_scenarios", scenario_ids=["S000001"], bogus=1)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+
+# ---------------------------------------------------------------------------
+# get_signal_programs (v2a unit 9)
+# ---------------------------------------------------------------------------
+
+import base64 as _base64
+
+
+_GREEN_SPLIT_BLOB = (
+    '<sc version="202001" id="1" name="">'
+    '<sgs><sg id="1" name="01"/></sgs>'
+    "<progs>"
+    '<prog id="1" cycletime="130000" name="P1"><sgs>'
+    '<sg sg_id="1"><cmds><cmd display="1" begin="15000"/><cmd display="3" begin="130000"/></cmds>'
+    '<fixedstates><fixedstate display="4" duration="3000"/></fixedstates></sg>'
+    "</sgs></prog>"
+    '<prog id="2" cycletime="130000" name="P2"><sgs>'
+    '<sg sg_id="1"><cmds><cmd display="3" begin="1000"/><cmd display="1" begin="15000"/></cmds>'
+    '<fixedstates><fixedstate display="4" duration="3000"/></fixedstates></sg>'
+    "</sgs></prog>"
+    "</progs></sc>"
+)
+
+
+def _signal_program_fixture_xml(extra_controllers: str = "") -> str:
+    isd = _base64.b64encode(_GREEN_SPLIT_BLOB.encode("utf-8")).decode("ascii")
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        "<network>"
+        "<signalControllers>"
+        f'<signalController no="1" name="Main" type="FIXEDTIME" progNo="2" intSupplyData="{isd}">'
+        '<sgs><signalGroup no="1" name="North"/></sgs>'
+        "</signalController>"
+        '<signalController no="2" name="Ext" type="VAP" progNo="1" supplyFile1="#data#x.vap"/>'
+        f"{extra_controllers}"
+        "</signalControllers>"
+        "</network>"
+    )
+
+
+@pytest.fixture()
+def signal_program_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "signal_programs.inpx"
+    path.write_text(_signal_program_fixture_xml(), encoding="utf-8")
+    return path
+
+
+def test_get_signal_programs_reports_programs_and_active_marker(signal_program_fixture_inpx: Path):
+    tools_network.set_active_inpx(signal_program_fixture_inpx)
+
+    envelope = _dispatch("get_signal_programs")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 2
+    controllers = {c["sc_no"]: c for c in data["signal_programs"]}
+
+    sc1 = controllers["1"]
+    assert sc1["controller_type"] == "FIXEDTIME"
+    assert sc1["active_program_no"] == "2"
+    progs = {p["prog_no"]: p for p in sc1["programs"]}
+    # The ACTIVE program's split (green 1..15 s) -- NOT program 1's wrap.
+    active_split = progs["2"]["sg_splits"][0]
+    assert active_split["green_start_s"] == 1.0
+    assert active_split["green_end_s"] == 15.0
+    # Program 1 is still reported too (with its wrapping window).
+    assert progs["1"]["sg_splits"][0]["green_start_s"] == 130.0
+
+    # External controller: empty programs + an explicit note, never a guess.
+    sc2 = controllers["2"]
+    assert sc2["programs"] == []
+    assert "not inspectable" in sc2["note"]
+
+
+def test_get_signal_programs_controller_no_filter(signal_program_fixture_inpx: Path):
+    tools_network.set_active_inpx(signal_program_fixture_inpx)
+
+    envelope = _dispatch("get_signal_programs", controller_no="1")
+
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert len(data["signal_programs"]) == 1
+    assert data["signal_programs"][0]["sc_no"] == "1"
+    assert "truncated" not in data
+
+
+def test_get_signal_programs_unfiltered_caps_with_truncated_flag(tmp_path: Path):
+    extra = "".join(
+        f'<signalController no="{no}" name="S{no}" type="FIXEDTIMESIMPLE" progNo="1" cycTm="60">'
+        '<sgs><signalGroup no="1" endRed="10" endGreen="40" amber="3"/></sgs>'
+        "</signalController>"
+        for no in range(10, 21)
+    )
+    path = tmp_path / "many_controllers.inpx"
+    path.write_text(_signal_program_fixture_xml(extra), encoding="utf-8")
+    tools_network.set_active_inpx(path)
+
+    envelope = _dispatch("get_signal_programs")
+
+    data = envelope["data"]
+    assert data["count"] == 13
+    assert len(data["signal_programs"]) == 10
+    assert data["truncated"] is True
+    assert "controller_no" in data["hint"]
+
+
+def test_get_signal_programs_shadow_model_flat_splits_shape(signal_program_fixture_inpx: Path):
+    # The FLAT signal_program_splits list guardrails.py reads: three-part
+    # "{sc}.{prog}.{sg}" ids, green_window as ONE dict, active marker.
+    shadow = tools_network.build_shadow_model(signal_program_fixture_inpx)
+
+    splits = {s["id"]: s for s in shadow["signal_program_splits"]}
+    assert set(splits) == {"1.1.1", "1.2.1"}
+    assert splits["1.2.1"]["green_window"] == {"green_start_s": 1.0, "green_end_s": 15.0}
+    assert splits["1.2.1"]["active"] is True
+    assert splits["1.1.1"]["active"] is False
+    assert splits["1.1.1"]["green_window"] == {"green_start_s": 130.0, "green_end_s": 15.0}
+
+
+def test_get_signal_programs_rejects_unexpected_params(signal_program_fixture_inpx: Path):
+    tools_network.set_active_inpx(signal_program_fixture_inpx)
+
+    envelope = _dispatch("get_signal_programs", bogus=1)
 
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "invalid_params"

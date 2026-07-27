@@ -184,6 +184,35 @@ class FakeEditSession:
             return readbacks[(decision_no, veh_class_no)]
         return readbacks
 
+    def set_signal_green_split(
+        self,
+        sc_no: int,
+        sg_no: int,
+        green_start_s: float,
+        green_end_s: float,
+        program_no: int | None = None,
+    ) -> dict[str, Any]:
+        self._record(
+            "set_signal_green_split",
+            sc_no=sc_no,
+            sg_no=sg_no,
+            green_start_s=green_start_s,
+            green_end_s=green_end_s,
+            program_no=program_no,
+        )
+        # Mirrors VissimController.set_signal_green_split's return shape
+        # (resolved controller_type + program actually written).
+        return self._readback.get(
+            "signal_green_split_written",
+            {"controller_type": "FIXEDTIME", "program_no": program_no},
+        )
+
+    def get_signal_green_split(
+        self, sc_no: int, sg_no: int, program_no: int | None = None
+    ) -> dict[str, Any]:
+        self._record("get_signal_green_split", sc_no=sc_no, sg_no=sg_no, program_no=program_no)
+        return self._readback["signal_green_split"]
+
     def persist(self) -> None:
         self.persist_calls += 1
 
@@ -231,6 +260,16 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
         (
             "set_des_speed_decision",
             {"decision_no": "6", "veh_class_no": "10", "des_speed_distr_no": "25"},
+        ),
+        (
+            "set_signal_green_split",
+            {
+                "sc_no": "1",
+                "sg_no": "1",
+                "program_no": "2",
+                "green_start_s": 1.0,
+                "green_end_s": 20.0,
+            },
         ),
     ],
 )
@@ -1122,6 +1161,104 @@ def test_set_des_speed_decision_missing_required_param_is_rejected():
     set_active_edit_session(session)
 
     envelope = _dispatch("set_des_speed_decision", decision_no="6", veh_class_no="10")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+# ---------------------------------------------------------------------------
+# set_signal_green_split — v2a unit ⑨. Verification carries the WHOLE green
+# window as one dict on each side (the set_reduced_speed_area same-key-set
+# precedent); program_no is REQUIRED (three-part identity, see tools_edit.py's
+# own comment at this tool).
+# ---------------------------------------------------------------------------
+
+
+def test_set_signal_green_split_happy_path():
+    session = FakeEditSession(
+        readback={
+            "signal_green_split": {
+                "green_start_s": 1.0,
+                "green_end_s": 8.0,
+                "controller_type": "FIXEDTIME",
+                "program_no": 2,
+            },
+            "signal_green_split_written": {"controller_type": "FIXEDTIME", "program_no": 2},
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_signal_green_split",
+        sc_no="1",
+        sg_no="1",
+        program_no="2",
+        green_start_s=1.0,
+        green_end_s=8.0,
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": {"green_start_s": 1.0, "green_end_s": 8.0},
+        "readback_value": {"green_start_s": 1.0, "green_end_s": 8.0},
+    }
+    assert envelope["artifacts"] == {"controller_type": "FIXEDTIME", "program_no": 2}
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {
+            "op": "set_signal_green_split",
+            "sc_no": 1,
+            "sg_no": 1,
+            "green_start_s": 1.0,
+            "green_end_s": 8.0,
+            "program_no": 2,
+        },
+        {"op": "get_signal_green_split", "sc_no": 1, "sg_no": 1, "program_no": 2},
+    ]
+    # sc_no/sg_no/program_no coerced str -> int at the COM boundary.
+    assert isinstance(session.calls[0]["sc_no"], int)
+    assert isinstance(session.calls[0]["sg_no"], int)
+    assert isinstance(session.calls[0]["program_no"], int)
+
+
+def test_set_signal_green_split_vissim_refusal_surfaces_as_structured_error():
+    # The exact live refusal shape from the probe: a program-driven
+    # controller's per-SG attribute write path raising -- the wrapper must
+    # surface it structurally and never persist.
+    session = FakeEditSession(
+        raise_on={
+            "set_signal_green_split": RuntimeError(
+                "AttValue failed: Object 1 - 1: 01: Attribute End of green cannot be changed."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_signal_green_split",
+        sc_no="1",
+        sg_no="1",
+        program_no="2",
+        green_start_s=1.0,
+        green_end_s=8.0,
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "cannot be changed" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+def test_set_signal_green_split_missing_program_no_is_rejected():
+    # program_no is REQUIRED -- a two-part call must be rejected at the
+    # pydantic layer, never guessed to mean "the active program" silently.
+    session = FakeEditSession(readback={"signal_green_split": {}})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_signal_green_split", sc_no="1", sg_no="1", green_start_s=1.0, green_end_s=8.0
+    )
 
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "invalid_params"

@@ -25,6 +25,7 @@ def _shadow_model(
     vehicle_compositions: list[dict[str, Any]] | None = None,
     des_speed_decisions: list[dict[str, Any]] | None = None,
     des_speed_distributions: list[dict[str, Any]] | None = None,
+    signal_programs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -74,7 +75,58 @@ def _shadow_model(
         shadow["des_speed_decisions"] = des_speed_decisions
     if des_speed_distributions is not None:
         shadow["des_speed_distributions"] = des_speed_distributions
+    # signal_programs deliberately OMITTED by default too (v2a unit ⑨) --
+    # same reasoning as the object classes above.
+    if signal_programs is not None:
+        shadow["signal_programs"] = signal_programs
     return shadow
+
+
+def _sg_split(
+    sg_no: str,
+    *,
+    green_start_s: float | None = 10.0,
+    green_end_s: float | None = 40.0,
+    amber_s: float = 3.0,
+    min_green_s: float | None = None,
+    head_count: int = 2,
+    simple: bool = True,
+    sg_name: str = "",
+) -> dict[str, Any]:
+    return {
+        "sg_no": sg_no,
+        "sg_name": sg_name or f"SG{sg_no}",
+        "green_start_s": green_start_s,
+        "green_end_s": green_end_s,
+        "amber_s": amber_s,
+        "red_amber_s": 1.0,
+        "min_green_s": min_green_s,
+        "head_count": head_count,
+        "simple": simple,
+    }
+
+
+def _signal_program(
+    prog_no: str, sg_splits: list[dict[str, Any]], *, cycle_s: float | None = 90.0, name: str = ""
+) -> dict[str, Any]:
+    return {"prog_no": prog_no, "name": name, "cycle_s": cycle_s, "sg_splits": sg_splits}
+
+
+def _signal_program_controller(
+    sc_no: str,
+    programs: list[dict[str, Any]],
+    *,
+    controller_type: str = "FIXEDTIME",
+    active_program_no: str | None = "1",
+    sc_name: str = "",
+) -> dict[str, Any]:
+    return {
+        "sc_no": sc_no,
+        "sc_name": sc_name,
+        "controller_type": controller_type,
+        "active_program_no": active_program_no,
+        "programs": programs,
+    }
 
 
 def _composition_entry(
@@ -3120,9 +3172,14 @@ def test_registry_size_matches_m3_1_catalog_port():
     # entry, a defensive addition" shapes for the new set_des_speed_decision
     # tool -- #30 speed_decision_unpaired already existed and was
     # RETARGETED in place from a placeholder tool name onto the real one,
-    # not added) == 54.
+    # not added) == 54, + 4 (v2a unit ⑨'s signal_program_split_not_found /
+    # green_split_outside_cycle / green_split_below_min_green /
+    # signal_green_split_change_confirm, all four "not a §-numbered catalog
+    # entry, a defensive addition" shapes for the new set_signal_green_split
+    # tool -- #4 signal_controller_type_unsupported already existed and was
+    # EXTENDED in place to also gate the new tool, not added) == 58.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 54
+    assert len(get_registry()) == 58
 
 
 def test_registry_has_unique_ids():
@@ -3166,3 +3223,278 @@ def test_run_checks_returns_multiple_findings_in_registration_order():
 
     ids = [f.constraint_id for f in findings]
     assert ids == ["latent_demand_overflow"]
+
+
+# ---------------------------------------------------------------------------
+# v2a unit ⑨ — set_signal_green_split's four checks
+# ---------------------------------------------------------------------------
+
+
+def _green_split_fixture(**controller_kwargs: Any) -> dict[str, Any]:
+    """One FIXEDTIME controller, two programs (1 active, 2 inactive), three
+    SGs in program 1 -- SG 1 green 10..40, SG 2 green 50..85, SG 3 wrapping
+    green 85..5 (cycle 90)."""
+    programs = [
+        _signal_program(
+            "1",
+            [
+                _sg_split("1", green_start_s=10.0, green_end_s=40.0),
+                _sg_split("2", green_start_s=50.0, green_end_s=85.0),
+                _sg_split("3", green_start_s=85.0, green_end_s=5.0),
+            ],
+        ),
+        _signal_program("2", [_sg_split("1", green_start_s=1.0, green_end_s=15.0)]),
+    ]
+    return _shadow_model(
+        signals=[
+            {
+                "sc_no": "1",
+                "sc_name": "SC1",
+                "cycle_time": 90,
+                "controller_type": "FIXEDTIME",
+                "phases": [],
+            }
+        ],
+        signal_programs=[_signal_program_controller("1", programs, **controller_kwargs)],
+    )
+
+
+def test_green_split_controller_type_gate_extends_to_set_signal_green_split():
+    shadow = _shadow_model(
+        signals=[
+            {
+                "sc_no": "1",
+                "sc_name": "SC1",
+                "cycle_time": 0,
+                "controller_type": "RINGBARRIERCONTROLLER",
+                "phases": [],
+            }
+        ],
+        signal_programs=[_signal_program_controller("1", [], controller_type="RINGBARRIERCONTROLLER")],
+    )
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=10.0, green_end_s=40.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    assert any(f.constraint_id == "signal_controller_type_unsupported" for f in findings)
+
+
+def test_signal_program_split_not_found_missing_controller_defers_to_object_not_found():
+    shadow = _green_split_fixture()
+    action = _action(
+        "set_signal_green_split", sc_no="99", sg_no="1", program_no="1", green_start_s=10.0, green_end_s=40.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    ids = [f.constraint_id for f in findings]
+    assert "object_not_found" in ids
+    assert "signal_program_split_not_found" not in ids
+
+
+def test_signal_program_split_not_found_fires_for_bogus_program():
+    shadow = _green_split_fixture()
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="7", green_start_s=10.0, green_end_s=40.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    matches = [f for f in findings if f.constraint_id == "signal_program_split_not_found"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    _assert_well_formed_messages(finding, must_contain_ko="7")
+    assert finding.details["reason"] == "program_not_found"
+    assert finding.suggested_fix["candidates"] == ["1", "2"]
+    assert finding.suggested_fix["active_program_no"] == "1"
+
+
+def test_signal_program_split_not_found_fires_for_bogus_sg():
+    shadow = _green_split_fixture()
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="9", program_no="1", green_start_s=10.0, green_end_s=40.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    matches = [f for f in findings if f.constraint_id == "signal_program_split_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["reason"] == "sg_not_found"
+    assert matches[0].suggested_fix["candidates"] == ["1", "2", "3"]
+
+
+def test_signal_program_split_not_found_fires_for_controller_without_program_data():
+    shadow = _shadow_model(
+        signals=[
+            {
+                "sc_no": "1",
+                "sc_name": "SC1",
+                "cycle_time": 0,
+                "controller_type": "FIXEDTIME",
+                "phases": [],
+            }
+        ],
+        signal_programs=[_signal_program_controller("1", [], controller_type="FIXEDTIME")],
+    )
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=10.0, green_end_s=40.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    matches = [f for f in findings if f.constraint_id == "signal_program_split_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["reason"] == "no_program_data"
+
+
+def test_signal_program_split_not_found_fires_for_non_simple_shape():
+    shadow = _shadow_model(
+        signal_programs=[
+            _signal_program_controller(
+                "1",
+                [
+                    _signal_program(
+                        "1",
+                        [_sg_split("1", green_start_s=None, green_end_s=None, simple=False)],
+                    )
+                ],
+            )
+        ],
+    )
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=10.0, green_end_s=40.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    matches = [f for f in findings if f.constraint_id == "signal_program_split_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["reason"] == "non_simple_shape"
+
+
+def test_signal_program_split_not_found_silent_for_valid_triple():
+    shadow = _green_split_fixture()
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=10.0, green_end_s=45.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    assert not any(f.constraint_id == "signal_program_split_not_found" for f in findings)
+
+
+def test_green_split_outside_cycle_refuses_beyond_cycle_value():
+    # Live-proven silent failure: Vissim itself ACCEPTS a green window edge
+    # beyond the cycle time (probe: EndRed=5000 accepted with CycTm=999) --
+    # this refusal is the only screen.
+    shadow = _green_split_fixture()
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=10.0, green_end_s=120.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    matches = [f for f in findings if f.constraint_id == "green_split_outside_cycle"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details["cycle_s"] == 90.0
+    _assert_well_formed_messages(matches[0], must_contain_ko="90")
+
+
+def test_green_split_outside_cycle_refuses_negative_and_zero_length():
+    shadow = _green_split_fixture()
+    negative = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=-1.0, green_end_s=40.0
+    )
+    assert any(
+        f.constraint_id == "green_split_outside_cycle"
+        for f in run_checks("preflight", negative, shadow, {})
+    )
+    zero_length = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=40.0, green_end_s=40.0
+    )
+    assert any(
+        f.constraint_id == "green_split_outside_cycle"
+        for f in run_checks("preflight", zero_length, shadow, {})
+    )
+
+
+def test_green_split_outside_cycle_allows_wrapping_window():
+    # start > end is a REAL, valid shape (green spans the cycle boundary --
+    # Beijing program 1 SG 1 wraps 130 -> 15).
+    shadow = _green_split_fixture()
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=80.0, green_end_s=5.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    assert not any(f.constraint_id == "green_split_outside_cycle" for f in findings)
+
+
+def test_green_split_below_min_green_fires_only_with_real_datum():
+    shadow = _shadow_model(
+        signal_programs=[
+            _signal_program_controller(
+                "1",
+                [_signal_program("1", [_sg_split("1", min_green_s=10.0)], cycle_s=90.0)],
+                controller_type="FIXEDTIMESIMPLE",
+            )
+        ],
+    )
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=10.0, green_end_s=15.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    matches = [f for f in findings if f.constraint_id == "green_split_below_min_green"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["green_duration_s"] == 5.0
+
+    # datum absent (blob programs report min_green_s=None) -> silent, no claim
+    shadow_no_datum = _green_split_fixture()
+    findings = run_checks("preflight", action, shadow_no_datum, {})
+    assert not any(f.constraint_id == "green_split_below_min_green" for f in findings)
+
+
+def test_signal_green_split_change_confirm_always_fires_and_reports_overlaps():
+    shadow = _green_split_fixture()
+    # New SG1 window 10..60 overlaps SG2's 50..85 but not SG3's wrap 85..5.
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=10.0, green_end_s=60.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    matches = [f for f in findings if f.constraint_id == "signal_green_split_change_confirm"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "warn"
+    assert finding.details["overlapping_sg_nos"] == ["2"]
+    assert finding.details["old_green_window"] == {"green_start_s": 10.0, "green_end_s": 40.0}
+    assert finding.details["new_green_window"] == {"green_start_s": 10.0, "green_end_s": 60.0}
+    assert finding.details["targets_active_program"] is True
+    # The silent-failure education is ALWAYS present.
+    assert "막지 않습니다" in finding.messages["ko"]
+    assert "will NOT stop" in finding.messages["en"]
+
+
+def test_signal_green_split_change_confirm_detects_wrapping_overlap():
+    shadow = _green_split_fixture()
+    # New SG1 window wraps 88..3: vs SG2's 50..85 -> no overlap; vs SG3's
+    # wrap 85..5 (segments 85..90 + 0..5) -> overlap.
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="1", green_start_s=88.0, green_end_s=3.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    matches = [f for f in findings if f.constraint_id == "signal_green_split_change_confirm"]
+    assert len(matches) == 1
+    assert matches[0].details["overlapping_sg_nos"] == ["3"]
+
+
+def test_signal_green_split_change_confirm_warns_loudly_on_inactive_program():
+    shadow = _green_split_fixture()
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="1", program_no="2", green_start_s=1.0, green_end_s=20.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    matches = [f for f in findings if f.constraint_id == "signal_green_split_change_confirm"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.details["targets_active_program"] is False
+    assert "활성 프로그램이 아닙니다" in finding.messages["ko"]
+    assert "NOT the active program" in finding.messages["en"]
+
+
+def test_signal_green_split_change_confirm_silent_when_target_unresolvable():
+    # An unresolvable triple is signal_program_split_not_found's job -- the
+    # confirm never fires alongside a refusal for the same broken target.
+    shadow = _green_split_fixture()
+    action = _action(
+        "set_signal_green_split", sc_no="1", sg_no="9", program_no="1", green_start_s=10.0, green_end_s=40.0
+    )
+    findings = run_checks("preflight", action, shadow, {})
+    assert not any(f.constraint_id == "signal_green_split_change_confirm" for f in findings)

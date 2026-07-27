@@ -245,6 +245,216 @@ def _parse_one_sc(
     )
 
 
+def parse_signal_programs(inpx_path: Path) -> list[dict[str, object]]:
+    """Per-controller fixed-time signal PROGRAM data — the green splits.
+
+    v2a unit ⑨ (2026-07-27). This is a SEPARATE read path from
+    :func:`parse_signal_controllers` on purpose: that function's ``phases``
+    output reads ``progs[0]`` (the FIRST program in the blob), while the
+    program Vissim actually RUNS is selected by the outer element's
+    ``progNo`` attribute (verified live on Urban Intersection Beijing.CN:
+    ``progNo="2"`` of programs {1, 2}, and the SimBreakAt/SigState behavior
+    oracle in ``backend/tools/probe_signal_programs.py`` follows program 2,
+    not program 1). The existing ``phases`` shape is pinned by many
+    dashboard/agent tests and is left byte-untouched; THIS function reports
+    every program with the active one marked, so green-split reads/writes
+    can never silently describe the wrong program.
+
+    Storage reality (static scan of all 25 real Vissim 2026 example
+    networks + the live probe):
+
+    - ``type="FIXEDTIME"`` (Vissig): the ENTIRE program lives in the base64
+      ``intSupplyData`` blob — decoded, ``<progs><prog id cycletime(ms)>``
+      → ``<sgs><sg sg_id><cmds><cmd display begin(ms)>``; display 3 = the
+      "switch to green" command, display 1 = the "switch to red" command,
+      ``<fixedstates>`` carry amber (display 4) / red-amber (display 2)
+      durations. ``progFile``/``supplyFile1..3`` are EMPTY on every real
+      FIXEDTIME controller — the program is always embedded, never an
+      external file (external files are the VAP/RBC family, refused by
+      design elsewhere).
+    - ``type="FIXEDTIMESIMPLE"``: no blob; the green window lives as plain
+      ``<signalGroup>`` attributes (``endRed`` = green start, ``endGreen``
+      = green end, plus ``amber``/``redAmber``/``minGreen``), cycle on the
+      controller's own ``cycTm``. Reported here as ONE synthesized program
+      (``prog_no`` = the outer ``progNo``, "1" on every real example).
+    - every other controller type: ``programs`` is empty (external or
+      non-fixed-time program logic — nothing verifiable to report).
+
+    Each program's ``sg_splits`` entry: ``{sg_no, sg_name, green_start_s,
+    green_end_s, amber_s, red_amber_s, min_green_s, head_count, simple}``.
+    ``green_start_s`` is when the signal group switches to green;
+    ``green_end_s`` is when it switches to red (any amber runs immediately
+    before that point per the program's fixed states). A WRAPPING window
+    (``green_start_s > green_end_s``, green spanning the cycle boundary) is
+    real and valid — Beijing program 1 SG 1 wraps. ``simple`` is False when
+    the SG's command list is anything other than exactly one green + one red
+    command (multi-window programs exist in principle); such SGs report
+    ``green_start_s``/``green_end_s`` as None and are refused by the write
+    path rather than guessed at.
+    """
+    root = ET.parse(inpx_path).getroot()
+    head_index = _build_signal_head_index(root)
+    result: list[dict[str, object]] = []
+    for sc_el in root.findall(".//signalController"):
+        sc_no = (sc_el.get("no") or "").strip()
+        if not sc_no:
+            continue
+        controller_type = (sc_el.get("type") or "").strip() or "unknown"
+        sg_names = _build_signal_group_name_map(sc_el)
+        head_counts = head_index.get(sc_no, {})
+        active_prog_no = (sc_el.get("progNo") or "").strip() or None
+
+        programs: list[dict[str, object]] = []
+        if controller_type == "FIXEDTIME":
+            programs = _parse_fixedtime_blob_programs(sc_el, sg_names, head_counts)
+        elif controller_type == "FIXEDTIMESIMPLE":
+            programs = _parse_fixedtimesimple_program(sc_el, sg_names, head_counts, active_prog_no)
+
+        result.append(
+            {
+                "sc_no": sc_no,
+                "sc_name": (sc_el.get("name") or "").strip(),
+                "controller_type": controller_type,
+                "active_program_no": active_prog_no,
+                "programs": programs,
+            }
+        )
+    return result
+
+
+def _parse_fixedtime_blob_programs(
+    sc_el: ET.Element,
+    sg_names: dict[str, str],
+    head_counts: dict[str, int],
+) -> list[dict[str, object]]:
+    isd = sc_el.get("intSupplyData", "")
+    if not isd:
+        return []
+    try:
+        inner = ET.fromstring(base64.b64decode(isd).decode("utf-8"))
+    except Exception:
+        return []
+    progs_el = inner.find("progs")
+    if progs_el is None:
+        return []
+
+    programs: list[dict[str, object]] = []
+    for prog in list(progs_el):
+        try:
+            cycle_s: float | None = int(prog.get("cycletime", "0")) / 1000.0
+        except (TypeError, ValueError):
+            cycle_s = None
+        splits: list[dict[str, object]] = []
+        prog_sgs = prog.find("sgs")
+        for sg in (list(prog_sgs) if prog_sgs is not None else []):
+            sg_no = (sg.get("sg_id") or "").strip()
+            if not sg_no:
+                continue
+            green_begins: list[float] = []
+            red_begins: list[float] = []
+            cmds_el = sg.find("cmds")
+            for cmd in (list(cmds_el) if cmds_el is not None else []):
+                try:
+                    begin_s = int(cmd.get("begin", "0")) / 1000.0
+                except (TypeError, ValueError):
+                    continue
+                if cmd.get("display") == "3":
+                    green_begins.append(begin_s)
+                elif cmd.get("display") == "1":
+                    red_begins.append(begin_s)
+            amber_s = 0.0
+            red_amber_s = 0.0
+            fs_el = sg.find("fixedstates")
+            for fs in (list(fs_el) if fs_el is not None else []):
+                try:
+                    duration_s = int(fs.get("duration", "0")) / 1000.0
+                except (TypeError, ValueError):
+                    continue
+                if fs.get("display") == "4":
+                    amber_s = duration_s
+                elif fs.get("display") == "2":
+                    red_amber_s = duration_s
+            simple = len(green_begins) == 1 and len(red_begins) == 1
+            splits.append(
+                {
+                    "sg_no": sg_no,
+                    "sg_name": sg_names.get(sg_no, "") or f"SG{sg_no}",
+                    "green_start_s": green_begins[0] if simple else None,
+                    "green_end_s": red_begins[0] if simple else None,
+                    "amber_s": amber_s,
+                    "red_amber_s": red_amber_s,
+                    # min-green is NOT reported for blob programs: the blob's
+                    # per-SG defaultDurations semantics are unverified — an
+                    # unproven datum is omitted, never guessed (CycTm lesson).
+                    "min_green_s": None,
+                    "head_count": head_counts.get(sg_no, 0),
+                    "simple": simple,
+                }
+            )
+        programs.append(
+            {
+                "prog_no": (prog.get("id") or "").strip(),
+                "name": (prog.get("name") or "").strip(),
+                "cycle_s": cycle_s,
+                "sg_splits": splits,
+            }
+        )
+    return programs
+
+
+def _parse_fixedtimesimple_program(
+    sc_el: ET.Element,
+    sg_names: dict[str, str],
+    head_counts: dict[str, int],
+    active_prog_no: str | None,
+) -> list[dict[str, object]]:
+    def _sec(el: ET.Element, attr: str) -> float | None:
+        raw = el.get(attr)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    cycle_raw = sc_el.get("cycTm")
+    try:
+        cycle_s: float | None = float(cycle_raw) if cycle_raw is not None else None
+    except (TypeError, ValueError):
+        cycle_s = None
+
+    splits: list[dict[str, object]] = []
+    sgs_el = sc_el.find("sgs")
+    for sg in (sgs_el.findall("signalGroup") if sgs_el is not None else []):
+        sg_no = (sg.get("no") or "").strip()
+        if not sg_no:
+            continue
+        splits.append(
+            {
+                "sg_no": sg_no,
+                "sg_name": sg_names.get(sg_no, "") or f"SG{sg_no}",
+                # endRed = when red ENDS (green begins, after any red-amber);
+                # endGreen = when green ENDS. Same green-window vocabulary as
+                # the blob path above.
+                "green_start_s": _sec(sg, "endRed"),
+                "green_end_s": _sec(sg, "endGreen"),
+                "amber_s": _sec(sg, "amber") or 0.0,
+                "red_amber_s": _sec(sg, "redAmber") or 0.0,
+                "min_green_s": _sec(sg, "minGreen"),
+                "head_count": head_counts.get(sg_no, 0),
+                "simple": True,
+            }
+        )
+    return [
+        {
+            "prog_no": active_prog_no or "1",
+            "name": "",
+            "cycle_s": cycle_s,
+            "sg_splits": splits,
+        }
+    ]
+
+
 def parse_signal_controllers(inpx_path: Path) -> dict[str, SignalInfo]:
     """Return {sc_no: SignalInfo} for all signal controllers in the INPX."""
     root = ET.parse(inpx_path).getroot()
