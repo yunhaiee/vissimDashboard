@@ -323,12 +323,18 @@ def test_get_signal_controllers_on_demo_data_is_empty_but_well_formed():
 
 def test_get_conflict_areas_on_demo_data_is_empty_but_well_formed():
     """The demo .inpx carries no <conflictArea> elements at all — the tool
-    must return an empty, well-formed list rather than erroring (v2 unit ④)."""
+    must return an empty, well-formed list rather than erroring (v2 unit ④).
+
+    D1 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): an unfiltered
+    call now always carries an explicit ``truncated`` flag (false here — an
+    empty result is trivially not truncated), no ``hint`` key when nothing
+    was cut."""
     envelope = _dispatch("get_conflict_areas")
 
     assert envelope["status"] == "ok"
     data = envelope["data"]
-    assert data == {"count": 0, "conflict_areas": []}
+    assert data == {"count": 0, "conflict_areas": [], "truncated": False}
+    assert "hint" not in data
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +383,123 @@ def test_get_conflict_areas_on_real_conflict_area_elements(conflict_area_fixture
     }
     assert by_no["7"]["status"] == "AHASRIGHTOFWAY"
     assert by_no["7"]["link_pair"] == ("3", "21")
+    assert data["truncated"] is False  # well under the 40-item cap
+    assert "hint" not in data
+
+
+# ---------------------------------------------------------------------------
+# D1 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): conflict_area_no/
+# link_no server-side filters, and a bounded (capped + explicitly truncated)
+# default for an unfiltered call on a large network -- so the model can
+# narrow BEFORE the envelope is built instead of always getting (and having
+# planner.py's renderer separately truncate) the whole unbounded list.
+# ---------------------------------------------------------------------------
+
+
+def test_get_conflict_areas_filters_by_conflict_area_no(conflict_area_fixture_inpx: Path):
+    tools_network.set_active_inpx(conflict_area_fixture_inpx)
+
+    envelope = _dispatch("get_conflict_areas", conflict_area_no="7")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["conflict_areas"][0]["no"] == "7"
+    assert data["conflict_areas"][0]["status"] == "AHASRIGHTOFWAY"
+    # A filtered call is already bounded by the model's own query -- no cap
+    # bookkeeping needed.
+    assert "truncated" not in data
+    assert "hint" not in data
+
+
+def test_get_conflict_areas_filters_by_conflict_area_no_no_match_is_empty_not_an_error(
+    conflict_area_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(conflict_area_fixture_inpx)
+
+    envelope = _dispatch("get_conflict_areas", conflict_area_no="9999")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "conflict_areas": []}
+
+
+def test_get_conflict_areas_filters_by_link_no_matches_either_side_of_the_pair(
+    conflict_area_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(conflict_area_fixture_inpx)
+
+    # link 3 is link_a on BOTH fixture conflict areas (no=3: 3 vs 12, no=7: 3
+    # vs 21) -- link_no must match either side, not just link_a.
+    envelope = _dispatch("get_conflict_areas", link_no="21")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["conflict_areas"][0]["no"] == "7"
+
+
+def test_get_conflict_areas_rejects_unexpected_params(conflict_area_fixture_inpx: Path):
+    tools_network.set_active_inpx(conflict_area_fixture_inpx)
+
+    envelope = _dispatch("get_conflict_areas", bogus=1)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+_MANY_CONFLICT_AREAS_INPX_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links></links>
+  <conflictAreas>
+{areas}
+  </conflictAreas>
+</network>
+"""
+
+
+def _many_conflict_areas_inpx(tmp_path: Path, count: int) -> Path:
+    """A synthetic .inpx with ``count`` real ``<conflictArea>`` elements --
+    parsing has no cross-reference to a matching ``<link>`` element (see
+    ``_parse_conflict_areas``), so no ``<links>`` content is needed."""
+    areas = "\n".join(
+        f'    <conflictArea no="{i}" linkA="{i}" linkB="{i + 1000}" status="PASSIVE"/>'
+        for i in range(1, count + 1)
+    )
+    path = tmp_path / f"many_conflict_areas_{count}.inpx"
+    path.write_text(_MANY_CONFLICT_AREAS_INPX_TEMPLATE.format(areas=areas), encoding="utf-8")
+    return path
+
+
+def test_get_conflict_areas_unfiltered_call_on_large_network_is_capped_and_truncated(
+    tmp_path: Path,
+):
+    tools_network.set_active_inpx(_many_conflict_areas_inpx(tmp_path, 224))
+
+    envelope = _dispatch("get_conflict_areas")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 224  # the TRUE total, never hidden
+    assert len(data["conflict_areas"]) == tools_network._CONFLICT_AREAS_DEFAULT_CAP
+    assert data["truncated"] is True
+    assert "40" in data["hint"] and "224" in data["hint"]
+    # A filtered follow-up narrows to exactly what was asked, proving the
+    # hint's own suggestion actually works.
+    followup = _dispatch("get_conflict_areas", conflict_area_no="150")
+    assert followup["data"]["count"] == 1
+    assert followup["data"]["conflict_areas"][0]["no"] == "150"
+
+
+def test_get_conflict_areas_unfiltered_call_under_cap_is_not_truncated(tmp_path: Path):
+    tools_network.set_active_inpx(_many_conflict_areas_inpx(tmp_path, 10))
+
+    envelope = _dispatch("get_conflict_areas")
+
+    data = envelope["data"]
+    assert data["count"] == 10
+    assert len(data["conflict_areas"]) == 10
+    assert data["truncated"] is False
+    assert "hint" not in data
 
 
 def test_build_shadow_model_parses_conflict_areas_from_real_xml(conflict_area_fixture_inpx: Path):

@@ -313,6 +313,196 @@ def test_three_turn_conversation_carries_clarification_and_warning_forward(tmp_p
     assert persisted_3.context["accumulated_warnings"] == accumulated
 
 
+# ---------------------------------------------------------------------------
+# D4 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): the "참고: 이전
+# 대화에서 발생한 경고" block (i) must collapse two instances of the SAME
+# constraint (e.g. conflict_area_data_unavailable's Passive-count text before
+# vs. after the write that changed it) into ONE, keeping the latest, and
+# (ii) must not re-paste a warning's full text on every subsequent answer
+# forever once it has already been shown once.
+# ---------------------------------------------------------------------------
+
+
+def test_record_accumulated_warnings_dedups_by_constraint_id_keeping_latest_message():
+    """Direct, white-box test of _record_accumulated_warnings: the SAME
+    constraint firing twice (across two separate dispatches, e.g. a
+    conflict-area write's preflight-time and postwrite-time counts) with a
+    DIFFERENT message must collapse to ONE ledger entry carrying the LATEST
+    text — not two permanently-coexisting entries (the live incident: 145
+    Passive pairs before the write, 144 after, both shown forever)."""
+    from services.agent.constraints import Finding
+    from services.agent.orchestrator import _record_accumulated_warnings
+    from services.agent.state import AgentState
+
+    state = AgentState(goal="x", artifacts={}, history=[], context={})
+
+    before_finding = Finding(
+        constraint_id="conflict_area_data_unavailable",
+        tier="warn",
+        phase="postwrite",
+        messages={"ko": "충돌구간 145개가 Passive 상태입니다."},
+    )
+    _record_accumulated_warnings(state, [before_finding], "ko")
+
+    after_finding = Finding(
+        constraint_id="conflict_area_data_unavailable",
+        tier="warn",
+        phase="postwrite",
+        messages={"ko": "충돌구간 144개가 Passive 상태입니다."},
+    )
+    _record_accumulated_warnings(state, [after_finding], "ko")
+
+    accumulated = state.context["accumulated_warnings"]
+    assert len(accumulated) == 1  # collapsed, not two entries
+    assert accumulated[0] == {
+        "constraint_id": "conflict_area_data_unavailable",
+        "message": "충돌구간 144개가 Passive 상태입니다.",  # the LATEST, not the first
+    }
+
+
+def test_record_accumulated_warnings_keeps_stable_position_for_a_repeat_constraint():
+    """A repeat constraint updates its message IN PLACE (stays at its
+    original ledger position); a genuinely new constraint still appends at
+    the end — the ledger's ordering is otherwise unaffected by the dedup
+    fix."""
+    from services.agent.constraints import Finding
+    from services.agent.orchestrator import _record_accumulated_warnings
+    from services.agent.state import AgentState
+
+    state = AgentState(goal="x", artifacts={}, history=[], context={})
+    _record_accumulated_warnings(
+        state,
+        [Finding(constraint_id="a", tier="warn", phase="postwrite", messages={"ko": "a1"})],
+        "ko",
+    )
+    _record_accumulated_warnings(
+        state,
+        [Finding(constraint_id="b", tier="warn", phase="postwrite", messages={"ko": "b1"})],
+        "ko",
+    )
+    _record_accumulated_warnings(
+        state,
+        [Finding(constraint_id="a", tier="warn", phase="postwrite", messages={"ko": "a2"})],
+        "ko",
+    )
+
+    accumulated = state.context["accumulated_warnings"]
+    assert [entry["constraint_id"] for entry in accumulated] == ["a", "b"]
+    assert accumulated[0]["message"] == "a2"  # updated in place
+    assert accumulated[1]["message"] == "b1"
+
+
+def test_collect_history_warnings_dedups_by_constraint_id_keeping_latest_message():
+    """The M3.2 agentic-tier intra-turn safety net's own source of truth
+    gets the same latest-wins dedup discipline as the cross-turn ledger."""
+    from services.agent.orchestrator import _collect_history_warnings
+    from services.agent.state import StepRecord
+
+    history = [
+        StepRecord(
+            thought="",
+            action="set_vehicle_input_volume",
+            params={},
+            observation={
+                "guardrail_warnings": [
+                    {"constraint_id": "conflict_area_data_unavailable", "message": "145개"}
+                ]
+            },
+        ),
+        StepRecord(
+            thought="",
+            action="set_conflict_area_status",
+            params={},
+            observation={
+                "guardrail_warnings": [
+                    {"constraint_id": "conflict_area_data_unavailable", "message": "144개"}
+                ]
+            },
+        ),
+    ]
+
+    collected = _collect_history_warnings(history)
+
+    assert len(collected) == 1
+    assert collected[0]["message"] == "144개"  # the LATEST, not the first-seen
+
+
+def test_prior_turn_warning_shown_once_then_collapses_to_a_summary_line(tmp_path: Path):
+    """D4(ii): a warning that already appeared verbatim in an earlier turn's
+    answer must not be re-pasted in full on EVERY subsequent turn forever —
+    only the first carry-forward shows the full text; later turns collapse
+    it into a single summary bullet."""
+    registry = ToolRegistry()
+    calls = _register_short_run_tool(registry)
+    work_dir = tmp_path / "session"
+    session_id = "s-repeat-warning"
+
+    # Turn 1: the run itself, firing results_missing_kpi_tables (nothing to
+    # carry forward yet -- same as the 3-turn test above).
+    provider_1 = FakeStructuredProvider(
+        [
+            # random_seeds carries 5 seeds (not 1) so single_seed_run_not_
+            # statistically_valid does NOT also fire -- this test isolates
+            # results_missing_kpi_tables alone, same discipline as the
+            # 3-turn test above.
+            _action(
+                "run_simulation",
+                summary="실행합니다",
+                duration_s=300,
+                random_seeds=[1, 2, 3, 4, 5],
+            ),
+            _action("respond", summary="완료", answer="실행을 완료했습니다."),
+        ]
+    )
+    result_1 = run_agent_turn(
+        "시뮬레이션을 300초 돌려줘",
+        provider=provider_1,
+        work_dir=work_dir,
+        session_id=session_id,
+        language="ko",
+        registry=registry,
+        gate=_AllowAllGate(),
+        engine=GuardrailEngine(),
+    )
+    assert calls["count"] == 1
+    assert "참고:" not in result_1.answer  # nothing carried forward into turn 1's own answer
+
+    # Turn 2: unrelated follow-up -- FIRST carry-forward, full text shown.
+    provider_2 = FakeStructuredProvider(
+        [_action("respond", summary="요약", answer="결과를 요약했습니다.")]
+    )
+    result_2 = run_agent_turn(
+        "결과를 요약해줘",
+        provider=provider_2,
+        work_dir=work_dir,
+        session_id=session_id,
+        language="ko",
+        registry=registry,
+    )
+    assert "참고:" in result_2.answer
+    assert "SIMULATIONRUN" in result_2.answer  # full warning text, first time shown
+
+    # Turn 3: ANOTHER unrelated follow-up -- the SAME warning is still in the
+    # ledger (nothing resolved it), but must NOT be re-pasted in full again.
+    provider_3 = FakeStructuredProvider(
+        [_action("respond", summary="추가 요약", answer="추가로 확인했습니다.")]
+    )
+    result_3 = run_agent_turn(
+        "더 확인해줘",
+        provider=provider_3,
+        work_dir=work_dir,
+        session_id=session_id,
+        language="ko",
+        registry=registry,
+    )
+    assert "참고:" in result_3.answer  # still noted...
+    assert "SIMULATIONRUN" not in result_3.answer  # ...but NOT the full text again
+    assert "1" in result_3.answer  # the "N other warning(s) still apply" count
+
+    persisted_3 = session_store.load_state(work_dir, session_id)
+    assert persisted_3.context["warnings_shown"] == ["results_missing_kpi_tables"]
+
+
 def test_second_clarification_note_is_not_duplicated_with_the_first(tmp_path: Path):
     """A clarification note is a per-turn, ephemeral prompt hint (context
     key "warnings"), never an accumulating ledger — turn 3 must not still

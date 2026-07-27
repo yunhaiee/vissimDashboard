@@ -296,11 +296,118 @@ def test_older_history_entry_renders_compact_while_newest_entry_stays_generous(t
     # Compact budget: far fewer items than the recent-budget rendering from
     # the earlier test would have shown at the SAME position.
     assert len(older_rendered) <= planner_module._OBSERVATION_SNIPPET_CHARS
-    parsed = json.loads(older_rendered) if older_rendered.startswith("{") else None
-    if parsed is not None:
-        items = parsed["data"]["conflict_areas"]
-        shown = sum(1 for item in items if isinstance(item, dict))
-        assert shown < 10  # nowhere near the generous-budget rendering's count
+    # D2 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): this used to be
+    # a loose "if it happens to be parseable JSON" check, tolerating the
+    # zero-items bug (the 300-char snippet budget legitimately rendered ZERO
+    # kept conflict areas for this exact fixture shape before the fix). Now
+    # that the hard floor is in place, the render is ALWAYS valid JSON with
+    # at least one real item.
+    parsed = json.loads(older_rendered)
+    items = parsed["data"]["conflict_areas"]
+    shown = sum(1 for item in items if isinstance(item, dict))
+    assert 0 < shown < 10  # a real, non-empty item -- nowhere near the generous-budget count
+
+
+# ---------------------------------------------------------------------------
+# D2 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): the zero-items
+# bug. The old binary search always folded the truncation marker's own cost
+# into every trial size, including the smallest one -- against a real
+# envelope this could push a single, otherwise-comfortably-fitting item over
+# a tight budget, so "the largest count that fits" search correctly, but
+# uselessly, settled on ZERO items shown (verified against the live
+# incident's actual trace/state.json: a 224-item get_conflict_areas envelope
+# rendered at the OLDER-entry 300-char snippet budget kept 0/224 items).
+# ---------------------------------------------------------------------------
+
+
+def test_render_observation_224_conflict_areas_at_snippet_budget_keeps_at_least_one_item():
+    """Direct, white-box regression test on ``_render_observation`` itself
+    (not the full ``run_agent_turn`` machinery) at the exact budget
+    (``_OBSERVATION_SNIPPET_CHARS`` = 300) and payload shape that produced
+    the live-demo zero-items bug: kept_items must never be 0, and the
+    "N/M 표시" marker must accurately reflect what was actually kept."""
+    observation = {
+        "status": "ok",
+        "error_type": None,
+        "message": "",
+        "artifacts": None,
+        "suggested_fix": None,
+        "verification": None,
+        "data": _make_conflict_areas_payload(224),
+    }
+    budget = planner_module._OBSERVATION_SNIPPET_CHARS
+
+    rendered = planner_module._render_observation(observation, budget, "ko")
+
+    assert len(rendered) <= budget
+    parsed = json.loads(rendered)  # still valid, parseable JSON
+    items = parsed["data"]["conflict_areas"]
+    *object_items, marker = items
+    kept_items = len(object_items)
+
+    assert kept_items >= 1, "the zero-items bug: not a single complete item was kept"
+    assert all(isinstance(item, dict) for item in object_items)
+
+    match = re.search(r"표시 (\d+)/(\d+)", marker)
+    assert match is not None, f"no N/M marker found in {marker!r}"
+    shown, total = int(match.group(1)), int(match.group(2))
+    assert total == 224
+    assert shown == kept_items  # marker must reflect what was ACTUALLY kept
+
+
+def test_render_observation_hard_floor_preserves_overhead_fields_when_no_item_fits():
+    """The write-envelope shape from the live incident: a small
+    ``guardrail_warnings`` list sitting next to non-list overhead
+    (message/verification/artifacts) that alone is already close to the
+    snippet budget, so not even ONE full guardrail-warning item fits
+    alongside it. The old code fell all the way through to the generic
+    "observation too large" marker, discarding ``verification.readback_value``
+    -- exactly the field the model needed to confirm a write actually landed.
+    The fix must keep those unrelated overhead fields intact."""
+    observation = {
+        "status": "ok",
+        "error_type": None,
+        "message": "Conflict area 3 (link 3 vs link 12) status set to AHASRIGHTOFWAY.",
+        "artifacts": {"link_a": "3", "link_b": "12"},
+        "suggested_fix": None,
+        "verification": {"written_value": "AHASRIGHTOFWAY", "readback_value": "AHASRIGHTOFWAY"},
+        "data": None,
+        "guardrail_warnings": [
+            {
+                "constraint_id": "conflict_area_status_change_confirm",
+                "message": (
+                    "충돌구간 '3'은(는) 링크 3와(과) 링크 12 사이에 있으며, 현재 상태는 "
+                    "PASSIVE입니다. AHASRIGHTOFWAY(으)로 변경을 제안합니다 — 충돌구간 번호는 "
+                    "지오메트리 편집 시 바뀔 수 있으므로, 승인 전에 의도한 교차로가 맞는지 "
+                    "확인해 주세요."
+                ),
+            },
+            {
+                "constraint_id": "conflict_area_data_unavailable",
+                "message": (
+                    "충돌구간(conflict area) 144개가 Passive(우선권 없음) 상태입니다: 3-21, "
+                    "3-28, 3-43, 3-10020, 3-10021, 3-10022, 3-10027, 3-10029 외 136쌍."
+                ),
+            },
+        ],
+    }
+    budget = planner_module._OBSERVATION_SNIPPET_CHARS
+    full_len = len(json.dumps(observation, ensure_ascii=False, separators=(",", ":")))
+    assert full_len > budget  # sanity: truncation IS required
+
+    rendered = planner_module._render_observation(observation, budget, "ko")
+
+    assert len(rendered) <= budget
+    parsed = json.loads(rendered)  # still valid, parseable JSON -- never a bare fallback string
+    # The whole point: fields that have NOTHING to do with the oversized
+    # guardrail_warnings list must survive, even though the list itself may
+    # end up empty at this budget.
+    assert parsed["verification"] == {
+        "written_value": "AHASRIGHTOFWAY",
+        "readback_value": "AHASRIGHTOFWAY",
+    }
+    assert parsed["message"] == observation["message"]
+    assert parsed["artifacts"] == observation["artifacts"]
 
 
 # ---------------------------------------------------------------------------

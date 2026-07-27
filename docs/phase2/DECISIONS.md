@@ -1696,3 +1696,53 @@ metre-true past the floor. Known nuance: on very small base-pxPerMeter fits (Bei
 intentional (cleaner base view), revisit if "no chevrons at load" gets reported.
 Playback alignment re-verified after zoom (30/30 sampled vehicle pixels on-road);
 typecheck clean; dashboard-contract 11/12 (exempt pin only); contract pins byte-identical.
+
+---
+
+## 2026-07-27 — Live-demo fix: renderer zero-items floor, snippet demotion, conflict-area filters, warning dedup/aging
+
+**Context:** live demo — a conflict-area status write executed correctly but the model
+reported it couldn't confirm the result; get_conflict_areas rendered "0/224 표시 — 잘림";
+a narrowing request was refused as a duplicate; every answer re-pasted both pre- and
+post-write versions of the same Passive-count warning plus a stale earlier-turn warning.
+Traced against the actual session (runtime/agent_sessions/78439ebea200): the write's
+envelope was genuinely compact (800 chars, verification.readback_value intact) — "too
+large" was a symptom of the renderer, not envelope bloat.
+
+**Root cause:** planner._render_observation's binary search folds the truncation
+marker's ~47-49 char JSON cost into every trial. Measured on the real envelopes: the
+224-item get_conflict_areas result (27,592 chars; overhead 145; item ~106-137) needed
+301 chars for 1 item + marker at the 300-char older-entry snippet budget — ONE char
+over — so it settled on 0 items. Worse: the model's same-turn duplicate write attempt
+(correctly refused by the approval gate) became the newest history entry, demoting the
+REAL write result out of the 12000-char recent budget into that same 300-char snippet
+tier, where overhead (293) + 0-item marker (47) > 300 wiped even the readback — which
+the model then honestly reported as unconfirmable.
+
+**Decision:**
+1. get_conflict_areas gains optional conflict_area_no/link_no server-side filters and a
+   bounded unfiltered default (40-item cap + explicit `truncated` flag + a `hint`
+   telling the model to filter) — an unbounded list never reaches the renderer.
+2. _render_observation gains a tiered fallback under the binary search: hard floor
+   forcing ≥1 real item when it fits (full marker → shorter _COMPACT_TRUNCATION_MARKER
+   → no marker); then a compact per-item key=value summary tier; then a bare-empty-list
+   tier that preserves unrelated overhead fields (e.g. a write's verification) before
+   ever falling to the generic too-large notice. The N/M marker reflects what was kept.
+3. Verified, no change needed: the shared envelope layer (_build_success_envelope +
+   _attach_guardrail_warnings) never carries a Finding's uncapped details — pinned with
+   a regression test using the live incident's 145/144-pair numbers (<2500 chars,
+   readback survives).
+4. accumulated_warnings dedups by constraint_id alone keeping the LATEST message in
+   place (was constraint_id+message, letting pre/post-write versions of one constraint
+   coexist forever); _collect_history_warnings gets the same latest-wins discipline.
+   _finalize_turn tracks state.context["warnings_shown"]: a carried-forward warning
+   renders in full only the FIRST time; later turns collapse it to a single "이전에
+   안내한 경고 N건이 여전히 유효합니다" bullet (ko/en/ja).
+
+**Consequence:** replayed against the exact incident envelopes — the 224-item list now
+keeps 1 item + honest "표시 1/224 — 잘림" (269 chars) at the snippet tier; the write
+result preserves verification.readback_value (293 chars). 14 new/updated regression
+tests across planner rendering, read tools, edit tools, and session memory. Full suite
+972 passed / 1 skipped, only the pre-existing RAG-corpus failure. Known pre-existing
+(spun off, not fixed here): test_agent_read_tools.py lacks a tools_check import so 2
+registry anti-drift tests only pass in the full suite, not standalone.

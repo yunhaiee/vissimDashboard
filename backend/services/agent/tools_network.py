@@ -62,7 +62,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 import config
 from services.agent.toolkit import tool
@@ -626,19 +626,83 @@ def get_signal_controllers(params: GetSignalControllersParams) -> dict[str, Any]
 
 # ---------------------------------------------------------------------------
 # get_conflict_areas — v2 unit (4)
+#
+# D1 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): an unfiltered call
+# against a real (not the empty demo) network returns 224 conflict areas,
+# ~27.6KB -- comfortably inside AGENT_OBS_RECENT_BUDGET's 12000-char default
+# for the MOST RECENT history entry, but every other rendering of the same
+# result (any older entry, and every subsequent turn's history window) hits
+# the much smaller _OBSERVATION_SNIPPET_CHARS budget, where a 224-item list
+# needs truncation. Rather than depend entirely on planner.py's renderer to
+# cut a list the tool itself knows is unbounded, this now (a) accepts
+# optional server-side filters so the model can narrow BEFORE the envelope
+# is built, and (b) gives an unfiltered call a bounded default (full count +
+# a capped item list + an explicit machine-readable ``truncated`` flag + a
+# ``hint`` nudging the model to filter) instead of ever handing back the
+# whole unbounded list.
 # ---------------------------------------------------------------------------
+
+#: Item cap for an UNFILTERED get_conflict_areas call -- comfortably inside
+#: even the compact _OBSERVATION_SNIPPET_CHARS budget for a typical entry
+#: shape (~120 chars/item; 40 items is well under the recent-entry budget
+#: too), so a bounded default never itself needs planner-side truncation.
+_CONFLICT_AREAS_DEFAULT_CAP = 40
 
 
 class GetConflictAreasParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    conflict_area_no: str | None = Field(
+        default=None,
+        description="Exact conflict area 'no' to return (narrows to at most one result).",
+    )
+    link_no: str | None = Field(
+        default=None,
+        description=(
+            "Return only conflict areas where this link participates (either side of "
+            "link_pair)."
+        ),
+    )
+
+
+def _conflict_area_matches_link(conflict_area: dict[str, Any], link_no: str) -> bool:
+    return link_no in {str(x) for x in conflict_area.get("link_pair", ())}
+
 
 @tool(name="get_conflict_areas", tier="read", provider="inspect", params=GetConflictAreasParams)
 def get_conflict_areas(params: GetConflictAreasParams) -> dict[str, Any]:
-    """Return the network's conflict areas (id, link pair, right-of-way status) -- conflict areas default to Passive (no right-of-way control, vehicles drive through each other) and this is how the agent sees which ones are Passive before deciding whether to fix any with set_conflict_area_status."""
-    del params  # no fields
+    """Return the network's conflict areas (id, link pair, right-of-way status) -- conflict areas default to Passive (no right-of-way control, vehicles drive through each other) and this is how the agent sees which ones are Passive before deciding whether to fix any with set_conflict_area_status. Optionally filter by conflict_area_no (exact match) or link_no (either side of the pair) -- an unfiltered call on a large network returns only the first 40 (with an explicit truncated flag and a hint), so narrow with these filters rather than requesting the whole list."""
     conflict_areas = _current_shadow_model()["conflict_areas"]
-    return {"count": len(conflict_areas), "conflict_areas": conflict_areas}
+
+    if params.conflict_area_no is not None:
+        conflict_areas = [
+            ca for ca in conflict_areas if str(ca.get("no")) == str(params.conflict_area_no)
+        ]
+    if params.link_no is not None:
+        conflict_areas = [
+            ca for ca in conflict_areas if _conflict_area_matches_link(ca, str(params.link_no))
+        ]
+
+    total = len(conflict_areas)
+    filtered = params.conflict_area_no is not None or params.link_no is not None
+    if filtered:
+        # A filtered call is already expected to return a small, bounded
+        # result -- the model asked for something specific, so no cap.
+        return {"count": total, "conflict_areas": conflict_areas}
+
+    capped = conflict_areas[:_CONFLICT_AREAS_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {
+        "count": total,
+        "conflict_areas": capped,
+        "truncated": truncated,
+    }
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} conflict areas. Narrow with "
+            "conflict_area_no or link_no to see a specific one instead of the whole list."
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------

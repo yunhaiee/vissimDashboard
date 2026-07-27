@@ -17,6 +17,7 @@ the verification envelope shape, artifacts).
 """
 from __future__ import annotations
 
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -435,6 +436,108 @@ def test_set_conflict_area_status_rejects_a_status_outside_the_verified_vocabula
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "invalid_params"
     assert session.calls == []
+
+
+# ---------------------------------------------------------------------------
+# D3 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): the set_
+# conflict_area_status result the MODEL sees must stay compact -- the
+# target's own read-back, a one-line verdict, and warning MESSAGES (already
+# capped via constraints.py's _capped_join), never a warning's full,
+# uncapped `details` (e.g. conflict_area_data_unavailable's 144-pair
+# `link_pairs` list). Root-cause tracing (the live incident's actual
+# trace/state.json) showed this was ALREADY true at dispatch time -- the
+# reported "result too large to display" was actually planner.py's renderer
+# demoting the write's own (already-compact) result out of the generous
+# "most recent" budget, fixed separately in D2. This test pins the
+# envelope-construction contract itself (toolkit.dispatch's leftover-keys
+# rule + orchestrator._attach_guardrail_warnings's constraint_id+message-only
+# rule) so a future change can't silently reintroduce the bloat, going
+# through the REAL guardrail engine (not a hand-built Finding) against the
+# exact real-network numbers from the live incident: 145 Passive conflict
+# areas before the write, 144 after (conflict area 3 flips PASSIVE ->
+# AHASRIGHTOFWAY).
+# ---------------------------------------------------------------------------
+
+
+def test_set_conflict_area_status_write_envelope_stays_compact_with_guardrail_warnings_attached():
+    from services.agent.guardrails import GuardrailEngine
+    from services.agent.orchestrator import _attach_guardrail_warnings
+
+    session = FakeEditSession(
+        readback={"conflict_area": {"no": 3, "link_a": "3", "link_b": "12", "status": "AHASRIGHTOFWAY"}}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_conflict_area_status", conflict_area_no="3", status="AHASRIGHTOFWAY")
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": "AHASRIGHTOFWAY",
+        "readback_value": "AHASRIGHTOFWAY",
+    }
+
+    # The real shadow-model shape constraints.py expects: 145 Passive
+    # conflict areas BEFORE the write (including #3 itself), 144 AFTER (#3
+    # flipped) -- the exact live-incident numbers.
+    def _conflict_areas(passive_count: int, area_3_status: str) -> list[dict[str, Any]]:
+        areas = [
+            {
+                "no": "3",
+                "link_a": "3",
+                "link_b": "12",
+                "link_pair": ("3", "12"),
+                "status": area_3_status,
+            }
+        ]
+        areas += [
+            {
+                "no": str(100 + i),
+                "link_a": str(i),
+                "link_b": str(i + 1000),
+                "link_pair": (str(i), str(i + 1000)),
+                "status": "PASSIVE",
+            }
+            for i in range(1, passive_count)  # passive_count total, #3 is one of them
+        ]
+        return areas
+
+    before_model = {"conflict_areas": _conflict_areas(145, "PASSIVE")}
+    after_model = {"conflict_areas": _conflict_areas(144, "AHASRIGHTOFWAY")}
+    action = {
+        "tool": "set_conflict_area_status",
+        "params": {"conflict_area_no": "3", "status": "AHASRIGHTOFWAY"},
+    }
+
+    report = GuardrailEngine().postwrite(
+        action, before_model, after_model, envelope["verification"]
+    )
+    warnings = report.warnings()
+    constraint_ids = {finding.constraint_id for finding in warnings}
+    assert "conflict_area_data_unavailable" in constraint_ids
+
+    enriched = _attach_guardrail_warnings(envelope, warnings, "ko")
+
+    # The target's own read-back must survive untouched.
+    assert enriched["verification"] == {
+        "written_value": "AHASRIGHTOFWAY",
+        "readback_value": "AHASRIGHTOFWAY",
+    }
+
+    # No `details` (the full, uncapped 144-pair link_pairs list) ever rides
+    # into the observation the planner renders -- only constraint_id +
+    # the already-capped message.
+    for warning in enriched["guardrail_warnings"]:
+        assert set(warning.keys()) == {"constraint_id", "message"}
+        if warning["constraint_id"] == "conflict_area_data_unavailable":
+            # The message enumerates at most 8 pairs + a capped remainder
+            # note (constraints.py's _capped_join, limit=8) -- never all 143
+            # non-#3 pairs spelled out.
+            assert "외" in warning["message"] or "more" in warning["message"]
+
+    enriched_size = len(json.dumps(enriched, ensure_ascii=False, separators=(",", ":")))
+    # Comfortably inside even the OLDER-entry snippet budget's generous
+    # multiple -- nowhere near the ~6KB+ an uncapped 144-pair enumeration
+    # would cost, let alone the tens-of-KB a full `details` dump would add.
+    assert enriched_size < 2500, f"write envelope unexpectedly bloated: {enriched_size} chars"
 
 
 # ---------------------------------------------------------------------------

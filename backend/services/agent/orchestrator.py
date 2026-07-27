@@ -81,15 +81,24 @@ carrying state forward:
 - **Accumulated warnings surfacing:** every WARN-tier finding that actually
   fires on a DISPATCHED write/run action (never a preflight shown on an
   approval request that might still be declined) is recorded into
-  ``state.context["accumulated_warnings"]`` (deduped by
-  constraint_id+message — see ``_record_accumulated_warnings``). Warnings
-  already present in that ledger BEFORE this turn started (i.e. from an
-  EARLIER turn) are appended as a deterministic suffix to this turn's final
-  ``answer`` (kind == "answer" only) via ``_append_carried_forward_warnings``
-  — the cross-turn counterpart to the M3.2 agentic-tier safety net
-  (``_append_agentic_warning_notice``, unchanged, intra-turn only); both
-  share one low-level renderer, ``_append_warning_block``, so a future
-  formatting fix only has one place to land.
+  ``state.context["accumulated_warnings"]`` — deduped by ``constraint_id``
+  ALONE, keeping the LATEST message (D4(i) live-demo fix, docs/phase2/
+  DECISIONS.md, 2026-07-27: was ``constraint_id``+``message``, which let a
+  constraint that fires twice with different text — e.g. a Passive-conflict-
+  area COUNT before vs. after the very write that changed it — pile up as
+  two permanently-coexisting entries; see ``_record_accumulated_warnings``).
+  Warnings already present in that ledger BEFORE this turn started (i.e.
+  from an EARLIER turn) are appended as a deterministic suffix to this
+  turn's final ``answer`` (kind == "answer" only) via
+  ``_append_carried_forward_warnings`` — the cross-turn counterpart to the
+  M3.2 agentic-tier safety net (``_append_agentic_warning_notice``,
+  unchanged, intra-turn only); both share one low-level renderer,
+  ``_append_warning_block``. D4(ii) (same date): a constraint_id already
+  shown verbatim in some earlier turn's answer (tracked in
+  ``state.context["warnings_shown"]``) renders in full only ONCE — every
+  later turn collapses it into a single "N other warning(s) still apply"
+  summary bullet instead of re-pasting the same text on every subsequent
+  answer forever.
 
 The active network is whatever ``tools_network.set_active_inpx`` points at —
 ``config.SIMULATION_INPX_PATH`` (the demo network) by default. Callers that
@@ -303,6 +312,17 @@ _CARRIED_FORWARD_WARNINGS_HEADER = {
         "注意: これまでの会話で発生した警告は引き続き有効です。今回の回答もこれらと"
         "合わせてご確認ください:"
     ),
+}
+
+# D4(ii) live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): the trailing
+# summary line appended when SOME carried-forward warnings have already been
+# shown verbatim in an earlier turn's answer (see _finalize_turn's
+# ``warnings_shown`` tracking) — collapses them to a single count instead of
+# re-pasting their full text on every subsequent answer forever.
+_CARRIED_FORWARD_REPEAT_NOTE = {
+    "ko": "그 외 이전에 안내해 드린 경고 {count}건이 여전히 유효합니다.",
+    "en": "{count} other warning(s) noted earlier still apply.",
+    "ja": "その他、以前お伝えした警告が{count}件、引き続き有効です。",
 }
 
 
@@ -561,7 +581,14 @@ def _approval_proposal_answer(
 
 def _collect_history_warnings(history: list[StepRecord]) -> list[dict[str, Any]]:
     """Every accumulated ``guardrail_warnings`` entry across ``history``'s
-    observations, in first-seen order, de-duplicated by ``constraint_id``.
+    observations, de-duplicated by ``constraint_id`` — keeping the LATEST
+    instance (D4(i) live-demo fix, docs/phase2/DECISIONS.md, 2026-07-27: a
+    constraint firing twice in one turn with a DIFFERENT message describes an
+    updated state — e.g. ``conflict_area_data_unavailable``'s Passive count
+    before vs. after the very write that changed it — so keeping the first,
+    now-stale instance instead of the current one is itself misleading, not
+    just verbose), at the FIRST-seen position (stable ordering — a later
+    re-fire updates its existing slot rather than moving to the end).
 
     This is the M3.2 agentic-tier safety net's source of truth for what must
     ride along on the final answer regardless of what the model's own answer
@@ -570,35 +597,40 @@ def _collect_history_warnings(history: list[StepRecord]) -> list[dict[str, Any]]
     every rule-fallback observation is a dict — but StepRecord.observation is
     typed ``Any``) are skipped defensively rather than raising.
     """
-    seen: set[Any] = set()
-    collected: list[dict[str, Any]] = []
+    collected: dict[Any, dict[str, Any]] = {}
     for record in history:
         observation = record.observation
         if not isinstance(observation, dict):
             continue
         for warning in observation.get("guardrail_warnings") or []:
-            constraint_id = warning.get("constraint_id")
-            if constraint_id in seen:
-                continue
-            seen.add(constraint_id)
-            collected.append(warning)
-    return collected
+            collected[warning.get("constraint_id")] = warning
+    return list(collected.values())
 
 
-def _append_warning_block(answer: str, header: str, warnings: list[dict[str, Any]]) -> str:
+def _append_warning_block(
+    answer: str,
+    header: str,
+    warnings: list[dict[str, Any]],
+    *,
+    trailing_note: str | None = None,
+) -> str:
     """Shared low-level suffix renderer (M3.3): header line + one ``- message``
-    bullet per warning, appended after a blank line. A no-op (returns
-    ``answer`` unchanged) when ``warnings`` is empty, so a clean answer with
-    nothing to report is never mutated. Used by both
-    ``_append_agentic_warning_notice`` (M3.2, intra-turn, agentic-tier only)
-    and ``_append_carried_forward_warnings`` (M3.3, cross-turn, every tier) —
-    one formatting implementation, two distinct trigger conditions and
-    header texts (see each caller's own docstring for why they stay
-    separate rather than being merged into one trigger).
+    bullet per warning (+ an optional final ``- trailing_note`` bullet — D4(ii),
+    see ``_append_carried_forward_warnings``), appended after a blank line.
+    A no-op (returns ``answer`` unchanged) when there is neither a warning
+    nor a trailing note, so a clean answer with nothing to report is never
+    mutated. Used by both ``_append_agentic_warning_notice`` (M3.2,
+    intra-turn, agentic-tier only — never passes ``trailing_note``) and
+    ``_append_carried_forward_warnings`` (M3.3, cross-turn, every tier) — one
+    formatting implementation, two distinct trigger conditions and header
+    texts (see each caller's own docstring for why they stay separate rather
+    than being merged into one trigger).
     """
-    if not warnings:
+    if not warnings and not trailing_note:
         return answer
     lines = [f"- {warning.get('message', '')}" for warning in warnings]
+    if trailing_note:
+        lines.append(f"- {trailing_note}")
     notice = header + "\n" + "\n".join(lines)
     if not answer.strip():
         return notice
@@ -619,7 +651,10 @@ def _append_agentic_warning_notice(
     next to a claimed improvement. Deterministic, assembled without any
     further LLM call, same discipline as ``_postwrite_abort_answer``/
     ``_forced_completion_answer``. A no-op (returns ``answer`` unchanged)
-    when ``warnings`` is empty.
+    when ``warnings`` is empty. Unlike ``_append_carried_forward_warnings``,
+    this is scoped to ONE turn's own findings (``_collect_history_warnings``
+    only ever sees the CURRENT turn's ``state.history``), so there is no
+    cross-turn "already shown" tracking to do here.
     """
     return _append_warning_block(
         answer, pick_language_text(_AGENTIC_WARNING_NOTICE_HEADER, language), warnings
@@ -627,11 +662,14 @@ def _append_agentic_warning_notice(
 
 
 def _append_carried_forward_warnings(
-    language: str, answer: str, warnings: list[dict[str, Any]]
+    language: str,
+    answer: str,
+    new_warnings: list[dict[str, Any]],
+    repeat_count: int = 0,
 ) -> str:
     """M3.3 cross-turn counterpart to ``_append_agentic_warning_notice``:
-    unconditionally appends warnings that were ALREADY in
-    ``state.context["accumulated_warnings"]`` before THIS turn started (see
+    appends warnings that were ALREADY in ``state.context[
+    "accumulated_warnings"]`` before THIS turn started (see
     ``run_agent_turn``'s ``carried_forward_warnings`` snapshot) to a
     kind == "answer" turn's final answer, regardless of tier — the roadmap's
     accept criterion ("a warning from turn 2 still visible in turn 3's
@@ -639,41 +677,72 @@ def _append_carried_forward_warnings(
     to warnings from EARLIER turns only (not this turn's own new findings):
     an agentic-tier turn's own same-turn findings are already covered by
     ``_append_agentic_warning_notice`` above, and duplicating them here
-    would produce two overlapping notice blocks on the same answer. A no-op
-    when ``warnings`` is empty (the common case: most sessions never
-    accumulate a warning at all).
+    would produce two overlapping notice blocks on the same answer.
+
+    D4(ii) live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): the OLD
+    version appended the ENTIRE carried-forward ledger, in full, to EVERY
+    subsequent answer for the rest of the session — a warning shown once in
+    turn 3 rode turns 4, 5, 6, ... verbatim, forever, growing the answer
+    every time a new one fired. The caller (``_finalize_turn``) now splits
+    the snapshot into ``new_warnings`` (never shown to the user before —
+    rendered in FULL, same as always) and a ``repeat_count`` of warnings that
+    already appeared in some earlier turn's answer — those collapse to ONE
+    summary bullet (``_CARRIED_FORWARD_REPEAT_NOTE``) instead of repeating
+    their full text again. A no-op when there is neither a new warning nor a
+    repeat to summarize (the common case: most sessions never accumulate a
+    warning at all).
     """
+    trailing_note = None
+    if repeat_count > 0:
+        trailing_note = pick_language_text(_CARRIED_FORWARD_REPEAT_NOTE, language).format(
+            count=repeat_count
+        )
     return _append_warning_block(
-        answer, pick_language_text(_CARRIED_FORWARD_WARNINGS_HEADER, language), warnings
+        answer,
+        pick_language_text(_CARRIED_FORWARD_WARNINGS_HEADER, language),
+        new_warnings,
+        trailing_note=trailing_note,
     )
 
 
 def _record_accumulated_warnings(
     state: AgentState, warn_findings: list[Any], language: str
 ) -> None:
-    """M3.3: append every WARN-tier finding that fired on a DISPATCHED
-    write/run action to ``state.context["accumulated_warnings"]`` —
-    ``{"constraint_id", "message"}`` per finding, deduped by
-    (constraint_id, message) so an identical warning firing again later in
-    the same session is not repeated. This is the session's persisted,
-    cross-turn ledger (``session_store.save_state`` writes ``state.context``
-    to ``state.json`` at the end of every turn via ``_finalize_turn`` below)
-    — distinct from ``_attach_guardrail_warnings``, which only rides ONE
-    tool call's own observation envelope for the CURRENT turn's planner to
-    see. Deliberately NOT called for a preflight warning shown on an
-    ``approval_request`` the user might still decline (see the ``except
-    ApprovalRequired`` branch) — nothing has actually happened yet, so
-    recording it here would be premature.
+    """M3.3: record every WARN-tier finding that fired on a DISPATCHED
+    write/run action into ``state.context["accumulated_warnings"]`` —
+    ``{"constraint_id", "message"}`` per finding.
+
+    D4(i) live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): deduped by
+    ``constraint_id`` ALONE now (was ``(constraint_id, message)`` — see the
+    module docstring above), keeping the LATEST message for a repeat
+    constraint rather than accumulating one entry per distinct message text.
+    The live incident this closes: ``conflict_area_data_unavailable`` fired
+    once BEFORE a write (145 Passive conflict areas) and again AFTER the
+    very write that changed the count (144) — the old key treated those as
+    two DIFFERENT warnings, so both rode every subsequent answer forever,
+    telling the user two contradictory counts for the same constraint. An
+    existing entry keeps its original ledger position (only its message
+    updates) — a genuinely new constraint_id still appends at the end.
+
+    This is the session's persisted, cross-turn ledger (``session_store.
+    save_state`` writes ``state.context`` to ``state.json`` at the end of
+    every turn via ``_finalize_turn`` below) — distinct from
+    ``_attach_guardrail_warnings``, which only rides ONE tool call's own
+    observation envelope for the CURRENT turn's planner to see. Deliberately
+    NOT called for a preflight warning shown on an ``approval_request`` the
+    user might still decline (see the ``except ApprovalRequired`` branch) —
+    nothing has actually happened yet, so recording it here would be
+    premature.
     """
     accumulated = state.context.setdefault("accumulated_warnings", [])
-    seen = {(entry.get("constraint_id"), entry.get("message")) for entry in accumulated}
+    by_constraint = {entry.get("constraint_id"): entry for entry in accumulated}
     for finding in warn_findings:
         message = pick_language_text(finding.messages, language)
-        key = (finding.constraint_id, message)
-        if key in seen:
-            continue
-        seen.add(key)
-        accumulated.append({"constraint_id": finding.constraint_id, "message": message})
+        by_constraint[finding.constraint_id] = {
+            "constraint_id": finding.constraint_id,
+            "message": message,
+        }
+    state.context["accumulated_warnings"] = list(by_constraint.values())
 
 
 def _forced_completion_answer(
@@ -740,17 +809,26 @@ def _finalize_turn(
        appended to the answer, but ONLY for ``kind == "answer"`` — a
        clarification question, an approval proposal line, or the short
        cancellation notice each have their own pinned deterministic text
-       elsewhere and are left untouched.
+       elsewhere and are left untouched. D4(ii) live-demo fix (docs/phase2/
+       DECISIONS.md, 2026-07-27): a warning already shown verbatim in some
+       EARLIER turn's answer (tracked in ``state.context["warnings_shown"]``,
+       a set of constraint_ids) renders in full only the FIRST time; every
+       later turn collapses it into a single "N other warning(s) still
+       apply" summary bullet instead of re-pasting the same text forever —
+       see ``_append_carried_forward_warnings``. Every constraint_id in this
+       turn's snapshot (new or repeat) is marked shown before returning, so
+       the NEXT turn's snapshot (which will also include whatever fired
+       DURING this turn) starts from an accurate "already seen" set.
     3. Persistence: ``session_store.save_state`` writes ``state`` (by now
-       carrying every ``StepRecord``/``accumulated_warnings`` entry this
-       turn produced) to ``<work_dir>/state.json``. Best-effort: a
-       persistence failure (bad session_id, unwritable dir, a
-       non-JSON-serializable value that snuck into ``context``) is logged
-       and swallowed, never allowed to turn an already-computed answer into
-       a 500 — the session simply won't resume with full context next time,
-       which is what the reload's own OWN "missing/corrupt state.json
-       degrades to a fresh state" contract already treats as a normal,
-       recoverable case.
+       carrying every ``StepRecord``/``accumulated_warnings``/
+       ``warnings_shown`` entry this turn produced) to ``<work_dir>/
+       state.json``. Best-effort: a persistence failure (bad session_id,
+       unwritable dir, a non-JSON-serializable value that snuck into
+       ``context``) is logged and swallowed, never allowed to turn an
+       already-computed answer into a 500 — the session simply won't resume
+       with full context next time, which is what the reload's own OWN
+       "missing/corrupt state.json degrades to a fresh state" contract
+       already treats as a normal, recoverable case.
     """
     if result.kind == "clarification":
         state.context[_CLARIFICATION_CONTEXT_KEY] = {
@@ -762,11 +840,22 @@ def _finalize_turn(
 
     finalized = result
     if result.kind == "answer" and carried_forward_warnings:
-        finalized = replace(
-            result,
-            answer=_append_carried_forward_warnings(
-                language, result.answer, carried_forward_warnings
-            ),
+        shown_before = set(state.context.get("warnings_shown") or [])
+        new_warnings = [
+            warning
+            for warning in carried_forward_warnings
+            if warning.get("constraint_id") not in shown_before
+        ]
+        repeat_count = len(carried_forward_warnings) - len(new_warnings)
+        if new_warnings or repeat_count > 0:
+            finalized = replace(
+                result,
+                answer=_append_carried_forward_warnings(
+                    language, result.answer, new_warnings, repeat_count
+                ),
+            )
+        state.context["warnings_shown"] = sorted(
+            shown_before | {warning.get("constraint_id") for warning in carried_forward_warnings}
         )
 
     try:

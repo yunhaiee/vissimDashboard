@@ -235,6 +235,46 @@ _OBSERVATION_TOO_LARGE_MARKER = {
     "ja": "[観測結果が大きすぎて表示できません。より具体的に照会してください]",
 }
 
+# D2 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): a SHORTER marker
+# for when the full, explanatory _TRUNCATION_MARKER's own cost is what would
+# push a comfortably-fitting item out of budget (see _render_observation's
+# hard-floor tier). Keeps the same "표시 {shown}/{total}" substring the full
+# marker uses (so any N/M-scraping regex matches either form identically),
+# just without the trailing guidance sentence.
+_COMPACT_TRUNCATION_MARKER = {
+    "ko": "[표시 {shown}/{total} — 잘림]",
+    "en": "[{shown}/{total} shown — truncated]",
+    "ja": "[表示 {shown}/{total} — 切捨て]",
+}
+
+# D2: per-item cap ladder for the "not even one COMPLETE item fits" tier --
+# tried largest-first so the summary is as informative as budget allows.
+_COMPACT_ITEM_MAX_CHARS: tuple[int, ...] = (60, 30, 12)
+
+
+def _compact_item_text(item: Any, max_chars: int) -> str:
+    """A short, generic one-line summary of a single list item -- D2's
+    "not even one full item fits" fallback tier.
+
+    Deliberately generic: never assumes a conflict-area/vehicle-input/etc
+    specific shape (this renderer serves EVERY tool's observation). For a
+    dict, joins ``key=value`` for its flat (non-dict/non-list) fields; for
+    anything else, ``str()``. Always capped to ``max_chars`` -- callers retry
+    with a smaller cap until the result fits the remaining budget.
+    """
+    if isinstance(item, dict):
+        parts = [
+            f"{key}={value}"
+            for key, value in item.items()
+            if not isinstance(value, (dict, list))
+        ]
+        text = ",".join(parts) if parts else "{...}"
+    else:
+        text = str(item)
+    if len(text) > max_chars:
+        text = text[: max(max_chars - 1, 1)] + "…"
+    return text
+
 # M3.2: deterministic ko/en/ja step narration for the mandatory-preview
 # diversion (see _mandatory_preview_decision) -- complex/agentic tiers may
 # not end the turn with `respond` as their very first decision; this is the
@@ -484,10 +524,45 @@ def _render_observation(observation: Any, budget: int, language: str) -> str:
     just one more string element in the list), still parseable, and
     unambiguous to the model: this is a deliberate, bounded truncation with a
     next step (narrow the query), not a signal that the tool call itself
-    needs to be retried. A structure with no list to truncate (or one whose
-    non-list parts alone already exceed ``budget``) falls back to a plain
-    outer notice (:data:`_OBSERVATION_TOO_LARGE_MARKER`) rather than ever
-    slicing the JSON text itself.
+    needs to be retried.
+
+    **D2 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-27): the zero-items
+    bug.** The binary search above always folds the marker's OWN cost into
+    every trial size, including the smallest one. Against a real envelope,
+    that marker cost (~45-50 chars) can be exactly what pushes a single,
+    otherwise-comfortably-fitting item over a tight budget (measured on the
+    live incident: an older-entry 300-char snippet budget, 224-item
+    ``get_conflict_areas``, overhead 145 chars, one item 106 chars -- 0 items
+    + marker fits at 194 chars, but 1 item + marker is 301, ONE char over —
+    so the "largest count that fits" search correctly, but uselessly,
+    settles on ZERO real items shown). Worse, when the envelope's own
+    non-list overhead is ALREADY close to budget (a write result's
+    ``guardrail_warnings`` list sitting next to a compact but non-trivial
+    ``verification``/``message`` block), even the marker-only (zero items)
+    candidate can miss budget entirely, and the old code fell all the way
+    through to :data:`_OBSERVATION_TOO_LARGE_MARKER` -- discarding fields
+    (like a write's own ``verification.readback_value``) that have nothing
+    to do with the oversized list.
+
+    The fix adds two escalating tiers below the normal binary search, each
+    keeping the "N/M 표시" marker accurate for whatever it actually kept:
+
+    1. **Hard floor (>=1 item).** If the binary search settled for zero (or
+       found nothing that fit at all), try ONE complete item with a
+       progressively cheaper marker -- the full marker, then
+       :data:`_COMPACT_TRUNCATION_MARKER`, then no marker at all. The
+       marker's cost must never be the reason a single item that otherwise
+       fits gets dropped.
+    2. **Compact per-item summary.** If not even one COMPLETE item fits
+       alongside the envelope overhead, degrade to a short, generic
+       ``key=value`` text summary of the first item (:func:`_compact_item_text`,
+       shrinking through :data:`_COMPACT_ITEM_MAX_CHARS`) instead of dropping
+       the whole observation.
+
+    Only when even a genuinely empty list still doesn't fit (the envelope's
+    OTHER fields alone already exceed budget) does this fall back to
+    :data:`_OBSERVATION_TOO_LARGE_MARKER` -- never a raw slice of the JSON
+    text itself.
     """
     try:
         full = json.dumps(observation, ensure_ascii=False, separators=(",", ":"))
@@ -500,28 +575,74 @@ def _render_observation(observation: Any, budget: int, language: str) -> str:
         return full
 
     path = _find_largest_list_path(observation)
-    if path is not None:
-        original_list = _get_at_path(observation, path)
-        total = len(original_list)
-        trial = copy.deepcopy(observation)
-        lo, hi = 0, total
-        best_rendered: str | None = None
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            marker = pick_language_text(_TRUNCATION_MARKER, language).format(shown=mid, total=total)
-            _set_at_path(trial, path, original_list[:mid] + [marker])
-            candidate = json.dumps(trial, ensure_ascii=False, separators=(",", ":"))
-            if len(candidate) <= budget:
-                best_rendered = candidate
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        if best_rendered is not None:
-            return best_rendered
+    if path is None:
+        # No list anywhere to truncate (e.g. one pathologically long scalar
+        # field) -- never chop the JSON text itself; state the omission
+        # plainly instead.
+        return pick_language_text(_OBSERVATION_TOO_LARGE_MARKER, language)
 
-    # No list anywhere to truncate, or even an empty one still doesn't fit
-    # (e.g. one pathologically long scalar field) -- never chop the JSON
-    # text itself; state the omission plainly instead.
+    original_list = _get_at_path(observation, path)
+    total = len(original_list)
+    trial = copy.deepcopy(observation)
+
+    def render(items: list[Any]) -> str | None:
+        _set_at_path(trial, path, items)
+        candidate = json.dumps(trial, ensure_ascii=False, separators=(",", ":"))
+        return candidate if len(candidate) <= budget else None
+
+    def marker(shown: int, *, compact: bool) -> str:
+        table = _COMPACT_TRUNCATION_MARKER if compact else _TRUNCATION_MARKER
+        return pick_language_text(table, language).format(shown=shown, total=total)
+
+    # Tier 1 (unchanged happy path): binary search for the largest item
+    # count that fits WITH the full, explanatory marker.
+    lo, hi = 0, total
+    best_count, best_rendered = -1, None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = render(original_list[:mid] + [marker(mid, compact=False)])
+        if candidate is not None:
+            best_count, best_rendered = mid, candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    if best_count >= 1 and best_rendered is not None:
+        return best_rendered
+
+    # Tier 2 (D2 hard floor): Tier 1 settled for zero (or nothing fit at
+    # all, not even zero items + marker) -- try ONE complete item with a
+    # progressively cheaper marker before ever giving up on it.
+    if total > 0:
+        for candidate_marker in (marker(1, compact=False), marker(1, compact=True), None):
+            items = [original_list[0]] + ([candidate_marker] if candidate_marker else [])
+            candidate = render(items)
+            if candidate is not None:
+                return candidate
+
+    # Tier 3 (D2 compact summary): not even one COMPLETE item fits alongside
+    # the envelope overhead -- degrade to a short, generic per-item text
+    # summary rather than dropping the whole observation, shrinking the
+    # summary until something fits.
+    if total > 0:
+        for max_chars in _COMPACT_ITEM_MAX_CHARS:
+            compact_first = _compact_item_text(original_list[0], max_chars)
+            for candidate_marker in (marker(1, compact=True), None):
+                items = [compact_first] + ([candidate_marker] if candidate_marker else [])
+                candidate = render(items)
+                if candidate is not None:
+                    return candidate
+
+    # Tier 4: even a genuinely EMPTY list fits -- every other envelope field
+    # (status/message/verification/etc, which have nothing to do with the
+    # oversized list) survives, just without any signal of how much was cut.
+    # A truthful partial render beats discarding unrelated fields wholesale.
+    empty = render([])
+    if empty is not None:
+        return empty
+
+    # Last resort: the bare envelope overhead alone already exceeds budget
+    # (e.g. one pathologically long scalar field elsewhere) -- never chop
+    # JSON text itself; state the omission plainly instead.
     return pick_language_text(_OBSERVATION_TOO_LARGE_MARKER, language)
 
 
