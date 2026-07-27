@@ -86,16 +86,40 @@ export const DEFAULT_LANE_M = 3.5; // fallback lane width when a link carries no
 const EPS = 1e-6;
 const MITER_COS_MIN = 0.5;         // clamp miter to ≤ 2× so sharp bends never spike offsets
 export const MIN_ROAD_PX = 2.5;    // asphalt floor at base fit (scales up with zoom)
-const CHEVRON_SPACING_PX = 120;    // one direction chevron per ~this many base-fit px
 const MAX_CHEVRONS = 8;            // cap per link (keeps SVG node count modest)
 
-// Element-glyph size floors (P1 junction-polish pass). These only bite when
-// pxPerMeter is small (base fit on a wide network); keeping them near-invisible
-// is deliberate — at mid zoom the floors used to dominate the metre-true sizes
-// and made the furniture louder than the roads. Everything above the floor is
-// still metre-true and scales with zoom.
-const GLYPH_MIN_PX = 2.5;          // half-widths, radii
-const GLYPH_MIN_STROKE_PX = 1.5;   // glyph stroke widths
+// Road-marking geometry (Defect B, 2026-07-27). Chevrons/lane dividers/connector
+// dashlines used to bake pixel floors and clamps into BASE-fit geometry, drawn once
+// outside drawZoomDependent — so the d3 zoom transform's k multiplied the floors
+// right along with the metre-true terms, and at the deeper max zoom (see the P1
+// scaleExtent note above drawZoomDependent) they rendered as enormous arrows/dashes
+// drowning the roads. Now: metre-true primary terms (scale naturally with k via the
+// group transform, same as road width) with SCREEN-space floors (divide by k, same
+// convention as the element glyphs below), drawn INSIDE drawZoomDependent so they
+// rebuild on the same k-changed schedule instead of being frozen at base fit.
+const CHEVRON_SPACING_M = 25;             // metre-true spacing target between chevrons
+const CHEVRON_SPACING_MIN_SCREEN_PX = 40; // spacing floor, screen px (keeps density sane zoomed out)
+const CHEVRON_MAX_M = 4;                  // chevron size cap, metre-true (0.5 x road width, capped)
+const CHEVRON_MIN_SCREEN_PX = 3;          // below this on-screen size, skip the chevron entirely
+const CHEVRON_STROKE_MIN_PX = 0.9;        // chevron stroke screen floor
+const LANE_DASH_M = 3;                    // lane-divider dash length, metres
+const LANE_GAP_M = 9;                     // lane-divider gap length, metres
+const LANE_DASH_STROKE_M = 0.15;          // lane-divider stroke width, metres
+const LANE_DASH_STROKE_MIN_PX = 0.7;      // lane-divider stroke screen floor
+const CONNECTOR_DASH_M = 1.5;             // connector centre-dash length, metres (shorter than lane dividers)
+const CONNECTOR_GAP_M = 4.5;              // connector centre-dash gap, metres
+const CONNECTOR_DASH_STROKE_M = 0.12;     // connector centre-dash stroke width, metres
+const CONNECTOR_DASH_STROKE_MIN_PX = 0.7; // connector centre-dash stroke screen floor
+
+// Element-glyph size floors (P1 junction-polish pass; raised 2026-07-27, Defect C —
+// user feedback found the P1 floors too stingy for legibility). These only bite when
+// pxPerMeter x k is small; everything above the floor is still metre-true and scales
+// with zoom.
+const GLYPH_MIN_PX = 4;            // half-widths, radii (was 2.5)
+const GLYPH_MIN_STROKE_PX = 2;     // glyph stroke widths (was 1.5)
+const GLYPH_HAIRLINE_PX = 1.4;     // fixed outline hairlines (was inline ~1 / 1.1 / 1.2)
+const HIT_POINT_MIN_PX = 11;       // point hit-target floor, screen px (was 9)
+const HIT_SEGMENT_MIN_PX = 14;     // segment hit-target floor, screen px (unchanged)
 const SIGNAL_BAR_OFFSET_M = 0.8;   // red signal bar sits this far downstream of its stop line
 
 type NetworkLink = NetworkData["links"][number];
@@ -554,64 +578,11 @@ export default function NetworkViewer({
         .style("pointer-events", "none");
     });
 
-    // Layer 3 — lane dividers + direction chevrons.
-    roads.forEach(({ link, pts, roadW }) => {
-      // Per-lane dividers (interior boundaries only; edge lines are intentionally
-      // omitted — the casing already reads as the road edge, and dropping them
-      // also avoids the largest, spike-prone ±width/2 offsets on curved arcs).
-      for (const offM of laneBoundaryOffsets(link)) {
-        const line = offsetPolyline(pts, offM * pxPerMeter);
-        gMarking.append("polyline")
-          .attr("points", line.map((p) => p.join(",")).join(" "))
-          .attr("stroke", MARKING_COLOR)
-          .attr("stroke-width", Math.max(roadW * 0.06, 0.7))
-          .attr("stroke-dasharray", "5 5")
-          .attr("stroke-opacity", 0.55)
-          .attr("fill", "none")
-          .attr("stroke-linecap", "round")
-          .style("pointer-events", "none");
-      }
-
-      // Direction chevrons: sparse, muted, oriented by local travel direction,
-      // sized off the road width. Read as markings, not icons.
-      const total = pts.reduce((sum, p, i) => (i === 0 ? 0 : sum + Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1])), 0);
-      const count = Math.min(Math.max(Math.floor(total / CHEVRON_SPACING_PX), 1), MAX_CHEVRONS);
-      const size = Math.min(Math.max(roadW * 0.5, 3), 9);
-      for (const { p, dir } of sampleAlong(pts, count)) {
-        const nrm: Pt = [-dir[1], dir[0]];
-        const tip: Pt = [p[0] + dir[0] * size * 0.6, p[1] + dir[1] * size * 0.6];
-        const back: Pt = [p[0] - dir[0] * size * 0.4, p[1] - dir[1] * size * 0.4];
-        const lft: Pt = [back[0] + nrm[0] * size * 0.55, back[1] + nrm[1] * size * 0.55];
-        const rgt: Pt = [back[0] - nrm[0] * size * 0.55, back[1] - nrm[1] * size * 0.55];
-        gMarking.append("path")
-          .attr("d", `M${lft[0]},${lft[1]} L${tip[0]},${tip[1]} L${rgt[0]},${rgt[1]}`)
-          .attr("stroke", MARKING_COLOR)
-          .attr("stroke-width", Math.max(roadW * 0.12, 0.9))
-          .attr("stroke-opacity", 0.5)
-          .attr("fill", "none")
-          .attr("stroke-linecap", "round")
-          .attr("stroke-linejoin", "round")
-          .style("pointer-events", "none");
-      }
-    });
-
-    // Layer 4 — connector identity cue only. The connector's pavement is already
-    // drawn in the casing/fill passes above; all that is left here is a thin,
-    // muted centre dashline so an engineer can still tell which pavement inside
-    // a junction is a connector. Its dash pattern is deliberately shorter and
-    // fainter than the lane dividers so it never competes with them.
-    connectors.forEach(({ pointsAttr, roadW }) => {
-      gConnector.append("polyline")
-        .attr("points", pointsAttr)
-        .attr("stroke", MARKING_COLOR)
-        .attr("stroke-width", Math.max(roadW * 0.07, 0.7))
-        .attr("stroke-dasharray", "3 4")
-        .attr("stroke-opacity", 0.42)
-        .attr("fill", "none")
-        .attr("stroke-linecap", "round")
-        .attr("stroke-linejoin", "round")
-        .style("pointer-events", "none");
-    });
+    // Layer 3 (lane dividers + chevrons) and Layer 4 (connector centre dashlines)
+    // moved into drawZoomDependent (Defect B, 2026-07-27) — their screen-space
+    // floors need the live zoom factor k, so they now redraw on the same
+    // k-changed schedule as the element glyphs below instead of being baked once
+    // at base-fit scale. See drawZoomDependent for the implementation.
 
     // Layer 5 — node areas (junction footprints): outline ONLY, never filled.
     // The translucent box used to dominate the junction and fight the pavement,
@@ -674,10 +645,84 @@ export default function NetworkViewer({
     // (with whatever k the viewer is currently at) and again from the zoom
     // handler whenever k changes meaningfully.
     function drawZoomDependent(k: number) {
+      gMarking.selectAll("*").remove();
+      gConnector.selectAll("*").remove();
       gElements.selectAll("*").remove();
       gElementsHit.selectAll("*").remove();
       gOverlay.selectAll("*").remove();
       gHitNodes.selectAll("*").remove();
+
+      // Layer 3 — lane dividers + direction chevrons. Defect B (2026-07-27):
+      // metre-true sizing with screen-space floors/caps (see the constants near
+      // the top of the file) instead of base-fit-baked pixel sizes, so this no
+      // longer magnifies into oversized paint at deep zoom.
+      roads.forEach(({ link, pts }) => {
+        // Per-lane dividers (interior boundaries only; edge lines are
+        // intentionally omitted — the casing already reads as the road edge, and
+        // dropping them also avoids the largest, spike-prone ±width/2 offsets on
+        // curved arcs). Dash pattern is metre-true (scales with k via the group
+        // transform, like real paint); stroke width metre-true with a screen floor.
+        for (const offM of laneBoundaryOffsets(link)) {
+          const line = offsetPolyline(pts, offM * pxPerMeter);
+          gMarking.append("polyline")
+            .attr("points", line.map((p) => p.join(",")).join(" "))
+            .attr("stroke", MARKING_COLOR)
+            .attr("stroke-width", Math.max(LANE_DASH_STROKE_M * pxPerMeter, LANE_DASH_STROKE_MIN_PX / k))
+            .attr("stroke-dasharray", `${LANE_DASH_M * pxPerMeter} ${LANE_GAP_M * pxPerMeter}`)
+            .attr("stroke-opacity", 0.55)
+            .attr("fill", "none")
+            .attr("stroke-linecap", "round")
+            .style("pointer-events", "none");
+        }
+
+        // Direction chevrons: sparse, muted, oriented by local travel direction,
+        // sized off the road width — metre-true, capped at CHEVRON_MAX_M, with a
+        // screen-space minimum below which the link simply draws none (cleaner
+        // than a shrinking dot). Spacing/count are recomputed every call since
+        // both the metre target and the screen floor depend on the live k.
+        const total = pts.reduce((sum, p, i) => (i === 0 ? 0 : sum + Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1])), 0);
+        const widthM = linkWidthMeters(link);
+        const size = Math.min(widthM * 0.5, CHEVRON_MAX_M) * pxPerMeter;
+        if (size * k < CHEVRON_MIN_SCREEN_PX) return;
+        const spacing = Math.max(CHEVRON_SPACING_M * pxPerMeter, CHEVRON_SPACING_MIN_SCREEN_PX / k);
+        const count = Math.min(Math.max(Math.floor(total / spacing), 1), MAX_CHEVRONS);
+        const strokeW = Math.max(size * 0.12, CHEVRON_STROKE_MIN_PX / k);
+        for (const { p, dir } of sampleAlong(pts, count)) {
+          const nrm: Pt = [-dir[1], dir[0]];
+          const tip: Pt = [p[0] + dir[0] * size * 0.6, p[1] + dir[1] * size * 0.6];
+          const back: Pt = [p[0] - dir[0] * size * 0.4, p[1] - dir[1] * size * 0.4];
+          const lft: Pt = [back[0] + nrm[0] * size * 0.55, back[1] + nrm[1] * size * 0.55];
+          const rgt: Pt = [back[0] - nrm[0] * size * 0.55, back[1] - nrm[1] * size * 0.55];
+          gMarking.append("path")
+            .attr("d", `M${lft[0]},${lft[1]} L${tip[0]},${tip[1]} L${rgt[0]},${rgt[1]}`)
+            .attr("stroke", MARKING_COLOR)
+            .attr("stroke-width", strokeW)
+            .attr("stroke-opacity", 0.5)
+            .attr("fill", "none")
+            .attr("stroke-linecap", "round")
+            .attr("stroke-linejoin", "round")
+            .style("pointer-events", "none");
+        }
+      });
+
+      // Layer 4 — connector identity cue only. The connector's pavement is
+      // already drawn in the casing/fill passes above; all that is left here is
+      // a thin, muted centre dashline so an engineer can still tell which
+      // pavement inside a junction is a connector. Defect B: metre-true dash
+      // pattern — shorter than the lane dividers' so it stays visually distinct
+      // — with a screen-space stroke floor, same treatment as above.
+      connectors.forEach(({ pointsAttr }) => {
+        gConnector.append("polyline")
+          .attr("points", pointsAttr)
+          .attr("stroke", MARKING_COLOR)
+          .attr("stroke-width", Math.max(CONNECTOR_DASH_STROKE_M * pxPerMeter, CONNECTOR_DASH_STROKE_MIN_PX / k))
+          .attr("stroke-dasharray", `${CONNECTOR_DASH_M * pxPerMeter} ${CONNECTOR_GAP_M * pxPerMeter}`)
+          .attr("stroke-opacity", 0.42)
+          .attr("fill", "none")
+          .attr("stroke-linecap", "round")
+          .attr("stroke-linejoin", "round")
+          .style("pointer-events", "none");
+      });
 
       // Defect 2 — every elkey (e.g. "signal_heads:42") maps to the visible
       // <g>(s) carrying its glyph primitives — usually one, two for a travel-
@@ -767,7 +812,7 @@ export default function NetworkViewer({
       }
       const hitPoint = (key: keyof NetworkElements, pt: Pt, rPx: number, text: string, ref: NetworkElementRef) => {
         attachTip(
-          subHit[key].append("circle").attr("cx", pt[0]).attr("cy", pt[1]).attr("r", Math.max(rPx, 9 / k)).attr("fill", "transparent"),
+          subHit[key].append("circle").attr("cx", pt[0]).attr("cy", pt[1]).attr("r", Math.max(rPx, HIT_POINT_MIN_PX / k)).attr("fill", "transparent"),
           text,
           ref,
         );
@@ -781,7 +826,7 @@ export default function NetworkViewer({
             .attr("x2", b[0])
             .attr("y2", b[1])
             .attr("stroke", "transparent")
-            .attr("stroke-width", 14 / k)
+            .attr("stroke-width", HIT_SEGMENT_MIN_PX / k)
             .attr("stroke-linecap", "round"),
           text,
           ref,
@@ -808,7 +853,7 @@ export default function NetworkViewer({
           .attr("x2", b[0])
           .attr("y2", b[1])
           .attr("stroke", MARKING_COLOR)
-          .attr("stroke-width", Math.max(pxM * 0.3, 1 / k))
+          .attr("stroke-width", Math.max(pxM * 0.3, GLYPH_HAIRLINE_PX / k))
           .attr("stroke-opacity", 0.8)
           .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
@@ -832,7 +877,7 @@ export default function NetworkViewer({
         if (!finite(v.x) || !finite(v.y)) continue;
         const c = P(v.x, v.y);
         const { along, across } = dirsFromAngle(v.angle);
-        const L = Math.max(roadWidthMFor(v.link) * pxM * 0.49, 7.5 / k);
+        const L = Math.max(roadWidthMFor(v.link) * pxM * 0.49, 10 / k);
         const w = L * 0.42;
         const tip: Pt = [c[0] + along[0] * L, c[1] + along[1] * L];
         const bl: Pt = [c[0] + across[0] * w, c[1] + across[1] * w];
@@ -844,7 +889,7 @@ export default function NetworkViewer({
           .attr("fill", ELEMENT_SLATE)
           .attr("fill-opacity", 0.85)
           .style("pointer-events", "none");
-        hitPoint("vehicle_inputs", [(c[0] + tip[0]) / 2, (c[1] + tip[1]) / 2], Math.max(w, 9 / k), `${typeLabel.vehicle_inputs} ${v.id} · ${v.name}`, elementRef("vehicle_inputs", v.id, v.name, v.link));
+        hitPoint("vehicle_inputs", [(c[0] + tip[0]) / 2, (c[1] + tip[1]) / 2], Math.max(w, HIT_POINT_MIN_PX / k), `${typeLabel.vehicle_inputs} ${v.id} · ${v.name}`, elementRef("vehicle_inputs", v.id, v.name, v.link));
       }
 
       // reduced_speed_areas — translucent amber band along the lane (x,y)->(end).
@@ -889,7 +934,7 @@ export default function NetworkViewer({
           .attr("x2", b[0])
           .attr("y2", b[1])
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.1 / k)
+          .attr("stroke-width", GLYPH_HAIRLINE_PX / k)
           .attr("stroke-dasharray", `${4 / k} ${3 / k}`)
           .attr("stroke-opacity", 0.85)
           .attr("stroke-linecap", "round")
@@ -933,10 +978,10 @@ export default function NetworkViewer({
           .attr("points", corners.map((p) => p.join(",")).join(" "))
           .attr("fill", "none")
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1 / k)
+          .attr("stroke-width", GLYPH_HAIRLINE_PX / k)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
-        hitPoint("detectors", center, Math.max(half, 9 / k), `${typeLabel.detectors} ${dt.id} · ${dt.name}`, elementRef("detectors", dt.id, dt.name, dt.link));
+        hitPoint("detectors", center, Math.max(half, HIT_POINT_MIN_PX / k), `${typeLabel.detectors} ${dt.id} · ${dt.name}`, elementRef("detectors", dt.id, dt.name, dt.link));
       }
 
       // data_collection_points — short solid tick across the lane.
@@ -981,7 +1026,7 @@ export default function NetworkViewer({
               .attr("x2", b[0])
               .attr("y2", b[1])
               .attr("stroke", TTS_CYAN)
-              .attr("stroke-width", 1.2 / k)
+              .attr("stroke-width", GLYPH_HAIRLINE_PX / k)
               .attr("stroke-opacity", 0.9)
               .attr("stroke-linecap", "round")
               .style("pointer-events", "none");
@@ -1001,8 +1046,8 @@ export default function NetworkViewer({
         const c = P(q.x, q.y);
         const { along } = dirsFromAngle(q.angle);
         const laneW = laneWidthMFor(q.link);
-        const r = Math.max(laneW * pxM * 0.196, 2.1 / k);
-        const stem = Math.max(laneW * pxM * 0.35, 3.5 / k);
+        const r = Math.max(laneW * pxM * 0.196, 3 / k);
+        const stem = Math.max(laneW * pxM * 0.35, 5 / k);
         const gEl = visibleGroup("queue_counters", q.id);
         gEl
           .append("circle")
@@ -1011,7 +1056,7 @@ export default function NetworkViewer({
           .attr("r", r)
           .attr("fill", "none")
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.1 / k)
+          .attr("stroke-width", GLYPH_HAIRLINE_PX / k)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
         const s0: Pt = [c[0] - along[0] * r, c[1] - along[1] * r];
@@ -1023,11 +1068,11 @@ export default function NetworkViewer({
           .attr("x2", s1[0])
           .attr("y2", s1[1])
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.1 / k)
+          .attr("stroke-width", GLYPH_HAIRLINE_PX / k)
           .attr("stroke-opacity", 0.9)
           .attr("stroke-linecap", "round")
           .style("pointer-events", "none");
-        hitPoint("queue_counters", c, Math.max(r, 9 / k), `${typeLabel.queue_counters} ${q.id} · ${q.name}`, elementRef("queue_counters", q.id, q.name, q.link));
+        hitPoint("queue_counters", c, Math.max(r, HIT_POINT_MIN_PX / k), `${typeLabel.queue_counters} ${q.id} · ${q.name}`, elementRef("queue_counters", q.id, q.name, q.link));
       }
 
       // stop_signs — short bar across the lane, muted red. Slimmed with the same
@@ -1088,7 +1133,7 @@ export default function NetworkViewer({
           .attr("points", corners.map((p) => p.join(",")).join(" "))
           .attr("fill", "none")
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1 / k)
+          .attr("stroke-width", GLYPH_HAIRLINE_PX / k)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
         hitSegment("pt_stops", base1, base2, `${typeLabel.pt_stops} ${pt.id} · ${pt.name}`, elementRef("pt_stops", pt.id, pt.name, pt.link));
@@ -1110,7 +1155,7 @@ export default function NetworkViewer({
           .attr("fill-opacity", 0.12)
           .attr("stroke", PED_FILL)
           .attr("stroke-opacity", 0.85)
-          .attr("stroke-width", 1 / k)
+          .attr("stroke-width", GLYPH_HAIRLINE_PX / k)
           .attr("stroke-dasharray", `${2 / k} ${2 / k}`)
           .attr("stroke-linejoin", "round")
           .style("pointer-events", "none");
@@ -1261,9 +1306,22 @@ export default function NetworkViewer({
         });
       })
       .on("end", () => {
-        // Always a final, exact redraw once the gesture settles, regardless of
-        // the threshold above, so the resting state is never left stale.
-        drawZoomDependent(zoomTransformRef.current.k);
+        // Defect A (2026-07-27) — d3-zoom fires start/end even for a
+        // zero-movement plain click (mousedown+mouseup, no drag). Rebuilding
+        // drawZoomDependent unconditionally here tore down and rebuilt every
+        // element hit shape right as the browser was about to dispatch the
+        // click event; the click's target node had just been detached from the
+        // DOM, so the d3-attached "click" listener on the (now-orphaned) old
+        // node never fired and the click was silently swallowed — hover still
+        // worked (mousemove hits the live node) and link clicks still worked
+        // (link hit shapes are not rebuilt by drawZoomDependent), matching the
+        // reported symptom exactly. Fix: only redraw when k actually changed
+        // since the last element draw. A plain click or a pure pan never
+        // changes k, so they never rebuild; a real zoom gesture still gets its
+        // final, exact settle-redraw regardless of the 0.05 relative threshold
+        // the "zoom" handler above uses.
+        const k = zoomTransformRef.current.k;
+        if (Math.abs(k / lastDrawnK - 1) > 1e-6) drawZoomDependent(k);
       });
     svg.call(zoom);
     svg.call(zoom.transform, zoomTransformRef.current);

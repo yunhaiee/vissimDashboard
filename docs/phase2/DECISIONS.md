@@ -1664,3 +1664,35 @@ gesture: canvas centroid now tracks the transform, 31/31 sampled vehicle pixels 
 after zoom. Node-dot half of the /k fix is code-symmetric but unexercised by this
 dataset (nodes list empty). Contract pins preserved byte-identical; typecheck clean;
 dashboard-contract 11/12 (exempt base-model pin only).
+
+---
+
+## 2026-07-27 — Zoom-aware element clicks, road-marking scaling, glyph-floor legibility
+
+**Context:** three follow-up defects in the semantic-zoom redraw (5bc2c1e). (A) Element
+clicks were silently swallowed: d3-zoom fires start/end even for a zero-movement plain
+click, and the "end" handler unconditionally rebuilt element hit shapes between mouseup
+and the browser's click dispatch — the click landed on a detached node (hover and LINK
+clicks kept working, which was the tell). (B) Direction chevrons, lane-divider dashes,
+and connector dashlines still had base-fit pixel floors baked into geometry, so the
+deeper max zoom rendered them as giant paint drowning the roads. (C) The 2.5px screen
+minimums from 5bc2c1e left element glyphs too small next to roads at working zooms.
+
+**Decision:** (A) the zoom-"end" rebuild is skipped when |k/lastDrawnK − 1| < 1e-6 —
+plain clicks and pure pans never rebuild; real zoom gestures still get the settle
+redraw. (B) markings moved inside drawZoomDependent(k), metre-true with screen clamps:
+chevrons 0.5×roadW capped CHEVRON_MAX_M=4m, skipped entirely below a 3px screen floor,
+spacing max(25m, 40px screen); lane dividers 3m dash/9m gap at 0.15m stroke (0.7px
+screen floor); connector dashes 1.5m/4.5m at 0.12m (kept shorter for the visual
+distinction). (C) floors raised: GLYPH_MIN_PX 2.5→4, GLYPH_MIN_STROKE_PX 1.5→2, new
+GLYPH_HAIRLINE_PX=1.4 consolidating three inline hairlines, HIT_POINT_MIN_PX 9→11,
+queue-counter r/stem 3/5, vehicle-input length 10.
+
+**Consequence:** scripted zero-movement clicks select elements on both /network and
+/dashboard 도식 (and immediately after a zoom settles); deep-zoom chevron bbox measures
+~4m equivalent instead of hundreds of px; mid-zoom signal heads read at ≥8px and go
+metre-true past the floor. Known nuance: on very small base-pxPerMeter fits (Beijing at
+~0.5 px/m) chevrons fall below the 3px floor at k=1 and only appear from k≈1.5 —
+intentional (cleaner base view), revisit if "no chevrons at load" gets reported.
+Playback alignment re-verified after zoom (30/30 sampled vehicle pixels on-road);
+typecheck clean; dashboard-contract 11/12 (exempt pin only); contract pins byte-identical.
