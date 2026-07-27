@@ -83,6 +83,12 @@ export interface PlaybackEngine {
   registerRenderer: (render: ((time: number) => void) | null) => void;
   /** Draw exactly one frame at the current sim time (zoom/resize while paused). */
   requestFrame: () => void;
+  /** Draw immediately using the current sim time, with NO rAF indirection —
+   * for a caller that is already running inside a throttled animation-frame
+   * callback (the projection/zoom-transform update below) and would
+   * otherwise pay ANOTHER frame of latency by going through requestFrame's
+   * own queuing. See its call site for why that extra hop matters. */
+  renderNow: () => void;
   /** `jobId` omitted -> default file-next-to-dataset/demo source; given ->
    * replay that completed agent-run job's own recorded trajectory. */
   load: (jobId?: string) => void;
@@ -232,6 +238,9 @@ export function createPlaybackEngine(): PlaybackEngine {
       renderer = render;
     },
     requestFrame,
+    renderNow() {
+      renderer?.(time);
+    },
     // Lazily fetched: the full frame set is hundreds of KB, so nothing is
     // requested until the user asks for playback (or retries after a failure).
     // `jobId`, when given, replays that completed agent-run job's own
@@ -728,9 +737,19 @@ export default function TrajectoryLayer({
     engine.registerRenderer(draw);
     engine.requestFrame();
 
-    // Zoom/pan: NetworkViewer already throttles its emits to one per animation
-    // frame, and requestFrame() coalesces, so this is at most one redraw/frame.
-    const unsubscribe = projection.subscribe(() => engine.requestFrame());
+    // Zoom/pan: NetworkViewer already throttles its own emits to one per
+    // animation frame (see its emitProjection/projectionRafRef), so this
+    // listener fires already inside that throttle. Drawing via requestFrame()
+    // here would queue a SECOND, separate rAF on top of that first one — while
+    // paused (raf idle, nothing else re-arming it) that is a full extra frame
+    // of latency between the SVG's already-updated transform and the canvas
+    // catching up, which is exactly the vehicles-trailing-off-the-road smear
+    // reported during a fast drag-pan/wheel-zoom. renderNow() draws
+    // synchronously with the projection update instead, so the canvas is
+    // never more than the one frame emitProjection already costs behind the
+    // road it is drawn over. (While playing this is a harmless no-op-ish
+    // extra redraw — frameLoop's own per-frame tick already covers it.)
+    const unsubscribe = projection.subscribe(() => engine.renderNow());
 
     let resizeRaf = 0;
     let observer: ResizeObserver | undefined;

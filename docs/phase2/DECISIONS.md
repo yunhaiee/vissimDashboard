@@ -1593,3 +1593,26 @@ section pill stays section-scoped.
 
 **Consequence:** fully additive; browser-verified both directions ("왜 평균속도가 낮아?" →
 DELAYAVG/SPEEDAVG/STOPSAVG only; overview question → all six, no note).
+
+---
+
+## 2026-07-27 — P4/P5 follow-up: vehicle canvas redraws same-frame as the zoom transform
+
+**Context:** vehicle dots visibly drifted off the roads during a fast drag-pan or
+wheel-zoom (live-demo defect #12). The shared-transform channel (P4's `ViewProjection`)
+and path-accurate interpolation (P5) were both already correct — verified end-to-end by
+pixel-cross-checking canvas-drawn vehicles against the SVG's own road/connector hit-shapes
+across zoom, pan, play, and pause/resume.
+
+**Decision:** `TrajectoryLayer`'s projection-update subscription drew via
+`PlaybackEngine.requestFrame()`, which queues its own `requestAnimationFrame`. Since the
+projection push itself already arrives from inside NetworkViewer's throttled rAF
+(`emitProjection`), this stacked a second, redundant animation frame of latency onto every
+live zoom/pan tick — worst while paused, when nothing else re-arms the render loop. Added
+`PlaybackEngine.renderNow()` (draws immediately, no rAF) and pointed the projection
+subscription at it, so the canvas is never behind the SVG by more than the one frame
+NetworkViewer's own throttle already costs.
+
+**Scope:** `frontend/components/TrajectoryLayer.tsx` only; `requestFrame()` retained for
+its other callers (mount, resize, scrub-while-paused), which don't share the same-frame
+requirement.
