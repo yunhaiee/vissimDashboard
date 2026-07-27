@@ -1513,3 +1513,29 @@ composer prefilled, user still presses send.
 **Consequence:** every new user's first assistant interaction is the real agent — verified
 live (handoff → prefill → genuine agent turn). Contract 11/12 (exempt base-model pin only);
 zero backend touch (endpoint tests 5/5).
+
+---
+
+## 2026-07-27 — Live-demo fix: recency-weighted observation rendering + duplicate-call guard
+
+**Root cause of the retry-to-K-cap loop:** planner._observation_snippet applied a flat
+300-char raw slice to EVERY history entry's json.dumps — measured on real Beijing data:
+overview 2,853 / vehicle inputs 1,888 / conflict areas 27,592 chars, all chopped mid-JSON,
+none parseable. The model truthfully reported truncation and retried the identical call
+with no signal why, burning the K=6 cap.
+
+**Decision:** (1) the MOST RECENT observation renders under AGENT_OBS_RECENT_BUDGET
+(default 12000 — fits the measured envelopes whole); older entries stay compact; forced
+truncation cuts at item boundaries via binary search over the largest list, appending a
+localized [표시 N/M — narrow the query] marker as a valid list element — never a mid-object
+chop. (2) Read-tier duplicate-call guard: a same-turn identical (tool, canonical-params)
+repeat refuses pre-dispatch (duplicate_call, traced as refusal/phase dispatch) — read
+results are pure functions of the turn's network state. Write/run tiers structurally
+exempt (the _GATED_TIERS branch owns them; PreapprovedWriteGate's consume-on-success
+re-issue is a deliberate, different repeat — its test stayed green unmodified).
+
+**Consequence:** the 12-input list and full overview now reach the model whole; 224
+conflict areas truncate honestly and machine-readably; identical retries cost zero
+iterations. test_iteration_cap_forces_deterministic_completion had PINNED the buggy 6×
+dispatch as correct — updated to 1 dispatch + 5 duplicate refusals; that was the bug,
+never the spec.

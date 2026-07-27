@@ -114,7 +114,7 @@ import services.agent.tools_metrics  # noqa: F401
 import services.agent.tools_network  # noqa: F401
 import services.agent.tools_run  # noqa: F401
 from services.agent import complexity, session_store
-from services.agent.gates import ApprovalRequired
+from services.agent.gates import ApprovalRequired, signature
 from services.agent.guardrails import GuardrailEngine, GuardrailReport
 from services.agent.planner import (
     SELECTION_CONTEXT_KEY,
@@ -205,6 +205,33 @@ _APPROVAL_CONSUMED_MESSAGE = {
     "ja": (
         "この操作（{tool}）は今回の承認で既に一度実行されました。同じ操作を再度要求せず、"
         "これまでに確認した内容をもとにユーザーに回答してください。"
+    ),
+}
+
+# Live-demo fix (docs/phase2/DECISIONS.md): the message a READ-tier duplicate
+# call gets (see `dispatched_read_signatures` / the loop's final `else`
+# branch below). Distinct from _APPROVAL_CONSUMED_MESSAGE above -- that one
+# is about a write/run action whose APPROVAL was already spent; this one is
+# about a read tool whose RESULT is already sitting in the step history, so
+# the fix is "look at what you already have or narrow the query", not
+# "explain to the user that it ran". Assembled without any further LLM call,
+# same discipline as every other deterministic text in this module.
+_DUPLICATE_CALL_MESSAGE = {
+    "ko": (
+        "이 작업({tool})은 이번 턴에서 동일한 파라미터로 이미 한 번 실행되었고, 그 결과는 "
+        "위 단계 기록에 이미 있습니다. 같은 호출을 다시 하지 말고, 그 결과를 바탕으로 답변하거나 "
+        "조건을 좁혀서 다른 조회를 시도하세요."
+    ),
+    "en": (
+        "This action ({tool}) was already dispatched once this turn with the exact same "
+        "parameters, and its full result is already in the step history above. Do not "
+        "re-issue the identical call — answer from that result, or narrow the query and "
+        "look up something more specific instead."
+    ),
+    "ja": (
+        "この操作（{tool}）は今回のターンで同じパラメータで既に一度実行されており、その結果は"
+        "既に上記のステップ履歴にあります。同じ呼び出しを繰り返さず、その結果をもとに回答するか、"
+        "条件を絞って別の照会を試してください。"
     ),
 }
 
@@ -314,8 +341,12 @@ class AgentTurnResult:
 #: "refusal"-kind trace records — without this tagging a rejected call
 #: scored as an undetected lie under BOTH arms (DECISIONS 2026-07-24, M5.4
 #: batch). tool_execution_error is deliberately excluded: a crash is a
-#: failure, not a refusal.
-_DISPATCH_REFUSAL_ERROR_TYPES = frozenset({"invalid_params", "unknown_tool"})
+#: failure, not a refusal. "duplicate_call" (live-demo fix, FIX 2) joined
+#: this set for the identical reason: a same-turn repeat of a READ-tier call
+#: is refused BEFORE toolkit.dispatch ever runs — see the loop's final
+#: `else` branch below — and that refusal-with-reason must trace the same
+#: way invalid_params/unknown_tool already do.
+_DISPATCH_REFUSAL_ERROR_TYPES = frozenset({"invalid_params", "unknown_tool", "duplicate_call"})
 
 
 def _trace_dispatch_refusal(
@@ -366,6 +397,25 @@ def _approval_consumed_envelope(tool_name: str, language: str) -> dict[str, Any]
         "status": "error",
         "error_type": "approval_consumed",
         "message": pick_language_text(_APPROVAL_CONSUMED_MESSAGE, language).format(tool=tool_name),
+        "artifacts": None,
+        "suggested_fix": None,
+        "verification": None,
+        "data": None,
+    }
+
+
+def _duplicate_call_envelope(tool_name: str, language: str) -> dict[str, Any]:
+    """The structured observation for FIX 2's READ-tier duplicate-call guard
+    (docs/phase2/DECISIONS.md, live-demo bug): the planner emitted a tool
+    call whose (tool, canonicalized params) exactly matches one already
+    DISPATCHED earlier this same turn. Same 7-key envelope shape as every
+    other refusal envelope in this module, distinct ``error_type`` so
+    trace/eval consumers can tell this apart from the other refusal
+    reasons."""
+    return {
+        "status": "error",
+        "error_type": "duplicate_call",
+        "message": pick_language_text(_DUPLICATE_CALL_MESSAGE, language).format(tool=tool_name),
         "artifacts": None,
         "suggested_fix": None,
         "verification": None,
@@ -877,6 +927,13 @@ def run_agent_turn(
     tracer = TraceWriter(work_dir, session_id)
     planner = Planner(provider, registry=target_registry)
     steps: list[dict[str, Any]] = []
+    # FIX 2 (docs/phase2/DECISIONS.md, live-demo bug): canonical signatures
+    # (services.agent.gates.signature) of every READ-tier call actually
+    # DISPATCHED so far THIS turn -- see the loop's final `else` branch
+    # below. Scoped to this one call of run_agent_turn (never persisted into
+    # state/session), since it exists only to stop a same-turn retry loop,
+    # not to remember anything across turns.
+    dispatched_read_signatures: set[str] = set()
 
     def finalize(result: AgentTurnResult) -> AgentTurnResult:
         return _finalize_turn(
@@ -1333,21 +1390,47 @@ def run_agent_turn(
         else:
             # Read-tier tool, or an unrecognized tool name: unchanged M1
             # behavior -- the gate and engine are never consulted.
-            tracer.write(
-                "action_start",
-                {"iteration": iteration, "tool": decision.tool, "params": decision.params},
-            )
-            envelope = dispatch(decision.tool, decision.params, registry=target_registry)
-            tracer.write(
-                "action_end",
-                {
-                    "iteration": iteration,
-                    "tool": decision.tool,
-                    "status": envelope["status"],
-                    "error_type": envelope["error_type"],
-                },
-            )
-            _trace_dispatch_refusal(tracer, iteration, decision.tool, envelope)
+            #
+            # FIX 2 (docs/phase2/DECISIONS.md, live-demo bug): a duplicate-
+            # call guard, READ-TIER ONLY. A read tool's result is a pure
+            # function of the active network + its own params -- the network
+            # cannot change out from under a single turn, so a SECOND
+            # dispatch of the EXACT SAME (tool, canonicalized params) pair
+            # this turn can only ever reproduce the same observation already
+            # sitting in state.history. The live-demo incident this closes:
+            # a planner that (wrongly) believed a large result had been cut
+            # short re-issued the identical get_vehicle_inputs call six
+            # times straight, burning the entire K=6 iteration cap on calls
+            # that could never return anything new. Gated tiers (write/run,
+            # _GATED_TIERS, handled entirely in the branches above) are
+            # DELIBERATELY EXEMPT from this guard: an approved write/run
+            # re-issued after an approval pause is the SAME action
+            # deliberately repeated by design (the whole point of
+            # PreapprovedWriteGate's re-run), and those tiers already have
+            # their own consume-on-success gating (gates.
+            # PreapprovedWriteGate) -- double-gating them here would either
+            # be redundant or, worse, block a legitimate approved re-issue.
+            call_signature = signature(decision.tool, decision.params)
+            if call_signature in dispatched_read_signatures:
+                envelope = _duplicate_call_envelope(decision.tool, language)
+                _trace_dispatch_refusal(tracer, iteration, decision.tool, envelope)
+            else:
+                dispatched_read_signatures.add(call_signature)
+                tracer.write(
+                    "action_start",
+                    {"iteration": iteration, "tool": decision.tool, "params": decision.params},
+                )
+                envelope = dispatch(decision.tool, decision.params, registry=target_registry)
+                tracer.write(
+                    "action_end",
+                    {
+                        "iteration": iteration,
+                        "tool": decision.tool,
+                        "status": envelope["status"],
+                        "error_type": envelope["error_type"],
+                    },
+                )
+                _trace_dispatch_refusal(tracer, iteration, decision.tool, envelope)
 
         state.history.append(
             StepRecord(

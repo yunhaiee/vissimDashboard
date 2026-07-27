@@ -32,6 +32,25 @@ context ONLY — it changes no gate, no tool offer and no preflight; the model
 still names explicit ids in its tool params, and the guardrails still validate
 them. No selection renders nothing at all, so every pre-P7 caller's prompt
 stays byte-identical.
+
+**Live-demo fix (docs/phase2/DECISIONS.md): history-observation rendering is
+recency-weighted and item-boundary-safe.** The old ``_observation_snippet``
+applied one flat ~300-char RAW CHARACTER SLICE to every history entry's
+``json.dumps`` text, regardless of recency -- against a real Beijing-sized
+network this chopped envelopes mid-object (e.g. a 224-row
+``get_conflict_areas`` result, ~27.6KB, cut to its first ~3 items with no
+signal anything was missing), so the model reported the data as "truncated"
+and the planner re-issued the identical call up to the iteration cap trying
+to see more of something that was never actually incomplete on the tool
+side. ``_render_observation`` fixes both halves: (a) the MOST RECENT history
+entry -- the one this iteration's decision is actually made from --
+renders under a generous, env-tunable budget (``_recent_observation_budget``,
+default 12000 chars via ``AGENT_OBS_RECENT_BUDGET``) while older entries stay
+compact; (b) any truncation that IS still needed cuts at an ITEM boundary
+(binary search for the largest list anywhere in the structure, truncated to
+the item count that fits) with an explicit ``_TRUNCATION_MARKER`` string
+appended -- never a raw slice that could land mid-object and produce
+unparseable JSON.
 """
 
 from __future__ import annotations
@@ -58,9 +77,49 @@ DEFAULT_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "v1_s
 SUMMARY_MAX_CHARS = 80
 
 # Prompt-economy knobs (M1.3 brief): last-K history entries in the state
-# block, each observation compacted to ~300 chars.
+# block. Live-demo bug (docs/phase2/DECISIONS.md): a flat ~300-char cap
+# applied to EVERY entry -- including the one the model must actually answer
+# from -- silently chopped Beijing-sized envelopes mid-JSON (e.g. 224
+# conflict areas at 27.6KB truncated to the first ~3 items with no signal
+# that anything was cut), so the planner told the user the data was
+# "truncated" and re-issued the identical call up to the K=6 cap trying to
+# get more of it. Fixed as recency-weighted rendering (see
+# ``_render_observation``/``_recent_observation_budget`` below): the MOST
+# RECENT entry (the one this turn's decision is actually made from) renders
+# under a generous, env-tunable budget; older entries stay compact under
+# this cap. Both budgets go through the SAME item-boundary-aware truncator
+# -- never a raw character slice that can land mid-object.
 _HISTORY_K = 6
 _OBSERVATION_SNIPPET_CHARS = 300
+
+#: Env var overriding the most-recent history entry's render budget (chars).
+_RECENT_OBS_BUDGET_ENV = "AGENT_OBS_RECENT_BUDGET"
+#: Default recent-entry budget: measured (backend/tools/agent_obs_size_probe.py)
+#: to comfortably fit a real Beijing-sized get_vehicle_inputs envelope (12
+#: inputs incl. per-interval volumes[], ~1.9KB) and get_network_overview
+#: (~2.9KB) WHOLE, while a 224-row get_conflict_areas envelope (~27.6KB)
+#: still needs item-boundary truncation even at this budget -- exactly the
+#: two outcomes FIX 1(c) requires.
+_DEFAULT_RECENT_OBS_BUDGET = 12000
+
+
+def _recent_observation_budget() -> int:
+    """The most-recent history entry's render budget, read fresh on every
+    call (never cached) so ``AGENT_OBS_RECENT_BUDGET`` always takes effect
+    immediately -- same pattern as ``services.agent.structured.
+    ladder_ceiling_seconds()``. Falls back to
+    :data:`_DEFAULT_RECENT_OBS_BUDGET` on anything unset, unparsable, or
+    non-positive.
+    """
+    raw = os.getenv(_RECENT_OBS_BUDGET_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_RECENT_OBS_BUDGET
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_RECENT_OBS_BUDGET
+    return value if value > 0 else _DEFAULT_RECENT_OBS_BUDGET
+
 
 # M1: only read-tier registry tools were offered to the provider. M2.3 adds
 # write-tier tools to the offer: the approval flow (services.agent.gates,
@@ -148,6 +207,32 @@ _FALLBACK_QUESTION = {
         "リクエストを正しく理解できませんでした。どのネットワークオブジェクトや指標を"
         "確認しましょうか？ 例：「107番の入力交通量」"
     ),
+}
+
+# FIX 1(b): the item-boundary truncation marker (see _render_observation).
+# Deliberately a plain string element inside the (still-valid-JSON) list it
+# truncates, formatted with {shown}/{total} -- both machine-readable (a
+# downstream parser/eval script can regex "shown" vs "total" straight out of
+# it) and model-readable (natural language, telling the planner exactly what
+# happened and what to do next: narrow the query, never just retry the same
+# call hoping for a different truncation point). This replaces the OLD
+# behavior of silently chopping raw JSON text mid-object, which is what let
+# the model believe the tool itself had failed/truncated and retry the
+# identical call up to the K=6 cap (the live-demo bug this fixes).
+_TRUNCATION_MARKER = {
+    "ko": "[표시 {shown}/{total} — 항목이 잘렸습니다. 특정 항목을 조회하거나 조건을 좁혀 주세요]",
+    "en": "[showing {shown}/{total} — list truncated. Look up a specific item or narrow your query]",
+    "ja": "[表示 {shown}/{total} — 項目が切り捨てられました。特定の項目を照会するか、条件を絞ってください]",
+}
+
+# Last-resort fallback when NO list exists anywhere in the observation (or
+# truncating the largest one still doesn't fit the budget, e.g. one huge
+# scalar field) -- still never a raw character slice of the JSON text itself,
+# just an honest "this didn't fit" notice in place of the whole thing.
+_OBSERVATION_TOO_LARGE_MARKER = {
+    "ko": "[관측 결과가 너무 커서 표시할 수 없습니다. 더 구체적으로 조회해 주세요]",
+    "en": "[the observation was too large to display. Try a more specific lookup]",
+    "ja": "[観測結果が大きすぎて表示できません。より具体的に照会してください]",
 }
 
 # M3.2: deterministic ko/en/ja step narration for the mandatory-preview
@@ -334,14 +419,110 @@ def _with_summary_param(tool_def: dict[str, Any]) -> dict[str, Any]:
     return augmented
 
 
-def _observation_snippet(observation: Any) -> str:
+def _json_len(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def _find_largest_list_path(obj: Any) -> tuple[Any, ...] | None:
+    """DFS for the path (dict keys / list indices) to the list value, ANYWHERE
+    in ``obj``'s nested dict/list structure, with the greatest serialized
+    size -- the "dominant" list responsible for a large observation (e.g.
+    ``data.conflict_areas``, ``data.vehicle_inputs``; for
+    ``get_network_overview``'s nested shape, one category's own
+    ``data.<type>.items``). ``None`` when no list exists anywhere.
+
+    A path, not the list object itself, so a caller can navigate a *separate*
+    deep copy the same way (see ``_render_observation``) without any
+    by-identity matching, which would break the moment two lists happen to
+    compare equal.
+    """
+    best_path: tuple[Any, ...] | None = None
+    best_size = -1
+
+    def walk(node: Any, path: tuple[Any, ...]) -> None:
+        nonlocal best_path, best_size
+        if isinstance(node, list):
+            size = _json_len(node)
+            if size > best_size:
+                best_path, best_size = path, size
+            for idx, item in enumerate(node):
+                walk(item, path + (idx,))
+        elif isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, path + (key,))
+
+    walk(obj, ())
+    return best_path
+
+
+def _get_at_path(obj: Any, path: tuple[Any, ...]) -> Any:
+    for key in path:
+        obj = obj[key]
+    return obj
+
+
+def _set_at_path(obj: Any, path: tuple[Any, ...], value: Any) -> None:
+    target = obj
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+
+def _render_observation(observation: Any, budget: int, language: str) -> str:
+    """Render ``observation`` as compact JSON text that fits within
+    ``budget`` chars -- FIX 1(b): item-boundary truncation, never a mid-JSON
+    character chop that leaves an unparseable fragment.
+
+    When the full serialization already fits, it is returned byte-identical
+    (this is what makes FIX 1(a)'s generous recent-entry budget actually
+    matter: a 12-input Beijing ``get_vehicle_inputs`` envelope, ~1.9KB, now
+    renders WHOLE instead of being chopped at 300 chars). When it doesn't
+    fit, the single largest list anywhere in the structure is truncated at
+    an item boundary (binary search for the largest item count that still
+    fits) and a trailing marker string (:data:`_TRUNCATION_MARKER`) states
+    exactly how many of how many are shown -- still valid JSON (the marker is
+    just one more string element in the list), still parseable, and
+    unambiguous to the model: this is a deliberate, bounded truncation with a
+    next step (narrow the query), not a signal that the tool call itself
+    needs to be retried. A structure with no list to truncate (or one whose
+    non-list parts alone already exceed ``budget``) falls back to a plain
+    outer notice (:data:`_OBSERVATION_TOO_LARGE_MARKER`) rather than ever
+    slicing the JSON text itself.
+    """
     try:
-        text = json.dumps(observation, ensure_ascii=False, separators=(",", ":"))
+        full = json.dumps(observation, ensure_ascii=False, separators=(",", ":"))
     except (TypeError, ValueError):
-        text = str(observation)
-    if len(text) > _OBSERVATION_SNIPPET_CHARS:
-        text = text[: _OBSERVATION_SNIPPET_CHARS - 3] + "..."
-    return text
+        # Not JSON-serializable at all (never happens for a real dispatch
+        # envelope/rule-fallback dict today, but observation is typed Any) --
+        # str() it and fall through to the same budget check below.
+        full = str(observation)
+    if len(full) <= budget:
+        return full
+
+    path = _find_largest_list_path(observation)
+    if path is not None:
+        original_list = _get_at_path(observation, path)
+        total = len(original_list)
+        trial = copy.deepcopy(observation)
+        lo, hi = 0, total
+        best_rendered: str | None = None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            marker = pick_language_text(_TRUNCATION_MARKER, language).format(shown=mid, total=total)
+            _set_at_path(trial, path, original_list[:mid] + [marker])
+            candidate = json.dumps(trial, ensure_ascii=False, separators=(",", ":"))
+            if len(candidate) <= budget:
+                best_rendered = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        if best_rendered is not None:
+            return best_rendered
+
+    # No list anywhere to truncate, or even an empty one still doesn't fit
+    # (e.g. one pathologically long scalar field) -- never chop the JSON
+    # text itself; state the omission plainly instead.
+    return pick_language_text(_OBSERVATION_TOO_LARGE_MARKER, language)
 
 
 class Planner:
@@ -464,6 +645,18 @@ class Planner:
 
         Rebuilt every iteration; the system prompt and tool defs stay static
         so provider-side prompt caching covers them.
+
+        FIX 1(a) (docs/phase2/DECISIONS.md, live-demo truncation bug): history
+        rendering is recency-weighted, not uniform. ``state.history`` is
+        chronological, so the LAST entry in ``recent`` is the most recent
+        observation -- the one THIS iteration's decision is actually made
+        from -- and renders under the generous
+        ``_recent_observation_budget()``; every older entry among the last
+        ``_HISTORY_K`` renders compact, under ``_OBSERVATION_SNIPPET_CHARS``.
+        Both go through the same item-boundary-aware ``_render_observation``
+        -- the old uniform 300-char raw-JSON-text slice (byte-identical for
+        every entry regardless of recency) is what silently chopped a real
+        Beijing-sized envelope mid-object with no signal it had happened.
         """
         lines = [f"Goal: {state.goal}", f"Language: {language}"]
         # P7: what the user clicked, right under the goal — "이 링크" in the
@@ -476,8 +669,12 @@ class Planner:
         recent = state.history[-_HISTORY_K:]
         if recent:
             lines.append(f"Recent steps (last {len(recent)}):")
-            for record in recent:
-                lines.append(f"- {record.action}: {_observation_snippet(record.observation)}")
+            most_recent_index = len(recent) - 1
+            recent_budget = _recent_observation_budget()
+            for index, record in enumerate(recent):
+                budget = recent_budget if index == most_recent_index else _OBSERVATION_SNIPPET_CHARS
+                rendered = _render_observation(record.observation, budget, language)
+                lines.append(f"- {record.action}: {rendered}")
         else:
             lines.append("Recent steps: none yet.")
         lines.append("Choose the single next action.")

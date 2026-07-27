@@ -410,10 +410,24 @@ def test_iteration_cap_forces_deterministic_completion(tmp_path):
         language="ko",
     )
 
-    # Exactly 6 planner calls and 6 dispatches — never a 7th, no exception.
+    # Exactly 6 planner calls — never a 7th, no exception.
     assert len(provider.calls) == 6
     records = read_trace(result.trace_path)
-    assert sum(1 for record in records if record["kind"] == "action_start") == 6
+    # FIX 2 (docs/phase2/DECISIONS.md, live-demo bug — duplicate-call guard):
+    # the planner keeps re-proposing the IDENTICAL get_network_overview call
+    # (no params to vary), so only the FIRST one actually dispatches; the
+    # other 5 are refused as duplicate_call BEFORE toolkit.dispatch runs,
+    # instead of the pre-fix behavior of re-running the same read tool 6
+    # times pointlessly (the exact live-demo symptom this guard exists to
+    # stop). state.history still gets one entry per iteration either way.
+    assert sum(1 for record in records if record["kind"] == "action_start") == 1
+    duplicate_refusals = [
+        record
+        for record in records
+        if record["kind"] == "refusal" and record["payload"].get("error_type") == "duplicate_call"
+    ]
+    assert len(duplicate_refusals) == 5
+    assert all(record["payload"].get("phase") == "dispatch" for record in duplicate_refusals)
     assert len(result.state.history) == 6
 
     # Forced completion: an apologetic deterministic answer listing what was
