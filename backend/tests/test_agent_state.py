@@ -116,6 +116,73 @@ def test_clone_copies_source_into_work_dir_without_modifying_source(tmp_path: Pa
     assert manager.working_path.read_bytes() == original_bytes
 
 
+def test_clone_copies_layx_sibling_asset_under_its_original_name(tmp_path: Path):
+    # docs/phase2/DECISIONS.md's v2 unit ⑤ follow-up ("ArtifactManager.
+    # clone() copies only the .inpx -- sibling assets ... are not cloned").
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_inpx = source_dir / "network.inpx"
+    source_inpx.write_bytes(DEMO_INPX.read_bytes())
+    (source_dir / "network.layx").write_text("<layout/>", encoding="utf-8")
+
+    work_dir = tmp_path / "work"
+    manager = ArtifactManager(source_inpx=source_inpx, work_dir=work_dir)
+
+    manager.clone()
+
+    copied = work_dir / "network.layx"
+    assert copied.exists()
+    assert copied.read_text(encoding="utf-8") == "<layout/>"
+
+
+def test_clone_copies_every_allowlisted_sibling_extension_under_original_names(tmp_path: Path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_inpx = source_dir / "network.inpx"
+    source_inpx.write_bytes(DEMO_INPX.read_bytes())
+    siblings = {
+        "network.layx": b"layout-bytes",
+        "Signal control.vap": b"vap-program-bytes",
+        "Parking.pua": b"parking-control-bytes",
+        "Bus priority.prbc": b'{"Controller": {}}',
+        "background.jpg": b"jpeg-bytes",
+        "aerial.png": b"png-bytes",
+    }
+    for name, content in siblings.items():
+        (source_dir / name).write_bytes(content)
+
+    work_dir = tmp_path / "work"
+    manager = ArtifactManager(source_inpx=source_inpx, work_dir=work_dir)
+
+    manager.clone()
+
+    for name, content in siblings.items():
+        copied = work_dir / name
+        assert copied.exists(), name
+        assert copied.read_bytes() == content
+
+
+def test_clone_does_not_copy_non_allowlisted_files_or_subdirectories(tmp_path: Path):
+    # Conservative allowlist, not "copy every non-.inpx file": documentation
+    # and results directories must never be swept into the work dir.
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_inpx = source_dir / "network.inpx"
+    source_inpx.write_bytes(DEMO_INPX.read_bytes())
+    (source_dir / "readme.pdf").write_bytes(b"%PDF-1.4 not a network asset")
+    results_dir = source_dir / "network.results"
+    results_dir.mkdir()
+    (results_dir / "output.att").write_bytes(b"simulation output, not a sibling asset")
+
+    work_dir = tmp_path / "work"
+    manager = ArtifactManager(source_inpx=source_inpx, work_dir=work_dir)
+
+    manager.clone()
+
+    assert not (work_dir / "readme.pdf").exists()
+    assert not (work_dir / "network.results").exists()
+
+
 def test_clone_parses_initial_shadow_model(tmp_path: Path):
     manager = ArtifactManager(source_inpx=DEMO_INPX, work_dir=tmp_path)
 

@@ -882,6 +882,37 @@ export interface AgentQueryResponse {
   session_id: string;
   /** Present iff kind === "approval_request". */
   approval?: AgentApproval;
+  /** P8 (edited-model download): true iff THIS turn persisted a write --
+   * backend/routers/assistant.py's _stream_agent_turn computes it from the
+   * session's ArtifactManager.version advancing across the turn (nothing
+   * else on the wire distinguishes a successful write step from a
+   * successful read step). Drives whether FloatingAssistant shows a
+   * "download the edited model" affordance under this turn's answer.
+   * Absent/false on any turn that only read, was declined, or errored. */
+  wrote_model?: boolean;
+}
+
+// P8 (edited-model download): one row from GET /api/assistant/agent's
+// sibling download-listing router (backend/routers/agent_downloads.py).
+// `version: null` means the session has cloned but never saved a write --
+// `filename` is then "working.inpx", the session's only .inpx on disk.
+export interface AgentDownloadEntry {
+  session_id: string;
+  /** Pre-shortened for display (first 8 hex chars) -- `session_id` itself
+   * still carries the full id, needed to build the download URL. */
+  session_id_short: string;
+  version: number | null;
+  is_latest: boolean;
+  /** The actual on-disk filename (e.g. "edit_003.inpx"), NOT the decorated
+   * name a download streams under -- see downloadAgentModel's own comment. */
+  filename: string;
+  /** ISO 8601 UTC. */
+  modified_at: string;
+  has_siblings: boolean;
+  /** The CURRENT active dataset's filename -- best-effort (see
+   * agent_downloads.py's list_downloads docstring for the caveat: a session
+   * that outlives a later dataset swap reports the NEW dataset's name). */
+  dataset_filename: string;
 }
 
 export type AgentStreamEvent =
@@ -993,6 +1024,55 @@ export async function fetchAssistantStatus(): Promise<AssistantStatus> {
   const r = await apiFetch("/api/assistant/status", { cache: "no-store" });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+// P8 (edited-model download): backend/routers/agent_downloads.py.
+// `sessionId` omitted lists the latest edited model per session, newest
+// first, across every session that has actually saved a write; passing it
+// scopes to that one session's full retained version history instead.
+export async function fetchAgentDownloads(options?: { sessionId?: string; limit?: number }): Promise<AgentDownloadEntry[]> {
+  const params = new URLSearchParams();
+  if (options?.sessionId) params.set("session_id", options.sessionId);
+  if (options?.limit) params.set("limit", String(options.limit));
+  const query = params.toString();
+  const r = await apiFetch(`/api/agent/downloads${query ? `?${query}` : ""}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export function agentDownloadPath(sessionId: string, version: number | null): string {
+  return `/api/agent/downloads/${sessionId}/${version === null ? "latest" : version}`;
+}
+
+// The backend names the actual streamed file server-side (dataset stem +
+// short session id + version, zip when sibling assets exist else bare
+// .inpx -- see agent_downloads.py's download_model docstring); read it back
+// off Content-Disposition rather than re-deriving it client-side, since the
+// list endpoint's own `filename` field is deliberately the raw on-disk name
+// (e.g. "edit_003.inpx"), not this decorated one.
+export async function downloadAgentModel(
+  sessionId: string,
+  version: number | null,
+): Promise<{ blob: Blob; filename: string }> {
+  const r = await apiFetch(agentDownloadPath(sessionId, version), { cache: "no-store" });
+  if (!r.ok) throw new Error(await r.text());
+  const blob = await r.blob();
+  const filename = filenameFromContentDisposition(r.headers.get("content-disposition")) ?? `${sessionId}.inpx`;
+  return { blob, filename };
+}
+
+function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      // Malformed percent-encoding -- fall through to the plain filename.
+    }
+  }
+  const plainMatch = header.match(/filename="([^"]+)"/i);
+  return plainMatch ? plainMatch[1] : null;
 }
 
 export async function askAssistant(payload: AssistantQueryRequest, signal?: AbortSignal): Promise<AssistantQueryResponse> {

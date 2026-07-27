@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import shutil
@@ -48,7 +49,97 @@ from typing import Any
 
 from services.agent.tools_network import build_shadow_model
 
+logger = logging.getLogger(__name__)
+
 _VERSION_RE = re.compile(r"^edit_(\d{3})\.inpx$")
+
+#: Extensions verified (live, against PTV Vissim 2026's bundled example
+#: networks -- Border Crossing Breitenau.DE, Urban Intersection Beijing.CN,
+#: 3D - Complex Intersection Karlsruhe.DE, BRT Priority Texas.US, Roundabout
+#: Billings.US) to sit as DIRECT file siblings of an .inpx, and, for at least
+#: .vap, to be load-blocking when missing -- docs/phase2/DECISIONS.md's v2
+#: unit ⑤ follow-up: "load_check correctly reports init_ok=False ('Import
+#: file ... not found') ... a real, pre-existing ArtifactManager limitation"
+#: on Border Crossing Breitenau.DE without its external
+#: ``Border crossing control.vap``. A deliberately CONSERVATIVE allowlist --
+#: not "copy every non-.inpx file" (that live-check script's own narrower,
+#: script-scoped workaround) -- chosen to exclude documentation (.pdf) and
+#: anything Vissim does not need to load/render the network:
+#:   .layx                    -- saved layout(s). Vissim auto-applies a
+#:                                same-STEM layout file found alongside the
+#:                                .inpx it opens (confirmed: 0 references to
+#:                                ".layx" anywhere in a live .inpx's own XML
+#:                                -- this association is purely a directory/
+#:                                filename convention, never an embedded
+#:                                reference, which is also why a copied
+#:                                .layx must keep its exact original name).
+#:   .vap                      -- external VisVAP signal-controller programs
+#:                                (referenced by exact relative filename from
+#:                                a <signalController>'s program attribute).
+#:   .pua                      -- parking-lot control files (same exact-
+#:                                filename reference pattern as .vap).
+#:   .prbc                     -- external PT-priority signal-controller
+#:                                configs (JSON; confirmed referenced by
+#:                                .inpx on BRT Priority Texas.US).
+#:   .v3d                      -- 3D scenery/vehicle models (3D visualization).
+#:   .jpg/.jpeg/.png/.bmp/.ecw -- background images an .inpx can reference by
+#:                                relative path (confirmed: Border crossing
+#:                                .inpx references "#data#Gesamt.jpg", where
+#:                                ``#data#`` is Vissim's "this .inpx's own
+#:                                directory" token).
+#: Never a directory (results dirs, texture subfolders, per-network asset
+#: folders) -- only direct FILE children of source_inpx.parent ever qualify,
+#: so this can never recurse into (or accidentally sweep up) a results dir.
+SIBLING_ASSET_EXTENSIONS = frozenset(
+    {".layx", ".vap", ".pua", ".prbc", ".v3d", ".jpg", ".jpeg", ".png", ".bmp", ".ecw"}
+)
+
+
+def _copy_sibling_assets(source_inpx: Path, work_dir: Path) -> list[str]:
+    """Copy ``source_inpx``'s sibling assets (:data:`SIBLING_ASSET_EXTENSIONS`)
+    into ``work_dir``, preserving each file's exact original name.
+
+    docs/phase2/DECISIONS.md's v2 unit ⑤ follow-up: ``ArtifactManager.
+    clone()`` used to ``shutil.copyfile`` ONLY the .inpx, so any network
+    whose signal controllers or layout depend on a sibling file (an external
+    .vap, a same-stem .layx, ...) silently failed to init once loaded from
+    the work dir. Names are never changed here -- an .inpx's own XML
+    references some of these (.vap/.pua/.prbc) by exact relative filename,
+    and a .layx's Vissim auto-load convention is itself a same-directory-
+    same-stem match, so renaming either would break the very thing this is
+    fixing.
+
+    Best-effort per file: one sibling that cannot be read (permission error,
+    vanishes between listing and copy, e.g. a multi-GB .ecw background) is
+    skipped with a logged warning rather than failing the whole ``clone()``
+    -- a caller should still get a working .inpx even if one background
+    image cannot be copied.
+
+    Returns the names actually copied (used by tests / the download
+    endpoint's own duplicated allowlist check); never raises.
+    """
+    copied: list[str] = []
+    try:
+        entries = list(source_inpx.parent.iterdir())
+    except OSError:
+        logger.warning(
+            "ArtifactManager.clone(): cannot list %s for sibling assets", source_inpx.parent
+        )
+        return copied
+
+    for path in entries:
+        try:
+            if not path.is_file() or path.name == source_inpx.name:
+                continue
+            if path.suffix.lower() not in SIBLING_ASSET_EXTENSIONS:
+                continue
+            shutil.copyfile(path, work_dir / path.name)
+            copied.append(path.name)
+        except OSError:
+            logger.warning(
+                "ArtifactManager.clone(): could not copy sibling asset %s", path, exc_info=True
+            )
+    return copied
 
 
 @dataclass
@@ -278,8 +369,13 @@ class ArtifactManager:
         """Copy the source .inpx into the work dir as the mutable working copy.
 
         Never touches ``source_inpx`` — it is copied, never moved or opened
-        for writing. Parses the initial shadow model and returns a deep copy
-        of it (see the ``shadow_model`` property).
+        for writing. Also copies ``source_inpx``'s sibling assets (external
+        signal-controller programs, layout files, background images -- see
+        :data:`SIBLING_ASSET_EXTENSIONS`) alongside it, under their original
+        names, so a network that depends on them (docs/phase2/DECISIONS.md's
+        v2 unit ⑤ follow-up) still inits correctly from the work dir. Parses
+        the initial shadow model and returns a deep copy of it (see the
+        ``shadow_model`` property).
 
         Raises:
             RuntimeError: see ``_guard_against_clobbering_unsaved_work`` —
@@ -289,6 +385,7 @@ class ArtifactManager:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self._guard_against_clobbering_unsaved_work()
         shutil.copyfile(self.source_inpx, self.working_path)
+        _copy_sibling_assets(self.source_inpx, self.work_dir)
         self._refresh_shadow_model()
         return self.shadow_model
 

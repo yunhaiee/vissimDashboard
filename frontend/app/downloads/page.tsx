@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { apiFetch, fetchActiveDataset, type ActiveDataset } from "@/lib/api";
+import {
+  apiFetch,
+  downloadAgentModel,
+  fetchActiveDataset,
+  fetchAgentDownloads,
+  type ActiveDataset,
+  type AgentDownloadEntry,
+} from "@/lib/api";
 
 type ExportItem = { key: string; label: string; filename: string };
 
@@ -121,6 +128,13 @@ const ORDER = [
   "travel-time-charts",
 ];
 
+function formatDownloadTimestamp(iso: string, lang: "ko" | "en" | "ja"): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const locale = lang === "ko" ? "ko-KR" : lang === "ja" ? "ja-JP" : "en-US";
+  return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
+}
+
 export default function DownloadsPage() {
   const { lang, t } = useLanguage();
   const [items, setItems] = useState<ExportItem[]>([]);
@@ -130,6 +144,78 @@ export default function DownloadsPage() {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [busyCombined, setBusyCombined] = useState(false);
   const [activeDataset, setActiveDataset] = useState<ActiveDataset | null>(null);
+
+  // P8 (edited-model download): the AI agent's edited working copies,
+  // listed newest-first (backend/routers/agent_downloads.py's unscoped
+  // GET /api/agent/downloads — the latest saved version per session that
+  // has actually saved a write).
+  const [agentDownloads, setAgentDownloads] = useState<AgentDownloadEntry[]>([]);
+  const [agentDownloadsLoading, setAgentDownloadsLoading] = useState(true);
+  const [agentDownloadsError, setAgentDownloadsError] = useState<string | null>(null);
+  const [agentDownloadBusyKey, setAgentDownloadBusyKey] = useState<string | null>(null);
+  const [agentDownloadStatus, setAgentDownloadStatus] = useState<Record<string, "ok" | "err">>({});
+
+  const loadAgentDownloads = useCallback(() => {
+    let cancelled = false;
+    setAgentDownloadsLoading(true);
+    fetchAgentDownloads({ limit: 20 })
+      .then((entries) => {
+        if (!cancelled) {
+          setAgentDownloads(entries);
+          setAgentDownloadsError(null);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setAgentDownloadsError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setAgentDownloadsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => loadAgentDownloads(), [loadAgentDownloads]);
+
+  // Refresh the list the moment the floating chat's agent session id
+  // changes — the same "vissim:agent-session" broadcast app/dashboard/
+  // page.tsx and app/network/page.tsx already listen for (docs/phase2/
+  // DECISIONS.md's P2 entry) — so a write made while this page is open
+  // shows up without a manual reload. A stale/unrelated id is harmless
+  // here: this only ever triggers a re-fetch of the unscoped (all
+  // sessions) listing, never a filtered one.
+  useEffect(() => {
+    function handleAgentSession() {
+      loadAgentDownloads();
+    }
+    window.addEventListener("vissim:agent-session", handleAgentSession);
+    return () => {
+      window.removeEventListener("vissim:agent-session", handleAgentSession);
+    };
+  }, [loadAgentDownloads]);
+
+  const downloadAgentEntry = useCallback(async (entry: AgentDownloadEntry) => {
+    const key = `${entry.session_id}:${entry.version ?? "latest"}`;
+    setAgentDownloadBusyKey(key);
+    setAgentDownloadStatus((prev) => ({ ...prev, [key]: undefined as never }));
+    try {
+      const { blob, filename } = await downloadAgentModel(entry.session_id, entry.version);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setAgentDownloadStatus((prev) => ({ ...prev, [key]: "ok" }));
+    } catch {
+      setAgentDownloadStatus((prev) => ({ ...prev, [key]: "err" }));
+    } finally {
+      setAgentDownloadBusyKey(null);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -234,6 +320,101 @@ export default function DownloadsPage() {
           )}
         </p>
       </header>
+
+      <section className="mb-6 rounded-xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">
+              {t("편집된 모델", "Edited models", "編集済みモデル")}
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              {t(
+                "AI 에이전트가 채팅에서 변경한 VISSIM 모델(.inpx)을 내려받습니다.",
+                "Download the VISSIM model (.inpx) the AI agent edited in chat.",
+                "AIエージェントがチャットで変更したVISSIMモデル(.inpx)をダウンロードします。",
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={loadAgentDownloads}
+            disabled={agentDownloadsLoading}
+            className="rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60"
+          >
+            {agentDownloadsLoading
+              ? t("새로고침 중…", "Refreshing…", "更新中…")
+              : t("새로고침", "Refresh", "更新")}
+          </button>
+        </div>
+
+        {agentDownloadsError && (
+          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+            {t("목록을 불러오지 못했습니다", "Failed to load the list", "リストを読み込めませんでした")}: {agentDownloadsError}
+          </div>
+        )}
+
+        {!agentDownloadsLoading && !agentDownloadsError && agentDownloads.length === 0 && (
+          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-xs text-slate-500">
+            {t(
+              "아직 편집된 모델이 없습니다. AI 에이전트 채팅에서 변경을 실행하면 여기에 표시됩니다.",
+              "No edited models yet. Once the AI agent executes a change in chat, it will show up here.",
+              "まだ編集済みモデルはありません。AIエージェントのチャットで変更を実行するとここに表示されます。",
+            )}
+          </p>
+        )}
+
+        {agentDownloads.length > 0 && (
+          <ul className="space-y-2">
+            {agentDownloads.map((entry) => {
+              const key = `${entry.session_id}:${entry.version ?? "latest"}`;
+              const status = agentDownloadStatus[key];
+              const versionLabel =
+                entry.version === null
+                  ? t("미저장(현재 작업본)", "Unsaved (current)", "未保存（現在の作業版）")
+                  : t(`버전 ${entry.version}`, `Version ${entry.version}`, `バージョン ${entry.version}`);
+              return (
+                <li
+                  key={key}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/60 px-3.5 py-3"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-900">{entry.dataset_filename}</span>
+                      {entry.is_latest && (
+                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                          {t("최신", "Latest", "最新")}
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      {t("세션", "Session", "セッション")} {entry.session_id_short} · {versionLabel} ·{" "}
+                      {formatDownloadTimestamp(entry.modified_at, lang)}
+                    </p>
+                  </div>
+                  <div className="flex flex-none items-center gap-2">
+                    {status === "ok" && (
+                      <span className="text-xs font-semibold text-emerald-600">{t("완료", "Done", "完了")}</span>
+                    )}
+                    {status === "err" && (
+                      <span className="text-xs font-semibold text-rose-600">{t("실패", "Failed", "失敗")}</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => downloadAgentEntry(entry)}
+                      disabled={agentDownloadBusyKey === key}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3.5 py-2 text-xs font-semibold text-ink transition hover:bg-slate-950 disabled:opacity-50"
+                    >
+                      {agentDownloadBusyKey === key
+                        ? t("생성 중…", "Building…", "生成中…")
+                        : t("다운로드", "Download", "ダウンロード")}
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       {error && (
         <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">

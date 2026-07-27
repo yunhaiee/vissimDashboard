@@ -1746,3 +1746,41 @@ tests across planner rendering, read tools, edit tools, and session memory. Full
 972 passed / 1 skipped, only the pre-existing RAG-corpus failure. Known pre-existing
 (spun off, not fixed here): test_agent_read_tools.py lacks a tools_check import so 2
 registry anti-drift tests only pass in the full suite, not standalone.
+
+---
+
+## 2026-07-27 — Edited-model download: sibling-assets gap closed, list+download shipped
+
+**Context:** users had no way to retrieve the .inpx an agent session edited. The tracked
+ArtifactManager sibling-assets clone gap was confirmed live: clone() copyfile'd ONLY the
+.inpx. Reproduced against a real PTV Vissim 2026 example network (Border Crossing
+Breitenau.DE — 6 sibling files missing from the work dir) and all 25 bundled examples
+were surveyed to build an evidence-based extension allowlist (.layx/.vap/.pua/.prbc/
+.v3d/images). Findings: .vap/.pua/.prbc are referenced by exact relative filename inside
+the .inpx XML ("#data#" token); .layx association is purely same-directory/same-stem
+convention (0 in-XML references). Version retention answered: save_version() snapshots
+an immutable edit_NNN.inpx per successful write — history is complete, never overwritten.
+NEW FINDING while testing: VissimEditSession.persist()'s SaveNetAs-to-tmp also emits a
+same-stem sibling (working_saving.layx) that never gets renamed onto working.layx —
+defensively excluded from downloads, real fix spun off (needs live-Vissim verification).
+
+**Decision:** ArtifactManager.clone() copies qualifying siblings under their original
+names (SIBLING_ASSET_EXTENSIONS, state.py). New routers/agent_downloads.py: GET
+/api/agent/downloads (list; session_id scopes to one session's full version history,
+else latest-per-session) and GET /api/agent/downloads/{session_id}/{version} (zip when
+siblings exist — only the .inpx is renamed to the dataset stem, re-establishing .layx
+auto-association for free while siblings keep names the XML references; else bare
+.inpx). Path safety mirrors network.py's regex + relative_to defense. Chat surfaces a
+download link via a new wrote_model boolean on the turn's done event — computed from
+ArtifactManager.version advancing across the turn (NOT from step tool-tier: two tests
+assert exact dict-equality on step payloads). Session↔dataset association is not
+persisted anywhere (AgentState.artifacts always {}), so the displayed dataset name is a
+best-effort proxy of today's active dataset — documented caveat, not a new store.
+Downloads page gains a "편집된 모델" card (ko/en/ja); FloatingAssistant shows "편집된
+모델 다운로드" under answers that persisted a write.
+
+**Consequence:** an edited model round-trips out of the app and reopens cleanly in
+Vissim with signal programs/layouts/背景 images intact — live-verified against a real
+example network's sibling set. 31 new download tests + 3 sibling-copy tests; orchestrator
+/approval suites re-run green (76/76 scoped; full-suite noise at commit time is the
+concurrent v2a unit ⑦'s in-flight registry work, verified unrelated).

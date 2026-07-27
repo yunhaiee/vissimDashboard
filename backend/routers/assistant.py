@@ -689,6 +689,17 @@ async def _stream_agent_turn(
             # other's state.json history or working-copy write.
             with _session_turn_scope(session_id):
                 _ensure_working_copy(artifact_manager)
+                # P8 (edited-model download): the version number right after
+                # ensure-working-copy, BEFORE run_agent_turn dispatches
+                # anything -- the baseline a post-turn comparison needs to
+                # tell "this turn itself wrote something" from "this session
+                # already had edits from an earlier turn". artifact_manager
+                # is the SAME instance run_agent_turn dispatches writes
+                # through (orchestrator.py calls artifact_manager.
+                # save_version() directly on it), so `.version` after the
+                # turn already reflects any write THIS turn made -- no
+                # refresh_version() rescan needed.
+                holder["version_before"] = artifact_manager.version
                 # M1-inherited module-global session context (tools_network.py's
                 # own documented caveat): points every read tool at THIS turn's
                 # working copy, not the source dataset, so an edit made earlier
@@ -822,6 +833,13 @@ async def _stream_agent_turn(
                     "kind": "answer",
                     "steps": streamed_steps,
                     "session_id": session_id,
+                    # P8: a turn that errored never gets credit for a write,
+                    # even if `version_before` was captured before the
+                    # failure -- there is no way from here to tell "the
+                    # write landed, then something else in this turn failed"
+                    # apart from "the write itself failed", so the safe
+                    # default is always False on this path.
+                    "wrote_model": False,
                 },
             }
         )
@@ -879,11 +897,30 @@ async def _stream_agent_turn(
     for chunk in chunk_answer_for_stream(result.answer):
         yield encode_stream_event({"type": "chunk", "stream_id": stream_id, "text": chunk})
 
+    # P8 (edited-model download): did THIS turn persist a write? Nothing on
+    # the wire marks this today -- a successful write step's `status` is
+    # "ok", indistinguishable from a successful READ step's "ok" without
+    # also knowing the tool's tier, which no step payload carries either
+    # (and orchestrator.py's step_payload dict is asserted against by exact
+    # equality in test_agent_orchestrator.py / test_agent_orchestrator_
+    # approval.py, so adding a key there is not the low-risk move it looks
+    # like). The precise, already-available signal instead: whether THIS
+    # artifact_manager's version advanced past the value captured right
+    # after _ensure_working_copy, in `run()` above -- version only ever
+    # moves via save_version(), which orchestrator.py calls exactly once per
+    # successfully dispatched + postwrite-verified write tool. A turn that
+    # never reached that line (e.g. the very first `_ensure_working_copy`
+    # itself raised) has no "version_before" to compare against, so this
+    # degrades to False rather than raising.
+    version_before = holder.get("version_before")
+    wrote_model = version_before is not None and artifact_manager.version > version_before
+
     done_response: dict[str, Any] = {
         "answer": result.answer,
         "kind": result.kind,
         "steps": result.steps,
         "session_id": session_id,
+        "wrote_model": wrote_model,
     }
     if approval_payload is not None:
         done_response["approval"] = approval_payload

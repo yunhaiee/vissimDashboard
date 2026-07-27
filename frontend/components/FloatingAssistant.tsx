@@ -10,6 +10,7 @@ import {
   AgentApprovalError,
   AgentStreamDisconnectedError,
   approveAgentAction,
+  downloadAgentModel,
   fetchAssistantStatus,
   fetchSimulationJob,
   fetchSimulationResults,
@@ -64,6 +65,15 @@ type FloatingMessage = {
    * terminal done.response.approval as a safety net). Stays on the message
    * after resolution — single-use, inert once acted on. */
   agentApproval?: AgentApprovalState;
+  /** P8 (edited-model download): true iff THIS agent-mode turn persisted a
+   * write (response.wrote_model — see lib/api.ts's AgentQueryResponse).
+   * Drives a small "download the edited model" link under the answer.
+   * `writeSessionId` is the session that write landed in — always set
+   * alongside `wroteModel`, kept as its own field rather than reusing the
+   * panel's live `agentSessionId` state so the affordance stays correct on
+   * an OLDER message even after a later "New conversation" reset. */
+  wroteModel?: boolean;
+  writeSessionId?: string;
 };
 
 type AssistantPageContext = {
@@ -707,6 +717,8 @@ export default function FloatingAssistant() {
                 agentApproval: response.approval
                   ? approvalStateFromEvent(response.approval, response.session_id)
                   : message.agentApproval,
+                wroteModel: response.wrote_model ?? false,
+                writeSessionId: response.wrote_model ? response.session_id : undefined,
               }
             : message,
         ),
@@ -850,6 +862,8 @@ export default function FloatingAssistant() {
               agentApproval: response.approval
                 ? approvalStateFromEvent(response.approval, response.session_id)
                 : message.agentApproval,
+              wroteModel: response.wrote_model ?? false,
+              writeSessionId: response.wrote_model ? response.session_id : undefined,
             };
           }
           if (message.id === sourceMessageId && message.agentApproval) {
@@ -1177,6 +1191,9 @@ function FloatingChatMessage({
         {!isUser && message.agentApproval && (
           <AgentApprovalCard approval={message.agentApproval} onRun={() => onResolveApproval(true)} onCancelApproval={() => onResolveApproval(false)} />
         )}
+        {!isUser && message.wroteModel && message.writeSessionId && (
+          <AgentModelDownloadLink sessionId={message.writeSessionId} />
+        )}
         {!isUser && message.response && <AssistantRuntimeBadge response={message.response} />}
         {promptSimulation && (
           <PromptSimulationStatus
@@ -1349,6 +1366,57 @@ function PreflightStatusChip({ warningCount }: { warningCount: number }) {
 // PromptSimulationStatus confirm strip below, since this one carries a
 // multi-action list, per-action params, and warnings rather than a single
 // yes/no prompt.
+// P8 (edited-model download): a small, non-intrusive affordance shown under
+// an agent-mode answer the moment `wroteModel` is true (see FloatingMessage's
+// own comment) -- streams the LATEST saved version of this session's edited
+// .inpx (zip with sibling assets when any exist, else bare .inpx --
+// backend/routers/agent_downloads.py) via the same blob + anchor-click
+// pattern app/downloads/page.tsx already uses for every other deliverable,
+// so it behaves identically to every other "download" button in this app.
+function AgentModelDownloadLink({ sessionId }: { sessionId: string }) {
+  const { t } = useLanguage();
+  const [status, setStatus] = useState<"idle" | "busy" | "error">("idle");
+
+  async function handleClick() {
+    if (status === "busy") return;
+    setStatus("busy");
+    try {
+      const { blob, filename } = await downloadAgentModel(sessionId, null);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setStatus("idle");
+    } catch {
+      setStatus("error");
+    }
+  }
+
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={status === "busy"}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-surface px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-wait disabled:opacity-60"
+      >
+        {status === "busy"
+          ? t("모델 준비 중…", "Preparing model…", "モデル準備中…")
+          : t("편집된 모델 다운로드", "Download edited model", "編集済みモデルをダウンロード")}
+      </button>
+      {status === "error" && (
+        <span className="text-[11px] font-medium text-rose-600">
+          {t("다운로드에 실패했습니다", "Download failed", "ダウンロードに失敗しました")}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function AgentApprovalCard({
   approval,
   onRun,
