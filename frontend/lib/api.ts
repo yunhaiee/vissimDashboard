@@ -1723,7 +1723,15 @@ export async function fetchTrajectories(params?: {
   if (params?.stride !== undefined) query.set("stride", String(params.stride));
   if (params?.jobId !== undefined) query.set("job_id", params.jobId);
   const qs = query.toString();
-  const r = await apiFetch(`/api/trajectories${qs ? `?${qs}` : ""}`, { cache: "no-store" });
+  // Trajectory payloads are big by nature (a real 600s/5-seed run's frames
+  // JSON measured 44MB, ~6.3s to transfer) — the shared 5s API_FETCH_TIMEOUT_MS
+  // aborted the download mid-flight on every fallback URL (net::ERR_ABORTED,
+  // live-diagnosed 2026-07-27). Supplying our own long-lived signal makes
+  // fetchWithTimeout skip the short global timeout entirely.
+  const r = await apiFetch(`/api/trajectories${qs ? `?${qs}` : ""}`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(120_000),
+  });
   if (!r.ok) throw new Error(await readApiError(r));
   return r.json();
 }
