@@ -102,7 +102,91 @@ dashboard 지도/도식 toggle + /network page, dataset-change refetch, connecto
 topology, click-selection → vissim:page-context, node LOS coloring from real per-node delay.
 Browser-verified against synthetic demo data; connector XML schema still needs validation
 against a real network on the Vissim box (see DECISIONS.md), merge to main pending Yunha's
-review. Remaining: Phase 4 completion (real Dochak .inpx + live eval runs + ground-truth tasks),
-TR-C paper (deadline ~09-05), then v2 tool expansion per docs/TOOL-CATALOG.md
-(the definitive v1/v2 capability matrix; v2 work runs on the Vissim box, branch
-v2-tools, one verified verb per commit).
+review.
+
+## Status update — 2026-07-27
+
+**Done since 07-24** (detail per entry in docs/phase2/DECISIONS.md):
+
+- **v2 tool queue ①–⑥ complete** (unattended serial run on branch v2-tools):
+  controller-type parsing/signal offset unlock, set_reduced_speed_area (first non-COM
+  verb), load_check (+ proof no COM consistency-check exists), conflict-area
+  read/status verbs, per-interval vehicle-input volumes (Cont-flag trap defeated),
+  route relative-flow read/write. v1 close-out COMPLETE; v2a 3/12 shipped.
+- **v2-tools + phase3-render merged to main**; both machines now share one trunk.
+- **Trajectory replay**: AI-run simulations record .fzp per seed; network tab replays
+  vehicle movement with speed controls, playback-source picker per job.
+- **Chat reorganization**: VISSIM 에이전트 default-on everywhere; dashboard curation
+  reframed as view control with agent handoff.
+- **Metric-level curation**: kpi_metrics six-key vocabulary — metric questions show
+  only relevant KPI cards + "전체 지표 보기" reveal.
+- **~19 live-rehearsal defects found and fixed** (the demo-as-validation method
+  continued): session race, approval consumed once, evaluation auto-arming,
+  dead-stream detection + heartbeat, 300-char observation cap (M1-era), warning
+  floods, replay download abort — and on 07-27 alone: vehicle-overlay freeze
+  (three stacked causes: frame lag, rAF latch, listener isolation), semantic zoom
+  for element glyphs (root cause of permanent clustering), hover/selection recolor
+  replacing the ring, element-click swallow, metre-true road markings, and the
+  agent observation-flood cluster (renderer zero-items bug traced to a 1-char
+  budget overflow, conflict-area filters, warning dedup/aging).
+- **Docs**: customer-facing README rewrite; TOOL-CATALOG reorganized into a
+  scannable per-verb matrix.
+
+## To-do (forward plan, updated 2026-07-27)
+
+### 1. Paper-critical path (deadline ~09-05)
+
+- Obtain real Korean intersection .inpx (professor emailed 07-24 — waiting)
+- Ground-truth eval tasks with Dochak engineers (Dr. Chun/Dr. Oh)
+- Live eval runs on real Vissim for final paper numbers (current 60% vs 0%
+  silent-failure detection is demo-scale)
+- Action-log analysis + TR-C paper writing
+- Yunha: full demo video re-shoot (18-beat script); regular GitHub Desktop pushes
+
+### 2. Product roadmap — ACTIVE, interleaved with paper work (decision 2026-07-27:
+v2 and service upgrades are NOT deferred to post-paper; run as queued units)
+
+**Tool expansion** (docs/TOOL-CATALOG.md is the definitive matrix):
+- v2a remaining 9 verbs (compositions, desired-speed pairs/distributions,
+  priority-rule params, driving behavior duplicate-then-edit, dwell times,
+  green-splits, vehicle type properties)
+- v2b structural tier (lane/link closure, links & connectors, geometry, signal
+  heads/detectors placement, measurement infra, PT, pedestrians)
+- v2c semantic tier (signal plan redesign, calibration search, OD/DA,
+  compare workflows)
+- Batch/compound edits (one approval for a validated multi-edit plan); edit
+  rollback verb (artifact versions already exist)
+
+**Purchase-driver features** (product review 2026-07-27, ranked by buying power):
+- 모델 건강검진 — one-click health-check report running the full constraint catalog
+  on an uploaded .inpx (sells the validation layer standalone; near-free to build)
+- Approval-card mini-map — visualize the affected element/location before approving
+- Live run-progress UI — per-seed status + ETA (recurring demo pain)
+- Audit-trail export — the agent action ledger as a 변경 이력 report (HWP/DOCX,
+  교통영향평가-style formatting)
+- Scenario matrix — N alternatives × M demand levels overnight → comparison report
+- Calibration assistant — GEH-scored parameter search (v2c's flagship)
+- Replay upgrades — signal-state playback (.lsa), follow-a-vehicle, queue highlight
+- Network diff view — two model versions side-by-side, changes highlighted
+- Data-boundary statement in UI (files never leave the machine; prompts only)
+- Onboarding — bundled sample project + guided tour
+- Share links (read-only dashboard/replay) + reviewer/modeler roles on the
+  approval gate
+
+**Platform/service upgrades:**
+- Live rendering during a run (step-streaming mode alongside batch RunContinuous)
+- 3D view (three.js/deck.gl), satellite/OSM map underlay
+- OSM/GIS network import; Korean traffic data ingestion (TOPIS/공공데이터 API)
+- External controller files via file-level editing (RBC/VAP — COM-impossible, proven)
+- Deployment: auth, multi-user, dedicated Vissim job-runner
+- RAG corpus completion (turns the known-failing retrieval test green)
+- Proactive diagnosis (agent flags gridlock/anomalies unprompted)
+
+### 3. Known small debts (fix opportunistically; ledger-tracked)
+
+- .fzp SPEED column absent → stopped-vehicle coloring inactive in replay
+- .err-log parser for deleted_vehicles; ArtifactManager sibling-assets clone gap
+- Deferred constraints: demand_scale turn-state, min_green_intergreen_sum
+- Chevrons invisible at base zoom on low-px/m networks (intentional; revisit on report)
+- test_agent_read_tools.py standalone-run import gap (task chip spawned)
+- docs/ux-backlog.md items
