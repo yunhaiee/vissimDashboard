@@ -3,7 +3,27 @@
 import { useCallback, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { curateDashboard, type DashboardCurationSpec } from "@/lib/api";
+import { curateDashboard, type DashboardCurationSpec, type DashboardInsightCard } from "@/lib/api";
+
+// Handoff to the full agent (FloatingAssistant, globally mounted in
+// AppShell — see components/AppShell.tsx) via the same custom-window-event
+// seam FloatingAssistant already uses for page context (its
+// "vissim:page-context" listener in components/FloatingAssistant.tsx).
+// CurationBar never imports or renders the assistant directly; it only
+// announces the request and lets the listener open the panel and prefill
+// the input. Deliverable 3 of the CurationBar/FloatingAssistant identity
+// split (docs/phase2/DECISIONS.md UX-reorg entry): this bar stays a
+// view-control surface, never a chat, but still offers a one-click bridge
+// into the real conversational/action surface.
+const ASSISTANT_HANDOFF_EVENT = "vissim:assistant-handoff";
+
+function buildHandoffPrompt(card: Pick<DashboardInsightCard, "title">): string {
+  return `"${card.title}"에 대해 자세히 설명해줘. 필요하면 조치도 도와줘.`;
+}
+
+function requestAgentHandoff(card: Pick<DashboardInsightCard, "title">) {
+  window.dispatchEvent(new CustomEvent(ASSISTANT_HANDOFF_EVENT, { detail: { prompt: buildHandoffPrompt(card) } }));
+}
 
 const TONE_STYLES: Record<string, string> = {
   success: "border-emerald-200 bg-emerald-50 text-emerald-600",
@@ -125,8 +145,21 @@ export default function CurationBar({
 
   return (
     <section className="rounded-xl border border-slate-200 bg-surface px-5 py-4">
+      {/* Identity header: a "dashboard curation" / view-control label, not a
+          chat title — CurationBar filters what's already on screen, it does
+          not converse. Same eyebrow-label styling FloatingAssistant already
+          uses for its own route-context summary, so the two surfaces read as
+          one design family while staying visually distinct in role. */}
+      <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">
+        {t("대시보드 큐레이션", "Dashboard curation", "ダッシュボードキュレーション")}
+      </p>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex h-10 min-w-[260px] flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-white/[0.03] px-3 focus-within:border-slate-300">
+          {/* Monochrome sparkle, not a chat/speech-bubble glyph — kept as a
+              subtle "this ranking is AI-curated" cue rather than removed.
+              It reads as "AI-powered filtering", not "conversation", so it
+              stays even though the bar's identity is now explicitly
+              non-chat; a speech-bubble icon would have to go. */}
           <svg aria-hidden viewBox="0 0 24 24" className="h-4 w-4 shrink-0 text-slate-400" fill="currentColor">
             <path d="M12 2l1.9 6.3a3 3 0 0 0 1.8 1.8L22 12l-6.3 1.9a3 3 0 0 0-1.8 1.8L12 22l-1.9-6.3a3 3 0 0 0-1.8-1.8L2 12l6.3-1.9a3 3 0 0 0 1.8-1.8z" />
           </svg>
@@ -137,13 +170,13 @@ export default function CurationBar({
               if (event.key === "Enter" && !event.nativeEvent.isComposing) submit();
             }}
             placeholder={t(
-              "궁금한 점을 물어보세요 — 관련 지표만 보여드립니다 (예: 신호 최적화가 효과 있었나요?)",
-              "Ask a question — only the relevant charts will be shown (e.g. Did signal optimization help?)",
-              "質問してください — 関連する指標のみ表示します",
+              "무엇을 보고 싶으세요? — 관련 차트만 보여드립니다 (예: 신호 최적화가 효과 있었나요?)",
+              "What would you like to see? — only the relevant charts will be shown (e.g. Did signal optimization help?)",
+              "何を見たいですか？ — 関連するチャートのみ表示します",
             )}
             disabled={disabled || loading}
             className="w-full bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-60"
-            aria-label={t("대시보드 질문 입력", "Dashboard question input")}
+            aria-label={t("대시보드 큐레이션 입력", "Dashboard curation input")}
           />
         </div>
         <div className="flex items-center gap-2">
@@ -178,7 +211,7 @@ export default function CurationBar({
               disabled={disabled || !message.trim()}
               className="ui-button-primary inline-flex h-10 items-center px-4 text-sm disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {t("질문하기", "Ask", "質問する")}
+              {t("보기", "View", "表示")}
             </button>
           )}
           {spec && !loading && (
@@ -239,14 +272,29 @@ export default function CurationBar({
                 >
                   <p className="text-sm font-semibold">{card.title}</p>
                   <p className="mt-1 text-sm leading-relaxed">{card.body}</p>
-                  {card.related_chart && applicableSectionIds.includes(card.related_chart) && (
-                    <a
-                      href={`#${card.related_chart}`}
-                      className="mt-2 inline-block text-xs font-semibold underline decoration-dotted underline-offset-2 opacity-80 hover:opacity-100"
+                  <div className="mt-2 flex flex-wrap items-center gap-3">
+                    {card.related_chart && applicableSectionIds.includes(card.related_chart) && (
+                      <a
+                        href={`#${card.related_chart}`}
+                        className="inline-block text-xs font-semibold underline decoration-dotted underline-offset-2 opacity-80 hover:opacity-100"
+                      >
+                        {t(`${chartLabel(card.related_chart)} 보기 →`, `View ${chartLabel(card.related_chart)} →`)}
+                      </a>
+                    )}
+                    {/* Handoff affordance (deliverable 3): always shown, small
+                        + ghost-styled so it never competes with the card's own
+                        content — opens/focuses FloatingAssistant and prefills
+                        a ko prompt derived from this card's title via the
+                        vissim:assistant-handoff window event above. */}
+                    <button
+                      type="button"
+                      onClick={() => requestAgentHandoff(card)}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-800"
                     >
-                      {t(`${chartLabel(card.related_chart)} 보기 →`, `View ${chartLabel(card.related_chart)} →`)}
-                    </a>
-                  )}
+                      {t("에이전트에게 요청", "Ask the agent", "エージェントに依頼")}
+                      <span aria-hidden>→</span>
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

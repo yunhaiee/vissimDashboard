@@ -1492,3 +1492,24 @@ VissimDatasetBanner.onDatasetChange never fires on initial mount, silently disab
 picker's dataset-revision safety filter — the picker now fetches the active dataset itself.
 
 **Deferred:** SPEED from real exports; the duration cap bounds time but not network density.
+
+---
+
+## 2026-07-27 — UX reorg: curation/agent identities split; agent mode default-on
+
+**Context:** two AI inputs read identically as "ask a box"; the M1.4 entry anticipated
+flipping the agent toggle once write capability shipped behind approval — long since true.
+
+**Decision:** (1) CurationBar reframed as a view control ("대시보드 큐레이션" eyebrow, 보기/View
+button, view-lens placeholder; endpoints byte-identical; sparkle kept — 4-point glyph reads
+AI-powered, not conversation). (2) FloatingAssistant is THE chat ("VISSIM 에이전트"),
+agentMode defaults true, beta checkbox removed; legacy regex pipeline intact server-side as
+the eval baseline, reachable only via ?assistant=legacy or the localStorage flag (documented
+escape hatch, never a visible control); starter prompts refreshed to a read/edit/run triad
+(the regex-era 107 combo retired). (3) Insight cards gained an 에이전트에게 요청 ghost button
+dispatching vissim:assistant-handoff (the page-context event precedent) → panel opens,
+composer prefilled, user still presses send.
+
+**Consequence:** every new user's first assistant interaction is the real agent — verified
+live (handoff → prefill → genuine agent turn). Contract 11/12 (exempt base-model pin only);
+zero backend touch (endpoint tests 5/5).

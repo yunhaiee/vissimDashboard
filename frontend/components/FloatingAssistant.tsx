@@ -130,18 +130,28 @@ type AssistantPanelResizeState = {
 
 type AssistantRequestPhase = "idle" | "context" | "querying" | "streaming" | "cancelled";
 
+// Refreshed for agent-mode-default (docs/phase2/DECISIONS.md UX-reorg
+// entry): the prior triplet's third starter was tuned for the legacy
+// regex path (a single sentence carrying both an edit and a run, in the
+// exact word order the regex matcher needed). Agent mode plans/approves
+// each action on its own, so the three starters now each showcase one
+// distinct agent verb -- a read, an edit, a run -- rather than one
+// combined command.
 const DEFAULT_STARTERS = [
   {
     ko: "\ud604\uc7ac VISSIM \uc2e4\ud589 \uc0c1\ud0dc\uc640 \ub370\uc774\ud130\uc14b \uc0c1\ud0dc\ub97c \uc694\uc57d\ud574\uc918.",
     en: "Summarize current VISSIM execution and dataset status.",
+    ja: "\u73fe\u5728\u306eVISSIM\u5b9f\u884c\u72b6\u6cc1\u3068\u30c7\u30fc\u30bf\u30bb\u30c3\u30c8\u306e\u72b6\u614b\u3092\u8981\u7d04\u3057\u3066\u3002",
   },
   {
-    ko: "\ucd5c\uadfc \uc2dc\ubbac\ub808\uc774\uc158 \uc624\ub958\ub97c \uc9c4\ub2e8\ud558\uace0 \ub2e4\uc74c \uc218\uc815 \ubc29\ud5a5\uc744 \uc54c\ub824\uc918.",
-    en: "Diagnose the latest simulation error and tell me the next fix.",
+    ko: "\ucc28\ub7c9 \uc785\ub825 107\ubc88\uc744 6000\uc73c\ub85c \ubcc0\uacbd\ud574\uc918.",
+    en: "Change vehicle input 107 to 6000.",
+    ja: "\u8eca\u4e21\u5165\u529b107\u30926000\u306b\u5909\u66f4\u3057\u3066\u3002",
   },
   {
-    ko: "Vehicle input 107\uc744 6000\uc73c\ub85c \ubc14\uafb8\uace0 seed 42\ub85c VISSIM \uc2dc\ubbac\ub808\uc774\uc158\uc744 \uc2e4\ud589\ud574\uc918.",
-    en: "Run a VISSIM simulation with vehicle input 107 set to 6000 and seed 42.",
+    ko: "5\uac1c \uc2dc\ub4dc\ub85c VISSIM \uc2dc\ubbac\ub808\uc774\uc158\uc744 \uc2e4\ud589\ud574\uc918.",
+    en: "Run a VISSIM simulation with 5 seeds.",
+    ja: "5\u3064\u306e\u30b7\u30fc\u30c9\u3067VISSIM\u30b7\u30df\u30e5\u30ec\u30fc\u30b7\u30e7\u30f3\u3092\u5b9f\u884c\u3057\u3066\u3002",
   },
 ];
 const PANEL_SIZE_STORAGE_KEY = "vissim-assistant-panel-size";
@@ -211,6 +221,33 @@ function approvalStateFromEvent(
   };
 }
 
+// Non-UI escape hatch to the legacy regex pipeline (docs/phase2/DECISIONS.md
+// UX-reorg entry). Agent mode is now the default and only user-facing chat
+// mode -- the checkbox that used to let anyone flip back to the M1.4 regex
+// path is gone. The regex pipeline itself stays fully intact server-side
+// (it's the paper's eval baseline; see runPrompt/streamAssistant below,
+// unchanged), so it still needs SOME way to be reached for evaluation and
+// debugging -- just never a visible control again. Two ways to trigger it,
+// checked once per page load:
+//   1. Load the page with ?assistant=legacy in the URL (session-only, this
+//      load only -- does not persist).
+//   2. Run `localStorage.setItem("vissim-assistant-legacy", "1")` in the
+//      browser console (persists across reloads until cleared).
+// Anything else (unset, any other value) leaves agent mode on.
+function legacyPipelineRequested(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    if (new URLSearchParams(window.location.search).get("assistant") === "legacy") return true;
+  } catch {
+    // Malformed location.search -- fall through to the localStorage check.
+  }
+  try {
+    return window.localStorage.getItem("vissim-assistant-legacy") === "1";
+  } catch {
+    return false;
+  }
+}
+
 export default function FloatingAssistant() {
   const pathname = usePathname();
   const { lang, t } = useLanguage();
@@ -230,10 +267,15 @@ export default function FloatingAssistant() {
   // Assistant message ids where the user explicitly declined a proposed
   // simulation run, so the confirm card doesn't keep reappearing.
   const [declinedExecutionIds, setDeclinedExecutionIds] = useState<Set<string>>(new Set());
-  // M1.4: read-only agent mode is an explicit opt-in, default off — see
-  // docs/phase2/DECISIONS.md. Off keeps every existing prompt (curation +
-  // the regex simulation-command path) behaved exactly as before.
-  const [agentMode, setAgentMode] = useState(false);
+  // Agent mode is now the default chat experience -- this flips the M1.4
+  // toggle exactly as that decision anticipated ("expected to flip to
+  // on-by-default ... once M2/M3 give the agent write capability behind the
+  // same approval flow", docs/phase2/DECISIONS.md), now that M2/M3 have
+  // shipped write capability behind that same propose->approve flow. There
+  // is no UI control for this anymore; the only way off is the non-UI
+  // escape hatch above (legacyPipelineRequested), kept for the paper's eval
+  // baseline and debugging, never for a real end user.
+  const [agentMode] = useState(() => !legacyPipelineRequested());
   // M4: the current open conversation's agent session id (M3.3's backend
   // capability, wired into the UI here for the first time — see
   // docs/phase2/DECISIONS.md's 2026-07-24 M3.3 entry, "Frontend threading
@@ -304,6 +346,28 @@ export default function FloatingAssistant() {
       window.removeEventListener("vissim:page-context", handlePageContext);
     };
   }, [pathname]);
+
+  // Deliverable 3 (handoff affordance): CurationBar's insight cards dispatch
+  // this event to hand a request off to the real agent -- same
+  // custom-window-event seam as "vissim:page-context" just above (that
+  // pattern is the established precedent this follows, per the task brief).
+  // Opens the panel if it was closed and prefills the composer with the
+  // ko prompt CurationBar derived from the card's title; the user still has
+  // to press send, so this never sends anything on the user's behalf.
+  useEffect(() => {
+    function handleAssistantHandoff(event: Event) {
+      const detail = (event as CustomEvent<{ prompt?: string }>).detail;
+      if (!detail?.prompt) return;
+      setPrompt(detail.prompt);
+      setOpen(true);
+      window.setTimeout(() => inputRef.current?.focus(), 80);
+    }
+
+    window.addEventListener("vissim:assistant-handoff", handleAssistantHandoff);
+    return () => {
+      window.removeEventListener("vissim:assistant-handoff", handleAssistantHandoff);
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -918,7 +982,7 @@ export default function FloatingAssistant() {
         <section
           className="fixed bottom-[5.75rem] left-3 right-3 z-[2700] flex h-[min(var(--assistant-panel-height),calc(100vh-7.25rem))] min-h-[430px] flex-col overflow-hidden rounded-xl border border-slate-300/80 bg-surface/95 shadow-[0_22px_60px_rgba(15,23,42,0.26)] backdrop-blur md:left-auto md:right-5 md:w-[var(--assistant-panel-width)]"
           style={panelStyle}
-          aria-label={t("VISSIM \ub3c4\uc6b0\ubbf8 \ucc44\ud305", "VISSIM assistant chat")}
+          aria-label={t("VISSIM \uc5d0\uc774\uc804\ud2b8 \ucc44\ud305", "VISSIM agent chat")}
         >
           <button
             type="button"
@@ -937,7 +1001,11 @@ export default function FloatingAssistant() {
                   AI
                 </span>
                 <div className="min-w-0">
-                  <h2 className="truncate text-sm font-bold text-slate-900">{t("VISSIM \ub3c4\uc6b0\ubbf8", "VISSIM Assistant")}</h2>
+                  {/* Header identity is now explicitly THE chat -- agent
+                      mode is the default and only user-facing mode, so this
+                      names the thing it actually is (docs/phase2/DECISIONS.md
+                      UX-reorg entry) rather than a generic "assistant". */}
+                  <h2 className="truncate text-sm font-bold text-slate-900">{t("VISSIM \uc5d0\uc774\uc804\ud2b8", "VISSIM Agent", "VISSIM \u30a8\u30fc\u30b8\u30a7\u30f3\u30c8")}</h2>
                   <p className="truncate text-xs font-medium text-slate-500">{context.label}</p>
                 </div>
               </div>
@@ -966,16 +1034,6 @@ export default function FloatingAssistant() {
                   {t("\ub300\ud654 \ucd08\uae30\ud654", "New conversation", "\u4f1a\u8a71\u3092\u30ea\u30bb\u30c3\u30c8")}
                 </button>
               </div>
-              <label className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
-                <input
-                  type="checkbox"
-                  checked={agentMode}
-                  disabled={loading}
-                  onChange={(event) => setAgentMode(event.target.checked)}
-                  className="h-3.5 w-3.5 rounded border-slate-300 text-accent focus:outline-none focus:ring-2 focus:ring-accent/35 disabled:cursor-not-allowed"
-                />
-                <span>{t("\uc5d0\uc774\uc804\ud2b8 \ubaa8\ub4dc (\ubca0\ud0c0)", "Agent mode (beta)", "\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30e2\u30fc\u30c9 (\u30d9\u30fc\u30bf)")}</span>
-              </label>
               <PageContextPills context={activePageContext} />
               <AssistantRuntimeNote status={status} statusError={statusError} checking={statusChecking} />
             </div>
@@ -2046,7 +2104,16 @@ function buildRouteAssistantContext(pathname: string, t: Translate): RouteAssist
       starters: [
         t("\ud604\uc7ac \ub300\uc2dc\ubcf4\ub4dc \uc2dc\ub098\ub9ac\uc624\uc640 \ucd5c\uadfc \uc2dc\ubbac\ub808\uc774\uc158 \uc624\ub958\ub97c \uc694\uc57d\ud574\uc918.", "Summarize the current dashboard scenarios and recent simulation errors."),
         t("\ucd5c\uadfc VISSIM \uc2e4\ud589\uc774 \uc65c \uc2e4\ud328\ud588\ub294\uc9c0, \uc5b4\ub5a4 \uac1d\uccb4 \ubc88\ud638\ub97c \uc368\uc57c \ud558\ub294\uc9c0 \uc54c\ub824\uc918.", "Why did the latest VISSIM run fail, and which object numbers should I use?"),
-        t("Vehicle input 107\uc744 6000\uc73c\ub85c \ubc14\uafb8\uace0 \uc2dc\ubbac\ub808\uc774\uc158\ud55c \uacb0\uacfc\ub97c \ubcf4\uc5ec\uc918.", "Run a simulation by changing vehicle input 107 to 6000 and show the result."),
+        // Replaces the old single-sentence edit+run combo tuned for the
+        // legacy regex matcher (see DEFAULT_STARTERS' comment above) with a
+        // clean run example that also ties into AgentRunDashboardHint below
+        // -- a completed agent run lands right back in this page's scenario
+        // list.
+        t(
+          "5\uac1c \uc2dc\ub4dc\ub85c VISSIM \uc2dc\ubbac\ub808\uc774\uc158\uc744 \uc2e4\ud589\ud574\uc918.",
+          "Run a VISSIM simulation with 5 seeds.",
+          "5\u3064\u306e\u30b7\u30fc\u30c9\u3067VISSIM\u30b7\u30df\u30e5\u30ec\u30fc\u30b7\u30e7\u30f3\u3092\u5b9f\u884c\u3057\u3066\u3002",
+        ),
       ],
     };
   }
@@ -2086,7 +2153,7 @@ function buildRouteAssistantContext(pathname: string, t: Translate): RouteAssist
 
   return {
     label: t("\ud398\uc774\uc9c0 \ucee8\ud14d\uc2a4\ud2b8", "Page context"),
-    starters: DEFAULT_STARTERS.map((starter) => t(starter.ko, starter.en)),
+    starters: DEFAULT_STARTERS.map((starter) => t(starter.ko, starter.en, starter.ja)),
   };
 }
 
