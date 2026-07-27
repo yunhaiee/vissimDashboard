@@ -44,7 +44,18 @@ export function createProjectionStore(): ProjectionStore {
     get: () => current,
     set: (projection) => {
       current = projection;
-      for (const listener of listeners) listener();
+      // Isolate listener failures: this set() is called from inside
+      // NetworkViewer's zoom handler and draw effect, so a throwing listener
+      // (seen live: a hot-reload-stale PlaybackEngine missing a new method)
+      // would otherwise abort the notify loop AND unwind the caller — freezing
+      // the vehicle canvas at a stale transform while the SVG keeps moving.
+      for (const listener of listeners) {
+        try {
+          listener();
+        } catch (err) {
+          console.error("projection listener failed", err);
+        }
+      }
     },
     subscribe: (listener) => {
       listeners.add(listener);
@@ -749,7 +760,14 @@ export default function TrajectoryLayer({
     // never more than the one frame emitProjection already costs behind the
     // road it is drawn over. (While playing this is a harmless no-op-ish
     // extra redraw — frameLoop's own per-frame tick already covers it.)
-    const unsubscribe = projection.subscribe(() => engine.renderNow());
+    // The engine object lives in useState, so across a dev hot-reload an OLD
+    // engine instance (predating renderNow) can outlive this NEW subscriber
+    // code — seen live 2026-07-27 as a canvas frozen off the roads. Falling
+    // back to requestFrame keeps a stale session correct (one frame behind)
+    // instead of dead; fresh sessions always take renderNow.
+    const unsubscribe = projection.subscribe(() =>
+      typeof engine.renderNow === "function" ? engine.renderNow() : engine.requestFrame(),
+    );
 
     let resizeRaf = 0;
     let observer: ResizeObserver | undefined;

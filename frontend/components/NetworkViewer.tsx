@@ -58,6 +58,11 @@ const MARKING_COLOR = "#94a3b8";  // muted light slate — lane dividers, chevro
 const NODE_FILL = "#1e293b";
 const NODE_STROKE = "#f8fafc";
 const ACCENT = "#4c8dff";
+// Defect 2 (element hover/selection recolor) — a lighter relative of ACCENT
+// (blended ~40% toward white), used ONLY for the element-glyph hover state so
+// hover and selection read as two distinct strengths of the same accent
+// family. Selection keeps ACCENT itself.
+const ACCENT_HOVER = "#94bbff";
 
 // Static-element glyph palette. Restricted, muted variants that read inside the
 // dark theme. Signal-head + stop-sign bars use a restrained red (Vissim draws
@@ -376,9 +381,14 @@ export default function NetworkViewer({
     onProjectionChangeRef.current = onProjectionChange;
   }, [onProjectionChange]);
   const projectionRafRef = useRef(0);
+  // Defect 1 (semantic zoom) — throttles the element-glyph/node-dot redraw to
+  // one per animation frame during a zoom gesture, same cancel-and-reschedule
+  // discipline as projectionRafRef (see the zoom handler below).
+  const elementsRafRef = useRef(0);
   useEffect(
     () => () => {
       if (projectionRafRef.current) cancelAnimationFrame(projectionRafRef.current);
+      if (elementsRafRef.current) cancelAnimationFrame(elementsRafRef.current);
     },
     [],
   );
@@ -473,10 +483,15 @@ export default function NetworkViewer({
     const gNodePoly = g.append("g").attr("data-layer", NODE_AREAS_KEY);
     const gElements = g.append("g"); // static elements: above roads/junctions, below selection
     const gOverlay = g.append("g");
-    const gHit = g.append("g");
-    // Element hover targets sit ABOVE gHit so a glyph's tooltip wins over the
-    // wide (invisible) link/node hit shapes it overlaps. Same data-layer tags as
-    // the visible groups, so one visibility flip hides both.
+    const gHit = g.append("g"); // link hit targets only (metre-true, drawn once)
+    // Node hit circles get their own group, separate from gHit's link polylines,
+    // because node hit radius is a pure fixed-pixel floor (Defect 1) and has to
+    // be redrawn every time the zoom factor k changes — the link polylines above
+    // do not.
+    const gHitNodes = g.append("g");
+    // Element hover targets sit ABOVE gHit/gHitNodes so a glyph's tooltip wins
+    // over the wide (invisible) link/node hit shapes it overlaps. Same
+    // data-layer tags as the visible groups, so one visibility flip hides both.
     const gElementsHit = g.append("g");
 
     // Click-vs-drag guard: d3.zoom swallows most post-drag clicks, but track the
@@ -626,24 +641,62 @@ export default function NetworkViewer({
     // furniture. angle handling: dirsFromAngle() returns SCREEN-space vectors
     // (the Y-flip negates the raw angle). Guards: skip non-finite coords; fall
     // back to angle 0 / default lane width; never crash on missing lists.
+    //
+    // Defect 1 (semantic zoom) — every pixel FLOOR below used to be baked once
+    // at the base-fit scale and then geometrically magnified by the d3 zoom
+    // transform, so a floored glyph could never separate from its neighbours no
+    // matter how far you zoomed in (the floor grew right along with the metre-
+    // true geometry). The fix: this whole block — element glyphs/hits AND the
+    // node dots/rings/hit-circles below it — is now `drawZoomDependent(k)`,
+    // parameterized by the LIVE zoom factor and re-run whenever k changes
+    // (see the zoom handler further down). Every fixed-pixel floor divides by
+    // k so it lands at the same floor ON SCREEN after the transform's *k
+    // multiplication; metre-true terms (pxM-derived) are untouched.
     const els = network.elements;
-    if (els) {
-      const pxM = pxPerMeter;
-      const linkById = new Map(network.links.map((l) => [String(l.id), l]));
-      const laneWidthMFor = (linkId?: string | null): number => {
-        const l = linkId != null ? linkById.get(String(linkId)) : undefined;
-        return l ? laneWidthMeters(l) : DEFAULT_LANE_M;
-      };
-      const roadWidthMFor = (linkId?: string | null): number => {
-        const l = linkId != null ? linkById.get(String(linkId)) : undefined;
-        return l ? linkWidthMeters(l) : DEFAULT_LANE_M;
-      };
-      const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
-      const P = (x: number, y: number): Pt => [projX(x), projY(y)];
+    const linkById = new Map(network.links.map((l) => [String(l.id), l]));
+    const laneWidthMFor = (linkId?: string | null): number => {
+      const l = linkId != null ? linkById.get(String(linkId)) : undefined;
+      return l ? laneWidthMeters(l) : DEFAULT_LANE_M;
+    };
+    const roadWidthMFor = (linkId?: string | null): number => {
+      const l = linkId != null ? linkById.get(String(linkId)) : undefined;
+      return l ? linkWidthMeters(l) : DEFAULT_LANE_M;
+    };
+    const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+    const P = (x: number, y: number): Pt => [projX(x), projY(y)];
 
-      // Type labels for tooltips (also the panel labels).
-      const typeLabel: Record<string, string> = {};
-      for (const l of ELEMENT_LAYERS) typeLabel[l.key] = t(l.ko, l.en);
+    // Type labels for tooltips (also the panel labels).
+    const typeLabel: Record<string, string> = {};
+    for (const l of ELEMENT_LAYERS) typeLabel[l.key] = t(l.ko, l.en);
+
+    // Redraws the element glyphs + hit targets and the node dots/rings/hit-
+    // circles for a given live zoom factor k. Called once synchronously below
+    // (with whatever k the viewer is currently at) and again from the zoom
+    // handler whenever k changes meaningfully.
+    function drawZoomDependent(k: number) {
+      gElements.selectAll("*").remove();
+      gElementsHit.selectAll("*").remove();
+      gOverlay.selectAll("*").remove();
+      gHitNodes.selectAll("*").remove();
+
+      // Defect 2 — every elkey (e.g. "signal_heads:42") maps to the visible
+      // <g>(s) carrying its glyph primitives — usually one, two for a travel-
+      // time section's paired start/end gates. attachTip's hover/selection
+      // toggling looks nodes up here instead of re-querying the DOM.
+      const elkeyGroups = new Map<string, SVGGElement[]>();
+      const markElkey = (key: string, node: SVGGElement) => {
+        const arr = elkeyGroups.get(key);
+        if (arr) arr.push(node);
+        else elkeyGroups.set(key, [node]);
+      };
+      const setElClass = (ref: NetworkElementRef, cls: string, on: boolean) => {
+        const arr = elkeyGroups.get(`${ref.type}:${ref.id}`);
+        if (!arr) return;
+        for (const node of arr) node.classList.toggle(cls, on);
+      };
+
+      if (els) {
+      const pxM = pxPerMeter;
 
       // One visible sub-group per class in gElements, plus a matching hover-target
       // sub-group per class in gElementsHit — both tagged with the same data-layer
@@ -654,6 +707,18 @@ export default function NetworkViewer({
         sub[key] = gElements.append("g").attr("data-layer", key);
         subHit[key] = gElementsHit.append("g").attr("data-layer", key);
       }
+
+      // Defect 2 — wraps one element's visible primitives in a per-element
+      // <g data-elkey="type:id">, so hover/selection can recolor exactly that
+      // glyph via CSS (see the <style> block in the JSX return) instead of the
+      // old getBBox() ring. Registers the node in elkeyGroups so attachTip can
+      // find it again without touching the DOM.
+      const visibleGroup = (key: keyof NetworkElements, id: unknown) => {
+        const elkey = `${String(key)}:${String(id ?? "")}`;
+        const gEl = sub[key].append("g").attr("data-elkey", elkey);
+        markElkey(elkey, gEl.node() as SVGGElement);
+        return gEl;
+      };
 
       // P6: every element hit target now also carries a click that publishes a
       // {type,id,name,link} reference (the same guard link/node clicks use, so a
@@ -672,35 +737,25 @@ export default function NetworkViewer({
       });
       const isSelectedElement = (ref: NetworkElementRef) =>
         selectedElementKey !== "" && selectedElementKey === `${ref.type}:${ref.id}`;
-      // Selection feedback without a per-class highlight glyph: ring the hit
-      // shape's own bounding box (hit shapes already sit exactly on the element).
-      // getBBox can throw on a detached/undisplayed node — never let it break a draw.
-      const ringSelected = (node: SVGGraphicsElement | null) => {
-        if (!node) return;
-        try {
-          const box = node.getBBox();
-          gOverlay
-            .append("circle")
-            .attr("cx", box.x + box.width / 2)
-            .attr("cy", box.y + box.height / 2)
-            .attr("r", Math.max(Math.hypot(box.width, box.height) / 2, 9))
-            .attr("fill", "none")
-            .attr("stroke", ACCENT)
-            .attr("stroke-width", 1.5)
-            .attr("vector-effect", "non-scaling-stroke")
-            .style("pointer-events", "none");
-        } catch {
-          // no ring for this element; the tooltip and the published ref still work
-        }
-      };
+      // Defect 2 — hover/selection recolors the glyph itself: a data-elkey'd <g>
+      // gains an .el-hover / .el-selected class that the <style> block in the
+      // JSX return turns into a stroke/fill/drop-shadow override. Replaces the
+      // old getBBox() ring (deleted, not supplemented).
       function attachTip<GE extends d3.BaseType>(
         sel: d3.Selection<GE, unknown, null, undefined>,
         text: string,
         ref?: NetworkElementRef,
       ) {
+        if (ref) sel.attr("data-elkey", `${ref.type}:${ref.id}`);
         sel
-          .on("mousemove", (event: MouseEvent) => setTooltip({ x: event.clientX, y: event.clientY, text }))
-          .on("mouseleave", () => setTooltip(null));
+          .on("mousemove", (event: MouseEvent) => {
+            setTooltip({ x: event.clientX, y: event.clientY, text });
+            if (ref) setElClass(ref, "el-hover", true);
+          })
+          .on("mouseleave", () => {
+            setTooltip(null);
+            if (ref) setElClass(ref, "el-hover", false);
+          });
         if (!ref) return;
         if (onElementClick) {
           sel.style("cursor", "pointer").on("click", (event: MouseEvent) => {
@@ -708,11 +763,11 @@ export default function NetworkViewer({
             onElementClick(ref);
           });
         }
-        if (isSelectedElement(ref)) ringSelected(sel.node() as SVGGraphicsElement | null);
+        if (isSelectedElement(ref)) setElClass(ref, "el-selected", true);
       }
       const hitPoint = (key: keyof NetworkElements, pt: Pt, rPx: number, text: string, ref: NetworkElementRef) => {
         attachTip(
-          subHit[key].append("circle").attr("cx", pt[0]).attr("cy", pt[1]).attr("r", Math.max(rPx, 9)).attr("fill", "transparent"),
+          subHit[key].append("circle").attr("cx", pt[0]).attr("cy", pt[1]).attr("r", Math.max(rPx, 9 / k)).attr("fill", "transparent"),
           text,
           ref,
         );
@@ -726,7 +781,7 @@ export default function NetworkViewer({
             .attr("x2", b[0])
             .attr("y2", b[1])
             .attr("stroke", "transparent")
-            .attr("stroke-width", 14)
+            .attr("stroke-width", 14 / k)
             .attr("stroke-linecap", "round"),
           text,
           ref,
@@ -742,29 +797,30 @@ export default function NetworkViewer({
         if (!finite(s.x) || !finite(s.y)) continue;
         const c = P(s.x, s.y);
         const { along, across } = dirsFromAngle(s.angle);
-        const half = Math.max((laneWidthMFor(s.link) * pxM) / 2, GLYPH_MIN_PX);
+        const half = Math.max((laneWidthMFor(s.link) * pxM) / 2, GLYPH_MIN_PX / k);
         const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
         const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
-        sub.signal_heads
+        const gEl = visibleGroup("signal_heads", s.id);
+        gEl
           .append("line")
           .attr("x1", a[0])
           .attr("y1", a[1])
           .attr("x2", b[0])
           .attr("y2", b[1])
           .attr("stroke", MARKING_COLOR)
-          .attr("stroke-width", Math.max(pxM * 0.3, 1))
+          .attr("stroke-width", Math.max(pxM * 0.3, 1 / k))
           .attr("stroke-opacity", 0.8)
           .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
         const barOff = SIGNAL_BAR_OFFSET_M * pxM;
-        sub.signal_heads
+        gEl
           .append("line")
           .attr("x1", a[0] + along[0] * barOff)
           .attr("y1", a[1] + along[1] * barOff)
           .attr("x2", b[0] + along[0] * barOff)
           .attr("y2", b[1] + along[1] * barOff)
           .attr("stroke", SIGNAL_RED)
-          .attr("stroke-width", Math.max(pxM * 0.35, GLYPH_MIN_STROKE_PX))
+          .attr("stroke-width", Math.max(pxM * 0.35, GLYPH_MIN_STROKE_PX / k))
           .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
         hitSegment("signal_heads", a, b, `${typeLabel.signal_heads} ${s.id} · ${s.name}`, elementRef("signal_heads", s.id, s.name, s.link));
@@ -776,18 +832,19 @@ export default function NetworkViewer({
         if (!finite(v.x) || !finite(v.y)) continue;
         const c = P(v.x, v.y);
         const { along, across } = dirsFromAngle(v.angle);
-        const L = Math.max(roadWidthMFor(v.link) * pxM * 0.49, 7.5);
+        const L = Math.max(roadWidthMFor(v.link) * pxM * 0.49, 7.5 / k);
         const w = L * 0.42;
         const tip: Pt = [c[0] + along[0] * L, c[1] + along[1] * L];
         const bl: Pt = [c[0] + across[0] * w, c[1] + across[1] * w];
         const br: Pt = [c[0] - across[0] * w, c[1] - across[1] * w];
-        sub.vehicle_inputs
+        visibleGroup("vehicle_inputs", v.id)
           .append("polygon")
+          .attr("class", "el-fillable")
           .attr("points", `${tip[0]},${tip[1]} ${bl[0]},${bl[1]} ${br[0]},${br[1]}`)
           .attr("fill", ELEMENT_SLATE)
           .attr("fill-opacity", 0.85)
           .style("pointer-events", "none");
-        hitPoint("vehicle_inputs", [(c[0] + tip[0]) / 2, (c[1] + tip[1]) / 2], Math.max(w, 9), `${typeLabel.vehicle_inputs} ${v.id} · ${v.name}`, elementRef("vehicle_inputs", v.id, v.name, v.link));
+        hitPoint("vehicle_inputs", [(c[0] + tip[0]) / 2, (c[1] + tip[1]) / 2], Math.max(w, 9 / k), `${typeLabel.vehicle_inputs} ${v.id} · ${v.name}`, elementRef("vehicle_inputs", v.id, v.name, v.link));
       }
 
       // reduced_speed_areas — translucent amber band along the lane (x,y)->(end).
@@ -803,14 +860,14 @@ export default function NetworkViewer({
         } else {
           continue;
         }
-        sub.reduced_speed_areas
+        visibleGroup("reduced_speed_areas", r.id)
           .append("line")
           .attr("x1", p1[0])
           .attr("y1", p1[1])
           .attr("x2", p2[0])
           .attr("y2", p2[1])
           .attr("stroke", RSA_AMBER)
-          .attr("stroke-width", Math.max(laneWidthMFor(r.link) * pxM, 4))
+          .attr("stroke-width", Math.max(laneWidthMFor(r.link) * pxM, 4 / k))
           .attr("stroke-opacity", 0.22)
           .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
@@ -822,18 +879,18 @@ export default function NetworkViewer({
         if (!finite(d.x) || !finite(d.y)) continue;
         const c = P(d.x, d.y);
         const { across } = dirsFromAngle(d.angle);
-        const half = Math.max((roadWidthMFor(d.link) * pxM) / 2, GLYPH_MIN_PX);
+        const half = Math.max((roadWidthMFor(d.link) * pxM) / 2, GLYPH_MIN_PX / k);
         const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
         const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
-        sub.des_speed_decisions
+        visibleGroup("des_speed_decisions", d.id)
           .append("line")
           .attr("x1", a[0])
           .attr("y1", a[1])
           .attr("x2", b[0])
           .attr("y2", b[1])
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.1)
-          .attr("stroke-dasharray", "4 3")
+          .attr("stroke-width", 1.1 / k)
+          .attr("stroke-dasharray", `${4 / k} ${3 / k}`)
           .attr("stroke-opacity", 0.85)
           .attr("stroke-linecap", "round")
           .style("pointer-events", "none");
@@ -857,9 +914,9 @@ export default function NetworkViewer({
         } else {
           lenPx = (dt.length ?? 2) * pxM;
         }
-        lenPx = Math.max(lenPx, 4);
+        lenPx = Math.max(lenPx, 4 / k);
         const acrossVec: Pt = [-alongVec[1], alongVec[0]];
-        const half = Math.max((laneWidthMFor(dt.link) * pxM) / 2 * 0.7, GLYPH_MIN_PX);
+        const half = Math.max((laneWidthMFor(dt.link) * pxM) / 2 * 0.7, GLYPH_MIN_PX / k);
         const center: Pt = [p1[0] + alongVec[0] * (lenPx / 2), p1[1] + alongVec[1] * (lenPx / 2)];
         const hx = alongVec[0] * (lenPx / 2);
         const hy = alongVec[1] * (lenPx / 2);
@@ -871,15 +928,15 @@ export default function NetworkViewer({
           [center[0] + hx + wx, center[1] + hy + wy],
           [center[0] - hx + wx, center[1] - hy + wy],
         ];
-        sub.detectors
+        visibleGroup("detectors", dt.id)
           .append("polygon")
           .attr("points", corners.map((p) => p.join(",")).join(" "))
           .attr("fill", "none")
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1)
+          .attr("stroke-width", 1 / k)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
-        hitPoint("detectors", center, Math.max(half, 9), `${typeLabel.detectors} ${dt.id} · ${dt.name}`, elementRef("detectors", dt.id, dt.name, dt.link));
+        hitPoint("detectors", center, Math.max(half, 9 / k), `${typeLabel.detectors} ${dt.id} · ${dt.name}`, elementRef("detectors", dt.id, dt.name, dt.link));
       }
 
       // data_collection_points — short solid tick across the lane.
@@ -887,17 +944,17 @@ export default function NetworkViewer({
         if (!finite(dc.x) || !finite(dc.y)) continue;
         const c = P(dc.x, dc.y);
         const { across } = dirsFromAngle(dc.angle);
-        const half = Math.max((laneWidthMFor(dc.link) * pxM) / 2, GLYPH_MIN_PX);
+        const half = Math.max((laneWidthMFor(dc.link) * pxM) / 2, GLYPH_MIN_PX / k);
         const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
         const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
-        sub.data_collection_points
+        visibleGroup("data_collection_points", dc.id)
           .append("line")
           .attr("x1", a[0])
           .attr("y1", a[1])
           .attr("x2", b[0])
           .attr("y2", b[1])
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", Math.max(pxM * 0.28, 1.3))
+          .attr("stroke-width", Math.max(pxM * 0.28, 1.3 / k))
           .attr("stroke-linecap", "round")
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
@@ -911,26 +968,27 @@ export default function NetworkViewer({
           if (!ep || !finite(ep.x) || !finite(ep.y)) return;
           const c = P(ep.x, ep.y);
           const { across, along } = dirsFromAngle(ep.angle);
-          const half = Math.max((roadWidthMFor(ep.link) * pxM) / 2, GLYPH_MIN_PX);
+          const half = Math.max((roadWidthMFor(ep.link) * pxM) / 2, GLYPH_MIN_PX / k);
+          const gEl = visibleGroup("traveltime_sections_geo", tt.id);
           const line = (off: number): [Pt, Pt] => {
             const cc: Pt = [c[0] + along[0] * off, c[1] + along[1] * off];
             const a: Pt = [cc[0] - across[0] * half, cc[1] - across[1] * half];
             const b: Pt = [cc[0] + across[0] * half, cc[1] + across[1] * half];
-            sub.traveltime_sections_geo
+            gEl
               .append("line")
               .attr("x1", a[0])
               .attr("y1", a[1])
               .attr("x2", b[0])
               .attr("y2", b[1])
               .attr("stroke", TTS_CYAN)
-              .attr("stroke-width", 1.2)
+              .attr("stroke-width", 1.2 / k)
               .attr("stroke-opacity", 0.9)
               .attr("stroke-linecap", "round")
               .style("pointer-events", "none");
             return [a, b];
           };
           const [a, b] = line(0);
-          if (doubled) line(Math.max(pxM * 1.2, 2.5));
+          if (doubled) line(Math.max(pxM * 1.2, 2.5 / k));
           hitSegment("traveltime_sections_geo", a, b, `${typeLabel.traveltime_sections_geo} ${tt.id} · ${tt.name}`, elementRef("traveltime_sections_geo", tt.id, tt.name, ep.link));
         };
         drawGate(tt.start, false);
@@ -943,32 +1001,33 @@ export default function NetworkViewer({
         const c = P(q.x, q.y);
         const { along } = dirsFromAngle(q.angle);
         const laneW = laneWidthMFor(q.link);
-        const r = Math.max(laneW * pxM * 0.196, 2.1);
-        const stem = Math.max(laneW * pxM * 0.35, 3.5);
-        sub.queue_counters
+        const r = Math.max(laneW * pxM * 0.196, 2.1 / k);
+        const stem = Math.max(laneW * pxM * 0.35, 3.5 / k);
+        const gEl = visibleGroup("queue_counters", q.id);
+        gEl
           .append("circle")
           .attr("cx", c[0])
           .attr("cy", c[1])
           .attr("r", r)
           .attr("fill", "none")
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.1)
+          .attr("stroke-width", 1.1 / k)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
         const s0: Pt = [c[0] - along[0] * r, c[1] - along[1] * r];
         const s1: Pt = [c[0] - along[0] * (r + stem), c[1] - along[1] * (r + stem)];
-        sub.queue_counters
+        gEl
           .append("line")
           .attr("x1", s0[0])
           .attr("y1", s0[1])
           .attr("x2", s1[0])
           .attr("y2", s1[1])
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1.1)
+          .attr("stroke-width", 1.1 / k)
           .attr("stroke-opacity", 0.9)
           .attr("stroke-linecap", "round")
           .style("pointer-events", "none");
-        hitPoint("queue_counters", c, Math.max(r, 9), `${typeLabel.queue_counters} ${q.id} · ${q.name}`, elementRef("queue_counters", q.id, q.name, q.link));
+        hitPoint("queue_counters", c, Math.max(r, 9 / k), `${typeLabel.queue_counters} ${q.id} · ${q.name}`, elementRef("queue_counters", q.id, q.name, q.link));
       }
 
       // stop_signs — short bar across the lane, muted red. Slimmed with the same
@@ -978,17 +1037,17 @@ export default function NetworkViewer({
         if (!finite(st.x) || !finite(st.y)) continue;
         const c = P(st.x, st.y);
         const { across } = dirsFromAngle(st.angle);
-        const half = Math.max(((laneWidthMFor(st.link) * pxM) / 2) * 0.7, GLYPH_MIN_PX);
+        const half = Math.max(((laneWidthMFor(st.link) * pxM) / 2) * 0.7, GLYPH_MIN_PX / k);
         const a: Pt = [c[0] - across[0] * half, c[1] - across[1] * half];
         const b: Pt = [c[0] + across[0] * half, c[1] + across[1] * half];
-        sub.stop_signs
+        visibleGroup("stop_signs", st.id)
           .append("line")
           .attr("x1", a[0])
           .attr("y1", a[1])
           .attr("x2", b[0])
           .attr("y2", b[1])
           .attr("stroke", SIGNAL_RED)
-          .attr("stroke-width", Math.max(pxM * 0.5, 2.2))
+          .attr("stroke-width", Math.max(pxM * 0.5, 2.2 / k))
           .attr("stroke-linecap", "butt")
           .style("pointer-events", "none");
         hitSegment("stop_signs", a, b, `${typeLabel.stop_signs} ${st.id} · ${st.name}`, elementRef("stop_signs", st.id, st.name, st.link));
@@ -1009,11 +1068,11 @@ export default function NetworkViewer({
         } else {
           lenPx = (pt.length ?? 15) * pxM;
         }
-        lenPx = Math.max(lenPx, 6);
+        lenPx = Math.max(lenPx, 6 / k);
         const acrossVec: Pt = [-alongVec[1], alongVec[0]];
         const laneW = laneWidthMFor(pt.link);
-        const bayW = Math.max(laneW * pxM * 0.8, 3);
-        const off = Math.max(laneW * pxM * 0.55, 3); // offset sideways so it sits alongside the lane
+        const bayW = Math.max(laneW * pxM * 0.8, 3 / k);
+        const off = Math.max(laneW * pxM * 0.55, 3 / k); // offset sideways so it sits alongside the lane
         const ov: Pt = [acrossVec[0] * off, acrossVec[1] * off];
         const base1: Pt = [p1[0] + ov[0], p1[1] + ov[1]];
         const base2: Pt = [p1[0] + alongVec[0] * lenPx + ov[0], p1[1] + alongVec[1] * lenPx + ov[1]];
@@ -1024,12 +1083,12 @@ export default function NetworkViewer({
           [base2[0] + w2[0], base2[1] + w2[1]],
           [base1[0] + w2[0], base1[1] + w2[1]],
         ];
-        sub.pt_stops
+        visibleGroup("pt_stops", pt.id)
           .append("polygon")
           .attr("points", corners.map((p) => p.join(",")).join(" "))
           .attr("fill", "none")
           .attr("stroke", ELEMENT_SLATE)
-          .attr("stroke-width", 1)
+          .attr("stroke-width", 1 / k)
           .attr("stroke-opacity", 0.9)
           .style("pointer-events", "none");
         hitSegment("pt_stops", base1, base2, `${typeLabel.pt_stops} ${pt.id} · ${pt.name}`, elementRef("pt_stops", pt.id, pt.name, pt.link));
@@ -1043,15 +1102,16 @@ export default function NetworkViewer({
         const proj = pa.polygon.filter((p) => finite(p[0]) && finite(p[1])).map((p) => P(p[0], p[1]));
         if (proj.length < 3) continue;
         const pointsAttr = proj.map((p) => p.join(",")).join(" ");
-        sub.ped_areas
+        visibleGroup("ped_areas", pa.id)
           .append("polygon")
+          .attr("class", "el-fillable")
           .attr("points", pointsAttr)
           .attr("fill", PED_FILL)
           .attr("fill-opacity", 0.12)
           .attr("stroke", PED_FILL)
           .attr("stroke-opacity", 0.85)
-          .attr("stroke-width", 1)
-          .attr("stroke-dasharray", "2 2")
+          .attr("stroke-width", 1 / k)
+          .attr("stroke-dasharray", `${2 / k} ${2 / k}`)
           .attr("stroke-linejoin", "round")
           .style("pointer-events", "none");
         attachTip(
@@ -1060,45 +1120,92 @@ export default function NetworkViewer({
           elementRef("ped_areas", pa.id, pa.name),
         );
       }
-    }
+      }
 
-    // Layer 6 — selection rings + center dots. LOS colour lives on the dot for
-    // EVERY node again (the pre-polygon behaviour): dot fill = the node's LOS
-    // colour when a metric exists, else the neutral NODE_FILL. With node areas
-    // default-off the dot is the only LOS carrier, so it is no longer shrunk
-    // for polygon nodes.
-    network.nodes.forEach((node) => {
-      const cx = projX(node.x);
-      const cy = projY(node.y);
-      const selected = selectedNodeSet.has(String(node.id));
-      const nodeMetric = nodeLosMap.get(String(node.id));
+      // Layer 6 — selection rings + center dots. LOS colour lives on the dot for
+      // EVERY node again (the pre-polygon behaviour): dot fill = the node's LOS
+      // colour when a metric exists, else the neutral NODE_FILL. With node areas
+      // default-off the dot is the only LOS carrier, so it is no longer shrunk
+      // for polygon nodes. Defect 1: radii divide by k so the ring/dot stay a
+      // constant size on screen instead of ballooning into 60-70px blobs at
+      // high zoom; stroke-width is untouched here — vector-effect=
+      // "non-scaling-stroke" already keeps it constant regardless of the
+      // group's transform, so only the geometry (r) needs the /k treatment.
+      network.nodes.forEach((node) => {
+        const cx = projX(node.x);
+        const cy = projY(node.y);
+        const selected = selectedNodeSet.has(String(node.id));
+        const nodeMetric = nodeLosMap.get(String(node.id));
 
-      if (selected) {
+        if (selected) {
+          gOverlay.append("circle")
+            .attr("cx", cx)
+            .attr("cy", cy)
+            .attr("r", 11 / k)
+            .attr("fill", "none")
+            .attr("stroke", ACCENT)
+            .attr("stroke-width", 2)
+            .attr("vector-effect", "non-scaling-stroke")
+            .style("pointer-events", "none");
+        }
+
+        const dotFill = nodeMetric ? LOS_COLORS[nodeMetric.los] : NODE_FILL;
         gOverlay.append("circle")
           .attr("cx", cx)
           .attr("cy", cy)
-          .attr("r", 11)
-          .attr("fill", "none")
-          .attr("stroke", ACCENT)
-          .attr("stroke-width", 2)
+          .attr("r", (selected ? 7 : 6) / k)
+          .attr("fill", dotFill)
+          .attr("stroke", selected ? ACCENT : NODE_STROKE)
+          .attr("stroke-width", 1.5)
           .attr("vector-effect", "non-scaling-stroke")
           .style("pointer-events", "none");
-      }
+      });
 
-      const dotFill = nodeMetric ? LOS_COLORS[nodeMetric.los] : NODE_FILL;
-      gOverlay.append("circle")
-        .attr("cx", cx)
-        .attr("cy", cy)
-        .attr("r", selected ? 7 : 6)
-        .attr("fill", dotFill)
-        .attr("stroke", selected ? ACCENT : NODE_STROKE)
-        .attr("stroke-width", 1.5)
-        .attr("vector-effect", "non-scaling-stroke")
-        .style("pointer-events", "none");
-    });
+      // Node hit circles — also a fixed-pixel floor (Defect 1), same /k
+      // treatment (r=14 unscaled would become a 140px invisible hover zone at
+      // k=10). Lives in gHitNodes (its own group) so it can be cleared and
+      // rebuilt on every zoom-driven redraw without touching the link hit
+      // polylines below, which are metre-true and drawn once.
+      network.nodes.forEach((node) => {
+        const cx = projX(node.x);
+        const cy = projY(node.y);
+        const nodeName = node.name || `${nodeLabel} ${node.id}`;
+        const nodeMetric = nodeLosMap.get(String(node.id));
+        const nodeTooltipText = nodeMetric
+          ? `${nodeName} · ${delayLabel} ${nodeMetric.delay.toFixed(1)}${secondsUnit} · LOS ${nodeMetric.los}`
+          : nodeName;
 
-    // Layer 7 — invisible hit targets (links then nodes). Contracts unchanged;
-    // link hit width tracks the road width (min 12px).
+        const hit = gHitNodes.append("circle")
+          .attr("cx", cx)
+          .attr("cy", cy)
+          .attr("r", 14 / k)
+          .attr("fill", "transparent")
+          .style("cursor", onNodeClick ? "pointer" : "default")
+          .on("mousemove", (event: MouseEvent) => {
+            setTooltip({ x: event.clientX, y: event.clientY, text: nodeTooltipText });
+          })
+          .on("mouseleave", () => setTooltip(null));
+        if (onNodeClick) {
+          hit.on("click", (event: MouseEvent) => {
+            if (isDragClick(event)) return;
+            onNodeClick(String(node.id), nodeName);
+          });
+        }
+      });
+
+      applyLayerVisibility(svgRef.current, hiddenRef.current);
+      lastDrawnK = k;
+    }
+
+    // Initial draw at whatever k the viewer is currently persisted at (identity
+    // on first mount / a new network; the previous zoom level on any other
+    // redraw — e.g. a selection change while the user is already zoomed in).
+    let lastDrawnK = zoomTransformRef.current.k;
+    drawZoomDependent(lastDrawnK);
+
+    // Layer 7 — invisible hit targets for links only (metre-true, drawn once).
+    // Node hit circles live inside drawZoomDependent above (gHitNodes) because
+    // their floor is a fixed pixel size, not metre-true.
     drawn.forEach(({ pointsAttr, roadW, tooltipText, isConn, link, linkName }) => {
       const hit = gHit.append("polyline")
         .attr("points", pointsAttr)
@@ -1118,47 +1225,45 @@ export default function NetworkViewer({
       }
     });
 
-    network.nodes.forEach((node) => {
-      const cx = projX(node.x);
-      const cy = projY(node.y);
-      const nodeName = node.name || `${nodeLabel} ${node.id}`;
-      const nodeMetric = nodeLosMap.get(String(node.id));
-      const nodeTooltipText = nodeMetric
-        ? `${nodeName} · ${delayLabel} ${nodeMetric.delay.toFixed(1)}${secondsUnit} · LOS ${nodeMetric.los}`
-        : nodeName;
-
-      const hit = gHit.append("circle")
-        .attr("cx", cx)
-        .attr("cy", cy)
-        .attr("r", 14)
-        .attr("fill", "transparent")
-        .style("cursor", onNodeClick ? "pointer" : "default")
-        .on("mousemove", (event: MouseEvent) => {
-          setTooltip({ x: event.clientX, y: event.clientY, text: nodeTooltipText });
-        })
-        .on("mouseleave", () => setTooltip(null));
-      if (onNodeClick) {
-        hit.on("click", (event: MouseEvent) => {
-          if (isDragClick(event)) return;
-          onNodeClick(String(node.id), nodeName);
-        });
-      }
-    });
-
-    // Zoom (preserve transform across redraws)
+    // Zoom (preserve transform across redraws). Ceiling raised from a flat 10
+    // to target ~30 px/metre on screen at max zoom (Defect 1's screen-constant
+    // floors make deep zoom safe now — lane-level glyphs actually separate
+    // instead of ballooning together).
+    const maxZoomK = Math.max(10, 30 / pxPerMeter);
     const zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.3, 10])
+      .scaleExtent([0.3, maxZoomK])
       .on("zoom", (event) => {
         g.attr("transform", event.transform);
         zoomTransformRef.current = event.transform;
-        // One projection emit per animation frame while zooming/panning, so an
-        // overlay redraw can never outpace the browser's paint rate.
-        if (onProjectionChangeRef.current && !projectionRafRef.current) {
+        // Projection emit — one per animation frame while zooming/panning, so
+        // the vehicle-canvas overlay can never outpace the browser's paint
+        // rate. Cancel-and-reschedule, NOT skip-if-pending: a rAF handle that
+        // never fires (backgrounded tab, non-compositing pane) used to wedge
+        // this closed forever — every later zoom/pan silently dropped its
+        // emit because the stale handle still looked "pending". The latest
+        // gesture always owns the pending slot now.
+        if (onProjectionChangeRef.current) {
+          if (projectionRafRef.current) cancelAnimationFrame(projectionRafRef.current);
           projectionRafRef.current = requestAnimationFrame(() => {
             projectionRafRef.current = 0;
             emitProjection(zoomTransformRef.current);
           });
         }
+        // Defect 1 — redraw element glyphs/node dots only when k actually
+        // changed since the last redraw (pan alone must never trigger it) and
+        // past a small relative threshold, so a slow zoom drag does not redraw
+        // every single frame. Same cancel-and-reschedule discipline as above.
+        if (elementsRafRef.current) cancelAnimationFrame(elementsRafRef.current);
+        elementsRafRef.current = requestAnimationFrame(() => {
+          elementsRafRef.current = 0;
+          const k = zoomTransformRef.current.k;
+          if (Math.abs(k / lastDrawnK - 1) > 0.05) drawZoomDependent(k);
+        });
+      })
+      .on("end", () => {
+        // Always a final, exact redraw once the gesture settles, regardless of
+        // the threshold above, so the resting state is never left stale.
+        drawZoomDependent(zoomTransformRef.current.k);
       });
     svg.call(zoom);
     svg.call(zoom.transform, zoomTransformRef.current);
@@ -1166,14 +1271,56 @@ export default function NetworkViewer({
     // redraw/resize (the rAF path above only covers live zoom/pan gestures).
     emitProjection(zoomTransformRef.current);
 
-    // Reapply layer visibility after this fresh redraw (groups were just rebuilt);
-    // read the ref so this effect never depends on `hidden` (toggling stays a
-    // pure display flip, not a data re-render).
-    applyLayerVisibility(svgRef.current, hiddenRef.current);
+    // Cancel any rAF this run's closure scheduled when the effect tears down
+    // (network/selection/resize change, or unmount) — otherwise a stale handle
+    // from an OLD closure (old fit params xMin/s/offsetX/…, old drawZoomDependent)
+    // could fire after a fresh redraw and push/apply stale state over it.
+    return () => {
+      if (projectionRafRef.current) {
+        cancelAnimationFrame(projectionRafRef.current);
+        projectionRafRef.current = 0;
+      }
+      if (elementsRafRef.current) {
+        cancelAnimationFrame(elementsRafRef.current);
+        elementsRafRef.current = 0;
+      }
+    };
   }, [network, nodeLosMap, selectedNodeSet, selectedLinkId, selectedElementKey, onNodeClick, onLinkClick, onElementClick, t, sizeNonce]);
 
   return (
     <div className="relative w-full h-full">
+      {/* Defect 2 — element hover/selection recolor. Presentation attributes
+          (.attr("stroke", ...) etc.) lose to CSS by cascade rules, so these
+          rules override them without !important. Scoped to `g[data-elkey]`
+          (a per-element wrapper the draw effect stamps on every glyph's
+          primitives) so nothing outside the element layer is touched. The
+          fill rule is further scoped to `.el-fillable` (vehicle-input /
+          ped-area polygons only) so stroke-only glyphs — which already carry
+          fill="none" as a presentation attribute — never pick up a fill. */}
+      <style>{`
+        g[data-elkey].el-hover :is(line, polyline, circle, polygon, path) {
+          stroke: ${ACCENT_HOVER};
+          stroke-opacity: 1;
+        }
+        g[data-elkey].el-hover .el-fillable {
+          fill: ${ACCENT_HOVER};
+          fill-opacity: 0.55;
+        }
+        g[data-elkey].el-hover {
+          filter: drop-shadow(0 0 3px rgba(76, 141, 255, 0.55));
+        }
+        g[data-elkey].el-selected :is(line, polyline, circle, polygon, path) {
+          stroke: ${ACCENT};
+          stroke-opacity: 1;
+        }
+        g[data-elkey].el-selected .el-fillable {
+          fill: ${ACCENT};
+          fill-opacity: 0.65;
+        }
+        g[data-elkey].el-selected {
+          filter: drop-shadow(0 0 5px rgba(76, 141, 255, 0.85));
+        }
+      `}</style>
       <svg ref={svgRef} className="w-full h-full bg-ink rounded-xl" />
 
       {isEmpty && (

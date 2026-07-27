@@ -1616,3 +1616,51 @@ NetworkViewer's own throttle already costs.
 **Scope:** `frontend/components/TrajectoryLayer.tsx` only; `requestFrame()` retained for
 its other callers (mount, resize, scrub-while-paused), which don't share the same-frame
 requirement.
+
+---
+
+## 2026-07-27 — Semantic zoom for element glyphs + hover/selection recolor + overlay-freeze fix
+
+**Context:** three live-demo defects (#13-15). (a) NetworkViewer drew static elements
+(signal heads, detectors, vehicle inputs, …) with pixel-space size floors (GLYPH_MIN_PX,
+hit-radius minimums, fixed strokes, node/hit-circle radii) computed once at base-fit
+scale, then relied on the d3 zoom transform to magnify the group geometrically. Base fit
+on the Beijing network is under ~1.4 px/metre, so most glyphs were floor-bound (52 signal
+heads within a ~23×30 px region), and because floors were baked in BEFORE the transform,
+zooming never resolved the clustering — overlap persisted at every zoom level. (b) Hover
+showed only a tooltip; selection drew a getBBox() ring, ambiguous once glyphs clustered.
+(c) The vehicle overlay could freeze at a stale transform while the SVG kept moving:
+the zoom handler's projection-emit rAF was a skip-if-pending latch (one never-fired
+frame wedges it shut permanently — reproduced live: wheel-zoom moved the SVG while the
+canvas stayed byte-identical), and the projection store's notify loop had no exception
+isolation (one throwing listener — seen live as a hot-reload-stale PlaybackEngine
+missing renderNow — killed the channel and unwound the caller).
+
+**Decision:**
+1. Element/hit/node drawing extracted into drawZoomDependent(k); every pixel floor and
+   fixed stroke divides by k (screen-constant post-transform; metre-true terms
+   untouched). Re-run synchronously on each redraw with the persisted k, from the zoom
+   handler when |k_new/k_prev − 1| > 0.05 (rAF-throttled, pan-immune), and on the d3
+   zoom "end" event. scaleExtent max raised from flat 10 to max(10, 30/pxPerMeter).
+2. Ring replaced by recoloring the glyph itself: primitives wrap in
+   <g data-elkey="type:id">; hover/selection toggle .el-hover/.el-selected classes;
+   a <style> block overrides stroke (and fill for .el-fillable glyphs) via CSS cascade
+   over presentation attributes, plus a drop-shadow. ACCENT_HOVER #94bbff added;
+   selection uses ACCENT #4c8dff. ringSelected deleted.
+3. Both zoom-handler rAF paths (projection emit + element redraw, separate refs) use
+   cancel-and-reschedule — a dead handle can never wedge the channel; the draw effect's
+   teardown cancels pending rAFs so an old closure can't emit stale fit params after a
+   redraw.
+4. TrajectoryLayer hardening: createProjectionStore.set isolates listener exceptions
+   (try/catch per listener, console.error); the projection subscriber falls back to
+   requestFrame when renderNow is missing (hot-reload-stale engine in useState survives
+   the swap instead of freezing the canvas).
+
+**Consequence:** base-zoom appearance unchanged (floors still bind at low pxPerMeter);
+at high zoom the same signal-head cluster becomes metre-true (~165×26 px, lane-width)
+with 0 overlapping glyph bounding boxes on screen. Hover/selection recolor verified via
+computed styles, zero rings remain. Overlay freeze re-tested with the exact reproducing
+gesture: canvas centroid now tracks the transform, 31/31 sampled vehicle pixels on-road
+after zoom. Node-dot half of the /k fix is code-symmetric but unexercised by this
+dataset (nodes list empty). Contract pins preserved byte-identical; typecheck clean;
+dashboard-contract 11/12 (exempt base-model pin only).
