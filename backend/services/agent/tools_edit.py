@@ -16,8 +16,9 @@ docs/phase2/DECISIONS.md, "postwrite gains a target-persisted check").
 
 Param names for the object-targeting tools (vehicle input, signal cycle,
 signal offset, conflict area status, -- v2 unit ⑥ -- routing decision
-route relative flow, and -- v2 unit ⑦ -- vehicle composition relative
-flow) match ``guardrails._WRITE_TARGET_FIELD_SPEC`` EXACTLY
+route relative flow, -- v2 unit ⑦ -- vehicle composition relative
+flow, and -- v2a unit ⑧ -- desired-speed decision distribution assignment)
+match ``guardrails._WRITE_TARGET_FIELD_SPEC`` EXACTLY
 (tool name AND field names) -- that table is what lets the postwrite
 "nothing else moved" diff exempt each tool's own intended target field;
 drifting a name here silently reintroduces false-positive diff evidence on
@@ -66,6 +67,42 @@ produce (every raised exception's ``error_type`` is the fixed string
 ``"tool_execution_error"``); :class:`NoEditSessionError`'s message carries
 the ``no_edit_session`` marker as literal, greppable text instead.
 
+**v2a unit ⑧: ``set_des_speed_decision`` is the first ATOMIC PAIRED write.**
+Every other write tool in this module mutates exactly ONE shadow-model
+object per call. A desired-speed decision is PERMANENT once passed (there is
+no time-boxing like ``set_reduced_speed_area``) -- the conventional way to
+model a temporary slow zone is a PAIR: one decision at the zone start
+(assigns a slower distribution) and a SECOND decision immediately downstream
+that restores the original distribution. Editing only the first is the
+catalog's "desired-speed decisions are permanent unless paired with a
+restoring decision" silent-failure trap
+(docs/phase2/00-EXECUTION-GUIDE.md §3.2). When the caller supplies the
+optional ``restore_decision_no``/``restore_distr_no`` pair, THIS SAME
+approved action writes BOTH decisions' assignments for the SAME
+``veh_class_no``, and -- unlike every single-target write tool above, which
+persists unconditionally and lets ``guardrails.py``'s postwrite #6 catch a
+mismatch after the fact -- proactively verifies BOTH read-backs BEFORE ever
+calling ``session.persist()``: a mismatch on either write raises (never
+returns), so the whole action fails and NEITHER write reaches the saved
+file. This is a deliberate deviation from the single-write precedent, forced
+by the fact that postwrite's generic write_verification_failed check (#6)
+only ever inspects ONE top-level ``written_value``/``readback_value`` pair —
+a RESTORE-write-only mismatch would otherwise sail through undetected and
+get persisted as a silently half-paired edit. The UNPAIRED call path (no
+``restore_decision_no``) keeps the exact single-write precedent unchanged
+(persist unconditionally; comparison is postwrite's job) for byte-compatible
+behavior with the other tools in this module.
+
+``guardrails.py``'s ``_WRITE_TARGET_FIELD_SPEC`` is single-target-only (one
+(object_class, id) exemption per tool) -- there is no built-in multi-target
+mechanism, so this tool's PAIRED write needed a small, additive extension
+(``_PAIRED_EXTRA_TARGET_SPEC``) rather than a bigger multi-target redesign;
+see that module's own comment at the extension point. Entry identity is the
+SAME two-part ``"{decision_no}.{veh_class_no}"`` synthesized id
+``tools_network._flatten_des_speed_decision_entries`` already uses, mirroring
+the ``id_param_parts`` precedent ``set_route_relative_flow``/
+``set_vehicle_composition_share`` established.
+
 **v2 unit (2): ``set_reduced_speed_area`` closes the M2.3 deferral.** The
 roadmap's sixth verb (``set_desired_speed_area`` in the original naming;
 renamed here per the controller's v2 design to match its actual object --
@@ -86,7 +123,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from services.agent.edit_session import get_active_edit_session
 from services.agent.toolkit import tool
@@ -563,4 +600,123 @@ def set_vehicle_composition_share(params: SetVehicleCompositionShareParams) -> d
         f"vehicle type's actual composition share across composition {params.composition_no}'s "
         "entries at simulation time; other vehicle types' own relative flow are left untouched)."
     )
+    return {"message": message, "verification": verification}
+
+
+# ---------------------------------------------------------------------------
+# set_des_speed_decision(decision_no, veh_class_no, des_speed_distr_no,
+#                         restore_decision_no=None, restore_distr_no=None)
+#
+# v2a unit ⑧ -- see the module docstring's own "v2a unit ⑧" paragraph for the
+# atomic-pair design rationale. No shared-sum semantics at all (verified
+# live, backend/tools/probe_des_speed_decisions.py): each vehicle class's
+# distribution assignment is fully independent, unlike route/vehicle-
+# composition RelFlow -- so there is no "raw weight" framing needed here.
+# ---------------------------------------------------------------------------
+
+
+class SetDesSpeedDecisionParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision_no: str
+    veh_class_no: str
+    des_speed_distr_no: str
+    # Explicit, caller-specified restore target -- no magic pairing inference
+    # (constraints.py's speed_decision_unpaired's own docstring: pairing is a
+    # pure human convention, never auto-detected from geometry). Both must be
+    # given together or both omitted; a half-specified pair is refused as
+    # invalid_params before this model even validates successfully (pydantic
+    # catches the ValueError the validator below raises).
+    restore_decision_no: str | None = None
+    restore_distr_no: str | None = None
+
+    @model_validator(mode="after")
+    def _restore_pair_is_all_or_nothing(self) -> "SetDesSpeedDecisionParams":
+        if (self.restore_decision_no is None) != (self.restore_distr_no is None):
+            raise ValueError(
+                "restore_decision_no and restore_distr_no must be given together (an explicit "
+                "restore target) or both omitted -- a half-specified restore pair is refused "
+                "before dispatch."
+            )
+        return self
+
+
+@tool(
+    name="set_des_speed_decision",
+    tier="write",
+    provider="edit",
+    params=SetDesSpeedDecisionParams,
+)
+def set_des_speed_decision(params: SetDesSpeedDecisionParams) -> dict[str, Any]:
+    """Set a desired-speed decision's distribution assignment for one vehicle class on the active edit session's working network -- optionally, in the SAME approved action, ALSO write a second (restore) decision's assignment for the SAME vehicle class via restore_decision_no/restore_distr_no, atomically: both writes and both read-backs must succeed or NEITHER is persisted. A desired-speed decision is PERMANENT once a vehicle passes it -- pairing a slow-zone start with an immediate restore decision downstream is the only way to avoid leaving the rest of the network slowed for the whole trip; Vissim has no structural link between the two, so identify the restore decision yourself."""
+    session = _require_session()
+    decision_no = _coerce_id(params.decision_no, "decision_no")
+    veh_class_no = _coerce_id(params.veh_class_no, "veh_class_no")
+    des_speed_distr_no = _coerce_id(params.des_speed_distr_no, "des_speed_distr_no")
+
+    session.set_des_speed_decision(decision_no, veh_class_no, des_speed_distr_no)
+    readback = session.get_des_speed_decision(decision_no, veh_class_no)
+
+    # written_value/readback_value are STRINGS -- des_speed_distr_no is an
+    # id (which distribution object), not a continuous physical quantity,
+    # matching the shadow model's own string-typed field and
+    # set_conflict_area_status's "status" convention (not the float-weight
+    # convention route/vehicle-composition RelFlow use). The COM boundary
+    # above still uses the coerced INT (des_speed_distr_no); comparisons and
+    # the envelope use the original string params throughout so they always
+    # agree in type with session.get_des_speed_decision's own string return.
+    verification: dict[str, Any] = {
+        "written_value": params.des_speed_distr_no,
+        "readback_value": readback,
+    }
+    message = (
+        f"Desired speed decision {params.decision_no} vehicle class {params.veh_class_no} "
+        f"distribution set to {params.des_speed_distr_no}."
+    )
+
+    if params.restore_decision_no is not None:
+        # ATOMIC PAIR (module docstring, "v2a unit ⑧"). Proactively verify
+        # the PRIMARY write's own read-back before ever attempting the
+        # restore write or calling persist() -- postwrite's generic #6 check
+        # only ever inspects the top-level written_value/readback_value
+        # pair, so without this the primary half could silently mismatch
+        # and still get persisted alongside a correct restore write.
+        if readback != params.des_speed_distr_no:
+            raise RuntimeError(
+                f"Desired speed decision {params.decision_no} vehicle class "
+                f"{params.veh_class_no}: read-back {readback!r} does not match the written "
+                f"value {params.des_speed_distr_no!r} -- aborting the paired write before "
+                "touching the restore decision; nothing has been persisted."
+            )
+
+        restore_decision_no = _coerce_id(params.restore_decision_no, "restore_decision_no")
+        assert params.restore_distr_no is not None  # enforced by the model validator
+        restore_distr_no = _coerce_id(params.restore_distr_no, "restore_distr_no")
+
+        session.set_des_speed_decision(restore_decision_no, veh_class_no, restore_distr_no)
+        restore_readback = session.get_des_speed_decision(restore_decision_no, veh_class_no)
+        if restore_readback != params.restore_distr_no:
+            raise RuntimeError(
+                f"Restore decision {params.restore_decision_no} vehicle class "
+                f"{params.veh_class_no}: read-back {restore_readback!r} does not match the "
+                f"written value {params.restore_distr_no!r} -- aborting; the primary write on "
+                f"decision {params.decision_no} above is NOT persisted either (atomic pair)."
+            )
+
+        verification["restore_written_value"] = params.restore_distr_no
+        verification["restore_readback_value"] = restore_readback
+        message = (
+            f"Desired speed decision {params.decision_no} vehicle class {params.veh_class_no} "
+            f"distribution set to {params.des_speed_distr_no}, AND restore decision "
+            f"{params.restore_decision_no} vehicle class {params.veh_class_no} distribution "
+            f"set to {params.restore_distr_no} (paired set+restore, both writes verified "
+            "before saving)."
+        )
+
+    # Persisted ONCE, after every write this action makes has already been
+    # verified above (unpaired: just the one write, matching every other
+    # tool's precedent; paired: both writes) -- a single SaveNetAs call
+    # serializes the WHOLE live network, so both halves of a paired write
+    # reach the saved file together or (on an earlier raise) neither does.
+    session.persist()
     return {"message": message, "verification": verification}

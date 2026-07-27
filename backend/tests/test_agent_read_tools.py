@@ -31,6 +31,9 @@ EXPECTED_TOOL_NAMES = {
     "get_conflict_areas",
     "get_routing_decisions",
     "get_vehicle_compositions",
+    # v2a unit ⑧ adds get_des_speed_decisions + get_des_speed_distributions.
+    "get_des_speed_decisions",
+    "get_des_speed_distributions",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -48,6 +51,7 @@ EXPECTED_TOOL_NAMES = {
 # v2 unit (4) adds set_conflict_area_status, the seventh.
 # v2 unit (6) adds set_route_relative_flow, the eighth.
 # v2 unit (7) adds set_vehicle_composition_share, the ninth.
+# v2a unit ⑧ adds set_des_speed_decision, the tenth.
 EXPECTED_WRITE_TOOL_NAMES = {
     "set_vehicle_input_volume",
     "set_signal_cycle",
@@ -58,6 +62,7 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_conflict_area_status",
     "set_route_relative_flow",
     "set_vehicle_composition_share",
+    "set_des_speed_decision",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -1033,6 +1038,263 @@ def test_get_network_overview_includes_vehicle_compositions_section(
 
 
 # ---------------------------------------------------------------------------
+# get_des_speed_decisions / get_des_speed_distributions /
+# _parse_des_speed_decisions — v2a unit ⑧ (the demo network has none; ground
+# truth mirrors Roundabout Billings.US's real decisions 6/7 and speed
+# distributions 25/50, per the v2a unit ⑧ live probe,
+# backend/tools/probe_des_speed_decisions.py)
+# ---------------------------------------------------------------------------
+
+
+def test_get_des_speed_decisions_on_demo_data_is_empty_but_well_formed():
+    envelope = _dispatch("get_des_speed_decisions")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "des_speed_decisions": [], "truncated": False}
+    assert "hint" not in envelope["data"]
+
+
+def test_get_des_speed_distributions_on_demo_data_is_empty_but_well_formed():
+    envelope = _dispatch("get_des_speed_distributions")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "des_speed_distributions": [], "truncated": False}
+    assert "hint" not in envelope["data"]
+
+
+_DES_SPEED_DECISION_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links>
+    <link no="6" name="Ring"><lanes><lane width="3.5"/></lanes></link>
+  </links>
+  <vehicleClasses>
+    <vehicleClass no="10" name="Car"/>
+    <vehicleClass no="20" name="HGV"/>
+  </vehicleClasses>
+  <desSpeedDecisions>
+    <desSpeedDecision anmFlag="false" lane="6 1" name="" no="6" pos="108.744" timeFrom="0" timeTo="2147483647">
+      <vehClassDesSpeedDistr>
+        <vehClassDesSpeedDistribution desSpeedDistr="50" vehClass="10"/>
+        <vehClassDesSpeedDistribution desSpeedDistr="50" vehClass="20"/>
+      </vehClassDesSpeedDistr>
+    </desSpeedDecision>
+    <desSpeedDecision anmFlag="false" lane="6 1" name="" no="7" pos="200.0" timeFrom="0" timeTo="2147483647">
+      <vehClassDesSpeedDistr>
+        <vehClassDesSpeedDistribution desSpeedDistr="25" vehClass="10"/>
+        <vehClassDesSpeedDistribution desSpeedDistr="25" vehClass="20"/>
+      </vehClassDesSpeedDistr>
+    </desSpeedDecision>
+    <desSpeedDecision anmFlag="false" lane="9 1" name="" no="8" pos="254.77" timeFrom="0" timeTo="2147483647">
+      <vehClassDesSpeedDistr>
+        <vehClassDesSpeedDistribution desSpeedDistr="50" vehClass="10"/>
+      </vehClassDesSpeedDistr>
+    </desSpeedDecision>
+  </desSpeedDecisions>
+  <speedDistributions>
+    <speedDistribution name="25 mph" no="25"/>
+    <speedDistribution name="55 mph" no="50"/>
+  </speedDistributions>
+</network>
+"""
+
+
+@pytest.fixture()
+def des_speed_decision_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "des_speed_decisions.inpx"
+    path.write_text(_DES_SPEED_DECISION_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_des_speed_decisions_on_real_elements(des_speed_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_decisions")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 3
+    by_no = {d["no"]: d for d in data["des_speed_decisions"]}
+
+    dec_6 = by_no["6"]
+    assert dec_6["link"] == "6"
+    assert dec_6["lane"] == "1"
+    assert dec_6["pos"] == 108.744
+    assignments = {a["veh_class_no"]: a for a in dec_6["veh_class_assignments"]}
+    assert assignments["10"] == {
+        "veh_class_no": "10",
+        "veh_class_name": "Car",
+        "des_speed_distr_no": "50",
+        "des_speed_distr_name": "55 mph",
+    }
+    assert assignments["20"]["veh_class_name"] == "HGV"
+
+    dec_8 = by_no["8"]
+    assert len(dec_8["veh_class_assignments"]) == 1  # only vehClass 10 assigned
+
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_get_des_speed_decisions_filters_by_decision_no(des_speed_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_decisions", decision_no="7")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["des_speed_decisions"][0]["no"] == "7"
+    assert "truncated" not in data
+    assert "hint" not in data
+
+
+def test_get_des_speed_decisions_filters_by_decision_no_no_match_is_empty_not_an_error(
+    des_speed_decision_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_decisions", decision_no="9999")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "des_speed_decisions": []}
+
+
+def test_get_des_speed_decisions_filters_by_link_no(des_speed_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_decisions", link_no="9")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["des_speed_decisions"][0]["no"] == "8"
+
+
+def test_get_des_speed_decisions_rejects_unexpected_params(des_speed_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_decisions", bogus=1)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+_MANY_DES_SPEED_DECISIONS_INPX_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links></links>
+  <desSpeedDecisions>
+{decisions}
+  </desSpeedDecisions>
+</network>
+"""
+
+
+def _many_des_speed_decisions_inpx(tmp_path: Path, count: int) -> Path:
+    decisions = "\n".join(
+        f'    <desSpeedDecision no="{i}" name="" lane="1 1" pos="0" timeFrom="0" '
+        f'timeTo="2147483647"><vehClassDesSpeedDistr>'
+        f'<vehClassDesSpeedDistribution desSpeedDistr="50" vehClass="10"/>'
+        f"</vehClassDesSpeedDistr></desSpeedDecision>"
+        for i in range(1, count + 1)
+    )
+    path = tmp_path / f"many_des_speed_decisions_{count}.inpx"
+    path.write_text(_MANY_DES_SPEED_DECISIONS_INPX_TEMPLATE.format(decisions=decisions), encoding="utf-8")
+    return path
+
+
+def test_get_des_speed_decisions_unfiltered_call_on_large_network_is_capped_and_truncated(
+    tmp_path: Path,
+):
+    tools_network.set_active_inpx(_many_des_speed_decisions_inpx(tmp_path, 60))
+
+    envelope = _dispatch("get_des_speed_decisions")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 60  # the TRUE total, never hidden
+    assert len(data["des_speed_decisions"]) == tools_network._DES_SPEED_DECISIONS_DEFAULT_CAP
+    assert data["truncated"] is True
+    assert "40" in data["hint"] and "60" in data["hint"]
+    followup = _dispatch("get_des_speed_decisions", decision_no="50")
+    assert followup["data"]["count"] == 1
+    assert followup["data"]["des_speed_decisions"][0]["no"] == "50"
+
+
+def test_get_des_speed_distributions_on_real_elements(des_speed_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_distributions")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 2
+    by_no = {d["no"]: d for d in data["des_speed_distributions"]}
+    assert by_no["25"]["name"] == "25 mph"
+    assert by_no["50"]["name"] == "55 mph"
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_get_des_speed_distributions_filters_by_distribution_no(des_speed_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_distributions", distribution_no="25")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["des_speed_distributions"][0]["name"] == "25 mph"
+    assert "truncated" not in data
+
+
+def test_get_des_speed_distributions_rejects_unexpected_params(des_speed_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_distributions", bogus=1)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+def test_build_shadow_model_flattens_des_speed_decision_entries_with_synthesized_ids(
+    des_speed_decision_fixture_inpx: Path,
+):
+    shadow = tools_network.build_shadow_model(des_speed_decision_fixture_inpx)
+
+    assert len(shadow["des_speed_decision_entries"]) == 5  # 2+2+1 assignments
+    by_id = {e["id"]: e for e in shadow["des_speed_decision_entries"]}
+    assert set(by_id) == {"6.10", "6.20", "7.10", "7.20", "8.10"}
+    assert by_id["6.10"]["decision_no"] == "6"
+    assert by_id["6.10"]["veh_class_no"] == "10"
+    assert by_id["6.10"]["des_speed_distr_no"] == "50"
+
+
+def test_resolve_object_finds_des_speed_decision_by_id(des_speed_decision_fixture_inpx: Path):
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("resolve_object", query="7", object_type="des_speed_decision")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["found"] is True
+    assert data["candidates"][0]["id"] == "7"
+    assert data["candidates"][0]["object_type"] == "des_speed_decision"
+
+
+def test_get_network_overview_includes_des_speed_decisions_section(
+    des_speed_decision_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("get_network_overview")
+
+    data = envelope["data"]
+    assert data["des_speed_decisions"]["count"] == 3
+    ids = {item["id"] for item in data["des_speed_decisions"]["items"]}
+    assert ids == {"6", "7", "8"}
+
+
+# ---------------------------------------------------------------------------
 # build_shadow_model — the extended shadow model builder (unit-level)
 # ---------------------------------------------------------------------------
 
@@ -1050,6 +1312,9 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "routes",
         "vehicle_compositions",
         "vehicle_composition_entries",
+        "des_speed_decisions",
+        "des_speed_decision_entries",
+        "des_speed_distributions",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2

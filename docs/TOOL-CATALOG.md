@@ -2,7 +2,7 @@
 
 The definitive list of what the AI agent can do in Vissim, by verification tier.
 Doctrine: **a verb ships only when its verification method does** (00-EXECUTION-GUIDE §4).
-Updated 2026-07-27 (post-Phase-2 + v2 queue units ①–⑦ + conflict-area read filters).
+Updated 2026-07-27 (post-Phase-2 + v2 queue units ①–⑧ + conflict-area read filters).
 
 Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned · 🚫 permanent refusal
 
@@ -23,6 +23,10 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
     with an explicit `truncated` flag and filter hint (observation-flood fix)
 - ✅ Vehicle compositions (`get_vehicle_compositions`, v2 unit ⑦)
   - 40-composition default cap + `composition_no` filter + per-entry estimated share %
+- ✅ Desired-speed decisions + distributions (`get_des_speed_decisions` /
+  `get_des_speed_distributions`, v2a unit ⑧)
+  - 40-cap + `decision_no`/`link_no` filters; distributions as a separate 60-cap
+    lookup read (shared table, not needed on every decisions read)
 
 ### Edits
 - ✅ Vehicle input volume
@@ -55,6 +59,17 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
     echoes estimated resulting share % + referencing vehicle inputs
   - Landmine: the entries container has NO `ItemByKey` (unique among probed
     collections) — lookup scans `GetAll()` and matches `VehType` client-side
+- ✅ Desired-speed decision distribution assignment (`set_des_speed_decision`,
+  v2a unit ⑧)
+  - The FIRST atomic paired write: optional `restore_decision_no`/`restore_distr_no`
+    makes one approved action write the slow-zone start AND its restore decision,
+    both read-backs verified BEFORE persist (all-or-nothing)
+  - No shared-sum semantics — each vehicle class's assignment fully independent
+    (live-verified); unpaired edits warn about the stay-slow-forever risk
+  - Pairing is a PURE human convention: 584 real decisions scanned, zero names,
+    no grouping attribute — the tool never infers pairs from geometry
+  - Distributions live on `Net.SpeedDistributions` (shared with reduced-speed
+    areas); no `DesSpeedDistributions` collection exists
 
 ### Runs
 - ✅ Multi-seed simulation with auto-armed evaluation (all four evaluation types)
@@ -83,8 +98,8 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ✅ Static route relative flows — shipped, see V1 edits
 - ✅ Conflict-area status — shipped, see V1 edits
 - ✅ Vehicle composition shares — shipped, see V1 reads/edits
-- ⬜ Desired-speed decision PAIRS (set + restore, atomic)
-- ⬜ Desired-speed distribution assignment
+- ✅ Desired-speed decision PAIRS (set + restore, atomic) — shipped, see V1 edits
+- ✅ Desired-speed distribution assignment — shipped (same tool as PAIRS)
 - ⬜ Desired-speed/time DISTRIBUTION curve editing (the legitimate CC1 route)
 - ⬜ Priority-rule gap/headway parameters
 - ⬜ Driving-behavior params via duplicate-then-edit (expert-gated)
@@ -92,7 +107,8 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ⬜ Signal green-splits within a program (needs the signal-program blob writer)
 - ⬜ Vehicle type properties (accel/decel curves, lengths, weight/power)
 
-**Status: 4 of 12 shipped.**
+**Status: 6 of 12 bullets shipped (one tool, `set_des_speed_decision`, satisfies both
+the PAIRS and distribution-assignment line items).**
 
 ---
 

@@ -869,6 +869,129 @@ class VissimController:
     def available_vehicle_composition_nos(self) -> list[int]:
         return self._collection_nos(self.vissim.Net.VehicleCompositions)
 
+    def set_des_speed_decision(
+        self, decision_no: int, veh_class_no: int, des_speed_distr_no: int
+    ) -> None:
+        """Set a desired-speed decision's per-vehicle-class distribution
+        assignment (COM attribute id ``DesSpeedDistr`` on the veh-class
+        CHILD entry -- SCALAR, verified live via
+        ``backend/tools/probe_des_speed_decisions.py`` against Vissim 2026
+        on Roundabout Billings.US: ``AttValue('DesSpeedDistr')`` with no
+        index works directly on the ``VehClassDesSpeedDistr`` child entry --
+        unlike route ``RelFlow``, there is no time-interval dimension here at
+        all. A SECOND form, ``decision.AttValue('DesSpeedDistr(<vehClass>)')``
+        directly on the decision object, was also confirmed to WORK FOR
+        READING in the same probe, but was never verified for writing and is
+        not used here -- the child-entry route below is the one proven set +
+        read-back + persist + fresh-reload, end to end.
+
+        **Entry lookup has no COM ``ItemByKey`` at all** (verified via a live
+        ``hasattr`` check -- the SAME landmine :meth:`set_vehicle_composition_share`
+        documents for vehicle-composition entries): the entry is found by
+        scanning ``GetAll()`` and matching ``AttValue('VehClass')``
+        client-side -- :meth:`_des_speed_decision_entry_by_veh_class`.
+
+        **No shared-sum/renormalization semantics at all**, unlike route/
+        vehicle-composition ``RelFlow``: writing vehClass=10's assignment on
+        a real 2-class decision (Roundabout Billings.US, decision no=6) left
+        vehClass=20's own assignment completely UNCHANGED -- confirmed both
+        immediately after the write and after a ``SaveNetAs`` + fresh COM
+        reload. Each vehicle class's assignment is a fully independent value;
+        there is no derived "share" to compute or report.
+
+        **COM itself fails CLOSED on a bogus distribution number** -- verified
+        live: ``SetAttValue('DesSpeedDistr', 999999)`` on a real entry RAISES
+        ("AttValue failed: Attribute Desired speed distribution: Object
+        999999 of type Speed Distribution does not exist."). This codebase's
+        own ``constraints.py`` ``des_speed_distribution_not_found`` preflight
+        check still refuses proactively (with a candidate list) so the
+        failure reaches the user as a structured refusal rather than this
+        raw COM error string reaching all the way through.
+
+        Error behavior otherwise matches every other per-object collection in
+        this module: a bogus ``decision_no`` fails CLOSED via ``ItemByKey``
+        ("object does not exist"); a bogus attribute id on a real object also
+        fails CLOSED.
+        """
+        try:
+            decision = self._item_by_key(
+                self.vissim.Net.DesSpeedDecisions,
+                decision_no,
+                "Desired speed decision",
+                self.available_des_speed_decision_nos(),
+            )
+            entry = self._des_speed_decision_entry_by_veh_class(decision, veh_class_no)
+            entry.SetAttValue("DesSpeedDistr", des_speed_distr_no)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set desired speed decision {decision_no} vehicle class "
+                f"{veh_class_no} distribution to {des_speed_distr_no}: {exc}"
+            ) from exc
+
+    def get_des_speed_decision(self, decision_no: int, veh_class_no: int) -> str:
+        """Paired getter for :meth:`set_des_speed_decision`.
+
+        Returns the distribution number as a STRING -- COM's own
+        ``AttValue('DesSpeedDistr')`` read-back form (verified live: e.g.
+        ``'50'``), matching the shadow model's own string-typed
+        ``des_speed_distr_no`` field (an id, not a continuous physical
+        quantity) so ``guardrails.py``'s postwrite compares never trip on an
+        int/str type mismatch -- mirrors :meth:`get_conflict_area`'s own
+        string ``status`` convention, not the float-weight convention
+        ``get_route_relative_flow``/``get_vehicle_composition_share`` use.
+        """
+        try:
+            decision = self._item_by_key(
+                self.vissim.Net.DesSpeedDecisions,
+                decision_no,
+                "Desired speed decision",
+                self.available_des_speed_decision_nos(),
+            )
+            entry = self._des_speed_decision_entry_by_veh_class(decision, veh_class_no)
+            return str(entry.AttValue("DesSpeedDistr"))
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read desired speed decision {decision_no} vehicle class "
+                f"{veh_class_no} distribution: {exc}"
+            ) from exc
+
+    def _des_speed_decision_entry_by_veh_class(self, decision: Any, veh_class_no: int) -> Any:
+        """The decision's ``VehClassDesSpeedDistr`` entry whose ``VehClass``
+        equals ``veh_class_no``, found by scanning ``GetAll()`` -- there is no
+        ``ItemByKey`` on this collection (see :meth:`set_des_speed_decision`'s
+        docstring). Raises :class:`VissimObjectNotFoundError` when no entry
+        matches, listing the decision's own available vehicle-class numbers
+        (mirrors :meth:`_vehicle_composition_entry_by_veh_type`'s contract)."""
+        available: list[int] = []
+        for item in decision.VehClassDesSpeedDistr.GetAll():
+            try:
+                item_veh_class = int(item.AttValue("VehClass"))
+            except Exception:
+                continue
+            available.append(item_veh_class)
+            if item_veh_class == veh_class_no:
+                return item
+        available_text = _format_available_keys(sorted(available))
+        raise VissimObjectNotFoundError(
+            f"Vehicle class {veh_class_no} does not exist in this desired speed decision's "
+            f"vehicle-class assignments. Available vehicle class numbers: {available_text}."
+        )
+
+    def available_des_speed_decision_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.DesSpeedDecisions)
+
+    def available_des_speed_distribution_nos(self) -> list[int]:
+        """Available ``Net.SpeedDistributions`` numbers -- verified live
+        (``backend/tools/probe_des_speed_decisions.py``) that this is the
+        SAME collection ``set_reduced_speed_area`` (v2 unit ②) already
+        injects into, not a dedicated ``DesSpeedDistributions`` collection
+        (which does not exist -- ``AttributeError`` on ``Net``)."""
+        return self._collection_nos(self.vissim.Net.SpeedDistributions)
+
     def get_sim_sec(self) -> float:
         try:
             value = float(self.vissim.Simulation.AttValue("SimSec"))

@@ -48,8 +48,25 @@ class FakeEditSession:
 
     def _record(self, op: str, **kwargs: Any) -> None:
         self.calls.append({"op": op, **kwargs})
-        if op in self._raise_on:
-            raise self._raise_on[op]
+        if op not in self._raise_on:
+            return
+        rule = self._raise_on[op]
+        if isinstance(rule, list):
+            # v2a unit ⑧: per-CALL sequence -- lets a test rig the FIRST call
+            # to an op to succeed and a LATER one to raise (needed for
+            # set_des_speed_decision's paired write, which calls
+            # set_des_speed_decision twice: once for the primary decision,
+            # once for the restore decision). A `None` entry means "succeed
+            # this call"; the list is consumed in order and a call past the
+            # end of the list never raises. Every EXISTING test passes a
+            # bare Exception here (raises on every call to that op),
+            # unchanged.
+            if rule:
+                exc = rule.pop(0)
+                if exc is not None:
+                    raise exc
+        else:
+            raise rule
 
     def set_vehicle_input_volume(self, input_no: int, volume: float, interval_no: int = 1) -> None:
         if interval_no == 1:
@@ -149,6 +166,24 @@ class FakeEditSession:
         )
         return self._readback["vehicle_composition_share"]
 
+    def set_des_speed_decision(self, decision_no: int, veh_class_no: int, des_speed_distr_no: int) -> None:
+        self._record(
+            "set_des_speed_decision",
+            decision_no=decision_no,
+            veh_class_no=veh_class_no,
+            des_speed_distr_no=des_speed_distr_no,
+        )
+
+    def get_des_speed_decision(self, decision_no: int, veh_class_no: int) -> int:
+        self._record("get_des_speed_decision", decision_no=decision_no, veh_class_no=veh_class_no)
+        readbacks = self._readback.get("des_speed_decision")
+        if isinstance(readbacks, dict):
+            # {(decision_no, veh_class_no): value} -- lets a test give the
+            # PRIMARY and RESTORE reads two different rigged values (needed
+            # for the atomic-pair happy-path/failure tests below).
+            return readbacks[(decision_no, veh_class_no)]
+        return readbacks
+
     def persist(self) -> None:
         self.persist_calls += 1
 
@@ -192,6 +227,10 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
         (
             "set_vehicle_composition_share",
             {"composition_no": "1", "veh_type_no": "100", "rel_flow": 5.85},
+        ),
+        (
+            "set_des_speed_decision",
+            {"decision_no": "6", "veh_class_no": "10", "des_speed_distr_no": "25"},
         ),
     ],
 )
@@ -791,6 +830,298 @@ def test_set_vehicle_composition_share_missing_required_param_is_rejected():
     set_active_edit_session(session)
 
     envelope = _dispatch("set_vehicle_composition_share", composition_no="1", veh_type_no="100")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+# ---------------------------------------------------------------------------
+# set_des_speed_decision — v2a unit ⑧: UNPAIRED happy path (matches every
+# other write tool's precedent exactly -- persist unconditionally, a
+# readback mismatch is guardrails.py's postwrite job, not this tool's).
+# ---------------------------------------------------------------------------
+
+
+def test_set_des_speed_decision_unpaired_happy_path():
+    # written_value/readback_value are STRINGS (an id, matching COM's own
+    # AttValue read-back form and the shadow model's string-typed field --
+    # see tools_edit.py's own comment at this tool) -- unlike route/vehicle-
+    # composition RelFlow, which are floats.
+    session = FakeEditSession(readback={"des_speed_decision": "25"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no="25"
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": "25", "readback_value": "25"}
+    assert "restore_written_value" not in envelope["verification"]
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {"op": "set_des_speed_decision", "decision_no": 6, "veh_class_no": 10, "des_speed_distr_no": 25},
+        {"op": "get_des_speed_decision", "decision_no": 6, "veh_class_no": 10},
+    ]
+    # decision_no/veh_class_no/des_speed_distr_no were coerced str -> int at
+    # the COM boundary (SetAttValue), even though the ENVELOPE's own
+    # written_value/readback_value stay strings.
+    assert isinstance(session.calls[0]["decision_no"], int)
+    assert isinstance(session.calls[0]["veh_class_no"], int)
+    assert isinstance(session.calls[0]["des_speed_distr_no"], int)
+
+
+def test_set_des_speed_decision_unpaired_readback_mismatch_still_reports_ok_envelope():
+    # Same discipline as every OTHER single-target write tool in this module
+    # (route/vehicle-composition/etc precedent): comparing written vs
+    # read-back for the UNPAIRED case is guardrails.py's postwrite job, not
+    # this tool's -- the atomic proactive check only activates when PAIRED
+    # (see the paired tests below).
+    session = FakeEditSession(readback={"des_speed_decision": "50"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no="25"
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": "25", "readback_value": "50"}
+    assert session.persist_calls == 1
+
+
+def test_set_des_speed_decision_vissim_refusal_surfaces_as_structured_error():
+    session = FakeEditSession(
+        raise_on={
+            "set_des_speed_decision": RuntimeError(
+                "AttValue failed: Attribute Desired speed distribution: Object 999999 of type "
+                "Speed Distribution does not exist."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no="999999"
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "does not exist" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# set_des_speed_decision — ATOMIC PAIRED write (v2a unit ⑧'s central new
+# behavior): both writes + both read-backs must succeed, or the whole
+# action raises BEFORE persist() is ever called.
+# ---------------------------------------------------------------------------
+
+
+def test_set_des_speed_decision_paired_happy_path():
+    session = FakeEditSession(
+        readback={"des_speed_decision": {(6, 10): "25", (7, 10): "50"}}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_decision_no="7",
+        restore_distr_no="50",
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": "25",
+        "readback_value": "25",
+        "restore_written_value": "50",
+        "restore_readback_value": "50",
+    }
+    assert "restore decision" in envelope["message"].lower() or "복원" in envelope["message"]
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {"op": "set_des_speed_decision", "decision_no": 6, "veh_class_no": 10, "des_speed_distr_no": 25},
+        {"op": "get_des_speed_decision", "decision_no": 6, "veh_class_no": 10},
+        {"op": "set_des_speed_decision", "decision_no": 7, "veh_class_no": 10, "des_speed_distr_no": 50},
+        {"op": "get_des_speed_decision", "decision_no": 7, "veh_class_no": 10},
+    ]
+
+
+def test_set_des_speed_decision_paired_primary_readback_mismatch_aborts_before_restore_write():
+    # The PRIMARY write's own readback disagrees -- unlike the unpaired case,
+    # a paired write proactively checks this BEFORE ever touching the
+    # restore decision or calling persist().
+    session = FakeEditSession(readback={"des_speed_decision": {(6, 10): "50", (7, 10): "50"}})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",  # written 25, but readback (rigged) reports 50
+        restore_decision_no="7",
+        restore_distr_no="50",
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "aborting" in envelope["message"].lower()
+    # the restore decision was NEVER touched
+    assert session.calls == [
+        {"op": "set_des_speed_decision", "decision_no": 6, "veh_class_no": 10, "des_speed_distr_no": 25},
+        {"op": "get_des_speed_decision", "decision_no": 6, "veh_class_no": 10},
+    ]
+    # nothing was persisted -- the whole action failed atomically.
+    assert session.persist_calls == 0
+
+
+def test_set_des_speed_decision_paired_restore_readback_mismatch_aborts_and_nothing_persists():
+    # THE central atomicity test: the PRIMARY write succeeds and reads back
+    # correctly, but the RESTORE write's own readback disagrees -- the whole
+    # action must still fail, and persist() must NEVER be called, so the
+    # primary write (already correct in COM's live memory) is not silently
+    # saved as a half-paired edit.
+    session = FakeEditSession(readback={"des_speed_decision": {(6, 10): "25", (7, 10): "25"}})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_decision_no="7",
+        restore_distr_no="50",  # written 50, but readback (rigged) reports 25
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "restore" in envelope["message"].lower() or "복원" in envelope["message"]
+    assert "not persisted" in envelope["message"].lower() or "atomic" in envelope["message"].lower()
+    # BOTH sets were attempted (the tool doesn't know restore will mismatch
+    # until it reads back), but persist() is the one thing that must NEVER
+    # be reached.
+    assert session.calls == [
+        {"op": "set_des_speed_decision", "decision_no": 6, "veh_class_no": 10, "des_speed_distr_no": 25},
+        {"op": "get_des_speed_decision", "decision_no": 6, "veh_class_no": 10},
+        {"op": "set_des_speed_decision", "decision_no": 7, "veh_class_no": 10, "des_speed_distr_no": 50},
+        {"op": "get_des_speed_decision", "decision_no": 7, "veh_class_no": 10},
+    ]
+    assert session.persist_calls == 0
+
+
+def test_set_des_speed_decision_paired_restore_write_itself_raises_aborts_before_persist():
+    # Vissim itself refuses the RESTORE write (e.g. a bogus restore_distr_no
+    # that slipped past preflight) -- same atomic guarantee: raises, no
+    # persist. The FIRST set_des_speed_decision call (primary) succeeds;
+    # only the SECOND (restore) raises -- a per-call rigged sequence (v2a
+    # unit ⑧'s FakeEditSession.raise_on list form).
+    session = FakeEditSession(
+        readback={"des_speed_decision": {(6, 10): "25"}},
+        raise_on={
+            "set_des_speed_decision": [None, RuntimeError("Restore decision write refused by Vissim")]
+        },
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_decision_no="7",
+        restore_distr_no="50",
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "Restore decision write refused" in envelope["message"]
+    assert session.persist_calls == 0
+    # the restore write WAS attempted (that's what raised); persist() never ran.
+    assert session.calls == [
+        {"op": "set_des_speed_decision", "decision_no": 6, "veh_class_no": 10, "des_speed_distr_no": 25},
+        {"op": "get_des_speed_decision", "decision_no": 6, "veh_class_no": 10},
+        {"op": "set_des_speed_decision", "decision_no": 7, "veh_class_no": 10, "des_speed_distr_no": 50},
+    ]
+
+
+# ---------------------------------------------------------------------------
+# set_des_speed_decision — param validation
+# ---------------------------------------------------------------------------
+
+
+def test_set_des_speed_decision_half_specified_restore_pair_is_rejected_as_invalid_params():
+    session = FakeEditSession(readback={"des_speed_decision": "25"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_decision_no="7",
+        # restore_distr_no omitted -- half-specified pair.
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_des_speed_decision_half_specified_restore_pair_other_side_is_also_rejected():
+    session = FakeEditSession(readback={"des_speed_decision": "25"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_distr_no="50",
+        # restore_decision_no omitted -- half-specified pair, the other way.
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_des_speed_decision_extra_param_is_rejected_before_the_tool_ever_runs():
+    session = FakeEditSession(readback={"des_speed_decision": "25"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        extra_field="nope",
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_des_speed_decision_non_numeric_veh_class_no_is_rejected_not_a_crash():
+    session = FakeEditSession(readback={"des_speed_decision": "25"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_decision", decision_no="6", veh_class_no="not-a-number", des_speed_distr_no="25"
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert session.persist_calls == 0
+
+
+def test_set_des_speed_decision_missing_required_param_is_rejected():
+    session = FakeEditSession(readback={"des_speed_decision": "25"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_des_speed_decision", decision_no="6", veh_class_no="10")
 
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "invalid_params"

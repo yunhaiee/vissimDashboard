@@ -406,6 +406,22 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "composition_no",
     },
+    # v2a unit ⑧: set_des_speed_decision added to the object_not_found /
+    # _TOOL_TARGET_SPEC lockstep table -- this only covers the PRIMARY
+    # decision-level lookup (des_speed_decisions object class, keyed by
+    # decision no, param "decision_no"); the SECOND-level lookup (does
+    # veh_class_no have an assignment WITHIN that decision) AND the entirely
+    # separate RESTORE-decision lookup (restore_decision_no, when the write
+    # is paired -- this table only ever names ONE param per tool) are both
+    # dedicated checks (des_speed_decision_entry_not_found, below) --
+    # mirrors set_route_relative_flow's/set_vehicle_composition_share's own
+    # split, extended for the second target a paired write can carry.
+    "set_des_speed_decision": {
+        "object_class": "des_speed_decisions",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "decision_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -415,6 +431,7 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "conflict_areas": {"ko": "충돌구간", "en": "conflict area", "ja": "錯綜区間"},
     "routing_decisions": {"ko": "차량 경로 결정", "en": "vehicle routing decision", "ja": "車両経路決定"},
     "vehicle_compositions": {"ko": "차량 조성", "en": "vehicle composition", "ja": "車両構成"},
+    "des_speed_decisions": {"ko": "희망속도결정", "en": "desired speed decision", "ja": "希望速度決定"},
 }
 
 
@@ -540,6 +557,7 @@ register(
             "set_conflict_area_status",
             "set_route_relative_flow",
             "set_vehicle_composition_share",
+            "set_des_speed_decision",
         ],
         phase="preflight",
         tier="refuse",
@@ -2546,9 +2564,22 @@ register(
 #
 # Catalog §2 "A speed decision is permanent unless you undo it": PTV is
 # explicit that a temporary speed change needs a SECOND desired speed
-# decision immediately after to restore the original speed. No M2 tool
-# creates desired speed decisions today; applies_to names the future tool
-# explicitly.
+# decision immediately after to restore the original speed.
+#
+# WOKEN FOR REAL by v2a unit ⑧ (2026-07-27): originally registered against a
+# placeholder tool name (``add_desired_speed_decision``) and param
+# (``paired_restore_decision_id``) before any real desired-speed-decision
+# write tool existed. The real tool is ``set_des_speed_decision`` (EDITS an
+# existing decision's assignment -- desired-speed decisions have no COM
+# Add/Remove, so "add" was never accurate either) with a real param,
+# ``restore_decision_no``. Retargeted in place (same constraint id, same
+# warn-tier "keep it simple" shape -- no shadow-model existence check added:
+# this fires purely off whether the write NAMES a restore target, exactly as
+# before, deliberately not gated on whether that target actually resolves,
+# since a separate refuse-tier check (des_speed_decision_entry_not_found)
+# already owns that and a co-occurring warn-tier finding on an otherwise-
+# refused action is harmless) rather than adding a second, near-duplicate
+# constraint -- this IS the catalog's own #30, not a new item.
 #
 # v2 unit (2) note: this is exactly why ``set_reduced_speed_area``
 # (services/agent/tools_edit.py, XML-injection write) is the SAFE verb for a
@@ -2562,11 +2593,11 @@ register(
 def _check_speed_decision_unpaired(
     action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
 ) -> Finding | None:
-    if action.get("tool") != "add_desired_speed_decision":
+    if action.get("tool") != "set_des_speed_decision":
         return None
 
     params = action.get("params", {})
-    if params.get("paired_restore_decision_id"):
+    if params.get("restore_decision_no"):
         return None
 
     return Finding(
@@ -2582,7 +2613,7 @@ def _check_speed_decision_unpaired(
 register(
     Constraint(
         id="speed_decision_unpaired",
-        applies_to=["add_desired_speed_decision"],
+        applies_to=["set_des_speed_decision"],
         phase="preflight",
         tier="warn",
         check=_check_speed_decision_unpaired,
@@ -4182,5 +4213,178 @@ register(
         message_ja="この変更により、車種 '{veh_type_no}' の推定比率が少数派({before_pct}%)から"
         "支配的な比率({after_pct}%)へ急激に変化します。意図した変更かご確認ください — 単位や桁の"
         "誤り(例: 生の重みの代わりに百分率のような値を入力)でないか確認することをお勧めします。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# des_speed_decision_entry_not_found (refuse, preflight) — v2a unit ⑧
+#
+# Not a §-numbered catalog entry; mirrors vehicle_composition_entry_not_found/
+# route_not_found_in_decision's exact split (the FIRST half — does the
+# PRIMARY decision_no exist at all — is object_not_found (#1), which
+# _TOOL_TARGET_SPEC already covers for that ONE param). set_des_speed_decision
+# is the first write tool whose action can name TWO decisions (the primary
+# and, when paired, the restore) -- _TOOL_TARGET_SPEC only ever names one
+# param per tool, so restore_decision_no has NO generic object_not_found
+# coverage at all; this check is the ONLY place a bogus restore_decision_no
+# (or a real decision missing the requested veh_class_no assignment, on
+# EITHER side) gets caught with a structured refusal before COM ever sees it.
+# ---------------------------------------------------------------------------
+
+
+def _des_speed_decision_role_finding(
+    role: str, decision_no: str, veh_class_no: str, decision: dict[str, Any] | None
+) -> Finding:
+    if decision is None:
+        candidates: list[str] = []
+        reason_ko = "이 결정 자체가 네트워크에 존재하지 않습니다"
+        reason_en = "this decision does not exist in the network at all"
+        reason_ja = "この決定自体がネットワークに存在しません"
+    else:
+        candidates = [str(a.get("veh_class_no", "")) for a in decision.get("veh_class_assignments", [])]
+        available_text = ", ".join(candidates) if candidates else "-"
+        reason_ko = f"이 결정에는 이 차종에 대한 배정이 없습니다 (배정된 차종: {available_text})"
+        reason_en = f"this decision has no assignment for this vehicle class (assigned: {available_text})"
+        reason_ja = f"この決定にはこの車種の割り当てがありません(割り当て済み車種: {available_text})"
+
+    role_ko = "복원(restore)" if role == "restore" else "주(primary)"
+    role_en = "restore" if role == "restore" else "primary"
+    role_ja = "復元(restore)" if role == "restore" else "主(primary)"
+
+    return Finding(
+        constraint_id="des_speed_decision_entry_not_found",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "des_speed_decision_entry_not_found",
+            role_ko=role_ko,
+            role_en=role_en,
+            role_ja=role_ja,
+            decision_no=decision_no,
+            veh_class_no=veh_class_no,
+            reason_ko=reason_ko,
+            reason_en=reason_en,
+            reason_ja=reason_ja,
+        ),
+        suggested_fix={"candidates": candidates},
+        details={
+            "role": role,
+            "decision_no": decision_no,
+            "veh_class_no": veh_class_no,
+            "available_veh_class_nos": candidates,
+        },
+    )
+
+
+def _check_des_speed_decision_entry_not_found(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_des_speed_decision":
+        return None
+
+    params = action.get("params", {})
+    veh_class_no = str(params.get("veh_class_no", ""))
+    roles: list[tuple[str, str]] = [("primary", str(params.get("decision_no", "")))]
+    restore_decision_no = params.get("restore_decision_no")
+    if restore_decision_no:
+        roles.append(("restore", str(restore_decision_no)))
+
+    for role, decision_no in roles:
+        decision = _find_by_field(shadow_model.get("des_speed_decisions", []), "no", decision_no)
+        if decision is None:
+            if role == "primary":
+                return None  # missing PRIMARY decision is object_not_found's job (#1)
+            return _des_speed_decision_role_finding(role, decision_no, veh_class_no, None)
+
+        assignment = _find_by_field(decision.get("veh_class_assignments", []), "veh_class_no", veh_class_no)
+        if assignment is None:
+            return _des_speed_decision_role_finding(role, decision_no, veh_class_no, decision)
+
+    return None
+
+
+register(
+    Constraint(
+        id="des_speed_decision_entry_not_found",
+        applies_to=["set_des_speed_decision"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_des_speed_decision_entry_not_found,
+        message_ko="{role_ko} 희망속도결정 '{decision_no}'의 차종 '{veh_class_no}' 배정을 찾을 수 "
+        "없습니다: {reason_ko}.",
+        message_en="Could not find the {role_en} desired speed decision '{decision_no}''s "
+        "assignment for vehicle class '{veh_class_no}': {reason_en}.",
+        message_ja="{role_ja}希望速度決定 '{decision_no}' の車種 '{veh_class_no}' の割り当てが"
+        "見つかりません: {reason_ja}。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# des_speed_distribution_not_found (refuse, preflight) — v2a unit ⑧
+#
+# Not a §-numbered catalog entry. COM itself already fails CLOSED on a bogus
+# SpeedDistribution number (verified live, backend/tools/
+# probe_des_speed_decisions.py: SetAttValue raises "Object 999999 of type
+# Speed Distribution does not exist") -- this check exists so the refusal
+# comes WITH a reason and a candidate list BEFORE ever touching COM, per the
+# guardrail doctrine, rather than a raw COM error string reaching the user.
+# Checks BOTH des_speed_distr_no (the primary write) and, when the write is
+# paired, restore_distr_no in ONE pass -- either one being bogus refuses.
+# ---------------------------------------------------------------------------
+
+
+def _check_des_speed_distribution_not_found(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_des_speed_decision":
+        return None
+
+    params = action.get("params", {})
+    distributions = shadow_model.get("des_speed_distributions", [])
+    known_nos = [str(d.get("no", "")) for d in distributions]
+    known_no_set = set(known_nos)
+
+    fields_to_check: list[tuple[str, Any]] = [("des_speed_distr_no", params.get("des_speed_distr_no"))]
+    restore_distr_no = params.get("restore_distr_no")
+    if restore_distr_no:
+        fields_to_check.append(("restore_distr_no", restore_distr_no))
+
+    for field_name, raw_no in fields_to_check:
+        distr_no = str(raw_no) if raw_no is not None else ""
+        if not distr_no or distr_no in known_no_set:
+            continue
+
+        candidates = difflib.get_close_matches(distr_no, known_nos, n=5) or sorted(known_no_set)[:20]
+        return Finding(
+            constraint_id="des_speed_distribution_not_found",
+            tier="refuse",
+            phase="preflight",
+            messages=_render(
+                "des_speed_distribution_not_found",
+                field=field_name,
+                distr_no=distr_no,
+                candidates=", ".join(candidates) if candidates else "-",
+            ),
+            suggested_fix={"candidates": candidates},
+            details={"field": field_name, "distr_no": distr_no, "available": sorted(known_no_set)},
+        )
+    return None
+
+
+register(
+    Constraint(
+        id="des_speed_distribution_not_found",
+        applies_to=["set_des_speed_decision"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_des_speed_distribution_not_found,
+        message_ko="속도분포 번호 '{distr_no}'({field})가 이 네트워크에 존재하지 않습니다. 사용 "
+        "가능한 속도분포 번호: {candidates}.",
+        message_en="Speed distribution '{distr_no}' ({field}) does not exist in this network. "
+        "Available speed distribution numbers: {candidates}.",
+        message_ja="速度分布番号 '{distr_no}'({field})はこのネットワークに存在しません。利用"
+        "可能な速度分布番号: {candidates}。",
     )
 )

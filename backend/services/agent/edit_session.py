@@ -229,6 +229,19 @@ class VissimEditSession:
     def get_vehicle_composition_share(self, composition_no: int, veh_type_no: int) -> float:
         return self._ensure_connected().get_vehicle_composition_share(composition_no, veh_type_no)
 
+    # v2a unit ⑧: desired-speed decision per-vehicle-class distribution
+    # assignment verbs. No interval_no, no shared-sum semantics -- each
+    # vehicle class's assignment is fully independent (verified live,
+    # backend/tools/probe_des_speed_decisions.py).
+
+    def set_des_speed_decision(
+        self, decision_no: int, veh_class_no: int, des_speed_distr_no: int
+    ) -> None:
+        self._ensure_connected().set_des_speed_decision(decision_no, veh_class_no, des_speed_distr_no)
+
+    def get_des_speed_decision(self, decision_no: int, veh_class_no: int) -> str:
+        return self._ensure_connected().get_des_speed_decision(decision_no, veh_class_no)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

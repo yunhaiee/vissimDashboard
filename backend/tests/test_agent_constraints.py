@@ -23,6 +23,8 @@ def _shadow_model(
     conflict_areas: list[dict[str, Any]] | None = None,
     routing_decisions: list[dict[str, Any]] | None = None,
     vehicle_compositions: list[dict[str, Any]] | None = None,
+    des_speed_decisions: list[dict[str, Any]] | None = None,
+    des_speed_distributions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -65,6 +67,13 @@ def _shadow_model(
     # conflict_areas/routing_decisions above.
     if vehicle_compositions is not None:
         shadow["vehicle_compositions"] = vehicle_compositions
+    # des_speed_decisions/des_speed_distributions deliberately OMITTED by
+    # default too (v2a unit ⑧) -- same reasoning as conflict_areas/
+    # routing_decisions/vehicle_compositions above.
+    if des_speed_decisions is not None:
+        shadow["des_speed_decisions"] = des_speed_decisions
+    if des_speed_distributions is not None:
+        shadow["des_speed_distributions"] = des_speed_distributions
     return shadow
 
 
@@ -115,6 +124,40 @@ def _route(
 
 def _routing_decision(no: str, routes: list[dict[str, Any]], *, link: str = "1", name: str = "") -> dict[str, Any]:
     return {"no": no, "link": link, "name": name, "routes": routes}
+
+
+def _veh_class_assignment(
+    veh_class_no: str, *, veh_class_name: str = "Car", des_speed_distr_no: str = "50", des_speed_distr_name: str = "55 mph"
+) -> dict[str, Any]:
+    return {
+        "veh_class_no": veh_class_no,
+        "veh_class_name": veh_class_name,
+        "des_speed_distr_no": des_speed_distr_no,
+        "des_speed_distr_name": des_speed_distr_name,
+    }
+
+
+def _des_speed_decision(
+    no: str,
+    veh_class_assignments: list[dict[str, Any]],
+    *,
+    name: str = "",
+    link: str = "6",
+    lane: str = "1",
+    pos: float = 100.0,
+) -> dict[str, Any]:
+    return {
+        "no": no,
+        "name": name,
+        "link": link,
+        "lane": lane,
+        "pos": pos,
+        "veh_class_assignments": veh_class_assignments,
+    }
+
+
+def _speed_distribution(no: str, name: str) -> dict[str, Any]:
+    return {"no": no, "name": name}
 
 
 def _action(tool: str, **params: Any) -> dict[str, Any]:
@@ -2160,8 +2203,13 @@ def test_simulation_resolution_unpinned_across_comparison_skipped_when_datum_abs
 
 
 def test_speed_decision_unpaired_fires_without_restore_id():
+    # v2a unit ⑧: retargeted from the placeholder "add_desired_speed_decision"
+    # tool onto the real set_des_speed_decision tool + its real
+    # restore_decision_no param (see constraints.py's #30 comment).
     shadow = _shadow_model()
-    action = _action("add_desired_speed_decision", link_id="101", position=50, speed=30)
+    action = _action(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no="25"
+    )
 
     findings = run_checks("preflight", action, shadow, {})
 
@@ -2173,11 +2221,12 @@ def test_speed_decision_unpaired_fires_without_restore_id():
 def test_speed_decision_unpaired_silent_with_restore_id():
     shadow = _shadow_model()
     action = _action(
-        "add_desired_speed_decision",
-        link_id="101",
-        position=50,
-        speed=30,
-        paired_restore_decision_id="dec-2",
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_decision_no="7",
+        restore_distr_no="50",
     )
 
     findings = run_checks("preflight", action, shadow, {})
@@ -2848,6 +2897,201 @@ def test_unbounded_com_dialog_risk_skipped_when_environment_data_absent():
 
 
 # ---------------------------------------------------------------------------
+# des_speed_decision_entry_not_found / des_speed_distribution_not_found —
+# v2a unit ⑧
+# ---------------------------------------------------------------------------
+
+_DES_SPEED_DECISIONS_FIXTURE = [
+    _des_speed_decision(
+        "6",
+        [_veh_class_assignment("10"), _veh_class_assignment("20", veh_class_name="HGV")],
+    ),
+    _des_speed_decision(
+        "7",
+        [_veh_class_assignment("10"), _veh_class_assignment("20", veh_class_name="HGV")],
+    ),
+]
+_DES_SPEED_DISTRIBUTIONS_FIXTURE = [
+    _speed_distribution("25", "25 mph"),
+    _speed_distribution("50", "55 mph"),
+]
+
+
+def test_des_speed_decision_entry_not_found_defers_to_object_not_found_when_primary_decision_missing():
+    shadow = _shadow_model(des_speed_decisions=_DES_SPEED_DECISIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_decision", decision_no="999", veh_class_no="10", des_speed_distr_no="25"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "des_speed_decision_entry_not_found" for f in findings)
+    assert any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_des_speed_decision_entry_not_found_fires_for_missing_veh_class_on_primary():
+    shadow = _shadow_model(des_speed_decisions=_DES_SPEED_DECISIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_decision", decision_no="6", veh_class_no="999", des_speed_distr_no="25"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "des_speed_decision_entry_not_found"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    assert finding.details["role"] == "primary"
+    assert finding.suggested_fix == {"candidates": ["10", "20"]}
+
+
+def test_des_speed_decision_entry_not_found_fires_for_bogus_restore_decision():
+    shadow = _shadow_model(des_speed_decisions=_DES_SPEED_DECISIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_decision_no="999",
+        restore_distr_no="50",
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "des_speed_decision_entry_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["role"] == "restore"
+    assert matches[0].details["decision_no"] == "999"
+    # A bogus restore_decision_no has NO _TOOL_TARGET_SPEC coverage of its
+    # own (that table only ever names the "decision_no" param) -- this check
+    # is the ONLY refusal for it.
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_des_speed_decision_entry_not_found_fires_for_missing_veh_class_on_restore():
+    # A FRESH decisions list (never the shared _DES_SPEED_DECISIONS_FIXTURE,
+    # which other tests reuse by reference) with vehClass 10 removed from
+    # decision 7 so the restore side is the one missing.
+    shadow = _shadow_model(
+        des_speed_decisions=[
+            _des_speed_decision(
+                "6",
+                [_veh_class_assignment("10"), _veh_class_assignment("20", veh_class_name="HGV")],
+            ),
+            _des_speed_decision("7", [_veh_class_assignment("20", veh_class_name="HGV")]),
+        ]
+    )
+    action = _action(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_decision_no="7",
+        restore_distr_no="50",
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "des_speed_decision_entry_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["role"] == "restore"
+    assert matches[0].details["decision_no"] == "7"
+
+
+def test_des_speed_decision_entry_not_found_silent_when_pair_fully_resolves():
+    shadow = _shadow_model(des_speed_decisions=_DES_SPEED_DECISIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_decision_no="7",
+        restore_distr_no="50",
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "des_speed_decision_entry_not_found" for f in findings)
+
+
+def test_des_speed_decision_entry_not_found_does_not_apply_to_unrelated_tool():
+    shadow = _shadow_model(des_speed_decisions=_DES_SPEED_DECISIONS_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "des_speed_decision_entry_not_found" for f in findings)
+
+
+def test_des_speed_distribution_not_found_fires_for_bogus_primary_distribution():
+    shadow = _shadow_model(
+        des_speed_decisions=_DES_SPEED_DECISIONS_FIXTURE,
+        des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE,
+    )
+    action = _action(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no="999999"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "des_speed_distribution_not_found"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    assert finding.details["field"] == "des_speed_distr_no"
+    assert "25" in finding.details["available"] and "50" in finding.details["available"]
+
+
+def test_des_speed_distribution_not_found_fires_for_bogus_restore_distribution():
+    shadow = _shadow_model(
+        des_speed_decisions=_DES_SPEED_DECISIONS_FIXTURE,
+        des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE,
+    )
+    action = _action(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_decision_no="7",
+        restore_distr_no="999999",
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "des_speed_distribution_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["field"] == "restore_distr_no"
+
+
+def test_des_speed_distribution_not_found_silent_for_real_distributions():
+    shadow = _shadow_model(
+        des_speed_decisions=_DES_SPEED_DECISIONS_FIXTURE,
+        des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE,
+    )
+    action = _action(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no="25",
+        restore_decision_no="7",
+        restore_distr_no="50",
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "des_speed_distribution_not_found" for f in findings)
+
+
+def test_des_speed_distribution_not_found_does_not_apply_to_other_tools():
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "des_speed_distribution_not_found" for f in findings)
+
+
+# ---------------------------------------------------------------------------
 # M3.1 — final registry shape (all 4 batches landed)
 # ---------------------------------------------------------------------------
 
@@ -2871,9 +3115,14 @@ def test_registry_size_matches_m3_1_catalog_port():
     # catalog entry, a defensive addition" shapes for the new
     # set_vehicle_composition_share tool -- #36 vehicle_composition_share_
     # redistribution_gap already existed and was corrected IN PLACE, not
-    # added) == 52.
+    # added) == 52, + 2 (v2a unit ⑧'s des_speed_decision_entry_not_found /
+    # des_speed_distribution_not_found, both "not a §-numbered catalog
+    # entry, a defensive addition" shapes for the new set_des_speed_decision
+    # tool -- #30 speed_decision_unpaired already existed and was
+    # RETARGETED in place from a placeholder tool name onto the real one,
+    # not added) == 54.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 52
+    assert len(get_registry()) == 54
 
 
 def test_registry_has_unique_ids():

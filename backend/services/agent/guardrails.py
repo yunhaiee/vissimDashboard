@@ -81,6 +81,12 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # vehType) pair, mirroring "routes" above exactly, for the identical
     # reason).
     "vehicle_composition_entries": "id",
+    # v2a unit ⑧: the FLAT des_speed_decision_entries list
+    # tools_network._flatten_des_speed_decision_entries builds (not
+    # "des_speed_decisions" -- an assignment's own identity is the
+    # (decision, vehClass) pair, mirroring "routes"/"vehicle_composition_
+    # entries" above exactly).
+    "des_speed_decision_entries": "id",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -193,6 +199,64 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "id_param_parts": ("composition_no", "veh_type_no"),
         "value_field": "rel_flow",
         "none_means": "not_persisted",
+    },
+    # v2a unit ⑧: desired-speed decision per-vehicle-class distribution
+    # assignment. desSpeedDistr is a plain XML attribute the parser can
+    # always see whenever the vehClassDesSpeedDistribution element itself
+    # exists (verified live -- backend/tools/probe_des_speed_decisions.py --
+    # no opaque-blob case like signal cycle_time), so a None after a write IS
+    # evidence the write never reached the file, same as status/rel_flow
+    # above. "id_param_parts" -- same TWO-part identity reasoning as routes/
+    # vehicle-composition entries (decision_no + veh_class_no). This entry
+    # covers ONLY the PRIMARY (decision_no) target; the optional RESTORE
+    # target (restore_decision_no) is a SECOND object entirely -- see
+    # _PAIRED_EXTRA_TARGET_SPEC below, the generalization this tool needed
+    # because _WRITE_TARGET_FIELD_SPEC itself only ever names ONE target per
+    # tool.
+    "set_des_speed_decision": {
+        "object_class": "des_speed_decision_entries",
+        "id_param_parts": ("decision_no", "veh_class_no"),
+        "value_field": "des_speed_distr_no",
+        "none_means": "not_persisted",
+        # LIVE FINDING (backend/tools/live_check_des_speed_decision.py): the
+        # flat entry's des_speed_distr_name is looked up from
+        # des_speed_distr_no at PARSE time -- writing the id ALWAYS also
+        # changes the name as an unavoidable side effect, so both must be
+        # exempted together or a correct write false-positives as "something
+        # else moved" (reproduced live on Roundabout Billings.US: '55 mph'
+        # -> '10 mph Roundabout HGV'). See _write_target_fields's own
+        # docstring for the general "coupled_fields" mechanism this uses.
+        "coupled_fields": ("des_speed_distr_name",),
+    },
+}
+
+# v2a unit ⑧: ``set_des_speed_decision`` is the first write tool whose action
+# can touch TWO separate objects (the primary decision's assignment AND, when
+# ``restore_decision_no`` is given, a SECOND decision's assignment for the
+# same vehicle class) -- ``_WRITE_TARGET_FIELD_SPEC`` has no built-in
+# multi-target mechanism (one exemption per tool, by design, per the M2.2
+# brief this table has followed since M2.3). Rather than redesign that table
+# for a single tool, this is a small, ADDITIVE lookup consulted only for
+# tools present here: when ``trigger_param`` is truthy in the action's own
+# params, a SECOND (object_id, field) exemption is added to the SAME
+# object_class's diff exemptions (see ``_nothing_else_moved_diff`` and
+# ``_target_not_persisted_finding`` below) -- without it, a legitimate paired
+# write's own restore-side change would read as "something else moved" and
+# refuse-and-rollback a correct edit, defeating the whole feature. Every
+# OTHER tool's behavior is byte-unchanged: this dict is empty for them, so
+# the diff/persisted-check machinery below falls back to exactly the single-
+# target behavior it has always had.
+_PAIRED_EXTRA_TARGET_SPEC: dict[str, dict[str, Any]] = {
+    "set_des_speed_decision": {
+        "object_class": "des_speed_decision_entries",
+        "id_param_parts": ("restore_decision_no", "veh_class_no"),
+        "value_field": "des_speed_distr_no",
+        "none_means": "not_persisted",
+        "trigger_param": "restore_decision_no",
+        # Same live-verified coupling as the primary spec's own entry above
+        # -- the restore target's des_speed_distr_name changes as the same
+        # unavoidable parse-time side effect.
+        "coupled_fields": ("des_speed_distr_name",),
     },
 }
 
@@ -369,16 +433,23 @@ def _diff_object_list(
     id_field: str,
     before: list[dict[str, Any]],
     after: list[dict[str, Any]],
-    exempt_field: tuple[str, frozenset[str]] | None,
+    exempt_targets: list[tuple[str, frozenset[str]]] | None,
 ) -> list[dict[str, Any]]:
     """Structural diff of one shadow-model object list, id-keyed.
 
-    ``exempt_field`` is ``(object_id, field_names)`` — the ONE object (by id)
-    whose listed field NAMES are allowed to differ without becoming evidence
-    (the write action's own intended target — usually one field, but v2 unit
-    ⑤'s ``set_vehicle_input_volume`` exempts a small coupled set, see
-    ``_write_target_fields``). Every other addition, removal, or field-level
-    change becomes one evidence entry.
+    ``exempt_targets`` is a list of ``(object_id, field_names)`` pairs —
+    every object (by id) whose listed field NAMES are allowed to differ
+    without becoming evidence. Almost every write tool contributes exactly
+    ONE entry here (the write action's own intended target — usually one
+    field, but v2 unit ⑤'s ``set_vehicle_input_volume`` exempts a small
+    coupled set, see ``_write_target_fields``); v2a unit ⑧'s
+    ``set_des_speed_decision`` is the first tool that can contribute TWO,
+    when its optional paired restore write is present (see
+    ``_PAIRED_EXTRA_TARGET_SPEC``) — TWO DIFFERENT objects in the SAME
+    object_class, each with its own exempt field set, so a single
+    ``(id, fields)`` tuple could no longer represent every tool's needs.
+    Every other addition, removal, or field-level change becomes one
+    evidence entry.
     """
     before_by_id = _index_by_id(before, id_field)
     after_by_id = _index_by_id(after, id_field)
@@ -391,10 +462,8 @@ def _diff_object_list(
     for obj_id in sorted(set(before_by_id) & set(after_by_id)):
         before_obj, after_obj = before_by_id[obj_id], after_by_id[obj_id]
         for field_name in sorted(set(before_obj) | set(after_obj)):
-            if (
-                exempt_field is not None
-                and exempt_field[0] == obj_id
-                and field_name in exempt_field[1]
+            if exempt_targets is not None and any(
+                target_id == obj_id and field_name in fields for target_id, fields in exempt_targets
             ):
                 continue
             before_value, after_value = before_obj.get(field_name), after_obj.get(field_name)
@@ -433,7 +502,8 @@ def _interval_no_from_action(spec: dict[str, str], action: dict[str, Any]) -> in
 def _write_target_fields(spec: dict[str, str], action: dict[str, Any]) -> frozenset[str]:
     """Which top-level shadow-model field NAME(s) the nothing-else-moved diff
     should exempt for this write. Every tool without an ``interval_param``
-    exempts exactly ``{spec["value_field"]}`` (unchanged since M1.2/M2.2).
+    exempts ``{spec["value_field"]} | spec.get("coupled_fields", ())``
+    (unchanged since M1.2/M2.2 for tools with no coupled fields).
     ``set_vehicle_input_volume`` (v2 unit ⑤) exempts ``{"volume", "volumes",
     "interval_count"}`` together, UNCONDITIONALLY regardless of interval_no
     -- see the ``_WRITE_TARGET_FIELD_SPEC`` comment for why the narrower
@@ -441,13 +511,21 @@ def _write_target_fields(spec: dict[str, str], action: dict[str, Any]) -> frozen
     false-positive regression against the demo network's zero-interval
     vehicle inputs, and why exempting the trio together is the more correct
     reading (they are coupled/derived views of the same XML structure), not
-    merely a workaround. ``action`` is accepted for signature symmetry with
+    merely a workaround. ``set_des_speed_decision`` (v2a unit ⑧) is the
+    NON-interval case of the identical lesson, found LIVE
+    (``backend/tools/live_check_des_speed_decision.py``): the flat entry's
+    ``des_speed_distr_name`` is looked up from ``des_speed_distr_no`` at
+    PARSE time (``tools_network._parse_des_speed_decisions``), so writing
+    the id field always also changes the name field as an unavoidable side
+    effect -- ``coupled_fields`` generalizes the "exempt the whole derived
+    group together" fix beyond the interval-specific shape v2 unit ⑤
+    introduced it for. ``action`` is accepted for signature symmetry with
     :func:`_resolve_saved_value` but is not read here since v2 unit ⑤ made
     this exemption interval_no-independent.
     """
     del action
     if spec.get("interval_param") is None:
-        return frozenset({spec["value_field"]})
+        return frozenset({spec["value_field"], *spec.get("coupled_fields", ())})
     fields = {spec["value_field"], spec["interval_list_field"]}
     count_field = spec.get("interval_count_field")
     if count_field:
@@ -485,14 +563,36 @@ def _resolve_saved_value(
     return field_label, entry.get(value_field)
 
 
+def _paired_extra_target_id(extra_spec: dict[str, Any], action: dict[str, Any]) -> str | None:
+    """The extra (restore) target's id, or ``None`` when this action's own
+    ``trigger_param`` is absent/falsy — i.e. the write was NOT paired this
+    time, so no second exemption applies (see ``_PAIRED_EXTRA_TARGET_SPEC``).
+    """
+    trigger_value = action.get("params", {}).get(extra_spec["trigger_param"])
+    if not trigger_value:
+        return None
+    return _target_id_for_spec(extra_spec, action)
+
+
 def _nothing_else_moved_diff(
     action: dict[str, Any], before_model: dict[str, Any], after_model: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    spec = _WRITE_TARGET_FIELD_SPEC.get(action.get("tool", ""))
-    exemptions: dict[str, tuple[str, frozenset[str]]] = {}
+    tool = action.get("tool", "")
+    spec = _WRITE_TARGET_FIELD_SPEC.get(tool)
+    exemptions: dict[str, list[tuple[str, frozenset[str]]]] = {}
     if spec is not None:
         target_id = _target_id_for_spec(spec, action)
-        exemptions[spec["object_class"]] = (target_id, _write_target_fields(spec, action))
+        exemptions.setdefault(spec["object_class"], []).append(
+            (target_id, _write_target_fields(spec, action))
+        )
+
+    extra_spec = _PAIRED_EXTRA_TARGET_SPEC.get(tool)
+    if extra_spec is not None:
+        extra_target_id = _paired_extra_target_id(extra_spec, action)
+        if extra_target_id is not None:
+            exemptions.setdefault(extra_spec["object_class"], []).append(
+                (extra_target_id, frozenset({extra_spec["value_field"], *extra_spec.get("coupled_fields", ())}))
+            )
 
     evidence: list[dict[str, Any]] = []
     for object_class, id_field in _SHADOW_OBJECT_ID_FIELDS.items():
@@ -546,35 +646,15 @@ def _values_differ(before: Any, after: Any) -> bool:
     return before != after
 
 
-def _target_not_persisted_finding(
-    action: dict[str, Any], after_model: dict[str, Any], com_result: dict[str, Any]
+def _check_one_target_persisted(
+    spec: dict[str, Any], action: dict[str, Any], after_model: dict[str, Any], written_value: Any
 ) -> Finding | None:
-    """Controller review addition: verify the written value is actually
-    present in the AFTER shadow model (i.e. in the saved network file the
-    model was reparsed from).
-
-    The read-back compare proves Vissim's IN-MEMORY state took the write;
-    the nothing-else-moved diff proves nothing UNRELATED changed in the
-    file. Neither proves the intended change itself reached the file — a
-    write tool that succeeds over COM but never calls ``save_net_as`` before
-    returning produces identical before/after models (diff: silent) and a
-    matching read-back (compare: silent), leaving the versioned artifact a
-    lie. This check closes that triangle.
-
-    Degrades silently (returns ``None``) when it cannot make a claim either
-    way: unmapped tool, no ``written_value`` in the verification payload,
-    target object absent from the after model (``object_not_found``/the
-    diff's "removed" evidence own those cases), or the parsed field is
-    ``None`` — the parser cannot see that attribute for this object (e.g.
-    signal ``cycle_time`` for opaque program-driven controllers, per the
-    M2.1 ``CycTm`` finding in docs/phase2/DECISIONS.md), so a file-level
-    persistence claim would be a guess, and a refusal here would be a false
-    positive rather than caution.
+    """The shared single-target implementation both
+    :func:`_target_not_persisted_finding` calls run — once for a tool's
+    primary target, and (v2a unit ⑧) once more for its optional paired
+    restore target when present. See that function's own docstring for the
+    overall degrade-silently policy this shares.
     """
-    spec = _WRITE_TARGET_FIELD_SPEC.get(action.get("tool", ""))
-    if spec is None or "written_value" not in com_result:
-        return None
-
     target_id = _target_id_for_spec(spec, action)
     id_field = _SHADOW_OBJECT_ID_FIELDS[spec["object_class"]]
     target = next(
@@ -589,7 +669,6 @@ def _target_not_persisted_finding(
         return None
 
     field, saved_value = _resolve_saved_value(spec, action, target)
-    written_value = com_result["written_value"]
     if saved_value is None:
         if spec.get("none_means") != "not_persisted":
             # Parser-blind field: no file-level claim can be made either
@@ -632,6 +711,62 @@ def _target_not_persisted_finding(
             }
         },
     )
+
+
+def _target_not_persisted_finding(
+    action: dict[str, Any], after_model: dict[str, Any], com_result: dict[str, Any]
+) -> Finding | None:
+    """Controller review addition: verify the written value is actually
+    present in the AFTER shadow model (i.e. in the saved network file the
+    model was reparsed from).
+
+    The read-back compare proves Vissim's IN-MEMORY state took the write;
+    the nothing-else-moved diff proves nothing UNRELATED changed in the
+    file. Neither proves the intended change itself reached the file — a
+    write tool that succeeds over COM but never calls ``save_net_as`` before
+    returning produces identical before/after models (diff: silent) and a
+    matching read-back (compare: silent), leaving the versioned artifact a
+    lie. This check closes that triangle.
+
+    Degrades silently (returns ``None``) when it cannot make a claim either
+    way: unmapped tool, no ``written_value`` in the verification payload,
+    target object absent from the after model (``object_not_found``/the
+    diff's "removed" evidence own those cases), or the parsed field is
+    ``None`` — the parser cannot see that attribute for this object (e.g.
+    signal ``cycle_time`` for opaque program-driven controllers, per the
+    M2.1 ``CycTm`` finding in docs/phase2/DECISIONS.md), so a file-level
+    persistence claim would be a guess, and a refusal here would be a false
+    positive rather than caution.
+
+    **v2a unit ⑧:** when the tool has a ``_PAIRED_EXTRA_TARGET_SPEC`` entry
+    AND its ``trigger_param`` is present in this action's own params, the
+    SAME check also runs against the restore target (keyed off
+    ``com_result["restore_written_value"]``) after the primary target
+    passes — genuine on-disk proof for BOTH halves of a paired write, not
+    just an inference from the primary target's own check. (In practice a
+    correctly-implemented paired write tool never reaches persist() at all
+    unless both COM read-backs already matched, so this mostly re-confirms
+    what the tool already verified — see tools_edit.py's
+    ``set_des_speed_decision`` docstring — but it is real, independent proof
+    against the SAVED FILE, not merely COM's in-memory state.)
+    """
+    spec = _WRITE_TARGET_FIELD_SPEC.get(action.get("tool", ""))
+    if spec is None or "written_value" not in com_result:
+        return None
+
+    finding = _check_one_target_persisted(spec, action, after_model, com_result["written_value"])
+    if finding is not None:
+        return finding
+
+    extra_spec = _PAIRED_EXTRA_TARGET_SPEC.get(action.get("tool", ""))
+    if extra_spec is not None and "restore_written_value" in com_result:
+        extra_target_id = _paired_extra_target_id(extra_spec, action)
+        if extra_target_id is not None:
+            finding = _check_one_target_persisted(
+                extra_spec, action, after_model, com_result["restore_written_value"]
+            )
+
+    return finding
 
 
 def _diff_finding(evidence: list[dict[str, Any]]) -> Finding:

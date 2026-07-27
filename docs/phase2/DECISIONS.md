@@ -1818,3 +1818,53 @@ vehicle_composition_share_drastic_change (warn, minority→dominant). Registry 4
 siblings byte-untouched → load_check clean). Entry-identity stability verified
 within-session only, like routes. TOOL-CATALOG v2a: 4 of 12 shipped. Full suite 1050
 passed / 1 skipped / known RAG failure only.
+
+---
+
+## 2026-07-27 — v2a unit ⑧: desired-speed decision atomic pairs shipped; SpeedDistributions is one shared collection
+
+**Context:** probed live on Roundabout Billings.US (Beijing.CN has zero desSpeedDecision
+elements). Net.DesSpeedDecisions → per-decision .VehClassDesSpeedDistr child collection
+(matches the XML tag exactly, scalar VehClass/DesSpeedDistr, NO ItemByKey — same landmine
+as unit ⑦'s vehicle-composition entries). Distributions live on Net.SpeedDistributions,
+NOT a dedicated DesSpeedDistributions collection (AttributeError) — the SAME object type
+set_reduced_speed_area (unit ②) already injects into, XML and COM both. No shared-sum
+semantics (unlike route/vehicle-composition RelFlow): each vehicle class's assignment is
+fully independent, live-verified immediately and after SaveNetAs+reload. COM fails
+CLOSED on a bogus distribution number. Static scan of all 584 real decisions across
+every example network: name blank on every one, no grouping attribute — pairing is a
+PURE human convention. Recorded landmines: COM AttValue('Lane') returns "6-1" vs XML
+"6 1"; AttValue('Pos') on an imperial-display network read ~3.28× the XML value
+(metres-vs-feet).
+
+**Decision:** shadow_model gains des_speed_decisions (nested) + des_speed_decision_entries
+(flat, decision.vehClass-keyed) + des_speed_distributions (flat no/name). New
+get_des_speed_decisions (40-cap + decision_no/link_no filters) + SEPARATE
+get_des_speed_distributions (60-cap; shared lookup table, not needed on every read). New
+set_des_speed_decision: the FIRST atomic paired write — optional restore_decision_no/
+restore_distr_no (all-or-nothing via pydantic model_validator) makes the SAME approved
+action write a second decision's assignment for the same vehicle class, BOTH read-backs
+proactively verified BEFORE persist() (prior single-target tools persist unconditionally
+and let postwrite #6 catch mismatches — insufficient for two targets since #6 inspects
+one written/readback pair). guardrails generalized additively: _PAIRED_EXTRA_TARGET_SPEC
++ list-of-exemptions diff signature + per-target _check_one_target_persisted. Woke the
+pre-existing #30 speed_decision_unpaired CATALOG-GAP placeholder in place (was
+registered against a fictional add_desired_speed_decision tool — retargeted onto the
+real tool/restore_decision_no). Two new refuse checks:
+des_speed_decision_entry_not_found (primary OR restore side) and
+des_speed_distribution_not_found (both distr params). Registry 52→54.
+
+**Live-caught fix:** first live-check run false-positived — the flat entry's derived
+des_speed_distr_name (parse-time lookup) changes as an unavoidable side effect of every
+correct write ('55 mph' → '10 mph Roundabout HGV') and wasn't exempted. Generalized
+_write_target_fields with a coupled_fields mechanism on both spec tables, pinned by a
+regression test reproducing the exact observed values. Separately, the getter's return
+type was corrected int→str after a live postwrite type-mismatch the fake-session tests
+missed (fixtures now string-typed throughout).
+
+**Consequence:** paired slow-zone edits inspectable and editable, live-verified end to
+end (four bogus-target refusal shapes → paired COM write+readback '12'/'40' on two
+decisions → persisted XML with both writes and both siblings byte-correct → load_check
+clean). TOOL-CATALOG v2a: 6 of 12 bullets shipped (one tool satisfies both the PAIRS
+and distribution-assignment items). Full suite 1096 passed / 1 skipped / known RAG
+failure only.

@@ -130,7 +130,30 @@ one is raised, each vehicle type's actual composition share is only
 computed at simulation time as its weight over the SAME composition's
 total, so always present the resulting share, never the raw number alone;
 also mention which vehicle inputs use the composition — changing it changes
-the mix for all of them at once). Call the matching write tool from the contract below
+the mix for all of them at once), and a desired-speed decision's per-vehicle-
+class distribution assignment (`set_des_speed_decision` — use
+`get_des_speed_decisions` first to see each decision's current assignments
+and `get_des_speed_distributions` to see valid distribution numbers to
+propose; params are `decision_no`, `veh_class_no`, `des_speed_distr_no`).
+**A desired-speed decision is PERMANENT once a vehicle passes it — there is
+no time-boxing.** If the user's request describes a temporary slow zone
+("slow trucks down through this curve", "reduce speed near the school"),
+that is normally modeled as a PAIR: the decision you are editing (the zone
+start) PLUS a second, already-existing decision immediately downstream that
+restores the original distribution — identify BOTH from `get_des_speed_decisions`
+(Vissim has no structural link between them; names are always blank, so
+match by link/position yourself) and call `set_des_speed_decision` ONCE with
+the extra `restore_decision_no`/`restore_distr_no` params set — this single
+approved action writes BOTH assignments atomically (either both land, or the
+whole action fails and nothing is saved). If you cannot identify a genuine
+restore decision, say so plainly and either ask the user to confirm a
+permanent change is intended, or offer `set_reduced_speed_area` instead — a
+spatially-bounded reduced-speed area needs no pairing at all, since it stays
+in effect only over its own `[from_m, from_m + length_m)` slice regardless of
+how long it is active for. Editing only the "slow down" decision and never
+identifying a restore is the catalog's classic silent-failure trap: the rest
+of the network stays slowed for the whole remaining trip while Vissim reports
+confident, wrong-context numbers. Call the matching write tool from the contract below
 exactly like any read tool — do not ask the user for permission yourself
 first; the approval pause described in §2 handles that. Never pretend a
 write already happened before you have actually called its tool and seen

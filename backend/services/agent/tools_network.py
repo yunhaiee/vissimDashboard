@@ -51,7 +51,18 @@ vehType) mirror keyed by a synthesized ``"{composition_no}.{veh_type}"`` id
 composition entry has no single-token identity of its own either (verified
 live: ``IVehicleCompositionRelativeFlowContainer`` has no ``ItemByKey`` at
 all). See :func:`_parse_vehicle_compositions`'s own docstring for the
-live-verified findings).
+live-verified findings), ``des_speed_decisions`` and
+``des_speed_decision_entries`` (v2a unit ⑧, 2026-07-27: parsed here directly
+from ``<desSpeedDecision>`` / ``<vehClassDesSpeedDistribution>`` — same
+"nested for the planner, flat for guardrails.py" split as routes/vehicle-
+composition entries, keyed by a synthesized ``"{decision_no}.{veh_class_no}"``
+id; unlike RelFlow, there is NO shared-sum/renormalization semantics here at
+all — each vehicle class's distribution assignment is fully independent. See
+:func:`_parse_des_speed_decisions`'s own docstring for the live-verified
+findings, including COM's fail-closed behavior on a bogus distribution
+reference), and ``des_speed_distributions`` (flat no/name list, shared with
+``set_reduced_speed_area``'s own distribution object type — see
+:func:`_parse_speed_distributions`).
 
 ``resolve_object`` is the "network-RAG" pattern (research-digest #10): a
 small, deterministic lexical top-k retrieval over the shadow model's objects.
@@ -82,7 +93,14 @@ from services.inpx_parser import parse_network
 from services.signal_parser import parse_signal_controllers
 
 ObjectType = Literal[
-    "link", "node", "vehicle_input", "signal", "conflict_area", "routing_decision", "vehicle_composition"
+    "link",
+    "node",
+    "vehicle_input",
+    "signal",
+    "conflict_area",
+    "routing_decision",
+    "vehicle_composition",
+    "des_speed_decision",
 ]
 
 # {object_type: {shadow_key, id_field, name_field}} — the one place that maps
@@ -109,6 +127,15 @@ _OBJECT_TYPE_SPECS: dict[str, dict[str, str]] = {
     # not through this generic object_type machinery (same split as
     # "routing_decision" above).
     "vehicle_composition": {"shadow_key": "vehicle_compositions", "id_field": "no", "name_field": "name"},
+    # v2a unit ⑧: keyed against the NESTED "des_speed_decisions" list (one
+    # entry per decision, not per vehicle-class assignment) -- same split as
+    # "routing_decision"/"vehicle_composition" above. Real ``name`` attribute
+    # exists in Vissim's own object model (unlike conflict areas) but is
+    # empirically ALWAYS blank (verified: 584/584 real decisions across every
+    # example network that has any) -- resolve_object/get_network_overview
+    # still work fine off "no" alone when name is empty, same as every other
+    # object type here.
+    "des_speed_decision": {"shadow_key": "des_speed_decisions", "id_field": "no", "name_field": "name"},
 }
 
 _TOP_K = 5
@@ -565,6 +592,179 @@ def _flatten_vehicle_composition_entries(vehicle_compositions: list[dict[str, An
     return flat
 
 
+def _parse_vehicle_class_names(root: ET.Element) -> dict[str, str]:
+    """{no: name} from ``<vehicleClasses><vehicleClass no="X" name="Y">`` --
+    used only to enrich :func:`_parse_des_speed_decisions`'s per-assignment
+    ``veh_class_name`` field; not exposed as its own shadow-model key (no
+    tool needs a standalone vehicle-class list yet)."""
+    return {vc.get("no", ""): vc.get("name", "") for vc in root.findall(".//vehicleClasses/vehicleClass")}
+
+
+def _parse_speed_distributions(root: ET.Element) -> list[dict[str, Any]]:
+    """{no, name} per ``<speedDistributions><speedDistribution>``.
+
+    v2a unit ⑧ (2026-07-27). This is the SAME distribution object type
+    :func:`services.simulation_network_builder.inject_reduced_speed_area`
+    already injects for ``set_reduced_speed_area`` (v2 unit ②) -- confirmed
+    at the COM level too by this unit's own probe
+    (``backend/tools/probe_des_speed_decisions.py``, Roundabout Billings.US):
+    the collection is ``Net.SpeedDistributions`` (``Net.DesSpeedDistributions``
+    does NOT exist -- ``AttributeError``), not a dedicated per-feature
+    collection. Desired-speed decisions and reduced-speed areas share ONE
+    distribution object type end to end, XML and COM both. ``no``/``name``
+    match the .inpx XML attributes exactly (no CycTm/NodeRes-style landmine
+    here); COM's own ``ItemByKey`` on this collection fails CLOSED for a
+    bogus number (verified live), and so does ``SetAttValue`` on a
+    desSpeedDecision entry given a bogus distribution number ("Object 999999
+    of type Speed Distribution does not exist") -- COM already protects
+    against a dangling reference at the write layer, but
+    ``constraints.py``'s ``des_speed_distribution_not_found`` still refuses
+    proactively (with a candidate list) so the failure is a structured
+    refusal, not a raw COM error string, per the guardrail doctrine.
+    """
+    return [
+        {"no": d.get("no", ""), "name": d.get("name", "")}
+        for d in root.findall(".//speedDistributions/speedDistribution")
+    ]
+
+
+def _parse_lane_token(raw: str | None) -> tuple[str, str]:
+    """``"<linkNo> <laneNo>"`` -> ``(link_no, lane_no)`` -- the SAME
+    space-separated XML encoding every other lane-scoped element in this
+    codebase uses (reducedSpeedArea, connector endpoints). NOT the COM-side
+    hyphenated ``"6-1"`` form ``AttValue('Lane')`` returns (v2a unit ⑧ probe
+    finding, backend/tools/probe_des_speed_decisions.py) -- irrelevant here
+    since this parses straight from the XML, never from a live COM read."""
+    if not raw:
+        return "", ""
+    parts = raw.split()
+    if len(parts) < 2:
+        return (parts[0], "") if parts else ("", "")
+    return parts[0], parts[1]
+
+
+def _parse_des_speed_decisions(root: ET.Element) -> list[dict[str, Any]]:
+    """{no, name, link, lane, pos, veh_class_assignments: [{veh_class_no,
+    veh_class_name, des_speed_distr_no, des_speed_distr_name}]} per
+    ``<desSpeedDecision>``.
+
+    v2a unit ⑧ (2026-07-27). COM surface verified live
+    (``backend/tools/probe_des_speed_decisions.py``, Roundabout Billings.US
+    clone -- Beijing.CN, every other v2-unit probe's default network, has
+    ZERO desSpeedDecision elements): ``Net.DesSpeedDecisions`` (``GetAll()``
+    count 5 == the XML element count) -> per-decision ``.VehClassDesSpeedDistr``
+    child collection (matches the XML child tag ``vehClassDesSpeedDistr``
+    exactly) -> per-entry ``AttValue('VehClass'/'DesSpeedDistr')``, BOTH
+    SCALAR (unlike route RelFlow's indexed-only form; like vehicle-
+    composition RelFlow's scalar-only form -- always verify, never assume
+    from a prior unit's finding). A SECOND, direct sub-attributed form ALSO
+    works for READING (``decision.AttValue('DesSpeedDistr(10)')`` -> the same
+    value the child-collection entry reports) but was not verified for
+    WRITING and is not used here -- the child-collection route is the one
+    this unit proved end to end (set, read back, persist, fresh-reload).
+
+    **Entry identity: the vehClass number, but with NO ``ItemByKey``** --
+    the SAME landmine v2 unit ⑦ found for vehicle-composition entries
+    (confirmed live via ``hasattr``): ``vissim_com.VissimController.
+    _des_speed_decision_entry_by_veh_class`` scans ``GetAll()`` and matches
+    client-side.
+
+    **No shared-sum/renormalization semantics at all** (unlike route/
+    vehicle-composition RelFlow): each vehicle class's distribution
+    assignment is a fully independent value -- writing vehClass=10's
+    DesSpeedDistr on a 2-class decision left vehClass=20's own assignment
+    byte-identical, confirmed live both immediately after the write and
+    after a ``SaveNetAs`` + fresh COM reload. There is no "raw weight" /
+    "estimated share" narrative to surface here.
+
+    **Fail-closed everywhere it matters, verified live:** a bogus attribute
+    id, a bogus decision number (``ItemByKey``), and -- critically -- a
+    bogus DISTRIBUTION number passed to ``SetAttValue`` on a real entry
+    ("Object 999999 of type Speed Distribution does not exist") ALL raise.
+    COM itself refuses a dangling distribution reference; this codebase's
+    own ``des_speed_distribution_not_found`` preflight check exists so that
+    refusal is structured (with candidates) rather than a raw COM error
+    reaching the user.
+
+    **``lane`` is a two-token ``"<linkNo> <laneNo>"`` XML attribute**
+    (:func:`_parse_lane_token`); COM's own ``AttValue('Lane')`` returns a
+    DIFFERENT, hyphenated ``"6-1"`` string form -- not used here, parsed
+    straight from XML like every other object this module builds.
+    ``pos`` also has a live COM/XML DISCREPANCY worth recording even though
+    this unit never writes it: on this US-unit (imperial-display) example
+    network, ``AttValue('Pos')`` read back ~3.28x the XML ``pos`` value
+    (356.77 vs 108.744 -- the metres-to-feet ratio) -- Vissim's COM layer
+    appears to report position in the network's DISPLAY unit while the
+    .inpx always stores metres internally. ``pos`` here is parsed from the
+    XML (metres, matching every other position-bearing field this codebase
+    parses) and never read via COM, so this is a recorded landmine for any
+    FUTURE position-writing tool, not a live bug in this one.
+
+    **Pairing is a pure human convention, not a structural link** (matches
+    a network-wide static scan finding, this module's own probe script
+    docstring, and ``constraints.py``'s pre-existing ``speed_decision_
+    unpaired`` CATALOG-GAP placeholder's own premise): ``name`` is blank on
+    every real decision observed (584/584 across every example network that
+    has any) -- there is no grouping attribute, naming convention, or any
+    other machine-discoverable link between a "set" decision and its
+    "restore" decision anywhere in the .inpx or over COM. A caller (human or
+    LLM) must identify the restore decision itself; this codebase does not
+    and will not try to infer pairs from geometry.
+    """
+    veh_class_names = _parse_vehicle_class_names(root)
+    distr_names = {
+        d.get("no", ""): d.get("name", "") for d in root.findall(".//speedDistributions/speedDistribution")
+    }
+    result: list[dict[str, Any]] = []
+    for dec in root.findall(".//desSpeedDecision"):
+        link_no, lane_no = _parse_lane_token(dec.get("lane"))
+        assignments: list[dict[str, Any]] = []
+        for entry in dec.findall(".//vehClassDesSpeedDistribution"):
+            veh_class_no = entry.get("vehClass", "")
+            distr_no = entry.get("desSpeedDistr", "")
+            assignments.append(
+                {
+                    "veh_class_no": veh_class_no,
+                    "veh_class_name": veh_class_names.get(veh_class_no, ""),
+                    "des_speed_distr_no": distr_no,
+                    "des_speed_distr_name": distr_names.get(distr_no, ""),
+                }
+            )
+        result.append(
+            {
+                "no": dec.get("no", ""),
+                "name": dec.get("name", ""),
+                "link": link_no,
+                "lane": lane_no,
+                "pos": _coerce_float_or_none(dec.get("pos")),
+                "veh_class_assignments": assignments,
+            }
+        )
+    return result
+
+
+def _flatten_des_speed_decision_entries(des_speed_decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A flat, one-entry-per-(decision, vehClass) view of
+    ``des_speed_decisions``, keyed by a synthesized ``"{decision_no}.
+    {veh_class_no}"`` ``id`` -- mirrors :func:`_flatten_routes`/
+    :func:`_flatten_vehicle_composition_entries`'s established precedent
+    exactly, for the identical reason: an assignment has no single-token
+    identity in Vissim itself (its real identity is the (decision, vehClass)
+    pair; see :func:`_parse_des_speed_decisions`'s docstring), so this is the
+    shape ``guardrails.py``'s postwrite machinery (the nothing-else-moved
+    diff + the target-persisted check) needs to compare a real, id-keyed
+    object list.
+    """
+    flat: list[dict[str, Any]] = []
+    for dec in des_speed_decisions:
+        for assignment in dec["veh_class_assignments"]:
+            entry = dict(assignment)
+            entry["id"] = f"{dec['no']}.{assignment['veh_class_no']}"
+            entry["decision_no"] = dec["no"]
+            flat.append(entry)
+    return flat
+
+
 def _signal_to_contract_shape(info: dict[str, Any]) -> dict[str, Any]:
     """Map a signal_parser SignalInfo down to the M0.3 contract shape.
 
@@ -591,6 +791,7 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
     link_ids = {str(link.get("id", "")) for link in net["links"]}
     routing_decisions = _parse_routing_decisions(root, link_ids)
     vehicle_compositions = _parse_vehicle_compositions(root)
+    des_speed_decisions = _parse_des_speed_decisions(root)
     return {
         "links": net["links"],
         "nodes": net["nodes"],
@@ -601,6 +802,10 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         "routes": _flatten_routes(routing_decisions),
         "vehicle_compositions": vehicle_compositions,
         "vehicle_composition_entries": _flatten_vehicle_composition_entries(vehicle_compositions),
+        # v2a unit ⑧
+        "des_speed_decisions": des_speed_decisions,
+        "des_speed_decision_entries": _flatten_des_speed_decision_entries(des_speed_decisions),
+        "des_speed_distributions": _parse_speed_distributions(root),
     }
 
 
@@ -970,4 +1175,117 @@ def get_vehicle_compositions(params: GetVehicleCompositionsParams) -> dict[str, 
                 f"Showing {len(rendered)} of {total} vehicle compositions. Narrow with "
                 "composition_no to see a specific one instead of the whole list."
             )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# get_des_speed_decisions / get_des_speed_distributions -- v2a unit ⑧
+#
+# BOUNDED OUTPUT from day one (the 2026-07-27 lesson): a single real network
+# can carry hundreds of desSpeedDecision elements (Signalization RBC
+# Boise.US: 283) -- an unfiltered call caps the list at
+# _DES_SPEED_DECISIONS_DEFAULT_CAP with an explicit truncated flag + hint,
+# and decision_no/link_no filters to narrow (link_no mirrors
+# get_conflict_areas' own link_no filter -- decisions, like conflict areas,
+# are lane/link-scoped objects a user might ask about "on link 6").
+#
+# TWO separate read tools, not one nested response, is a deliberate choice
+# (the task brief left this open): distributions are a SHARED lookup table
+# (also used by set_reduced_speed_area, v2 unit ②) the model only needs when
+# it doesn't already know a valid distribution number to propose -- bundling
+# the full distributions list into EVERY get_des_speed_decisions call would
+# repeat that payload on every read even when the model already has it from
+# an earlier turn (or already knows the number the user asked for), the same
+# "don't pay for something you don't need every time" reasoning
+# get_vehicle_inputs/get_signal_controllers already follow by being separate
+# small tools rather than folding into get_network_overview.
+# ---------------------------------------------------------------------------
+
+#: Item cap for an UNFILTERED get_des_speed_decisions call -- Boise.US alone
+#: has 283 real decisions; 40 stays comfortably inside even the compact
+#: snippet budget for a typical entry shape (a handful of veh-class
+#: assignments each).
+_DES_SPEED_DECISIONS_DEFAULT_CAP = 40
+
+#: Item cap for an UNFILTERED get_des_speed_distributions call -- every real
+#: example network probed carries well under 100 speed distributions
+#: (Roundabout Billings.US: 13; shared with pedestrian/reduced-speed-area
+#: distributions), but the cap discipline is applied uniformly regardless.
+_DES_SPEED_DISTRIBUTIONS_DEFAULT_CAP = 60
+
+
+class GetDesSpeedDecisionsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision_no: str | None = Field(
+        default=None,
+        description="Exact desired-speed decision 'no' to return (narrows to at most one result).",
+    )
+    link_no: str | None = Field(
+        default=None,
+        description="Return only decisions positioned on this link.",
+    )
+
+
+@tool(name="get_des_speed_decisions", tier="read", provider="inspect", params=GetDesSpeedDecisionsParams)
+def get_des_speed_decisions(params: GetDesSpeedDecisionsParams) -> dict[str, Any]:
+    """Return the network's desired-speed decisions (id, link/lane/position, and each vehicle class's assigned speed-distribution) -- a desired-speed decision is PERMANENT once a vehicle passes it: assigning a slower distribution here stays in effect for the rest of that vehicle's trip unless a SECOND decision immediately downstream restores the original distribution (there is no structural link between the two in Vissim -- pairing is purely by matching link/position, so identify the restore decision yourself before calling set_des_speed_decision with restore_decision_no). Optionally filter by decision_no (exact match) or link_no -- an unfiltered call on a large network returns only the first 40 (with an explicit truncated flag and a hint), so narrow with these filters rather than requesting the whole list."""
+    decisions = _current_shadow_model()["des_speed_decisions"]
+
+    if params.decision_no is not None:
+        decisions = [d for d in decisions if str(d.get("no")) == str(params.decision_no)]
+    if params.link_no is not None:
+        decisions = [d for d in decisions if str(d.get("link")) == str(params.link_no)]
+
+    total = len(decisions)
+    filtered = params.decision_no is not None or params.link_no is not None
+    if filtered:
+        return {"count": total, "des_speed_decisions": decisions}
+
+    capped = decisions[:_DES_SPEED_DECISIONS_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {"count": total, "des_speed_decisions": capped, "truncated": truncated}
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} desired-speed decisions. Narrow with "
+            "decision_no or link_no to see a specific one instead of the whole list."
+        )
+    return result
+
+
+class GetDesSpeedDistributionsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    distribution_no: str | None = Field(
+        default=None,
+        description="Exact speed distribution 'no' to return (narrows to at most one result).",
+    )
+
+
+@tool(
+    name="get_des_speed_distributions",
+    tier="read",
+    provider="inspect",
+    params=GetDesSpeedDistributionsParams,
+)
+def get_des_speed_distributions(params: GetDesSpeedDistributionsParams) -> dict[str, Any]:
+    """Return the network's speed distributions (id, name) -- these are the valid targets for set_des_speed_decision's des_speed_distr_no and restore_distr_no params; a number not in this list will be refused before it ever reaches Vissim. Shared with set_reduced_speed_area (one distribution object type, two features). Optionally filter by distribution_no -- an unfiltered call on a large network returns only the first 60 (with an explicit truncated flag and a hint)."""
+    distributions = _current_shadow_model()["des_speed_distributions"]
+
+    if params.distribution_no is not None:
+        distributions = [d for d in distributions if str(d.get("no")) == str(params.distribution_no)]
+
+    total = len(distributions)
+    filtered = params.distribution_no is not None
+    if filtered:
+        return {"count": total, "des_speed_distributions": distributions}
+
+    capped = distributions[:_DES_SPEED_DISTRIBUTIONS_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {"count": total, "des_speed_distributions": capped, "truncated": truncated}
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} speed distributions. Narrow with distribution_no "
+            "to see a specific one instead of the whole list."
+        )
     return result

@@ -27,6 +27,7 @@ def _shadow_model(
     conflict_areas: list[dict[str, Any]] | None = None,
     routes: list[dict[str, Any]] | None = None,
     vehicle_composition_entries: list[dict[str, Any]] | None = None,
+    des_speed_decision_entries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -45,6 +46,10 @@ def _shadow_model(
         # "{composition_no}.{veh_type}") -- see tools_network.
         # _flatten_vehicle_composition_entries for the real shape this mirrors.
         "vehicle_composition_entries": vehicle_composition_entries if vehicle_composition_entries is not None else [],
+        # v2a unit ⑧: the FLAT des_speed_decision_entries list
+        # (id = "{decision_no}.{veh_class_no}") -- see tools_network.
+        # _flatten_des_speed_decision_entries for the real shape this mirrors.
+        "des_speed_decision_entries": des_speed_decision_entries if des_speed_decision_entries is not None else [],
     }
 
 
@@ -75,6 +80,17 @@ def _route(
 
 def _action(tool: str, **params: Any) -> dict[str, Any]:
     return {"tool": tool, "params": params}
+
+
+def _des_speed_entry(decision_no: str, veh_class_no: str, *, des_speed_distr_no: str | None = "50") -> dict[str, Any]:
+    return {
+        "id": f"{decision_no}.{veh_class_no}",
+        "decision_no": decision_no,
+        "veh_class_no": veh_class_no,
+        "veh_class_name": "Car",
+        "des_speed_distr_no": des_speed_distr_no,
+        "des_speed_distr_name": "55 mph",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1050,6 +1066,326 @@ def test_postwrite_diff_still_flags_an_added_geometry_point():
     diff = report.first_refusal().details["nothing_else_moved_diff"]
     assert diff[0]["object_class"] == "links"
     assert diff[0]["field"] == "points"
+
+
+# ---------------------------------------------------------------------------
+# postwrite — set_des_speed_decision (v2a unit ⑧): the FIRST multi-target
+# write. UNPAIRED behaves exactly like every other single-target tool
+# (id_param_parts primary-only); PAIRED additionally exempts a SECOND
+# object (the restore decision's own entry) via _PAIRED_EXTRA_TARGET_SPEC --
+# without that exemption, the restore write's own legitimate field change
+# would read as "something else moved" and refuse a correct write.
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_unpaired_diff_is_silent_when_only_the_target_entrys_distr_changed():
+    action = _action(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no=25
+    )
+    before = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="50"),
+            _des_speed_entry("6", "20", des_speed_distr_no="50"),
+        ]
+    )
+    after = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="25"),
+            _des_speed_entry("6", "20", des_speed_distr_no="50"),
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": "25", "readback_value": "25"})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_unpaired_diff_flags_an_unrelated_sibling_entrys_distr_change_as_evidence():
+    # The written entry's OWN id ("6.10") is exempt, but a SIBLING entry
+    # (same decision, different vehClass -- "6.20") silently changing too
+    # must still be evidence -- there is no shared-sum semantics here at
+    # all, so a sibling actually moving is a genuine anomaly.
+    action = _action(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no=25
+    )
+    before = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="50"),
+            _des_speed_entry("6", "20", des_speed_distr_no="50"),
+        ]
+    )
+    after = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="25"),
+            _des_speed_entry("6", "20", des_speed_distr_no="99"),  # unrelated drift
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": "25", "readback_value": "25"})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {
+        "object_class": "des_speed_decision_entries",
+        "object_id": "6.20",
+        "change": "field_changed",
+        "field": "des_speed_distr_no",
+        "before": "50",
+        "after": "99",
+    } in diff
+
+
+def test_postwrite_paired_diff_exempts_both_the_primary_and_restore_entries():
+    # THE central v2a unit ⑧ regression: without _PAIRED_EXTRA_TARGET_SPEC,
+    # decision 7's own (legitimate) field change would be unexempted
+    # "something else moved" evidence and wrongly refuse a correct paired
+    # write.
+    action = _action(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no=25,
+        restore_decision_no="7",
+        restore_distr_no=50,
+    )
+    before = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="50"),
+            _des_speed_entry("7", "10", des_speed_distr_no="25"),
+        ]
+    )
+    after = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="25"),
+            _des_speed_entry("7", "10", des_speed_distr_no="50"),
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action,
+        before,
+        after,
+        {
+            "written_value": "25",
+            "readback_value": "25",
+            "restore_written_value": "50",
+            "restore_readback_value": "50",
+        },
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_paired_diff_still_flags_a_genuinely_unrelated_third_entry():
+    # Both the primary (6.10) AND restore (7.10) targets are exempt, but a
+    # THIRD, wholly unrelated entry (6.20) drifting is still evidence -- the
+    # exemption is narrow (exactly the two named targets), not a blanket
+    # "anything in this object class is fine" pass.
+    action = _action(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no=25,
+        restore_decision_no="7",
+        restore_distr_no=50,
+    )
+    before = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="50"),
+            _des_speed_entry("6", "20", des_speed_distr_no="50"),
+            _des_speed_entry("7", "10", des_speed_distr_no="25"),
+        ]
+    )
+    after = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="25"),
+            _des_speed_entry("6", "20", des_speed_distr_no="99"),  # unrelated drift
+            _des_speed_entry("7", "10", des_speed_distr_no="50"),
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action,
+        before,
+        after,
+        {
+            "written_value": "25",
+            "readback_value": "25",
+            "restore_written_value": "50",
+            "restore_readback_value": "50",
+        },
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {
+        "object_class": "des_speed_decision_entries",
+        "object_id": "6.20",
+        "change": "field_changed",
+        "field": "des_speed_distr_no",
+        "before": "50",
+        "after": "99",
+    } in diff
+
+
+def test_postwrite_des_speed_decision_target_persisted_check_happy_path_unpaired():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(des_speed_decision_entries=[_des_speed_entry("6", "10", des_speed_distr_no="50")])
+    after = _shadow_model(des_speed_decision_entries=[_des_speed_entry("6", "10", des_speed_distr_no="25")])
+    action = _action(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no=25
+    )
+
+    report = engine.postwrite(action, before, after, {"written_value": "25", "readback_value": "25"})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_des_speed_decision_target_persisted_check_fires_when_primary_not_persisted():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(des_speed_decision_entries=[_des_speed_entry("6", "10", des_speed_distr_no="50")])
+    after = _shadow_model(
+        des_speed_decision_entries=[_des_speed_entry("6", "10", des_speed_distr_no="50")]  # unchanged on disk
+    )
+    action = _action(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no=25
+    )
+
+    report = engine.postwrite(action, before, after, {"written_value": "25", "readback_value": "25"})
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "des_speed_decision_entries"
+    assert check["object_id"] == "6.10"
+    assert check["saved_value"] == "50"
+
+
+def test_postwrite_des_speed_decision_target_persisted_check_fires_when_restore_not_persisted():
+    # The PRIMARY target persisted correctly, but the RESTORE target's own
+    # saved value never reached the file -- the extra-target persisted
+    # check (keyed off com_result["restore_written_value"]) must catch this
+    # independently of the primary's own (passing) check.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="50"),
+            _des_speed_entry("7", "10", des_speed_distr_no="25"),
+        ]
+    )
+    after = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="25"),  # primary DID persist
+            _des_speed_entry("7", "10", des_speed_distr_no="25"),  # restore did NOT
+        ]
+    )
+    action = _action(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no=25,
+        restore_decision_no="7",
+        restore_distr_no=50,
+    )
+
+    report = engine.postwrite(
+        action,
+        before,
+        after,
+        {
+            "written_value": "25",
+            "readback_value": "25",
+            "restore_written_value": "50",
+            "restore_readback_value": "50",
+        },
+    )
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "des_speed_decision_entries"
+    assert check["object_id"] == "7.10"
+    assert check["saved_value"] == "25"
+
+
+def test_postwrite_diff_exempts_the_coupled_des_speed_distr_name_field_too():
+    # LIVE FINDING (backend/tools/live_check_des_speed_decision.py, first
+    # run): des_speed_distr_name is looked up from des_speed_distr_no at
+    # PARSE time (tools_network._parse_des_speed_decisions), so a real write
+    # ALWAYS also changes the name field as an unavoidable side effect ('55
+    # mph' -> '10 mph Roundabout HGV', reproduced live on Roundabout
+    # Billings.US) -- without the "coupled_fields" exemption this genuinely
+    # correct write false-positived as "something else moved". Both the
+    # PRIMARY and RESTORE targets' own names change in a paired write.
+    action = _action(
+        "set_des_speed_decision",
+        decision_no="6",
+        veh_class_no="10",
+        des_speed_distr_no=12,
+        restore_decision_no="7",
+        restore_distr_no=40,
+    )
+    before = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="50"),
+            _des_speed_entry("7", "10", des_speed_distr_no="50"),
+        ]
+    )
+    after = _shadow_model(
+        des_speed_decision_entries=[
+            {**_des_speed_entry("6", "10", des_speed_distr_no="12"), "des_speed_distr_name": "10 mph Roundabout HGV"},
+            {**_des_speed_entry("7", "10", des_speed_distr_no="40"), "des_speed_distr_name": "45 mph"},
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action,
+        before,
+        after,
+        {
+            "written_value": "12",
+            "readback_value": "12",
+            "restore_written_value": "40",
+            "restore_readback_value": "40",
+        },
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_des_speed_decision_extra_target_check_silent_when_action_is_unpaired():
+    # No restore_decision_no in this action -- _PAIRED_EXTRA_TARGET_SPEC's
+    # trigger_param is absent, so only the primary target is checked, even
+    # though "des_speed_decision_entries" also contains a "7.10" entry from
+    # some unrelated earlier state.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="50"),
+            _des_speed_entry("7", "10", des_speed_distr_no="25"),
+        ]
+    )
+    after = _shadow_model(
+        des_speed_decision_entries=[
+            _des_speed_entry("6", "10", des_speed_distr_no="25"),
+            _des_speed_entry("7", "10", des_speed_distr_no="25"),  # untouched, irrelevant here
+        ]
+    )
+    action = _action(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no=25
+    )
+
+    report = engine.postwrite(action, before, after, {"written_value": "25", "readback_value": "25"})
+
+    assert report.findings == []
+    assert report.blocking is False
 
 
 # ---------------------------------------------------------------------------
