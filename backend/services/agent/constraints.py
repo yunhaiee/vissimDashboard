@@ -128,7 +128,8 @@ NOT encoded here — see "Excluded from this module" below.
 - Volume is always per hour, whatever the interval ->
   ``vehicle_input_multi_interval_write_gap``
   (test_vehicle_input_multi_interval_write_gap_fires_when_datum_present)
-- "More trucks" redistributes rather than adds ->
+- "More trucks" redistributes rather than adds (a raw weight, not an
+  auto-renormalized share -- see v2 unit ⑦'s corrected finding below) ->
   ``vehicle_composition_share_redistribution_gap``
   (test_vehicle_composition_share_redistribution_gap_always_warns_for_that_tool)
 - Scaling demand automatically scales routes — don't do it twice ->
@@ -217,6 +218,7 @@ DECISIONS.md entry.
 from __future__ import annotations
 
 import difflib
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -390,6 +392,20 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "decision_no",
     },
+    # v2 unit ⑦: set_vehicle_composition_share added to the object_not_found
+    # / _TOOL_TARGET_SPEC lockstep table -- this only covers the
+    # COMPOSITION-level lookup (vehicle_compositions object class, keyed by
+    # composition no); the SECOND-level lookup (does veh_type_no exist
+    # WITHIN that composition) has no single flat id to check against a
+    # single object list the way every other tool here does, so it is a
+    # dedicated check (vehicle_composition_entry_not_found, below) --
+    # mirrors set_route_relative_flow's own split exactly.
+    "set_vehicle_composition_share": {
+        "object_class": "vehicle_compositions",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "composition_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -398,6 +414,7 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "links": {"ko": "링크", "en": "link", "ja": "リンク"},
     "conflict_areas": {"ko": "충돌구간", "en": "conflict area", "ja": "錯綜区間"},
     "routing_decisions": {"ko": "차량 경로 결정", "en": "vehicle routing decision", "ja": "車両経路決定"},
+    "vehicle_compositions": {"ko": "차량 조성", "en": "vehicle composition", "ja": "車両構成"},
 }
 
 
@@ -522,6 +539,7 @@ register(
             "set_reduced_speed_area",
             "set_conflict_area_status",
             "set_route_relative_flow",
+            "set_vehicle_composition_share",
         ],
         phase="preflight",
         tier="refuse",
@@ -2912,13 +2930,38 @@ register(
 # ---------------------------------------------------------------------------
 # #36 vehicle_composition_share_redistribution_gap (warn, preflight)
 #
-# Catalog §4 "'More trucks' redistributes rather than adds": vehicle mixes
-# are relative shares normalized to 100%; raising the truck share LOWERS the
-# car share, total stays the same. No M2 tool edits vehicle composition
-# shares today; unconditional warn whenever that (not-yet-existing) tool is
-# called — the ambiguity this catalog entry names is inherent to the verb
-# itself, not dependent on any missing datum.
+# Catalog §4 "'More trucks' redistributes rather than adds". ORIGINAL
+# premise (pre-v2-unit-⑦, before set_vehicle_composition_share existed or
+# any COM verification had been done): "vehicle mixes are relative shares
+# normalized to 100%; raising the truck share LOWERS the car share" — i.e.
+# that Vissim RENORMALIZES sibling entries on write. CORRECTED live in v2
+# unit ⑦ (2026-07-27, backend/tools/probe_vehicle_compositions.py): this was
+# a plausible-looking guess that turned out WRONG, the same landmine class as
+# CycTm/NodeRes in docs/phase2/DECISIONS.md. Verified fact: RelFlow is a RAW
+# weight — writing one entry's RelFlow leaves every sibling entry's own
+# stored RelFlow completely UNCHANGED (confirmed live + after a SaveNetAs +
+# fresh COM reload); the actual composition share is only ever a DERIVED
+# number, computed at simulation time (and for display) as this entry's
+# RelFlow divided by the SUM of every entry's RelFlow in the SAME
+# composition — exactly mirroring set_route_relative_flow's own
+# route_relative_flow_split_confirm (#48, v2 unit ⑥). This check now mirrors
+# that one's shape: it ALWAYS fires (whenever the target resolves; a missing
+# composition/vehType is #1's/vehicle_composition_entry_not_found's job) so
+# the composition's current entry count, the estimated resulting share
+# (computed from the OTHER entries' CURRENT relFlow plus this proposed new
+# value), and an explicit single-entry caveat are unconditionally echoed
+# into the approval card's warning list — regardless of whether the
+# planner's own free-text summary happens to explain the normalization.
+# Deliberately warn-tier, not refuse: a confirmation aid, not a problem with
+# the write itself.
 # ---------------------------------------------------------------------------
+
+
+def _rel_flow_for_veh_type(entries: list[dict[str, Any]], veh_type_no: str) -> float | None:
+    entry = _find_by_field(entries, "veh_type", veh_type_no)
+    if entry is None:
+        return None
+    return _coerce_number(entry.get("rel_flow"))
 
 
 def _check_vehicle_composition_share_redistribution_gap(
@@ -2928,17 +2971,84 @@ def _check_vehicle_composition_share_redistribution_gap(
         return None
 
     params = action.get("params", {})
+    composition_no = str(params.get("composition_no", ""))
+    veh_type_no = str(params.get("veh_type_no", ""))
+    raw_new_rel_flow = params.get("rel_flow")
+    if raw_new_rel_flow is None:
+        return None
+    new_rel_flow = _coerce_number(raw_new_rel_flow)
+    if new_rel_flow is None:
+        return None
+
+    composition = _find_by_field(shadow_model.get("vehicle_compositions", []), "no", composition_no)
+    if composition is None:
+        return None  # missing target is object_not_found's job (#1)
+    entries = composition.get("entries", [])
+    target = _find_by_field(entries, "veh_type", veh_type_no)
+    if target is None:
+        return None  # missing target is vehicle_composition_entry_not_found's job
+
+    old_rel_flow = _coerce_number(target.get("rel_flow"))
+    entry_count = len(entries)
+
+    sibling_sum = 0.0
+    sibling_known = True
+    for entry in entries:
+        if str(entry.get("veh_type", "")) == veh_type_no:
+            continue
+        sibling_value = _coerce_number(entry.get("rel_flow"))
+        if sibling_value is None:
+            sibling_known = False
+            break
+        sibling_sum += sibling_value
+
+    if entry_count <= 1:
+        share_pct: float | None = 100.0
+        share_note_ko = "이 조성에는 이 차종 하나뿐이므로, relFlow 값과 무관하게 실제 비율은 항상 " \
+            "100%입니다."
+        share_note_en = "This composition has only this one vehicle type, so the actual share is " \
+            "always 100% regardless of the relFlow value."
+        share_note_ja = "この構成にはこの車種しかないため、relFlowの値に関わらず実際の比率は常に" \
+            "100%です。"
+    elif sibling_known and (sibling_sum + new_rel_flow) > 0:
+        share_pct = round((new_rel_flow / (sibling_sum + new_rel_flow)) * 100, 1)
+        share_note_ko = f"이 조성의 다른 차종들이 현재 relFlow를 유지한다고 가정하면, 이 차종의 " \
+            f"예상 실제 비율은 약 {share_pct}%입니다."
+        share_note_en = f"Assuming the composition's other vehicle types keep their current " \
+            f"relFlow, this vehicle type's estimated actual share is about {share_pct}%."
+        share_note_ja = f"この構成の他の車種が現在のrelFlowを維持すると仮定すると、この車種の推定" \
+            f"実際比率は約{share_pct}%です。"
+    else:
+        share_pct = None
+        share_note_ko = "다른 차종의 relFlow 값을 알 수 없어 예상 비율을 계산할 수 없습니다."
+        share_note_en = "The resulting share could not be estimated (another vehicle type's " \
+            "relFlow is unknown)."
+        share_note_ja = "他の車種のrelFlow値が不明なため、予想比率を計算できません。"
+
     return Finding(
         constraint_id="vehicle_composition_share_redistribution_gap",
         tier="warn",
         phase="preflight",
         messages=_render(
             "vehicle_composition_share_redistribution_gap",
-            composition_id=params.get("composition_id", "?"),
-            class_id=params.get("class_id", "?"),
+            composition_no=composition_no,
+            veh_type_no=veh_type_no,
+            old_rel_flow=old_rel_flow if old_rel_flow is not None else "?",
+            new_rel_flow=raw_new_rel_flow,
+            entry_count=entry_count,
+            share_note_ko=share_note_ko,
+            share_note_en=share_note_en,
+            share_note_ja=share_note_ja,
         ),
-        suggested_fix={"hint": "ask whether the user means redistribution or an additive total-volume increase"},
-        details={"composition_id": params.get("composition_id"), "class_id": params.get("class_id")},
+        suggested_fix=None,
+        details={
+            "composition_no": composition_no,
+            "veh_type_no": veh_type_no,
+            "old_rel_flow": old_rel_flow,
+            "new_rel_flow": new_rel_flow,
+            "entry_count": entry_count,
+            "estimated_share_pct": share_pct,
+        },
     )
 
 
@@ -2949,18 +3059,22 @@ register(
         phase="preflight",
         tier="warn",
         check=_check_vehicle_composition_share_redistribution_gap,
-        message_ko="조성 '{composition_id}'의 클래스 '{class_id}' 비율 변경은 다른 클래스 비율을 "
-        "자동으로 낮춥니다(합계 100% 고정). 사용자가 '트럭을 늘려달라'고 했을 때 재분배를 의미하는지, "
-        "총량을 늘리며 나머지는 그대로 두는 것을 의미하는지 확인 없이는 둘 다 그럴듯하지만 결과가 "
-        "크게 다릅니다.",
-        message_en="Changing class '{class_id}''s share in composition '{composition_id}' "
-        "automatically lowers other classes' shares (they sum to 100%). Whether the user means "
-        "redistribution or 'more trucks AND the same number of cars' (total volume rises too) "
-        "is ambiguous without asking — both are legitimate and produce very different results.",
-        message_ja="構成 '{composition_id}' のクラス '{class_id}' の比率変更は、他のクラスの比率を"
-        "自動的に下げます(合計100%固定)。ユーザーが「トラックを増やして」と言った場合、再分配を"
-        "意味するのか、総量を増やしつつ他はそのままにすることを意味するのかは確認なしには曖昧で"
-        "あり、どちらも妥当ですが結果は大きく異なります。",
+        message_ko="차량 조성 '{composition_no}'의 차종 '{veh_type_no}' relFlow를 {old_rel_flow} → "
+        "{new_rel_flow}(으)로 변경하려 합니다. relFlow는 백분율이 아니라 원시 가중치이며, Vissim은 "
+        "같은 조성 안의 모든 차종 relFlow 합계에 대한 비율로 실제 구성 비율을 시뮬레이션 시점에 "
+        "계산합니다 — 이 값을 바꿔도 다른 차종 자체의 relFlow는 그대로 남습니다 (이 조성의 차종 수: "
+        "{entry_count}개). {share_note_ko}",
+        message_en="Proposing to change vehicle composition '{composition_no}' vehicle type "
+        "'{veh_type_no}' relFlow from {old_rel_flow} to {new_rel_flow}. relFlow is a RAW weight, "
+        "not a percentage — Vissim computes the actual composition split at simulation time as "
+        "each vehicle type's share of the SUM of every vehicle type's relFlow in the same "
+        "composition, and writing this value leaves every OTHER vehicle type's own relFlow "
+        "untouched (this composition has {entry_count} vehicle type(s)). {share_note_en}",
+        message_ja="車両構成 '{composition_no}' の車種 '{veh_type_no}' のrelFlowを {old_rel_flow} "
+        "から {new_rel_flow} に変更しようとしています。relFlowは百分率ではなく生の重みであり、"
+        "Vissimは同じ構成内の全車種のrelFlow合計に対する比率として実際の構成比率をシミュレーション"
+        "時に計算します — この値を変更しても他の車種自身のrelFlowはそのまま残ります(この構成の"
+        "車種数: {entry_count})。{share_note_ja}",
     )
 )
 
@@ -3768,5 +3882,305 @@ register(
         "重みであり、Vissimは同じ決定内の全経路のrelFlow合計に対する比率として実際の交通配分を"
         "シミュレーション時に計算します — この値を変更しても他の経路自身のrelFlowはそのまま残り"
         "ます（この決定の経路数: {route_count}）。{share_note_ja}",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# vehicle_composition_entry_not_found (refuse, preflight) — v2 unit ⑦
+#
+# Not a §-numbered catalog entry; the SECOND half of set_vehicle_composition_
+# share's object-resolution (the FIRST half — does composition_no exist at
+# all — is object_not_found (#1), which _TOOL_TARGET_SPEC already covers),
+# mirroring route_not_found_in_decision's (#46) exact split for the same
+# reason: a composition's relative-flow entry has no flat, cross-composition
+# id space of their own (vehType "100" can appear in many different
+# compositions), so this cannot reuse #1's single-flat-list machinery; it
+# looks the target composition up first (deferring to #1 when even THAT
+# fails) and then checks veh_type_no against that ONE composition's own
+# entries list.
+# ---------------------------------------------------------------------------
+
+
+def _check_vehicle_composition_entry_not_found(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_vehicle_composition_share":
+        return None
+
+    params = action.get("params", {})
+    composition_no = str(params.get("composition_no", ""))
+    veh_type_no = str(params.get("veh_type_no", ""))
+
+    composition = _find_by_field(shadow_model.get("vehicle_compositions", []), "no", composition_no)
+    if composition is None:
+        return None  # missing composition is object_not_found's job (#1)
+
+    entries = composition.get("entries", [])
+    if _find_by_field(entries, "veh_type", veh_type_no) is not None:
+        return None
+
+    candidates = [str(e.get("veh_type", "")) for e in entries]
+    return Finding(
+        constraint_id="vehicle_composition_entry_not_found",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "vehicle_composition_entry_not_found",
+            composition_no=composition_no,
+            veh_type_no=veh_type_no,
+            candidates=", ".join(candidates) if candidates else "-",
+        ),
+        suggested_fix=candidates,
+        details={"composition_no": composition_no, "veh_type_no": veh_type_no, "candidates": candidates},
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_composition_entry_not_found",
+        applies_to=["set_vehicle_composition_share"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_vehicle_composition_entry_not_found,
+        message_ko="차량 조성 '{composition_no}'에 차종 번호 '{veh_type_no}'이(가) 없습니다. 이 "
+        "조성의 사용 가능한 차종 번호: {candidates}.",
+        message_en="Vehicle composition '{composition_no}' has no vehicle type numbered "
+        "'{veh_type_no}'. This composition's available vehicle type numbers: {candidates}.",
+        message_ja="車両構成 '{composition_no}' に車種番号 '{veh_type_no}' はありません。この構成で"
+        "利用可能な車種番号: {candidates}。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# vehicle_composition_weight_invalid (refuse, preflight) — v2 unit ⑦
+#
+# Not a §-numbered catalog entry; a defensive range check mirroring #2
+# (volume_out_of_range)'s shape. RelFlow is a weight, not a percentage (see
+# vehicle_composition_share_redistribution_gap's own docstring) -- a
+# negative or zero weight has no physical meaning (Vissim's own COM write
+# was not probed for this edge case since the risk of a malformed value
+# reaching a live network unexamined is exactly what preflight exists to
+# prevent), and a non-finite value (NaN/±inf) can only ever be a client-side
+# bug, never a real request.
+# ---------------------------------------------------------------------------
+
+
+def _check_vehicle_composition_weight_invalid(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_vehicle_composition_share":
+        return None
+
+    params = action.get("params", {})
+    raw_rel_flow = params.get("rel_flow")
+    if raw_rel_flow is None:
+        return None
+    rel_flow = _coerce_number(raw_rel_flow)
+    if rel_flow is None:
+        return None
+
+    if math.isfinite(rel_flow) and rel_flow > 0:
+        return None
+
+    return Finding(
+        constraint_id="vehicle_composition_weight_invalid",
+        tier="refuse",
+        phase="preflight",
+        messages=_render("vehicle_composition_weight_invalid", rel_flow=raw_rel_flow),
+        suggested_fix={"min": "greater than 0", "must_be": "finite"},
+        details={"rel_flow": raw_rel_flow},
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_composition_weight_invalid",
+        applies_to=["set_vehicle_composition_share"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_vehicle_composition_weight_invalid,
+        message_ko="요청한 relFlow 값 {rel_flow}은(는) 유효하지 않습니다. relFlow는 0보다 크고 "
+        "유한한 값이어야 합니다.",
+        message_en="Requested relFlow value {rel_flow} is invalid. relFlow must be greater than "
+        "0 and a finite number.",
+        message_ja="指定されたrelFlow値 {rel_flow} は無効です。relFlowは0より大きい有限の値である"
+        "必要があります。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# vehicle_composition_referenced_by_vehicle_inputs (warn, preflight) — v2
+# unit ⑦
+#
+# Not a §-numbered catalog entry; a defensive addition specific to
+# set_vehicle_composition_share. A composition is a shared object exactly
+# like a driving behavior (#40, driving_behavior_shared_object_edit) or a
+# signal cycle time shared across a corridor (#-, signal_cycle_change_may_
+# break_corridor_sync): editing it changes the vehicle mix for EVERY vehicle
+# input that references it (tools_network._parse_vehicle_compositions'
+# referencing_vehicle_input_nos, scanning every interval's vehComp -- v2
+# unit ⑦ probe finding), not just whatever the user had in mind when asking.
+# Fires only when the datum is present and non-empty (a composition with no
+# known references is not evidence of anything -- silent, not a false
+# "0 vehicle inputs" claim).
+# ---------------------------------------------------------------------------
+
+
+def _check_vehicle_composition_referenced_by_vehicle_inputs(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_vehicle_composition_share":
+        return None
+
+    params = action.get("params", {})
+    composition_no = str(params.get("composition_no", ""))
+    composition = _find_by_field(shadow_model.get("vehicle_compositions", []), "no", composition_no)
+    if composition is None:
+        return None  # missing target is object_not_found's job (#1)
+
+    referencing = [str(x) for x in composition.get("referencing_vehicle_input_nos", []) or []]
+    if not referencing:
+        return None
+
+    refs_ko, refs_en, refs_ja = _capped_join(referencing, "개", "vehicle inputs", "件")
+    return Finding(
+        constraint_id="vehicle_composition_referenced_by_vehicle_inputs",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "vehicle_composition_referenced_by_vehicle_inputs",
+            composition_no=composition_no,
+            count=len(referencing),
+            refs_ko=refs_ko,
+            refs_en=refs_en,
+            refs_ja=refs_ja,
+        ),
+        suggested_fix=None,
+        details={"composition_no": composition_no, "referencing_vehicle_input_nos": referencing},
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_composition_referenced_by_vehicle_inputs",
+        applies_to=["set_vehicle_composition_share"],
+        phase="preflight",
+        tier="warn",
+        check=_check_vehicle_composition_referenced_by_vehicle_inputs,
+        message_ko="차량 조성 '{composition_no}'은(는) 차량 입력 {count}개가 사용 중입니다: "
+        "{refs_ko}. 이 조성을 변경하면 이 모든 차량 입력의 차량 구성이 함께 바뀝니다.",
+        message_en="Vehicle composition '{composition_no}' is used by {count} vehicle input(s): "
+        "{refs_en}. Changing this composition changes the vehicle mix for ALL of them at once.",
+        message_ja="車両構成 '{composition_no}' は {count} 件の車両インプットで使用されています: "
+        "{refs_ja}。この構成を変更すると、これらすべての車両インプットの車両構成が同時に変わります。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# vehicle_composition_share_drastic_change (warn, preflight) — v2 unit ⑦
+#
+# Not a §-numbered catalog entry; a defensive sanity nudge distinct from the
+# always-fires split-confirm above. Fires only when the proposed write moves
+# a vehicle type's estimated share from a clear MINORITY (<50%) to a near-
+# TOTAL DOMINANCE (>=90%) of the composition -- a shape very unlikely to be
+# the intended request ("a few more trucks") versus a magnitude/units
+# mistake (e.g. typing a percentage-like number where a raw weight was
+# expected). Uses the SAME "assume siblings keep their current relFlow"
+# share estimate as vehicle_composition_share_redistribution_gap so the two
+# findings never disagree with each other.
+# ---------------------------------------------------------------------------
+
+_DRASTIC_CHANGE_MINORITY_CEILING_PCT = 50.0
+_DRASTIC_CHANGE_DOMINANCE_FLOOR_PCT = 90.0
+
+
+def _check_vehicle_composition_share_drastic_change(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_vehicle_composition_share":
+        return None
+
+    params = action.get("params", {})
+    composition_no = str(params.get("composition_no", ""))
+    veh_type_no = str(params.get("veh_type_no", ""))
+    raw_new_rel_flow = params.get("rel_flow")
+    if raw_new_rel_flow is None:
+        return None
+    new_rel_flow = _coerce_number(raw_new_rel_flow)
+    if new_rel_flow is None:
+        return None
+
+    composition = _find_by_field(shadow_model.get("vehicle_compositions", []), "no", composition_no)
+    if composition is None:
+        return None  # missing target is object_not_found's job (#1)
+    entries = composition.get("entries", [])
+    target = _find_by_field(entries, "veh_type", veh_type_no)
+    if target is None:
+        return None  # missing target is vehicle_composition_entry_not_found's job
+
+    old_rel_flow = _coerce_number(target.get("rel_flow"))
+    if old_rel_flow is None:
+        return None
+
+    sibling_sum = 0.0
+    for entry in entries:
+        if str(entry.get("veh_type", "")) == veh_type_no:
+            continue
+        sibling_value = _coerce_number(entry.get("rel_flow"))
+        if sibling_value is None:
+            return None  # unknown sibling -- cannot estimate either share, don't guess
+        sibling_sum += sibling_value
+
+    if sibling_sum + old_rel_flow <= 0 or sibling_sum + new_rel_flow <= 0:
+        return None
+
+    before_pct = round((old_rel_flow / (sibling_sum + old_rel_flow)) * 100, 1)
+    after_pct = round((new_rel_flow / (sibling_sum + new_rel_flow)) * 100, 1)
+
+    if not (before_pct < _DRASTIC_CHANGE_MINORITY_CEILING_PCT and after_pct >= _DRASTIC_CHANGE_DOMINANCE_FLOOR_PCT):
+        return None
+
+    return Finding(
+        constraint_id="vehicle_composition_share_drastic_change",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "vehicle_composition_share_drastic_change",
+            composition_no=composition_no,
+            veh_type_no=veh_type_no,
+            before_pct=before_pct,
+            after_pct=after_pct,
+        ),
+        suggested_fix=None,
+        details={
+            "composition_no": composition_no,
+            "veh_type_no": veh_type_no,
+            "before_share_pct": before_pct,
+            "after_share_pct": after_pct,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_composition_share_drastic_change",
+        applies_to=["set_vehicle_composition_share"],
+        phase="preflight",
+        tier="warn",
+        check=_check_vehicle_composition_share_drastic_change,
+        message_ko="이 변경으로 차종 '{veh_type_no}'의 예상 비율이 소수({before_pct}%)에서 "
+        "지배적 비율({after_pct}%)로 급격히 바뀝니다. 의도한 변경이 맞는지 확인해 주세요 — 단위나 "
+        "자릿수 실수(예: 백분율 값을 원시 가중치 자리에 입력)가 아닌지 점검하는 것이 좋습니다.",
+        message_en="This change moves vehicle type '{veh_type_no}''s estimated share from a "
+        "minority ({before_pct}%) to a dominant ({after_pct}%) share of the composition. Please "
+        "confirm this is the intended change — this shape often indicates a units/magnitude "
+        "mistake (e.g. entering a percentage-like number where a raw weight was expected).",
+        message_ja="この変更により、車種 '{veh_type_no}' の推定比率が少数派({before_pct}%)から"
+        "支配的な比率({after_pct}%)へ急激に変化します。意図した変更かご確認ください — 単位や桁の"
+        "誤り(例: 生の重みの代わりに百分率のような値を入力)でないか確認することをお勧めします。",
     )
 )

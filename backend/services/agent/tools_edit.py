@@ -15,8 +15,9 @@ actually reached the saved file (the "target-persisted" check,
 docs/phase2/DECISIONS.md, "postwrite gains a target-persisted check").
 
 Param names for the object-targeting tools (vehicle input, signal cycle,
-signal offset, conflict area status, and -- v2 unit ⑥ -- routing decision
-route relative flow) match ``guardrails._WRITE_TARGET_FIELD_SPEC`` EXACTLY
+signal offset, conflict area status, -- v2 unit ⑥ -- routing decision
+route relative flow, and -- v2 unit ⑦ -- vehicle composition relative
+flow) match ``guardrails._WRITE_TARGET_FIELD_SPEC`` EXACTLY
 (tool name AND field names) -- that table is what lets the postwrite
 "nothing else moved" diff exempt each tool's own intended target field;
 drifting a name here silently reintroduces false-positive diff evidence on
@@ -37,6 +38,16 @@ single-token identity in Vissim itself -- it is addressed by the
 ``"{decision_no}.{route_no}"`` id ``tools_network._flatten_routes`` already
 uses as the flat ``shadow_model["routes"]`` list's own ``id`` field -- see
 that helper's docstring and ``guardrails._target_id_for_spec``.
+
+**v2 unit ⑦: ``set_vehicle_composition_share`` is the SECOND two-part
+identity write tool**, addressed by (``composition_no``, ``veh_type_no``)
+for the identical reason as routes -- a composition's relative-flow entry
+has no single-token identity in Vissim itself (worse: its own COM
+collection has no ``ItemByKey`` at all, verified live --
+``backend/tools/probe_vehicle_compositions.py``). ``guardrails.py``'s spec
+entry uses the same ``id_param_parts`` mechanism against
+``tools_network._flatten_vehicle_composition_entries``'s synthesized
+``"{composition_no}.{veh_type}"`` id.
 
 **Failure shape.** ``toolkit.dispatch`` can only ever produce an
 envelope-level ``status: "error"`` when the tool FUNCTION RAISES (unknown
@@ -495,5 +506,61 @@ def set_route_relative_flow(params: SetRouteRelativeFlowParams) -> dict[str, Any
         f"set to {params.rel_flow} (a raw weight, not a percentage -- Vissim normalizes each "
         f"route's actual traffic share across decision {params.decision_no}'s routes at "
         "simulation time; sibling routes' own relative flow are left untouched)."
+    )
+    return {"message": message, "verification": verification}
+
+
+# ---------------------------------------------------------------------------
+# set_vehicle_composition_share(composition_no, veh_type_no, rel_flow)
+#
+# v2 unit ⑦. A COM verb, same shape as set_route_relative_flow: set -> get
+# (readback) -> persist -> verification envelope. No interval_no -- RelFlow
+# is SCALAR ONLY for vehicle compositions (verified live,
+# backend/tools/probe_vehicle_compositions.py: AttValue('RelFlow(1)') raises
+# "Too many sub-attributes: 1"), unlike route RelFlow. RelFlow is a RAW
+# weight, not a percentage -- verified live that Vissim does NOT renormalize
+# sibling entries' own stored values when one entry's RelFlow is written
+# (exactly like route RelFlow, v2 unit ⑥); each vehicle type's ACTUAL
+# simulated composition share is derived at RUN time as this value divided
+# by the sum of every entry's RelFlow in the SAME composition. This is the
+# OPPOSITE of the premise constraints.py's prior forward-declared placeholder
+# assumed ("raising one class's share automatically lowers the others") --
+# see that check's own corrected comment. The message here AND the dedicated
+# vehicle_composition_share_redistribution_gap preflight constraint both
+# spell out the normalization semantics explicitly, mirroring the route
+# precedent, rather than just stating "changed to X".
+# ---------------------------------------------------------------------------
+
+
+class SetVehicleCompositionShareParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    composition_no: str
+    veh_type_no: str
+    rel_flow: float
+
+
+@tool(
+    name="set_vehicle_composition_share",
+    tier="write",
+    provider="edit",
+    params=SetVehicleCompositionShareParams,
+)
+def set_vehicle_composition_share(params: SetVehicleCompositionShareParams) -> dict[str, Any]:
+    """Set one vehicle type's relative-flow weight within a vehicle composition on the active edit session's working network -- relFlow is a RAW weight, not a percentage: Vissim computes each vehicle type's actual composition share by normalizing its relFlow against the SUM of every vehicle type's relFlow in the SAME composition at simulation time, and writing this value never changes any other vehicle type's own stored relFlow (verified live; siblings are always left untouched)."""
+    session = _require_session()
+    composition_no = _coerce_id(params.composition_no, "composition_no")
+    veh_type_no = _coerce_id(params.veh_type_no, "veh_type_no")
+
+    session.set_vehicle_composition_share(composition_no, veh_type_no, params.rel_flow)
+    readback = session.get_vehicle_composition_share(composition_no, veh_type_no)
+    session.persist()
+
+    verification: dict[str, Any] = {"written_value": params.rel_flow, "readback_value": readback}
+    message = (
+        f"Vehicle composition {params.composition_no} vehicle type {params.veh_type_no} relative "
+        f"flow set to {params.rel_flow} (a raw weight, not a percentage -- Vissim normalizes each "
+        f"vehicle type's actual composition share across composition {params.composition_no}'s "
+        "entries at simulation time; other vehicle types' own relative flow are left untouched)."
     )
     return {"message": message, "verification": verification}

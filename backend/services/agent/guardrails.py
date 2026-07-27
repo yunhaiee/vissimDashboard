@@ -75,6 +75,12 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # _target_id_for_spec below for how a two-param write action resolves
     # this SAME synthesized id).
     "routes": "id",
+    # v2 unit ⑦: the FLAT vehicle_composition_entries list
+    # tools_network._flatten_vehicle_composition_entries builds (not
+    # "vehicle_compositions" — an entry's own identity is the (composition,
+    # vehType) pair, mirroring "routes" above exactly, for the identical
+    # reason).
+    "vehicle_composition_entries": "id",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -170,6 +176,23 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "interval_key_field": "interval_no",
         "interval_value_field": "rel_flow",
         "interval_count_field": "interval_count",
+    },
+    # v2 unit ⑦: vehicle-composition relative-flow (share weight). relFlow
+    # is a plain XML attribute the parser can always see whenever the
+    # vehicleCompositionRelativeFlow element itself exists (verified live --
+    # backend/tools/probe_vehicle_compositions.py -- no opaque-blob case
+    # like signal cycle_time), so, like status/rel_flow above, a None after
+    # a write IS evidence the write never reached the file.
+    # "id_param_parts" (not "id_param") -- same TWO-part identity reasoning
+    # as set_route_relative_flow (composition_no + veh_type_no); see
+    # tools_edit.py's module docstring. NO interval dimension at all
+    # (verified live: RelFlow is scalar-only for vehicle compositions,
+    # unlike route RelFlow) -- so no interval_param/interval_*_field here.
+    "set_vehicle_composition_share": {
+        "object_class": "vehicle_composition_entries",
+        "id_param_parts": ("composition_no", "veh_type_no"),
+        "value_field": "rel_flow",
+        "none_means": "not_persisted",
     },
 }
 

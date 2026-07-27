@@ -1784,3 +1784,37 @@ Vissim with signal programs/layouts/背景 images intact — live-verified again
 example network's sibling set. 31 new download tests + 3 sibling-copy tests; orchestrator
 /approval suites re-run green (76/76 scoped; full-suite noise at commit time is the
 concurrent v2a unit ⑦'s in-flight registry work, verified unrelated).
+
+---
+
+## 2026-07-27 — v2 unit ⑦: vehicle-composition shares shipped; #36's "auto-renormalizes" premise disproven
+
+**Context:** probed live on Urban Intersection Beijing.CN (3 compositions).
+Net.VehicleCompositions → .VehCompRelFlows matches the .inpx child tag exactly; RelFlow
+is SCALAR ONLY (RelFlow(1) raises "Too many sub-attributes"), unlike route RelFlow. NEW
+LANDMINE: IVehicleCompositionRelativeFlowContainer has NO ItemByKey at all (type-lib +
+live hasattr) — every other per-object collection probed so far (conflict areas, routes,
+vehicle inputs, signal controllers) has one; entry lookup must scan GetAll() and match
+VehType client-side, with the wrapper raising VissimObjectNotFoundError itself since COM
+gives no existence signal. FilteredBy('VehType=n') rejected by Vissim's formula engine.
+
+**Decision:** shadow_model gains vehicle_compositions (nested) + vehicle_composition_entries
+(flat, composition.vehType-keyed, mirroring _flatten_routes). New get_vehicle_compositions
+(bounded per the 2026-07-27 lesson: 40-cap + composition_no filter + estimated_share_pct)
++ set_vehicle_composition_share(composition_no, veh_type_no, rel_flow). CENTRAL FINDING,
+live-verified: writing one entry's RelFlow leaves every sibling entry's stored value
+untouched (immediately and after SaveNetAs+reload) — a raw weight exactly like route
+RelFlow, share computed only at simulation time. This DISPROVES the premise of the
+forward-declared placeholder vehicle_composition_share_redistribution_gap (#36) ("raising
+one class's share automatically lowers the others") — corrected in place, params renamed
+from the placeholder's composition_id/class_id/new_share to the real composition_no/
+veh_type_no/rel_flow. Four new constraints: vehicle_composition_entry_not_found (refuse),
+vehicle_composition_weight_invalid (refuse, >0 finite), vehicle_composition_referenced_by_
+vehicle_inputs (warn, capped-join; vehComp lives per-interval on inputs, not once),
+vehicle_composition_share_drastic_change (warn, minority→dominant). Registry 48→52.
+
+**Consequence:** vehicle-mix editing inspectable and editable, live-verified end to end
+(preflight refusals with candidates → COM write+readback == 5.85 → persisted XML with
+siblings byte-untouched → load_check clean). Entry-identity stability verified
+within-session only, like routes. TOOL-CATALOG v2a: 4 of 12 shipped. Full suite 1050
+passed / 1 skipped / known RAG failure only.

@@ -216,6 +216,19 @@ class VissimEditSession:
     def get_route_relative_flow(self, decision_no: int, route_no: int, interval_no: int = 1) -> float:
         return self._ensure_connected().get_route_relative_flow(decision_no, route_no, interval_no)
 
+    # v2 unit ⑦: vehicle-composition relative-flow (share weight) verbs. No
+    # interval_no -- RelFlow is scalar-only for vehicle compositions
+    # (verified live, backend/tools/probe_vehicle_compositions.py:
+    # AttValue('RelFlow(1)') raises "Too many sub-attributes: 1").
+
+    def set_vehicle_composition_share(
+        self, composition_no: int, veh_type_no: int, rel_flow: float
+    ) -> None:
+        self._ensure_connected().set_vehicle_composition_share(composition_no, veh_type_no, rel_flow)
+
+    def get_vehicle_composition_share(self, composition_no: int, veh_type_no: int) -> float:
+        return self._ensure_connected().get_vehicle_composition_share(composition_no, veh_type_no)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

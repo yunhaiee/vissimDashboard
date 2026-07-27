@@ -28,6 +28,7 @@ EXPECTED_READ_TOOLS = {
     "get_signal_controllers",
     "get_conflict_areas",
     "get_routing_decisions",
+    "get_vehicle_compositions",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -48,6 +49,7 @@ EXPECTED_WRITE_TOOLS = {
     "set_reduced_speed_area",
     "set_conflict_area_status",
     "set_route_relative_flow",
+    "set_vehicle_composition_share",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

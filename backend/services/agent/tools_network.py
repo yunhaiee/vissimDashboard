@@ -39,7 +39,19 @@ against the network's own link ids) while #14 stays open (its
 ``manually_scaled_this_turn`` flag is turn-scoped ephemeral state with no
 XML representation — see :func:`_flatten_routes`'s own docstring). See
 :func:`_parse_routing_decisions`'s own docstring for the live-verified
-findings).
+findings), ``vehicle_compositions`` and ``vehicle_composition_entries`` (v2
+unit ⑦, 2026-07-27: parsed here directly from ``<vehicleComposition>`` /
+``<vehicleCompositionRelativeFlow>`` — ``vehicle_compositions`` is the
+planner-facing nested shape (composition no/name, each vehicle type's
+relative-flow weight + which vehicle inputs reference the composition);
+``vehicle_composition_entries`` is a FLAT, one-entry-per-(composition,
+vehType) mirror keyed by a synthesized ``"{composition_no}.{veh_type}"`` id
+— the SAME "nested for the planner, flat for guardrails.py" split
+:func:`_flatten_routes` established for routing decisions, since a
+composition entry has no single-token identity of its own either (verified
+live: ``IVehicleCompositionRelativeFlowContainer`` has no ``ItemByKey`` at
+all). See :func:`_parse_vehicle_compositions`'s own docstring for the
+live-verified findings).
 
 ``resolve_object`` is the "network-RAG" pattern (research-digest #10): a
 small, deterministic lexical top-k retrieval over the shadow model's objects.
@@ -69,7 +81,9 @@ from services.agent.toolkit import tool
 from services.inpx_parser import parse_network
 from services.signal_parser import parse_signal_controllers
 
-ObjectType = Literal["link", "node", "vehicle_input", "signal", "conflict_area", "routing_decision"]
+ObjectType = Literal[
+    "link", "node", "vehicle_input", "signal", "conflict_area", "routing_decision", "vehicle_composition"
+]
 
 # {object_type: {shadow_key, id_field, name_field}} — the one place that maps
 # a planner-facing object_type onto the shadow model's (differently-named)
@@ -87,6 +101,14 @@ _OBJECT_TYPE_SPECS: dict[str, dict[str, str]] = {
     # decision_no+route_no params, not through this generic object_type
     # machinery).
     "routing_decision": {"shadow_key": "routing_decisions", "id_field": "no", "name_field": "name"},
+    # v2 unit ⑦: keyed against the NESTED "vehicle_compositions" list (one
+    # entry per composition, not per vehType) -- resolve_object/
+    # get_network_overview resolve a composition by its own no/name; a
+    # specific ENTRY within a composition is addressed by
+    # set_vehicle_composition_share's own composition_no+veh_type_no params,
+    # not through this generic object_type machinery (same split as
+    # "routing_decision" above).
+    "vehicle_composition": {"shadow_key": "vehicle_compositions", "id_field": "no", "name_field": "name"},
 }
 
 _TOP_K = 5
@@ -405,6 +427,144 @@ def _flatten_routes(routing_decisions: list[dict[str, Any]]) -> list[dict[str, A
     return flat
 
 
+def _xml_vehicle_composition_refs(root: ET.Element) -> dict[str, list[str]]:
+    """{composition_no: [vehicle_input_no, ...]} -- which vehicle inputs
+    reference each composition, scanning EVERY interval's ``vehComp``
+    attribute, not just interval 1 (v2 unit ⑦ probe finding: ``vehComp``
+    lives on each ``<timeIntervalVehVolume>`` child, not once on
+    ``<vehicleInput>`` itself, so a multi-interval input could in principle
+    reference different compositions per interval). Order preserves each
+    vehicle input's own first-referencing-interval order; a given input
+    appears at most once per composition even if multiple intervals
+    reference it."""
+    refs: dict[str, list[str]] = {}
+    seen: dict[str, set[str]] = {}
+    for vi in root.findall(".//vehicleInput"):
+        vi_no = vi.get("no", "")
+        for tv in vi.findall(".//timeIntervalVehVolume"):
+            comp_no = tv.get("vehComp")
+            if not comp_no:
+                continue
+            already = seen.setdefault(comp_no, set())
+            if vi_no in already:
+                continue
+            already.add(vi_no)
+            refs.setdefault(comp_no, []).append(vi_no)
+    return refs
+
+
+def _parse_vehicle_compositions(root: ET.Element) -> list[dict[str, Any]]:
+    """{no, name, entries: [{veh_type, des_speed_distr, rel_flow}],
+    referencing_vehicle_input_nos} per ``<vehicleComposition>``.
+
+    v2 unit ⑦ (2026-07-27). COM surface verified live
+    (``backend/tools/probe_vehicle_compositions.py``, Urban Intersection
+    Beijing.CN clone): ``Net.VehicleCompositions`` (``GetAll()`` count 3 ==
+    the XML element count) -> per-composition ``.VehCompRelFlows`` child
+    collection (matches the XML child tag ``vehCompRelFlows`` exactly, count
+    matched per-composition entry counts too) -> per-entry
+    ``AttValue('VehType'/'DesSpeedDistr'/'RelFlow')`` all read directly
+    (plain attributes, spelled with Vissim's usual capitalize-each-word
+    convention over the XML's own ``vehType``/``desSpeedDistr``/``relFlow``).
+    ``RelFlow`` is SCALAR ONLY -- ``AttValue('RelFlow(1)')`` RAISES ("Too
+    many sub-attributes: 1"), unlike route ``RelFlow`` (v2 unit ⑥) -- there
+    is no time-interval dimension for vehicle-composition relative flows at
+    all.
+
+    **Entry identity: the vehType number, but with NO ``ItemByKey``.**
+    ``<vehicleCompositionRelativeFlow>`` carries no ``no`` attribute of its
+    own (``AttValue('No')`` raises "Could not find attribute with ID NO");
+    the static scan (grepping all 21 real Vissim 2026 example networks that
+    carry any vehicle compositions, 73 total) never found a duplicate
+    ``vehType`` within one composition, so ``vehType`` is a safe entry key
+    -- BUT ``IVehicleCompositionRelativeFlowContainer`` (confirmed via both
+    the type-library scan and live ``hasattr``) exposes only
+    ``GetAll``/``FilteredBy``/``GetFilteredSet``/
+    ``AddVehicleCompositionRelativeFlow``/
+    ``RemoveVehicleCompositionRelativeFlow``/``SetMulti*`` -- genuinely no
+    ``ItemByKey``, unlike every other per-object collection this codebase
+    has probed (conflict areas, routes, vehicle inputs, signal controllers
+    all support it). ``FilteredBy('VehType=<n>')`` was also tried live and
+    rejected by Vissim's own formula engine. ``vissim_com.
+    VissimController._vehicle_composition_entry_by_veh_type`` therefore
+    scans ``GetAll()`` and matches client-side.
+
+    **Normalization semantics (the central empirical finding, verified
+    live) -- CORRECTS a prior wrong assumption.** ``constraints.py``'s old
+    forward-declared CATALOG-GAP placeholder (``vehicle_composition_share_
+    redistribution_gap``, added before this unit, before any real COM
+    verification existed) assumed vehicle-composition shares are
+    "normalized to 100%" such that raising one class's share "automatically
+    lowers other classes' shares" -- i.e. that Vissim renormalizes sibling
+    entries ON WRITE. Verified FALSE live: writing composition no=1's
+    vehType=100 entry from 0.85 to 5.85 on a real 4-entry composition left
+    every sibling entry's OWN stored ``RelFlow`` (vehType 190/200/300, each
+    0.05) completely UNCHANGED, both immediately after the write and after
+    a ``SaveNetAs`` + fresh COM reload. ``RelFlow`` is a RAW weight -- EXACTLY
+    like route ``RelFlow`` (v2 unit ⑥) -- and each vehicle type's ACTUAL
+    simulated composition share is only computed at RUN time (and for
+    display) as this entry's ``RelFlow`` divided by the SUM of every entry's
+    ``RelFlow`` in the SAME composition. The fact that every real example
+    network's authored values happen to already sum to 1.0 (e.g.
+    0.85+0.05+0.05+0.05) is an AUTHORING CONVENTION for readability, not an
+    enforced invariant -- the same "plausible-looking guess turned out
+    wrong" class of landmine as ``CycTm``/``NodeRes`` in
+    docs/phase2/DECISIONS.md. ``constraints.py``'s check was corrected in
+    this same unit once this was verified (see that module's own comment at
+    the check's registration).
+
+    ``referencing_vehicle_input_nos`` is real (v2 unit ⑦ closes the "which
+    vehicle inputs use this composition" gap needed for the impact
+    warning): every vehicle input whose ``vehComp`` (on ANY of its
+    intervals, not just interval 1 -- see :func:`_xml_vehicle_composition_refs`)
+    names this composition's ``no``.
+    """
+    refs = _xml_vehicle_composition_refs(root)
+    result: list[dict[str, Any]] = []
+    for comp in root.findall(".//vehicleComposition"):
+        no = comp.get("no", "")
+        entries: list[dict[str, Any]] = []
+        for rf in comp.findall(".//vehicleCompositionRelativeFlow"):
+            entries.append(
+                {
+                    "veh_type": rf.get("vehType", ""),
+                    "des_speed_distr": rf.get("desSpeedDistr", ""),
+                    "rel_flow": _coerce_float_or_none(rf.get("relFlow")),
+                }
+            )
+        result.append(
+            {
+                "no": no,
+                "name": comp.get("name", ""),
+                "entries": entries,
+                "referencing_vehicle_input_nos": refs.get(no, []),
+            }
+        )
+    return result
+
+
+def _flatten_vehicle_composition_entries(vehicle_compositions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A flat, one-entry-per-(composition, vehType) view of
+    ``vehicle_compositions``, keyed by a synthesized
+    ``"{composition_no}.{veh_type}"`` ``id`` -- mirrors
+    :func:`_flatten_routes`'s precedent (v2 unit ⑥) exactly, for the same
+    reason: a composition entry has no single-token identity in Vissim
+    itself (its real identity is the (composition, vehType) pair; see
+    :func:`_parse_vehicle_compositions`'s docstring), so this is the shape
+    ``guardrails.py``'s postwrite machinery (the nothing-else-moved diff +
+    the target-persisted check) needs to compare a real, id-keyed object
+    list, exactly like every other write-tool target object class.
+    """
+    flat: list[dict[str, Any]] = []
+    for comp in vehicle_compositions:
+        for entry in comp["entries"]:
+            flat_entry = dict(entry)
+            flat_entry["id"] = f"{comp['no']}.{entry['veh_type']}"
+            flat_entry["composition_no"] = comp["no"]
+            flat.append(flat_entry)
+    return flat
+
+
 def _signal_to_contract_shape(info: dict[str, Any]) -> dict[str, Any]:
     """Map a signal_parser SignalInfo down to the M0.3 contract shape.
 
@@ -430,6 +590,7 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
     signals_by_sc_no = parse_signal_controllers(inpx_path)
     link_ids = {str(link.get("id", "")) for link in net["links"]}
     routing_decisions = _parse_routing_decisions(root, link_ids)
+    vehicle_compositions = _parse_vehicle_compositions(root)
     return {
         "links": net["links"],
         "nodes": net["nodes"],
@@ -438,6 +599,8 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         "conflict_areas": _parse_conflict_areas(root),
         "routing_decisions": routing_decisions,
         "routes": _flatten_routes(routing_decisions),
+        "vehicle_compositions": vehicle_compositions,
+        "vehicle_composition_entries": _flatten_vehicle_composition_entries(vehicle_compositions),
     }
 
 
@@ -480,7 +643,7 @@ class GetNetworkOverviewParams(BaseModel):
 
 @tool(name="get_network_overview", tier="read", provider="inspect", params=GetNetworkOverviewParams)
 def get_network_overview(params: GetNetworkOverviewParams) -> dict[str, Any]:
-    """Return object counts and compact id/name lists for links, nodes, vehicle inputs, and signals."""
+    """Return object counts and compact id/name lists for links, nodes, vehicle inputs, signals, conflict areas, routing decisions, and vehicle compositions."""
     del params  # no fields
     shadow = _current_shadow_model()
     return {
@@ -720,3 +883,91 @@ def get_routing_decisions(params: GetRoutingDecisionsParams) -> dict[str, Any]:
     del params  # no fields
     routing_decisions = _current_shadow_model()["routing_decisions"]
     return {"count": len(routing_decisions), "routing_decisions": routing_decisions}
+
+
+# ---------------------------------------------------------------------------
+# get_vehicle_compositions — v2 unit ⑦
+#
+# BOUNDED OUTPUT from day one (the 2026-07-27 lesson, see get_conflict_areas
+# above): an unfiltered call caps the COMPOSITIONS list (not each
+# composition's own entries, which are naturally small -- a handful of
+# vehicle types per composition on every real example network probed) at
+# _VEHICLE_COMPOSITIONS_DEFAULT_CAP, with an explicit truncated flag + hint,
+# and a composition_no filter to narrow.
+# ---------------------------------------------------------------------------
+
+#: Item cap for an UNFILTERED get_vehicle_compositions call, same discipline
+#: as _CONFLICT_AREAS_DEFAULT_CAP -- each composition entry is small (no/
+#: name/entries/referencing_vehicle_input_nos, entries themselves bounded to
+#: a handful of vehicle types), so 40 compositions stays comfortably inside
+#: even the compact snippet budget.
+_VEHICLE_COMPOSITIONS_DEFAULT_CAP = 40
+
+
+def _estimated_share_pct(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each entry plus its ``estimated_share_pct`` -- RelFlow is a raw
+    weight (v2 unit ⑦ probe: Vissim does NOT renormalize sibling entries on
+    write, exactly like route RelFlow), so the actual simulated composition
+    share is only ever a DERIVED number: this entry's ``rel_flow`` divided
+    by the sum of every entry's ``rel_flow`` in the SAME composition.
+    ``None`` when the sum is not strictly positive or any value is missing
+    (never guess)."""
+    total = 0.0
+    all_known = True
+    for entry in entries:
+        rel_flow = entry.get("rel_flow")
+        if rel_flow is None:
+            all_known = False
+            break
+        total += rel_flow
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        share_pct: float | None = None
+        rel_flow = entry.get("rel_flow")
+        if all_known and rel_flow is not None and total > 0:
+            share_pct = round((rel_flow / total) * 100, 1)
+        out.append({**entry, "estimated_share_pct": share_pct})
+    return out
+
+
+class GetVehicleCompositionsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    composition_no: str | None = Field(
+        default=None,
+        description="Exact vehicle composition 'no' to return (narrows to at most one result).",
+    )
+
+
+@tool(name="get_vehicle_compositions", tier="read", provider="inspect", params=GetVehicleCompositionsParams)
+def get_vehicle_compositions(params: GetVehicleCompositionsParams) -> dict[str, Any]:
+    """Return the network's vehicle compositions (id, name, and each vehicle type's relative-flow weight + estimated resulting share %) plus which vehicle inputs reference each composition -- relative flow (RelFlow) is a RAW weight, not a pre-computed percentage: Vissim derives each vehicle type's actual composition share by normalizing its relative flow against the SUM of every vehicle type's relative flow in the SAME composition at simulation time, so use set_vehicle_composition_share to change one vehicle type's split rather than assuming the number itself is a proportion. Optionally filter by composition_no (exact match) -- an unfiltered call on a large network returns only the first 40 (with an explicit truncated flag and a hint), so narrow with this filter rather than requesting the whole list."""
+    vehicle_compositions = _current_shadow_model()["vehicle_compositions"]
+
+    if params.composition_no is not None:
+        vehicle_compositions = [
+            comp for comp in vehicle_compositions if str(comp.get("no")) == str(params.composition_no)
+        ]
+
+    total = len(vehicle_compositions)
+    filtered = params.composition_no is not None
+    if not filtered:
+        capped = vehicle_compositions[:_VEHICLE_COMPOSITIONS_DEFAULT_CAP]
+        truncated = total > len(capped)
+        vehicle_compositions = capped
+    else:
+        truncated = False
+
+    rendered = [
+        {**comp, "entries": _estimated_share_pct(comp["entries"])} for comp in vehicle_compositions
+    ]
+
+    result: dict[str, Any] = {"count": total, "vehicle_compositions": rendered}
+    if not filtered:
+        result["truncated"] = truncated
+        if truncated:
+            result["hint"] = (
+                f"Showing {len(rendered)} of {total} vehicle compositions. Narrow with "
+                "composition_no to see a specific one instead of the whole list."
+            )
+    return result

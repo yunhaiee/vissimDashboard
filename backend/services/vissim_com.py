@@ -753,6 +753,122 @@ class VissimController:
     def available_routing_decision_nos(self) -> list[int]:
         return self._collection_nos(self.vissim.Net.VehicleRoutingDecisionsStatic)
 
+    def set_vehicle_composition_share(
+        self, composition_no: int, veh_type_no: int, rel_flow: float
+    ) -> None:
+        """Set a vehicle composition's per-vehicle-type ``RelFlow`` (COM
+        attribute id ``RelFlow`` on the entry -- SCALAR ONLY, verified live
+        via ``backend/tools/probe_vehicle_compositions.py`` against Vissim
+        2026: ``AttValue('RelFlow(1)')`` RAISES ("Too many sub-attributes:
+        1") -- unlike route ``RelFlow``, there is NO time-interval dimension
+        at all for vehicle-composition relative flows.
+
+        **Entry lookup has no COM ``ItemByKey`` at all** (verified via both
+        the type-library scan and a live probe:
+        ``IVehicleCompositionRelativeFlowContainer`` exposes only
+        ``GetAll``/``FilteredBy``/``GetFilteredSet``/
+        ``AddVehicleCompositionRelativeFlow``/
+        ``RemoveVehicleCompositionRelativeFlow``/``SetMulti*`` -- no
+        ``ItemByKey``, unlike every other per-object collection in this
+        module (conflict areas, routes, vehicle inputs, signal controllers).
+        ``FilteredBy('VehType=<n>')`` was also tried live and rejected by
+        Vissim's own formula engine ("A variable is not permitted:
+        'VehType'"), so the entry is found by scanning ``GetAll()`` and
+        matching ``AttValue('VehType')`` client-side --
+        :meth:`_vehicle_composition_entry_by_veh_type`. A bogus ``veh_type_no``
+        therefore has NO COM-level existence signal to relay; this wrapper
+        raises :class:`VissimObjectNotFoundError` itself when the scan finds
+        no match, mirroring :meth:`_item_by_key`'s contract for every other
+        object class even though the underlying mechanism differs.
+
+        **Normalization semantics (the central empirical finding, verified
+        live).** ``RelFlow`` is a RAW weight, not a pre-computed proportion
+        -- EXACTLY like :meth:`set_route_relative_flow`'s own finding, and
+        the OPPOSITE of the premise ``constraints.py``'s old forward-declared
+        placeholder assumed ("raising one class's share automatically lowers
+        the others"). Writing composition no=1's vehType=100 entry from
+        0.85 to 5.85 on a real 4-entry composition (Urban Intersection
+        Beijing.CN) left every SIBLING entry's OWN stored ``RelFlow``
+        (vehType 190/200/300, each 0.05) completely UNCHANGED -- confirmed
+        both immediately after the write and after a ``SaveNetAs`` + fresh
+        COM reload. Each vehicle type's ACTUAL simulated composition share is
+        only computed at RUN time (and for display), as this entry's
+        ``RelFlow`` divided by the SUM of every entry's ``RelFlow`` in the
+        SAME composition. Writing the ``RelFlow`` on a composition's ONLY
+        entry (verified live, composition no=4 "Cycle") succeeds normally --
+        there is nothing to redistribute against, so the share stays 100%
+        regardless of the number, matching the single-route precedent.
+
+        Error behavior (per the AttValue taxonomy in
+        docs/phase2/00-EXECUTION-GUIDE.md / DECISIONS.md): a bogus
+        ``composition_no`` fails CLOSED via ``ItemByKey`` ("object does not
+        exist"), matching every other per-object collection lookup in this
+        module. A bogus attribute id on a real entry also fails CLOSED
+        (``AttValue`` raises "Could not find attribute with ID ..."),
+        matching conflict areas/routes -- not ``Net.AttValue``'s fail-OPEN
+        exception.
+        """
+        try:
+            composition = self._item_by_key(
+                self.vissim.Net.VehicleCompositions,
+                composition_no,
+                "Vehicle composition",
+                self.available_vehicle_composition_nos(),
+            )
+            entry = self._vehicle_composition_entry_by_veh_type(composition, veh_type_no)
+            entry.SetAttValue("RelFlow", rel_flow)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set vehicle composition {composition_no} vehicle type "
+                f"{veh_type_no} relative flow to {rel_flow}: {exc}"
+            ) from exc
+
+    def get_vehicle_composition_share(self, composition_no: int, veh_type_no: int) -> float:
+        """Paired getter for :meth:`set_vehicle_composition_share`."""
+        try:
+            composition = self._item_by_key(
+                self.vissim.Net.VehicleCompositions,
+                composition_no,
+                "Vehicle composition",
+                self.available_vehicle_composition_nos(),
+            )
+            entry = self._vehicle_composition_entry_by_veh_type(composition, veh_type_no)
+            return float(entry.AttValue("RelFlow"))
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read vehicle composition {composition_no} vehicle type "
+                f"{veh_type_no} relative flow: {exc}"
+            ) from exc
+
+    def _vehicle_composition_entry_by_veh_type(self, composition: Any, veh_type_no: int) -> Any:
+        """The composition's ``VehCompRelFlows`` entry whose ``VehType``
+        equals ``veh_type_no``, found by scanning ``GetAll()`` -- there is no
+        ``ItemByKey`` on this collection (see :meth:`set_vehicle_composition_share`'s
+        docstring). Raises :class:`VissimObjectNotFoundError` when no entry
+        matches, listing the composition's own available vehicle-type
+        numbers (mirrors :meth:`_item_by_key`'s message shape)."""
+        available: list[int] = []
+        for item in composition.VehCompRelFlows.GetAll():
+            try:
+                item_veh_type = int(item.AttValue("VehType"))
+            except Exception:
+                continue
+            available.append(item_veh_type)
+            if item_veh_type == veh_type_no:
+                return item
+        available_text = _format_available_keys(sorted(available))
+        raise VissimObjectNotFoundError(
+            f"Vehicle type {veh_type_no} does not exist in this vehicle composition's "
+            f"relative-flow entries. Available vehicle type numbers: {available_text}."
+        )
+
+    def available_vehicle_composition_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.VehicleCompositions)
+
     def get_sim_sec(self) -> float:
         try:
             value = float(self.vissim.Simulation.AttValue("SimSec"))

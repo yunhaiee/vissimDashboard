@@ -2,7 +2,7 @@
 
 The definitive list of what the AI agent can do in Vissim, by verification tier.
 Doctrine: **a verb ships only when its verification method does** (00-EXECUTION-GUIDE §4).
-Updated 2026-07-27 (post-Phase-2 + v2 queue units ①–⑥ + conflict-area read filters).
+Updated 2026-07-27 (post-Phase-2 + v2 queue units ①–⑦ + conflict-area read filters).
 
 Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned · 🚫 permanent refusal
 
@@ -21,6 +21,8 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ✅ Conflict areas (`get_conflict_areas`, v2 unit ④)
   - 2026-07-27: gained `conflict_area_no` / `link_no` filters + a 40-item default cap
     with an explicit `truncated` flag and filter hint (observation-flood fix)
+- ✅ Vehicle compositions (`get_vehicle_compositions`, v2 unit ⑦)
+  - 40-composition default cap + `composition_no` filter + per-entry estimated share %
 
 ### Edits
 - ✅ Vehicle input volume
@@ -47,6 +49,12 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ✅ Route relative flow (`set_route_relative_flow`, v2 unit ⑥)
   - Raw-weight semantics confirmed live; approval card echoes the estimated resulting
     share %; `route_integrity_unverifiable` check live
+- ✅ Vehicle composition share (`set_vehicle_composition_share`, v2 unit ⑦)
+  - Raw-weight semantics confirmed live — Vissim does NOT renormalize siblings on
+    write (disproved the earlier placeholder constraint's premise); approval card
+    echoes estimated resulting share % + referencing vehicle inputs
+  - Landmine: the entries container has NO `ItemByKey` (unique among probed
+    collections) — lookup scans `GetAll()` and matches `VehType` client-side
 
 ### Runs
 - ✅ Multi-seed simulation with auto-armed evaluation (all four evaluation types)
@@ -74,7 +82,7 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ✅ Time-varying demand profiles (multi-interval inputs) — shipped, see V1 edits
 - ✅ Static route relative flows — shipped, see V1 edits
 - ✅ Conflict-area status — shipped, see V1 edits
-- ⬜ Vehicle composition shares
+- ✅ Vehicle composition shares — shipped, see V1 reads/edits
 - ⬜ Desired-speed decision PAIRS (set + restore, atomic)
 - ⬜ Desired-speed distribution assignment
 - ⬜ Desired-speed/time DISTRIBUTION curve editing (the legitimate CC1 route)
@@ -84,7 +92,7 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ⬜ Signal green-splits within a program (needs the signal-program blob writer)
 - ⬜ Vehicle type properties (accel/decel curves, lengths, weight/power)
 
-**Status: 3 of 12 shipped.**
+**Status: 4 of 12 shipped.**
 
 ---
 

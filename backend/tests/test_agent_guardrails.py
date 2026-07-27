@@ -26,6 +26,7 @@ def _shadow_model(
     nodes: list[dict[str, Any]] | None = None,
     conflict_areas: list[dict[str, Any]] | None = None,
     routes: list[dict[str, Any]] | None = None,
+    vehicle_composition_entries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -40,6 +41,10 @@ def _shadow_model(
         # v2 unit ⑥: the flat routes list (id = "{decision_no}.{route_no}")
         # -- see tools_network._flatten_routes for the real shape this mirrors.
         "routes": routes if routes is not None else [],
+        # v2 unit ⑦: the flat vehicle_composition_entries list (id =
+        # "{composition_no}.{veh_type}") -- see tools_network.
+        # _flatten_vehicle_composition_entries for the real shape this mirrors.
+        "vehicle_composition_entries": vehicle_composition_entries if vehicle_composition_entries is not None else [],
     }
 
 
@@ -784,6 +789,137 @@ def test_postwrite_route_relative_flow_target_persisted_check_interval_2_fires_w
     assert check["field"] == "rel_flows[2].rel_flow"
     assert check["written_value"] == 999.0
     assert check["saved_value"] == 45.0
+
+
+# ---------------------------------------------------------------------------
+# postwrite — set_vehicle_composition_share (v2 unit ⑦): TWO-PART
+# id_param_parts, no interval dimension at all (RelFlow is scalar-only for
+# vehicle compositions, unlike route RelFlow).
+# ---------------------------------------------------------------------------
+
+
+def _composition_entry(composition_no: str, veh_type: str, *, rel_flow: float | None = 100.0) -> dict[str, Any]:
+    return {
+        "id": f"{composition_no}.{veh_type}",
+        "composition_no": composition_no,
+        "veh_type": veh_type,
+        "des_speed_distr": "50",
+        "rel_flow": rel_flow,
+    }
+
+
+def test_postwrite_diff_is_silent_when_only_the_target_entrys_rel_flow_changed():
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.85)
+    before = _shadow_model(
+        vehicle_composition_entries=[
+            _composition_entry("1", "100", rel_flow=0.85),
+            _composition_entry("1", "190", rel_flow=0.05),
+        ]
+    )
+    after = _shadow_model(
+        vehicle_composition_entries=[
+            _composition_entry("1", "100", rel_flow=5.85),
+            _composition_entry("1", "190", rel_flow=0.05),
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 5.85, "readback_value": 5.85})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_flags_an_unrelated_sibling_entrys_rel_flow_change_as_evidence():
+    # The written entry's OWN id ("1.100") is exempt, but a SIBLING entry
+    # (same composition, different vehType -- a different flat-list id)
+    # silently changing too must still be evidence -- Vissim does NOT
+    # renormalize siblings on write (verified live), so a sibling actually
+    # moving is a genuine anomaly this diff must catch.
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.85)
+    before = _shadow_model(
+        vehicle_composition_entries=[
+            _composition_entry("1", "100", rel_flow=0.85),
+            _composition_entry("1", "190", rel_flow=0.05),
+        ]
+    )
+    after = _shadow_model(
+        vehicle_composition_entries=[
+            _composition_entry("1", "100", rel_flow=5.85),
+            _composition_entry("1", "190", rel_flow=0.99),  # unrelated drift
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 5.85, "readback_value": 5.85})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {
+        "object_class": "vehicle_composition_entries",
+        "object_id": "1.190",
+        "change": "field_changed",
+        "field": "rel_flow",
+        "before": 0.05,
+        "after": 0.99,
+    } in diff
+
+
+def test_postwrite_diff_does_not_confuse_two_compositions_own_veh_type_100():
+    # composition 1's vehType 100 ("1.100") and composition 2's vehType 100
+    # ("2.100") are two entirely different objects sharing the same vehType
+    # -- the synthesized id must keep them apart (a bug here would either
+    # miss real drift or false-positive on the unrelated composition's own
+    # vehType 100).
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.85)
+    before = _shadow_model(
+        vehicle_composition_entries=[
+            _composition_entry("1", "100", rel_flow=0.85),
+            _composition_entry("2", "100", rel_flow=0.97),
+        ]
+    )
+    after = _shadow_model(
+        vehicle_composition_entries=[
+            _composition_entry("1", "100", rel_flow=5.85),
+            _composition_entry("2", "100", rel_flow=0.97),
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 5.85, "readback_value": 5.85})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_vehicle_composition_share_target_persisted_check_happy_path():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(vehicle_composition_entries=[_composition_entry("1", "100", rel_flow=0.85)])
+    after = _shadow_model(vehicle_composition_entries=[_composition_entry("1", "100", rel_flow=5.85)])
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.85)
+
+    report = engine.postwrite(action, before, after, {"written_value": 5.85, "readback_value": 5.85})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_vehicle_composition_share_target_persisted_check_fires_when_not_persisted():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(vehicle_composition_entries=[_composition_entry("1", "100", rel_flow=0.85)])
+    after = _shadow_model(
+        vehicle_composition_entries=[_composition_entry("1", "100", rel_flow=0.85)]  # write never reached the file
+    )
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.85)
+
+    report = engine.postwrite(action, before, after, {"written_value": 5.85, "readback_value": 5.85})
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "vehicle_composition_entries"
+    assert check["object_id"] == "1.100"
+    assert check["field"] == "rel_flow"
+    assert check["saved_value"] == 0.85
 
 
 def test_postwrite_unpersisted_conflict_area_status_is_blocking():

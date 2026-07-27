@@ -133,6 +133,22 @@ class FakeEditSession:
             )
         return self._readback["route_relative_flow"]
 
+    def set_vehicle_composition_share(
+        self, composition_no: int, veh_type_no: int, rel_flow: float
+    ) -> None:
+        self._record(
+            "set_vehicle_composition_share",
+            composition_no=composition_no,
+            veh_type_no=veh_type_no,
+            rel_flow=rel_flow,
+        )
+
+    def get_vehicle_composition_share(self, composition_no: int, veh_type_no: int) -> float:
+        self._record(
+            "get_vehicle_composition_share", composition_no=composition_no, veh_type_no=veh_type_no
+        )
+        return self._readback["vehicle_composition_share"]
+
     def persist(self) -> None:
         self.persist_calls += 1
 
@@ -172,6 +188,10 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
         (
             "set_route_relative_flow",
             {"decision_no": "1", "route_no": "1", "rel_flow": 500.0},
+        ),
+        (
+            "set_vehicle_composition_share",
+            {"composition_no": "1", "veh_type_no": "100", "rel_flow": 5.85},
         ),
     ],
 )
@@ -668,6 +688,113 @@ def test_set_route_relative_flow_non_numeric_route_no_is_rejected_not_a_crash():
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "tool_execution_error"
     assert session.persist_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# set_vehicle_composition_share — v2 unit ⑦
+# ---------------------------------------------------------------------------
+
+
+def test_set_vehicle_composition_share_happy_path():
+    session = FakeEditSession(readback={"vehicle_composition_share": 5.85})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.85
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": 5.85, "readback_value": 5.85}
+    assert "raw weight" in envelope["message"]
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {
+            "op": "set_vehicle_composition_share",
+            "composition_no": 1,
+            "veh_type_no": 100,
+            "rel_flow": 5.85,
+        },
+        {"op": "get_vehicle_composition_share", "composition_no": 1, "veh_type_no": 100},
+    ]
+    # composition_no/veh_type_no were coerced str -> int at the COM boundary.
+    assert isinstance(session.calls[0]["composition_no"], int)
+    assert isinstance(session.calls[0]["veh_type_no"], int)
+
+
+def test_set_vehicle_composition_share_readback_mismatch_still_reports_ok_envelope():
+    # Same discipline as every other write tool: comparing written vs
+    # read-back is guardrails.py's postwrite job, not this tool's.
+    session = FakeEditSession(readback={"vehicle_composition_share": 0.85})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.85
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": 5.85, "readback_value": 0.85}
+
+
+def test_set_vehicle_composition_share_vissim_refusal_surfaces_as_structured_error():
+    session = FakeEditSession(
+        raise_on={
+            "set_vehicle_composition_share": RuntimeError(
+                "Vehicle type 999 does not exist in this vehicle composition's relative-flow "
+                "entries. Available vehicle type numbers: 100, 190, 200, 300."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_composition_share", composition_no="1", veh_type_no="999", rel_flow=5.0
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "does not exist" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+def test_set_vehicle_composition_share_extra_param_is_rejected_before_the_tool_ever_runs():
+    session = FakeEditSession(readback={"vehicle_composition_share": 5.85})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_composition_share",
+        composition_no="1",
+        veh_type_no="100",
+        rel_flow=5.85,
+        extra_field="nope",
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_vehicle_composition_share_non_numeric_veh_type_no_is_rejected_not_a_crash():
+    session = FakeEditSession(readback={"vehicle_composition_share": 5.85})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_composition_share", composition_no="1", veh_type_no="not-a-number", rel_flow=5.85
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert session.persist_calls == 0
+
+
+def test_set_vehicle_composition_share_missing_required_param_is_rejected():
+    session = FakeEditSession(readback={"vehicle_composition_share": 5.85})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_vehicle_composition_share", composition_no="1", veh_type_no="100")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
 
 
 # ---------------------------------------------------------------------------

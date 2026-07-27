@@ -30,6 +30,7 @@ EXPECTED_TOOL_NAMES = {
     "get_signal_controllers",
     "get_conflict_areas",
     "get_routing_decisions",
+    "get_vehicle_compositions",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -46,6 +47,7 @@ EXPECTED_TOOL_NAMES = {
 # v2 unit (2) adds set_reduced_speed_area (XML-injection, not COM), the sixth.
 # v2 unit (4) adds set_conflict_area_status, the seventh.
 # v2 unit (6) adds set_route_relative_flow, the eighth.
+# v2 unit (7) adds set_vehicle_composition_share, the ninth.
 EXPECTED_WRITE_TOOL_NAMES = {
     "set_vehicle_input_volume",
     "set_signal_cycle",
@@ -55,6 +57,7 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_reduced_speed_area",
     "set_conflict_area_status",
     "set_route_relative_flow",
+    "set_vehicle_composition_share",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -814,6 +817,222 @@ def test_get_network_overview_includes_routing_decisions_section(
 
 
 # ---------------------------------------------------------------------------
+# get_vehicle_compositions / _parse_vehicle_compositions — v2 unit ⑦
+# ---------------------------------------------------------------------------
+
+
+def test_get_vehicle_compositions_on_demo_data_is_empty_but_well_formed():
+    # The demo .inpx carries no <vehicleComposition> elements at all -- the
+    # tool must return an empty, well-formed list rather than erroring, same
+    # shape as get_conflict_areas on the demo network (v2 unit ④).
+    envelope = _dispatch("get_vehicle_compositions")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "vehicle_compositions": [], "truncated": False}
+    assert "hint" not in envelope["data"]
+
+
+_VEHICLE_COMPOSITION_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links>
+    <link no="11" name="Border Rd"><lanes><lane width="3.5"/></lanes></link>
+  </links>
+  <vehicleCompositions>
+    <vehicleComposition no="1" name="5% HGV, 5% LGV, 5% Bus">
+      <vehCompRelFlows>
+        <vehicleCompositionRelativeFlow desSpeedDistr="65" relFlow="0.85" vehType="100"/>
+        <vehicleCompositionRelativeFlow desSpeedDistr="50" relFlow="0.05" vehType="190"/>
+        <vehicleCompositionRelativeFlow desSpeedDistr="50" relFlow="0.05" vehType="200"/>
+        <vehicleCompositionRelativeFlow desSpeedDistr="50" relFlow="0.05" vehType="300"/>
+      </vehCompRelFlows>
+    </vehicleComposition>
+    <vehicleComposition no="4" name="Cycle">
+      <vehCompRelFlows>
+        <vehicleCompositionRelativeFlow desSpeedDistr="15" relFlow="1" vehType="600"/>
+      </vehCompRelFlows>
+    </vehicleComposition>
+  </vehicleCompositions>
+  <vehicleInputs>
+    <vehicleInput anmFlag="false" link="11" name="" no="1">
+      <timeIntVehVols>
+        <timeIntervalVehVolume cont="false" timeInt="1 0" vehComp="1" volType="STOCHASTIC" volume="1838"/>
+      </timeIntVehVols>
+    </vehicleInput>
+    <vehicleInput anmFlag="false" link="11" name="" no="2">
+      <timeIntVehVols>
+        <timeIntervalVehVolume cont="false" timeInt="1 0" vehComp="1" volType="STOCHASTIC" volume="1446"/>
+      </timeIntVehVols>
+    </vehicleInput>
+  </vehicleInputs>
+</network>
+"""
+
+
+@pytest.fixture()
+def vehicle_composition_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "vehicle_compositions.inpx"
+    path.write_text(_VEHICLE_COMPOSITION_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_vehicle_compositions_on_real_elements(vehicle_composition_fixture_inpx: Path):
+    # Ground truth mirrors Urban Intersection Beijing.CN's real compositions
+    # 1 and 4, per the v2 unit ⑦ live probe (backend/tools/
+    # probe_vehicle_compositions.py).
+    tools_network.set_active_inpx(vehicle_composition_fixture_inpx)
+
+    envelope = _dispatch("get_vehicle_compositions")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 2
+    by_no = {c["no"]: c for c in data["vehicle_compositions"]}
+
+    comp_1 = by_no["1"]
+    assert comp_1["name"] == "5% HGV, 5% LGV, 5% Bus"
+    assert comp_1["referencing_vehicle_input_nos"] == ["1", "2"]
+    entries_by_veh_type = {e["veh_type"]: e for e in comp_1["entries"]}
+    assert entries_by_veh_type["100"]["rel_flow"] == 0.85
+    assert entries_by_veh_type["100"]["des_speed_distr"] == "65"
+    # estimated_share_pct is DERIVED (rel_flow / sum of this composition's
+    # entries), not read verbatim off relFlow -- 0.85 / 1.0 == 85%.
+    assert entries_by_veh_type["100"]["estimated_share_pct"] == 85.0
+    assert entries_by_veh_type["190"]["estimated_share_pct"] == 5.0
+
+    comp_4 = by_no["4"]
+    assert comp_4["referencing_vehicle_input_nos"] == []  # nothing references "Cycle" in this fixture
+    assert comp_4["entries"][0]["estimated_share_pct"] == 100.0  # only entry -> always 100%
+
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_get_vehicle_compositions_filters_by_composition_no(vehicle_composition_fixture_inpx: Path):
+    tools_network.set_active_inpx(vehicle_composition_fixture_inpx)
+
+    envelope = _dispatch("get_vehicle_compositions", composition_no="4")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["vehicle_compositions"][0]["no"] == "4"
+    # A filtered call is already bounded by the model's own query -- no cap
+    # bookkeeping needed (matches get_conflict_areas' precedent).
+    assert "truncated" not in data
+    assert "hint" not in data
+
+
+def test_get_vehicle_compositions_filters_by_composition_no_no_match_is_empty_not_an_error(
+    vehicle_composition_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(vehicle_composition_fixture_inpx)
+
+    envelope = _dispatch("get_vehicle_compositions", composition_no="9999")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "vehicle_compositions": []}
+
+
+def test_get_vehicle_compositions_rejects_unexpected_params(vehicle_composition_fixture_inpx: Path):
+    tools_network.set_active_inpx(vehicle_composition_fixture_inpx)
+
+    envelope = _dispatch("get_vehicle_compositions", bogus=1)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+_MANY_VEHICLE_COMPOSITIONS_INPX_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links></links>
+  <vehicleCompositions>
+{compositions}
+  </vehicleCompositions>
+</network>
+"""
+
+
+def _many_vehicle_compositions_inpx(tmp_path: Path, count: int) -> Path:
+    compositions = "\n".join(
+        f'    <vehicleComposition no="{i}" name="Comp {i}">'
+        f'<vehCompRelFlows><vehicleCompositionRelativeFlow desSpeedDistr="50" relFlow="1" '
+        f'vehType="100"/></vehCompRelFlows></vehicleComposition>'
+        for i in range(1, count + 1)
+    )
+    path = tmp_path / f"many_vehicle_compositions_{count}.inpx"
+    path.write_text(_MANY_VEHICLE_COMPOSITIONS_INPX_TEMPLATE.format(compositions=compositions), encoding="utf-8")
+    return path
+
+
+def test_get_vehicle_compositions_unfiltered_call_on_large_network_is_capped_and_truncated(
+    tmp_path: Path,
+):
+    tools_network.set_active_inpx(_many_vehicle_compositions_inpx(tmp_path, 60))
+
+    envelope = _dispatch("get_vehicle_compositions")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 60  # the TRUE total, never hidden
+    assert len(data["vehicle_compositions"]) == tools_network._VEHICLE_COMPOSITIONS_DEFAULT_CAP
+    assert data["truncated"] is True
+    assert "40" in data["hint"] and "60" in data["hint"]
+    followup = _dispatch("get_vehicle_compositions", composition_no="50")
+    assert followup["data"]["count"] == 1
+    assert followup["data"]["vehicle_compositions"][0]["no"] == "50"
+
+
+def test_get_vehicle_compositions_unfiltered_call_under_cap_is_not_truncated(tmp_path: Path):
+    tools_network.set_active_inpx(_many_vehicle_compositions_inpx(tmp_path, 5))
+
+    envelope = _dispatch("get_vehicle_compositions")
+
+    data = envelope["data"]
+    assert data["count"] == 5
+    assert len(data["vehicle_compositions"]) == 5
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_build_shadow_model_flattens_vehicle_composition_entries_with_synthesized_ids(
+    vehicle_composition_fixture_inpx: Path,
+):
+    shadow = tools_network.build_shadow_model(vehicle_composition_fixture_inpx)
+
+    assert len(shadow["vehicle_composition_entries"]) == 5  # 4 entries on comp 1 + 1 on comp 4
+    by_id = {e["id"]: e for e in shadow["vehicle_composition_entries"]}
+    assert set(by_id) == {"1.100", "1.190", "1.200", "1.300", "4.600"}
+    assert by_id["1.100"]["composition_no"] == "1"
+    assert by_id["1.100"]["veh_type"] == "100"
+    assert by_id["1.100"]["rel_flow"] == 0.85
+
+
+def test_resolve_object_finds_vehicle_composition_by_name(vehicle_composition_fixture_inpx: Path):
+    tools_network.set_active_inpx(vehicle_composition_fixture_inpx)
+
+    envelope = _dispatch("resolve_object", query="Cycle", object_type="vehicle_composition")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["found"] is True
+    assert data["candidates"][0]["id"] == "4"
+    assert data["candidates"][0]["object_type"] == "vehicle_composition"
+
+
+def test_get_network_overview_includes_vehicle_compositions_section(
+    vehicle_composition_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(vehicle_composition_fixture_inpx)
+
+    envelope = _dispatch("get_network_overview")
+
+    data = envelope["data"]
+    assert data["vehicle_compositions"]["count"] == 2
+    ids = {item["id"] for item in data["vehicle_compositions"]["items"]}
+    assert ids == {"1", "4"}
+
+
+# ---------------------------------------------------------------------------
 # build_shadow_model — the extended shadow model builder (unit-level)
 # ---------------------------------------------------------------------------
 
@@ -829,6 +1048,8 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "conflict_areas",
         "routing_decisions",
         "routes",
+        "vehicle_compositions",
+        "vehicle_composition_entries",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -849,6 +1070,11 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
     # at all (unlike a real Vissim export) -- every route parses as NOT
     # disconnected (empty link_seq is vacuously "connected", not unknown).
     assert all(r["disconnected"] is False for r in shadow["routes"])
+    # v2 unit ⑦: the demo .inpx carries no <vehicleComposition> elements at
+    # all -- both shadow keys must still be present and well-formed (empty
+    # list, not absent/None), same shape as signals/conflict_areas.
+    assert shadow["vehicle_compositions"] == []
+    assert shadow["vehicle_composition_entries"] == []
 
 
 def test_build_shadow_model_is_mtime_cached_across_repeat_calls():

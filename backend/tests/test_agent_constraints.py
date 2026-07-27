@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from services.agent.constraints import Finding, get_registry, run_checks
 
 LANGS = ("ko", "en", "ja")
@@ -20,6 +22,7 @@ def _shadow_model(
     nodes: list[dict[str, Any]] | None = None,
     conflict_areas: list[dict[str, Any]] | None = None,
     routing_decisions: list[dict[str, Any]] | None = None,
+    vehicle_compositions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -56,7 +59,34 @@ def _shadow_model(
     # conflict_areas above.
     if routing_decisions is not None:
         shadow["routing_decisions"] = routing_decisions
+    # vehicle_compositions is deliberately OMITTED by default too (v2 unit
+    # ⑦) -- same "most tests have nothing to do with this object class, and
+    # a caller-built fixture can legitimately omit the key" reasoning as
+    # conflict_areas/routing_decisions above.
+    if vehicle_compositions is not None:
+        shadow["vehicle_compositions"] = vehicle_compositions
     return shadow
+
+
+def _composition_entry(
+    veh_type: str, *, des_speed_distr: str = "50", rel_flow: float | None = 100.0
+) -> dict[str, Any]:
+    return {"veh_type": veh_type, "des_speed_distr": des_speed_distr, "rel_flow": rel_flow}
+
+
+def _vehicle_composition(
+    no: str,
+    entries: list[dict[str, Any]],
+    *,
+    name: str = "",
+    referencing_vehicle_input_nos: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "no": no,
+        "name": name,
+        "entries": entries,
+        "referencing_vehicle_input_nos": referencing_vehicle_input_nos or [],
+    }
 
 
 def _route(
@@ -2311,21 +2341,176 @@ def test_object_reference_integrity_on_delete_does_not_apply_to_other_tools():
     )
 
 
-def test_vehicle_composition_share_redistribution_gap_always_warns_for_that_tool():
-    shadow = _shadow_model()
+# ---------------------------------------------------------------------------
+# set_vehicle_composition_share — v2 unit ⑦
+# ---------------------------------------------------------------------------
+
+
+def test_object_not_found_fires_for_missing_vehicle_composition():
+    # v2 unit ⑦: the composition-level (first) half of
+    # set_vehicle_composition_share's two-part object resolution reuses #1's
+    # generic single-id machinery.
+    shadow = _shadow_model(vehicle_compositions=[_vehicle_composition("1", [_composition_entry("100")])])
+    action = _action("set_vehicle_composition_share", composition_no="999", veh_type_no="100", rel_flow=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    _assert_well_formed_messages(matches[0], must_contain_ko="999")
+
+
+def test_object_not_found_silent_when_vehicle_composition_present():
+    shadow = _shadow_model(vehicle_compositions=[_vehicle_composition("1", [_composition_entry("100")])])
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_vehicle_composition_entry_not_found_fires_for_missing_veh_type():
+    shadow = _shadow_model(
+        vehicle_compositions=[
+            _vehicle_composition("1", [_composition_entry("100"), _composition_entry("200")])
+        ]
+    )
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="999", rel_flow=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "vehicle_composition_entry_not_found"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    _assert_well_formed_messages(finding, must_contain_ko="1")
+    assert finding.suggested_fix == ["100", "200"]
+
+
+def test_vehicle_composition_entry_not_found_silent_when_veh_type_present():
+    shadow = _shadow_model(
+        vehicle_compositions=[
+            _vehicle_composition("1", [_composition_entry("100"), _composition_entry("200")])
+        ]
+    )
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="200", rel_flow=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_composition_entry_not_found" for f in findings)
+
+
+def test_vehicle_composition_entry_not_found_defers_to_object_not_found_when_composition_missing():
+    shadow = _shadow_model(vehicle_compositions=[_vehicle_composition("1", [_composition_entry("100")])])
+    action = _action("set_vehicle_composition_share", composition_no="999", veh_type_no="100", rel_flow=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_composition_entry_not_found" for f in findings)
+    assert any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_vehicle_composition_entry_not_found_does_not_apply_to_unrelated_tool():
+    shadow = _shadow_model(vehicle_compositions=[_vehicle_composition("1", [_composition_entry("100")])])
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_composition_entry_not_found" for f in findings)
+
+
+@pytest.mark.parametrize("bad_rel_flow", [0.0, -5.0, float("nan"), float("inf"), float("-inf")])
+def test_vehicle_composition_weight_invalid_fires_for_non_positive_or_non_finite(bad_rel_flow):
+    shadow = _shadow_model(vehicle_compositions=[_vehicle_composition("1", [_composition_entry("100")])])
     action = _action(
-        "set_vehicle_composition_share", composition_id="1", class_id="truck", new_share=0.3
+        "set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=bad_rel_flow
     )
 
     findings = run_checks("preflight", action, shadow, {})
 
-    matches = [
-        f
-        for f in findings
-        if f.constraint_id == "vehicle_composition_share_redistribution_gap"
-    ]
+    matches = [f for f in findings if f.constraint_id == "vehicle_composition_weight_invalid"]
     assert len(matches) == 1
-    assert matches[0].tier == "warn"
+    assert matches[0].tier == "refuse"
+
+
+def test_vehicle_composition_weight_invalid_silent_for_a_positive_finite_weight():
+    shadow = _shadow_model(vehicle_compositions=[_vehicle_composition("1", [_composition_entry("100")])])
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.85)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_composition_weight_invalid" for f in findings)
+
+
+def test_vehicle_composition_weight_invalid_does_not_apply_to_other_tools():
+    shadow = _shadow_model()
+    action = _action("set_vehicle_input_volume", input_no="1", volume=-5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_composition_weight_invalid" for f in findings)
+
+
+def test_vehicle_composition_share_redistribution_gap_always_fires_and_echoes_the_estimated_share():
+    # v2 unit ⑦ corrected finding: RelFlow is a RAW weight (verified live —
+    # Vissim does NOT renormalize sibling entries on write), matching
+    # route_relative_flow_split_confirm's (#48) own share-estimate math
+    # exactly — siblings' CURRENT relFlow, not renormalized.
+    shadow = _shadow_model(
+        vehicle_compositions=[
+            _vehicle_composition(
+                "1",
+                [
+                    _composition_entry("100", rel_flow=0.85),
+                    _composition_entry("190", rel_flow=0.05),
+                    _composition_entry("200", rel_flow=0.05),
+                    _composition_entry("300", rel_flow=0.05),
+                ],
+            )
+        ]
+    )
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.85)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "vehicle_composition_share_redistribution_gap"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "warn"
+    _assert_well_formed_messages(finding, must_contain_ko="1")
+    # 5.85 / (5.85 + 0.05 + 0.05 + 0.05) == 97.5% -- siblings' CURRENT
+    # rel_flow used, not renormalized.
+    assert finding.details["estimated_share_pct"] == 97.5
+    assert finding.details["old_rel_flow"] == 0.85
+    assert finding.details["new_rel_flow"] == 5.85
+    assert finding.details["entry_count"] == 4
+    assert "raw" in finding.messages["en"].lower()
+    assert "auto" not in finding.messages["en"].lower()  # the old, disproven premise must be gone
+
+
+def test_vehicle_composition_share_redistribution_gap_notes_single_entry_has_no_effect_on_split():
+    shadow = _shadow_model(
+        vehicle_compositions=[_vehicle_composition("4", [_composition_entry("600", rel_flow=1.0)])]
+    )
+    action = _action("set_vehicle_composition_share", composition_no="4", veh_type_no="600", rel_flow=42.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "vehicle_composition_share_redistribution_gap"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.details["entry_count"] == 1
+    assert finding.details["estimated_share_pct"] == 100.0
+    assert "100%" in finding.messages["en"]
+
+
+def test_vehicle_composition_share_redistribution_gap_silent_when_target_missing():
+    shadow = _shadow_model(vehicle_compositions=[])
+    action = _action("set_vehicle_composition_share", composition_no="999", veh_type_no="100", rel_flow=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_composition_share_redistribution_gap" for f in findings)
 
 
 def test_vehicle_composition_share_redistribution_gap_does_not_apply_to_other_tools():
@@ -2337,6 +2522,114 @@ def test_vehicle_composition_share_redistribution_gap_does_not_apply_to_other_to
     assert not any(
         f.constraint_id == "vehicle_composition_share_redistribution_gap" for f in findings
     )
+
+
+def test_vehicle_composition_referenced_by_vehicle_inputs_fires_and_caps_the_list():
+    shadow = _shadow_model(
+        vehicle_compositions=[
+            _vehicle_composition(
+                "1",
+                [_composition_entry("100")],
+                referencing_vehicle_input_nos=[str(i) for i in range(1, 12)],  # 11 inputs
+            )
+        ]
+    )
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "vehicle_composition_referenced_by_vehicle_inputs"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "warn"
+    assert finding.details["referencing_vehicle_input_nos"] == [str(i) for i in range(1, 12)]
+    # message caps at 8 + a remainder note (constraints._capped_join, limit=8)
+    assert "more" in finding.messages["en"] or "외" in finding.messages["ko"]
+
+
+def test_vehicle_composition_referenced_by_vehicle_inputs_silent_when_no_references():
+    shadow = _shadow_model(
+        vehicle_compositions=[_vehicle_composition("4", [_composition_entry("600")], referencing_vehicle_input_nos=[])]
+    )
+    action = _action("set_vehicle_composition_share", composition_no="4", veh_type_no="600", rel_flow=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "vehicle_composition_referenced_by_vehicle_inputs" for f in findings
+    )
+
+
+def test_vehicle_composition_referenced_by_vehicle_inputs_silent_when_target_missing():
+    shadow = _shadow_model(vehicle_compositions=[])
+    action = _action("set_vehicle_composition_share", composition_no="999", veh_type_no="100", rel_flow=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "vehicle_composition_referenced_by_vehicle_inputs" for f in findings
+    )
+
+
+def test_vehicle_composition_share_drastic_change_fires_minority_to_dominant():
+    # before: 0.85 / (0.85+0.05+0.05+0.05) == 85% -- NOT a minority, so this
+    # fixture alone should not trip the check; use a genuinely minority
+    # starting entry instead (vehType 190: 0.05 / 1.0 == 5%).
+    shadow = _shadow_model(
+        vehicle_compositions=[
+            _vehicle_composition(
+                "1",
+                [
+                    _composition_entry("100", rel_flow=0.85),
+                    _composition_entry("190", rel_flow=0.05),
+                    _composition_entry("200", rel_flow=0.05),
+                    _composition_entry("300", rel_flow=0.05),
+                ],
+            )
+        ]
+    )
+    # new_rel_flow=9.0 -> 9.0 / (9.0+0.85+0.05+0.05) == 90.1% (dominant)
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="190", rel_flow=9.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "vehicle_composition_share_drastic_change"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "warn"
+    assert finding.details["before_share_pct"] < 50.0
+    assert finding.details["after_share_pct"] >= 90.0
+    _assert_well_formed_messages(finding, must_contain_ko="190")
+
+
+def test_vehicle_composition_share_drastic_change_silent_for_a_modest_change():
+    shadow = _shadow_model(
+        vehicle_compositions=[
+            _vehicle_composition(
+                "1",
+                [
+                    _composition_entry("100", rel_flow=0.85),
+                    _composition_entry("190", rel_flow=0.05),
+                ],
+            )
+        ]
+    )
+    # 0.85 -> 0.90 stays comfortably dominant the whole time; not "minority
+    # to dominant", just a normal small edit.
+    action = _action("set_vehicle_composition_share", composition_no="1", veh_type_no="100", rel_flow=0.90)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_composition_share_drastic_change" for f in findings)
+
+
+def test_vehicle_composition_share_drastic_change_silent_when_target_missing():
+    shadow = _shadow_model(vehicle_compositions=[])
+    action = _action("set_vehicle_composition_share", composition_no="999", veh_type_no="100", rel_flow=90.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_composition_share_drastic_change" for f in findings)
 
 
 def test_restriction_missing_vehicle_class_scope_fires_without_classes():
@@ -2571,9 +2864,16 @@ def test_registry_size_matches_m3_1_catalog_port():
     # ⑥'s route_not_found_in_decision / route_relative_flow_interval_out_of_
     # range / route_relative_flow_split_confirm, all three "not a
     # §-numbered catalog entry, a defensive addition" shapes for the new
-    # set_route_relative_flow tool) == 48.
+    # set_route_relative_flow tool) == 48, + 4 (v2 unit ⑦'s
+    # vehicle_composition_entry_not_found / vehicle_composition_weight_
+    # invalid / vehicle_composition_referenced_by_vehicle_inputs /
+    # vehicle_composition_share_drastic_change, all four "not a §-numbered
+    # catalog entry, a defensive addition" shapes for the new
+    # set_vehicle_composition_share tool -- #36 vehicle_composition_share_
+    # redistribution_gap already existed and was corrected IN PLACE, not
+    # added) == 52.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 48
+    assert len(get_registry()) == 52
 
 
 def test_registry_has_unique_ids():
