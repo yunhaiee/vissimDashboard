@@ -20,6 +20,8 @@
 // the wire payload) -- the /network page re-resolves every id against the
 // network geometry it already fetches.
 
+import { useEffect, useState } from "react";
+
 export type FocusBbox = { x_min: number; y_min: number; x_max: number; y_max: number };
 
 /** One focus element as it travels in the URL: the backend focus payload's
@@ -96,14 +98,32 @@ export const MAX_FOCUS_URL_ELEMENTS = 24;
 
 /** Focus element `type` (singular, as the backend emits it) -> the
  * NetworkElements list key NetworkViewer stamps into its `data-elkey`
- * attributes (`"signal_heads:42"`). Types absent here have no element glyph:
- * "link" is drawn by the road passes (matched by `data-linkid` instead) and
- * "conflict_area" has no geometry at all. */
+ * attributes (`"signal_heads:42"`). Types absent here have no element glyph
+ * anywhere in NetworkViewer: "link" is drawn by the road passes (matched by
+ * `data-linkid` instead of this map) and everything else absent -- node,
+ * signal_controller, conflict_area, routing_decision, route,
+ * vehicle_composition, des_speed_distribution -- has no geometry of its own
+ * at all (approval_focus.py's / network_search.py's own docstrings agree on
+ * this).
+ *
+ * The first four entries are every type the approval-focus write tools ever
+ * emit. Network component search (2026-07-28, lib/networkSearchLabel.ts +
+ * components/NetworkSearchBox.tsx) can surface every OTHER drawable element
+ * family too, so its point-glyph classes are appended here rather than kept
+ * in a second, drifting copy of this same table -- one focus-type -> elkey
+ * map for every consumer of `focusElementKey`/`buildFocusFlash`. */
 const ELEMENT_KEY_BY_FOCUS_TYPE: Record<string, string> = {
   signal_head: "signal_heads",
   vehicle_input: "vehicle_inputs",
   des_speed_decision: "des_speed_decisions",
   reduced_speed_area: "reduced_speed_areas",
+  detector: "detectors",
+  data_collection_point: "data_collection_points",
+  queue_counter: "queue_counters",
+  pt_stop: "pt_stops",
+  stop_sign: "stop_signs",
+  traveltime_section: "traveltime_sections_geo",
+  ped_area: "ped_areas",
 };
 
 /** The `data-elkey` value NetworkViewer stamps for this focus element, or
@@ -172,4 +192,75 @@ export function focusSignature(focus: NetworkFocus | null): string {
   return `${focus.nonce}#${round(x_min)},${round(y_min)},${round(x_max)},${round(y_max)}|${focus.elements
     .map((el) => `${el.type}:${el.id}`)
     .join(",")}`;
+}
+
+// --- Shared focusFlash/zoomToBbox plumbing (network search, 2026-07-28) ---
+//
+// Originally lived inline in app/network/page.tsx, written once for the
+// approval-card URL handoff. Network component search (NetworkSearchBox.tsx)
+// needs the EXACT same "pulse then settle" lifecycle and the exact same
+// element-refs -> {linkIds, elementKeys} translation, on /network (where it
+// must coexist with the URL handoff) and on /dashboard (which has never had
+// either). Extracted here rather than copy-pasted three times, so the pulse
+// timing and the flash-shape logic can never drift between call sites.
+
+// ~4 cycles of NetworkViewer's 0.85s focus-flash keyframe — long enough to
+// catch the eye after a zoom flight lands, short enough to never read as a
+// permanent blink (irritating, and an accessibility problem). Skipped
+// entirely under prefers-reduced-motion by useFocusPulse below.
+export const FOCUS_PULSE_MS = 3400;
+
+/** Pulse-then-settle state machine for one focus "slot" (the URL-sourced
+ * approval focus and a search selection are two independent slots that can
+ * be active on the same page — each calls this once with its own key).
+ * Arriving with a NEW, non-empty `key` starts a short attention pulse
+ * (skipped under prefers-reduced-motion), which SETTLES into the static
+ * highlight after `pulseMs` — never an endless blink. Starting the pulse
+ * happens DURING RENDER (React's documented "adjust state when a prop
+ * changes" pattern), not in an effect — an effect would render one frame of
+ * the settled highlight first, i.e. the pulse would visibly stutter on
+ * arrival. `key === ""` means "no focus in this slot"; the hook simply never
+ * pulses (and returns false) until a real key arrives. */
+export function useFocusPulse(key: string, pulseMs: number = FOCUS_PULSE_MS): boolean {
+  const [pulse, setPulse] = useState({ key: "", active: false });
+  if (key && pulse.key !== key) {
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setPulse({ key, active: !reduceMotion });
+  }
+  const pulsing = pulse.active && pulse.key === key;
+  useEffect(() => {
+    if (!pulsing) return;
+    const timer = window.setTimeout(() => setPulse((prev) => ({ ...prev, active: false })), pulseMs);
+    return () => window.clearTimeout(timer);
+  }, [pulsing, pulse.key, pulseMs]);
+  return pulsing;
+}
+
+/** `elements` -> NetworkViewer's `focusFlash` prop shape: link ids resolve
+ * against `data-linkid` (the road fills), everything else resolves against
+ * `data-elkey` via `focusElementKey` (or drops out silently if it names a
+ * family NetworkViewer never draws — a conflict area's own "self" ref, a
+ * route, a node, ...). Returns null when nothing in `elements` maps to a
+ * flashable glyph at all — the caller still zooms via `zoomToBbox`, it just
+ * has nothing to recolour (mirrors ApprovalFocusMap.tsx's own "no bbox -> no
+ * map" contract, one level down: "no flashable element -> no flash prop"). */
+export function buildFocusFlash(
+  elements: readonly FocusElementRef[],
+  pulsing: boolean,
+): { linkIds: string[]; elementKeys: string[]; pulsing: boolean } | null {
+  const linkIds: string[] = [];
+  const elementKeys: string[] = [];
+  for (const element of elements) {
+    if (element.type === "link") {
+      linkIds.push(element.id);
+      continue;
+    }
+    const key = focusElementKey(element);
+    if (key) elementKeys.push(key);
+  }
+  if (!linkIds.length && !elementKeys.length) return null;
+  return { linkIds, elementKeys, pulsing };
 }

@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import NetworkSearchBox, { type NetworkSearchSelection } from "@/components/NetworkSearchBox";
 import TrajectoryLayer, { createProjectionStore, PLAYBACK_SPEEDS, useTrajectoryPlayback } from "@/components/TrajectoryLayer";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import {
@@ -16,7 +17,15 @@ import {
   type SimulationJob,
 } from "@/lib/api";
 import { elementTypeLabel, linkKindLabel, type NetworkElementRef } from "@/lib/networkElements";
-import { focusElementKey, focusSignature, parseNetworkFocus } from "@/lib/networkFocus";
+import {
+  buildFocusFlash,
+  focusSignature,
+  nextFocusNonce,
+  parseNetworkFocus,
+  useFocusPulse,
+  type FocusBbox,
+  type FocusElementRef,
+} from "@/lib/networkFocus";
 
 // NetworkViewer draws with d3 straight against the DOM, so it must stay
 // client-only (same reason DashboardMap/Leaflet is dynamically imported).
@@ -28,14 +37,6 @@ const MAX_SELECTED_NODES = 6;
 // would otherwise substitute a colour emoji keep them as plain glyphs.
 const PLAY_GLYPH = "▶︎";
 const PAUSE_GLYPH = "⏸︎";
-
-// Approval-focus flash (2026-07-28): how long the attention pulse runs before
-// SETTLING into the same colour held statically. ~4 cycles of NetworkViewer's
-// 0.85s keyframe animation — long enough to catch the eye after the 0.65s
-// zoom flight lands, short enough that it never becomes a permanent blink
-// (which is both irritating and an accessibility problem). Skipped entirely
-// under prefers-reduced-motion: straight to the static highlight.
-const FOCUS_PULSE_MS = 3400;
 
 // m:ss for the scrubber readout. Sim clocks can start at a non-zero t0, so the
 // caller passes an already-relative offset; absolute sim seconds are shown
@@ -138,56 +139,17 @@ function NetworkPageContent() {
     setDismissedFocusKey(focusKeyRef.current || "none");
   }, []);
 
-  // Pulse phase, keyed to the focus it belongs to. Arriving with a new focus
-  // starts pulsing DURING RENDER (React's documented "adjust state when a prop
-  // changes" pattern) rather than in an effect — an effect that flipped this
-  // on would render one frame of the settled highlight first, i.e. the pulse
-  // would visibly stutter on arrival, and it would trip
-  // react-hooks/set-state-in-effect for exactly that reason.
-  // prefers-reduced-motion never enters the pulse phase at all (NetworkViewer's
-  // stylesheet also disables the keyframes — belt and braces, since a media
-  // query can flip after mount).
-  const [pulse, setPulse] = useState({ key: "", active: false });
-  if (focusKey && pulse.key !== focusKey) {
-    const reduceMotion =
-      typeof window !== "undefined" &&
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    setPulse({ key: focusKey, active: !reduceMotion });
-  }
-  const focusPulsing = pulse.active && pulse.key === focusKey;
-
-  // ...and SETTLE into the static highlight after a handful of cycles — never
-  // an endless blink (irritating, and hostile to anyone sensitive to motion).
-  // `pulse.key` is a dependency as well as `focusPulsing`: re-asking for the
-  // same target while it is STILL pulsing changes the key but not the flag, and
-  // without it the restarted pulse would inherit the first ask's remaining time
-  // and settle early.
-  useEffect(() => {
-    if (!focusPulsing) return;
-    const timer = window.setTimeout(() => setPulse((prev) => ({ ...prev, active: false })), FOCUS_PULSE_MS);
-    return () => window.clearTimeout(timer);
-  }, [focusPulsing, pulse.key]);
-
-  // Focus elements -> the two address spaces NetworkViewer already stamps:
-  // `data-linkid` on road fills, `data-elkey` on element glyph groups.
-  // "conflict_area" entries resolve to neither (they have no geometry at all)
-  // and are dropped here — the two links they name carry the highlight.
-  const focusFlash = useMemo(() => {
-    if (!activeFocus) return null;
-    const linkIds: string[] = [];
-    const elementKeys: string[] = [];
-    for (const element of activeFocus.elements) {
-      if (element.type === "link") {
-        linkIds.push(element.id);
-        continue;
-      }
-      const key = focusElementKey(element);
-      if (key) elementKeys.push(key);
-    }
-    if (!linkIds.length && !elementKeys.length) return null;
-    return { linkIds, elementKeys, pulsing: focusPulsing };
-  }, [activeFocus, focusPulsing]);
+  // Pulse phase, keyed to the focus it belongs to — extracted to
+  // lib/networkFocus.ts's useFocusPulse (2026-07-28) so the URL-sourced
+  // approval focus below and the network-search selection further down share
+  // the exact same "pulse during render, settle after FOCUS_PULSE_MS,
+  // skip entirely under prefers-reduced-motion" state machine instead of two
+  // independently-drifting copies of it.
+  const focusPulsing = useFocusPulse(focusKey);
+  const urlFocusFlash = useMemo(
+    () => (activeFocus ? buildFocusFlash(activeFocus.elements, focusPulsing) : null),
+    [activeFocus, focusPulsing],
+  );
 
   const focusBanner = useMemo(() => {
     if (!activeFocus) return null;
@@ -205,6 +167,48 @@ function NetworkPageContent() {
     const count = activeFocus.elements.length;
     return t(`대상 요소 ${count}개`, `${count} target element${count === 1 ? "" : "s"}`, `対象要素${count}個`);
   }, [activeFocus, t]);
+
+  // --- Network search selection (2026-07-28) ------------------------------
+  // A SEPARATE focus "slot" from the URL-sourced approval focus above — a
+  // search selection is a same-page interactive action, not a navigation, so
+  // it carries its own nonce/pulse rather than round-tripping through the URL
+  // codec. Takes precedence over the URL focus whenever present (selecting a
+  // search result is unambiguously "look here NOW"); selecting a result also
+  // retires the URL focus via dismissFocus so the two banners never stack.
+  const [searchSelection, setSearchSelection] = useState<{
+    key: string;
+    bbox: FocusBbox;
+    elements: FocusElementRef[];
+    label: string;
+  } | null>(null);
+  const searchPulsing = useFocusPulse(searchSelection?.key ?? "");
+  const searchFocusFlash = useMemo(
+    () => (searchSelection ? buildFocusFlash(searchSelection.elements, searchPulsing) : null),
+    [searchSelection, searchPulsing],
+  );
+
+  const handleSearchSelect = useCallback(
+    (selection: NetworkSearchSelection) => {
+      dismissFocus();
+      setSearchSelection({
+        key: nextFocusNonce(),
+        bbox: selection.bbox,
+        elements: selection.elements,
+        label: selection.label,
+      });
+    },
+    [dismissFocus],
+  );
+  const clearSearchSelection = useCallback(() => setSearchSelection(null), []);
+
+  // Combined values NetworkViewer actually receives: search wins over the URL
+  // focus whenever a search selection is active.
+  const focusFlash = searchSelection ? searchFocusFlash : urlFocusFlash;
+  const zoomToBbox = searchSelection
+    ? { ...searchSelection.bbox, nonce: searchSelection.key }
+    : activeFocus
+      ? { ...activeFocus.bbox, nonce: activeFocus.nonce }
+      : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -300,15 +304,22 @@ function NetworkPageContent() {
     setSelectedNodeIds([]);
     setSelectedLinkInfo(null);
     setSelectedElementInfo(null);
+    // A search selection's bbox is in the OLD network's coordinate space --
+    // keeping it across a dataset swap would fly the diagram to a location
+    // that means nothing in the new one (same reason the selections above are
+    // cleared, one step worse).
+    setSearchSelection(null);
     setDatasetRevision(dataset?.revision ?? String(Date.now()));
   }, []);
 
   // Mirror the dashboard's handleNodeClick semantics: clicking toggles the node
   // in the comparison set, capped at six with the oldest dropped first.
   const handleNodeClick = useCallback((nodeId: string) => {
-    // Selecting anything retires the approval focus — "look here" has served
-    // its purpose the moment the user starts driving the diagram themselves.
+    // Selecting anything retires the approval focus AND any search
+    // selection — "look here" has served its purpose the moment the user
+    // starts driving the diagram themselves.
     dismissFocus();
+    setSearchSelection(null);
     setSelectedNodeIds((prev) => {
       if (prev.includes(nodeId)) {
         return prev.filter((id) => id !== nodeId);
@@ -326,11 +337,13 @@ function NetworkPageContent() {
   // links and elements key the parsed network.
   const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean) => {
     dismissFocus();
+    setSearchSelection(null);
     setSelectedLinkInfo((prev) => (prev && prev.id === linkId ? null : { id: linkId, name: linkName, isConnector }));
   }, [dismissFocus]);
 
   const handleElementClick = useCallback((ref: NetworkElementRef) => {
     dismissFocus();
+    setSearchSelection(null);
     setSelectedElementInfo((prev) => (prev && prev.type === ref.type && prev.id === ref.id ? null : ref));
   }, [dismissFocus]);
 
@@ -436,13 +449,16 @@ function NetworkPageContent() {
           </div>
         </div>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={() => setReloadNonce((nonce) => nonce + 1)}
-            className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
-          >
-            {t("새로고침", "Refresh")}
-          </button>
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setReloadNonce((nonce) => nonce + 1)}
+              className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+            >
+              {t("새로고침", "Refresh")}
+            </button>
+            <NetworkSearchBox onSelect={handleSearchSelect} className="w-full sm:w-80" />
+          </div>
           <div className="w-full lg:max-w-[320px]">
             <VissimDatasetBanner onDatasetChange={handleDatasetChange} fullWidth className="h-full" />
           </div>
@@ -454,19 +470,25 @@ function NetworkPageContent() {
           cannot be imported — and importing anything from NetworkViewer here
           would defeat its `ssr: false` dynamic import above. Keep the two in
           step by hand; both carry the same "#00c2ff" marker. */}
-      {activeFocus && (
+      {(searchSelection || activeFocus) && (
         <div
           data-testid="network-focus-banner"
           className="mx-1 flex flex-wrap items-center gap-2 rounded-lg border border-[#00c2ff]/50 bg-[#00c2ff]/10 px-3 py-2 text-xs text-slate-600"
         >
           <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-full bg-[#00c2ff]" />
           <span className="font-semibold text-slate-700">
-            {t("승인 대상 강조", "Approval target highlighted", "承認対象をハイライト")}
+            {searchSelection
+              ? t("검색 결과 강조", "Search result highlighted", "検索結果をハイライト")
+              : t("승인 대상 강조", "Approval target highlighted", "承認対象をハイライト")}
           </span>
-          {focusBanner && <span className="text-slate-500">{focusBanner}</span>}
+          {searchSelection ? (
+            <span className="text-slate-500">{searchSelection.label}</span>
+          ) : (
+            focusBanner && <span className="text-slate-500">{focusBanner}</span>
+          )}
           <button
             type="button"
-            onClick={dismissFocus}
+            onClick={searchSelection ? clearSearchSelection : dismissFocus}
             className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 transition hover:text-slate-900"
           >
             {t("강조 해제", "Clear highlight", "ハイライト解除")}
@@ -492,6 +514,13 @@ function NetworkPageContent() {
           </div>
         ) : (
           <>
+            {/* zoomToBbox carries the focus nonce as well as the four numbers:
+                NetworkViewer keys its fit-to-region effect off a scalar built
+                from them, and on a re-trigger the numbers are by definition
+                unchanged — the nonce is the only thing that says "fly there
+                again". `focusFlash`/`zoomToBbox` are the COMBINED values
+                (search selection takes precedence over the URL-sourced
+                approval focus) computed above. */}
             <NetworkViewer
               network={network}
               selectedNodeIds={selectedNodeIds}
@@ -502,11 +531,7 @@ function NetworkPageContent() {
               onElementClick={handleElementClick}
               onProjectionChange={projection.set}
               focusFlash={focusFlash}
-              // The nonce rides along so re-asking for the SAME region re-flies
-              // the zoom: NetworkViewer keys that effect off a scalar built
-              // from the bbox numbers, which are by definition unchanged on a
-              // re-trigger.
-              zoomToBbox={activeFocus ? { ...activeFocus.bbox, nonce: activeFocus.nonce } : null}
+              zoomToBbox={zoomToBbox}
             />
             {/* Canvas overlay: same box as the viewer's SVG, pointer-events
                 none so zoom/pan/click all still land on the SVG beneath it. */}

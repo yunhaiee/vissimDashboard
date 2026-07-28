@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from routers import assistant, datasets, network, scenarios, simulations, geojson, validation, exports, report, trajectories, agent_downloads, health
+from routers import assistant, datasets, network, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_downloads, health
 from services.agent.sessions import sweep_stale_sessions
 from services.license_guard import license_required, license_status
 
@@ -129,6 +129,10 @@ async def require_activated_license(request, call_next):
 
 
 app.include_router(network.router)
+# Shares network.router's /api/network prefix but only claims the /search
+# sub-paths — distinct, fully-specified routes, so registration order does not
+# affect matching.
+app.include_router(search.router)
 app.include_router(datasets.router)
 app.include_router(scenarios.router)
 app.include_router(simulations.router)

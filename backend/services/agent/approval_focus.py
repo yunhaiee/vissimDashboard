@@ -738,4 +738,30 @@ def resolve_focus(
         return _no_focus("resolver_error")
 
 
-__all__ = ["resolve_focus"]
+# ---------------------------------------------------------------------------
+# Additive shared surface (network component search, 2026-07-28)
+# ---------------------------------------------------------------------------
+#
+# ``services/network_search.py`` answers a DIFFERENT question ("where is the
+# thing the user typed?") but must draw the SAME map as an approval card does,
+# with the same anchor/context/cap policy -- two coordinate resolvers that
+# disagree about where conflict area 2140 is would be worse than none. Rather
+# than reach into this module's private names (or, worse, re-derive the anchor
+# math), the pieces search needs are re-exported here under public names.
+#
+# Purely additive aliases: no existing resolver, constant or behaviour changes,
+# and ``resolve_focus`` is untouched. Anything NOT listed here stays private on
+# purpose -- the per-write-tool resolvers are keyed to ``guardrails.py``'s
+# write-target tables and mean nothing to a search query.
+FocusAccumulator = _FocusAccumulator
+crossing_anchor = _crossing_anchor
+network_element_geometry = _elements_for
+MAX_FOCUS_FANOUT = _MAX_FANOUT_ELEMENTS
+
+__all__ = [
+    "resolve_focus",
+    "FocusAccumulator",
+    "crossing_anchor",
+    "network_element_geometry",
+    "MAX_FOCUS_FANOUT",
+]

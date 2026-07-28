@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import CurationBar from "@/components/dashboard/CurationBar";
+import NetworkSearchBox, { type NetworkSearchSelection } from "@/components/NetworkSearchBox";
 import NodeFlowPanel from "@/components/NodeFlowPanel";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import {
@@ -25,6 +26,7 @@ import {
 } from "@/lib/api";
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, objectBelongsToNode, resolveLosGrade, type LosGrade } from "@/lib/los";
 import { elementTypeLabel, linkKindLabel, type NetworkElementRef } from "@/lib/networkElements";
+import { buildFocusFlash, nextFocusNonce, useFocusPulse, type FocusBbox, type FocusElementRef } from "@/lib/networkFocus";
 import { getScenarioDisplayColor } from "@/lib/scenarioPalette";
 import { errorTone, gehTone, toneBadgeClass, type ValidationTone } from "@/lib/validationThresholds";
 
@@ -161,6 +163,17 @@ export default function DashboardPage() {
   const [networkLoading, setNetworkLoading] = useState(false);
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [networkReloadNonce, setNetworkReloadNonce] = useState(0);
+  // Network search selection (v2 UX unit, 2026-07-28): NetworkSearchBox is
+  // only mounted while the diagram (not the Leaflet map) is showing -- see
+  // its render site below -- so there is no URL-sourced focus to combine
+  // with here, unlike /network's page. Same shared pulse/flash plumbing
+  // (lib/networkFocus.ts) as that page, kept in its own state slot.
+  const [diagramSearchSelection, setDiagramSearchSelection] = useState<{
+    key: string;
+    bbox: FocusBbox;
+    elements: FocusElementRef[];
+    label: string;
+  } | null>(null);
   // P2: the floating assistant's current agent session id, mirrored here via
   // the "vissim:agent-session" event so the diagram viewer can show that
   // session's in-progress edited working copy on demand (refresh) -- see
@@ -438,6 +451,7 @@ export default function DashboardPage() {
   );
 
   const handleNodeClick = useCallback((nodeId: string, nodeName: string) => {
+    setDiagramSearchSelection(null);
     setNodeNamesById((prev) => ({ ...prev, [nodeId]: nodeName }));
     setSelectedNodeIds((prev) => {
       if (prev.includes(nodeId)) {
@@ -460,11 +474,35 @@ export default function DashboardPage() {
   // separate from selected_node_ids: node ids key result/metric lookups, while
   // link and element ids key the parsed network.
   const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean) => {
+    setDiagramSearchSelection(null);
     setSelectedLinkInfo((prev) => (prev && prev.id === linkId ? null : { id: linkId, name: linkName, isConnector }));
   }, []);
 
   const handleElementClick = useCallback((ref: NetworkElementRef) => {
+    setDiagramSearchSelection(null);
     setSelectedElementInfo((prev) => (prev && prev.type === ref.type && prev.id === ref.id ? null : ref));
+  }, []);
+
+  // Network search selection (v2 UX unit, 2026-07-28): mirrors /network's
+  // handleSearchSelect, minus the URL-focus precedence dance that page needs
+  // and this one doesn't (see the state comment above). Fires on EVERY
+  // selection, including the same hit picked twice in a row -- the fresh
+  // nonce minted here is what makes a repeat selection re-flash.
+  const diagramSearchPulsing = useFocusPulse(diagramSearchSelection?.key ?? "");
+  const diagramFocusFlash = useMemo(
+    () => (diagramSearchSelection ? buildFocusFlash(diagramSearchSelection.elements, diagramSearchPulsing) : null),
+    [diagramSearchSelection, diagramSearchPulsing],
+  );
+  const diagramZoomToBbox = diagramSearchSelection
+    ? { ...diagramSearchSelection.bbox, nonce: diagramSearchSelection.key }
+    : null;
+  const handleDiagramSearchSelect = useCallback((selection: NetworkSearchSelection) => {
+    setDiagramSearchSelection({
+      key: nextFocusNonce(),
+      bbox: selection.bbox,
+      elements: selection.elements,
+      label: selection.label,
+    });
   }, []);
 
   const handleMapViewChange = useCallback((view: "map" | "diagram") => {
@@ -504,9 +542,13 @@ export default function DashboardPage() {
     clearDashboardData();
     // Selections reference objects of the previous network — clear them so a
     // stale link/element can't be sent to the assistant against a new dataset
-    // (matches /network's handleDatasetChange).
+    // (matches /network's handleDatasetChange). The search selection is the
+    // same hazard one step worse: its bbox is in the OLD network's coordinate
+    // space, so keeping it would fly the diagram to a location that means
+    // nothing in the new one.
     setSelectedLinkInfo(null);
     setSelectedElementInfo(null);
+    setDiagramSearchSelection(null);
     setDatasetRevision(dataset?.revision ?? String(Date.now()));
     setDatasetLoading(false);
     setError(null);
@@ -666,12 +708,16 @@ export default function DashboardPage() {
               title={t("지도 기반 교차로 선택", "Map-Based Intersection Selection")}
               subtitle={t("지도 또는 도식 보기에서 비교할 교차로를 최대 6개까지 선택합니다.", "Select up to six intersections to compare, in map or diagram view.")}
             />
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
               {network?.source?.view === "working" && (
                 <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-600">
                   {t("편집본 표시 중", "Showing edited copy")}
                 </span>
               )}
+              {/* Search only makes sense where the flash it drives is
+                  visible -- the Leaflet map view has no NetworkViewer to
+                  flash anything on. */}
+              {mapView === "diagram" && <NetworkSearchBox onSelect={handleDiagramSearchSelect} className="w-56" />}
               <button
                 type="button"
                 onClick={() => {
@@ -694,20 +740,48 @@ export default function DashboardPage() {
 
               <div className="relative h-[520px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)] xl:h-[60vh]">
                 {mapView === "diagram" ? (
-                  <NetworkDiagramView
-                    network={network}
-                    loading={networkLoading}
-                    error={networkError}
-                    results={results}
-                    selectedScenario={activeScenarios[0]?.id}
-                    selectedNodeIds={selectedNodeIds}
-                    selectedLinkId={selectedLinkInfo?.id ?? null}
-                    selectedElement={selectedElementInfo}
-                    onNodeClick={handleNodeClick}
-                    onLinkClick={handleLinkClick}
-                    onElementClick={handleElementClick}
-                    onRetry={() => setNetworkReloadNonce((nonce) => nonce + 1)}
-                  />
+                  <>
+                    <NetworkDiagramView
+                      network={network}
+                      loading={networkLoading}
+                      error={networkError}
+                      results={results}
+                      selectedScenario={activeScenarios[0]?.id}
+                      selectedNodeIds={selectedNodeIds}
+                      selectedLinkId={selectedLinkInfo?.id ?? null}
+                      selectedElement={selectedElementInfo}
+                      onNodeClick={handleNodeClick}
+                      onLinkClick={handleLinkClick}
+                      onElementClick={handleElementClick}
+                      onRetry={() => setNetworkReloadNonce((nonce) => nonce + 1)}
+                      focusFlash={diagramFocusFlash}
+                      zoomToBbox={diagramZoomToBbox}
+                    />
+                    {/* Search-selection banner (v2 UX unit, 2026-07-28) --
+                        mirrors /network's own "네트워크에서 보기" banner colour
+                        (NetworkViewer.tsx's FOCUS_FLASH literal, #00c2ff), as a
+                        pointer-events-auto overlay so it never steals space
+                        from the grid layout below it. */}
+                    {diagramSearchSelection && (
+                      <div
+                        data-testid="dashboard-diagram-search-banner"
+                        className="pointer-events-none absolute left-3 right-3 top-3 z-[900] flex flex-wrap items-center gap-2 rounded-lg border border-[#00c2ff]/50 bg-[#00c2ff]/10 px-3 py-2 text-xs text-slate-600 backdrop-blur-sm"
+                      >
+                        <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-full bg-[#00c2ff]" />
+                        <span className="font-semibold text-slate-700">
+                          {t("검색 결과 강조", "Search result highlighted", "検索結果をハイライト")}
+                        </span>
+                        <span className="text-slate-500">{diagramSearchSelection.label}</span>
+                        <button
+                          type="button"
+                          onClick={() => setDiagramSearchSelection(null)}
+                          className="pointer-events-auto ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 transition hover:text-slate-900"
+                        >
+                          {t("강조 해제", "Clear highlight", "ハイライト解除")}
+                        </button>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <>
                     <DashboardMap
@@ -1899,6 +1973,8 @@ function NetworkDiagramView({
   onLinkClick,
   onElementClick,
   onRetry,
+  focusFlash,
+  zoomToBbox,
 }: {
   network: NetworkData | null;
   loading: boolean;
@@ -1912,6 +1988,12 @@ function NetworkDiagramView({
   onLinkClick: (linkId: string, linkName: string, isConnector: boolean) => void;
   onElementClick: (ref: NetworkElementRef) => void;
   onRetry: () => void;
+  // Network search selection (v2 UX unit, 2026-07-28) -- same shape as
+  // NetworkViewer's own `focusFlash`/`zoomToBbox` props (components/
+  // NetworkViewer.tsx), forwarded straight through so the dashboard's 도식
+  // view can flash/zoom a search hit exactly like /network does.
+  focusFlash?: { linkIds: string[]; elementKeys: string[]; pulsing: boolean } | null;
+  zoomToBbox?: { x_min: number; y_min: number; x_max: number; y_max: number; nonce?: number | string } | null;
 }) {
   const { t } = useLanguage();
 
@@ -1949,6 +2031,8 @@ function NetworkDiagramView({
       onNodeClick={onNodeClick}
       onLinkClick={onLinkClick}
       onElementClick={onElementClick}
+      focusFlash={focusFlash}
+      zoomToBbox={zoomToBbox}
     />
   );
 }

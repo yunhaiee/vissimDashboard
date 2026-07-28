@@ -978,6 +978,53 @@ export interface AgentApprovalFocus {
   coordinate_note: string;
 }
 
+// Network component search (v2 UX unit, 2026-07-28) -- backend/services/
+// network_search.py's response shape. Unlike AgentApprovalFocusElement's
+// narrow union, a search hit's own `focus.elements` type is a plain string:
+// search is exhaustive over every drawable family (19 of them, including
+// families no write verb ever targets -- nodes, routes, PT stops, ...), so
+// the union above would have to grow to match and would then describe two
+// different things for two different reasons. `label` ships RAW PARTS only
+// (never a localized noun or composed sentence -- the language regression
+// fixed in bd63874 came from exactly that shortcut); the UI composes the
+// human string itself (see lib/networkSearchLabel.ts).
+export interface NetworkSearchFocusElement {
+  type: string;
+  id: string;
+  label: string;
+}
+
+export interface NetworkSearchFocus {
+  elements: NetworkSearchFocusElement[];
+  bbox: { x_min: number; y_min: number; x_max: number; y_max: number } | null;
+}
+
+export interface NetworkSearchHitLabel {
+  type: string;
+  id: string;
+  name: string;
+  detail: Record<string, unknown>;
+}
+
+export interface NetworkSearchHit {
+  type: string;
+  id: string;
+  name: string;
+  label: NetworkSearchHitLabel;
+  match: { rank: number; field: string };
+  focus: NetworkSearchFocus;
+}
+
+export interface NetworkSearchResponse {
+  query: string;
+  total: number;
+  returned: number;
+  limit: number;
+  truncated: boolean;
+  results: NetworkSearchHit[];
+  source: { view: string };
+}
+
 // M2.3: the full payload backend/routers/assistant.py emits both from the
 // dedicated `approval_request` NDJSON event and, identically, under
 // `done.response.approval` (a client that only inspects `done` still gets
@@ -1576,6 +1623,27 @@ function sleepForRetry(ms: number): Promise<void> {
 export async function fetchNetwork(sessionId?: string): Promise<NetworkData> {
   const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
   const r = await apiFetch(`/api/network${query}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+// Network component search (v2 UX unit, 2026-07-28): GET /api/network/search
+// (backend/routers/search.py). `signal` lets NetworkSearchBox abort an
+// in-flight request when the user types again -- an aborted fetch rejects
+// with an AbortError, which the caller is expected to swallow (this function
+// deliberately does not catch it, so cancellation stays indistinguishable
+// from any other rejection at this layer -- the caller already knows which
+// request it aborted and why).
+export async function fetchNetworkSearch(
+  query: string,
+  options?: { limit?: number; signal?: AbortSignal },
+): Promise<NetworkSearchResponse> {
+  const params = new URLSearchParams({ q: query });
+  if (options?.limit) params.set("limit", String(options.limit));
+  const r = await apiFetch(`/api/network/search?${params.toString()}`, {
+    cache: "no-store",
+    signal: options?.signal,
+  });
   if (!r.ok) throw new Error(await readApiError(r));
   return r.json();
 }

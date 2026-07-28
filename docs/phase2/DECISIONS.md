@@ -2188,3 +2188,48 @@ with Beijing's splits byte-identical.
 **The wider lesson for the paper:** the PTV demo corpus that unit ⑨ — and every published
 Vissim-COM tool we surveyed — validates against does not contain the program family real
 consulting models use. Corpus coverage, not parser cleverness, was the binding constraint.
+
+---
+
+## 2026-07-28 — Network component search: finding a thing you can name but cannot locate
+
+**Context.** Users routinely know the number or name of the component they want to edit and
+have no idea where it sits on a 312-link network. There was no way to find it — the diagram
+answered "what is this?" but never "where is that?". Meanwhile the approval card's focus/flash
+machinery already solved the hard half (resolve an element to a tight, anchor-derived bbox and
+make it pulse), so the question was purely how to reach it from a text query.
+
+**Decision.** (1) Search REUSES `approval_focus`'s anchor machinery rather than re-deriving
+coordinates — two resolvers that disagreed about where conflict area 2140 is would be worse
+than one. The needed internals are re-exported under public names (`FocusAccumulator`,
+`crossing_anchor`, `network_element_geometry`, `MAX_FOCUS_FANOUT`); the per-write-tool resolvers
+stay private because they are keyed to guardrail write-target tables and mean nothing to a
+query. (2) Ranking is `exact id > exact name > class alias > name prefix > name substring >
+id prefix`, ties broken by family then row order so identical queries are stable.
+**Deviation recorded:** the first implementation ranked id-prefix SECOND, citing an earlier
+draft of the brief; demoted to last, because on this dataset a bare "5" otherwise buries the
+node/composition/distribution actually numbered 5 under id-prefix noise. (3) DUPLICATE DISPLAY
+NAMES ARE NEVER COLLAPSED. "South St EB" is not the two-way clash we expected — it names
+**18 distinct elements**, links and connectors both. Every one is returned, each labelled
+"링크 515 · South St EB" vs "연결로 10969 · South St EB", with the link/connector noun derived
+from the `connector` flag the API carries (the wire `type` is `link` for both). Returning one
+arbitrary winner would be strictly worse than returning a labelled choice. (4) Selecting does
+NOT close the dropdown — deliberate, and the 18-way collision is exactly why: arrow-and-Enter
+walks the candidates while each one flashes in turn, which is how a user tells them apart. The
+list is capped at 320 px and covers 9% of the map and none of the flashed element. (5) The
+pulse-then-settle state machine that lived in `/network` is now the shared `useFocusPulse` hook
+plus `buildFocusFlash`, so URL-focus, `/network` search and `/dashboard` search run ONE
+implementation rather than three copies. (6) Re-selecting an already-selected result re-flashes,
+via the same click-time nonce that fixed the approval button in 29b5afb. (7) Hits with no
+resolvable geometry render visibly disabled rather than silently doing nothing on click.
+
+**Consequence.** Verified live on the Murdoch dataset with the backend restarted so the new
+route is actually served: "South St EB" returns all 18 with both 링크 and 연결로 labels present;
+keyboard-only (type → ArrowDown → Enter) selects the SECOND result and flashes link 512 at
+computed stroke `rgb(0, 194, 255)`; a MutationObserver caught the pulse class re-applying when
+the already-selected item was selected again; the dashboard 도식 view flashes link 505
+identically; a fresh tab logs no console errors. Backend 1282 passed / 1 skipped / 1 known RAG
+failure. Frontend typecheck clean, contract 11/12 with zero contract edits. `networkFocus.ts`'s
+element-key map gained the 7 families search covers that approval-focus never emitted
+(detector, data-collection point, queue counter, PT stop, stop sign, travel-time section,
+pedestrian area).
