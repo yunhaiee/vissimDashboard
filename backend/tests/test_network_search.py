@@ -240,13 +240,21 @@ def test_one_id_shared_by_two_families_returns_both(fixture_inpx: Path):
     assert typed.index(("link", "70")) < typed.index(("des_speed_distribution", "70"))
 
 
-def test_id_prefix_ranks_below_both_name_tiers(fixture_inpx: Path):
-    """Task brief's explicit order: exact id > exact name > name prefix >
-    name substring > id prefix — id prefix is the LAST tier, below a name
-    hit even when that name hit is only a substring match. An id that merely
-    starts with the typed digits is weak evidence of intent ("5" prefixes
-    ~a dozen unrelated ids); a name match, even partial, means the user
-    actually typed something meaningful.
+def test_id_prefix_tier_depends_on_whether_the_query_is_digits(fixture_inpx: Path):
+    """The id-prefix tier moves, because one fixed position is wrong for one
+    of the two ways the box gets used.
+
+    An ALL-DIGIT query is someone reaching for a number, and they arrive at
+    it one digit at a time. Ranking id-prefix below name-substring buried
+    them on the real network, where 216 conflict areas are named
+    "Link <a> vs Link <b>" so every link number is also a substring of 216
+    NAMES: measured live, `51` pushed the first link to result 17 and `11`
+    returned no link at all in the first 20 rows. So digits promote
+    id-prefix above both name tiers.
+
+    Anything else is a lookup by name and cannot id-prefix-match while ids
+    stay numeric, so id-prefix stays LAST there — if alphanumeric ids ever
+    appear, a partial NAME hit is the stronger evidence of intent.
 
     Isolated as a direct ``_rank_for`` unit test (bypassing the fixture/
     index machinery) because the hand-built fixture has no query that
@@ -265,15 +273,35 @@ def test_id_prefix_ranks_below_both_name_tiers(fixture_inpx: Path):
         family="link", seq=2, obj_id="8", name="West 50th Ave",
         id_norm="8", name_norm="west 50th ave", obj={},
     )
+    # Digits: the id-prefix row must beat BOTH name rows.
+    assert (
+        network_search._rank_for(id_prefix_row, "50", None, True)
+        == network_search.RANK_ID_PREFIX_NUMERIC
+    )
+    assert (
+        network_search._rank_for(id_prefix_row, "50", None, True)
+        < network_search._rank_for(name_prefix_row, "50", None, True)
+        < network_search._rank_for(name_substring_row, "50", None, True)
+    )
+    # Non-digits: unchanged — id-prefix is the last tier.
     assert network_search._rank_for(id_prefix_row, "50", None) == network_search.RANK_ID_PREFIX
     assert network_search._rank_for(name_prefix_row, "50", None) == network_search.RANK_NAME_PREFIX
     assert network_search._rank_for(name_substring_row, "50", None) == network_search.RANK_NAME_SUBSTRING
     assert (
         network_search.RANK_EXACT_ID
         < network_search.RANK_EXACT_NAME
+        < network_search.RANK_TYPE
+        < network_search.RANK_ID_PREFIX_NUMERIC
         < network_search.RANK_NAME_PREFIX
         < network_search.RANK_NAME_SUBSTRING
         < network_search.RANK_ID_PREFIX
+    )
+    # Both id-prefix tiers report the same wire-visible match field: the
+    # distinction is ranking policy, not a different kind of match.
+    assert (
+        network_search._MATCH_FIELD_BY_RANK[network_search.RANK_ID_PREFIX_NUMERIC]
+        == network_search._MATCH_FIELD_BY_RANK[network_search.RANK_ID_PREFIX]
+        == "id_prefix"
     )
 
 

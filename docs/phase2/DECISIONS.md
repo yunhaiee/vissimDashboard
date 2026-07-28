@@ -2233,3 +2233,39 @@ failure. Frontend typecheck clean, contract 11/12 with zero contract edits. `net
 element-key map gained the 7 families search covers that approval-focus never emitted
 (detector, data-collection point, queue counter, PT stop, stop sign, travel-time section,
 pedestrian area).
+
+---
+
+## 2026-07-28 — Search ranking: the id-prefix tier has to move with the query
+
+**Context.** The previous entry recorded demoting id-prefix to the LAST tier as a correction.
+An adversarial verifier, running against the live Murdoch model rather than a fixture, showed
+that correction was itself the defect — and that the controller's stated reason for it was
+wrong. On this network 216 conflict areas are named `"Link <a> vs Link <b>"`, so every link
+NUMBER is also a substring of 216 NAMES. With id-prefix below name-substring, typing a link
+number one digit at a time — the single most obvious use of a search-by-number box — returns
+nothing but conflict areas: measured live, `51` pushed the first link to result 17, and `11`
+returned NO link at all inside the first 20 rows. The justification given for the demotion
+("a bare 5 buries the things actually numbered 5") does not hold: exact-id is rank 0 either
+way, so those were never at risk from the id-prefix tier's position.
+
+**Decision.** The tier's position depends on the SHAPE of the query, because one fixed position
+is wrong for one of the two ways the box is used. An all-digit query is a lookup by number, so
+id-prefix sorts ABOVE both name tiers (`RANK_ID_PREFIX_NUMERIC`). Anything else is a lookup by
+name and cannot id-prefix-match at all while ids stay numeric, so id-prefix stays LAST there —
+kept deliberately rather than deleted, so that if alphanumeric ids ever appear, a partial NAME
+hit still outranks an incidental id-prefix hit. Both tiers report the same wire-visible
+`id_prefix` match field: the split is ranking policy, not a new kind of match.
+
+**Consequence.** Verified live after a backend restart: `51` → links 510-514 as the top four
+(was: first link at index 17); `11` → 19 links in the top 20 (was: zero); `515` → link 515
+still first; `5` → node 5 / composition 5 / distribution 5 still first, THEN id-prefix links,
+so the concern behind the original demotion is satisfied anyway; `south st` unchanged. Backend
+1282 passed / 1 skipped / 1 known RAG failure. The pinning test now covers BOTH query shapes
+and asserts the two id-prefix tiers share one match field.
+
+**Process note worth keeping:** this defect was introduced by a controller-written spec that
+asserted a ranking order without checking it against the real dataset, and it survived a unit's
+own self-verification. It was caught only because an independent adversarial verifier re-ran
+the queries a user would actually type. Spec assertions about ORDERING are hypotheses; on a
+real network they need measuring, not stating.

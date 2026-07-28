@@ -92,17 +92,31 @@ MAX_LIMIT = 50
 #     conflict-area display names ("Link 515 vs Link 10969"); without this
 #     tier, asking for links would return conflict areas.
 #
-# ID_PREFIX sorts LAST, after both name tiers -- deliberately below a
-# substring match on a spelled-out name, not just its prefix. "5" is an id
-# prefix for ~40 objects on this network but tells you almost nothing about
-# what the user meant; a name hit, even a partial one, is evidence of actual
-# intent to find a specific street/component.
+# ID_PREFIX's position DEPENDS ON THE SHAPE OF THE QUERY, because one fixed
+# position is wrong for one of the two ways people use this box.
+#
+#   * An ALL-DIGIT query is a lookup by number, and someone typing a link
+#     number arrives at it one digit at a time. On this network that partial
+#     number is also a substring of 216 conflict-area display names
+#     ("Link 515 vs Link 10969"), so ranking id-prefix below name-substring
+#     buries the links entirely: measured on the live model, `51` pushed the
+#     first link to result 17, and `11` returned NO link at all inside the
+#     first 20 rows. For digits, id-prefix therefore sorts ABOVE both name
+#     tiers (RANK_ID_PREFIX_NUMERIC).
+#   * A query containing anything else is a lookup by name, and cannot
+#     id-prefix-match at all while ids stay numeric. Its position is near
+#     moot; it stays LAST so that if alphanumeric ids ever appear, a partial
+#     name hit -- evidence of intent to find a specific street -- still wins.
+#
+# Both tiers report the same wire-visible `id_prefix` match field: the
+# distinction is a ranking policy, not a different kind of match.
 RANK_EXACT_ID = 0
 RANK_EXACT_NAME = 1
 RANK_TYPE = 2
-RANK_NAME_PREFIX = 3
-RANK_NAME_SUBSTRING = 4
-RANK_ID_PREFIX = 5
+RANK_ID_PREFIX_NUMERIC = 3
+RANK_NAME_PREFIX = 4
+RANK_NAME_SUBSTRING = 5
+RANK_ID_PREFIX = 6
 
 # Wire-visible, English, machine-readable tag for WHY a row matched (the UI
 # can highlight the matched field / group by tier). Not user-facing prose.
@@ -110,6 +124,7 @@ _MATCH_FIELD_BY_RANK = {
     RANK_EXACT_ID: "id",
     RANK_EXACT_NAME: "name",
     RANK_TYPE: "type",
+    RANK_ID_PREFIX_NUMERIC: "id_prefix",
     RANK_NAME_PREFIX: "name_prefix",
     RANK_NAME_SUBSTRING: "name_substring",
     RANK_ID_PREFIX: "id_prefix",
@@ -754,20 +769,31 @@ def clear_cache() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _rank_for(row: _Row, query_norm: str, alias_family: str | None) -> int | None:
+def _rank_for(
+    row: _Row,
+    query_norm: str,
+    alias_family: str | None,
+    query_is_numeric: bool = False,
+) -> int | None:
     """The best (lowest) rank at which ``row`` matches, or ``None``.
 
     Checked in BEST-to-WORST order (matching the RANK_* numeric order above),
     not the order a human would read the criteria in -- a row can satisfy more
     than one tier at once (e.g. id "50" on a row whose name also happens to
     start with "50"), and the first check that matches here is the one that
-    wins, so the check order must be the priority order."""
+    wins, so the check order must be the priority order.
+
+    ``query_is_numeric`` promotes the id-prefix tier above both name tiers;
+    see the RANK_* block for why an all-digit query needs the opposite order
+    from a spelled-out one."""
     if query_norm and row.id_norm == query_norm:
         return RANK_EXACT_ID
     if query_norm and row.name_norm and row.name_norm == query_norm:
         return RANK_EXACT_NAME
     if alias_family is not None and row.family == alias_family:
         return RANK_TYPE
+    if query_is_numeric and query_norm and row.id_norm.startswith(query_norm):
+        return RANK_ID_PREFIX_NUMERIC
     if query_norm and row.name_norm and row.name_norm.startswith(query_norm):
         return RANK_NAME_PREFIX
     if query_norm and row.name_norm and query_norm in row.name_norm:
@@ -850,10 +876,13 @@ def search(
 
     index = _index_for(inpx_path)
     alias_family = _TYPE_BY_ALIAS.get(_norm_alias(query))
+    # Digits only -- the user is reaching for a number, so id-prefix hits
+    # outrank incidental matches inside spelled-out names. See RANK_*.
+    query_is_numeric = query_norm.isdigit()
 
     matches: list[tuple[int, int, _Row]] = []
     for row in index.rows:
-        rank = _rank_for(row, query_norm, alias_family)
+        rank = _rank_for(row, query_norm, alias_family, query_is_numeric)
         if rank is None:
             continue
         matches.append((rank, row.seq, row))
