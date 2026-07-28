@@ -31,7 +31,11 @@ clearly-delimited block so "이 링크 차로 수 알려줘" has a referent. It 
 context ONLY — it changes no gate, no tool offer and no preflight; the model
 still names explicit ids in its tool params, and the guardrails still validate
 them. No selection renders nothing at all, so every pre-P7 caller's prompt
-stays byte-identical.
+stays byte-identical. The selection may hold SEVERAL elements (the diagram's
+shift+click / shift+drag multi-select): each one gets its own line, because the
+case this exists for — an approach whose three vehicle inputs sit on one
+coordinate, one per vehicle class — is unanswerable if the block names only one
+of them or reports a count.
 
 **Live-demo fix (docs/phase2/DECISIONS.md): history-observation rendering is
 recency-weighted and item-boundary-safe.** The old ``_observation_snippet``
@@ -376,15 +380,46 @@ def _selection_element_line(element: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def _selection_elements(selection: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every selected element, plural key first, legacy singular key folded in.
+
+    ``build_selection_context`` emits ``elements`` (two or more objects) OR
+    ``element`` (exactly one) and never both, but a selection replayed from an
+    older ``pending_approval.json`` carries only the singular key — so both are
+    read, de-duplicated on ``(type, id)`` so an object can never be listed
+    twice.
+    """
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any]] = set()
+    candidates = [*(selection.get("elements") or []), selection.get("element")]
+    for element in candidates:
+        if not isinstance(element, dict):
+            continue
+        key = (element.get("type"), element.get("id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(element)
+    return found
+
+
 def render_selection_block(selection: dict[str, Any] | None) -> list[str]:
     """The state block's lines for ``selection`` (empty list when there is none).
 
     Shape produced by ``services.network_selection.build_selection_context``:
-    ``{"nodes": [...], "links": [...], "element": {...}, "scenario_ids": [...]}``,
-    every key optional. One short line per object — worst case today is 6 links
-    + 6 nodes + 1 element + 1 scenario line, and each line is a handful of
-    tokens, because this whole block is re-sent on every loop iteration.
-    Anything unrecognized is skipped rather than dumped raw.
+    ``{"nodes": [...], "links": [...], "element": {...} | "elements": [...],
+    "elements_omitted": N, "scenario_ids": [...]}``, every key optional. One
+    short line per object — worst case today is 6 links + 6 nodes + 8 elements
+    + 1 scenario line, and each line is a handful of tokens, because this whole
+    block is re-sent on every loop iteration. Anything unrecognized is skipped
+    rather than dumped raw.
+
+    Multi-select is rendered object BY object: three vehicle inputs stacked on
+    one approach coordinate (the real client model's shape — one input per
+    vehicle class) produce three named lines, never "3 selected" and never just
+    the first one. A selection the request boundary capped adds an explicit
+    "+N more" line, so the model can say the group was truncated instead of
+    reasoning about a silently shortened set.
     """
     if not isinstance(selection, dict) or not selection:
         return []
@@ -396,9 +431,17 @@ def render_selection_block(selection: dict[str, Any] | None) -> list[str]:
     for link in selection.get("links") or []:
         if isinstance(link, dict):
             lines.append(_selection_link_line(link))
-    element = selection.get("element")
-    if isinstance(element, dict):
+    for element in _selection_elements(selection):
         lines.append(_selection_element_line(element))
+    try:
+        omitted = int(selection.get("elements_omitted") or 0)
+    except (TypeError, ValueError):
+        omitted = 0
+    if omitted > 0:
+        # Stated, never silent — same rationale as the "not found in this
+        # network" lines above: the model must be able to tell the user their
+        # selection was larger than what it can see.
+        lines.append(f"- (+{omitted} more selected objects were not sent: selection limit reached)")
     scenario_ids = [str(value) for value in (selection.get("scenario_ids") or [])]
     if scenario_ids:
         lines.append("- scenarios: " + ", ".join(scenario_ids))

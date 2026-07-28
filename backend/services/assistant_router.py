@@ -20,7 +20,11 @@ from typing import Any, Callable
 
 from config import REPO_ROOT
 from services.datasets import get_active_dataset, get_active_inpx_path, get_active_real_counts_excel
-from services.network_selection import resolve_selected_element, resolve_selected_links
+from services.network_selection import (
+    element_selection_fields,
+    resolve_selected_elements,
+    resolve_selected_links,
+)
 from services.rag_documents import get_rag_status, search_rag
 from services.validation import geh as compute_geh, load_real_counts
 from services.results_reader import get_compare_summary, get_selected_node_details, list_scenarios
@@ -48,6 +52,7 @@ INTERNAL_ANSWER_TERMS = (
     "selected_node_ids",
     "selected_links",
     "selected_element",
+    "selected_elements",
     "simulation_jobs",
     "vissim_com",
     "rag_chunks",
@@ -114,6 +119,14 @@ class AssistantRequestContext:
     # pre-P6 caller -- and every existing test -- is unaffected.
     selected_link_ids: list[str] = field(default_factory=list)
     selected_element: dict[str, Any] | None = None
+    # Multi-select -- the FULL element selection (shift+click / shift+drag),
+    # already merged with `selected_element` at the request boundary, so a
+    # single-click request arrives here as a one-entry list AND on the legacy
+    # field above. Defaults keep every pre-multi-select caller unaffected;
+    # `selected_elements_omitted` is > 0 only when the client selected more
+    # objects than services.network_selection.MAX_SELECTED_ELEMENTS.
+    selected_elements: list[dict[str, Any]] = field(default_factory=list)
+    selected_elements_omitted: int = 0
     allow_tool_execution: bool = False
     response_language: str = "auto"
 
@@ -867,9 +880,25 @@ class VissimAssistantRouter:
                 tool_results["selected_links"] = resolve_selected_links(request.selected_link_ids)
             except Exception:
                 logger.exception("Assistant context: selected link details failed")
-        if request.selected_element:
+        # Multi-select: `selected_elements` is the merged full selection (a
+        # pre-multi-select request's single element is its one entry), and
+        # element_selection_fields keeps ONE object on the legacy
+        # `selected_element` key while a group is named object-by-object under
+        # `selected_elements` -- never collapsed to a count, never truncated to
+        # the first. The real client model needs this: an approach carries
+        # three vehicle inputs on one coordinate, one per vehicle class.
+        selected_elements = request.selected_elements or (
+            [request.selected_element] if request.selected_element else []
+        )
+        if selected_elements:
             try:
-                tool_results["selected_element"] = resolve_selected_element(request.selected_element)
+                tool_results.update(
+                    element_selection_fields(
+                        resolve_selected_elements(selected_elements),
+                        request.selected_elements_omitted,
+                        prefix="selected_",
+                    )
+                )
             except Exception:
                 logger.exception("Assistant context: selected element details failed")
 
@@ -905,7 +934,11 @@ class VissimAssistantRouter:
         sources = [{"kind": "dashboard", "title": "Active dataset and scenario summary"}, *doc_sources]
         if tool_results.get("selected_intersection_details"):
             sources.append({"kind": "dashboard", "title": "Selected intersection dashboard details"})
-        if tool_results.get("selected_links") or tool_results.get("selected_element"):
+        if (
+            tool_results.get("selected_links")
+            or tool_results.get("selected_element")
+            or tool_results.get("selected_elements")
+        ):
             sources.append({"kind": "dashboard", "title": "Selected network diagram objects"})
         if intent in {"status", "diagnostic"}:
             sources.append({"kind": "tool", "title": "Simulation job registry"})

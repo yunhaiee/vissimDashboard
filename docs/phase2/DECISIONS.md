@@ -2351,3 +2351,36 @@ flagging it — a preview-only guard would have been worthless.
 endpoint first, so cancelling the mapping modal leaves that transient file active. That matches
 today's behavior for any bad upload, but cancel is now a NORMAL action in this flow rather than an
 error path, so it deserves its own fix.
+
+---
+
+## 2026-07-28 — The selection contract goes plural: `selected_elements`
+
+**Context.** The diagram is gaining multi-select (shift+click, shift+drag box). Links and nodes
+have had plural request channels since P6/P7, but elements had only a singular
+`selected_element`. That is not a convenience gap. On the real client model every approach
+carries THREE vehicle inputs at one coordinate, one per vehicle class — link 620 "Jennalup
+ST_WB" holds 107 (Class1, 127.3 veh/h), 207 (Class2-5, 19.0) and 307 (Class6-9, 0.95), sharing
+link, position AND name. A request that can name one object could not describe that approach at
+all, so "이 세 개 합쳐서" was unanswerable by construction.
+
+**Decision.** `selected_elements: list[dict]` sits beside `selected_element` on every request
+model via the shared mixin, with plural sanitize/resolve helpers next to their singular
+originals. Three sub-decisions:
+
+1. *One merge rule, one place.* Plural list in the client's order, then `selected_element`
+   appended unless that `(type, id)` is already present, then dedupe and cap. A pre-multi-select
+   client is byte-identically unaffected. Identity is `(type, id)` ONLY — position and name are
+   explicitly not identity, because the case above shares both.
+2. *Cap = 8*, sized as two full approaches (2 x 3 inputs) plus headroom. The selection block
+   re-renders on every planner iteration, so this is prompt cost, not an arbitrary limit.
+3. *Truncation is stated, never silent.* Overflow reaches the prompt as an explicit line, the
+   same doctrine as the existing "not found in this network" lines: the model must be able to
+   tell the user what it cannot see.
+
+Context shape follows the count — exactly one selected object keeps the legacy singular key, two
+or more use the plural key with every object named. A group is never collapsed to a count nor
+truncated to its first entry.
+
+**Consequence.** Context only; no gate, tool permission or preflight behavior changes with it,
+exactly as P7 established for singular selection.

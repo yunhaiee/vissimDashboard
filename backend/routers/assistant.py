@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Callable, Iterator
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from config import REPO_ROOT
 from services.agent.edit_session import (
@@ -43,9 +43,12 @@ from services.dashboard_curator import curate_dashboard
 from services.datasets import get_active_inpx_path
 from services.network_selection import (
     build_selection_context,
-    resolve_selected_element,
+    element_selection_fields,
+    merge_element_selection,
+    resolve_selected_elements,
     resolve_selected_links,
     sanitize_selected_element,
+    sanitize_selected_elements,
     sanitize_selected_link_ids,
     sanitize_selected_node_ids,
     sanitize_selected_scenario_ids,
@@ -93,16 +96,33 @@ def _preload_assistant_model() -> None:
 _preload_assistant_model()
 
 
-# P6 — the diagram selection every chat request may carry. Both fields are
-# CLIENT strings that end up inside a model prompt, so they are normalized at
+# P6 — the diagram selection every chat request may carry. Every field is
+# CLIENT input that ends up inside a model prompt, so it is normalized at
 # this boundary (whitelisted keys, str/None values, per-field length caps, link
 # list capped at services.network_selection.MAX_SELECTED_LINKS) before any
-# service sees them; the values themselves are then re-resolved against the
-# parsed active .inpx rather than believed. Shared by both request models below
-# via this mixin so the two can never drift apart.
+# service sees it; the values themselves are then re-resolved against the
+# parsed active .inpx rather than believed. Shared by every request model below
+# via this mixin so they can never drift apart.
+#
+# MULTI-SELECT: the diagram now supports shift+click / shift+drag, so a request
+# may carry SEVERAL elements (`selected_elements`) instead of the single
+# `selected_element` P6 defined. Both are accepted; `_merge_element_selection`
+# below is the ONE place the two are reconciled, so no model can implement the
+# back-compat rule differently. This matters concretely: on the real client
+# model an approach carries three vehicle inputs at one coordinate (one per
+# vehicle class), and only the plural field can refer to that approach.
 class _SelectionFieldsMixin(BaseModel):
     selected_link_ids: list[str] = Field(default_factory=list)
     selected_element: dict | None = None
+    # Multi-select. Always the FULL selection after merging: a client that
+    # sends only the singular field still finds its element here, so every
+    # consumer can read this one list and ignore the legacy field.
+    selected_elements: list[dict] = Field(default_factory=list)
+    # How many further element references the cap dropped — NOT client input
+    # (the model validator always overwrites whatever was sent). Surfaced so
+    # the prompt can say the selection was truncated instead of quietly
+    # answering about a subset of what the user selected.
+    selected_elements_omitted: int = 0
 
     @field_validator("selected_link_ids", mode="before")
     @classmethod
@@ -113,6 +133,40 @@ class _SelectionFieldsMixin(BaseModel):
     @classmethod
     def _clean_element(cls, value: Any) -> dict | None:
         return sanitize_selected_element(value)
+
+    @field_validator("selected_elements", mode="before")
+    @classmethod
+    def _clean_elements(cls, value: Any) -> list[dict]:
+        # Idempotent second line of defence: the model validator below has
+        # already merged+sanitized this field, and re-sanitizing a clean list
+        # is a no-op, but a model constructed field-by-field still cannot get
+        # an unsanitized element list past this boundary.
+        return sanitize_selected_elements(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_element_selection(cls, data: Any) -> Any:
+        """Fold the singular element channel into the plural one — the single
+        implementation of the back-compat rule (see
+        ``services.network_selection.merge_element_selection``): plural list
+        first in the client's own order, then ``selected_element`` appended
+        unless the list already holds that ``(type, id)``.
+
+        A pre-multi-select client therefore keeps working EXACTLY as before —
+        it sends only ``selected_element``, which stays populated and reaches
+        every existing consumer untouched, and additionally shows up as the
+        one entry of ``selected_elements``.
+        """
+        if not isinstance(data, dict):
+            return data
+        elements, omitted = merge_element_selection(
+            data.get("selected_elements"), data.get("selected_element")
+        )
+        return {
+            **data,
+            "selected_elements": elements,
+            "selected_elements_omitted": omitted,
+        }
 
 
 class AssistantQueryRequest(_SelectionFieldsMixin):
@@ -130,8 +184,9 @@ class AgentQueryRequest(_SelectionFieldsMixin):
     "Known gap"). Every field defaults to empty, so a pre-P7 client's request
     body is unchanged and produces a byte-identical turn.
 
-    ``selected_link_ids``/``selected_element`` are validated by the shared
-    mixin. ``selected_node_ids``/``selected_scenario_ids`` get the same
+    ``selected_link_ids``/``selected_element``/``selected_elements`` are
+    validated by the shared mixin (which is also the one place the
+    singular/plural element back-compat rule lives). ``selected_node_ids``/``selected_scenario_ids`` get the same
     treatment here (stripped, de-duplicated, char-capped, count-capped at
     ``MAX_SELECTED_NODES``/``MAX_SELECTED_SCENARIOS``) rather than in the
     mixin, because ``AssistantQueryRequest``'s own copies of those two fields
@@ -219,9 +274,20 @@ def curate(payload: CurateRequest):
             context["selected_links"] = resolve_selected_links(payload.selected_link_ids)
         except Exception:
             logger.exception("Curation context: selected link details failed")
-    if payload.selected_element:
+    # Multi-select: `selected_elements` already holds the merged full selection
+    # (the singular field folded in by _SelectionFieldsMixin), and
+    # element_selection_fields keeps the one-object case on the legacy
+    # `selected_element` key, so a pre-multi-select curation context is
+    # unchanged while a group of three arrives as three named objects.
+    if payload.selected_elements:
         try:
-            context["selected_element"] = resolve_selected_element(payload.selected_element)
+            context.update(
+                element_selection_fields(
+                    resolve_selected_elements(payload.selected_elements),
+                    payload.selected_elements_omitted,
+                    prefix="selected_",
+                )
+            )
         except Exception:
             logger.exception("Curation context: selected element details failed")
 
@@ -554,7 +620,14 @@ def _resolve_agent_selection(
         return build_selection_context(
             node_ids=payload.selected_node_ids,
             link_ids=payload.selected_link_ids,
+            # Multi-select: the merged list is authoritative (it already holds
+            # the singular field when a pre-multi-select client sent one);
+            # `element` is passed too because build_selection_context merges
+            # them itself, which keeps this call correct even if a caller ever
+            # builds a payload without going through the mixin.
             element=payload.selected_element,
+            elements=payload.selected_elements,
+            elements_omitted=payload.selected_elements_omitted,
             scenario_ids=payload.selected_scenario_ids,
             inpx_path=inpx_path,
         )
@@ -1005,7 +1078,8 @@ def stream_agent_query(payload: AgentQueryRequest, request: Request):
     resume the returned id on its next message.
 
     P7: the request may also carry what the user has CLICKED in the rendered
-    network (``selected_node_ids``/``selected_link_ids``/``selected_element``/
+    network (``selected_node_ids``/``selected_link_ids``/``selected_element``
+    or its multi-select successor ``selected_elements``/
     ``selected_scenario_ids``) — resolved by ``_resolve_agent_selection``
     against this session's working copy when it has one, else the active
     dataset, and handed to ``run_agent_turn`` as planner context. Context
@@ -1198,6 +1272,10 @@ def run_assistant_query(
                 # the router resolves them against the parsed active network.
                 selected_link_ids=payload.selected_link_ids,
                 selected_element=payload.selected_element,
+                # Multi-select: the full merged selection. The singular field
+                # above is kept as-is so nothing that reads it changes.
+                selected_elements=payload.selected_elements,
+                selected_elements_omitted=payload.selected_elements_omitted,
                 allow_tool_execution=payload.allow_tool_execution,
                 response_language=payload.response_language,
             ),
