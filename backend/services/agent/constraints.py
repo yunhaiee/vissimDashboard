@@ -222,7 +222,14 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-Phase = str  # "preflight" | "postwrite" | "postrun"
+Phase = str  # "preflight" | "postwrite" | "postrun" | "dataset"
+# "dataset" (health-check unit, 2026-07-28): a constraint that only ever
+# fires from services.agent.health_check's whole-network scan
+# (constraints.get_dataset_checks()), never from guardrails.py's real
+# preflight/postwrite/postrun edit-time calls -- run_checks() is only ever
+# invoked with phase in {"preflight", "postwrite", "postrun"} (see
+# guardrails.py's three GuardrailEngine methods), so a "dataset"-phase
+# constraint is unreachable there by construction, not by convention alone.
 Tier = str  # "refuse" | "warn"
 
 
@@ -286,6 +293,70 @@ def register(constraint: Constraint) -> Constraint:
 def get_registry() -> tuple[Constraint, ...]:
     """Return all registered constraints, in registration order."""
     return tuple(_REGISTRY.values())
+
+
+# ---------------------------------------------------------------------------
+# Dataset-check hook (health-check unit, 2026-07-28)
+#
+# services.agent.health_check's HealthCheckRunner needs to run a SUBSET of
+# this catalog against a whole parsed network with no proposed action at all
+# (a one-click "모델 건강검진" report, not an agent turn) -- most constraints
+# above are action-gated (they read action["params"] to know WHICH object a
+# proposed edit targets, or extra["run_result"]/extra["written_value"] that
+# only exist after a real COM write/run) and have no meaning against a cold
+# parse. Rather than a fragile try-every-constraint-and-see-what-doesn't-
+# crash approach, each dataset-scannable constraint opts IN explicitly here,
+# by id, via :func:`register_dataset_check` -- called from health_check.py
+# (the module that actually owns "how do you turn this one-action check into
+# a whole-network scan"), never from this file, so this module's own edit-time
+# behavior (``run_checks``, called by guardrails.py's three phase methods)
+# is completely unchanged by any of it: nothing in ``_DATASET_CHECKS`` is
+# ever consulted by ``run_checks``.
+# ---------------------------------------------------------------------------
+
+DatasetCheckFn = Callable[[dict[str, Any]], list["Finding"]]
+
+_DATASET_CHECKS: list[tuple[tuple[str, ...], DatasetCheckFn]] = []
+
+
+def register_dataset_check(constraint_ids: str | list[str], fn: DatasetCheckFn) -> None:
+    """Opt one or more already-registered constraints into health-check
+    dataset-wide scanning. ``fn`` takes ONLY the shadow model (a health check
+    has no proposed action/extra) and returns every Finding it can find
+    across the whole network -- zero, one, or many. Grouping multiple ids
+    under one ``fn`` call (rather than one registration per id) lets a single
+    scan that naturally produces several constraint ids at once (e.g. one
+    pass over every signal controller yielding both ``cycle_below_
+    intergreen_sum`` and ``conflicting_greens_in_signal_plan`` findings) be
+    registered -- and therefore invoked -- exactly once, not once per id."""
+    ids = (constraint_ids,) if isinstance(constraint_ids, str) else tuple(constraint_ids)
+    for constraint_id in ids:
+        if constraint_id not in _REGISTRY:
+            raise KeyError(f"register_dataset_check: unknown constraint id {constraint_id!r}")
+    _DATASET_CHECKS.append((ids, fn))
+
+
+def get_dataset_checks() -> list[tuple[tuple[str, ...], DatasetCheckFn]]:
+    """Every registered dataset-check scan function, each paired with the
+    constraint id(s) it covers -- call each ``fn`` exactly once (never once
+    per id) to avoid double-counting its findings."""
+    return list(_DATASET_CHECKS)
+
+
+def get_dataset_checkable_ids() -> frozenset[str]:
+    """Every constraint id currently reachable through the health-check
+    dataset-scan path (across every registered scan's id group)."""
+    return frozenset(constraint_id for ids, _ in _DATASET_CHECKS for constraint_id in ids)
+
+
+def get_edit_time_only_constraints() -> tuple[Constraint, ...]:
+    """Every registered constraint NOT reachable through the health-check
+    dataset scan -- action-gated checks (need a proposed edit's params) and
+    run-gated checks (need real COM write/run evidence) alike. The health
+    check report lists these by id/title so its coverage claim stays honest:
+    "checked at edit time", never silently omitted."""
+    checkable = get_dataset_checkable_ids()
+    return tuple(c for c in _REGISTRY.values() if c.id not in checkable)
 
 
 def _render(constraint_id: str, **kwargs: Any) -> dict[str, str]:
@@ -4909,5 +4980,261 @@ register(
         "[{new_start}秒 → {new_end}秒] に変更します。{inactive_note_ja}{overlap_note_ja} "
         "注意: Vissimは錯綜する動線への同時青を防ぎません(実測確認済み) — 結果は正常に見えても"
         "車両が互いをすり抜ける無意味なシミュレーションになる恐れがあります。",
+    )
+)
+
+
+# =============================================================================
+# Health-check unit (2026-07-28) — three NEW constraints, phase="dataset".
+#
+# These are not §-numbered catalog entries and not extensions of an existing
+# M2/v2 write tool's own preflight/postwrite/postrun gate: each names a
+# whole-network integrity fact that only makes sense as a scan over EVERY
+# object of its class, with no proposed action at all -- the health-check
+# report's own reason for existing. Registered with phase="dataset" (see the
+# Phase alias's own comment above) so they are, by construction, never
+# reachable from guardrails.py's real edit-time run_checks() calls -- adding
+# them changes nothing about what any existing tool call refuses/warns on.
+# Each is wired into services.agent.health_check's whole-network scan via
+# constraints.register_dataset_check (that module, not this one, owns the
+# "how do you turn this into a scan" glue -- see that function's docstring).
+# =============================================================================
+
+
+# ---------------------------------------------------------------------------
+# evaluation_config_disarmed (warn, dataset)
+#
+# Catalog §5 "Evaluations are not retroactive": the existing #15
+# (evaluation_not_configured_before_run) can only ever answer this POSTRUN,
+# from a live job's run_result["evaluation_configured"] (see that
+# constraint's own docstring -- it has no shadow-model path). This is the
+# STATIC counterpart a parse-only health check CAN answer with no COM and no
+# run at all: tools_network._parse_evaluation_config reads the .inpx's own
+# top-level <evaluation netPerfEvalAct="..." .../> element directly. Fires
+# when the element is missing entirely (nothing was ever configured) OR
+# present but netPerfEvalAct is not true (network performance evaluation —
+# the measure most other KPI answers depend on — is switched off).
+# ---------------------------------------------------------------------------
+
+
+def _check_evaluation_config_disarmed(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    config = shadow_model.get("evaluation_config")
+    if config is None:
+        return None  # older/synthetic shadow model omitting the key entirely
+
+    if not config.get("present"):
+        return Finding(
+            constraint_id="evaluation_config_disarmed",
+            tier="warn",
+            phase="dataset",
+            messages=_render(
+                "evaluation_config_disarmed",
+                reason_ko="이 네트워크에는 평가(evaluation) 설정 자체가 없습니다",
+                reason_en="this network has no evaluation configuration at all",
+                reason_ja="このネットワークには評価(evaluation)設定自体がありません",
+            ),
+            suggested_fix=None,
+            details={"present": False},
+        )
+
+    if config.get("net_perf_eval_act") is False:
+        return Finding(
+            constraint_id="evaluation_config_disarmed",
+            tier="warn",
+            phase="dataset",
+            messages=_render(
+                "evaluation_config_disarmed",
+                reason_ko="네트워크 성능 평가(Network Performance Evaluation)가 꺼져 있습니다",
+                reason_en="network performance evaluation is switched off",
+                reason_ja="ネットワークパフォーマンス評価(Network Performance Evaluation)がオフです",
+            ),
+            suggested_fix=None,
+            details={"present": True, "net_perf_eval_act": False},
+        )
+
+    return None
+
+
+register(
+    Constraint(
+        id="evaluation_config_disarmed",
+        applies_to=["*"],
+        phase="dataset",
+        tier="warn",
+        check=_check_evaluation_config_disarmed,
+        message_ko="{reason_ko} — Vissim은 실행 전에 켜둔 측정값만 기록하므로, 지금 평가를 켜지 "
+        "않으면 다음 실행 후 다시 실행하지 않고는 답할 수 없는 질문들이 생깁니다.",
+        message_en="{reason_en} — Vissim only records measurements switched on before the run "
+        "starts, so without arming evaluation now, some questions about the next run will be "
+        "unanswerable without a re-run.",
+        message_ja="{reason_ja} — Vissimは実行前にオンにした測定値のみを記録するため、今評価を"
+        "有効化しないと、次回実行後に再実行なしでは答えられない質問が生じます。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# vehicle_input_cont_volume_mismatch (warn, dataset)
+#
+# Catalog §4 "Volume is always per hour, whatever the interval", the same
+# root fact #13 (vehicle_input_multi_interval_write_gap) encodes for a
+# PROPOSED write -- but this is a static DATA-integrity trap the .inpx can
+# already carry with no write at all: a <timeIntervalVehVolume cont="true">
+# interval means Vissim IGNORES that interval's own "volume" attribute and
+# continues the PREVIOUS interval's volume instead (verified live,
+# backend/tools/vehicle_input_interval_probe.py's own Cont finding). When the
+# .inpx's stored "volume" on a cont=true interval DIFFERS from the previous
+# interval's own effective volume, that stored number is misleading dead
+# data -- whoever last edited this profile (by hand, by import, or by a
+# future tool) may reasonably believe it takes effect; it never will.
+# ---------------------------------------------------------------------------
+
+_CONT_VOLUME_TOLERANCE = 1e-6
+
+
+def _cont_mismatched_intervals(volumes: list[dict[str, Any]]) -> list[str]:
+    """Every ``interval_no`` (1-based, as ``str``) in ``volumes`` (one
+    vehicle input's own ``{interval_no, volume, continuous}`` list, in
+    document order) whose ``cont=true`` interval carries a stored volume
+    that differs from the volume actually in effect (the nearest EARLIER
+    non-continuous interval's own volume, carried forward — Cont's real
+    semantics)."""
+    mismatched: list[str] = []
+    if not volumes:
+        return mismatched
+    effective_volume = _coerce_number(volumes[0].get("volume"))
+    for interval in volumes[1:]:
+        own_volume = _coerce_number(interval.get("volume"))
+        if interval.get("continuous"):
+            if (
+                own_volume is not None
+                and effective_volume is not None
+                and _values_differ(own_volume, effective_volume)
+            ):
+                mismatched.append(str(interval.get("interval_no")))
+            # effective_volume carries forward unchanged (Cont == "keep previous")
+        else:
+            effective_volume = own_volume
+    return mismatched
+
+
+def _check_vehicle_input_cont_volume_mismatch(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    offenders: list[str] = []
+    for vi in shadow_model.get("vehicle_inputs", []):
+        input_no = str(vi.get("no", ""))
+        for interval_no in _cont_mismatched_intervals(vi.get("volumes") or []):
+            offenders.append(f"{input_no}.{interval_no}")
+
+    if not offenders:
+        return None
+
+    entries_ko, entries_en, entries_ja = _capped_join(offenders, "개", "intervals", "件")
+    return Finding(
+        constraint_id="vehicle_input_cont_volume_mismatch",
+        tier="warn",
+        phase="dataset",
+        messages=_render(
+            "vehicle_input_cont_volume_mismatch",
+            entries_ko=entries_ko,
+            entries_en=entries_en,
+            entries_ja=entries_ja,
+        ),
+        suggested_fix=None,
+        details={"mismatched_input_intervals": offenders},
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_input_cont_volume_mismatch",
+        applies_to=["*"],
+        phase="dataset",
+        tier="warn",
+        check=_check_vehicle_input_cont_volume_mismatch,
+        message_ko="차량 입력.구간 {entries_ko}은(는) 연속(Cont) 표시가 되어 있어 Vissim이 이전 "
+        "구간의 볼륨을 그대로 사용하며, 저장된 자체 볼륨 값은 무시합니다 — 저장된 숫자가 실제로 "
+        "적용되는 값과 다릅니다.",
+        message_en="Vehicle-input.interval {entries_en} are marked continuous (Cont) — Vissim "
+        "carries the previous interval's volume forward and ignores this interval's own stored "
+        "volume value, which differs from what actually applies.",
+        message_ja="車両インプット.区間 {entries_ja} は連続(Cont)指定されているため、Vissimは前の"
+        "区間のボリュームをそのまま使用し、この区間自体に保存されたボリューム値は無視されます — "
+        "保存されている数値は実際に適用される値と異なります。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# des_speed_distribution_orphan_reference (warn, dataset)
+#
+# Catalog §3's "fragile references" spirit, applied to desired-speed
+# decisions: each vehicle-class assignment names a des_speed_distr_no, and
+# tools_network._parse_des_speed_decisions already resolves that number to a
+# distribution NAME by cross-referencing shadow_model's own
+# <speedDistributions> list, defaulting to "" when the number doesn't
+# resolve. Reusing that already-computed resolution (rather than
+# re-deriving a second id-set lookup) is the entire check: an assignment
+# whose des_speed_distr_no is non-empty but whose resolved name is empty is a
+# dangling reference -- COM itself fails closed on this (constraint #4's twin
+# gap note; des_speed_decision's own docstring: "a bogus DISTRIBUTION number
+# ... 'Object 999999 of type Speed Distribution does not exist'"), so this is
+# a genuine, already-broken configuration a health check should surface
+# BEFORE any agent turn ever tries to write through it.
+# ---------------------------------------------------------------------------
+
+
+def _check_des_speed_distribution_orphan_reference(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    entries = shadow_model.get("des_speed_decision_entries")
+    if not entries:
+        return None
+
+    offenders = [
+        f"{e.get('decision_no', '?')}.{e.get('veh_class_no', '?')}"
+        for e in entries
+        if str(e.get("des_speed_distr_no", "")).strip() and not str(e.get("des_speed_distr_name", "")).strip()
+    ]
+    if not offenders:
+        return None
+
+    entries_ko, entries_en, entries_ja = _capped_join(offenders, "개", "entries", "件")
+    return Finding(
+        constraint_id="des_speed_distribution_orphan_reference",
+        tier="warn",
+        phase="dataset",
+        messages=_render(
+            "des_speed_distribution_orphan_reference",
+            entries_ko=entries_ko,
+            entries_en=entries_en,
+            entries_ja=entries_ja,
+        ),
+        suggested_fix=None,
+        details={"offending_entries": offenders},
+    )
+
+
+register(
+    Constraint(
+        id="des_speed_distribution_orphan_reference",
+        applies_to=["*"],
+        phase="dataset",
+        tier="warn",
+        check=_check_des_speed_distribution_orphan_reference,
+        message_ko="희망속도결정 항목 {entries_ko}(decision.vehClass)이(가) 존재하지 않는 희망속도"
+        "분포 번호를 참조하고 있습니다. Vissim COM은 이런 참조에 대한 쓰기를 거부하지만("
+        "\"Object N of type Speed Distribution does not exist\"), 데이터 자체는 이미 끊어진 "
+        "상태입니다.",
+        message_en="Desired-speed decision entr(ies) {entries_en} (decision.vehClass) reference a "
+        "desired-speed distribution number that does not exist. Vissim COM refuses a write "
+        "through a dangling reference like this (\"Object N of type Speed Distribution does not "
+        "exist\"), but the data itself is already broken.",
+        message_ja="希望速度決定エントリ {entries_ja}(decision.vehClass)が存在しない希望速度分布"
+        "番号を参照しています。Vissim COMはこのような参照への書き込みを拒否しますが"
+        "(\"Object N of type Speed Distribution does not exist\")、データ自体は既に壊れています。",
     )
 )

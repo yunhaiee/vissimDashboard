@@ -26,6 +26,7 @@ def _shadow_model(
     des_speed_decisions: list[dict[str, Any]] | None = None,
     des_speed_distributions: list[dict[str, Any]] | None = None,
     signal_programs: list[dict[str, Any]] | None = None,
+    evaluation_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -79,6 +80,10 @@ def _shadow_model(
     # same reasoning as the object classes above.
     if signal_programs is not None:
         shadow["signal_programs"] = signal_programs
+    # evaluation_config deliberately OMITTED by default too (health-check
+    # unit, 2026-07-28) -- same reasoning as the object classes above.
+    if evaluation_config is not None:
+        shadow["evaluation_config"] = evaluation_config
     return shadow
 
 
@@ -3177,9 +3182,16 @@ def test_registry_size_matches_m3_1_catalog_port():
     # signal_green_split_change_confirm, all four "not a §-numbered catalog
     # entry, a defensive addition" shapes for the new set_signal_green_split
     # tool -- #4 signal_controller_type_unsupported already existed and was
-    # EXTENDED in place to also gate the new tool, not added) == 58.
+    # EXTENDED in place to also gate the new tool, not added) == 58, + 3
+    # (health-check unit, 2026-07-28: evaluation_config_disarmed /
+    # vehicle_input_cont_volume_mismatch / des_speed_distribution_orphan_
+    # reference -- all three phase="dataset", NOT §-numbered catalog entries,
+    # NOT extensions of any M2/v2 write tool's own gate; they only ever fire
+    # from services.agent.health_check's whole-network scan, never from
+    # guardrails.py's real preflight/postwrite/postrun run_checks() calls --
+    # see the Phase alias's own comment just above class Finding) == 61.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 58
+    assert len(get_registry()) == 61
 
 
 def test_registry_has_unique_ids():
@@ -3498,3 +3510,209 @@ def test_signal_green_split_change_confirm_silent_when_target_unresolvable():
     )
     findings = run_checks("preflight", action, shadow, {})
     assert not any(f.constraint_id == "signal_green_split_change_confirm" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# Health-check unit (2026-07-28) — three new phase="dataset" constraints,
+# plus the dataset-check registry hook itself
+# (register_dataset_check/get_dataset_checks/get_dataset_checkable_ids/
+# get_edit_time_only_constraints). services/agent/health_check.py is the
+# module that actually WIRES these onto the hook (importing it registers its
+# scans, mirroring tools_network.py's own "importing this module registers
+# its tools" pattern) -- these tests exercise the check FUNCTIONS directly
+# via run_checks(phase="dataset", ...), the same way every other constraint
+# in this file is tested, independent of whatever health_check.py itself
+# ends up doing with them.
+# ---------------------------------------------------------------------------
+
+
+def test_run_checks_never_returns_dataset_phase_findings_for_the_three_real_phases():
+    # The whole point of phase="dataset": guardrails.py's real edit-time
+    # calls only ever request preflight/postwrite/postrun, so a
+    # dataset-phase constraint must be unreachable from all three, for ANY
+    # action/shadow_model/extra combination -- not just the ones this test
+    # happens to construct.
+    shadow = _shadow_model(evaluation_config={"present": False})
+    action = _action("run_simulation")
+    dataset_ids = {
+        "evaluation_config_disarmed",
+        "vehicle_input_cont_volume_mismatch",
+        "des_speed_distribution_orphan_reference",
+    }
+    for phase in ("preflight", "postwrite", "postrun"):
+        findings = run_checks(phase, action, shadow, {"run_result": {}})
+        assert not any(f.constraint_id in dataset_ids for f in findings)
+
+
+def test_evaluation_config_disarmed_fires_when_element_absent():
+    shadow = _shadow_model(evaluation_config={"present": False})
+    findings = run_checks("dataset", _action("anything"), shadow, {})
+    matches = [f for f in findings if f.constraint_id == "evaluation_config_disarmed"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    _assert_well_formed_messages(matches[0], must_contain_ko="평가")
+
+
+def test_evaluation_config_disarmed_fires_when_net_perf_eval_act_false():
+    shadow = _shadow_model(
+        evaluation_config={"present": True, "net_perf_eval_act": False}
+    )
+    findings = run_checks("dataset", _action("anything"), shadow, {})
+    matches = [f for f in findings if f.constraint_id == "evaluation_config_disarmed"]
+    assert len(matches) == 1
+    assert matches[0].details == {"present": True, "net_perf_eval_act": False}
+
+
+def test_evaluation_config_disarmed_silent_when_armed():
+    shadow = _shadow_model(
+        evaluation_config={"present": True, "net_perf_eval_act": True}
+    )
+    findings = run_checks("dataset", _action("anything"), shadow, {})
+    assert not any(f.constraint_id == "evaluation_config_disarmed" for f in findings)
+
+
+def test_evaluation_config_disarmed_skipped_when_datum_absent():
+    shadow = _shadow_model()  # no evaluation_config key at all
+    findings = run_checks("dataset", _action("anything"), shadow, {})
+    assert not any(f.constraint_id == "evaluation_config_disarmed" for f in findings)
+
+
+def test_vehicle_input_cont_volume_mismatch_fires_on_differing_continuous_interval():
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {
+                "no": "2",
+                "name": "",
+                "link": "11",
+                "volume": 1000.0,
+                "interval_count": 2,
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 1000.0, "continuous": False},
+                    {"interval_no": 2, "from_s": 1200.0, "volume": 500.0, "continuous": True},
+                ],
+            }
+        ]
+    )
+    findings = run_checks("dataset", _action("anything"), shadow, {})
+    matches = [f for f in findings if f.constraint_id == "vehicle_input_cont_volume_mismatch"]
+    assert len(matches) == 1
+    assert matches[0].details["mismatched_input_intervals"] == ["2.2"]
+    _assert_well_formed_messages(matches[0], must_contain_ko="2.2")
+
+
+def test_vehicle_input_cont_volume_mismatch_silent_when_continuous_volume_matches():
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {
+                "no": "2",
+                "name": "",
+                "link": "11",
+                "volume": 1000.0,
+                "interval_count": 2,
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 1000.0, "continuous": False},
+                    {"interval_no": 2, "from_s": 1200.0, "volume": 1000.0, "continuous": True},
+                ],
+            }
+        ]
+    )
+    findings = run_checks("dataset", _action("anything"), shadow, {})
+    assert not any(f.constraint_id == "vehicle_input_cont_volume_mismatch" for f in findings)
+
+
+def test_vehicle_input_cont_volume_mismatch_silent_when_single_interval():
+    shadow = _shadow_model()  # default single-interval vehicle_inputs fixture
+    findings = run_checks("dataset", _action("anything"), shadow, {})
+    assert not any(f.constraint_id == "vehicle_input_cont_volume_mismatch" for f in findings)
+
+
+def test_des_speed_distribution_orphan_reference_fires_on_unresolved_distr_no():
+    shadow = _shadow_model(
+        des_speed_decisions=[
+            _des_speed_decision(
+                "6",
+                [
+                    _veh_class_assignment("10", des_speed_distr_no="50", des_speed_distr_name="55 mph"),
+                    _veh_class_assignment("20", des_speed_distr_no="999999", des_speed_distr_name=""),
+                ],
+            )
+        ]
+    )
+    shadow["des_speed_decision_entries"] = [
+        {
+            "id": "6.10", "decision_no": "6", "veh_class_no": "10",
+            "veh_class_name": "Car", "des_speed_distr_no": "50", "des_speed_distr_name": "55 mph",
+        },
+        {
+            "id": "6.20", "decision_no": "6", "veh_class_no": "20",
+            "veh_class_name": "HGV", "des_speed_distr_no": "999999", "des_speed_distr_name": "",
+        },
+    ]
+    findings = run_checks("dataset", _action("anything"), shadow, {})
+    matches = [f for f in findings if f.constraint_id == "des_speed_distribution_orphan_reference"]
+    assert len(matches) == 1
+    assert matches[0].details["offending_entries"] == ["6.20"]
+
+
+def test_des_speed_distribution_orphan_reference_silent_when_all_resolve():
+    shadow = _shadow_model()
+    shadow["des_speed_decision_entries"] = [
+        {
+            "id": "6.10", "decision_no": "6", "veh_class_no": "10",
+            "veh_class_name": "Car", "des_speed_distr_no": "50", "des_speed_distr_name": "55 mph",
+        },
+    ]
+    findings = run_checks("dataset", _action("anything"), shadow, {})
+    assert not any(f.constraint_id == "des_speed_distribution_orphan_reference" for f in findings)
+
+
+def test_des_speed_distribution_orphan_reference_skipped_when_entries_absent():
+    shadow = _shadow_model()  # no des_speed_decision_entries key at all
+    findings = run_checks("dataset", _action("anything"), shadow, {})
+    assert not any(f.constraint_id == "des_speed_distribution_orphan_reference" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# Dataset-check registry hook
+# ---------------------------------------------------------------------------
+
+
+def test_register_dataset_check_rejects_unknown_constraint_id():
+    import services.agent.constraints as constraints_module
+
+    with pytest.raises(KeyError):
+        constraints_module.register_dataset_check("not_a_real_constraint_id", lambda shadow: [])
+
+
+def test_register_dataset_check_and_get_dataset_checks_round_trip():
+    import services.agent.constraints as constraints_module
+
+    before = len(constraints_module.get_dataset_checks())
+    sentinel_calls: list[dict] = []
+
+    def _sentinel_scan(shadow_model):
+        sentinel_calls.append(shadow_model)
+        return []
+
+    constraints_module.register_dataset_check(["object_not_found"], _sentinel_scan)
+    try:
+        checks = constraints_module.get_dataset_checks()
+        assert len(checks) == before + 1
+        assert "object_not_found" in constraints_module.get_dataset_checkable_ids()
+        # Calling the registered fn exactly once (the caller's job, not this
+        # registry's) must reach the same function object that was passed in.
+        ids, fn = checks[-1]
+        assert ids == ("object_not_found",)
+        fn({"sentinel": True})
+        assert sentinel_calls == [{"sentinel": True}]
+    finally:
+        constraints_module._DATASET_CHECKS.pop()  # test isolation — undo the mutation
+
+
+def test_get_edit_time_only_constraints_excludes_every_dataset_checkable_id():
+    import services.agent.constraints as constraints_module
+
+    checkable = constraints_module.get_dataset_checkable_ids()
+    edit_time_only_ids = {c.id for c in constraints_module.get_edit_time_only_constraints()}
+    assert edit_time_only_ids.isdisjoint(checkable)
+    assert edit_time_only_ids | checkable == {c.id for c in get_registry()}

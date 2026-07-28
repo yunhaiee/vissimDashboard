@@ -42,6 +42,7 @@ test("app shell exposes the merged dashboard routes", () => {
   assert.doesNotMatch(shell, /href: "\/"/, "expected prompt home route to be removed from top navigation");
   assert.match(shell, /href: "\/base-model"/, "expected base-model validation route in top navigation");
   assert.match(shell, /href: "\/dashboard"/, "expected dashboard route in top navigation");
+  assert.match(shell, /href: "\/health"/, "expected model health-check route in top navigation");
   assert.doesNotMatch(shell, /label: "Prompt"/, "expected prompt-only entry to be removed once assistant is floating");
   assert.match(shell, /FloatingAssistant/, "expected assistant chat launcher to be available across pages");
   // Streaming (not the older one-shot askAssistant) is the current call path

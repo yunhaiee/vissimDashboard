@@ -1915,3 +1915,44 @@ byte-identical after the edit). The blob writer never touches checkSum — if a 
 Vissim version starts validating it, load_check + the persisted check fail loudly, not
 silently. TOOL-CATALOG v2a 7 of 12. Full suite 1129 passed / 1 skipped / known RAG
 failure only.
+
+---
+
+## 2026-07-28 — Model health-check ("모델 건강검진"): the validation layer, standalone
+
+**Context:** productizing constraints.py + guardrails.py as a one-click report meant
+confronting that most of the catalog (47/61) is action- or run-gated and structurally
+cannot apply to a cold parse — a check needing proposed `params` or a `run_result` can
+never fire from a static .inpx. Rather than guess which checks tolerate an empty action,
+the seam is explicit opt-in.
+
+**Decision:** `constraints.register_dataset_check` hook. 11 existing checks reused —
+either called with an empty action (shadow-model-only: conflict_area_data_unavailable,
+route_integrity_unverifiable, units_ambiguous_on_write, stale_route_files_after_edit) or
+via PER-OBJECT SYNTHESIS: loop every real object and feed its CURRENT value into the
+existing check as if it were a proposed write (volume_out_of_range,
+latent_demand_overflow, cycle_below_intergreen_sum, ring_barrier_splits_sum_mismatch,
+conflicting_greens_in_signal_plan, green_split_outside_cycle,
+green_split_below_min_green). Plus 3 new phase="dataset" constraints unreachable from
+guardrails' real run_checks() by construction: evaluation_config_disarmed (new
+<evaluation> parser feeding a new evaluation_config shadow key),
+vehicle_input_cont_volume_mismatch (Cont-chain integrity),
+des_speed_distribution_orphan_reference. Registry 58→61. New
+services/agent/health_check.py + routers/health.py: GET /api/health-check, SYNC
+(measured ~31ms cold on the real Beijing network, ~2ms on demo data — far under the 3s
+job-conversion threshold), plus ?format=json attachment for the paper. The report splits
+`findings` (14 dataset-capable ids) from `edit_time_only` (47, derived from the registry
+so it can NEVER drift from the catalog) — coverage is stated honestly, not implied.
+New /health page (severity cards → grouped findings with expandable details → collapsed
+편집 시 검사 section → stats footer → JSON download), ko/en/ja, nav entry in AppShell.
+
+**Consequence:** the validation layer now stands alone as a product surface and needs NO
+Vissim/COM — it runs on any uploaded .inpx, so the professor's Korean network can be
+audited the moment it arrives. Live-verified on the real Beijing example with zero
+fabrication: a GENUINE beyond-cycle green (controller 1 / program 1 / SG 6, window
+131s→15s against a 130s cycle — exactly the silent failure unit ⑨ proved Vissim accepts),
+145/224 Passive conflict areas, and an over-capacity vehicle input (link 41, 2366 veh/h
+vs ~1900 rough capacity). findings_by_severity reserves an `info` bucket that is always 0
+today (Tier stays refuse|warn, mapped to issue|warning). Full suite 1152 passed / 1
+skipped / known RAG failure only; contract suite 11/12 (one assertion added to the
+existing app-shell routes test rather than a new test).

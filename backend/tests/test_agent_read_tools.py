@@ -1322,6 +1322,8 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         # v2a unit ⑨
         "signal_programs",
         "signal_program_splits",
+        # health-check unit (2026-07-28): static evaluation-armed flags.
+        "evaluation_config",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -1331,6 +1333,10 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
     # the shadow key must still be present and well-formed (empty list, not
     # absent/None), the same "no signal controllers" shape signals already has.
     assert shadow["conflict_areas"] == []
+    # health-check unit (2026-07-28): the demo .inpx carries no <evaluation>
+    # element either -- a genuine, not-fabricated "no evaluation armed" fact
+    # about the bundled demo network.
+    assert shadow["evaluation_config"] == {"present": False}
     # v2 unit ⑥: unlike signals/conflict_areas, the demo .inpx DOES carry
     # static routing decisions (2 decisions, 3 routes each = 6 flat routes) —
     # verified directly against data/practice.inpx before pinning these

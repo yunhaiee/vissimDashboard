@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from routers import assistant, datasets, network, scenarios, simulations, geojson, validation, exports, report, trajectories, agent_downloads
+from routers import assistant, datasets, network, scenarios, simulations, geojson, validation, exports, report, trajectories, agent_downloads, health
 from services.agent.sessions import sweep_stale_sessions
 from services.license_guard import license_required, license_status
 
@@ -139,6 +139,7 @@ app.include_router(exports.router)
 app.include_router(report.router)
 app.include_router(trajectories.router)
 app.include_router(agent_downloads.router)
+app.include_router(health.router)
 
 
 @app.get("/")

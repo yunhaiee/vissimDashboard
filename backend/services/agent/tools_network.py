@@ -297,6 +297,44 @@ def _parse_conflict_areas(root: ET.Element) -> list[dict[str, Any]]:
     return result
 
 
+def _parse_evaluation_config(root: ET.Element) -> dict[str, Any]:
+    """{present, net_perf_eval_act, link_eval_act, queue_eval_act,
+    ln_chg_eval_act, eval_interval_s} from the .inpx's top-level
+    ``<evaluation>`` element -- health-check unit (2026-07-28), closing the
+    "is any evaluation actually ARMED" half of catalog §5's "Evaluations are
+    not retroactive" that constraints.py's existing ``evaluation_not_
+    configured_before_run`` (#15) could only ever answer POSTRUN, from a live
+    job's ``run_result`` (see that constraint's own docstring -- it has no
+    shadow-model path at all). This is the STATIC counterpart: the .inpx
+    itself carries the evaluation-armed flags as plain attributes on one
+    element, parseable with no COM and no run (verified against the real
+    Urban Intersection Beijing.CN_31360 example:
+    ``<evaluation netPerfEvalAct="true" linkEvalAct="..." queueEvalAct="..."
+    lnChgEvalAct="..." evalInt="600" .../>``). ``present=False`` (every other
+    key omitted) when the .inpx carries no ``<evaluation>`` element at all --
+    genuinely true of the bundled demo network (``data/practice.inpx``), not
+    a fabricated gap.
+    """
+    el = root.find(".//evaluation")
+    if el is None:
+        return {"present": False}
+
+    def _bool_attr(attr: str) -> bool | None:
+        raw = el.get(attr)
+        if raw is None:
+            return None
+        return raw.strip().lower() == "true"
+
+    return {
+        "present": True,
+        "net_perf_eval_act": _bool_attr("netPerfEvalAct"),
+        "link_eval_act": _bool_attr("linkEvalAct"),
+        "queue_eval_act": _bool_attr("queueEvalAct"),
+        "ln_chg_eval_act": _bool_attr("lnChgEvalAct"),
+        "eval_interval_s": _coerce_float_or_none(el.get("evalInt")),
+    }
+
+
 def _parse_rel_flow(raw: str | None) -> list[dict[str, Any]]:
     """[{interval_no, from_s, rel_flow}] from a ``<vehicleRouteStatic
     relFlow="...">`` attribute, one entry per referenced time interval, in
@@ -855,6 +893,9 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         # parse_signal_programs's docstring for the storage-reality findings.
         "signal_programs": signal_programs,
         "signal_program_splits": _flatten_signal_program_splits(signal_programs),
+        # health-check unit (2026-07-28): static evaluation-armed flags, see
+        # _parse_evaluation_config's own docstring.
+        "evaluation_config": _parse_evaluation_config(root),
     }
 
 

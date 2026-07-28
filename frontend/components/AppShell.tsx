@@ -7,7 +7,7 @@ import FloatingAssistant from "@/components/FloatingAssistant";
 import { useLanguage } from "@/components/LanguageProvider";
 import type { Language } from "@/lib/i18n";
 
-function NavIcon({ name }: { name: "dashboard" | "network" | "validation" | "downloads" | "report" }) {
+function NavIcon({ name }: { name: "dashboard" | "network" | "validation" | "downloads" | "report" | "health" }) {
   const paths: Record<string, React.ReactNode> = {
     dashboard: (
       <>
@@ -46,6 +46,12 @@ function NavIcon({ name }: { name: "dashboard" | "network" | "validation" | "dow
         <path d="M9.5 16h5.5" />
       </>
     ),
+    health: (
+      <>
+        <path d="M12 21s-7.5-4.6-9.5-9.2C1.2 8.4 3 5.5 6.2 5.2c2-.2 3.6 1 4.8 2.6C12.2 6.2 13.8 5 15.8 5.2c3.2.3 5 3.2 3.7 6.6C17.5 16.4 12 21 12 21Z" />
+        <path d="M6.5 12h2.2l1.3-2.6 2 4.8 1.3-2.2h4.2" />
+      </>
+    ),
   };
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -61,10 +67,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // Dashboard listed first: it's the landing page (root redirects here) and
   // the page most users need first; the more specialist calibration page
   // follows it instead of leading.
-  const links: Array<{ href: string; label: string; icon: "dashboard" | "network" | "validation" | "downloads" | "report" }> = [
+  const links: Array<{ href: string; label: string; icon: "dashboard" | "network" | "validation" | "downloads" | "report" | "health" }> = [
     { href: "/dashboard", label: t("대시보드", "Dashboard", "ダッシュボード"), icon: "dashboard" },
     { href: "/base-model", label: t("베이스모델 검증", "Base Model Validation", "ベースモデル検証"), icon: "validation" },
     { href: "/network", label: t("네트워크", "Network", "ネットワーク"), icon: "network" },
+    { href: "/health", label: t("모델 검진", "Model Health Check", "モデル検診"), icon: "health" },
     { href: "/downloads", label: t("데이터 다운로드", "Data Downloads", "データダウンロード"), icon: "downloads" },
     { href: "/report", label: t("보고서 작성", "Report Builder", "レポート作成"), icon: "report" },
   ];

@@ -481,6 +481,57 @@ export interface ActiveDataset {
   has_real_counts?: boolean;
 }
 
+// 모델 건강검진 (model health-check) — GET /api/health-check's report shape,
+// mirrored 1:1 from backend/services/agent/health_check.py's HealthCheckRunner.
+export interface HealthCheckLocalizedText {
+  ko: string;
+  en: string;
+  ja: string;
+}
+
+export interface HealthCheckFinding {
+  constraint_id: string;
+  severity: "issue" | "warning" | "info";
+  tier: "refuse" | "warn";
+  title: HealthCheckLocalizedText;
+  // null only on a per-constraint truncation-marker entry (see
+  // truncated_additional_count) — every real finding always carries a message.
+  message: HealthCheckLocalizedText | null;
+  details: Record<string, unknown>;
+  object_refs: string[];
+  truncated_additional_count?: number;
+}
+
+export interface HealthCheckEditTimeOnlyEntry {
+  constraint_id: string;
+  title: HealthCheckLocalizedText;
+  tier: "refuse" | "warn";
+  phase: string;
+}
+
+export interface HealthCheckReport {
+  generated_at: string;
+  dataset: { name: string; revision: string | null; source: string | null };
+  summary: {
+    checked_n: number;
+    edit_time_only_n: number;
+    findings_by_severity: { issue: number; warning: number; info: number };
+  };
+  findings: HealthCheckFinding[];
+  edit_time_only: HealthCheckEditTimeOnlyEntry[];
+  stats: {
+    links: number;
+    nodes: number;
+    vehicle_inputs: number;
+    signal_controllers: number;
+    conflict_areas: number;
+    routing_decisions: number;
+    routes: number;
+    vehicle_compositions: number;
+    des_speed_decisions: number;
+  };
+}
+
 export interface ScenarioResults {
   run_count: number;
   network: Record<string, number>;
@@ -1478,6 +1529,16 @@ export async function resetActiveDataset(): Promise<ActiveDataset> {
   const r = await apiMutationFetch("/api/datasets/reset", { method: "POST" });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+export async function fetchHealthCheck(): Promise<HealthCheckReport> {
+  const r = await apiFetch("/api/health-check", { cache: "no-store" });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+export function healthCheckDownloadUrl(): string {
+  return apiUrl("/api/health-check?format=json");
 }
 
 export async function startSimulation(params: {
