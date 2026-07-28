@@ -188,6 +188,21 @@ dataset-wide, parse-only (no COM, no Vissim install needed). Shipped 2026-07-28.
   references
 - ~31ms on the real Beijing example; JSON export for paper artifacts
 
+## Related surface — network component search (not an agent verb)
+
+`GET /api/network/search?q=&limit=` + the search box on `/network` and the dashboard
+도식 view. Parse-only (no COM). Shipped 2026-07-28.
+
+- Covers every drawable element family; matches on id, name and Korean class alias
+  ("신호" → signal controllers)
+- Rank order: exact id > exact name > class alias > name prefix > name substring >
+  id prefix, ties broken by family then row order so repeat queries are stable
+- Reuses `approval_focus`'s anchor machinery, so a search hit and an approval card
+  agree on where an element is
+- Bounded like every list read: default 20, explicit `truncated` flag + total count
+- Duplicate display names are never collapsed — 18 real elements share the name
+  "South St EB", and each is labelled by family + id
+
 ## 🚫 Impossible by design (permanent, documented refusals)
 
 - **External signal-controller logic (RBC / VAP / Econolite)** — timing lives in

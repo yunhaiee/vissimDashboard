@@ -199,10 +199,16 @@ top three SHIPPED 2026-07-28):
 - Share links (read-only dashboard/replay) + reviewer/modeler roles on the
   approval gate
 
-**Network-view interaction precision** (live-rehearsal defects, 2026-07-28)
+**Network-view interaction** (live-rehearsal findings, 2026-07-28)
 
-The 도식 is now legible (semantic zoom, metre-true markings) but not yet *precise to
-click*. Two separate defects, both in `NetworkViewer.tsx`:
+- ✅ Component search on `/network` and the dashboard 도식 — find by id or name, flash
+  the hit. Shipped 07-28. Duplicate display names are never collapsed: "South St EB"
+  names **18** distinct elements on the real model, so every hit is returned with its
+  family and id, and the list stays open so you can walk them and watch each flash.
+- ✅ Focus flash is blue (`#00c2ff`) and re-fires on every ask — shipped 07-28.
+
+The 도식 is now legible (semantic zoom, metre-true markings) and searchable, but not yet
+*precise to click*. Two separate defects remain, both in `NetworkViewer.tsx`:
 
 - ⬜ **Link hit bands overhang the drawn asphalt.** The invisible link hit polyline is
   `stroke-width = max(roadW + 8, 12)` in **world metres**, drawn ONCE outside
