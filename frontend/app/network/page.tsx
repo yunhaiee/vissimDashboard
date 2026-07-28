@@ -1,7 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import TrajectoryLayer, { createProjectionStore, PLAYBACK_SPEEDS, useTrajectoryPlayback } from "@/components/TrajectoryLayer";
@@ -15,6 +16,7 @@ import {
   type SimulationJob,
 } from "@/lib/api";
 import { elementTypeLabel, linkKindLabel, type NetworkElementRef } from "@/lib/networkElements";
+import { focusElementKey, focusSignature, parseNetworkFocus } from "@/lib/networkFocus";
 
 // NetworkViewer draws with d3 straight against the DOM, so it must stay
 // client-only (same reason DashboardMap/Leaflet is dynamically imported).
@@ -26,6 +28,14 @@ const MAX_SELECTED_NODES = 6;
 // would otherwise substitute a colour emoji keep them as plain glyphs.
 const PLAY_GLYPH = "▶︎";
 const PAUSE_GLYPH = "⏸︎";
+
+// Approval-focus flash (2026-07-28): how long the attention pulse runs before
+// SETTLING into the same colour held statically. ~4 cycles of NetworkViewer's
+// 0.85s keyframe animation — long enough to catch the eye after the 0.65s
+// zoom flight lands, short enough that it never becomes a permanent blink
+// (which is both irritating and an accessibility problem). Skipped entirely
+// under prefers-reduced-motion: straight to the static highlight.
+const FOCUS_PULSE_MS = 3400;
 
 // m:ss for the scrubber readout. Sim clocks can start at a non-zero t0, so the
 // caller passes an already-relative offset; absolute sim seconds are shown
@@ -45,7 +55,21 @@ function formatJobLabel(job: SimulationJob): string {
   return `${name} (${date.toLocaleString()})`;
 }
 
+// `useSearchParams` makes the client tree up to the nearest Suspense boundary
+// client-rendered (Next 16 docs, app/api-reference/functions/use-search-params
+// "Prerendering"), so the boundary lives here rather than being inherited from
+// the app shell. Everything below already renders client-side anyway (the
+// viewer is a `ssr: false` dynamic import), so the fallback is never seen for
+// long enough to need chrome of its own.
 export default function NetworkPage() {
+  return (
+    <Suspense fallback={null}>
+      <NetworkPageContent />
+    </Suspense>
+  );
+}
+
+function NetworkPageContent() {
   const { t } = useLanguage();
   const [network, setNetwork] = useState<NetworkData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -82,6 +106,95 @@ export default function NetworkPage() {
   // the default file-next-to-dataset/demo source. `null` = default source.
   const [replayableJobs, setReplayableJobs] = useState<SimulationJob[]>([]);
   const [trajectorySourceJobId, setTrajectorySourceJobId] = useState<string | null>(null);
+
+  // --- Approval-card focus handoff (2026-07-28) --------------------------
+  // The approval card's 네트워크에서 보기 button navigates here with the
+  // pending write's focus in the URL (lib/networkFocus.ts). Reading it from
+  // the URL rather than from an in-memory channel is what makes the landing
+  // reload-safe and shareable; the ids are re-resolved against the network
+  // geometry this page already fetches, so nothing extra is fetched.
+  const searchParams = useSearchParams();
+  const urlFocus = useMemo(() => parseNetworkFocus(searchParams), [searchParams]);
+  const focusKey = focusSignature(urlFocus);
+  // Which focus the user has already dismissed (by clicking something else in
+  // the diagram, or the banner's own dismiss). Stored as the focus signature
+  // so arriving with a DIFFERENT focus revives the highlight.
+  const [dismissedFocusKey, setDismissedFocusKey] = useState("");
+  const activeFocus = urlFocus && dismissedFocusKey !== focusKey ? urlFocus : null;
+
+  const focusKeyRef = useRef(focusKey);
+  useEffect(() => {
+    focusKeyRef.current = focusKey;
+  }, [focusKey]);
+  // Stable identity: the diagram click handlers below are NetworkViewer draw
+  // dependencies, so they must not change when the focus does.
+  const dismissFocus = useCallback(() => {
+    setDismissedFocusKey(focusKeyRef.current || "none");
+  }, []);
+
+  // Pulse phase, keyed to the focus it belongs to. Arriving with a new focus
+  // starts pulsing DURING RENDER (React's documented "adjust state when a prop
+  // changes" pattern) rather than in an effect — an effect that flipped this
+  // on would render one frame of the settled highlight first, i.e. the pulse
+  // would visibly stutter on arrival, and it would trip
+  // react-hooks/set-state-in-effect for exactly that reason.
+  // prefers-reduced-motion never enters the pulse phase at all (NetworkViewer's
+  // stylesheet also disables the keyframes — belt and braces, since a media
+  // query can flip after mount).
+  const [pulse, setPulse] = useState({ key: "", active: false });
+  if (focusKey && pulse.key !== focusKey) {
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setPulse({ key: focusKey, active: !reduceMotion });
+  }
+  const focusPulsing = pulse.active && pulse.key === focusKey;
+
+  // ...and SETTLE into the static highlight after a handful of cycles — never
+  // an endless blink (irritating, and hostile to anyone sensitive to motion).
+  useEffect(() => {
+    if (!focusPulsing) return;
+    const timer = window.setTimeout(() => setPulse((prev) => ({ ...prev, active: false })), FOCUS_PULSE_MS);
+    return () => window.clearTimeout(timer);
+  }, [focusPulsing]);
+
+  // Focus elements -> the two address spaces NetworkViewer already stamps:
+  // `data-linkid` on road fills, `data-elkey` on element glyph groups.
+  // "conflict_area" entries resolve to neither (they have no geometry at all)
+  // and are dropped here — the two links they name carry the highlight.
+  const focusFlash = useMemo(() => {
+    if (!activeFocus) return null;
+    const linkIds: string[] = [];
+    const elementKeys: string[] = [];
+    for (const element of activeFocus.elements) {
+      if (element.type === "link") {
+        linkIds.push(element.id);
+        continue;
+      }
+      const key = focusElementKey(element);
+      if (key) elementKeys.push(key);
+    }
+    if (!linkIds.length && !elementKeys.length) return null;
+    return { linkIds, elementKeys, pulsing: focusPulsing };
+  }, [activeFocus, focusPulsing]);
+
+  const focusBanner = useMemo(() => {
+    if (!activeFocus) return null;
+    const conflict = activeFocus.elements.find((element) => element.type === "conflict_area");
+    const links = activeFocus.elements.filter((element) => element.type === "link");
+    if (conflict) {
+      const pair = links
+        .slice(0, 2)
+        .map((link) => t(`링크 ${link.id}`, `link ${link.id}`, `リンク${link.id}`))
+        .join(" ↔ ");
+      const head = t(`충돌구간 ${conflict.id}`, `Conflict area ${conflict.id}`, `錯綜区間${conflict.id}`);
+      return pair ? `${head} · ${pair}` : head;
+    }
+    if (links.length === 1) return t(`링크 ${links[0].id}`, `Link ${links[0].id}`, `リンク${links[0].id}`);
+    const count = activeFocus.elements.length;
+    return t(`대상 요소 ${count}개`, `${count} target element${count === 1 ? "" : "s"}`, `対象要素${count}個`);
+  }, [activeFocus, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -183,6 +296,9 @@ export default function NetworkPage() {
   // Mirror the dashboard's handleNodeClick semantics: clicking toggles the node
   // in the comparison set, capped at six with the oldest dropped first.
   const handleNodeClick = useCallback((nodeId: string) => {
+    // Selecting anything retires the approval focus — "look here" has served
+    // its purpose the moment the user starts driving the diagram themselves.
+    dismissFocus();
     setSelectedNodeIds((prev) => {
       if (prev.includes(nodeId)) {
         return prev.filter((id) => id !== nodeId);
@@ -190,7 +306,7 @@ export default function NetworkPage() {
       const next = [...prev, nodeId];
       return next.length <= MAX_SELECTED_NODES ? next : next.slice(next.length - MAX_SELECTED_NODES);
     });
-  }, []);
+  }, [dismissFocus]);
 
   // P6: link/connector and element clicks are published as STRUCTURED context
   // (selectedLinks/selectedElement, which FloatingAssistant forwards as
@@ -199,12 +315,14 @@ export default function NetworkPage() {
   // from selected_node_ids because node ids key result/metric lookups while
   // links and elements key the parsed network.
   const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean) => {
+    dismissFocus();
     setSelectedLinkInfo((prev) => (prev && prev.id === linkId ? null : { id: linkId, name: linkName, isConnector }));
-  }, []);
+  }, [dismissFocus]);
 
   const handleElementClick = useCallback((ref: NetworkElementRef) => {
+    dismissFocus();
     setSelectedElementInfo((prev) => (prev && prev.type === ref.type && prev.id === ref.id ? null : ref));
-  }, []);
+  }, [dismissFocus]);
 
   // Mirrors the dashboard/base-model pages' assistant page-context dispatch:
   // publish on mount/change and again whenever the floating assistant asks
@@ -321,6 +439,26 @@ export default function NetworkPage() {
         </div>
       </section>
 
+      {activeFocus && (
+        <div
+          data-testid="network-focus-banner"
+          className="mx-1 flex flex-wrap items-center gap-2 rounded-lg border border-[#ff3ec8]/50 bg-[#ff3ec8]/10 px-3 py-2 text-xs text-slate-600"
+        >
+          <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-full bg-[#ff3ec8]" />
+          <span className="font-semibold text-slate-700">
+            {t("승인 대상 강조", "Approval target highlighted", "承認対象をハイライト")}
+          </span>
+          {focusBanner && <span className="text-slate-500">{focusBanner}</span>}
+          <button
+            type="button"
+            onClick={dismissFocus}
+            className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 transition hover:text-slate-900"
+          >
+            {t("강조 해제", "Clear highlight", "ハイライト解除")}
+          </button>
+        </div>
+      )}
+
       <div className="relative h-[70vh] min-h-[420px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)]">
         {error ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
@@ -348,6 +486,8 @@ export default function NetworkPage() {
               onLinkClick={handleLinkClick}
               onElementClick={handleElementClick}
               onProjectionChange={projection.set}
+              focusFlash={focusFlash}
+              zoomToBbox={activeFocus?.bbox ?? null}
             />
             {/* Canvas overlay: same box as the viewer's SVG, pointer-events
                 none so zoom/pan/click all still land on the SVG beneath it. */}

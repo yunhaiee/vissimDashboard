@@ -13,6 +13,7 @@
 // own projection conventions (y-flip, uniform/isotropic fit) so it reads
 // consistently with the rest of the app.
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
@@ -23,11 +24,18 @@ import {
   type AgentApprovalFocusElement,
   type NetworkData,
 } from "@/lib/api";
+import { buildNetworkFocusHref } from "@/lib/networkFocus";
 
-const MAP_HEIGHT_PX = 152;
+// Raised 152 -> 200 with the zoom fix (2026-07-28). The bbox is now anchored
+// on the actual target rather than the union of its links' extents, so the
+// thumbnail finally has something worth resolving; the extra 48px of height
+// is what turns "a junction shape" into "a junction whose approaches you can
+// count". Kept well inside the assistant panel's own 430px minimum height so
+// the approval card's buttons never get pushed below the fold.
+const MAP_HEIGHT_PX = 200;
 const VIEW_W = 320;
-const VIEW_H = 152;
-const VIEW_MARGIN = 10;
+const VIEW_H = 200;
+const VIEW_MARGIN = 8;
 
 // Matches NetworkViewer.tsx's own ACCENT constant exactly (frontend/
 // components/NetworkViewer.tsx) -- this app has no dark-mode theme (verified:
@@ -38,12 +46,19 @@ const ACCENT = "#4c8dff";
 const MUTED_LINK = "#c7cfdb";
 const HIGHLIGHT_LINK = ACCENT;
 
-// "Generous padding... show surrounding context, not just the element" (task
-// brief): the WORLD bbox is expanded by this multiple of its own span on
-// each side before fitting, so the fitted view spans roughly
-// (1 + 2*PAD_RATIO)x the target's own extent -- enough surrounding network
-// to orient, not so much the target shrinks to a speck.
-const PAD_RATIO = 1.1;
+// The WORLD bbox is expanded by this multiple of its own span on each side
+// before fitting, so the fitted view spans (1 + 2*PAD_RATIO)x the bbox.
+//
+// Was 1.1 -- i.e. the view was 3.2x the bbox on every side, which is what
+// turned conflict area 3's already-too-wide 45 x 116 m link-extent bbox into
+// 841 x 370 m of a 1188 x 851 m network (the isotropic fit multiplies the
+// aspect mismatch on top). 0.15 is the counterpart to the backend's now
+// anchor-based bbox: `approval_focus.py`'s `_ANCHOR_CONTEXT_M` already puts
+// ~50 m of surrounding network on every side of the target, so the context
+// the old ratio was trying to buy is now IN the bbox, correctly sized in
+// metres instead of as a multiple of whatever the target happened to span.
+// What is left here is breathing room so the target never touches the frame.
+const PAD_RATIO = 0.15;
 
 // Module-level cache: repeated approvals in the SAME browser session (any
 // session_id, including the "no session yet" `""` key) never refetch network
@@ -232,6 +247,11 @@ export default function ApprovalFocusMap({
   const caption = buildCaption(focus, action, t);
   const expanded = expandBbox(bbox);
   const { projX, projY } = fit(expanded);
+  // The same focus, carried to the full network tab as URL params (see
+  // lib/networkFocus.ts for why the handoff is a URL and not a context).
+  // The thumbnail deliberately has no zoom/pan chrome, so this button IS the
+  // "I want to look properly" affordance.
+  const networkHref = buildNetworkFocusHref(bbox, focus.elements);
 
   return (
     <div className="mt-2">
@@ -293,7 +313,18 @@ export default function ApprovalFocusMap({
           <div className="h-full w-full animate-pulse bg-slate-100" aria-hidden="true" />
         )}
       </div>
-      <p className="mt-1 text-[10px] font-medium text-slate-500">{caption}</p>
+      <div className="mt-1 flex items-center justify-between gap-2">
+        <p className="text-[10px] font-medium text-slate-500">{caption}</p>
+        {networkHref && (
+          <Link
+            href={networkHref}
+            prefetch={false}
+            className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+          >
+            {t("네트워크에서 보기", "View in network", "ネットワークで見る")}
+          </Link>
+        )}
+      </div>
     </div>
   );
 }

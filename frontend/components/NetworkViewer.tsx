@@ -48,6 +48,20 @@ interface Props {
   // when there is nothing drawn. Held in a ref internally so passing it never
   // becomes a redraw dependency — with the prop absent nothing below changes.
   onProjectionChange?: (projection: ViewProjection | null) => void;
+  // Approval-focus flash (2026-07-28, optional + purely additive). The links
+  // and elements the agent's pending write touches, recoloured FOCUS_FLASH.
+  // `pulsing` runs a short attention pulse; false settles into the same
+  // colour, held statically until the caller clears it. Applied as CSS
+  // classes over the EXISTING data-elkey / data-linkid attributes — no extra
+  // drawing pass, and no redraw dependency (held in a ref, reapplied after
+  // every redraw exactly like the layer-visibility flags).
+  focusFlash?: { linkIds: string[]; elementKeys: string[]; pulsing: boolean } | null;
+  // Programmatic fit-to-region, in RAW NETWORK METRES. Driven through the
+  // existing d3.zoom behaviour (never by writing the group transform behind
+  // its back), so zoomTransformRef, the ViewProjection emit the vehicle
+  // overlay consumes, and the semantic-zoom redraw all stay consistent.
+  // `nonce` lets the caller re-trigger the same region.
+  zoomToBbox?: { x_min: number; y_min: number; x_max: number; y_max: number; nonce?: number } | null;
 }
 
 // Road-surface palette — all drawn from the file's existing slate family; no new
@@ -63,6 +77,22 @@ const ACCENT = "#4c8dff";
 // hover and selection read as two distinct strengths of the same accent
 // family. Selection keeps ACCENT itself.
 const ACCENT_HOVER = "#94bbff";
+
+// Approval-focus flash (2026-07-28) — "the agent wants you to look HERE",
+// arriving from the approval card's 네트워크에서 보기 button. Deliberately
+// outside every hue already spoken for in this file, because it has to read
+// as a DIFFERENT KIND of statement than any of them: the accent blue family
+// (ACCENT / ACCENT_HOVER) already means "you selected this / you are pointing
+// at this", SIGNAL_RED means signal + stop control, RSA_AMBER means reduced
+// speed, TTS_CYAN means travel-time gates, PED_FILL means pedestrian area,
+// and the whole green->amber->red ramp is LOS (lib/los.ts). That leaves the
+// magenta/violet quadrant completely unclaimed, and this vivid magenta clears
+// 6.3:1 contrast against the #0b0b0b ink background, so it stays legible on
+// the dark canvas at hairline widths.
+const FOCUS_FLASH = "#ff3ec8";
+// Screen-px breathing room left around the focus bbox when zooming to it.
+const FOCUS_ZOOM_PAD_PX = 72;
+const FOCUS_ZOOM_MS = 650;
 
 // Static-element glyph palette. Restricted, muted variants that read inside the
 // dark theme. Signal-head + stop-sign bars use a restrained red (Vissim draws
@@ -316,6 +346,30 @@ function applyLayerVisibility(svgEl: SVGSVGElement | null, hidden: Set<string>) 
   }
 }
 
+const FLASH_CLASS = "focus-flash";
+const FLASH_PULSE_CLASS = "focus-flash-pulse";
+
+// Approval-focus flash, applied the same way layer visibility is: by
+// re-selecting the CURRENT DOM through the attributes the draw passes already
+// stamp (`data-linkid` on road fills, `data-elkey` on element glyph groups)
+// and toggling classes the <style> block below turns into a recolor. Called
+// both on prop change and after every redraw (with the ref), so a
+// semantic-zoom rebuild of the element layer never drops the highlight.
+function applyFocusFlash(
+  svgEl: SVGSVGElement | null,
+  flash: { linkIds: string[]; elementKeys: string[]; pulsing: boolean } | null | undefined,
+) {
+  if (!svgEl) return;
+  const sel = d3.select(svgEl);
+  sel.selectAll(`.${FLASH_CLASS}`).classed(FLASH_CLASS, false).classed(FLASH_PULSE_CLASS, false);
+  if (!flash) return;
+  const mark = (selector: string) => {
+    sel.selectAll(selector).classed(FLASH_CLASS, true).classed(FLASH_PULSE_CLASS, flash.pulsing);
+  };
+  for (const linkId of flash.linkIds) mark(`[data-linkid='${CSS.escape(linkId)}']`);
+  for (const key of flash.elementKeys) mark(`g[data-elkey='${CSS.escape(key)}']`);
+}
+
 export default function NetworkViewer({
   network,
   results,
@@ -327,6 +381,8 @@ export default function NetworkViewer({
   onElementClick,
   selectedElement,
   onProjectionChange,
+  focusFlash,
+  zoomToBbox,
 }: Props) {
   const { t } = useLanguage();
   const svgRef = useRef<SVGSVGElement>(null);
@@ -396,6 +452,39 @@ export default function NetworkViewer({
     applyLayerVisibility(svgRef.current, hidden);
   }, [hidden]);
 
+  // Approval-focus flash — exactly the hiddenRef pattern above: mirror the
+  // prop into a ref (so the draw effect can reapply it after a redraw without
+  // taking it as a dependency) and apply it to the live DOM on change. A
+  // scalar key keeps a parent re-rendering with a fresh object literal from
+  // re-running this.
+  const focusFlashRef = useRef(focusFlash);
+  const focusFlashKey = focusFlash
+    ? `${focusFlash.pulsing ? "p" : "s"}|${focusFlash.linkIds.join(",")}|${focusFlash.elementKeys.join(",")}`
+    : "";
+  useEffect(() => {
+    focusFlashRef.current = focusFlash;
+    applyFocusFlash(svgRef.current, focusFlash);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusFlashKey]);
+
+  // Set by the draw effect so the fit-to-bbox effect below can drive the SAME
+  // d3.zoom behaviour the user's own gestures drive (rather than writing the
+  // group transform directly, which would desync zoomTransformRef and the
+  // ViewProjection the vehicle overlay reads).
+  const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const lastUserGestureRef = useRef(0);
+  const fitRef = useRef<{
+    s: number;
+    offsetX: number;
+    offsetY: number;
+    xMin: number;
+    yMax: number;
+    width: number;
+    height: number;
+    minK: number;
+    maxK: number;
+  } | null>(null);
+
   // P4 projection publishing. The callback lives in a ref so the draw effect
   // never takes it as a dependency (a parent re-creating the callback must not
   // force a full d3 redraw); the rAF handle throttles zoom/pan emissions to one
@@ -443,6 +532,8 @@ export default function NetworkViewer({
     svg.selectAll("*").remove();
     if (!network.links.length) {
       onProjectionChangeRef.current?.(null);
+      zoomBehaviorRef.current = null;
+      fitRef.current = null;
       return;
     }
 
@@ -567,8 +658,12 @@ export default function NetworkViewer({
     // Layer 2 — asphalt fills for every surface, same colour for links and
     // connectors. Selection recolors the fill stroke to accent (connectors
     // included — that is now their selected treatment).
-    drawn.forEach(({ pointsAttr, roadW, isSel }) => {
+    drawn.forEach(({ pointsAttr, roadW, isSel, link }) => {
       gFill.append("polyline")
+        // Approval-focus flash addressing. Links are drawn by the road passes
+        // rather than as data-elkey element glyphs, so this is their
+        // equivalent handle — one attribute, no extra drawing pass.
+        .attr("data-linkid", String(link.id))
         .attr("points", pointsAttr)
         .attr("stroke", isSel ? ACCENT : ASPHALT_FILL)
         .attr("stroke-width", isSel ? roadW + 1.5 : roadW)
@@ -1239,6 +1334,11 @@ export default function NetworkViewer({
       });
 
       applyLayerVisibility(svgRef.current, hiddenRef.current);
+      // Same reason as the line above: this pass just rebuilt every element
+      // glyph group, so any focus flash on one of them has to be restamped.
+      // Road-fill flashes are re-marked here too (harmless — applyFocusFlash
+      // clears and reapplies the whole set) so one call covers both.
+      applyFocusFlash(svgRef.current, focusFlashRef.current);
       lastDrawnK = k;
     }
 
@@ -1280,6 +1380,11 @@ export default function NetworkViewer({
       .on("zoom", (event) => {
         g.attr("transform", event.transform);
         zoomTransformRef.current = event.transform;
+        // `sourceEvent` is the DOM event for a real gesture and null for a
+        // programmatic `zoom.transform`. Recording the last gesture lets the
+        // fit-to-bbox effect below abandon its settle if the user has taken
+        // the wheel in the meantime.
+        if (event.sourceEvent) lastUserGestureRef.current = performance.now();
         // Projection emit — one per animation frame while zooming/panning, so
         // the vehicle-canvas overlay can never outpace the browser's paint
         // rate. Cancel-and-reschedule, NOT skip-if-pending: a rAF handle that
@@ -1325,6 +1430,11 @@ export default function NetworkViewer({
       });
     svg.call(zoom);
     svg.call(zoom.transform, zoomTransformRef.current);
+    // Publish this run's zoom behaviour + base fit so the fit-to-bbox effect
+    // can retarget through them. Kept in refs (not state) for the same reason
+    // the projection callback is: nothing here may become a redraw trigger.
+    zoomBehaviorRef.current = zoom;
+    fitRef.current = { s, offsetX, offsetY, xMin, yMax, width: W, height: H, minK: 0.3, maxK: maxZoomK };
     // Synchronous emit so the overlay has the fresh fit immediately after a
     // redraw/resize (the rAF path above only covers live zoom/pan gestures).
     emitProjection(zoomTransformRef.current);
@@ -1344,6 +1454,74 @@ export default function NetworkViewer({
       }
     };
   }, [network, nodeLosMap, selectedNodeSet, selectedLinkId, selectedElementKey, onNodeClick, onLinkClick, onElementClick, t, sizeNonce]);
+
+  // Programmatic fit-to-region (approval focus). Declared AFTER the draw
+  // effect so React's in-order effect execution guarantees zoomBehaviorRef /
+  // fitRef are populated for this same render before this runs.
+  //
+  // Everything goes through `zoom.transform`, never `g.attr("transform", …)`:
+  // that is what keeps zoomTransformRef current, keeps the rAF ViewProjection
+  // emit firing (so TrajectoryLayer's vehicles stay glued to the road through
+  // the whole flight), and lets the k-changed semantic-zoom redraw fire on
+  // arrival exactly as it does for a user gesture.
+  const zoomBboxKey = zoomToBbox
+    ? `${zoomToBbox.x_min},${zoomToBbox.y_min},${zoomToBbox.x_max},${zoomToBbox.y_max},${zoomToBbox.nonce ?? 0}`
+    : "";
+  useEffect(() => {
+    const svgEl = svgRef.current;
+    const zoom = zoomBehaviorRef.current;
+    const fitParams = fitRef.current;
+    if (!svgEl || !zoom || !fitParams || !zoomToBbox) return;
+
+    const projX = (x: number) => fitParams.offsetX + (x - fitParams.xMin) * fitParams.s;
+    const projY = (y: number) => fitParams.offsetY + (fitParams.yMax - y) * fitParams.s;
+    const x0 = projX(zoomToBbox.x_min);
+    const x1 = projX(zoomToBbox.x_max);
+    const yTop = projY(zoomToBbox.y_max);
+    const yBottom = projY(zoomToBbox.y_min);
+    const widthPx = Math.max(Math.abs(x1 - x0), 1);
+    const heightPx = Math.max(Math.abs(yBottom - yTop), 1);
+    const availW = Math.max(fitParams.width - 2 * FOCUS_ZOOM_PAD_PX, 1);
+    const availH = Math.max(fitParams.height - 2 * FOCUS_ZOOM_PAD_PX, 1);
+    const k = Math.min(
+      Math.max(Math.min(availW / widthPx, availH / heightPx), fitParams.minK),
+      fitParams.maxK,
+    );
+    const cx = (x0 + x1) / 2;
+    const cy = (yTop + yBottom) / 2;
+    const target = d3.zoomIdentity.translate(fitParams.width / 2 - k * cx, fitParams.height / 2 - k * cy).scale(k);
+
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const selection = d3.select(svgEl);
+    if (reduceMotion) {
+      selection.call(zoom.transform, target);
+      return;
+    }
+    const startedAt = performance.now();
+    selection.transition().duration(FOCUS_ZOOM_MS).call(zoom.transform, target);
+    // Guaranteed arrival. d3 transitions are driven by requestAnimationFrame,
+    // which a backgrounded/non-compositing browser context can suspend
+    // indefinitely — the same hazard the projection-emit rAF handling above
+    // already documents. If that happens the flight silently never starts and
+    // the user lands on an unzoomed network with a highlight they cannot see.
+    // This settles the SAME transform through the SAME behaviour once the
+    // flight should have finished; when the transition did run it is a no-op
+    // (identical transform), and a user gesture in the meantime cancels it so
+    // we never yank the view back out from under them.
+    const settle = window.setTimeout(() => {
+      if (lastUserGestureRef.current > startedAt) return;
+      const current = zoomTransformRef.current;
+      if (Math.abs(current.k - target.k) < 1e-6 && Math.abs(current.x - target.x) < 1e-6 && Math.abs(current.y - target.y) < 1e-6) {
+        return;
+      }
+      d3.select(svgEl).interrupt().call(zoom.transform, target);
+    }, FOCUS_ZOOM_MS + 120);
+    return () => window.clearTimeout(settle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomBboxKey, network, sizeNonce]);
 
   return (
     <div className="relative w-full h-full">
@@ -1377,6 +1555,41 @@ export default function NetworkViewer({
         }
         g[data-elkey].el-selected {
           filter: drop-shadow(0 0 5px rgba(76, 141, 255, 0.85));
+        }
+
+        /* Approval-focus flash (2026-07-28). Same cascade trick as the
+           hover/selection rules above (CSS beats presentation attributes), and
+           the same two address spaces: g[data-elkey] element groups and
+           polyline[data-linkid] road fills. Listed AFTER the selection rules
+           so a focused element that also happens to be selected still reads
+           as "look here" rather than "you clicked this". */
+        polyline[data-linkid].focus-flash {
+          stroke: ${FOCUS_FLASH};
+          filter: drop-shadow(0 0 4px rgba(255, 62, 200, 0.75));
+        }
+        g[data-elkey].focus-flash :is(line, polyline, circle, polygon, path) {
+          stroke: ${FOCUS_FLASH};
+          stroke-opacity: 1;
+        }
+        g[data-elkey].focus-flash .el-fillable {
+          fill: ${FOCUS_FLASH};
+          fill-opacity: 0.7;
+        }
+        g[data-elkey].focus-flash {
+          filter: drop-shadow(0 0 6px rgba(255, 62, 200, 0.9));
+        }
+        /* A handful of cycles, then the class is swapped for the static one by
+           the page — never an endless blink (annoying, and hostile to anyone
+           sensitive to motion). */
+        @keyframes prism-focus-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+        .focus-flash-pulse {
+          animation: prism-focus-pulse 0.85s ease-in-out 0s infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .focus-flash-pulse { animation: none; }
         }
       `}</style>
       <svg ref={svgRef} className="w-full h-full bg-ink rounded-xl" />

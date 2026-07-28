@@ -2058,3 +2058,46 @@ screenshot: the details `<pre>` used the conventional dark-code-block idiom
 ramp for this theme (slate-950 IS #ffffff, slate-200 is 10%-opacity white) — it rendered
 as a white box with invisible white text. Wells are slate-50/100, body text the
 slate-600..800 ramp; comment left in place so the next author does not repeat it.
+
+---
+
+## 2026-07-28 — Approval-focus bbox is anchor-driven; /network handoff by URL
+
+**Context:** the mini-map shipped a day earlier was unusable — a conflict area rendered
+as a dot in the middle of most of the network. Two compounding causes, both measured
+live on the real Murdoch Drive dataset (1564×2846 m), conflict area 2140:
+_FocusAccumulator.add_link fed every focus link's WHOLE polyline extent into the bbox
+(212.3×54.7 m for two approach links), AND both consumers fit isotropically, so
+ApprovalFocusMap's PAD_RATIO=1.1 re-inflated the short axis by the aspect factor again
+— rendered 724.6×344.2 m, 43% of the network width.
+
+**Decision:** (1) separate "what is highlighted" from "what drives the bbox" — the
+accumulator now tracks an ANCHOR bbox alongside the extent; anchors win when present,
+extent is the anchorless fallback; `elements` unchanged so links stay drawn for context.
+A conflict area's anchor is DERIVED (it has no geometry in the .inpx) as the
+segment-segment crossing of its two link polylines, falling back to closest-approach
+midpoint because connectors often don't strictly intersect — 72 of Beijing's 224
+conflict areas, closest-approach min 0.0 / median 1.1 / max 6.2 m. (2) Span policy:
+_MIN_SPAN_M=15 kept as the degenerate guard, plus _ANCHOR_CONTEXT_M=50 (a junction
+footprint is ~45-60 m — live-measured: Beijing SC1's 52 heads span 45.1×59.1 m) and
+_MAX_SPAN_M=200. The cap eats the CONTEXT MARGIN first and never crops a real anchor —
+hiding half a fan-out target is worse than a wide view; routes stay extent-based and
+uncapped (a route IS long). (3) PAD_RATIO 1.1→0.15, map height 152→200px: context now
+lives in the bbox in metres, not as a multiple of whatever the target spans. (4) The
+approval→/network handoff travels as URL query params (fbox + capped fel type:id pairs,
+lib/networkFocus.ts) — reload-safe, shareable, wire contract unchanged. (5) The flash
+pulses ~4 cycles then SETTLES static, honours prefers-reduced-motion, retired by any
+diagram selection or explicit dismiss. (6) The programmatic zoom goes through the
+existing d3 zoom behaviour, with a gesture-aware settle timer because d3 transitions are
+rAF-driven and a suspended rAF would otherwise strand the user unzoomed on a highlight
+they cannot see.
+
+**Consequence:** conflict area 2140 renders 226.1×141.3 m instead of 724.6×344.2 m —
+3.2× linear, 7.8× areal, measured in the DOM (1.4154 viewBox-units/m read back from
+rendered polylines). All 224 Beijing conflict-area focuses now fall under the cap; 19
+previously did not (worst 385 m). Conflicts between two short connectors zoom OUT to a
+consistent 100 m window rather than showing featureless pavement — intentional. Three
+existing tests were retargeted: they pinned "the bbox contains every link point", which
+is exactly the defect. NetworkViewer gains one attribute (data-linkid) and two optional
+props; semantic-zoom redraw, ViewProjection channel and hover/selection recolor
+untouched. Suite 1201 passed; contract 11/12 with ZERO contract edits.
