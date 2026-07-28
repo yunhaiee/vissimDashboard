@@ -82,11 +82,27 @@ Prism will describe these to users as fixed-time plans.
 
 ## Also worth raising
 
-- **Turning-movement counts are in the wrong shape for us.** Observed counts live in
-  `Scenario TurningMovements_review.xlsx`, not the `real_counts.xlsx` template the validation
-  tab imports, so GEH validation is currently dark. Ask whether that layout is the Dochak
-  standard — if it is, we teach the importer to read it rather than asking engineers to
-  reformat.
+- **We cannot find any observed traffic counts in the bundle — this is the big one.**
+  We first assumed `Scenario TurningMovements_review.xlsx` held the field survey. It does not.
+  Its ten sheets are `AM_DoMin` / `AM_TMP1_final` / `AM_TMP2_final` / `PM_*` plus four `_Diff`
+  sheets — all *modelled scenarios*. Scanning every cell of all ten sheets for a header
+  containing observed / survey / count / actual / field / 실측 / 조사 returns exactly one road
+  name and one cell reference. The other two workbooks are the same story: `Travel Time
+  Comparison` has Base / DoMin / TMP1 / TMP2 columns (all model), and the `TT_*` sheets are raw
+  Vissim exports. The only genuine field data in the bundle is SCATS **signal timing** in
+  `STP Cal_AM/PM` (Calls / Actual Av / MAX / MIN) — real, but it is timing, not volumes.
+
+  *Ask, in this order:*
+  1. Does a turning-movement **count survey** exist for this project at all? Murdoch may be a
+     design/option study that was never calibrated against counts, in which case GEH-on-counts
+     simply does not apply here and we should say so in the UI rather than show an empty tab.
+  2. If it does exist, we need that file — whatever shape it is in.
+  3. The model's travel-time measurements are named `TomTomTravelTime…`, so observed probe
+     travel times almost certainly exist somewhere. Can we get the TomTom export? That alone
+     would light up the travel-time half of Category 1 validation.
+
+  We are NOT going to import modelled turning movements as if they were observed: GEH would
+  compare the model against itself and pass every time, which is worse than showing nothing.
 - **Stage-based programs are read-only in Prism by design.** We can report a stage program's
   cycle, offset, stage sequence and signal-group roster, but we deliberately do not
   synthesize per-group green windows, because `interstagesUsingMinDurations` compresses
