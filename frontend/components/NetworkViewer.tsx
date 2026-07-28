@@ -60,8 +60,11 @@ interface Props {
   // existing d3.zoom behaviour (never by writing the group transform behind
   // its back), so zoomTransformRef, the ViewProjection emit the vehicle
   // overlay consumes, and the semantic-zoom redraw all stay consistent.
-  // `nonce` lets the caller re-trigger the same region.
-  zoomToBbox?: { x_min: number; y_min: number; x_max: number; y_max: number; nonce?: number } | null;
+  // `nonce` lets the caller re-trigger the same region — string or number,
+  // whatever the caller's own re-trigger token happens to be (the approval
+  // handoff's is the URL's `fseq`); it is only ever stringified into the
+  // effect key below, never interpreted.
+  zoomToBbox?: { x_min: number; y_min: number; x_max: number; y_max: number; nonce?: number | string } | null;
 }
 
 // Road-surface palette — all drawn from the file's existing slate family; no new
@@ -79,17 +82,25 @@ const ACCENT = "#4c8dff";
 const ACCENT_HOVER = "#94bbff";
 
 // Approval-focus flash (2026-07-28) — "the agent wants you to look HERE",
-// arriving from the approval card's 네트워크에서 보기 button. Deliberately
-// outside every hue already spoken for in this file, because it has to read
-// as a DIFFERENT KIND of statement than any of them: the accent blue family
-// (ACCENT / ACCENT_HOVER) already means "you selected this / you are pointing
-// at this", SIGNAL_RED means signal + stop control, RSA_AMBER means reduced
-// speed, TTS_CYAN means travel-time gates, PED_FILL means pedestrian area,
-// and the whole green->amber->red ramp is LOS (lib/los.ts). That leaves the
-// magenta/violet quadrant completely unclaimed, and this vivid magenta clears
-// 6.3:1 contrast against the #0b0b0b ink background, so it stays legible on
-// the dark canvas at hairline widths.
-const FOCUS_FLASH = "#ff3ec8";
+// arriving from the approval card's 네트워크에서 보기 button.
+//
+// Was a magenta (#ff3ec8) chosen for maximum hue separation; changed to this
+// electric azure on direct user instruction after seeing it live. Blue is not
+// a free hue in this file — ACCENT means "you selected this" and ACCENT_HOVER
+// "you are pointing at this" — so the separation has to come from WITHIN the
+// blues instead of from the hue wheel: #00c2ff is a fully saturated,
+// cyan-leaning, markedly brighter blue than either (CIE76 ΔE 43.7 from ACCENT,
+// 23.5 from ACCENT_HOVER — both an order of magnitude past the ~2.3 JND, and
+// measurably so with both on screen at once), while TTS_CYAN is a desaturated
+// slate that shares nothing with it but the quadrant. The remaining "focus,
+// not selection" signal is carried by the pulse animation and the on-screen
+// banner, which selection has neither of. Contrast against the #0b0b0b ink
+// canvas is 9.5:1 (up from magenta's 6.3:1), so hairline-width road fills stay
+// legible.
+const FOCUS_FLASH = "#00c2ff";
+// Same colour as an rgb() triple, for the drop-shadow rgba()s below — kept
+// beside its hex so the two can never drift.
+const FOCUS_FLASH_RGB = "0, 194, 255";
 // Screen-px breathing room left around the focus bbox when zooming to it.
 const FOCUS_ZOOM_PAD_PX = 72;
 const FOCUS_ZOOM_MS = 650;
@@ -1565,7 +1576,7 @@ export default function NetworkViewer({
            as "look here" rather than "you clicked this". */
         polyline[data-linkid].focus-flash {
           stroke: ${FOCUS_FLASH};
-          filter: drop-shadow(0 0 4px rgba(255, 62, 200, 0.75));
+          filter: drop-shadow(0 0 4px rgba(${FOCUS_FLASH_RGB}, 0.75));
         }
         g[data-elkey].focus-flash :is(line, polyline, circle, polygon, path) {
           stroke: ${FOCUS_FLASH};
@@ -1576,7 +1587,7 @@ export default function NetworkViewer({
           fill-opacity: 0.7;
         }
         g[data-elkey].focus-flash {
-          filter: drop-shadow(0 0 6px rgba(255, 62, 200, 0.9));
+          filter: drop-shadow(0 0 6px rgba(${FOCUS_FLASH_RGB}, 0.9));
         }
         /* A handful of cycles, then the class is swapped for the static one by
            the page — never an endless blink (annoying, and hostile to anyone

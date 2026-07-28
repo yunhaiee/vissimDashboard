@@ -27,10 +27,64 @@ export type FocusBbox = { x_min: number; y_min: number; x_max: number; y_max: nu
  * from `type`, so shipping a baked label would go stale on a language switch). */
 export type FocusElementRef = { type: string; id: string };
 
-export type NetworkFocus = { bbox: FocusBbox; elements: FocusElementRef[] };
+export type NetworkFocus = {
+  bbox: FocusBbox;
+  elements: FocusElementRef[];
+  /** Per-click re-trigger token, "" when the URL carries none — see
+   * FOCUS_NONCE_PARAM below. Part of focusSignature(), so a second click on the
+   * SAME target reads as a new focus rather than as the one already dismissed. */
+  nonce: string;
+};
 
 export const FOCUS_BBOX_PARAM = "fbox";
 export const FOCUS_ELEMENTS_PARAM = "fel";
+
+// Re-trigger token (2026-07-28 defect: "the button only works once").
+//
+// `fbox`+`fel` describe WHICH place to look at, and are deliberately stable —
+// the same target always produces the same pair, which is what makes the URL
+// bookmarkable and reload-safe. But that stability is exactly what broke the
+// second click, in two places at once:
+//
+//   1. Router: clicking 네트워크에서 보기 while already parked on that exact
+//      /network?fbox=…&fel=… URL is a navigation to the current URL, so the
+//      app router has nothing to change and useSearchParams never re-emits.
+//   2. Page state: /network remembers the focus the user dismissed BY ITS
+//      SIGNATURE, so even a forced re-render of an identical focus would
+//      resolve to "already dismissed, stay quiet".
+//
+// One extra param fixes both, because it changes the URL *and* the signature:
+// `fseq` says nothing about the target, only "this is a fresh ask". It is
+// generated at CLICK time (never at render time — a render-time nonce would be
+// a hydration mismatch, and would still be stale by the second click).
+export const FOCUS_NONCE_PARAM = "fseq";
+
+// Hand-editable input: anything that is not a short opaque token is dropped
+// rather than trusted, so a mangled URL degrades to "no nonce" (= the pre-fix
+// behaviour, still perfectly usable) instead of poisoning the React keys and
+// DOM-attribute-adjacent strings this value flows into.
+const NONCE_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+
+// Monotonic within a page session; the timestamp prefix keeps it unique across
+// remounts and reloads (a per-component counter would restart at 0 and hand
+// out an already-used value, silently reviving the very defect this fixes).
+let nonceCounter = 0;
+
+/** A fresh re-trigger token. Call once per click — never memoize it. */
+export function nextFocusNonce(): string {
+  nonceCounter += 1;
+  return `${Date.now().toString(36)}${nonceCounter.toString(36)}`;
+}
+
+/** The same focus href, re-triggerable: identical target, guaranteed-new URL.
+ * Idempotent in the param (re-applying replaces rather than appends). */
+export function withFocusNonce(href: string, nonce: string = nextFocusNonce()): string {
+  const queryAt = href.indexOf("?");
+  const path = queryAt < 0 ? href : href.slice(0, queryAt);
+  const params = new URLSearchParams(queryAt < 0 ? "" : href.slice(queryAt + 1));
+  params.set(FOCUS_NONCE_PARAM, nonce);
+  return `${path}?${params.toString()}`;
+}
 
 // A whole signal controller's focus can carry 79 elements (live-measured:
 // Beijing SC1 = 52 signal heads + their links). Past a couple of dozen the
@@ -103,16 +157,19 @@ export function parseNetworkFocus(params: URLSearchParams | null | undefined): N
     elements.push({ type, id });
     if (elements.length >= MAX_FOCUS_URL_ELEMENTS) break;
   }
-  return { bbox: { x_min, y_min, x_max, y_max }, elements };
+  const rawNonce = (params.get(FOCUS_NONCE_PARAM) ?? "").trim();
+  const nonce = NONCE_PATTERN.test(rawNonce) ? rawNonce : "";
+  return { bbox: { x_min, y_min, x_max, y_max }, elements, nonce };
 }
 
 /** Stable identity for one focus, so an effect can re-run when the URL's
- * focus actually changes (including "same focus clicked twice" — the caller
- * appends its own nonce for that) without depending on object identity. */
+ * focus actually changes — INCLUDING "same target asked for a second time",
+ * which is what the leading nonce encodes (see FOCUS_NONCE_PARAM) — without
+ * depending on object identity. */
 export function focusSignature(focus: NetworkFocus | null): string {
   if (!focus) return "";
   const { x_min, y_min, x_max, y_max } = focus.bbox;
-  return `${round(x_min)},${round(y_min)},${round(x_max)},${round(y_max)}|${focus.elements
+  return `${focus.nonce}#${round(x_min)},${round(y_min)},${round(x_max)},${round(y_max)}|${focus.elements
     .map((el) => `${el.type}:${el.id}`)
     .join(",")}`;
 }

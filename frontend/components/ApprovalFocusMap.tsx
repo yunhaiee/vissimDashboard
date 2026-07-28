@@ -14,7 +14,8 @@
 // consistently with the rest of the app.
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import {
@@ -24,7 +25,13 @@ import {
   type AgentApprovalFocusElement,
   type NetworkData,
 } from "@/lib/api";
-import { buildNetworkFocusHref } from "@/lib/networkFocus";
+import { buildNetworkFocusHref, withFocusNonce } from "@/lib/networkFocus";
+
+// The route the focus handoff lands on. Re-triggering the focus while ALREADY
+// here is a view change, not a journey, so it replaces the history entry
+// instead of stacking one per click; arriving from elsewhere pushes normally so
+// Back still returns to where the user came from.
+const NETWORK_ROUTE = "/network";
 
 // Raised 152 -> 200 with the zoom fix (2026-07-28). The bbox is now anchored
 // on the actual target rather than the union of its links' extents, so the
@@ -203,6 +210,8 @@ export default function ApprovalFocusMap({
   action: AgentAction | undefined;
 }) {
   const { t } = useLanguage();
+  const router = useRouter();
+  const pathname = usePathname();
   const [network, setNetwork] = useState<NetworkData | null>(null);
   const [failed, setFailed] = useState(false);
   const bbox = focus?.bbox ?? null;
@@ -252,6 +261,23 @@ export default function ApprovalFocusMap({
   // The thumbnail deliberately has no zoom/pan chrome, so this button IS the
   // "I want to look properly" affordance.
   const networkHref = buildNetworkFocusHref(bbox, focus.elements);
+
+  // Plain left-click navigates ourselves, to a URL carrying a nonce minted
+  // RIGHT NOW (lib/networkFocus.ts's FOCUS_NONCE_PARAM explains why). Without
+  // this the second click on the same target is a no-op: the href is identical
+  // to the URL already in the address bar, so nothing navigates and nothing
+  // re-renders. Modifier/middle clicks are left alone so ctrl/cmd-click still
+  // opens the plain, nonce-free href in a new tab — that lands on a fresh page
+  // whose focus fires on mount, so it needs no re-trigger token.
+  const handleViewInNetwork = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (event.defaultPrevented) return;
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (!networkHref) return;
+    event.preventDefault();
+    const target = withFocusNonce(networkHref);
+    if (pathname === NETWORK_ROUTE) router.replace(target);
+    else router.push(target);
+  };
 
   return (
     <div className="mt-2">
@@ -319,6 +345,8 @@ export default function ApprovalFocusMap({
           <Link
             href={networkHref}
             prefetch={false}
+            onClick={handleViewInNetwork}
+            data-testid="approval-focus-network-link"
             className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
           >
             {t("네트워크에서 보기", "View in network", "ネットワークで見る")}

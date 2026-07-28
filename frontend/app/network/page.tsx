@@ -115,10 +115,16 @@ function NetworkPageContent() {
   // geometry this page already fetches, so nothing extra is fetched.
   const searchParams = useSearchParams();
   const urlFocus = useMemo(() => parseNetworkFocus(searchParams), [searchParams]);
+  // Carries the URL's per-click nonce (lib/networkFocus.ts's
+  // FOCUS_NONCE_PARAM), which is what makes "same target, asked again" a
+  // DIFFERENT key here — everything below is keyed off this, so re-asking
+  // revives a dismissed highlight, restarts the pulse and re-flies the zoom
+  // with no extra state of its own.
   const focusKey = focusSignature(urlFocus);
   // Which focus the user has already dismissed (by clicking something else in
   // the diagram, or the banner's own dismiss). Stored as the focus signature
-  // so arriving with a DIFFERENT focus revives the highlight.
+  // so arriving with a DIFFERENT focus — or the same one re-requested —
+  // revives the highlight.
   const [dismissedFocusKey, setDismissedFocusKey] = useState("");
   const activeFocus = urlFocus && dismissedFocusKey !== focusKey ? urlFocus : null;
 
@@ -153,11 +159,15 @@ function NetworkPageContent() {
 
   // ...and SETTLE into the static highlight after a handful of cycles — never
   // an endless blink (irritating, and hostile to anyone sensitive to motion).
+  // `pulse.key` is a dependency as well as `focusPulsing`: re-asking for the
+  // same target while it is STILL pulsing changes the key but not the flag, and
+  // without it the restarted pulse would inherit the first ask's remaining time
+  // and settle early.
   useEffect(() => {
     if (!focusPulsing) return;
     const timer = window.setTimeout(() => setPulse((prev) => ({ ...prev, active: false })), FOCUS_PULSE_MS);
     return () => window.clearTimeout(timer);
-  }, [focusPulsing]);
+  }, [focusPulsing, pulse.key]);
 
   // Focus elements -> the two address spaces NetworkViewer already stamps:
   // `data-linkid` on road fills, `data-elkey` on element glyph groups.
@@ -439,12 +449,17 @@ function NetworkPageContent() {
         </div>
       </section>
 
+      {/* Banner colour is NetworkViewer.tsx's FOCUS_FLASH literal. Tailwind
+          arbitrary values are compiled from the literal class string, so it
+          cannot be imported — and importing anything from NetworkViewer here
+          would defeat its `ssr: false` dynamic import above. Keep the two in
+          step by hand; both carry the same "#00c2ff" marker. */}
       {activeFocus && (
         <div
           data-testid="network-focus-banner"
-          className="mx-1 flex flex-wrap items-center gap-2 rounded-lg border border-[#ff3ec8]/50 bg-[#ff3ec8]/10 px-3 py-2 text-xs text-slate-600"
+          className="mx-1 flex flex-wrap items-center gap-2 rounded-lg border border-[#00c2ff]/50 bg-[#00c2ff]/10 px-3 py-2 text-xs text-slate-600"
         >
-          <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-full bg-[#ff3ec8]" />
+          <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-full bg-[#00c2ff]" />
           <span className="font-semibold text-slate-700">
             {t("승인 대상 강조", "Approval target highlighted", "承認対象をハイライト")}
           </span>
@@ -487,7 +502,11 @@ function NetworkPageContent() {
               onElementClick={handleElementClick}
               onProjectionChange={projection.set}
               focusFlash={focusFlash}
-              zoomToBbox={activeFocus?.bbox ?? null}
+              // The nonce rides along so re-asking for the SAME region re-flies
+              // the zoom: NetworkViewer keys that effect off a scalar built
+              // from the bbox numbers, which are by definition unchanged on a
+              // re-trigger.
+              zoomToBbox={activeFocus ? { ...activeFocus.bbox, nonce: activeFocus.nonce } : null}
             />
             {/* Canvas overlay: same box as the viewer's SVG, pointer-events
                 none so zoom/pan/click all still land on the SVG beneath it. */}

@@ -2101,3 +2101,36 @@ existing tests were retargeted: they pinned "the bbox contains every link point"
 is exactly the defect. NetworkViewer gains one attribute (data-linkid) and two optional
 props; semantic-zoom redraw, ViewProjection channel and hover/selection recolor
 untouched. Suite 1201 passed; contract 11/12 with ZERO contract edits.
+
+---
+
+## 2026-07-28 — Focus flash: blue, and re-triggerable
+
+**Context:** live rehearsal on the Murdoch model surfaced two defects in the
+approval-card → /network handoff shipped in e0a5f8f. (1) The flash was magenta
+`#ff3ec8`; the user asked for blue, which collides with the two blues the diagram
+already spends — `#4c8dff` selection and `#94bbff` hover. (2) The 네트워크에서 보기
+button worked exactly once: the second click on the same target was a no-op.
+
+**Decision:** (1) `FOCUS_FLASH = #00c2ff` — a fully saturated cyan-blue picked for
+SATURATION and GLOW separation rather than hue distance, since hue distance is the axis
+the request removed. Selection/hover are both desaturated periwinkles with no drop
+shadow; focus is pure cyan carrying a `drop-shadow(0 0 4px)` halo, so the three read
+apart even side by side on the same junction. (2) Root cause of the once-only button:
+the href was fully determined by the target, so a second click produced a URL byte-identical
+to the one already in the address bar — the app router has nothing to change and
+`useSearchParams` never re-emits. Fixed with `fseq`, a nonce minted at CLICK time (never
+at render time: a render-time nonce would re-fire the pulse on every unrelated re-render)
+and made the LEADING component of `focusSignature()`, so a repeat ask yields a new
+`focusKey` and the existing during-render pulse-restart path runs unchanged. Already on
+/network the button uses `router.replace` rather than `push`, so re-asking does not stack
+history entries. Modifier and middle clicks bypass the handler entirely and keep the
+plain nonce-free href, because those open a fresh page whose focus fires on mount and
+needs no re-trigger token. The parsed nonce is regex-validated, so a hand-mangled URL
+degrades to the pre-fix behaviour instead of throwing.
+
+**Consequence:** verified live against the Murdoch dataset — link 505 flashes with
+computed stroke `rgb(0, 194, 255)` and the cyan drop-shadow, pulse settling to static as
+designed. Frontend typecheck clean; contract 11/12 (the known base-model layout failure
+only), zero contract edits. The wire contract is unchanged: `fseq` is additive and
+optional, and `parseNetworkFocus` treats its absence as "no nonce".
