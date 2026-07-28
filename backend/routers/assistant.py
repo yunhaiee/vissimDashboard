@@ -679,6 +679,25 @@ async def _stream_agent_turn(
     def on_step(step: dict[str, Any]) -> None:
         step_queue.put(("step", dict(step)))
 
+    # RUN-PROGRESS UI (2026-07-28): run_simulation blocks inside
+    # tools_run._run_job_and_wait's poll loop for the run's ENTIRE duration
+    # (a multi-seed batch can be 10+ minutes) before toolkit.dispatch ever
+    # returns and an on_step "step" event can fire — that gap is exactly the
+    # "Preparing answer..." with zero indication bug this milestone fixes.
+    # tools_run.set_run_started_callback fires as soon as the job is
+    # SUBMITTED (before the poll loop starts), so the frontend learns the
+    # job_id immediately and can poll GET /api/simulations/{job_id} for
+    # seed-boundary progress on its own, independent of this NDJSON stream
+    # (which stays blocked on the same turn either way). A dedicated
+    # `run_started` event, not reusing the `ping` heartbeat: ping is a
+    # content-free liveness signal on a fixed interval (any payload on it
+    # would need the SAME poll-vs-push disambiguation this event exists to
+    # avoid), and a job can start at any offset inside that interval — an
+    # event tied to the actual moment of submission is simpler than piggy-
+    # backing on an unrelated timer.
+    def on_run_started(job_id: str) -> None:
+        step_queue.put(("run_started", {"job_id": job_id}))
+
     def run() -> None:
         try:
             # Bug 1 root-cause fix (see _session_turn_scope's docstring):
@@ -716,6 +735,7 @@ async def _stream_agent_turn(
                 # private resolver; see tools_run.py's module docstring). Reset
                 # in `finally` alongside tools_network's, same hygiene rationale.
                 tools_run.set_active_run_source(artifact_manager.working_path)
+                tools_run.set_run_started_callback(on_run_started)
                 if edit_session is not None:
                     set_active_edit_session(edit_session)
                 try:
@@ -744,6 +764,7 @@ async def _stream_agent_turn(
                         edit_session.close()
                     tools_network.set_active_inpx(None)
                     tools_run.clear_active_run_source()
+                    tools_run.clear_run_started_callback()
         except Exception as exc:  # noqa: BLE001 - surfaced as an apologetic `done`, never raised
             holder["error"] = exc
         finally:
@@ -778,6 +799,11 @@ async def _stream_agent_turn(
             last_emit = time.monotonic()
             if kind == "end":
                 break
+            if kind == "run_started":
+                yield encode_stream_event(
+                    {"type": "run_started", "stream_id": stream_id, "job_id": value.get("job_id")}
+                )
+                continue
             summary = value.get("summary", "")
             tool = value.get("tool", "")
             status = value.get("status", "")

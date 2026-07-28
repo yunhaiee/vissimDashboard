@@ -1956,3 +1956,40 @@ vs ~1900 rough capacity). findings_by_severity reserves an `info` bucket that is
 today (Tier stays refuse|warn, mapped to issue|warning). Full suite 1152 passed / 1
 skipped / known RAG failure only; contract suite 11/12 (one assertion added to the
 existing app-shell routes test rather than a new test).
+
+---
+
+## 2026-07-28 — Run-progress UI: seed-boundary bookkeeping + run_started event
+
+**Context:** a multi-seed agent run blocks the turn for its whole duration (10+ min) with
+nothing but "답변 준비 중…" — live-demo anxiety three separate times in one session.
+Investigation confirmed the exact mechanism: on_step fires only when toolkit.dispatch
+RETURNS, and run_simulation's dispatch blocks in _run_job_and_wait's poll loop until the
+last seed finishes. The agent path's only progress signal was progress=(i+1)/n set AFTER
+each seed completed. Also found latent: routers/simulations.py's module-level _jobs dict
+was mutated from worker threads with NO lock, and GET handlers returned the live
+reference — FastAPI's encoder could serialize a dict mid-mutation.
+
+**Decision:** progress is bookkept ONLY at seed boundaries and COM-call phase transitions
+(arming → running → collecting → done/error) in BOTH job runners — never by sampling
+inside RunContinuous (no SimBreakAt chunking; perturbing a run for a progress bar is out
+of scope per 00-EXECUTION-GUIDE §3.1). eta_s stays null until at least one seed actually
+completes, then median(completed durations) × remaining — never extrapolated from zero
+samples (the honesty rule). New module-global hook tools_run.set_run_started_callback
+(mirroring set_active_run_source) fires the instant a job is SUBMITTED, before the
+blocking wait, so _stream_agent_turn emits {"type":"run_started","job_id":…} — chosen
+over piggy-backing the ping heartbeat because ping is a fixed-interval content-free
+liveness signal and a job can start at any offset within it. Since run_simulation is
+tier="run" (gated), this fires on the /agent/approve stream in practice. The frontend
+polls GET /api/simulations/{job_id} independently of the still-blocked stream (polling
+survives stream hiccups) and renders AgentRunProgressCard: phase label, 시드 N/M, bar,
+elapsed, and "약 N분 남음" only when eta_s is real ("예상 시간 계산 중" otherwise).
+_jobs_lock now guards every read-modify-write; GETs read through _job_snapshot() copies.
+
+**Consequence:** the manual /simulation page deliberately does NOT reuse the new card —
+it is always single-seed and already has finer-grained live per-simulated-second progress
+over its WebSocket; seed-boundary granularity would be a downgrade. eta_s is permanently
+null for a single-seed interactive run (degenerate case of the honesty rule, not a gap).
+Verified sequence over 3 fake seeds: completed_seeds monotonic 0→1→2→3, exactly one
+"running" transition per seed, eta_s null until the first boundary then always real. Full
+suite 1163 passed / 1 skipped / known RAG failure only; contract 11/12.

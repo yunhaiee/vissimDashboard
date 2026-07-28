@@ -31,6 +31,17 @@ def job_dir(job_id: str) -> Path:
 
 def create_job_record(job_id: str, params: dict[str, Any]) -> dict[str, Any]:
     dataset = get_active_dataset()
+    # RUN-PROGRESS UI (2026-07-28): total_seeds is knowable up front from
+    # params for BOTH job paths -- the agent multi-seed path always carries
+    # a "random_seeds" list (services.agent.tools_run.run_simulation always
+    # supplies at least one entry, possibly [None]), the interactive
+    # single-run path never carries that key at all and is always exactly
+    # one seed. Everything else starts at its honest "nothing has happened
+    # yet" value and is advanced by the job-runner thread at SEED BOUNDARIES
+    # only (routers/simulations.py's _run_simulation/_run_agent_simulation_job)
+    # -- never per-simulation-step, never a SimBreakAt sampling hack.
+    random_seeds = params.get("random_seeds")
+    total_seeds = len(random_seeds) if isinstance(random_seeds, list) and random_seeds else 1
     record = {
         "id": job_id,
         "scenario_result_id": runtime_scenario_id(job_id),
@@ -44,6 +55,18 @@ def create_job_record(job_id: str, params: dict[str, Any]) -> dict[str, Any]:
         "completed_at": None,
         "dataset_revision": dataset.get("revision"),
         "dataset_filename": dataset.get("filename"),
+        "total_seeds": total_seeds,
+        "completed_seeds": 0,
+        "current_seed": None,
+        "phase": "queued",
+        "per_seed_durations": [],
+        # eta_s stays None until the job runner has at least one completed
+        # seed's real duration to work from -- a guess extrapolated from zero
+        # samples would just be a made-up number, not an estimate (this
+        # project's "refused edit beats wrong numbers" doctrine, applied to
+        # progress UI instead of a write).
+        "eta_s": None,
+        "last_update_at": None,
     }
     upsert_job_record(record)
     return record

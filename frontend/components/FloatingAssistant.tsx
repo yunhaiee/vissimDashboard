@@ -74,6 +74,15 @@ type FloatingMessage = {
    * an OLDER message even after a later "New conversation" reset. */
   wroteModel?: boolean;
   writeSessionId?: string;
+  /** RUN-PROGRESS UI (2026-07-28): set from the run_started stream event
+   * (lib/api.ts's AgentStreamEvent) the moment a run_simulation dispatch
+   * submits a job -- well before the turn's own stream resumes (it stays
+   * blocked on the same tool call until the run finishes). Drives
+   * AgentRunProgressCard, polled independently of this stream via
+   * fetchSimulationJob. Never cleared once set -- a message's own run is a
+   * fixed fact of that turn, and the card itself stops polling/rendering
+   * progress once the job reaches a terminal status. */
+  runJobId?: string;
 };
 
 type AssistantPageContext = {
@@ -690,6 +699,15 @@ export default function FloatingAssistant() {
               ),
             );
           },
+          // RUN-PROGRESS UI: the job now exists, well before the run (and
+          // this stream) finishes -- start showing live progress instead of
+          // the bare "Preparing answer..." spinner.
+          onRunStarted: (event) => {
+            if (!event.job_id) return;
+            setMessages((prev) =>
+              prev.map((message) => (message.id === assistantMessageId ? { ...message, runJobId: event.job_id } : message)),
+            );
+          },
           onChunk: (chunk) => {
             streamedContent += chunk;
             setRequestPhase("streaming");
@@ -833,6 +851,15 @@ export default function FloatingAssistant() {
                   ? { ...message, agentApproval: approvalStateFromEvent(event, message.agentApproval?.sessionId ?? "") }
                   : message,
               ),
+            );
+          },
+          // RUN-PROGRESS UI: a run-tier action is gated, so its actual job
+          // submission happens on THIS approve turn (not the original
+          // proposal) -- this is the call site that matters in practice.
+          onRunStarted: (event) => {
+            if (!event.job_id) return;
+            setMessages((prev) =>
+              prev.map((message) => (message.id === assistantMessageId ? { ...message, runJobId: event.job_id } : message)),
             );
           },
           onChunk: (chunk) => {
@@ -1179,13 +1206,28 @@ function FloatingChatMessage({
         {isUser ? (
           <div className="whitespace-pre-wrap">{message.content}</div>
         ) : !message.content.trim() && !message.response && !hasAgentSteps ? (
-          <AssistantInlineProgress phase={activePhase ?? "querying"} onCancel={onCancel} />
+          // RUN-PROGRESS UI: while a run_simulation dispatch is in flight for
+          // THIS message, message.runJobId is set (from the run_started
+          // stream event) well before any content/step narration arrives --
+          // show honest seed-by-seed progress instead of the bare
+          // "Preparing answer..." spinner that used to sit here for the
+          // run's entire duration (the reported live-demo anxiety).
+          message.runJobId && isActiveAssistant ? (
+            <AgentRunProgressCard jobId={message.runJobId} onCancel={onCancel} />
+          ) : (
+            <AssistantInlineProgress phase={activePhase ?? "querying"} onCancel={onCancel} />
+          )
         ) : (
           <>
             {hasAgentSteps && <AgentStepNarration steps={message.agentSteps!} />}
             <AssistantAnswerContent content={message.content} response={message.response} />
             {hasAgentSteps && <AgentRunDashboardHint steps={message.agentSteps} />}
-            {isActiveAssistant && <AssistantInlineProgress phase={activePhase ?? "streaming"} onCancel={onCancel} compact />}
+            {isActiveAssistant &&
+              (message.runJobId ? (
+                <AgentRunProgressCard jobId={message.runJobId} onCancel={onCancel} compact />
+              ) : (
+                <AssistantInlineProgress phase={activePhase ?? "streaming"} onCancel={onCancel} compact />
+              ))}
           </>
         )}
         {!isUser && message.agentApproval && (
@@ -1979,6 +2021,194 @@ function CompactSources({ sources }: { sources: AssistantSource[] }) {
       </div>
     </details>
   );
+}
+
+// RUN-PROGRESS UI (2026-07-28): honest per-seed progress + ETA for an
+// in-flight run_simulation dispatch, replacing the bare "Preparing
+// answer..." spinner that used to sit here for the run's ENTIRE duration
+// (10+ minutes for a multi-seed batch, with zero indication -- the
+// repeated live-demo "is it still running?" question this milestone
+// fixes). Polls GET /api/simulations/{jobId} (backend/routers/
+// simulations.py's job-status endpoint, SimulationJob's seed-boundary
+// fields in lib/api.ts) on a fixed interval, independently of the agent
+// NDJSON stream -- the stream stays blocked on this same turn until the
+// run reaches a terminal state, so polling (which survives a stream
+// hiccup) is the only channel that can move on its own. Mirrors
+// PromptSimulationStatus's identical polling shape (the legacy regex
+// pipeline's own simulation-progress widget below) rather than inventing a
+// new pattern, just against the richer M2.4 seed-boundary job fields.
+function AgentRunProgressCard({
+  jobId,
+  onCancel,
+  compact = false,
+}: {
+  jobId: string;
+  onCancel?: () => void;
+  compact?: boolean;
+}) {
+  const { t } = useLanguage();
+  const [job, setJob] = useState<SimulationJob | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
+  // Purely cosmetic: keeps the elapsed-time readout ticking between polls.
+  // Always derived from the server's own `started_at` below, never a
+  // locally guessed duration -- this doesn't affect eta_s honesty at all.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let intervalId: number | undefined;
+
+    async function refresh() {
+      try {
+        const nextJob = await fetchSimulationJob(jobId);
+        if (!active) return;
+        setJob(nextJob);
+        setPollError(null);
+        if ((nextJob.status === "done" || nextJob.status === "error") && intervalId !== undefined) {
+          window.clearInterval(intervalId);
+          intervalId = undefined;
+        }
+      } catch (caught) {
+        if (active) setPollError(caught instanceof Error ? caught.message : String(caught));
+      }
+    }
+
+    void refresh();
+    intervalId = window.setInterval(() => void refresh(), 2500);
+    return () => {
+      active = false;
+      if (intervalId !== undefined) window.clearInterval(intervalId);
+    };
+  }, [jobId]);
+
+  const status = job?.status ?? "queued";
+  const phase = job?.phase ?? "queued";
+  const totalSeeds = job?.total_seeds ?? null;
+  const completedSeeds = job?.completed_seeds ?? 0;
+  const etaS = job?.eta_s ?? null;
+  const startedAtMs = job?.started_at ? Date.parse(job.started_at) : null;
+  const elapsedS = startedAtMs !== null && !Number.isNaN(startedAtMs) ? Math.max(0, Math.round((nowTick - startedAtMs) / 1000)) : null;
+
+  const fractionFromSeeds = totalSeeds && totalSeeds > 0 ? completedSeeds / totalSeeds : null;
+  const progressFraction = fractionFromSeeds ?? Math.max(0, Math.min(1, job?.progress ?? 0));
+  const progressPercent = Math.round(progressFraction * 100);
+
+  const phaseLabel = agentRunPhaseLabel(phase, t);
+  const seedText =
+    totalSeeds && totalSeeds > 1
+      ? t(
+          `시드 ${completedSeeds}/${totalSeeds} 완료`,
+          `Seed ${completedSeeds}/${totalSeeds} complete`,
+          `シード ${completedSeeds}/${totalSeeds} 完了`,
+        )
+      : null;
+  // eta_s is null until the backend has at least one completed seed's real
+  // duration to work from -- this project's "refused edit beats wrong
+  // numbers" honesty doctrine, applied to progress UI. Never interpolate a
+  // guess here; show the honest "still figuring it out" copy instead.
+  const etaText =
+    etaS === null
+      ? t("예상 시간 계산 중", "Estimating time remaining", "所要時間を計算中")
+      : t(
+          `약 ${formatMinutesCeil(etaS)}분 남음`,
+          `About ${formatMinutesCeil(etaS)} min remaining`,
+          `残り約${formatMinutesCeil(etaS)}分`,
+        );
+
+  return (
+    <div
+      className={
+        compact
+          ? "mt-2 rounded-lg border border-slate-100 bg-slate-50/70 px-2.5 py-2"
+          : "rounded-lg border border-slate-100 bg-slate-50/70 px-2.5 py-2"
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-600">
+          <span
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+              status === "error" ? "bg-rose-500" : status === "done" ? "bg-emerald-500" : "animate-pulse bg-blue-500"
+            }`}
+          />
+          <span className="truncate font-semibold text-slate-700">{phaseLabel}</span>
+          {seedText && <span className="shrink-0 text-slate-400">· {seedText}</span>}
+        </div>
+        {onCancel && status !== "done" && status !== "error" && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold leading-none text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+          >
+            {t("취소", "Cancel", "キャンセル")}
+          </button>
+        )}
+      </div>
+
+      <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200">
+        <div
+          className={`h-1.5 rounded-full transition-all duration-500 ${status === "error" ? "bg-rose-400" : "bg-blue-500"}`}
+          style={{ width: `${progressPercent}%` }}
+        />
+      </div>
+
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
+        <span>
+          {elapsedS !== null
+            ? t(`경과 ${formatElapsedClock(elapsedS)}`, `Elapsed ${formatElapsedClock(elapsedS)}`, `経過 ${formatElapsedClock(elapsedS)}`)
+            : t("시작 중...", "Starting...", "開始中...")}
+        </span>
+        {status !== "error" && status !== "done" && <span>{etaText}</span>}
+      </div>
+
+      {status === "error" && (
+        <p className="mt-1.5 text-[11px] leading-5 text-rose-600">
+          {job?.error ?? pollError ?? t("시뮬레이션이 실패했습니다.", "The simulation failed.", "シミュレーションに失敗しました。")}
+        </p>
+      )}
+      {!job && pollError && (
+        <p className="mt-1.5 text-[11px] leading-5 text-slate-400">
+          {t(
+            "진행 상황을 불러오지 못했습니다. 계속 재시도합니다.",
+            "Couldn't load progress yet — retrying.",
+            "進行状況を取得できませんでした。再試行しています。",
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function agentRunPhaseLabel(phase: string, t: Translate): string {
+  switch (phase) {
+    case "arming":
+      return t("시뮬레이션 준비 중", "Preparing simulation", "シミュレーション準備中");
+    case "running":
+      return t("시뮬레이션 실행 중", "Running simulation", "シミュレーション実行中");
+    case "collecting":
+      return t("결과 수집 중", "Collecting results", "結果を収集中");
+    case "done":
+      return t("시뮬레이션 완료", "Simulation complete", "シミュレーション完了");
+    case "error":
+      return t("시뮬레이션 오류", "Simulation error", "シミュレーションエラー");
+    case "queued":
+    default:
+      return t("대기 중", "Queued", "待機中");
+  }
+}
+
+function formatMinutesCeil(seconds: number): number {
+  return Math.max(1, Math.ceil(seconds / 60));
+}
+
+function formatElapsedClock(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 function AssistantInlineProgress({

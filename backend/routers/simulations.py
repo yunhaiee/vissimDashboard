@@ -3,9 +3,12 @@ import asyncio
 import logging
 import os
 import shutil
+import statistics
 import sys
 import threading
+import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -26,6 +29,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/simulations", tags=["simulations"])
 
 _jobs: dict[str, dict] = {}
+# Guards every read-modify-write of `_jobs[job_id]` (the worker thread
+# mutates it via _update_job; request handlers read it via _job_snapshot).
+# Individual dict operations are already GIL-atomic, so this is not about
+# preventing a crash -- it's about (a) never handing a request handler a
+# LIVE reference into a dict the worker thread might mutate again before
+# jsonable_encoder finishes serializing it, and (b) making the "update, then
+# publish" sequence in _update_job a single atomic step instead of several.
+_jobs_lock = threading.Lock()
 
 
 class SimulationUnavailableError(RuntimeError):
@@ -84,7 +95,9 @@ def start_simulation_job(params: SimParams) -> dict:
 @router.get("")
 def list_simulations():
     records = {record["id"]: record for record in list_job_records()}
-    records.update(_jobs)
+    with _jobs_lock:
+        in_memory_snapshot = {job_id: dict(record) for job_id, record in _jobs.items()}
+    records.update(in_memory_snapshot)
     return sorted(records.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
@@ -95,7 +108,7 @@ def get_simulation_capabilities():
 
 @router.get("/{job_id}")
 def get_simulation(job_id: str):
-    job = _jobs.get(job_id) or get_job_record(job_id)
+    job = _job_snapshot(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
@@ -103,7 +116,7 @@ def get_simulation(job_id: str):
 
 @router.get("/{job_id}/results")
 def get_simulation_results(job_id: str):
-    job = _jobs.get(job_id) or get_job_record(job_id)
+    job = _job_snapshot(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["status"] != "done":
@@ -127,7 +140,7 @@ async def simulation_ws(websocket: WebSocket, job_id: str):
     await websocket.accept()
     try:
         while True:
-            job = _jobs.get(job_id) or get_job_record(job_id)
+            job = _job_snapshot(job_id)
             if not job:
                 await websocket.send_json({"error": "Job not found"})
                 break
@@ -163,7 +176,25 @@ def _run_simulation(job_id: str, params: SimParams):
         from services.vissim_com import VissimController
         from services.simulation_network_builder import build_simulation_network
 
-        _update_job(job_id, status="running", progress=0.0)
+        # RUN-PROGRESS UI (2026-07-28): this path is always exactly one seed
+        # (SimParams.random_seed is a single int), so completed_seeds/eta_s
+        # only ever move at the very end -- eta_s in particular stays None
+        # for this entire run (no seed has completed until the run itself
+        # is over), which is correct per the "never a guessed number"
+        # doctrine, not a gap. The fine-grained 0..1 `progress` field below
+        # (from the existing RunSingleStep loop, unchanged) is already
+        # honest, live progress for this single-seed case.
+        _update_job(
+            job_id,
+            status="running",
+            progress=0.0,
+            phase="arming",
+            completed_seeds=0,
+            current_seed=1,
+            per_seed_durations=[],
+            eta_s=None,
+            last_update_at=_utc_now_iso(),
+        )
         ctrl = VissimController()
         # attach_to_running=False is a hard safety rule for automation: the default
         # (GetActiveObject) can attach to a human's open Vissim GUI, and loading a
@@ -197,6 +228,9 @@ def _run_simulation(job_id: str, params: SimParams):
         for sc_no, offset in params.signal_offsets.items():
             ctrl.set_signal_offset(sc_no, offset)
 
+        seed_start_s = time.monotonic()
+        _update_job(job_id, phase="running", last_update_at=_utc_now_iso())
+
         total = float(params.sim_duration)
         previous_sim_sec = ctrl.get_sim_sec()
         # Run simulation step-by-step to update progress in the same thread.
@@ -225,11 +259,33 @@ def _run_simulation(job_id: str, params: SimParams):
 
             previous_sim_sec = current_sim_sec
 
-        _update_job(job_id, progress=1.0, status="done")
+        seed_duration_s = time.monotonic() - seed_start_s
+        _update_job(
+            job_id,
+            progress=1.0,
+            status="done",
+            phase="done",
+            completed_seeds=1,
+            current_seed=None,
+            per_seed_durations=[seed_duration_s],
+            # Never a guessed number, even at the very end -- see this
+            # function's own comment: with total_seeds=1, no seed EVER
+            # completes before the job itself is terminal, so there is
+            # nothing left to estimate. 0.0 here just means "nothing
+            # remains", not an extrapolation.
+            eta_s=0.0,
+            last_update_at=_utc_now_iso(),
+        )
         logger.info("Simulation %s completed", job_id)
     except Exception as exc:
         logger.exception("Simulation %s failed", job_id)
-        _update_job(job_id, status="error", error=_format_simulation_error(exc))
+        _update_job(
+            job_id,
+            status="error",
+            phase="error",
+            error=_format_simulation_error(exc),
+            last_update_at=_utc_now_iso(),
+        )
     finally:
         try:
             if ctrl is not None:
@@ -324,29 +380,89 @@ def _format_number_list(values, limit: int = 20) -> str:
     return ", ".join(str(value) for value in shown) + suffix
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _estimate_eta_s(per_seed_durations: list[float], remaining_seeds: int) -> float | None:
+    """ETA (seconds) for the remaining seeds of a job, or ``None`` when no
+    seed has completed yet.
+
+    Honesty over false precision (this project's doctrine, applied to
+    progress UI instead of a write): before the first seed finishes there is
+    no real duration sample to extrapolate from, so this returns ``None``
+    rather than a made-up number -- callers must render that as "calculating"
+    text, never as a guessed value. Once at least one seed has completed,
+    uses the MEDIAN of completed per-seed durations (robust to one
+    unusually slow/fast seed -- e.g. a cold Vissim COM launch on the very
+    first seed skewing a mean) times however many seeds remain.
+    """
+    if not per_seed_durations:
+        return None
+    if remaining_seeds <= 0:
+        return 0.0
+    typical_seed_s = statistics.median(per_seed_durations)
+    return typical_seed_s * remaining_seeds
+
+
 def _update_job(job_id: str, **updates):
-    record = _jobs.get(job_id) or get_job_record(job_id)
-    if record is None:
-        return
-    if updates.get("status") == "running" and not record.get("started_at"):
-        from datetime import datetime, timezone
+    with _jobs_lock:
+        record = _jobs.get(job_id) or get_job_record(job_id)
+        if record is None:
+            return
+        if updates.get("status") == "running" and not record.get("started_at"):
+            updates["started_at"] = _utc_now_iso()
+        if updates.get("status") in {"done", "error"}:
+            updates["completed_at"] = _utc_now_iso()
+        # Every value this module ever passes in `updates` is a freshly
+        # constructed object (a new list for per_seed_durations, a new str
+        # for phase/last_update_at, ...), never a container mutated in
+        # place -- so a snapshot taken by a concurrent reader right after
+        # this dict.update() (see _job_snapshot) can safely hold onto
+        # whatever nested list/dict it copied a reference to; a later
+        # _update_job call here will only ever swap that key to a NEW
+        # object, never mutate the old one out from under the reader.
+        record.update(updates)
+        _jobs[job_id] = record
+        should_persist = (
+            "status" in updates
+            or "error" in updates
+            or "started_at" in updates
+            or "completed_at" in updates
+            or "phase" in updates
+            or "completed_seeds" in updates
+            or updates.get("progress") in {0.0, 1.0}
+        )
+        persist_updates = dict(updates) if should_persist else None
+    # File persistence happens outside the in-memory lock -- it's disk I/O
+    # against a SEPARATE serialization (services.simulation_runs' own
+    # read-JSON/write-JSON registry file), not the `_jobs` dict this lock
+    # protects, so there is no correctness reason to hold `_jobs_lock` for
+    # its duration.
+    if persist_updates is not None:
+        update_job_record(job_id, **persist_updates)
 
-        updates["started_at"] = datetime.now(timezone.utc).isoformat()
-    if updates.get("status") in {"done", "error"}:
-        from datetime import datetime, timezone
 
-        updates["completed_at"] = datetime.now(timezone.utc).isoformat()
-    record.update(updates)
-    _jobs[job_id] = record
-    should_persist = (
-        "status" in updates
-        or "error" in updates
-        or "started_at" in updates
-        or "completed_at" in updates
-        or updates.get("progress") in {0.0, 1.0}
-    )
-    if should_persist:
-        update_job_record(job_id, **updates)
+def _job_snapshot(job_id: str) -> dict | None:
+    """Thread-safe read of one job record for a request handler: a shallow
+    COPY when the job is still in the in-memory `_jobs` registry (the worker
+    thread mutates that dict directly), or the registry-file record
+    otherwise (services.simulation_runs.get_job_record already returns a
+    freshly-parsed dict on every call, so no aliasing risk there).
+
+    Returning a copy (not the live `_jobs[job_id]` dict itself) matters
+    because FastAPI's response serialization happens AFTER this function
+    returns, on the same request-handling thread but with no lock held --
+    a live reference could be observed mid-mutation, or (worse, pre-fix)
+    have `dict.update()` change its key set out from under
+    `jsonable_encoder`'s iteration. See _update_job's own comment for why a
+    shallow copy is sufficient (every value swap uses a fresh object).
+    """
+    with _jobs_lock:
+        record = _jobs.get(job_id)
+        if record is not None:
+            return dict(record)
+    return get_job_record(job_id)
 
 
 def _format_simulation_error(exc: Exception) -> str:
@@ -548,14 +664,43 @@ def _run_agent_simulation_job(
     try:
         from services.vissim_com import VissimController
 
-        _update_job(job_id, status="running", progress=0.0)
+        # RUN-PROGRESS UI (2026-07-28): progress bookkeeping is updated only
+        # at SEED BOUNDARIES and phase transitions -- never by sampling
+        # inside RunContinuous (there is no COM hook for that without
+        # SimBreakAt-chunking the run, which docs/phase2/00-EXECUTION-GUIDE.md
+        # SS3.1 and this milestone's brief both forbid: perturbing run
+        # behavior for a progress bar is unacceptable). per_seed_durations
+        # is local to this thread (only the worker thread ever appends to
+        # it) and republished wholesale via _update_job on each boundary --
+        # see _update_job's own comment on why that's safe to read
+        # concurrently without a lock on the frontend-facing side.
+        _update_job(
+            job_id,
+            status="running",
+            progress=0.0,
+            phase="arming",
+            completed_seeds=0,
+            current_seed=None,
+            per_seed_durations=[],
+            eta_s=None,
+            last_update_at=_utc_now_iso(),
+        )
         work_dir = job_dir(job_id)
         work_dir.mkdir(parents=True, exist_ok=True)
         all_tables: set[str] = set()
         trajectory_paths: list[str] = []
         trajectory_max_s = _trajectory_max_s()
+        per_seed_durations: list[float] = []
+        total_seeds = len(random_seeds)
 
         for index, seed in enumerate(random_seeds):
+            seed_start_s = time.monotonic()
+            _update_job(
+                job_id,
+                phase="arming",
+                current_seed=index + 1,
+                last_update_at=_utc_now_iso(),
+            )
             seed_dir = work_dir / f"seed_{index:02d}"
             seed_dir.mkdir(parents=True, exist_ok=True)
             _clear_stale_result_dbs(seed_dir)
@@ -654,7 +799,14 @@ def _run_agent_simulation_job(
                 # Python loop costs minutes for 60 sim-seconds and is
                 # reserved for a future live-streaming feature, never
                 # batch/agent runs (docs/phase2/00-EXECUTION-GUIDE.md SS3.1).
+                # phase="running" brackets the ONE COM call that actually
+                # advances sim time -- there is no honest way to sample
+                # progress WITHIN it (see this function's own comment above
+                # the seed loop), so "running" simply covers "somewhere
+                # between 0% and 100% of this seed", nothing finer.
+                _update_job(job_id, phase="running", last_update_at=_utc_now_iso())
                 ctrl.vissim.Simulation.RunContinuous()
+                _update_job(job_id, phase="collecting", last_update_at=_utc_now_iso())
 
                 db_paths = sorted(seed_dir.rglob("*.db"), key=lambda p: p.stat().st_mtime)
                 if not db_paths:
@@ -697,12 +849,32 @@ def _run_agent_simulation_job(
                     )
                 ctrl = None
 
-            _update_job(job_id, progress=(index + 1) / len(random_seeds))
+            # Seed boundary: this seed is genuinely finished (COM already
+            # disconnected above) -- the one honest, zero-perturbation point
+            # to record its real duration and recompute eta_s from actual
+            # completed-seed samples (never a guess; see _estimate_eta_s).
+            seed_duration_s = time.monotonic() - seed_start_s
+            per_seed_durations.append(seed_duration_s)
+            completed_seeds = index + 1
+            remaining_seeds = total_seeds - completed_seeds
+            _update_job(
+                job_id,
+                progress=completed_seeds / total_seeds,
+                completed_seeds=completed_seeds,
+                current_seed=None,
+                per_seed_durations=list(per_seed_durations),
+                eta_s=_estimate_eta_s(per_seed_durations, remaining_seeds),
+                last_update_at=_utc_now_iso(),
+            )
 
         _update_job(
             job_id,
             status="done",
             progress=1.0,
+            phase="done",
+            current_seed=None,
+            eta_s=0.0,
+            last_update_at=_utc_now_iso(),
             result_tables=sorted(all_tables),
             # Reachable only when every seed's configure_network_performance_evaluation
             # call above succeeded (any failure raises out of the seed loop and lands
@@ -728,7 +900,13 @@ def _run_agent_simulation_job(
         logger.info("Agent simulation job %s completed (%d seed run(s))", job_id, len(random_seeds))
     except Exception as exc:
         logger.exception("Agent simulation job %s failed", job_id)
-        _update_job(job_id, status="error", error=_format_simulation_error(exc))
+        _update_job(
+            job_id,
+            status="error",
+            phase="error",
+            error=_format_simulation_error(exc),
+            last_update_at=_utc_now_iso(),
+        )
     finally:
         try:
             if ctrl is not None:

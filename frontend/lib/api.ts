@@ -707,6 +707,26 @@ export interface SimulationJob {
   // one seed's vehicle-record (.fzp) output was armed AND written; drives
   // the /network page's real-run playback source picker.
   trajectory_recorded?: boolean;
+  // RUN-PROGRESS UI (2026-07-28): seed-boundary progress bookkeeping --
+  // backend/services/simulation_runs.py's create_job_record seeds these
+  // defaults for every job (both the interactive single-run path and the
+  // agent multi-seed path), and backend/routers/simulations.py's job
+  // runners advance them at seed starts/completions and phase transitions
+  // ONLY -- never by sampling inside a running simulation (see that
+  // module's own comments). total_seeds is always 1 for the interactive
+  // path (SimParams.random_seed is a single int); eta_s is null until at
+  // least one seed has actually completed -- never a guessed number.
+  total_seeds?: number;
+  completed_seeds?: number;
+  /** 1-based index of the seed currently arming/running/being collected,
+   * or null between seeds / once the job is terminal. */
+  current_seed?: number | null;
+  phase?: "queued" | "arming" | "running" | "collecting" | "done" | "error" | string;
+  per_seed_durations?: number[];
+  /** Estimated seconds remaining, or null before the first seed completes
+   * (honesty over false precision -- see the field comment above). */
+  eta_s?: number | null;
+  last_update_at?: string | null;
 }
 
 export interface SimulationResultsResponse {
@@ -996,6 +1016,18 @@ export type AgentStreamEvent =
       type: "ping";
       stream_id?: string;
     }
+  // RUN-PROGRESS UI (2026-07-28): emitted the moment a run_simulation
+  // dispatch SUBMITS a job to the simulation job queue -- well before the
+  // run itself finishes (backend/routers/assistant.py's _stream_agent_turn,
+  // backend/services/agent/tools_run.py's set_run_started_callback). Lets
+  // the frontend start polling GET /api/simulations/{job_id} (SimulationJob's
+  // seed-boundary progress fields) independently of this stream, which stays
+  // blocked on the same turn until the run reaches a terminal state.
+  | {
+      type: "run_started";
+      stream_id?: string;
+      job_id?: string;
+    }
   | {
       type: "done";
       stream_id?: string;
@@ -1006,6 +1038,10 @@ export interface AgentStreamHandlers {
   onStatus?: (event: Extract<AgentStreamEvent, { type: "status" }>) => void;
   onStep?: (event: Extract<AgentStreamEvent, { type: "step" }>) => void;
   onApprovalRequest?: (event: Extract<AgentStreamEvent, { type: "approval_request" }>) => void;
+  /** RUN-PROGRESS UI: fires as soon as a run_simulation dispatch submits a
+   * job, long before the run (and this stream) finishes -- see
+   * AgentStreamEvent's "run_started" variant. */
+  onRunStarted?: (event: Extract<AgentStreamEvent, { type: "run_started" }>) => void;
   onChunk?: (text: string) => void;
 }
 
@@ -1456,6 +1492,10 @@ function handleAgentStreamLine(line: string, handlers: AgentStreamHandlers): Age
   }
   if (event.type === "approval_request") {
     handlers.onApprovalRequest?.(event);
+    return null;
+  }
+  if (event.type === "run_started") {
+    handlers.onRunStarted?.(event);
     return null;
   }
   if (event.type === "chunk") {

@@ -69,7 +69,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict
 
@@ -119,6 +119,45 @@ class NoActiveRunSourceError(RuntimeError):
     wrapped ``status: "ok"`` by ``toolkit.dispatch``, which would make the
     orchestrator treat a never-submitted run as a completed one) so
     ``toolkit.dispatch`` reports a genuine ``status: "error"`` envelope."""
+
+
+# ---------------------------------------------------------------------------
+# RUN-PROGRESS UI (2026-07-28): a "job just got submitted" notification hook
+# ---------------------------------------------------------------------------
+#
+# run_simulation (below) BLOCKS inside _run_job_and_wait's poll loop for the
+# entire run — for a multi-seed batch, that can be 10+ minutes — before this
+# tool function returns anything toolkit.dispatch/orchestrator can turn into
+# an on_step/NDJSON event. Without a separate hook, the frontend has no way
+# to learn the job_id (and therefore start polling GET /api/simulations/{id}
+# for seed-boundary progress) until the ENTIRE run is already over, which is
+# exactly the "Preparing answer... for 10 minutes" bug this milestone fixes.
+#
+# Mirrors set_active_run_source's module-global "current turn" pattern
+# exactly, rather than threading a callback parameter through
+# toolkit.dispatch's fixed (tool, params) -> envelope contract (which has no
+# seam for it — see this module's own docstring on why _active_run_source
+# is a module-global in the first place). routers/assistant.py sets this to
+# a queue-pushing closure for the duration of a turn and clears it in a
+# `finally`, exactly like tools_network.set_active_inpx and this module's
+# own set_active_run_source/clear_active_run_source.
+_on_run_started: Callable[[str], None] | None = None
+
+
+def set_run_started_callback(callback: Callable[[str], None] | None) -> None:
+    """Set (or clear, with ``None``) the callback invoked with a job's id
+    the moment it is submitted to the simulation job queue — BEFORE
+    :func:`_run_job_and_wait` starts polling for completion."""
+    global _on_run_started
+    _on_run_started = callback
+
+
+def clear_run_started_callback() -> None:
+    """Equivalent to ``set_run_started_callback(None)`` — named separately
+    so call sites read as intent, matching this module's
+    clear_active_run_source."""
+    global _on_run_started
+    _on_run_started = None
 
 
 def _require_active_run_source() -> Path:
@@ -188,6 +227,16 @@ def _run_job_and_wait(
         source_inpx=source_inpx, duration_s=duration_s, random_seeds=random_seeds
     )
     job_id = submitted["id"]
+
+    # RUN-PROGRESS UI: fire the "a job now exists" notification BEFORE the
+    # poll loop below blocks for the run's real duration. Best-effort, same
+    # swallow-and-log discipline as orchestrator.py's _emit_step's on_step
+    # call — a broken/raising callback must never fail the run itself.
+    if _on_run_started is not None:
+        try:
+            _on_run_started(job_id)
+        except Exception:
+            logger.exception("run_started callback raised; ignoring")
 
     deadline = time.monotonic() + timeout_s
     while True:
@@ -360,7 +409,9 @@ __all__ = [
     "NoActiveRunSourceError",
     "RunSimulationParams",
     "clear_active_run_source",
+    "clear_run_started_callback",
     "get_active_run_source",
     "run_simulation",
     "set_active_run_source",
+    "set_run_started_callback",
 ]
