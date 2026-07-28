@@ -90,6 +90,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import config
 from services.agent.toolkit import tool
 from services.inpx_parser import parse_network
+from services import signal_parser
 from services.signal_parser import parse_signal_controllers, parse_signal_programs
 
 ObjectType = Literal[
@@ -1403,6 +1404,140 @@ _UNSUPPORTED_PROGRAM_NOTE = (
     "cannot be read or edited here by design."
 )
 
+# ---------------------------------------------------------------------------
+# Reason-code -> explanation (Murdoch Drive finding, 2026-07-28)
+#
+# An empty list or an implausible number must arrive at the planner WITH the
+# reason attached, never as a bare blank or a bare figure. signal_parser
+# emits the machine-readable code; these render it into something the answer
+# can quote. Korean first per the project's user-facing-string rule -- this
+# output is read by the model that writes the Korean answer, so the exact
+# phrasing has to travel with the datum rather than be reinvented per answer.
+# ---------------------------------------------------------------------------
+
+_PROGRAMS_UNAVAILABLE_NOTES: dict[str, tuple[str, str]] = {
+    signal_parser.PROGRAMS_NO_BLOB: (
+        "이 제어기는 상세 신호 프로그램 데이터를 제공하지 않습니다: 내부 신호 프로그램 "
+        "데이터(intSupplyData)가 .inpx에 없습니다.",
+        "This controller provides no detailed signal-program data: it carries no embedded "
+        "intSupplyData block in the .inpx.",
+    ),
+    signal_parser.PROGRAMS_BLOB_UNREADABLE: (
+        "이 제어기는 상세 신호 프로그램 데이터를 제공하지 않습니다: 내장된 신호 프로그램 "
+        "블록을 해독할 수 없습니다 (파일 손상 가능).",
+        "This controller provides no detailed signal-program data: its embedded program "
+        "block could not be decoded (possible file corruption).",
+    ),
+    signal_parser.PROGRAMS_BLOB_EMPTY: (
+        "이 제어기는 상세 신호 프로그램 데이터를 제공하지 않습니다: 신호 프로그램 블록은 "
+        "있으나 정의된 프로그램이 하나도 없습니다.",
+        "This controller provides no detailed signal-program data: its program block exists "
+        "but defines no program at all.",
+    ),
+}
+
+_SG_SPLITS_UNAVAILABLE_NOTES: dict[str, tuple[str, str]] = {
+    signal_parser.SG_SPLITS_STAGE_BASED: (
+        "이 프로그램은 현시(stage) 기반이라 신호그룹별 녹색시간 구간을 따로 저장하지 "
+        "않습니다. 대신 stage_sequence(현시 전환 시각과 각 현시의 신호그룹)를 확인하세요. "
+        "녹색시간 값은 추정하지 않습니다.",
+        "This program is STAGE-based: it stores a stage/interstage sequence, not per-signal-"
+        "group green windows, so there is no green split to report. Read stage_sequence "
+        "(transition instants + which signal groups each stage holds green) instead. Green "
+        "windows are deliberately NOT estimated, and set_signal_green_split cannot target "
+        "this program.",
+    ),
+}
+
+_DATA_QUALITY_NOTES: dict[str, tuple[str, str]] = {
+    signal_parser.DQ_CYCLE_ABOVE_TYPICAL_MAX: (
+        "주기가 일반적인 도시 신호 범위를 크게 넘습니다 - 모델에 저장된 값 그대로이며, "
+        "실제 운영 계획이 아닐 수 있습니다(더미/미완성 프로그램 가능).",
+        "cycle far above the normal urban range -- reported exactly as the model stores it, "
+        "but it may not be a real operating plan (possible stub/placeholder program).",
+    ),
+    signal_parser.DQ_CYCLE_BELOW_TYPICAL_MIN: (
+        "주기가 일반적인 도시 신호 범위보다 짧습니다 - 값 확인이 필요합니다.",
+        "cycle below the normal urban range -- worth confirming against the source timing data.",
+    ),
+    signal_parser.DQ_NEAR_PERMANENT_GREEN: (
+        "한 신호그룹이 주기의 90% 이상 녹색입니다 - 사실상 상시 녹색으로, 교차로 운영 "
+        "계획으로 보기 어렵습니다.",
+        "one signal group holds green for 90%+ of the cycle -- effectively permanent green, "
+        "not a plausible intersection operating plan.",
+    ),
+    signal_parser.DQ_SINGLE_SIGNAL_GROUP: (
+        "이 프로그램에는 신호그룹이 하나뿐입니다.",
+        "this program contains only one signal group.",
+    ),
+}
+
+_CONTROLLER_FLAG_NOTES: dict[str, tuple[str, str]] = {
+    signal_parser.CONTROLLER_NO_SIGNAL_HEADS: (
+        "이 제어기를 참조하는 신호등(signal head)이 네트워크에 하나도 없습니다 - 프로그램을 "
+        "수정해도 차량 거동에 아무 영향이 없습니다.",
+        "no signal head in the network references this controller -- editing its programs "
+        "would have no effect on any vehicle.",
+    ),
+}
+
+
+def _annotate_signal_controller(controller: dict[str, Any]) -> dict[str, Any]:
+    """Attach human-readable notes for every machine-readable reason code on
+    a controller and its programs, leaving the codes themselves in place."""
+    out = dict(controller)
+    notes_ko: list[str] = []
+    notes_en: list[str] = []
+
+    reason = str(out.get("programs_unavailable_reason") or "")
+    if not out.get("programs"):
+        if reason in _PROGRAMS_UNAVAILABLE_NOTES:
+            ko, en = _PROGRAMS_UNAVAILABLE_NOTES[reason]
+            notes_ko.append(ko)
+            notes_en.append(en)
+        elif out.get("controller_type") not in ("FIXEDTIME", "FIXEDTIMESIMPLE"):
+            notes_en.append(_UNSUPPORTED_PROGRAM_NOTE)
+            notes_ko.append(
+                "이 제어기는 상세 데이터를 제공하지 않습니다: 제어 로직이 외부 파일"
+                "(.vap/.prbc 등)에 있거나 고정주기 방식이 아니어서 녹색시간을 읽거나 "
+                "편집할 수 없습니다."
+            )
+
+    for flag in out.get("controller_flags", []) or []:
+        pair = _CONTROLLER_FLAG_NOTES.get(str(flag))
+        if pair:
+            notes_ko.append(pair[0])
+            notes_en.append(pair[1])
+
+    programs: list[dict[str, Any]] = []
+    for program in out.get("programs", []) or []:
+        p = dict(program)
+        p_notes_ko: list[str] = []
+        p_notes_en: list[str] = []
+        split_reason = str(p.get("sg_splits_unavailable_reason") or "")
+        if not p.get("sg_splits") and split_reason in _SG_SPLITS_UNAVAILABLE_NOTES:
+            ko, en = _SG_SPLITS_UNAVAILABLE_NOTES[split_reason]
+            p_notes_ko.append(ko)
+            p_notes_en.append(en)
+        for code in p.get("data_quality", []) or []:
+            pair = _DATA_QUALITY_NOTES.get(str(code))
+            if pair:
+                p_notes_ko.append(pair[0])
+                p_notes_en.append(pair[1])
+        if p_notes_ko:
+            p["note_ko"] = " ".join(p_notes_ko)
+        if p_notes_en:
+            p["note"] = " ".join(p_notes_en)
+        programs.append(p)
+    if programs:
+        out["programs"] = programs
+
+    if notes_ko:
+        out["note_ko"] = " ".join(notes_ko)
+    if notes_en:
+        out["note"] = " ".join(notes_en)
+    return out
+
 
 class GetSignalProgramsParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1415,7 +1550,7 @@ class GetSignalProgramsParams(BaseModel):
 
 @tool(name="get_signal_programs", tier="read", provider="inspect", params=GetSignalProgramsParams)
 def get_signal_programs(params: GetSignalProgramsParams) -> dict[str, Any]:
-    """Return each signal controller's fixed-time signal PROGRAMS with per-signal-group green splits: program no/name/cycle_s, active_program_no (the program Vissim actually runs -- a controller can carry several), and each signal group's {sg_no, sg_name, green_start_s, green_end_s, amber_s, min_green_s, head_count}. green_start_s is when the group turns green and green_end_s is when it switches to red (a wrapping window with start > end is valid -- green spans the cycle boundary). Use this BEFORE set_signal_green_split: the write needs the exact (controller, program, signal group) triple, and edits normally target the ACTIVE program. Only FIXEDTIME/FIXEDTIMESIMPLE controllers carry inspectable programs; other types report an empty list with a note. Optionally filter by controller_no -- an unfiltered call on a large network returns only the first 10 controllers (with an explicit truncated flag and a hint)."""
+    """Return each signal controller's fixed-time signal PROGRAMS: program no/name/cycle_s/offset_s, active_program_no (the program Vissim actually runs -- a controller can carry several), and program_kind. Two program families exist and they report DIFFERENT things. (1) program_kind="signal_group"/"signal_group_simple": each signal group's green split {sg_no, sg_name, green_start_s, green_end_s, amber_s, min_green_s, head_count} -- green_start_s is when the group turns green, green_end_s when it switches to red (a wrapping window with start > end is valid, green spans the cycle boundary); these are the programs set_signal_green_split can edit. (2) program_kind="stage_based": the program is a STAGE sequence, so sg_splits is EMPTY BY DESIGN with sg_splits_unavailable_reason="STAGE_BASED_PROGRAM" -- read stage_sequence (transition_at_s + the stage taking over + the signal groups it holds green) and the controller's signal_groups roster instead; green windows are not stored and are never estimated, and green-split edits are not possible on these. Every program also carries data_quality: machine-readable flags (CYCLE_ABOVE_TYPICAL_MAX, NEAR_PERMANENT_GREEN, SINGLE_SIGNAL_GROUP_PROGRAM, ...) marking figures that are read correctly from the model but are NOT plausible operating plans -- report such a number only together with its caveat, never as plain fact. A controller with no programs always carries programs_unavailable_reason. note/note_ko spell out every code. Use this BEFORE set_signal_green_split: the write needs the exact (controller, program, signal group) triple and edits normally target the ACTIVE program. Optionally filter by controller_no -- an unfiltered call on a large network returns only the first 10 controllers (with an explicit truncated flag and a hint)."""
     controllers = _current_shadow_model()["signal_programs"]
 
     if params.controller_no is not None:
@@ -1430,14 +1565,7 @@ def get_signal_programs(params: GetSignalProgramsParams) -> dict[str, Any]:
     else:
         truncated = False
 
-    rendered = [
-        (
-            {**c, "note": _UNSUPPORTED_PROGRAM_NOTE}
-            if not c.get("programs") and c.get("controller_type") not in ("FIXEDTIME", "FIXEDTIMESIMPLE")
-            else c
-        )
-        for c in controllers
-    ]
+    rendered = [_annotate_signal_controller(c) for c in controllers]
 
     result: dict[str, Any] = {"count": total, "signal_programs": rendered}
     if not filtered:

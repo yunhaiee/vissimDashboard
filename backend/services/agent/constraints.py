@@ -4610,6 +4610,41 @@ def _check_signal_program_split_not_found(
             },
         )
 
+    if split is None and program.get("program_kind") == "stage_based":
+        # Murdoch Drive finding (2026-07-28): a STAGE-based program has no
+        # per-signal-group green window to edit at all -- saying "signal
+        # group not found" would send the planner hunting for a different
+        # sg_no that also does not exist. Name the real reason instead.
+        return Finding(
+            constraint_id="signal_program_split_not_found",
+            tier="refuse",
+            phase="preflight",
+            messages=_render(
+                "signal_program_split_not_found",
+                sc_no=sc_no,
+                program_no=program_no,
+                sg_no=sg_no,
+                reason_ko="이 프로그램은 현시(stage) 기반이라 신호그룹별 녹색시간 구간이 "
+                "존재하지 않습니다 - 현시 순서와 전환 시각으로만 정의되므로 여기서 "
+                "편집할 수 없습니다 (Vissim GUI의 신호 프로그램 편집기를 사용하세요)",
+                reason_en="this program is STAGE-based and has no per-signal-group green "
+                "window at all -- it is defined only by its stage sequence and transition "
+                "instants, so it cannot be edited here (use the Vissim GUI's signal program "
+                "editor instead)",
+                reason_ja="このプログラムはステージ(現示)ベースであり、信号グループごとの"
+                "青時間帯が存在しません - ステージ順序と切替時刻のみで定義されるため、"
+                "ここでは編集できません(Vissim GUIの信号プログラムエディタをご利用ください)",
+            ),
+            suggested_fix=None,
+            details={
+                "sc_no": sc_no,
+                "program_no": program_no,
+                "sg_no": sg_no,
+                "reason": "stage_based_program",
+                "sg_splits_unavailable_reason": program.get("sg_splits_unavailable_reason"),
+            },
+        )
+
     if split is None:
         candidates = [str(s.get("sg_no", "")) for s in program.get("sg_splits", [])]
         candidates_text = ", ".join(candidates) if candidates else "-"

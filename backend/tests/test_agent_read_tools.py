@@ -1720,3 +1720,127 @@ def test_get_signal_programs_rejects_unexpected_params(signal_program_fixture_in
 
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "invalid_params"
+
+
+# ---------------------------------------------------------------------------
+# STAGE-BASED programs at the TOOL boundary — Murdoch Drive finding
+# (2026-07-28). What the planner and the answer actually see: never a bare
+# blank, never a bare implausible number.
+# ---------------------------------------------------------------------------
+
+_STAGE_BLOB_TOOL = (
+    '<sc version="202001" id="6" name="" interstagesUsingMinDurations="true">'
+    '<sgs><sg id="1" name="SG1"/><sg id="2" name="SG2"/></sgs>'
+    "<progs/>"
+    "<stages>"
+    '<stage id="1" name="A"><activations>'
+    '<activation sg_id="1" activation="ON"/><activation sg_id="2" activation="OFF"/>'
+    "</activations></stage>"
+    '<stage id="2" name="B"><activations>'
+    '<activation sg_id="1" activation="OFF"/><activation sg_id="2" activation="ON"/>'
+    "</activations></stage>"
+    "</stages>"
+    "<interstageProgs>"
+    '<interstageProg id="1" cycletime="12000" fromStage="1" toStage="2"/>'
+    '<interstageProg id="2" cycletime="12000" fromStage="2" toStage="1"/>'
+    "</interstageProgs>"
+    "<stageProgs>"
+    '<stageProg id="41" cycletime="120000" offset="0" name="TMP2_AM_120s"><interstages>'
+    '<interstage display="1" begin="94000"/><interstage display="2" begin="113000"/>'
+    "</interstages></stageProg>"
+    "</stageProgs></sc>"
+)
+
+_STUB_BLOB_TOOL = (
+    '<sc version="202001" id="9" name="">'
+    '<sgs><sg id="1" name="SG1"/></sgs>'
+    "<progs>"
+    '<prog id="11" cycletime="375000" offset="0" name="BaseAM"><sgs>'
+    '<sg sg_id="1"><cmds><cmd display="3" begin="0"/><cmd display="1" begin="357000"/></cmds>'
+    '<fixedstates><fixedstate display="4" duration="4000"/></fixedstates></sg>'
+    "</sgs></prog></progs><stageProgs/></sc>"
+)
+
+
+@pytest.fixture()
+def murdoch_shaped_inpx(tmp_path: Path) -> Path:
+    stage_isd = _base64.b64encode(_STAGE_BLOB_TOOL.encode("utf-8")).decode("ascii")
+    stub_isd = _base64.b64encode(_STUB_BLOB_TOOL.encode("utf-8")).decode("ascii")
+    path = tmp_path / "murdoch_shaped.inpx"
+    path.write_text(
+        '<?xml version="1.0" encoding="utf-8"?><network><signalControllers>'
+        '<signalController no="6" name="SC-Alpha" type="FIXEDTIME" progNo="41" '
+        'cycTm="0" intSupplyData="%s"><sgs>'
+        '<signalGroup no="1" name="SG1" amber="4" minGreen="5" endRed="0" endGreen="0"/>'
+        '<signalGroup no="2" name="SG2" amber="4" minGreen="5" endRed="0" endGreen="0"/>'
+        "</sgs></signalController>"
+        '<signalController no="9" name="SC-Stub" type="FIXEDTIME" progNo="11" '
+        'intSupplyData="%s"><sgs>'
+        '<signalGroup no="1" name="SG1" amber="5" minGreen="10" endRed="0" endGreen="0"/>'
+        "</sgs></signalController>"
+        "</signalControllers>"
+        '<signalHeads><signalHead no="1" sg="6 1" lane="10 1"/>'
+        '<signalHead no="2" sg="6 2" lane="11 1"/>'
+        '<signalHead no="3" sg="9 1" lane="12 1"/></signalHeads>'
+        "</network>" % (stage_isd, stub_isd),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_get_signal_programs_stage_based_controller_is_not_a_silent_blank(
+    murdoch_shaped_inpx: Path,
+):
+    """Before the fix this controller returned ``programs: []`` with NO note
+    at all (the note branch only fired for non-FIXEDTIME types), so the agent
+    reported nothing and explained nothing."""
+    tools_network.set_active_inpx(murdoch_shaped_inpx)
+
+    envelope = _dispatch("get_signal_programs", controller_no="6")
+
+    controller = envelope["data"]["signal_programs"][0]
+    program = controller["programs"][0]
+    assert program["prog_no"] == "41"
+    assert program["program_kind"] == "stage_based"
+    assert program["cycle_s"] == 120.0
+    assert program["sg_splits"] == []
+    assert program["sg_splits_unavailable_reason"] == "STAGE_BASED_PROGRAM"
+    # The reason must arrive in words the answer can quote, Korean included.
+    assert "현시" in program["note_ko"]
+    assert "STAGE-based" in program["note"]
+    # ...and the useful data is there instead of the missing green windows.
+    assert [s["to_stage"] for s in program["stage_sequence"]] == ["B", "A"]
+    assert [s["signal_groups"] for s in program["stage_sequence"]] == [["2"], ["1"]]
+    roster = {sg["sg_no"]: sg for sg in controller["signal_groups"]}
+    assert roster["1"]["green_in_stages"] == ["A"]
+    assert roster["2"]["min_green_s"] == 5.0
+
+
+def test_get_signal_programs_implausible_cycle_ships_with_its_caveat(
+    murdoch_shaped_inpx: Path,
+):
+    """375 s cycle / 357 s green on one signal group: reported verbatim (we
+    never alter what the model says) but never as an unqualified fact."""
+    tools_network.set_active_inpx(murdoch_shaped_inpx)
+
+    envelope = _dispatch("get_signal_programs", controller_no="9")
+
+    program = envelope["data"]["signal_programs"][0]["programs"][0]
+    assert program["cycle_s"] == 375.0
+    assert program["sg_splits"][0]["green_end_s"] == 357.0
+    assert "CYCLE_ABOVE_TYPICAL_MAX" in program["data_quality"]
+    assert "NEAR_PERMANENT_GREEN" in program["data_quality"]
+    assert program["note_ko"] and program["note"]
+
+
+def test_get_signal_programs_stage_based_adds_no_flat_split_targets(
+    murdoch_shaped_inpx: Path,
+):
+    """A stage program has no editable (controller, program, signal group)
+    triple, so it must contribute NOTHING to the flat list guardrails and
+    the write path resolve against -- a target that cannot be written must
+    not look writable."""
+    shadow = tools_network.build_shadow_model(murdoch_shaped_inpx)
+
+    ids = {s["id"] for s in shadow["signal_program_splits"]}
+    assert ids == {"9.11.1"}

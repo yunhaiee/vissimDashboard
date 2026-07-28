@@ -3716,3 +3716,51 @@ def test_get_edit_time_only_constraints_excludes_every_dataset_checkable_id():
     edit_time_only_ids = {c.id for c in constraints_module.get_edit_time_only_constraints()}
     assert edit_time_only_ids.isdisjoint(checkable)
     assert edit_time_only_ids | checkable == {c.id for c in get_registry()}
+
+
+def test_signal_program_split_not_found_names_stage_based_as_the_real_reason():
+    """Murdoch Drive finding (2026-07-28): a STAGE-based program has no
+    per-signal-group green window at all. Falling through to the generic
+    "signal group not found" branch would send the planner hunting for a
+    different sg_no that also does not exist -- the refusal must name the
+    program family instead, and offer no candidates."""
+    stage_program = {
+        "prog_no": "11",
+        "name": "BaseAM",
+        "cycle_s": 131.0,
+        "program_kind": "stage_based",
+        "sg_splits": [],
+        "sg_splits_unavailable_reason": "STAGE_BASED_PROGRAM",
+        "stage_sequence": [],
+    }
+    shadow = _shadow_model(
+        signals=[
+            {
+                "sc_no": "6",
+                "sc_name": "SC-Alpha",
+                "cycle_time": 131,
+                "controller_type": "FIXEDTIME",
+                "phases": [],
+            }
+        ],
+        signal_programs=[
+            _signal_program_controller("6", [stage_program], active_program_no="11")
+        ],
+    )
+    action = _action(
+        "set_signal_green_split",
+        sc_no="6",
+        sg_no="1",
+        program_no="11",
+        green_start_s=10.0,
+        green_end_s=40.0,
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "signal_program_split_not_found"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details["reason"] == "stage_based_program"
+    assert matches[0].suggested_fix is None
+    assert "현시" in matches[0].messages["ko"]

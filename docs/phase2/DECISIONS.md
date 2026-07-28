@@ -2134,3 +2134,57 @@ computed stroke `rgb(0, 194, 255)` and the cyan drop-shadow, pulse settling to s
 designed. Frontend typecheck clean; contract 11/12 (the known base-model layout failure
 only), zero contract edits. The wire contract is unchanged: `fseq` is additive and
 optional, and `parseNetworkFocus` treats its absence as "no nonce".
+
+---
+
+## 2026-07-28 — Stage-based signal programs: a whole program family we could not read, and a stub we reported as fact
+
+**Context.** Cross-checking Prism against the project engineer's own timing workbook on the
+Murdoch Drive (Perth) production model (312 links, 6 controllers) produced two irreconcilable
+stories: `get_signal_programs` claimed SC 9 runs a 375 s cycle with one signal group green
+0→357 s, and reported *nothing at all* — an empty list with no reason — for the other five
+controllers, including the one the engineer's AM sheet is actually about. A static XML probe
+(`backend/tools/probe_murdoch_signals.py`, no COM) found that 5 of the 6 controllers are
+`type="FIXEDTIME"` with an EMPTY `<progs/>` and a populated `<stageProgs>` — a STAGE-BASED
+Vissig family (`<stages>` + `<interstageProgs>` + `<stageProgs>`) that unit ⑨ never met,
+because NOT ONE of the 25 PTV "Examples Demo" networks uses it. Two parser faults followed:
+(1) `<stageProg>`'s `<interstage display="N">` names the INTERSTAGE PROGRAM N, not stage N —
+reading it as a stage id mis-attributed 3 of SC 6's 5 phases, dropped a stage entirely, and
+produced a phase serving no signal groups at all on a sibling controller; (2) both phase paths
+read program index 0 rather than the `progNo`-active program. The 375 s, by contrast, is REAL:
+read correctly, stored verbatim in the model, and not an operable plan.
+
+**Decision.** Read the stage family and report exactly what it stores — per-`<stageProg>`
+cycle/offset and a stage sequence resolved through `interstageProg.toStage`, plus a
+per-controller signal-group roster — and NOTHING more. Per-signal-group green windows are NOT
+synthesized for stage programs: `interstagesUsingMinDurations="true"` compresses interstages to
+a length that is not statically derivable (SC 6 program 11 carries a nominally 16 s interstage
+between transitions 6 s apart, so subtracting the nominal figure yields NEGATIVE green), so
+`sg_splits` stays empty and ships `sg_splits_unavailable_reason="STAGE_BASED_PROGRAM"`;
+`set_signal_green_split` refuses these by name rather than with the old, misleading "command
+shape is not simple" (which would send the planner hunting for a different sg_no). Both phase
+paths now select the `progNo`-active program. Implausible figures are never altered or hidden —
+they ship with machine-readable `data_quality` flags (`CYCLE_ABOVE_TYPICAL_MAX`,
+`NEAR_PERMANENT_GREEN`, `SINGLE_SIGNAL_GROUP_PROGRAM`) plus ko/en prose, and a controller no
+`<signalHead>` references is flagged `NO_SIGNAL_HEADS`. An empty program list now always carries
+a reason code (`PROGRAMS_NO_BLOB` / `BLOB_NOT_DECODABLE` / `BLOB_HAS_NO_PROGRAMS`) — the old
+path only explained itself for non-FIXEDTIME types, so a FIXEDTIME controller with no readable
+programs rendered as a bare blank.
+
+**Consequence.** Stage-based controllers are readable for the first time — 5 of 6 on the first
+real client model. Correctness of the interstage reading is proven, not assumed, and the
+controller re-verified it independently after the unit: under the new reading ALL 28 Murdoch
+stage programs close into a consistent cycle (every `to_stage` equals the next `from_stage`)
+and ZERO stage entries serve an empty signal-group set — both of which fail under the old
+reading. SC 6's resulting phase intervals (41/20/35/29+6 s) match the engineer's field-measured
+green+intergreen (40.9/19.5/34.6/33.9 s) with min greens agreeing exactly (A=8, D=6, E=8, G=6),
+so the residual 131 s vs 122.18 s gap is a deliberate fixed-time fit to SCATS-actuated field
+data, not an error — no program anywhere in the model carries a ~122 s cycle. Green splits
+remain UNEDITABLE on stage programs by design. Beijing's reported phases change, to program 2 —
+the one it actually runs. Suite 1218 passed / 1 skipped / 1 known RAG failure, controller-run;
+all 25 PTV example networks still parse (129 controllers, 29 programs, 228 splits, 0 errors)
+with Beijing's splits byte-identical.
+
+**The wider lesson for the paper:** the PTV demo corpus that unit ⑨ — and every published
+Vissim-COM tool we surveyed — validates against does not contain the program family real
+consulting models use. Corpus coverage, not parser cleverness, was the binding constraint.

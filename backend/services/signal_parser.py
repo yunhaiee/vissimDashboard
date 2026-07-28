@@ -11,6 +11,52 @@ from typing import TypedDict
 
 CARDINAL_DIRECTIONS = ("north", "east", "south", "west")
 
+# ---------------------------------------------------------------------------
+# Machine-readable reason codes (Murdoch Drive finding, 2026-07-28)
+#
+# A read that returns an empty list, or a number nobody could operate a real
+# intersection with, must SAY WHY in a form the answer layer can branch on --
+# never a silent blank and never an unqualified figure. Every code below is
+# attached from directly-read XML evidence, never inferred.
+# ---------------------------------------------------------------------------
+
+#: ``sg_splits`` is empty because the program is STAGE-BASED (Vissig
+#: ``<stageProgs>``): the program stores a stage/interstage sequence, not
+#: per-signal-group green windows, so there is no green window to report.
+SG_SPLITS_STAGE_BASED = "STAGE_BASED_PROGRAM"
+
+#: ``programs`` is empty because the controller carries no ``intSupplyData``.
+PROGRAMS_NO_BLOB = "NO_INTSUPPLYDATA_BLOB"
+#: ``programs`` is empty because the base64 blob would not decode/parse.
+PROGRAMS_BLOB_UNREADABLE = "BLOB_NOT_DECODABLE"
+#: ``programs`` is empty because the blob decoded fine but holds neither a
+#: ``<prog>`` nor a ``<stageProg>`` -- a controller with no program at all.
+PROGRAMS_BLOB_EMPTY = "BLOB_HAS_NO_PROGRAMS"
+
+#: Program-level data-quality flags. These FLAG, they never refuse, alter or
+#: hide a value: the number stays exactly as the model stores it and the code
+#: tells the answer layer the figure needs qualifying rather than quoting.
+DQ_CYCLE_ABOVE_TYPICAL_MAX = "CYCLE_ABOVE_TYPICAL_MAX"
+DQ_CYCLE_BELOW_TYPICAL_MIN = "CYCLE_BELOW_TYPICAL_MIN"
+DQ_NEAR_PERMANENT_GREEN = "NEAR_PERMANENT_GREEN"
+DQ_SINGLE_SIGNAL_GROUP = "SINGLE_SIGNAL_GROUP_PROGRAM"
+
+#: Controller-level flag: the controller exists and carries programs, but NO
+#: ``<signalHead>`` in the network references it, so nothing it does can
+#: affect a single vehicle. Editing its timings is a guaranteed no-op --
+#: exactly the silent failure this project exists to surface.
+CONTROLLER_NO_SIGNAL_HEADS = "NO_SIGNAL_HEADS"
+
+#: Plausibility band for an urban fixed-time cycle. Deliberately generous:
+#: the point is to catch a stub/placeholder (Murdoch SC 9's 375 s), not to
+#: second-guess an engineer. The longest genuine program in the Murdoch
+#: production model is 159 s; PTV's own example networks top out at 130 s.
+_TYPICAL_CYCLE_MAX_S = 240.0
+_TYPICAL_CYCLE_MIN_S = 20.0
+#: A single signal group holding green for >= this share of the cycle is not
+#: an operating plan -- Murdoch SC 9 program 11 holds 357 s of a 375 s cycle.
+_NEAR_PERMANENT_GREEN_RATIO = 0.9
+
 # Standard Korean 8-SG convention: SG1-8 = N(1-2), E(3-4), S(5-6), W(7-8)
 _STANDARD_4WAY_MOVEMENTS: dict[str, tuple[str, str, str]] = {
     "1": ("north", "south", "straight"),
@@ -121,6 +167,7 @@ def _parse_one_sc(
         inner=inner,
         sg_names=sg_names,
         sg_head_counts=sg_head_counts,
+        active_prog_no=(sc_el.get("progNo") or "").strip() or None,
     )
 
     progs_el = inner.find("progs")
@@ -135,7 +182,17 @@ def _parse_one_sc(
             phases=stage_phases,
         )
 
-    prog = list(progs_el)[0]
+    # The program Vissim RUNS is the one ``progNo`` selects, not the first in
+    # the blob (Urban Intersection Beijing.CN: progNo="2" of progs {1, 2}, and
+    # the live SimBreakAt/SigState oracle in backend/tools/
+    # probe_signal_programs.py follows program 2). Reading progs[0] reported a
+    # plan the simulation never runs -- the same falsehood the stage path
+    # carried, closed here at the same time (chip task_eeca6837, 2026-07-28).
+    # Falls back to the first program when progNo names nothing, so a
+    # malformed progNo degrades to the old behavior rather than to no phases.
+    progs = list(progs_el)
+    active_prog_no = (sc_el.get("progNo") or "").strip()
+    prog = next((p for p in progs if (p.get("id") or "").strip() == active_prog_no), progs[0])
     cycle_ms = int(prog.get("cycletime", 0))
     cycle_s = cycle_ms // 1000
 
@@ -277,8 +334,37 @@ def parse_signal_programs(inpx_path: Path) -> list[dict[str, object]]:
       = green end, plus ``amber``/``redAmber``/``minGreen``), cycle on the
       controller's own ``cycTm``. Reported here as ONE synthesized program
       (``prog_no`` = the outer ``progNo``, "1" on every real example).
+    - ``type="FIXEDTIME"`` (Vissig) with an EMPTY ``<progs/>`` and a
+      populated ``<stageProgs>``: a STAGE-BASED program. Found first on the
+      real Murdoch Drive (Perth) production model, 2026-07-28 — 5 of its 6
+      controllers are this shape and NOT ONE of the 25 PTV example networks
+      is, which is why unit ⑨ never saw it. The program is a cycle-long
+      sequence of STAGES (``<stages>``, each naming which signal groups are
+      ON) joined by INTERSTAGES (``<interstageProgs>``, each with explicit
+      ``fromStage``/``toStage``); ``<stageProg>`` lists only the transition
+      instants as ``<interstage display="..." begin="...(ms)"/>`` where
+      ``display`` is the **interstageProg id, NOT a stage id** (proven: all
+      28 Murdoch stage programs form a closed, chain-consistent stage cycle
+      under that reading, and several ``display`` values exceed the
+      controller's stage count entirely). Reported here as one program per
+      ``<stageProg>`` with ``program_kind="stage_based"``, a resolved
+      ``stage_sequence``, and an EXPLICITLY LABELLED empty ``sg_splits``
+      (``sg_splits_unavailable_reason = "STAGE_BASED_PROGRAM"``) — there is
+      no per-signal-group green window stored to report, and the realized
+      interstage lengths are not statically derivable (``<sc
+      interstagesUsingMinDurations="true">`` compresses them: Murdoch SC 6
+      program 11 has a nominally 16 s interstage between transitions only
+      6 s apart). Green windows are therefore NOT synthesized for this
+      family — a labelled gap beats a plausible-looking guess.
     - every other controller type: ``programs`` is empty (external or
       non-fixed-time program logic — nothing verifiable to report).
+
+    A controller whose ``programs`` list is empty always carries a
+    ``programs_unavailable_reason`` (see the ``PROGRAMS_*`` codes above), and
+    every program carries a ``data_quality`` list of flags for figures that
+    must not be quoted unqualified (see the ``DQ_*`` codes). Both are
+    machine-readable on purpose: the answer layer branches on the code, never
+    on prose.
 
     Each program's ``sg_splits`` entry: ``{sg_no, sg_name, green_start_s,
     green_end_s, amber_s, red_amber_s, min_green_s, head_count, simple}``.
@@ -305,35 +391,265 @@ def parse_signal_programs(inpx_path: Path) -> list[dict[str, object]]:
         active_prog_no = (sc_el.get("progNo") or "").strip() or None
 
         programs: list[dict[str, object]] = []
+        unavailable_reason: str | None = None
+        signal_groups: list[dict[str, object]] | None = None
         if controller_type == "FIXEDTIME":
-            programs = _parse_fixedtime_blob_programs(sc_el, sg_names, head_counts)
+            programs, unavailable_reason, signal_groups = _parse_fixedtime_programs(
+                sc_el, sg_names, head_counts
+            )
         elif controller_type == "FIXEDTIMESIMPLE":
             programs = _parse_fixedtimesimple_program(sc_el, sg_names, head_counts, active_prog_no)
 
-        result.append(
-            {
-                "sc_no": sc_no,
-                "sc_name": (sc_el.get("name") or "").strip(),
-                "controller_type": controller_type,
-                "active_program_no": active_prog_no,
-                "programs": programs,
-            }
-        )
+        entry: dict[str, object] = {
+            "sc_no": sc_no,
+            "sc_name": (sc_el.get("name") or "").strip(),
+            "controller_type": controller_type,
+            "active_program_no": active_prog_no,
+            "programs": programs,
+        }
+        if not programs and unavailable_reason:
+            entry["programs_unavailable_reason"] = unavailable_reason
+        if signal_groups is not None:
+            # Only stage-based controllers get a roster: for <prog> families
+            # the same facts already ride on every sg_splits entry, and
+            # duplicating them would bloat a deliberately bounded read.
+            entry["signal_groups"] = signal_groups
+        # A controller no <signalHead> points at cannot influence a single
+        # vehicle; say so rather than letting a planner "fix" its timings.
+        if programs and not head_counts:
+            entry["controller_flags"] = [CONTROLLER_NO_SIGNAL_HEADS]
+        result.append(entry)
     return result
 
 
-def _parse_fixedtime_blob_programs(
+def _parse_fixedtime_programs(
     sc_el: ET.Element,
     sg_names: dict[str, str],
     head_counts: dict[str, int],
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], str | None, list[dict[str, object]] | None]:
+    """Dispatch a FIXEDTIME controller's blob to whichever program family it
+    actually uses. Returns ``(programs, unavailable_reason, sg_roster)``;
+    ``sg_roster`` is non-None only for the stage-based family."""
     isd = sc_el.get("intSupplyData", "")
     if not isd:
-        return []
+        return [], PROGRAMS_NO_BLOB, None
     try:
         inner = ET.fromstring(base64.b64decode(isd).decode("utf-8"))
     except Exception:
-        return []
+        return [], PROGRAMS_BLOB_UNREADABLE, None
+
+    progs_el = inner.find("progs")
+    if progs_el is not None and len(list(progs_el)) > 0:
+        return _parse_fixedtime_blob_programs(inner, sg_names, head_counts), None, None
+
+    stage_progs_el = inner.find("stageProgs")
+    if stage_progs_el is not None and len(list(stage_progs_el)) > 0:
+        programs, roster = _parse_stage_blob_programs(inner, sc_el, sg_names, head_counts)
+        return programs, None, roster
+
+    return [], PROGRAMS_BLOB_EMPTY, None
+
+
+def _stage_index(inner: ET.Element) -> dict[str, dict[str, object]]:
+    """``{stage_id: {"name", "sg_ids"}}`` from the blob's ``<stages>``.
+
+    ``sg_ids`` are the signal groups the stage holds GREEN — the activations
+    marked ``ON``; ``OFF`` ones are listed explicitly in the XML and are
+    dropped here."""
+    stages_el = inner.find("stages")
+    index: dict[str, dict[str, object]] = {}
+    for stage in list(stages_el) if stages_el is not None else []:
+        stage_id = (stage.get("id") or "").strip()
+        if not stage_id:
+            continue
+        activations = stage.find("activations")
+        sg_ids = [
+            (a.get("sg_id") or "").strip()
+            for a in (list(activations) if activations is not None else [])
+            if (a.get("activation") or "").upper() == "ON" and (a.get("sg_id") or "").strip()
+        ]
+        index[stage_id] = {"name": (stage.get("name") or "").strip() or stage_id, "sg_ids": sg_ids}
+    return index
+
+
+def _interstage_index(inner: ET.Element) -> dict[str, tuple[str, str]]:
+    """``{interstageProg_id: (fromStage, toStage)}``.
+
+    THE landmine of the stage-based family: a ``<stageProg>``'s
+    ``<interstage display="N">`` names the INTERSTAGE PROGRAM ``N``, not
+    stage ``N``. Reading ``display`` as a stage id silently mis-attributes
+    every phase to the wrong signal groups (and invents phases with no
+    signal groups at all when ``N`` exceeds the stage count) -- which is
+    exactly what this parser did to the Murdoch model before 2026-07-28."""
+    inter_el = inner.find("interstageProgs")
+    index: dict[str, tuple[str, str]] = {}
+    for item in list(inter_el) if inter_el is not None else []:
+        item_id = (item.get("id") or "").strip()
+        from_stage = (item.get("fromStage") or "").strip()
+        to_stage = (item.get("toStage") or "").strip()
+        if item_id and from_stage and to_stage:
+            index[item_id] = (from_stage, to_stage)
+    return index
+
+
+def _stage_transitions(
+    stage_prog: ET.Element, interstages: dict[str, tuple[str, str]]
+) -> list[tuple[int, str, str]]:
+    """``[(begin_ms, from_stage_id, to_stage_id), ...]`` in cycle order.
+
+    Entries whose ``display`` resolves to no known interstage program are
+    dropped rather than guessed at."""
+    interstages_el = stage_prog.find("interstages")
+    out: list[tuple[int, str, str]] = []
+    for item in list(interstages_el) if interstages_el is not None else []:
+        ref = (item.get("display") or "").strip()
+        pair = interstages.get(ref)
+        if pair is None:
+            continue
+        try:
+            begin_ms = int(item.get("begin", "0"))
+        except (TypeError, ValueError):
+            continue
+        out.append((max(0, begin_ms), pair[0], pair[1]))
+    out.sort(key=lambda row: row[0])
+    return out
+
+
+def _parse_stage_blob_programs(
+    inner: ET.Element,
+    sc_el: ET.Element,
+    sg_names: dict[str, str],
+    head_counts: dict[str, int],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Every ``<stageProg>`` as a program, plus the controller's signal-group
+    roster.
+
+    Only directly-read facts are emitted: the program's own cycle time and
+    offset, and the resolved stage sequence (transition instant + the stage
+    that takes over + which signal groups that stage holds green). Per-signal
+    -group green windows are NOT synthesized -- see this module's
+    ``parse_signal_programs`` docstring for why they are not statically
+    derivable -- so ``sg_splits`` stays empty and says why."""
+    stages = _stage_index(inner)
+    interstages = _interstage_index(inner)
+
+    programs: list[dict[str, object]] = []
+    stage_progs_el = inner.find("stageProgs")
+    for stage_prog in list(stage_progs_el) if stage_progs_el is not None else []:
+        try:
+            cycle_s: float | None = int(stage_prog.get("cycletime", "0")) / 1000.0
+        except (TypeError, ValueError):
+            cycle_s = None
+        try:
+            offset_s: float | None = int(stage_prog.get("offset", "0")) / 1000.0
+        except (TypeError, ValueError):
+            offset_s = None
+
+        sequence: list[dict[str, object]] = []
+        for begin_ms, from_stage, to_stage in _stage_transitions(stage_prog, interstages):
+            target = stages.get(to_stage, {"name": to_stage, "sg_ids": []})
+            source = stages.get(from_stage, {"name": from_stage, "sg_ids": []})
+            sg_ids = [str(x) for x in target["sg_ids"]]  # type: ignore[index]
+            sequence.append(
+                {
+                    "transition_at_s": begin_ms / 1000.0,
+                    "from_stage": str(source["name"]),
+                    "to_stage": str(target["name"]),
+                    # Ids only: the controller-level ``signal_groups`` roster
+                    # already carries every group's name/heads/min-green once,
+                    # and a stage program can have 6+ steps x 8 programs --
+                    # repeating names per step is pure output bloat (the
+                    # bounded-output discipline unit ⑨ set).
+                    "signal_groups": sg_ids,
+                }
+            )
+
+        programs.append(
+            {
+                "prog_no": (stage_prog.get("id") or "").strip(),
+                "name": (stage_prog.get("name") or "").strip(),
+                "cycle_s": cycle_s,
+                "offset_s": offset_s,
+                "program_kind": "stage_based",
+                "sg_splits": [],
+                "sg_splits_unavailable_reason": SG_SPLITS_STAGE_BASED,
+                "stage_sequence": sequence,
+                "data_quality": _program_data_quality(cycle_s, []),
+            }
+        )
+
+    # Roster: reported ONCE per controller (not once per program) because
+    # these attributes live on the controller's own <signalGroup> elements
+    # and are shared by every program.
+    stages_by_sg: dict[str, list[str]] = {}
+    for stage in stages.values():
+        for sg_id in stage["sg_ids"]:  # type: ignore[index]
+            stages_by_sg.setdefault(str(sg_id), []).append(str(stage["name"]))
+
+    roster: list[dict[str, object]] = []
+    outer_sgs = sc_el.find("sgs")
+    for sg in outer_sgs.findall("signalGroup") if outer_sgs is not None else []:
+        sg_no = (sg.get("no") or "").strip()
+        if not sg_no:
+            continue
+        roster.append(
+            {
+                "sg_no": sg_no,
+                "sg_name": sg_names.get(sg_no, "") or f"SG{sg_no}",
+                "head_count": head_counts.get(sg_no, 0),
+                "amber_s": _float_or_none(sg.get("amber")),
+                "red_amber_s": _float_or_none(sg.get("redAmber")),
+                "min_green_s": _float_or_none(sg.get("minGreen")),
+                "green_in_stages": stages_by_sg.get(sg_no, []),
+            }
+        )
+    return programs, roster
+
+
+def _float_or_none(raw: str | None) -> float | None:
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _program_data_quality(
+    cycle_s: float | None, splits: list[dict[str, object]]
+) -> list[str]:
+    """Machine-readable flags for figures the answer layer must qualify.
+
+    Nothing here changes a value or hides a program: Murdoch SC 9's 375 s
+    cycle IS what the .inpx stores and stays reported verbatim — the codes
+    exist so an answer can say "the model says 375 s, which is not an
+    operable plan" instead of "the cycle is 375 s"."""
+    flags: list[str] = []
+    if cycle_s is not None and cycle_s > 0:
+        if cycle_s > _TYPICAL_CYCLE_MAX_S:
+            flags.append(DQ_CYCLE_ABOVE_TYPICAL_MAX)
+        elif cycle_s < _TYPICAL_CYCLE_MIN_S:
+            flags.append(DQ_CYCLE_BELOW_TYPICAL_MIN)
+    if len(splits) == 1:
+        flags.append(DQ_SINGLE_SIGNAL_GROUP)
+    if cycle_s and cycle_s > 0:
+        for split in splits:
+            start = split.get("green_start_s")
+            end = split.get("green_end_s")
+            if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+                continue
+            green = (end - start) if end >= start else (cycle_s - start + end)
+            if green >= _NEAR_PERMANENT_GREEN_RATIO * cycle_s:
+                flags.append(DQ_NEAR_PERMANENT_GREEN)
+                break
+    return flags
+
+
+def _parse_fixedtime_blob_programs(
+    inner: ET.Element,
+    sg_names: dict[str, str],
+    head_counts: dict[str, int],
+) -> list[dict[str, object]]:
     progs_el = inner.find("progs")
     if progs_el is None:
         return []
@@ -344,6 +660,10 @@ def _parse_fixedtime_blob_programs(
             cycle_s: float | None = int(prog.get("cycletime", "0")) / 1000.0
         except (TypeError, ValueError):
             cycle_s = None
+        try:
+            offset_s: float | None = int(prog.get("offset", "0")) / 1000.0
+        except (TypeError, ValueError):
+            offset_s = None
         splits: list[dict[str, object]] = []
         prog_sgs = prog.find("sgs")
         for sg in (list(prog_sgs) if prog_sgs is not None else []):
@@ -396,7 +716,10 @@ def _parse_fixedtime_blob_programs(
                 "prog_no": (prog.get("id") or "").strip(),
                 "name": (prog.get("name") or "").strip(),
                 "cycle_s": cycle_s,
+                "offset_s": offset_s,
+                "program_kind": "signal_group",
                 "sg_splits": splits,
+                "data_quality": _program_data_quality(cycle_s, splits),
             }
         )
     return programs
@@ -450,7 +773,10 @@ def _parse_fixedtimesimple_program(
             "prog_no": active_prog_no or "1",
             "name": "",
             "cycle_s": cycle_s,
+            "offset_s": _float_or_none(sc_el.get("offset")),
+            "program_kind": "signal_group_simple",
             "sg_splits": splits,
+            "data_quality": _program_data_quality(cycle_s, splits),
         }
     ]
 
@@ -509,14 +835,49 @@ def _parse_stage_program_phases(
     inner: ET.Element,
     sg_names: dict[str, str],
     sg_head_counts: dict[str, int],
+    active_prog_no: str | None = None,
 ) -> tuple[int, list[PhaseInfo]]:
+    """Phase timeline for a STAGE-BASED controller (``<stageProgs>``).
+
+    Two things here were wrong until the Murdoch Drive finding (2026-07-28)
+    and are fixed together, because either alone still lies:
+
+    1. **Which program.** The reported plan must be the one Vissim RUNS —
+       the ``<stageProg>`` whose ``id`` equals the controller's ``progNo``,
+       not ``stageProgs[0]``. (The Murdoch model has up to EIGHT stage
+       programs per controller: Base/DoMin/TMP1/TMP2 x AM/PM.)
+    2. **Which stage.** ``<interstage display="N">`` is the id of an
+       ``<interstageProg>``, NOT of a ``<stage>``. Each interstage program
+       carries explicit ``fromStage``/``toStage``, so the stage that takes
+       over at instant ``begin`` is that program's ``toStage``. Reading
+       ``display`` as a stage id mis-attributed 3 of Murdoch SC 6's 5
+       phases to the wrong signal groups, dropped stage G entirely, and
+       produced a phase with NO signal groups on SC 7 (``display="6"``
+       against a 5-stage controller). Proof of the correct reading: under
+       it all 28 Murdoch stage programs resolve to a closed stage cycle
+       where every transition's ``toStage`` is the next one's ``fromStage``.
+
+    ``duration`` is the stage INTERVAL — from the instant its introducing
+    interstage begins to the instant the next one does — so it INCLUDES that
+    interstage (green + intergreen), not green alone. That is deliberate:
+    ``<sc interstagesUsingMinDurations="true">`` compresses interstages to a
+    length that is not statically derivable (Murdoch SC 6 program 11 has a
+    nominally 16 s interstage between transitions 6 s apart), so subtracting
+    the nominal figure would produce negative greens. Cross-checked against
+    the project engineer's own SCATS workbook for SC 6 AM: intervals
+    41/20/35/29+6 s vs the engineer's measured green+intergreen
+    40.9/19.5/34.6/33.9 s."""
     stage_progs = inner.find("stageProgs")
     if stage_progs is None or not list(stage_progs):
         return 0, []
 
-    first_prog = list(stage_progs)[0]
+    candidates = list(stage_progs)
+    chosen = next(
+        (p for p in candidates if (p.get("id") or "").strip() == (active_prog_no or "")),
+        candidates[0],
+    )
     try:
-        cycle_ms = int(first_prog.get("cycletime", "0"))
+        cycle_ms = int(chosen.get("cycletime", "0"))
     except (TypeError, ValueError):
         cycle_ms = 0
     cycle_s = max(0, cycle_ms // 1000)
@@ -527,18 +888,11 @@ def _parse_stage_program_phases(
     if not stage_groups:
         return cycle_s, []
 
-    interstages = first_prog.find("interstages")
-    transitions: list[tuple[str, int]] = []
-    if interstages is not None:
-        for item in list(interstages):
-            stage_id = (item.get("display") or "").strip()
-            if not stage_id:
-                continue
-            try:
-                begin_s = int(item.get("begin", "0")) // 1000
-            except (TypeError, ValueError):
-                continue
-            transitions.append((stage_id, max(0, begin_s)))
+    interstage_map = _interstage_index(inner)
+    transitions: list[tuple[str, int]] = [
+        (to_stage, begin_ms // 1000)
+        for begin_ms, _from_stage, to_stage in _stage_transitions(chosen, interstage_map)
+    ]
 
     phases: list[PhaseInfo] = []
     if transitions:
