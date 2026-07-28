@@ -132,7 +132,33 @@ review.
 - **Docs**: customer-facing README rewrite; TOOL-CATALOG reorganized into a
   scannable per-verb matrix.
 
-## To-do (forward plan, updated 2026-07-27)
+**Done overnight 07-27 → 07-28** (v2a queue 2 + the top three purchase-drivers):
+
+- **v2a queue units ⑦⑧⑨ shipped**, each live-verified against real Vissim:
+  vehicle-composition shares (RelFlow proven a RAW WEIGHT — Vissim never renormalizes
+  siblings, disproving placeholder constraint #36); desired-speed decision PAIRS (the
+  first atomic two-target write; guardrails gained paired-target + coupled-fields
+  machinery); signal GREEN SPLITS — the feared "blob writer" turned out to be the
+  COM-writable `IntSupplyData` attribute, verified with a SimBreakAt+SigState
+  BEHAVIOR ORACLE (the proof class CycTm never had). v2a 3/12 → 7/12; registry 48→58.
+- **Edited-model download**: per-version list + zip export (.inpx + sibling assets),
+  downloads-page card + in-chat link; closed the ArtifactManager sibling-assets gap
+  (allowlist built by surveying all 25 PTV example networks).
+- **모델 건강검진** (`/health`): the validation layer as a standalone parse-only
+  product surface — 14 constraints run dataset-wide, 47 declared edit-time-only
+  (derived from the registry so coverage can never overstate itself), ~31ms on the
+  real Beijing network, JSON export for the paper. First run found a GENUINE
+  beyond-cycle green in a shipped PTV example (131s window in a 130s cycle).
+  Registry 58→61.
+- **Run-progress card**: seed-boundary phase/ETA bookkeeping + a `run_started` stream
+  event; ETA stays null until a seed actually completes (honesty rule). Fixed a
+  latent race — job records were mutated by worker threads with no lock while GET
+  handlers returned the live dict.
+- **Approval-card mini-map**: `approval_focus.py` resolves each write tool's target to
+  coordinates (reusing guardrails' identity tables) and the card renders an oriented
+  thumbnail with the affected links highlighted — no more approving blind.
+
+## To-do (forward plan, updated 2026-07-28)
 
 ### 1. Paper-critical path (deadline ~09-05)
 
@@ -147,9 +173,9 @@ review.
 v2 and service upgrades are NOT deferred to post-paper; run as queued units)
 
 **Tool expansion** (docs/TOOL-CATALOG.md is the definitive matrix):
-- v2a remaining 9 verbs (compositions, desired-speed pairs/distributions,
-  priority-rule params, driving behavior duplicate-then-edit, dwell times,
-  green-splits, vehicle type properties)
+- v2a remaining 5 bullets (priority-rule gap/headway params, driving behavior via
+  duplicate-then-edit, dwell-time distributions, vehicle type properties) — the
+  overnight-queue pattern works; queue them a few at a time
 - v2b structural tier (lane/link closure, links & connectors, geometry, signal
   heads/detectors placement, measurement infra, PT, pedestrians)
 - v2c semantic tier (signal plan redesign, calibration search, OD/DA,
@@ -157,11 +183,11 @@ v2 and service upgrades are NOT deferred to post-paper; run as queued units)
 - Batch/compound edits (one approval for a validated multi-edit plan); edit
   rollback verb (artifact versions already exist)
 
-**Purchase-driver features** (product review 2026-07-27, ranked by buying power):
-- 모델 건강검진 — one-click health-check report running the full constraint catalog
-  on an uploaded .inpx (sells the validation layer standalone; near-free to build)
-- Approval-card mini-map — visualize the affected element/location before approving
-- Live run-progress UI — per-seed status + ETA (recurring demo pain)
+**Purchase-driver features** (product review 2026-07-27, ranked by buying power;
+top three SHIPPED 2026-07-28):
+- ✅ 모델 건강검진 — shipped 07-28 (`/health`)
+- ✅ Approval-card mini-map — shipped 07-28
+- ✅ Live run-progress UI — shipped 07-28
 - Audit-trail export — the agent action ledger as a 변경 이력 report (HWP/DOCX,
   교통영향평가-style formatting)
 - Scenario matrix — N alternatives × M demand levels overnight → comparison report
@@ -173,27 +199,80 @@ v2 and service upgrades are NOT deferred to post-paper; run as queued units)
 - Share links (read-only dashboard/replay) + reviewer/modeler roles on the
   approval gate
 
-**Deployment & persistence** (direction set 2026-07-27):
-- Target model: ON-PREM TEAM SERVER — one Windows box with Vissim + Prism inside the
-  customer's network, engineers connect via browser over LAN. Cloud SaaS rejected
-  near-term (Vissim licensing + confidential .inpx). LLM API stays the only external
-  call; on-prem LLM swap via the existing provider seam if security demands.
-- ① Edited-model download (FIRST — real user-facing gap today): per-version download
-  + "export current edited model" (.inpx + sibling assets like .layx — forces the
-  ArtifactManager sibling-assets fix), surfaced on the downloads page and in chat
-  after an edit.
+**Deployment & persistence** (direction 2026-07-27, detailed 2026-07-28)
+
+Target model: ON-PREM TEAM SERVER inside the customer's network; engineers connect by
+browser over LAN. Cloud SaaS rejected near-term (Vissim licensing + confidential .inpx).
+The LLM API is the only external call; on-prem LLM swap available via the provider seam.
+
+*Hard constraint (do not design around it):* **COM automation is local-only** — the
+process calling COM must sit on the same Windows machine as the Vissim install. A
+FLOATING license changes only where the *seat* is checked out (a CodeMeter license
+server), NOT where Vissim executes. Therefore the backend host is Windows; no Linux, no
+containers for the backend. Independently of licensing, the Vissim worker eventually
+wants its own box anyway — simulations are CPU-hungry and will make the shared web UI
+sluggish while running. That is why the worker abstraction is worth building BEFORE the
+deployment ladder, not after.
+
+Build order:
+- ✅ ① Edited-model download — shipped 2026-07-28 (per-version zip + sibling assets).
 - ② Project workspaces: replace the global active-dataset singleton (upload currently
   rmtree's the previous one) with projects/<id>/ containers holding datasets, runs,
-  chat sessions, artifact versions, audit log — "save my project and come back to my
-  history" becomes structural.
-- ③ Metadata layer: SQLite (WAL) for users/projects/runs/sessions/version-timeline
-  indexes; heavyweight artifacts stay files. Zero-ops, one-file backup, Postgres
-  migration path open if a cloud tier ever lands.
-- ④ Login + roles: session auth with hashed passwords (OIDC/SSO later if customer IT
-  requires; no social OAuth); modeler/reviewer/admin roles mapped onto the existing
-  approval gate.
+  chat sessions, artifact versions, audit log. **This is an ACCESS-CONTROL boundary,
+  not just organization** — the moment two users share a server, the global active
+  dataset is a client-confidentiality leak. Hence it precedes login.
+- ③ Metadata layer: SQLite in WAL mode — users, projects, memberships, datasets, runs,
+  sessions, messages, artifact versions, audit log. Heavyweight artifacts stay FILES
+  (never blob a .inpx into the DB); the DB stores paths + metadata. Threading care
+  required: the job runner mutates from worker threads → connection-per-thread (or a
+  small pool), WAL, and a busy_timeout, or expect sporadic "database is locked".
+  Postgres only when multiple backend processes/hosts are needed.
+- ④ Login + roles: session-cookie auth, argon2/bcrypt hashes, server-side sessions,
+  cookies HttpOnly + Secure + SameSite=Lax. Build this FIRST rather than SSO (zero
+  external dependency — waiting on customer IT to provision an app registration stalls
+  pilots), but keep the auth layer a seam so OIDC/SSO drops in later (MFA and, more
+  importantly, instant offboarding). Roles: modeler / reviewer / admin, mapped onto
+  the existing approval gate — approvals bound to a named user is what turns the gate
+  into a compliance control.
 - ⑤ Optional later: cloud view-only tier (dashboards, replay, health-check report —
   none need Vissim) with the runner staying on-prem.
+
+Serving shape: uvicorn + `next start` as supervised Windows Services (NSSM/sc.exe) —
+never dev servers, never --reload. One reverse proxy (IIS or Caddy) terminating TLS and
+serving frontend + API under a SINGLE ORIGIN — this removes CORS entirely and lets the
+frontend's multi-base fallback URL logic be deleted. HTTPS even on LAN (session cookies
+over plain HTTP inside a corporate network leak sideways).
+
+Security, in priority order:
+1. Authorization (project membership checks on every endpoint) — the real work; see ②.
+2. Append-only audit log: who proposed, who approved, what changed, which version
+   resulted. Doubles as the 변경 이력 export customers want (compliance = feature).
+3. Uploads are the hostile surface: extension/size validation, zip-bomb guard, and the
+   Vissim worker runs under a RESTRICTED Windows account with write access only to the
+   work dirs — never Administrator.
+4. Secrets + budget: ANTHROPIC_API_KEY server-side only with locked file permissions;
+   per-user LLM usage tracking/caps and per-user job caps so one person cannot burn the
+   month's budget or starve the queue.
+5. Extend the existing path-traversal discipline (regex + relative_to, already in the
+   download endpoints) to every new project-scoped file endpoint.
+
+Operational gotcha to solve BEFORE any real deployment: **disk**. One 600s/5-seed
+trajectory measured 44MB; multiplied by users and runs the drive fills in weeks and
+Vissim fails ugly on a full disk. Need a retention policy (auto-expire .fzp after N
+days, keep results + version snapshots) plus free-space monitoring.
+
+Staged rollout: pilot (3-5 users, one Windows box, session auth, SQLite, internal TLS,
+retention policy from day one) → hardening (roles + audit log, automated & TESTED
+backups, OIDC if IT wants, quotas) → scale-out (worker on its own machine).
+
+OPEN — must be answered before committing to variant A (ask TK / PTV Korea, get it in
+writing): node-locked vs floating and how many seats; whether terms permit server-side
+/ automated execution or restrict use to a named user at a licensed machine; whether COM
+is included in Dochak's license tier or is an add-on; whether a batch/server SKU exists;
+and whether customer sites have their own Vissim licenses (determines if the
+local-worker fallback is viable there). If the answer is node-locked-only, the fallback
+is a worker installed on each engineer's own PC pulling jobs from the central server —
+each person uses their own seat, and the licensing question stops being load-bearing.
 
 **Platform/service upgrades:**
 - Live rendering during a run (step-streaming mode alongside batch RunContinuous)

@@ -2,7 +2,7 @@
 
 The definitive list of what the AI agent can do in Vissim, by verification tier.
 Doctrine: **a verb ships only when its verification method does** (00-EXECUTION-GUIDE §4).
-Updated 2026-07-27 (post-Phase-2 + v2 queue units ①–⑨ + conflict-area read filters).
+Updated 2026-07-28 (post-Phase-2 + v2 queue units ①–⑨ + health-check surface).
 
 Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned · 🚫 permanent refusal
 
@@ -156,6 +156,20 @@ the PAIRS and distribution-assignment line items).**
 - ⬜ Run video export (presentation)
 
 ---
+
+## Related surface — model health check (not an agent verb)
+
+`GET /api/health-check` + the `/health` page run the SAME constraint catalog
+dataset-wide, parse-only (no COM, no Vissim install needed). Shipped 2026-07-28.
+
+- **14 of 61 constraints** are dataset-capable — either shadow-model-only or evaluated
+  per-object by feeding each object's CURRENT value in as if it were a proposed write
+- **47 are edit-time-only** (need proposed params or a run result) and are listed as
+  such in the report, derived from the registry so coverage can never be overstated
+- 3 constraints are health-check-exclusive (`phase="dataset"`): evaluation-config
+  disarmed, vehicle-input Cont-chain contradictions, orphan desired-speed-distribution
+  references
+- ~31ms on the real Beijing example; JSON export for paper artifacts
 
 ## 🚫 Impossible by design (permanent, documented refusals)
 
