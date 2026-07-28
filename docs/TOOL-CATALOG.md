@@ -2,7 +2,8 @@
 
 The definitive list of what the AI agent can do in Vissim, by verification tier.
 Doctrine: **a verb ships only when its verification method does** (00-EXECUTION-GUIDE §4).
-Updated 2026-07-28 (post-Phase-2 + v2 queue units ①–⑨ + health-check surface).
+Updated 2026-07-28 (post-Phase-2 + v2 queue units ①–⑨ + health-check surface +
+stage-based signal-program reader).
 
 Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned · 🚫 permanent refusal
 
@@ -30,6 +31,19 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ✅ Signal programs (`get_signal_programs`, v2a unit ⑨)
   - Per controller: programs (active marked), per-SG green windows/amber/min-green;
     10-controller cap + `controller_no` filter
+  - 2026-07-28: reads BOTH Vissig program families. `program_kind="signal_group"`
+    is the `<progs>` shape unit ⑨ shipped; `program_kind="stage_based"` is the
+    `<stages>` + `<interstageProgs>` + `<stageProgs>` shape found on 5 of the 6
+    controllers in the first real client model — and present in NONE of the 25 PTV
+    example networks
+  - Stage programs report cycle/offset/stage sequence + a signal-group roster, but
+    `sg_splits` stays empty with `sg_splits_unavailable_reason="STAGE_BASED_PROGRAM"`:
+    `interstagesUsingMinDurations` compresses interstages by an amount that is not
+    statically derivable, so a synthesized green window would be a guess
+  - Never presents an implausible figure as fact: `data_quality` flags
+    (`CYCLE_ABOVE_TYPICAL_MAX`, `NEAR_PERMANENT_GREEN`, `SINGLE_SIGNAL_GROUP_PROGRAM`,
+    `NO_SIGNAL_HEADS`) ride along with ko/en prose, and an empty program list always
+    carries a reason code instead of rendering as a bare blank
 
 ### Edits
 - ✅ Vehicle input volume
@@ -83,6 +97,9 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
   - Behavior-oracle-verified (SimBreakAt + SigState flip), not just readback/XML
   - Vissim silently accepts beyond-cycle values AND conflicting greens (live-proven)
     — `green_split_outside_cycle` refuses, the always-on confirm educates
+  - ⚠️ STAGE-BASED programs are read-only by design (2026-07-28): the verb refuses
+    with `stage_based_program` rather than the old, misleading "command shape is not
+    simple", which sent the planner hunting for a different `sg_no` that did not exist
 
 ### Runs
 - ✅ Multi-seed simulation with auto-armed evaluation (all four evaluation types)
