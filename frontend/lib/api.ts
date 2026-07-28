@@ -932,18 +932,50 @@ export interface AgentWarning {
   message: string;
 }
 
+// Approval-card mini-map (v2 UX unit, 2026-07-28): one element the pending
+// write touches -- an id the client re-resolves against the network
+// geometry it already fetches for the /network page (backend/services/
+// agent/approval_focus.py's own docstring: this never ships raw
+// coordinates itself, to keep the approval payload small and avoid a
+// second, drifting copy of the same geometry data). `type` "link" resolves
+// against NetworkData.links; every other type resolves against the
+// matching NetworkElements list (e.g. "vehicle_input" ->
+// elements.vehicle_inputs). "conflict_area" carries no geometry of its own
+// (conflict areas have none) -- it exists only so the caption can name the
+// conflict area itself alongside the two links drawn for it.
+export interface AgentApprovalFocusElement {
+  type: "link" | "conflict_area" | "signal_head" | "vehicle_input" | "des_speed_decision";
+  id: string;
+  label: string;
+}
+
+// backend/services/agent/approval_focus.py's `resolve_focus` return shape.
+// `bbox` is `null` exactly when nothing resolved (unsupported tool, no
+// working copy yet, or a target genuinely absent from this network) -- the
+// UI's contract is to render no map at all in that case, never an error
+// (ApprovalFocusMap.tsx). `coordinate_note` is a short, English,
+// NOT-user-facing diagnostic tag -- logs/debugging only, never shown.
+export interface AgentApprovalFocus {
+  elements: AgentApprovalFocusElement[];
+  bbox: { x_min: number; y_min: number; x_max: number; y_max: number } | null;
+  coordinate_note: string;
+}
+
 // M2.3: the full payload backend/routers/assistant.py emits both from the
 // dedicated `approval_request` NDJSON event and, identically, under
 // `done.response.approval` (a client that only inspects `done` still gets
 // it -- see that router's own docstring). `assumptions` is always `[]`
 // today -- no structured assumption signal exists yet from the planner --
 // but is part of the wire shape so the UI can render it once it starts
-// populating, at no future contract-breaking cost.
+// populating, at no future contract-breaking cost. `focus` (v2 UX unit) is
+// additive -- always present (never raises server-side), possibly the
+// null-bbox "no focus" shape.
 export interface AgentApproval {
   approval_id: string;
   actions: AgentAction[];
   warnings: AgentWarning[];
   assumptions: string[];
+  focus?: AgentApprovalFocus;
 }
 
 export interface AgentQueryResponse {

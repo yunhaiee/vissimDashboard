@@ -122,7 +122,7 @@ import services.agent.tools_edit  # noqa: F401
 import services.agent.tools_metrics  # noqa: F401
 import services.agent.tools_network  # noqa: F401
 import services.agent.tools_run  # noqa: F401
-from services.agent import complexity, session_store
+from services.agent import approval_focus, complexity, session_store
 from services.agent.gates import ApprovalRequired, signature
 from services.agent.guardrails import GuardrailEngine, GuardrailReport
 from services.agent.planner import (
@@ -1163,11 +1163,28 @@ def run_agent_turn(
                             "warnings": warning_payload,
                         },
                     )
+                    # Approval-card mini-map (v2 UX unit): best-effort "what
+                    # does this touch on the map" hint, resolved from THIS
+                    # SAME shadow model / working copy preflight just ran
+                    # against, so it reflects any earlier-this-session edits.
+                    # approval_focus.resolve_focus never raises (see its own
+                    # docstring) -- a map-drawing bug can degrade this to
+                    # "no focus" but must never block the approval pause
+                    # itself, so no try/except is needed at this call site.
+                    focus = approval_focus.resolve_focus(
+                        decision.tool,
+                        decision.params,
+                        shadow_model=approval_preflight_model,
+                        inpx_path=(
+                            artifact_manager.working_path if artifact_manager is not None else None
+                        ),
+                    )
                     pending_approval = {
                         "tool": decision.tool,
                         "params": decision.params,
                         "summary": decision.summary,
                         "warnings": warning_payload,
+                        "focus": focus,
                     }
                     _emit_step(
                         steps,

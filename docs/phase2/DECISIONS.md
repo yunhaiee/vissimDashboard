@@ -1993,3 +1993,36 @@ null for a single-seed interactive run (degenerate case of the honesty rule, not
 Verified sequence over 3 fake seeds: completed_seeds monotonic 0→1→2→3, exactly one
 "running" transition per seed, eta_s null until the first boundary then always real. Full
 suite 1163 passed / 1 skipped / known RAG failure only; contract 11/12.
+
+---
+
+## 2026-07-28 — Approval-card mini-map (map-focus resolver)
+
+**Context:** a live demo showed the approval card describing its target in TEXT ONLY
+("충돌구간 '3'은 링크 3와 링크 12 사이에…") — the user could not tell WHICH intersection
+#3 was and approved essentially blind. Approving blind is where trust dies.
+
+**Decision:** new services/agent/approval_focus.py — a never-raising
+resolve_focus(tool, params, shadow_model, inpx_path) that REUSES guardrails'
+_WRITE_TARGET_FIELD_SPEC/_PAIRED_EXTRA_TARGET_SPEC identity tables (imported, not
+re-derived) to find each write tool's target, then resolves coordinates from the shadow
+model (link polylines, conflict-area link pairs, route link_seq) and parse_network_elements
+(signal heads / vehicle inputs / des-speed decisions). Objects with no coordinates of
+their own (conflict areas, vehicle compositions, des-speed entries — verified: no x/y in
+the .inpx) resolve via what REFERENCES them. Fan-out capped at 12; bbox has a 15 m
+degenerate-span floor. Attached additively as a TOP-LEVEL "focus" on the approval payload
+(sibling of actions/warnings, following the warnings precedent) rather than inside
+action_entry, so existing `actions == [...]` exact-equality tests needed no change.
+Frontend ApprovalFocusMap.tsx renders a static 152px SVG thumbnail — muted links, accent
+target with glow, localized caption — reusing NetworkViewer's projection conventions
+(uniform fit, y-flip) WITHOUT importing or refactoring it; fetchNetwork with a
+module-level cache. Renders nothing when bbox is null or the fetch fails: a map failure
+must never block an approval.
+
+**Consequence:** set_sim_duration/set_random_seed/run_simulation have no single-element
+target and render no map by design (not a gap). Live-verified against the real
+SouthStreet_Base.inpx (conflict area 2140 → links 515/10969, bbox x[123.6,335.9]
+y[-6395.9,-6341.2], non-degenerate) — which exposed that a link and its auto-generated
+connector can share an IDENTICAL display name ("South St EB"), so the conflict-area
+caption uses link IDs, not names. Full suite 1186 passed / 1 skipped / known RAG failure
+only; contract 11/12 unchanged.

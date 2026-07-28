@@ -886,6 +886,18 @@ async def _stream_agent_turn(
         # against the field now and it starts populating later at no
         # contract-breaking cost.
         assumptions: list[str] = []
+        # Approval-card mini-map (v2 UX unit): the focus hint
+        # orchestrator.py's ApprovalRequired branch already resolved
+        # (services.agent.approval_focus.resolve_focus — never raises, so
+        # this key is always present, possibly the "no focus" shape).
+        # Attached at the PAYLOAD level (sibling of actions/warnings), not
+        # inside action_entry — orchestrator.py only ever proposes ONE
+        # action per pause (same "singular, not a list" limitation
+        # `warnings` already documents above), and keeping action_entry
+        # byte-unchanged means the existing exact-equality assertions on
+        # `approval_event["actions"]` (test_agent_approval_endpoint.py,
+        # test_agent_run_approval_endpoint.py) needed no changes at all.
+        focus = result.pending_approval.get("focus")
         pending_file_payload = {
             "approval_id": approval_id,
             "created_at": time.time(),
@@ -899,6 +911,7 @@ async def _stream_agent_turn(
             "signatures": [signature(action_entry["tool"], action_entry["params"])],
             "actions": [action_entry],
             "warnings": warnings,
+            "focus": focus,
         }
         # P7: replayed verbatim by the approve turn, for the same reason
         # `message`/`language` are — the approved re-run must reconstruct the
@@ -915,6 +928,7 @@ async def _stream_agent_turn(
             "actions": [action_entry],
             "warnings": warnings,
             "assumptions": assumptions,
+            "focus": focus,
         }
         yield encode_stream_event(
             {"type": "approval_request", "stream_id": stream_id, **approval_payload}

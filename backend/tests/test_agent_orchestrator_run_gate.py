@@ -157,6 +157,11 @@ def test_propose_gate_pauses_for_run_tier_with_approval_request(tmp_path: Path):
         "params": {"duration_s": 300, "random_seeds": [1, 2, 3, 4, 5]},
         "summary": "5분 시뮬레이션 실행 제안",
         "warnings": [],
+        # Approval-card mini-map (v2 UX unit): a whole-network run has no
+        # single element target -- run_simulation is deliberately absent
+        # from approval_focus.py's resolver table, so this is the
+        # deterministic "gracefully unsupported" shape, not a bug.
+        "focus": {"elements": [], "bbox": None, "coordinate_note": "unsupported_tool"},
     }
     assert "run_simulation" in result.answer
 

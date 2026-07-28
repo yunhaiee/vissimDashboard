@@ -174,12 +174,24 @@ def test_propose_gate_pauses_with_approval_request_and_traces_user_confirm(tmp_p
     assert artifact_manager.version == 0  # nothing was ever saved
     assert len(provider.calls) == 1  # the planner was asked exactly once
 
+    # Approval-card mini-map (v2 UX unit): popped out and checked separately
+    # -- its OWN correctness (per-tool resolution, bbox math, the graceful
+    # no-coordinates path) is test_agent_approval_focus.py's job; this test's
+    # job is orchestrator WIRING, i.e. that a "focus" key reaches
+    # pending_approval at all and points at the real target. Input 1 has a
+    # real, resolvable location on the demo network (link 101), so the wired
+    # call must find it.
+    focus = result.pending_approval.pop("focus", None)
     assert result.pending_approval == {
         "tool": "set_vehicle_input_volume",
         "params": {"input_no": "1", "volume": 600.0},
         "summary": "교통량을 600으로 변경 제안",
         "warnings": [],
     }
+    assert focus is not None and focus["bbox"] is not None
+    assert {"type": "vehicle_input", "id": "1"} in [
+        {"type": e["type"], "id": e["id"]} for e in focus["elements"]
+    ]
     assert "set_vehicle_input_volume" in result.answer
     assert result.state.history == []  # nothing dispatched, nothing to log there
 

@@ -5,6 +5,7 @@ import type { CSSProperties, FormEvent, KeyboardEvent, PointerEvent as ReactPoin
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import ApprovalFocusMap from "@/components/ApprovalFocusMap";
 import { useLanguage } from "@/components/LanguageProvider";
 import {
   AgentApprovalError,
@@ -17,6 +18,7 @@ import {
   streamAgentQuery,
   streamAssistant,
   type AgentAction,
+  type AgentApprovalFocus,
   type AgentStep,
   type AgentWarning,
   type AssistantQueryResponse,
@@ -45,6 +47,13 @@ type AgentApprovalState = {
   assumptions: string[];
   resolution: AgentApprovalResolution;
   errorMessage?: string;
+  /** Approval-card mini-map (v2 UX unit): the map-focus hint from the SAME
+   * wire event actions/warnings/assumptions come from -- see
+   * AgentApprovalFocus's own doc comment in lib/api.ts. Undefined only for
+   * an approval reconciled from a pre-this-unit event shape; ApprovalFocusMap
+   * already treats a missing/null bbox as "render nothing", so no separate
+   * guard is needed here. */
+  focus?: AgentApprovalFocus;
 };
 
 type FloatingMessage = {
@@ -227,7 +236,13 @@ function localizeHeading(heading: string, lang: string): string {
 // known). `resolution` always starts "pending" here; only
 // runAgentApproval below ever advances it.
 function approvalStateFromEvent(
-  event: { approval_id?: string; actions?: AgentAction[]; warnings?: AgentWarning[]; assumptions?: string[] },
+  event: {
+    approval_id?: string;
+    actions?: AgentAction[];
+    warnings?: AgentWarning[];
+    assumptions?: string[];
+    focus?: AgentApprovalFocus;
+  },
   sessionId: string,
 ): AgentApprovalState {
   return {
@@ -237,6 +252,7 @@ function approvalStateFromEvent(
     warnings: event.warnings ?? [],
     assumptions: event.assumptions ?? [],
     resolution: "pending",
+    focus: event.focus,
   };
 }
 
@@ -1490,6 +1506,10 @@ function AgentApprovalCard({
           </div>
         ))}
       </div>
+
+      {approval.focus?.bbox && (
+        <ApprovalFocusMap focus={approval.focus} sessionId={approval.sessionId} action={approval.actions[0]} />
+      )}
 
       {approval.warnings.length > 0 && (
         <div className="mt-2 space-y-1">
