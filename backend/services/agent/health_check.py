@@ -60,6 +60,15 @@ from typing import Any
 
 from services.agent import constraints
 from services.agent import tools_network
+# Registers every write-tier tool onto toolkit.default_registry (mirrors this
+# module's own "importing this module registers its X" pattern, used above
+# for tools_network) -- needed so _write_tool_names() below sees the full,
+# CURRENT write-verb set regardless of import order. In production this is
+# already guaranteed (main.py -> routers.assistant -> orchestrator ->
+# tools_edit, all imported before any request is served); this import makes
+# health_check.py self-sufficient rather than relying on that chain.
+import services.agent.tools_edit  # noqa: F401
+from services.agent.toolkit import default_registry
 
 # Live-bug fix precedent (2026-07-27, constraints.py's own _capped_join
 # docstring): a hit list whose size tracks NETWORK size flooded a message
@@ -212,6 +221,10 @@ def _scan_vehicle_inputs(shadow_model: dict[str, Any]) -> list[constraints.Findi
         }
         for f in constraints.run_checks("preflight", action, shadow_model, {}):
             if f.constraint_id in _VEHICLE_INPUT_SCAN_IDS:
+                # Stashed for _fix_target's handoff-prompt grounding only
+                # (see that function's own comment) -- not part of the
+                # public Finding contract, never read by anything else.
+                f._scan_params = action["params"]  # type: ignore[attr-defined]
                 findings.append(f)
     return findings
 
@@ -241,6 +254,7 @@ def _scan_signals(shadow_model: dict[str, Any]) -> list[constraints.Finding]:
         }
         for f in constraints.run_checks("preflight", action, shadow_model, {}):
             if f.constraint_id in _SIGNAL_SCAN_IDS:
+                f._scan_params = action["params"]  # type: ignore[attr-defined]
                 findings.append(f)
     return findings
 
@@ -271,6 +285,7 @@ def _scan_signal_program_splits(shadow_model: dict[str, Any]) -> list[constraint
         }
         for f in constraints.run_checks("preflight", action, shadow_model, {}):
             if f.constraint_id in _GREEN_SPLIT_SCAN_IDS:
+                f._scan_params = action["params"]  # type: ignore[attr-defined]
                 findings.append(f)
     return findings
 
@@ -347,7 +362,145 @@ def _object_refs(details: dict[str, Any]) -> list[str]:
     return refs[:_MAX_DETAILS_LIST_LEN]
 
 
-def _finding_to_dict(finding: constraints.Finding, title: dict[str, str]) -> dict[str, Any]:
+# ---------------------------------------------------------------------------
+# "AI로 수정하기" / "AI에게 물어보기" handoff classification (2026-07-28)
+#
+# Every finding needs a `suggested_action` telling the frontend whether a
+# button should even render, and if so what it hands off. Derived from the
+# SAME two sources the task brief calls out -- a constraint's own
+# ``applies_to`` (constraints.py) and the CURRENT write-tool registry
+# (toolkit.default_registry) -- rather than a hand-maintained id->tool map,
+# so this can never silently drift as new write verbs ship (a constraint
+# that starts naming a real tool in applies_to becomes "fix" automatically,
+# with zero edit here).
+#
+# Rule: a constraint whose applies_to names EXACTLY ONE tool that is
+# CURRENTLY a write-tier tool is "fix" (that tool is unambiguously the one
+# verb that would address it). Anything else -- applies_to=["*"]
+# (tool-agnostic; no single verb owns it), or two-or-more tools (ambiguous;
+# e.g. conflicting_greens_in_signal_plan names both set_signal_cycle and
+# set_signal_offset, neither of which actually rewrites the phase/movement
+# assignment that IS the problem) -- defaults to "inspect": no shipped verb
+# mechanically resolves it, but the agent can still investigate/explain.
+#
+# The ONE case that default can't get right on its own is
+# evaluation_config_disarmed: applies_to=["*"] would default it to
+# "inspect", but evaluation-config edits are a DOCUMENTED, unconditional
+# refusal (see evaluation_change_deletes_results's own
+# "test_..._always_refuses", and the module docstring's catalog table, §5)
+# and no write tool for evaluation settings exists at all (grep
+# tools_edit.py) -- routing a user into a guaranteed refusal is worse than
+# no button, so this is the one explicit override, to "none".
+# ---------------------------------------------------------------------------
+
+_OVERRIDE_KIND: dict[str, tuple[str, str | None]] = {
+    "evaluation_config_disarmed": ("none", None),
+}
+
+
+def _write_tool_names() -> frozenset[str]:
+    return frozenset(spec.name for spec in default_registry.specs() if spec.tier == "write")
+
+
+def _derive_kind_and_tool(
+    constraint_id: str, constraint: constraints.Constraint | None, write_tools: frozenset[str]
+) -> tuple[str, str | None]:
+    if constraint_id in _OVERRIDE_KIND:
+        return _OVERRIDE_KIND[constraint_id]
+    if constraint is None:
+        return "inspect", None
+    candidates = [t for t in constraint.applies_to if t != "*" and t in write_tools]
+    if len(candidates) == 1:
+        return "fix", candidates[0]
+    return "inspect", None
+
+
+# Per-constraint field allowlist for a "fix" target: which keys (drawn from
+# the Finding's own `details` OR the scan's own action params, stashed on
+# the Finding via `_scan_params` below -- see e.g. _scan_vehicle_inputs)
+# ground the prompt with a concrete object id + concrete numbers. NOT the
+# same as the finding's public `details`/`object_refs` (those stay exactly
+# as they were -- untouched by this unit, so existing pinned assertions on
+# them cannot drift): this is a deliberately separate, small allowlist built
+# only for the handoff prompt.
+_FIX_TARGET_FIELDS: dict[str, tuple[str, ...]] = {
+    "volume_out_of_range": ("input_no", "volume"),
+    "latent_demand_overflow": ("input_no", "volume", "link_id", "lanes", "capacity"),
+    "cycle_below_intergreen_sum": ("sc_no", "cycle", "min_sum"),
+    "ring_barrier_splits_sum_mismatch": ("sc_no", "cycle", "split_sum"),
+    "green_split_outside_cycle": ("sc_no", "program_no", "sg_no", "green_start_s", "green_end_s", "cycle_s"),
+    "green_split_below_min_green": (
+        "sc_no", "program_no", "sg_no", "green_start_s", "green_end_s", "green_duration_s", "min_green_s",
+    ),
+}
+
+
+def _fix_target(finding: constraints.Finding) -> dict[str, Any]:
+    fields = _FIX_TARGET_FIELDS.get(finding.constraint_id, ())
+    # `_scan_params` (per-object scans only -- see _scan_vehicle_inputs/
+    # _scan_signals/_scan_signal_program_splits) carries the object id the
+    # check's own `details` doesn't always echo back (e.g. volume_out_of_
+    # range's details is just {"volume": ...}, no input_no) -- finding.details
+    # wins on overlap since it is the check's own, authoritative value.
+    scan_params: dict[str, Any] = getattr(finding, "_scan_params", None) or {}
+    source = {**scan_params, **finding.details}
+    target: dict[str, Any] = {k: source[k] for k in fields if k in source and source[k] is not None}
+    if isinstance(finding.suggested_fix, dict):
+        target["suggested_fix"] = finding.suggested_fix
+    return target
+
+
+# Dataset-wide "inspect" findings that enumerate an offending-object list
+# (one Finding covering many objects, e.g. 145 Passive conflict areas) --
+# the 2026-07-27 observation-flood lesson applies to a handoff prompt just
+# as much as to a message/details payload: never hand the agent (or a
+# prompt string) the full list, only a true count + a FEW example ids.
+_INSPECT_LIST_KEYS = ("link_pairs", "disconnected_routes", "mismatched_input_intervals", "offending_entries")
+_INSPECT_LIST_COUNT_KEYS: dict[str, str] = {"link_pairs": "passive_count"}
+_MAX_INSPECT_EXAMPLES = 3
+
+
+def _inspect_target(finding: constraints.Finding) -> dict[str, Any]:
+    details = finding.details
+    for key in _INSPECT_LIST_KEYS:
+        items = details.get(key)
+        if isinstance(items, list) and items:
+            count_key = _INSPECT_LIST_COUNT_KEYS.get(key)
+            count = details.get(count_key, len(items)) if count_key else len(items)
+            return {"count": count, "examples": [str(x) for x in items[:_MAX_INSPECT_EXAMPLES]]}
+    # No enumerable hit list (a single dataset-wide flag, e.g.
+    # evaluation_config_disarmed/units_ambiguous_on_write, or one concrete
+    # instance, e.g. conflicting_greens_in_signal_plan) -- pass through
+    # whatever small scalar/short-list fields the check already computed;
+    # already bounded by construction (a handful of primitives per finding).
+    return {
+        k: v
+        for k, v in details.items()
+        if not isinstance(v, dict) and not (isinstance(v, list) and len(v) > _MAX_INSPECT_EXAMPLES)
+    }
+
+
+def _suggested_action(
+    finding: constraints.Finding,
+    constraint: constraints.Constraint | None,
+    write_tools: frozenset[str],
+) -> dict[str, Any]:
+    kind, tool = _derive_kind_and_tool(finding.constraint_id, constraint, write_tools)
+    if kind == "fix":
+        target = _fix_target(finding)
+    elif kind == "inspect":
+        target = _inspect_target(finding)
+    else:
+        target = {}
+    return {"kind": kind, "tool": tool, "target": target}
+
+
+def _finding_to_dict(
+    finding: constraints.Finding,
+    title: dict[str, str],
+    constraint: constraints.Constraint | None,
+    write_tools: frozenset[str],
+) -> dict[str, Any]:
     return {
         "constraint_id": finding.constraint_id,
         "severity": _TIER_TO_SEVERITY.get(finding.tier, "warning"),
@@ -356,6 +509,7 @@ def _finding_to_dict(finding: constraints.Finding, title: dict[str, str]) -> dic
         "message": finding.messages,
         "details": _bound_details(finding.details),
         "object_refs": _object_refs(finding.details),
+        "suggested_action": _suggested_action(finding, constraint, write_tools),
     }
 
 
@@ -400,6 +554,13 @@ class HealthCheckRunner:
         for f in raw_findings:
             by_constraint.setdefault(f.constraint_id, []).append(f)
 
+        # Computed once per run (both are process-wide, registration-order-
+        # independent lookups) and threaded through every _finding_to_dict
+        # call below -- see that function's own "AI로 수정하기" comment block
+        # for why these two are the derivation's whole input.
+        write_tools = _write_tool_names()
+        constraint_by_id = {c.id: c for c in constraints.get_registry()}
+
         findings: list[dict[str, Any]] = []
         findings_by_severity = {"issue": 0, "warning": 0, "info": 0}
         for constraint_id, group in by_constraint.items():
@@ -408,9 +569,10 @@ class HealthCheckRunner:
             findings_by_severity[severity] = findings_by_severity.get(severity, 0) + len(group)
             shown = group[:_MAX_FINDINGS_PER_CONSTRAINT]
             for f in shown:
-                findings.append(_finding_to_dict(f, title))
+                findings.append(_finding_to_dict(f, title, constraint_by_id.get(constraint_id), write_tools))
             remaining = len(group) - len(shown)
             if remaining > 0:
+                kind, tool = _derive_kind_and_tool(constraint_id, constraint_by_id.get(constraint_id), write_tools)
                 findings.append(
                     {
                         "constraint_id": constraint_id,
@@ -421,6 +583,12 @@ class HealthCheckRunner:
                         "details": {},
                         "object_refs": [],
                         "truncated_additional_count": remaining,
+                        # No concrete Finding backs this summary row (it's
+                        # "N more not shown"), so kind/tool are still derived
+                        # for consistency but target stays empty -- the
+                        # frontend does not render a handoff button on a
+                        # message===null row regardless.
+                        "suggested_action": {"kind": kind, "tool": tool, "target": {}},
                     }
                 )
 

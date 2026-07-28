@@ -2026,3 +2026,35 @@ y[-6395.9,-6341.2], non-degenerate) — which exposed that a link and its auto-g
 connector can share an IDENTICAL display name ("South St EB"), so the conflict-area
 caption uses link IDs, not names. Full suite 1186 passed / 1 skipped / known RAG failure
 only; contract 11/12 unchanged.
+
+---
+
+## 2026-07-28 — Health-check "AI로 수정하기" handoff + palette-lock regression
+
+**Context:** /health listed findings with no path to act on them. Needed a per-finding
+button handing the issue to the agent (mirroring the CurationBar → FloatingAssistant
+handoff), with an honest classification — routing a user into a guaranteed refusal is
+worse than no button.
+
+**Decision:** classify each finding SERVER-SIDE by DERIVING from the constraint's own
+`applies_to` intersected with the CURRENT write-tool registry, not a hand-maintained
+table: a constraint naming exactly one live write tool → "fix"; anything else
+(applies_to=["*"], or 2+ tools) → "inspect". Exactly one override:
+evaluation_config_disarmed → "none" (documented always-refuse; no evaluation-config
+write tool exists). conflict_area_data_unavailable is "inspect" despite
+set_conflict_area_status existing, because its scan yields ONE AGGREGATE finding (111
+Passive areas on the real Murdoch network) with no single groundable target.
+`suggested_action.target` is bounded (count + ≤3 example ids, never the full list —
+2026-07-27 observation-flood lesson). Frontend builds t()-routed ko/en/ja prompts and
+dispatches the same vissim:assistant-handoff event; the listener prefills the composer
+and never auto-sends (CurationBar's contract, matched exactly).
+
+**Consequence:** additive to the report contract and SELF-UPDATING — a future verb that
+starts covering, say, conflicting_greens_in_signal_plan turns that finding's button on
+with zero health_check.py edits. A missing suggested_action (stale backend process)
+degrades to kind="none" rather than crashing the list. Also fixed here, found by live
+screenshot: the details `<pre>` used the conventional dark-code-block idiom
+(bg-slate-950/90 + text-slate-200), but globals.css's PALETTE LOCK INVERTS the slate
+ramp for this theme (slate-950 IS #ffffff, slate-200 is 10%-opacity white) — it rendered
+as a white box with invisible white text. Wells are slate-50/100, body text the
+slate-600..800 ramp; comment left in place so the next author does not repeat it.

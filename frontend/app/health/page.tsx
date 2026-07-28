@@ -18,6 +18,209 @@ const SEVERITY_TONE: Record<HealthCheckFinding["severity"], ValidationTone> = {
   info: "neutral",
 };
 
+// Matches CurationBar.tsx's own local alias for useLanguage()'s `t` (see that
+// file's comment on why this stays a local type rather than a shared export).
+type Translate = (ko: string, en: string, ja?: string) => string;
+
+// Same custom-window-event seam CurationBar.tsx already uses to hand a
+// request off to the real agent (FloatingAssistant, globally mounted in
+// AppShell -- see components/AppShell.tsx, so it is already available on
+// THIS page with no extra wiring). Not imported from CurationBar.tsx because
+// that module doesn't export it either -- FloatingAssistant's own listener
+// (components/FloatingAssistant.tsx) uses the same literal string directly;
+// the event NAME is the shared contract between independent dispatchers,
+// not a shared import.
+const ASSISTANT_HANDOFF_EVENT = "vissim:assistant-handoff";
+
+function requestAgentHandoff(prompt: string) {
+  window.dispatchEvent(new CustomEvent(ASSISTANT_HANDOFF_EVENT, { detail: { prompt } }));
+}
+
+function targetStr(target: Record<string, unknown>, key: string): string {
+  const value = target[key];
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function targetExamples(target: Record<string, unknown>): string {
+  const examples = target.examples;
+  return Array.isArray(examples) ? examples.map((e) => String(e)).join(", ") : "";
+}
+
+function targetCount(target: Record<string, unknown>): string {
+  const count = target.count;
+  return typeof count === "number" ? String(count) : "";
+}
+
+// Per-constraint, localized, GROUNDED handoff prompts -- built from
+// suggested_action.target (backend/services/agent/health_check.py's bounded
+// _fix_target/_inspect_target), not just the finding's own display message,
+// so the agent gets concrete ids/numbers to act on without a round trip.
+// Falls back to the finding's own message text for any constraint id this
+// page doesn't have a dedicated template for yet (future catalog growth),
+// so a new dataset-checkable constraint never produces a dead/blank prompt.
+function buildHandoffPrompt(finding: HealthCheckFinding, t: Translate): string {
+  const { constraint_id: id } = finding;
+  const target = finding.suggested_action?.target ?? {};
+
+  switch (id) {
+    case "volume_out_of_range": {
+      const inputNo = targetStr(target, "input_no");
+      const volume = targetStr(target, "volume");
+      const suggestedFix = (target.suggested_fix as Record<string, unknown> | undefined) ?? {};
+      const min = targetStr(suggestedFix, "min");
+      const max = targetStr(suggestedFix, "max");
+      return t(
+        `차량 입력 ${inputNo}의 유입량 ${volume} veh/h가 허용 범위(${min}~${max} veh/h)를 벗어납니다. 현재 유입량 설정을 확인하고 범위 안에 들어오도록 수정해줘.`,
+        `Vehicle input ${inputNo}'s volume ${volume} veh/h is outside the allowed range (${min}-${max} veh/h). Check the current input setting and fix it to fit the range.`,
+        `車両インプット${inputNo}の交通量 ${volume} veh/h が許容範囲(${min}〜${max} veh/h)を超えています。現在のインプット設定を確認し、範囲内に収まるよう修正してください。`,
+      );
+    }
+    case "latent_demand_overflow": {
+      const inputNo = targetStr(target, "input_no");
+      const linkId = targetStr(target, "link_id");
+      const volume = targetStr(target, "volume");
+      const capacity = targetStr(target, "capacity");
+      return t(
+        `차량 입력 ${inputNo}(링크 ${linkId})의 유입량 ${volume} veh/h가 대략적 용량 ${capacity} veh/h를 초과합니다. 현재 유입량 설정을 확인하고 조정안을 제안해줘.`,
+        `Vehicle input ${inputNo} (link ${linkId})'s volume ${volume} veh/h exceeds the rough capacity ${capacity} veh/h. Check the current input setting and propose an adjustment.`,
+        `車両インプット${inputNo}(リンク${linkId})の交通量 ${volume} veh/h がおおよその容量 ${capacity} veh/h を超えています。現在のインプット設定を確認し、調整案を提案してください。`,
+      );
+    }
+    case "cycle_below_intergreen_sum": {
+      const scNo = targetStr(target, "sc_no");
+      const cycle = targetStr(target, "cycle");
+      const minSum = targetStr(target, "min_sum");
+      return t(
+        `신호제어기 ${scNo}의 주기 ${cycle}초가 최소 녹색시간+인터그린 시간 합계 ${minSum}초보다 짧습니다. 현재 신호 프로그램을 확인하고 주기를 ${minSum}초 이상으로 수정해줘.`,
+        `Signal controller ${scNo}'s cycle ${cycle}s is shorter than the minimum green + intergreen time sum of ${minSum}s. Check the current signal program and fix the cycle to at least ${minSum}s.`,
+        `信号制御機${scNo}のサイクル ${cycle}秒 が最小青時間+インターグリーン時間の合計 ${minSum}秒 より短くなっています。現在の信号プログラムを確認し、サイクルを${minSum}秒以上に修正してください。`,
+      );
+    }
+    case "ring_barrier_splits_sum_mismatch": {
+      const scNo = targetStr(target, "sc_no");
+      const cycle = targetStr(target, "cycle");
+      const splitSum = targetStr(target, "split_sum");
+      return t(
+        `신호제어기 ${scNo}의 링-바리어 스플릿 합계는 ${splitSum}초인데 주기는 ${cycle}초입니다. 현재 신호 프로그램을 확인하고 주기와 스플릿 합이 일치하도록 수정해줘.`,
+        `Signal controller ${scNo}'s ring-barrier splits sum to ${splitSum}s, but the cycle is ${cycle}s. Check the current signal program and fix it so the cycle matches the split sum.`,
+        `信号制御機${scNo}のリングバリアスプリットの合計は${splitSum}秒ですが、サイクルは${cycle}秒です。現在の信号プログラムを確認し、サイクルとスプリット合計が一致するよう修正してください。`,
+      );
+    }
+    case "green_split_outside_cycle": {
+      const scNo = targetStr(target, "sc_no");
+      const programNo = targetStr(target, "program_no");
+      const sgNo = targetStr(target, "sg_no");
+      const start = targetStr(target, "green_start_s");
+      const end = targetStr(target, "green_end_s");
+      const cycle = targetStr(target, "cycle_s");
+      return t(
+        `신호제어기 ${scNo}의 프로그램 ${programNo}, 신호그룹 ${sgNo}의 녹색시간 [${start}초→${end}초]이 주기 ${cycle}초를 벗어납니다. 현재 신호 프로그램을 확인하고 주기 안에 들어오도록 수정해줘.`,
+        `Signal controller ${scNo} program ${programNo}, signal group ${sgNo}'s green window [${start}s→${end}s] falls outside the ${cycle}s cycle. Check the current signal program and fix it to fit within the cycle.`,
+        `信号制御機${scNo}のプログラム${programNo}、信号グループ${sgNo}の青時間 [${start}秒→${end}秒] がサイクル${cycle}秒の範囲外です。現在の信号プログラムを確認し、サイクル内に収まるよう修正してください。`,
+      );
+    }
+    case "green_split_below_min_green": {
+      const scNo = targetStr(target, "sc_no");
+      const programNo = targetStr(target, "program_no");
+      const sgNo = targetStr(target, "sg_no");
+      const duration = targetStr(target, "green_duration_s");
+      const minGreen = targetStr(target, "min_green_s");
+      return t(
+        `신호제어기 ${scNo}의 프로그램 ${programNo}, 신호그룹 ${sgNo}의 녹색시간 ${duration}초가 최소 녹색시간 ${minGreen}초보다 짧습니다. 현재 신호 프로그램을 확인하고 최소 녹색시간 이상으로 수정해줘.`,
+        `Signal controller ${scNo} program ${programNo}, signal group ${sgNo}'s green duration ${duration}s is below the minimum green ${minGreen}s. Check the current signal program and fix it to meet the minimum green.`,
+        `信号制御機${scNo}のプログラム${programNo}、信号グループ${sgNo}の青時間 ${duration}秒 が最小青時間 ${minGreen}秒 を下回っています。現在の信号プログラムを確認し、最小青時間以上に修正してください。`,
+      );
+    }
+    case "conflicting_greens_in_signal_plan": {
+      const scNo = targetStr(target, "sc_no");
+      const phaseA = targetStr(target, "phase_a_start");
+      const phaseB = targetStr(target, "phase_b_start");
+      return t(
+        `신호제어기 ${scNo}의 현재 페이즈 플랜에서 시작 ${phaseA}초 페이즈와 시작 ${phaseB}초 페이즈가 겹쳐 직각 접근로에 동시에 녹색을 주고 있습니다. 인터그린 매트릭스를 확인하고 위험한지 알려줘.`,
+        `Signal controller ${scNo}'s current phase plan overlaps the phase starting at ${phaseA}s with the one starting at ${phaseB}s, giving simultaneous green to perpendicular approaches. Check against the intergreen matrix and tell me if this is dangerous.`,
+        `信号制御機${scNo}の現在のフェーズプランで、開始${phaseA}秒のフェーズと開始${phaseB}秒のフェーズが重なり、直交する進入路に同時に青を与えています。インターグリーンマトリックスを確認し、危険かどうか教えてください。`,
+      );
+    }
+    case "units_ambiguous_on_write":
+      return t(
+        "이 네트워크의 단위(속도 등) 설정이 불완전하여 쓰기 시 단위가 모호합니다. 현재 단위 설정을 확인하고 어떤 위험이 있는지 알려줘.",
+        "This network's unit settings (e.g. speed) are incomplete, making units ambiguous on write. Check the current unit settings and tell me what risk this poses.",
+        "このネットワークの単位(速度など)設定が不完全なため、書き込み時に単位が曖昧です。現在の単位設定を確認し、どのようなリスクがあるか教えてください。",
+      );
+    case "stale_route_files_after_edit":
+      return t(
+        "동적배정(dynamic assignment) 경로 파일이 최근 편집 이후 오래된 상태일 수 있습니다. 현재 동적배정 설정을 확인하고 재계산이 필요한지 알려줘.",
+        "The dynamic-assignment route files may be stale after a recent edit. Check the current dynamic-assignment settings and tell me whether they need to be recomputed.",
+        "動的配分(dynamic assignment)の経路ファイルが最近の編集後に古くなっている可能性があります。現在の動的配分設定を確認し、再計算が必要か教えてください。",
+      );
+    case "conflict_area_data_unavailable": {
+      const count = targetCount(target);
+      const examples = targetExamples(target);
+      return t(
+        `충돌구간 ${count}개가 Passive 상태입니다 (예: ${examples}). 주요 교차로부터 확인하고 우선권 지정이 필요한지 알려줘.`,
+        `${count} conflict area(s) are Passive (e.g. ${examples}). Check starting from the major intersections and tell me whether right-of-way needs to be assigned.`,
+        `${count}件の錯綜区間がPassive状態です(例: ${examples})。主要な交差点から確認し、優先権の指定が必要か教えてください。`,
+      );
+    }
+    case "route_integrity_unverifiable": {
+      const count = targetCount(target);
+      const examples = targetExamples(target);
+      return t(
+        `경로 ${count}개가 단절된 상태입니다 (예: ${examples}). 어느 경로인지 확인하고 복구가 필요한지 알려줘.`,
+        `${count} route(s) are disconnected (e.g. ${examples}). Check which routes these are and tell me whether they need to be repaired.`,
+        `経路${count}件が切断されています(例: ${examples})。どの経路か確認し、復旧が必要か教えてください。`,
+      );
+    }
+    case "vehicle_input_cont_volume_mismatch": {
+      const count = targetCount(target);
+      const examples = targetExamples(target);
+      return t(
+        `차량 입력.구간 ${count}개가 연속(Cont) 표시로 인해 저장된 볼륨 값과 실제 적용되는 값이 다릅니다 (예: ${examples}). 어느 값이 실제로 적용되는지 확인하고 알려줘.`,
+        `${count} vehicle-input.interval entries are marked continuous (Cont), so the stored volume differs from what actually applies (e.g. ${examples}). Check which value actually applies and tell me.`,
+        `車両インプット.区間 ${count}件が連続(Cont)指定のため、保存されているボリューム値と実際に適用される値が異なります(例: ${examples})。実際に適用される値を確認して教えてください。`,
+      );
+    }
+    case "des_speed_distribution_orphan_reference": {
+      const count = targetCount(target);
+      const examples = targetExamples(target);
+      return t(
+        `희망속도결정 항목 ${count}개가 존재하지 않는 희망속도분포를 참조하고 있습니다 (예: ${examples}). 어떤 분포를 대신 사용해야 할지 확인하고 알려줘.`,
+        `${count} desired-speed decision entries reference a desired-speed distribution that doesn't exist (e.g. ${examples}). Check which distribution should be used instead and tell me.`,
+        `希望速度決定エントリ${count}件が存在しない希望速度分布を参照しています(例: ${examples})。代わりにどの分布を使うべきか確認して教えてください。`,
+      );
+    }
+    default:
+      // Future-proofing: a dataset-checkable constraint this page has no
+      // dedicated template for yet still gets a usable (if more generic)
+      // grounded prompt built from its own display message, rather than a
+      // button that produces an empty/broken handoff.
+      return t(
+        `"${finding.title.ko}": ${finding.message?.ko ?? ""} 확인하고 도와줘.`,
+        `"${finding.title.en}": ${finding.message?.en ?? ""} Please look into this and help.`,
+        `"${finding.title.ja}": ${finding.message?.ja ?? ""} 確認して手伝ってください。`,
+      );
+  }
+}
+
+function handoffButtonLabel(kind: HealthCheckFinding["suggested_action"]["kind"], t: Translate): string {
+  return kind === "fix" ? t("AI로 수정하기", "Fix with AI", "AIで修正する") : t("AI에게 물어보기", "Ask the AI", "AIに聞く");
+}
+
+// Report-level handoff (optional deliverable): a single bounded summary --
+// counts + up to 3 example titles, never the full findings list -- for a
+// "review everything, help me prioritize" turn instead of one finding at a
+// time.
+function buildReportSummaryPrompt(report: HealthCheckReport, lang: "ko" | "en" | "ja", t: Translate): string {
+  const { issue, warning, info } = report.summary.findings_by_severity;
+  const actionable = report.findings.filter((f) => f.message !== null && (f.suggested_action?.kind ?? "none") !== "none");
+  const exampleTitles = actionable.slice(0, 3).map((f) => f.title[lang]).join(", ");
+  return t(
+    `모델 검진 결과 이슈 ${issue}건, 경고 ${warning}건, 정보 ${info}건이 발견되었습니다 (예: ${exampleTitles}). 우선순위를 정해서 어디부터 확인해야 할지 알려줘.`,
+    `The model health check found ${issue} issue(s), ${warning} warning(s), and ${info} info item(s) (e.g. ${exampleTitles}). Help me prioritize where to start.`,
+    `モデル検診の結果、問題${issue}件、警告${warning}件、情報${info}件が見つかりました(例: ${exampleTitles})。優先順位をつけて、どこから確認すべきか教えてください。`,
+  );
+}
+
 const SEVERITY_ORDER: HealthCheckFinding["severity"][] = ["issue", "warning", "info"];
 
 function severityLabel(severity: HealthCheckFinding["severity"], t: (ko: string, en: string, ja?: string) => string): string {
@@ -115,6 +318,15 @@ export default function HealthCheckPage() {
             {t("JSON 다운로드", "Download JSON", "JSONダウンロード")}
           </a>
         )}
+        {report && report.findings.some((f) => f.message !== null && (f.suggested_action?.kind ?? "none") !== "none") && (
+          <button
+            type="button"
+            onClick={() => requestAgentHandoff(buildReportSummaryPrompt(report, lang, t))}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-accent/40 bg-accent/10 px-3.5 py-2 text-xs font-semibold text-accent-deep transition hover:border-accent/60 hover:bg-accent/15"
+          >
+            {t("AI와 함께 검토하기", "Review with AI", "AIと一緒に確認する")}
+          </button>
+        )}
         {report && (
           <span className="text-xs text-slate-500">
             {t("생성 시각", "Generated", "生成時刻")}: {formatTimestamp(report.generated_at, lang)}
@@ -185,6 +397,12 @@ export default function HealthCheckPage() {
                       const key = `${severity}-${index}`;
                       const globalIndex = report.findings.indexOf(finding);
                       const isOpen = !!expanded[globalIndex];
+                      // Defensive fallback, not just a type-level assumption: an
+                      // older backend process (no live hot-reload for FastAPI --
+                      // see .claude/launch.json) can still be serving a report
+                      // shaped before suggested_action existed. Treat that as
+                      // "no button" rather than crashing the whole findings list.
+                      const action = finding.suggested_action ?? { kind: "none" as const, tool: null, target: {} };
                       if (finding.message === null) {
                         return (
                           <li
@@ -221,18 +439,46 @@ export default function HealthCheckPage() {
                                 </p>
                               )}
                             </div>
-                            {Object.keys(finding.details).length > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => toggleExpanded(globalIndex)}
-                                className="flex-none rounded-lg border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
-                              >
-                                {isOpen ? t("접기", "Hide details", "閉じる") : t("상세", "Details", "詳細")}
-                              </button>
-                            )}
+                            <div className="flex flex-none items-center gap-1.5">
+                              {/* AI handoff (2026-07-28): only rendered for kind="fix"/"inspect" --
+                                  kind="none" (e.g. evaluation_config_disarmed, a documented
+                                  always-refuse with no write tool at all) shows no button, since
+                                  the message above already explains it and routing a user into a
+                                  guaranteed refusal would be worse than nothing. Mirrors
+                                  CurationBar.tsx's own handoff button styling so the two surfaces
+                                  read as one family. */}
+                              {action.kind !== "none" && (
+                                <button
+                                  type="button"
+                                  onClick={() => requestAgentHandoff(buildHandoffPrompt(finding, t))}
+                                  className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${
+                                    action.kind === "fix"
+                                      ? "border-accent/40 bg-accent/10 text-accent-deep hover:border-accent/60 hover:bg-accent/15"
+                                      : "border-slate-200 bg-surface text-slate-500 hover:border-slate-300 hover:text-slate-800"
+                                  }`}
+                                >
+                                  {handoffButtonLabel(action.kind, t)}
+                                  <span aria-hidden>→</span>
+                                </button>
+                              )}
+                              {Object.keys(finding.details).length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleExpanded(globalIndex)}
+                                  className="rounded-lg border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                                >
+                                  {isOpen ? t("접기", "Hide details", "閉じる") : t("상세", "Details", "詳細")}
+                                </button>
+                              )}
+                            </div>
                           </div>
                           {isOpen && (
-                            <pre className="mt-2 overflow-x-auto rounded-lg bg-slate-950/90 px-3 py-2 text-[11px] text-slate-200">
+                            /* globals.css PALETTE LOCK inverts the slate ramp for this
+                               dark theme (slate-950 IS white, slate-200 is 10%-opacity
+                               white), so the conventional bg-slate-950/text-slate-200
+                               code block renders white-on-white. Wells use slate-50/100;
+                               body text rides the slate-600..800 ramp. */
+                            <pre className="mt-2 overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-700">
                               {JSON.stringify(finding.details, null, 2)}
                             </pre>
                           )}

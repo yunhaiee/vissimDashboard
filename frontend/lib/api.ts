@@ -489,6 +489,22 @@ export interface HealthCheckLocalizedText {
   ja: string;
 }
 
+// AI handoff (2026-07-28): backend/services/agent/health_check.py derives
+// this per finding from the constraint's own applies_to + the CURRENT
+// write-tool registry (never a hand-maintained id->kind map) --
+// "fix" = a shipped write verb can address it directly, "inspect" = no
+// direct verb but the agent can investigate/explain, "none" = a documented,
+// always-refused edit (e.g. evaluation config) -- no button should ever be
+// rendered for "none". `target` is deliberately bounded (see that module's
+// _fix_target/_inspect_target) -- for an aggregate finding covering many
+// objects it carries a true `count` plus a FEW example ids, never the full
+// list.
+export interface HealthCheckSuggestedAction {
+  kind: "fix" | "inspect" | "none";
+  tool: string | null;
+  target: Record<string, unknown>;
+}
+
 export interface HealthCheckFinding {
   constraint_id: string;
   severity: "issue" | "warning" | "info";
@@ -500,6 +516,7 @@ export interface HealthCheckFinding {
   details: Record<string, unknown>;
   object_refs: string[];
   truncated_additional_count?: number;
+  suggested_action: HealthCheckSuggestedAction;
 }
 
 export interface HealthCheckEditTimeOnlyEntry {
