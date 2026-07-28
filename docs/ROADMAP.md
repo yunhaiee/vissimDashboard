@@ -199,6 +199,30 @@ top three SHIPPED 2026-07-28):
 - Share links (read-only dashboard/replay) + reviewer/modeler roles on the
   approval gate
 
+**Network-view interaction precision** (live-rehearsal defects, 2026-07-28)
+
+The 도식 is now legible (semantic zoom, metre-true markings) but not yet *precise to
+click*. Two separate defects, both in `NetworkViewer.tsx`:
+
+- ⬜ **Link hit bands overhang the drawn asphalt.** The invisible link hit polyline is
+  `stroke-width = max(roadW + 8, 12)` in **world metres**, drawn ONCE outside
+  `drawZoomDependent`. So every road is clickable ~4 m beyond each visible edge, and a
+  narrow connector claims a 12 m band — and because the padding is metre-true, zooming
+  in never tightens it. Symptom: clicking a small element *beside* a road selects the
+  road, on ground the user can see is outside the blue selection shade.
+  Fix: make the band screen-constant — `max(roadW, HIT_LINK_MIN_PX / k)` — which moves
+  it into `drawZoomDependent`. **Regression risk:** that is the exact code path of the
+  5774a28 click bug (d3-zoom fires `end` for a zero-movement click and rebuilds hit
+  shapes between mouseup and click dispatch). The `|k/lastDrawnK − 1| < 1e-6` guard must
+  be proven to still hold with links inside the redraw, by test, not by reading.
+- ⬜ **No way to reach an occluded element.** Roads, junction polygons, connectors and
+  glyphs stack; the topmost hit shape in DOM order always wins and there is no second
+  path to the ones underneath. Fix: repeat-click cycling — a click within ~4 px of the
+  previous one, with no intervening pointer move, advances through the full candidate
+  stack from `document.elementsFromPoint()` instead of reselecting the same top hit —
+  plus a "N개 겹침 · 다시 클릭" hint in the tooltip so the affordance is discoverable.
+  Stretch: shift-click opens a small labelled picker listing every candidate.
+
 **Deployment & persistence** (direction 2026-07-27, detailed 2026-07-28)
 
 Target model: ON-PREM TEAM SERVER inside the customer's network; engineers connect by
