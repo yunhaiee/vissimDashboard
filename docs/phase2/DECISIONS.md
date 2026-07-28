@@ -2269,3 +2269,45 @@ asserted a ranking order without checking it against the real dataset, and it su
 own self-verification. It was caught only because an independent adversarial verifier re-ran
 the queries a user would actually type. Spec assertions about ORDERING are hypotheses; on a
 real network they need measuring, not stating.
+
+---
+
+## 2026-07-28 — Click selection: hit bands are screen-constant, and stacks are cycled
+
+**Context.** Reported live: "the select 범위 is quite wide — clicking a small traffic
+component next to a road selects the road instead, even where I clicked is not on the blue
+shade", plus "road, intersection, connections are overlapped together, so it is really hard
+to select a component at the back".
+
+**Cause (defect 1).** The link hit-polyline was stroked at `Math.max(roadW + 8, 12)` in WORLD
+METRES and built once, outside `drawZoomDependent(k)`. Padding fixed in world units cannot
+tighten: zooming in magnified the invisible grab band exactly as fast as the asphalt, so the
+band stayed ~27 m wide on a 5-lane link at every zoom. Measured live on link 513 (5 lanes,
+18 m): old half-width 27.1 m vs the drawn 9.0 m.
+
+**Decision.** Hit bands follow the same convention the point/segment floors already used:
+`Math.max(roadW, HIT_LINK_MIN_PX / k)`, rebuilt inside `drawZoomDependent`. Above the floor
+the grab band equals the drawn asphalt exactly — zero padding, what you see is what you hit.
+Below it a screen-constant 12 px floor keeps hairline connectors clickable when zoomed out.
+Verified live at k=8: clicking 6 m off centerline selects link 513, clicking 12 m off does
+not (the old band would have taken it).
+
+**Decision (defect 2).** Occlusion is resolved by REPEAT CLICK, not by a z-order guess.
+`elementsFromPoint` already returns this SVG's `.nv-hit` shapes topmost-first, so a second
+click within 4 px advances an index into that stack and re-dispatches a synthetic click on the
+next shape — firing that shape's own existing handler rather than a parallel selection path.
+Every tooltip in a stack of >1 gains `"N개 겹침 · 다시 클릭"` so the affordance is discoverable
+instead of secret.
+
+**Regression guarded.** `5774a28`'s hazard is that a plain click reads as a zero-movement d3
+zoom gesture and rebuilds hit shapes mid-click. Two naive cycle-reset guards reintroduced it:
+resetting on any `"zoom"` event wiped the cycle on the PROGRAMMATIC `zoom.transform` that
+every selection redraw performs, and gating on `event.sourceEvent` still failed because a
+trusted sub-pixel mousemove makes d3 report a real user pan. The reset now compares actual
+transform magnitude (`k` delta >1e-6, or >0.5 px translation) — the same epsilon convention
+the existing `"end"` handler uses. First-click selection re-verified at k=1, after a wheel
+zoom, and after a drag pan.
+
+**Cost.** Hit shapes now rebuild on zoom rather than once per network load. Bounded by the
+same `drawZoomDependent` guard that already gates the point/segment floors, so a click or pan
+still rebuilds nothing.

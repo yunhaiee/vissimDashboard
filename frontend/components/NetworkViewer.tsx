@@ -161,6 +161,19 @@ const GLYPH_MIN_STROKE_PX = 2;     // glyph stroke widths (was 1.5)
 const GLYPH_HAIRLINE_PX = 1.4;     // fixed outline hairlines (was inline ~1 / 1.1 / 1.2)
 const HIT_POINT_MIN_PX = 11;       // point hit-target floor, screen px (was 9)
 const HIT_SEGMENT_MIN_PX = 14;     // segment hit-target floor, screen px (unchanged)
+// Defect 1 (2026-07-28) — link/connector hit-band floor, screen px, same
+// convention as the two floors above. Replaces the old `Math.max(roadW + 8, 12)`,
+// which was metre-true padding baked once outside drawZoomDependent: the +8
+// pad never shrank on zoom (it scaled right along with roadW), so a click
+// several metres off the asphalt could still select the link no matter how
+// far in the user zoomed. Now: above this floor the clickable band tracks the
+// drawn asphalt exactly (roadW, no extra padding); below it (a hairline
+// connector at low zoom) the band still gets a minimum on-screen width.
+const HIT_LINK_MIN_PX = 12;
+// Defect 2 (2026-07-28) — a click within this many screen px of the previous
+// click, with the candidate stack under the cursor unchanged, advances the
+// occlusion-stack cycle instead of reselecting the topmost hit shape.
+const CLICK_CYCLE_PX = 4;
 const SIGNAL_BAR_OFFSET_M = 0.8;   // red signal bar sits this far downstream of its stop line
 
 type NetworkLink = NetworkData["links"][number];
@@ -359,6 +372,13 @@ function applyLayerVisibility(svgEl: SVGSVGElement | null, hidden: Set<string>) 
 
 const FLASH_CLASS = "focus-flash";
 const FLASH_PULSE_CLASS = "focus-flash-pulse";
+// Defect 2 (occluded-element cycling, 2026-07-28) — every clickable/hoverable
+// hit shape (link/connector polylines, node hit circles, element hit
+// points/segments/polygons) carries this class so document.elementsFromPoint()
+// can be filtered down to "this diagram's interactive shapes" and walked in
+// DOM (= paint) order — topmost first, matching what a real click would have
+// hit — to cycle through whatever is stacked at one screen point.
+const HIT_CLASS = "nv-hit";
 
 // Approval-focus flash, applied the same way layer visibility is: by
 // re-selecting the CURRENT DOM through the attributes the draw passes already
@@ -425,11 +445,28 @@ export default function NetworkViewer({
   const zoomTransformRef = useRef<d3.ZoomTransform>(d3.zoomIdentity);
   const prevNetworkRef = useRef<NetworkData | null>(null);
 
+  // Defect 2 (2026-07-28) — repeat-click cycling through occluded hit shapes.
+  // Holds the LAST click's screen position and which index into that point's
+  // candidate stack it selected; a following click within CLICK_CYCLE_PX of
+  // this position advances to the next candidate instead of reselecting the
+  // topmost one. Reset on pointer movement past the threshold and on any
+  // zoom/pan transform change (both inside the draw effect below), and on
+  // selection-cleared (the effect just below this).
+  const clickCycleRef = useRef<{ x: number; y: number; index: number } | null>(null);
+
   const selectedNodeSet = useMemo(() => new Set((selectedNodeIds ?? []).map(String)), [selectedNodeIds]);
   // Stable scalar identity for the selected element, so a page re-rendering with
   // a fresh `{type, id}` object literal never forces a full redraw.
   const selectedElementKey = selectedElement ? `${selectedElement.type}:${selectedElement.id}` : "";
   const isEmpty = network.links.length === 0;
+
+  // Defect 2 — a fresh "nothing selected" state always starts the next
+  // repeat-click sequence from the topmost candidate again.
+  useEffect(() => {
+    if (selectedLinkId == null && selectedNodeSet.size === 0 && selectedElementKey === "") {
+      clickCycleRef.current = null;
+    }
+  }, [selectedLinkId, selectedNodeSet, selectedElementKey]);
 
   // Layer visibility. `hidden` holds hidden layer keys — seeded from
   // DEFAULT_HIDDEN_LAYERS so a row can ship default-off without any extra
@@ -609,11 +646,13 @@ export default function NetworkViewer({
     const gNodePoly = g.append("g").attr("data-layer", NODE_AREAS_KEY);
     const gElements = g.append("g"); // static elements: above roads/junctions, below selection
     const gOverlay = g.append("g");
-    const gHit = g.append("g"); // link hit targets only (metre-true, drawn once)
+    // Defect 1 (2026-07-28) — link hit targets. Screen-constant like the node/
+    // element hit floors below (HIT_LINK_MIN_PX), so rebuilt inside
+    // drawZoomDependent whenever k changes; no longer metre-true / drawn once.
+    const gHit = g.append("g");
     // Node hit circles get their own group, separate from gHit's link polylines,
     // because node hit radius is a pure fixed-pixel floor (Defect 1) and has to
-    // be redrawn every time the zoom factor k changes — the link polylines above
-    // do not.
+    // be redrawn every time the zoom factor k changes.
     const gHitNodes = g.append("g");
     // Element hover targets sit ABOVE gHit/gHitNodes so a glyph's tooltip wins
     // over the wide (invisible) link/node hit shapes it overlaps. Same
@@ -629,6 +668,71 @@ export default function NetworkViewer({
     });
     const isDragClick = (event: MouseEvent) =>
       event.defaultPrevented || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 5;
+
+    // Defect 2 (occluded-element cycling) — full interactive-shape stack at a
+    // screen point, filtered to THIS diagram's own hit shapes (elementsFromPoint
+    // returns topmost-first, i.e. already in the exact cycle order the spec
+    // wants — no re-sorting needed).
+    const candidatesAt = (clientX: number, clientY: number): Element[] => {
+      const svgEl = svgRef.current;
+      if (!svgEl || typeof document === "undefined" || typeof document.elementsFromPoint !== "function") return [];
+      return document.elementsFromPoint(clientX, clientY).filter(
+        (el) => el.classList.contains(HIT_CLASS) && el instanceof SVGElement && el.ownerSVGElement === svgEl,
+      );
+    };
+    // Appends a discoverability hint whenever more than one candidate sits
+    // under the cursor — the only signal (besides a second click actually
+    // doing something) that repeat-clicking is available here.
+    const withOverlapHint = (baseText: string, clientX: number, clientY: number): string => {
+      const n = candidatesAt(clientX, clientY).length;
+      if (n <= 1) return baseText;
+      return `${baseText} · ${t(`${n}개 겹침 · 다시 클릭`, `${n} overlapping · click again`, `${n}件重複 · もう一度クリック`)}`;
+    };
+
+    // Defect 2 — repeat-click cycling. A CAPTURE-phase listener runs before any
+    // hit shape's own bubble-phase "click" handler, so it can intercept a
+    // repeat click, stop it from reselecting the topmost shape again, and
+    // instead re-dispatch a synthetic click at the SAME point directly on the
+    // next candidate down the stack. That fires the target's own already-bound
+    // d3 click handler (onLinkClick/onNodeClick/onElementClick with its own
+    // closed-over arguments), so downstream selection behaviour is identical
+    // to a direct click — this never reimplements the callbacks. `isTrusted`
+    // distinguishes the real click that starts this from the synthetic one
+    // this handler itself dispatches, so the re-dispatch does not recurse.
+    svg.on(
+      "click.cycle",
+      (event: MouseEvent) => {
+        if (!event.isTrusted) return;
+        if (isDragClick(event)) return;
+        const { clientX, clientY } = event;
+        const candidates = candidatesAt(clientX, clientY);
+        const prev = clickCycleRef.current;
+        if (prev && candidates.length > 1 && Math.hypot(clientX - prev.x, clientY - prev.y) <= CLICK_CYCLE_PX) {
+          const nextIndex = (prev.index + 1) % candidates.length;
+          clickCycleRef.current = { x: clientX, y: clientY, index: nextIndex };
+          const target = candidates[nextIndex];
+          event.preventDefault();
+          event.stopPropagation();
+          target.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, cancelable: true, clientX, clientY, button: event.button }),
+          );
+          return;
+        }
+        // Fresh click (new spot, or only one candidate here): let the browser's
+        // own hit-testing dispatch to the topmost candidate as normal, and
+        // remember this as the anchor for a possible next repeat click.
+        clickCycleRef.current = candidates.length > 0 ? { x: clientX, y: clientY, index: 0 } : null;
+      },
+      { capture: true },
+    );
+    // Pointer movement past the threshold breaks the cycle — coming back to
+    // the same spot later starts over from the topmost candidate.
+    svg.on("mousemove.cycle", (event: MouseEvent) => {
+      const prev = clickCycleRef.current;
+      if (prev && Math.hypot(event.clientX - prev.x, event.clientY - prev.y) > CLICK_CYCLE_PX) {
+        clickCycleRef.current = null;
+      }
+    });
 
     // Pre-project every drawable link once; each layer below reuses this.
     const drawn = network.links
@@ -757,6 +861,11 @@ export default function NetworkViewer({
       gElementsHit.selectAll("*").remove();
       gOverlay.selectAll("*").remove();
       gHitNodes.selectAll("*").remove();
+      // Defect 1 (2026-07-28) — link/connector hit polylines moved in here
+      // (were drawn once, metre-true, outside drawZoomDependent) so their
+      // screen-constant HIT_LINK_MIN_PX floor can track the live zoom factor
+      // k. See the "Layer 7" block near the bottom of this function.
+      gHit.selectAll("*").remove();
 
       // Layer 3 — lane dividers + direction chevrons. Defect B (2026-07-27):
       // metre-true sizing with screen-space floors/caps (see the constants near
@@ -899,8 +1008,9 @@ export default function NetworkViewer({
       ) {
         if (ref) sel.attr("data-elkey", `${ref.type}:${ref.id}`);
         sel
+          .classed(HIT_CLASS, true)
           .on("mousemove", (event: MouseEvent) => {
-            setTooltip({ x: event.clientX, y: event.clientY, text });
+            setTooltip({ x: event.clientX, y: event.clientY, text: withOverlapHint(text, event.clientX, event.clientY) });
             if (ref) setElClass(ref, "el-hover", true);
           })
           .on("mouseleave", () => {
@@ -1331,15 +1441,42 @@ export default function NetworkViewer({
           .attr("cy", cy)
           .attr("r", 14 / k)
           .attr("fill", "transparent")
+          .classed(HIT_CLASS, true)
           .style("cursor", onNodeClick ? "pointer" : "default")
           .on("mousemove", (event: MouseEvent) => {
-            setTooltip({ x: event.clientX, y: event.clientY, text: nodeTooltipText });
+            setTooltip({ x: event.clientX, y: event.clientY, text: withOverlapHint(nodeTooltipText, event.clientX, event.clientY) });
           })
           .on("mouseleave", () => setTooltip(null));
         if (onNodeClick) {
           hit.on("click", (event: MouseEvent) => {
             if (isDragClick(event)) return;
             onNodeClick(String(node.id), nodeName);
+          });
+        }
+      });
+
+      // Layer 7 — invisible hit targets for links AND connectors. Defect 1
+      // (2026-07-28) — moved in here from a one-time, metre-true draw outside
+      // drawZoomDependent so the clickable band can be screen-constant (see
+      // HIT_LINK_MIN_PX above): above the floor it now tracks the drawn
+      // asphalt exactly, and it actually tightens as the user zooms in
+      // instead of staying fixed in world metres forever.
+      drawn.forEach(({ pointsAttr, roadW, tooltipText, isConn, link, linkName }) => {
+        const hit = gHit.append("polyline")
+          .attr("points", pointsAttr)
+          .attr("stroke", "transparent")
+          .attr("stroke-width", Math.max(roadW, HIT_LINK_MIN_PX / k))
+          .attr("fill", "none")
+          .classed(HIT_CLASS, true)
+          .style("cursor", onLinkClick ? "pointer" : "default")
+          .on("mousemove", (event: MouseEvent) => {
+            setTooltip({ x: event.clientX, y: event.clientY, text: withOverlapHint(tooltipText, event.clientX, event.clientY) });
+          })
+          .on("mouseleave", () => setTooltip(null));
+        if (onLinkClick) {
+          hit.on("click", (event: MouseEvent) => {
+            if (isDragClick(event)) return;
+            onLinkClick(String(link.id), linkName, isConn);
           });
         }
       });
@@ -1359,28 +1496,6 @@ export default function NetworkViewer({
     let lastDrawnK = zoomTransformRef.current.k;
     drawZoomDependent(lastDrawnK);
 
-    // Layer 7 — invisible hit targets for links only (metre-true, drawn once).
-    // Node hit circles live inside drawZoomDependent above (gHitNodes) because
-    // their floor is a fixed pixel size, not metre-true.
-    drawn.forEach(({ pointsAttr, roadW, tooltipText, isConn, link, linkName }) => {
-      const hit = gHit.append("polyline")
-        .attr("points", pointsAttr)
-        .attr("stroke", "transparent")
-        .attr("stroke-width", Math.max(roadW + 8, 12))
-        .attr("fill", "none")
-        .style("cursor", onLinkClick ? "pointer" : "default")
-        .on("mousemove", (event: MouseEvent) => {
-          setTooltip({ x: event.clientX, y: event.clientY, text: tooltipText });
-        })
-        .on("mouseleave", () => setTooltip(null));
-      if (onLinkClick) {
-        hit.on("click", (event: MouseEvent) => {
-          if (isDragClick(event)) return;
-          onLinkClick(String(link.id), linkName, isConn);
-        });
-      }
-    });
-
     // Zoom (preserve transform across redraws). Ceiling raised from a flat 10
     // to target ~30 px/metre on screen at max zoom (Defect 1's screen-constant
     // floors make deep zoom safe now — lane-level glyphs actually separate
@@ -1390,7 +1505,37 @@ export default function NetworkViewer({
       .scaleExtent([0.3, maxZoomK])
       .on("zoom", (event) => {
         g.attr("transform", event.transform);
+        // Defect 2 — a real user zoom/pan gesture invalidates the screen-
+        // point-to-candidate-stack mapping the click cycle relies on, so start
+        // the next click sequence over. Gated on the transform ACTUALLY
+        // moving (compared against the value this same handler is about to
+        // overwrite), not on `event.sourceEvent` truthiness or on k alone —
+        // two false positives were caught live testing this:
+        //  1. Every selection-triggered redraw re-creates this zoom behaviour
+        //     and calls `svg.call(zoom.transform, zoomTransformRef.current)`
+        //     below to restore the persisted transform. That call dispatches
+        //     a "zoom" event too; sourceEvent is null for it (a programmatic
+        //     call), same as any other `zoom.transform` call — already
+        //     handled correctly by staying off `sourceEvent` entirely here.
+        //  2. A plain click dispatched via CDP (mousedown+mouseup with the
+        //     SAME target coordinate) still produces one real, trusted
+        //     mousemove of a FRACTION of a pixel between down and up, which
+        //     d3-zoom's own pan-drag gesture treats as a legitimate (if
+        //     tiny) pan and dispatches with a real, non-null sourceEvent.
+        //     Gating on `event.sourceEvent` alone (an earlier version of
+        //     this fix) still wiped clickCycleRef on this micro-pan, right
+        //     after the SAME click's own interceptor had just set it — the
+        //     cycle could never advance past its first step. A >0.5px
+        //     translate / >1e-6 relative k threshold (same order as the
+        //     "end" handler's guard below) survives that jitter while still
+        //     catching every real pan or zoom gesture.
+        const prevT = zoomTransformRef.current;
+        const moved =
+          Math.abs(event.transform.k / prevT.k - 1) > 1e-6 ||
+          Math.abs(event.transform.x - prevT.x) > 0.5 ||
+          Math.abs(event.transform.y - prevT.y) > 0.5;
         zoomTransformRef.current = event.transform;
+        if (moved) clickCycleRef.current = null;
         // `sourceEvent` is the DOM event for a real gesture and null for a
         // programmatic `zoom.transform`. Recording the last gesture lets the
         // fit-to-bbox effect below abandon its settle if the user has taken
@@ -1430,12 +1575,22 @@ export default function NetworkViewer({
         // DOM, so the d3-attached "click" listener on the (now-orphaned) old
         // node never fired and the click was silently swallowed — hover still
         // worked (mousemove hits the live node) and link clicks still worked
-        // (link hit shapes are not rebuilt by drawZoomDependent), matching the
-        // reported symptom exactly. Fix: only redraw when k actually changed
-        // since the last element draw. A plain click or a pure pan never
-        // changes k, so they never rebuild; a real zoom gesture still gets its
-        // final, exact settle-redraw regardless of the 0.05 relative threshold
-        // the "zoom" handler above uses.
+        // (link hit shapes were not inside drawZoomDependent back then),
+        // matching the reported symptom exactly. Fix: only redraw when k
+        // actually changed since the last element draw. A plain click or a
+        // pure pan never changes k, so they never rebuild; a real zoom
+        // gesture still gets its final, exact settle-redraw regardless of the
+        // 0.05 relative threshold the "zoom" handler above uses.
+        //
+        // Defect 1 (2026-07-28) folded the link/connector hit polylines INTO
+        // drawZoomDependent too (they need the live k for their screen-
+        // constant hit-band floor — see HIT_LINK_MIN_PX). That re-creates the
+        // exact hazard above unless this same guard still covers them, which
+        // it does: this "end" handler is the only path that can rebuild
+        // drawZoomDependent between a mouseup and its click, and it only
+        // fires the rebuild when k truly changed. A zero-movement click never
+        // changes k, so link hit shapes — like every other hit shape — survive
+        // untouched through the click; proven live, not just by this comment.
         const k = zoomTransformRef.current.k;
         if (Math.abs(k / lastDrawnK - 1) > 1e-6) drawZoomDependent(k);
       });
