@@ -1960,6 +1960,160 @@ export async function uploadBaseWorkbook(file: File): Promise<BaseWorkbookRespon
   throw new Error(`Failed to upload validation workbook. Tried API: ${triedBases}. Last network error: ${detail}`);
 }
 
+// Flexible base-workbook mapping (backend/services/workbook_mapping.py):
+// upload ANY spreadsheet, inspect its sheets, map columns to the fields the
+// dashboard needs. `uploadBaseWorkbook` above stays the FIRST thing tried --
+// this flow is only for files that come back from it with warnings (a
+// non-template layout). See that module's docstring for the self-comparison
+// trap `WorkbookMappingRefusedError` exists to make un-ignorable.
+
+export interface WorkbookMappingFieldGuess {
+  column: number;
+  header: string;
+  source: "alias" | "remembered";
+  matched_alias: string | null;
+}
+
+export interface WorkbookInspectSheet {
+  name: string;
+  header_row: number;
+  headers: string[];
+  columns: string[];
+  sample_rows: Array<Array<string | number | boolean | null>>;
+  sample_truncated: boolean;
+  max_row: number;
+  max_col: number;
+  columns_truncated?: boolean;
+  proposed_counts_mapping: Record<string, WorkbookMappingFieldGuess>;
+  proposed_travel_times_mapping: Record<string, WorkbookMappingFieldGuess>;
+  // Present only when this one sheet failed to parse -- inspect never fails
+  // the whole request over one malformed sheet (see inspect_workbook's
+  // per-sheet try/except).
+  error?: string;
+}
+
+export interface WorkbookInspectProposedBlock {
+  sheet: string;
+  header_row: number;
+  fields: Record<string, WorkbookMappingFieldGuess>;
+}
+
+export interface WorkbookInspectResponse {
+  upload_token: string;
+  filename: string;
+  sheets: WorkbookInspectSheet[];
+  sheets_truncated: boolean;
+  proposed_mapping: {
+    counts: WorkbookInspectProposedBlock | null;
+    travel_times: WorkbookInspectProposedBlock | null;
+  };
+}
+
+export interface WorkbookMappingSpec {
+  sheet: string;
+  header_row: number;
+  fields: Record<string, number>;
+}
+
+export interface WorkbookMappingIssue {
+  code: string;
+  ko: string;
+  en: string;
+  ja: string;
+}
+
+export interface WorkbookMappingPreviewBlock<TRow> {
+  field_columns: Record<string, number>;
+  total_rows: number;
+  rows: TRow[];
+  truncated: boolean;
+  issues: WorkbookMappingIssue[];
+}
+
+export interface WorkbookMappingPreviewResponse {
+  counts_preview: WorkbookMappingPreviewBlock<BaseWorkbookCountRow> | null;
+  travel_times_preview: WorkbookMappingPreviewBlock<BaseWorkbookTravelTimeRow> | null;
+}
+
+export interface WorkbookMappingRequestBody {
+  upload_token: string;
+  counts?: WorkbookMappingSpec;
+  travel_times?: WorkbookMappingSpec;
+}
+
+// Thrown by importBaseWorkbookMapping when the backend refuses the import
+// (400 with `{detail: {issues: [...]}}`) -- distinct from a generic Error so
+// the mapping UI can render each localized {ko, en, ja} reason inline
+// instead of one flat error string.
+export class WorkbookMappingRefusedError extends Error {
+  issues: WorkbookMappingIssue[];
+
+  constructor(issues: WorkbookMappingIssue[]) {
+    super(issues.map((issue) => issue.en).join(" "));
+    this.name = "WorkbookMappingRefusedError";
+    this.issues = issues;
+  }
+}
+
+export async function inspectBaseWorkbook(file: File): Promise<WorkbookInspectResponse> {
+  const filename = encodeURIComponent(file.name);
+  const path = `/api/validation/base-workbook/inspect?filename=${filename}`;
+  const r = await apiMutationFetch(path, { method: "POST", cache: "no-store", body: file });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+export async function resolveBaseWorkbookMappingSheet(
+  token: string,
+  sheet: string,
+  headerRow: number,
+): Promise<WorkbookInspectSheet> {
+  const params = new URLSearchParams({ sheet, header_row: String(headerRow) });
+  const r = await apiFetch(`/api/validation/base-workbook/mapping/${encodeURIComponent(token)}/resolve?${params.toString()}`, {
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+export async function previewBaseWorkbookMapping(payload: WorkbookMappingRequestBody): Promise<WorkbookMappingPreviewResponse> {
+  const r = await apiMutationFetch("/api/validation/base-workbook/mapping/preview", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+export async function importBaseWorkbookMapping(payload: WorkbookMappingRequestBody): Promise<BaseWorkbookResponse> {
+  const r = await apiMutationFetch("/api/validation/base-workbook/mapping/import", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (r.ok) return r.json();
+
+  if (r.status === 400) {
+    const text = await r.text();
+    try {
+      const data = JSON.parse(text) as { detail?: { issues?: WorkbookMappingIssue[] } };
+      if (data.detail && Array.isArray(data.detail.issues) && data.detail.issues.length > 0) {
+        throw new WorkbookMappingRefusedError(data.detail.issues);
+      }
+      const plainDetail = (data as { detail?: unknown }).detail;
+      throw new Error(typeof plainDetail === "string" ? plainDetail : text);
+    } catch (parseError) {
+      if (parseError instanceof WorkbookMappingRefusedError) throw parseError;
+      throw new Error(text || `${r.status} ${r.statusText}`);
+    }
+  }
+
+  throw new Error(await readApiError(r));
+}
+
 // Phase 3 P3: resolved vehicle-trajectory playback frames
 // (backend/services/trajectory_reader.py + backend/routers/trajectories.py).
 // Positions are resolved server-side (lane_offset_point/point_at_pos) against

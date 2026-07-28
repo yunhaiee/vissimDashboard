@@ -2311,3 +2311,43 @@ zoom, and after a drag pan.
 **Cost.** Hit shapes now rebuild on zoom rather than once per network load. Bounded by the
 same `drawZoomDependent` guard that already gates the point/segment floors, so a click or pan
 still rebuilds nothing.
+
+---
+
+## 2026-07-28 — Column-mapping workbook import, and the four refusals it must make
+
+**Context.** TK's bundle contains no observed counts (see `docs/model-questions-for-tk.md`), so
+the base-model validation tab could only ever be fed by a workbook shaped like our own
+template. Users need to import whatever shape their survey actually arrives in.
+
+**Decision.** Upload is tried against the EXISTING template path first; the mapping UI appears
+only when that comes back with warnings. A conforming `real_counts.xlsx` therefore still
+imports in one click and gains no new step. Auto-mapping reuses `COUNT_HEADER_ALIASES` (already
+ko/en aware) plus a remembered mapping keyed on a header-text signature, so the second import of
+a recurring format is also click-free. Explicit mappings run through the SAME
+`_parse_counts_sheet` row builders as the template path — `headers`/`min_row` became optional
+parameters rather than a parallel implementation, because two importers would drift.
+
+**The refusals are the point.** This feature's failure mode is not a crash, it is a confidently
+wrong green. Four refusals block the import (not merely warn), and none of them can be clicked
+past:
+1. `counts_required_field_unmapped`
+2. `counts_observed_model_same_column`
+3. `counts_observed_no_numeric_values`
+4. `counts_self_comparison_trap` — observed and model mapped to DIFFERENT columns whose values
+   are nonetheless identical row-for-row.
+
+(4) is the one that matters. Mapping modelled turning movements into the observed slot makes GEH
+compare the model against itself and pass 100% forever — the exact outcome we refused to build
+when TK's workbook turned out to hold only modelled scenarios. Identity is `abs(a-b) < 1e-9`
+across every valid pair, minimum two pairs.
+
+**Verified independently of the unit's own fixtures.** Controller-built workbooks: all four codes
+fire; a normal workbook imports clean; a near-miss with 3 of 4 rows identical does NOT fire, so
+the check is not trigger-happy; and `import_mapping` itself raises rather than only the preview
+flagging it — a preview-only guard would have been worthless.
+
+**Known wart, deliberately not fixed here.** A non-conforming upload still hits the legacy upload
+endpoint first, so cancelling the mapping modal leaves that transient file active. That matches
+today's behavior for any bad upload, but cancel is now a NORMAL action in this flow rather than an
+error path, so it deserves its own fix.

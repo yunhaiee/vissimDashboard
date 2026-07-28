@@ -28,7 +28,7 @@ def _isolate_ambient_machine_state(tmp_path_factory: pytest.TempPathFactory):
     attributes onto their own tmp dirs, which composes fine — their
     function-scoped monkeypatch wins for the test, then restores these values.
     """
-    from services import datasets, simulation_runs
+    from services import datasets, simulation_runs, workbook_mapping
 
     mp = pytest.MonkeyPatch()
     ambient_root = tmp_path_factory.mktemp("ambient-state")
@@ -45,6 +45,13 @@ def _isolate_ambient_machine_state(tmp_path_factory: pytest.TempPathFactory):
     simulation_root = ambient_root / "simulations"
     mp.setattr(simulation_runs, "SIMULATION_ROOT", simulation_root)
     mp.setattr(simulation_runs, "REGISTRY_PATH", simulation_root / "simulation_runs.json")
+
+    # services/workbook_mapping.py stages uploaded workbooks and remembers
+    # confirmed mappings outside of datasets.UPLOAD_DIR -- isolate those too
+    # so a real dev machine's staged files/memory never leak into a test run
+    # (and a test run never leaves stray files under the real runtime/ dir).
+    mp.setattr(workbook_mapping, "STAGING_DIR", ambient_root / "uploads" / "staging")
+    mp.setattr(workbook_mapping, "MAPPING_MEMORY_PATH", ambient_root / "uploads" / "mapping_memory.json")
 
     yield
     mp.undo()

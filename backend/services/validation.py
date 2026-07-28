@@ -456,23 +456,52 @@ def _adjust_for_unlabeled_direction_column(ws, headers: dict[str, int]) -> None:
         headers["model_volume"] = observed_idx - 1
 
 
-def _parse_counts_sheet(ws, warnings: list[str]) -> list[BaseWorkbookCountRow]:
-    headers = _canonical_headers_for_sheet(ws, COUNT_HEADER_ALIASES)
-    _adjust_for_unlabeled_direction_column(ws, headers)
-    has_standard_shape = {"period", "node_id", "node_name", "movement", "observed_volume"}.issubset(headers)
-    has_simple_shape = {"time_range", "node_name", "movement", "observed_volume"}.issubset(headers)
-    has_vissim_shape = {"time_range", "movement", "model_volume", "observed_volume"}.issubset(headers)
-    if not has_standard_shape and not has_simple_shape and not has_vissim_shape:
-        warnings.append(
-            "Counts sheet is missing required columns. Use either "
-            "period/node_id/node_name/movement/observed_volume or "
-            "time_range/node_name/movement/observed_volume or "
-            "Vissim Node Results columns TimeInt/Movement/Vehs(All)/Observed."
-        )
-        return []
+def _parse_counts_sheet(
+    ws,
+    warnings: list[str],
+    headers: dict[str, int] | None = None,
+    min_row: int = 2,
+) -> list[BaseWorkbookCountRow]:
+    """Build normalized count rows from a worksheet.
+
+    ``headers`` defaults to ``None``, which preserves the original behavior
+    exactly: canonical headers are auto-detected from row 1 via
+    :func:`_canonical_headers_for_sheet` + :func:`COUNT_HEADER_ALIASES`, the
+    sheet is rejected (with a warning) unless it matches one of the three
+    known shapes, and data starts at row 2.
+
+    The mapping-import feature (``services/workbook_mapping.py``) instead
+    passes an EXPLICIT ``headers`` dict (canonical field name -> 0-indexed
+    column, chosen by the user via the mapping UI) and a ``min_row`` for the
+    row right after whatever header row the user picked. That reuses this
+    exact same row-building logic (node id/name parsing, movement
+    normalization, period detection, ...) so downstream GEH/validation math
+    never diverges between the two import paths — the explicit-mapping
+    caller is trusted to have already checked required fields itself (see
+    ``validate_counts_mapping``), so the shape-detection gate below is
+    skipped in that case.
+    """
+    if headers is None:
+        headers = _canonical_headers_for_sheet(ws, COUNT_HEADER_ALIASES)
+        _adjust_for_unlabeled_direction_column(ws, headers)
+        has_standard_shape = {"period", "node_id", "node_name", "movement", "observed_volume"}.issubset(headers)
+        has_simple_shape = {"time_range", "node_name", "movement", "observed_volume"}.issubset(headers)
+        has_vissim_shape = {"time_range", "movement", "model_volume", "observed_volume"}.issubset(headers)
+        if not has_standard_shape and not has_simple_shape and not has_vissim_shape:
+            warnings.append(
+                "Counts sheet is missing required columns. Use either "
+                "period/node_id/node_name/movement/observed_volume or "
+                "time_range/node_name/movement/observed_volume or "
+                "Vissim Node Results columns TimeInt/Movement/Vehs(All)/Observed."
+            )
+            return []
+    else:
+        # An explicit mapping never carries the packed Vissim "1: name W-E"
+        # movement string -- the user maps a plain movement column directly.
+        has_vissim_shape = False
 
     rows: list[BaseWorkbookCountRow] = []
-    for excel_row in ws.iter_rows(min_row=2, values_only=True):
+    for excel_row in ws.iter_rows(min_row=min_row, values_only=True):
         values = _row_as_dict(headers, excel_row)
         period = _normalize_period(values.get("period")) or _period_from_time_range(values.get("time_range"))
         raw_node_id = _clean_string(values.get("node_id"))
@@ -589,10 +618,24 @@ def _parse_travel_times_sheet(ws, warnings: list[str]) -> list[BaseWorkbookTrave
     return []
 
 
-def _parse_travel_times_standard(ws) -> list[BaseWorkbookTravelTimeRow]:
-    headers = _headers_for_sheet(ws)
+def _parse_travel_times_standard(
+    ws,
+    headers: dict[str, int] | None = None,
+    min_row: int = 2,
+) -> list[BaseWorkbookTravelTimeRow]:
+    """Build normalized travel-time rows from a worksheet using the canonical
+    (non-Vissim-export) header shape.
+
+    Same ``headers``/``min_row`` override contract as :func:`_parse_counts_sheet`
+    -- ``None`` preserves the exact original auto-detected-row-1 behavior;
+    the mapping-import feature passes an explicit column mapping + the row
+    right after the user-picked header row, reusing this exact row-building
+    logic.
+    """
+    if headers is None:
+        headers = _headers_for_sheet(ws)
     rows: list[BaseWorkbookTravelTimeRow] = []
-    for excel_row in ws.iter_rows(min_row=2, values_only=True):
+    for excel_row in ws.iter_rows(min_row=min_row, values_only=True):
         values = _row_as_dict(headers, excel_row)
         period = _normalize_period(values.get("period"))
         route_id = _clean_string(values.get("route_id"))

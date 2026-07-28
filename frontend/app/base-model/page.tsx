@@ -30,11 +30,13 @@ import {
 } from "@/lib/validationThresholds";
 import BaseValidationMap, { type BaseValidationMapNode } from "@/components/BaseValidationMap";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
+import WorkbookMappingModal from "@/components/WorkbookMappingModal";
 import {
   fetchActiveDataset,
   fetchBaseWorkbook,
   fetchResults,
   fetchScenarios,
+  inspectBaseWorkbook,
   resetBaseWorkbook,
   uploadBaseWorkbook,
   type ActiveDataset,
@@ -43,6 +45,7 @@ import {
   type BaseWorkbookTravelTimeRow,
   type ScenarioMeta,
   type ScenarioResults,
+  type WorkbookInspectResponse,
 } from "@/lib/api";
 
 type Period = "AM" | "PM";
@@ -188,6 +191,11 @@ export default function BaseModelPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedValidationNodeIds, setSelectedValidationNodeIds] = useState<string[]>([]);
   const [activeValidationNodeId, setActiveValidationNodeId] = useState<string | null>(null);
+  // Column-mapping flow (non-template workbook layouts): set once an
+  // uploaded file comes back from the standard importer with warnings, so
+  // the mapping modal can offer a way forward instead of leaving the user
+  // stuck. See WorkbookMappingModal + backend/services/workbook_mapping.py.
+  const [mappingInspect, setMappingInspect] = useState<WorkbookInspectResponse | null>(null);
   const requestSerial = useRef(0);
 
   const selectedScenarioId = period === "AM" ? amScenarioId : pmScenarioId;
@@ -399,13 +407,35 @@ export default function BaseModelPage() {
     setUploading(true);
     setError(null);
     try {
+      // Try the standard template importer first -- a file shaped like
+      // real_counts.xlsx (sheets literally named Counts/TravelTimes) imports
+      // exactly as it always has, zero extra steps.
       const nextWorkbook = await uploadBaseWorkbook(file);
       setWorkbook(nextWorkbook);
+      const mapsCleanly = nextWorkbook.warnings.length === 0 && (nextWorkbook.counts.length > 0 || nextWorkbook.travel_times.length > 0);
+      if (mapsCleanly) return;
+
+      // Non-conforming layout (real consulting workbooks rarely use the
+      // template's sheet names/columns) -- offer the column-mapping flow
+      // instead of leaving the user with an unexplained empty dashboard.
+      try {
+        const inspected = await inspectBaseWorkbook(file);
+        setMappingInspect(inspected);
+      } catch (inspectError) {
+        setError(inspectError instanceof Error ? inspectError.message : String(inspectError));
+      }
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : String(uploadError));
     } finally {
       setUploading(false);
     }
+  }, []);
+
+  const handleMappingClose = useCallback(() => setMappingInspect(null), []);
+
+  const handleMappingImported = useCallback((nextWorkbook: BaseWorkbookResponse) => {
+    setWorkbook(nextWorkbook);
+    setMappingInspect(null);
   }, []);
 
   const handleWorkbookReset = useCallback(async () => {
@@ -503,6 +533,9 @@ export default function BaseModelPage() {
 
   return (
     <div className="mx-auto w-full max-w-[96rem] space-y-6 pb-16">
+      {mappingInspect && (
+        <WorkbookMappingModal inspectResult={mappingInspect} onClose={handleMappingClose} onImported={handleMappingImported} />
+      )}
       <section className="px-1">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
