@@ -31,6 +31,15 @@ import { linkKindLabel } from "./networkElements";
 
 export type Translator = (ko: string, en: string, ja?: string) => string;
 
+/** The parts of a hit these functions actually read -- callers that only
+ * have a hit's raw parts (e.g. a stored selection carrying data instead of a
+ * baked string, so a display can re-localize on a later render) don't need
+ * to keep the full `NetworkSearchHit` (its `match`/`focus` fields) around
+ * just to satisfy this module's signatures. `NetworkSearchHit` itself
+ * structurally satisfies this type, so existing full-hit callers are
+ * unaffected. */
+export type SearchHitLabelParts = Pick<NetworkSearchHit, "type" | "id" | "name" | "label">;
+
 const SEARCH_TYPE_LABELS: Record<string, { ko: string; en: string; ja: string }> = {
   node: { ko: "노드", en: "Node", ja: "ノード" },
   signal_controller: { ko: "신호제어기", en: "Signal controller", ja: "信号制御機" },
@@ -56,7 +65,7 @@ const SEARCH_TYPE_LABELS: Record<string, { ko: string; en: string; ja: string }>
  * (via the connector flag search's own `label.detail.connector` carries),
  * the class noun for everything else. Unknown/future family types fall back
  * to the raw type token rather than throwing. */
-export function searchHitTypeLabel(hit: NetworkSearchHit, t: Translator): string {
+export function searchHitTypeLabel(hit: SearchHitLabelParts, t: Translator): string {
   if (hit.type === "link") {
     return linkKindLabel(Boolean(hit.label.detail.connector), t);
   }
@@ -66,7 +75,7 @@ export function searchHitTypeLabel(hit: NetworkSearchHit, t: Translator): string
 
 /** The one human string every consumer renders for a hit: "<type> <id> ·
  * <name>", or "<type> <id>" when the object has no name (routes). */
-export function searchHitDisplayLabel(hit: NetworkSearchHit, t: Translator): string {
+export function searchHitDisplayLabel(hit: SearchHitLabelParts, t: Translator): string {
   const typeLabel = searchHitTypeLabel(hit, t);
   const name = hit.name?.trim();
   return name ? `${typeLabel} ${hit.id} · ${name}` : `${typeLabel} ${hit.id}`;

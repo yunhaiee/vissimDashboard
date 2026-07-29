@@ -32,6 +32,7 @@ import {
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, objectBelongsToNode, resolveLosGrade, type LosGrade } from "@/lib/los";
 import { elementTypeLabel, linkKindLabel, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 import { buildFocusFlash, nextFocusNonce, useFocusPulse, type FocusBbox, type FocusElementRef } from "@/lib/networkFocus";
+import { searchHitDisplayLabel, type SearchHitLabelParts } from "@/lib/networkSearchLabel";
 import {
   addAllCapped,
   elementKey,
@@ -229,7 +230,7 @@ export default function DashboardPage() {
     key: string;
     bbox: FocusBbox;
     elements: FocusElementRef[];
-    label: string;
+    hit: SearchHitLabelParts;
   } | null>(null);
   // P2: the floating assistant's current agent session id, mirrored here via
   // the "vissim:agent-session" event so the diagram viewer can show that
@@ -709,7 +710,7 @@ export default function DashboardPage() {
       key: nextFocusNonce(),
       bbox: selection.bbox,
       elements: selection.elements,
-      label: selection.label,
+      hit: selection.hit,
     });
   }, []);
 
@@ -974,7 +975,7 @@ export default function DashboardPage() {
                         <span className="font-semibold text-slate-700">
                           {t("검색 결과 강조", "Search result highlighted", "検索結果をハイライト")}
                         </span>
-                        <span className="text-slate-500">{diagramSearchSelection.label}</span>
+                        <span className="text-slate-500">{searchHitDisplayLabel(diagramSearchSelection.hit, t)}</span>
                         <button
                           type="button"
                           onClick={() => setDiagramSearchSelection(null)}

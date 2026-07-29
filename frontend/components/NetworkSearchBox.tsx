@@ -26,7 +26,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import { fetchNetworkSearch, type NetworkSearchHit } from "@/lib/api";
-import { searchHitDisplayLabel, searchHitTypeLabel } from "@/lib/networkSearchLabel";
+import { searchHitTypeLabel, type SearchHitLabelParts } from "@/lib/networkSearchLabel";
 
 // Long enough that a number typed at speed ("2140") is one request rather than
 // four, short enough that the dropdown still feels attached to the keyboard.
@@ -36,10 +36,16 @@ const RESULT_LIMIT = 20;
 export interface NetworkSearchSelection {
   bbox: { x_min: number; y_min: number; x_max: number; y_max: number };
   elements: { type: string; id: string }[];
-  /** Already-composed, already-localized display string (searchHitDisplayLabel) --
-   * so a host page's banner can quote exactly what the dropdown row said,
-   * without re-importing the label table itself. */
-  label: string;
+  /** Raw parts (NOT a pre-composed string) needed to reconstruct the same
+   * display label searchHitDisplayLabel() renders for this hit's dropdown
+   * row. A host page's banner calls searchHitDisplayLabel(selection.hit, t)
+   * itself, at render time, with its OWN current `t` -- so the banner
+   * re-localizes on a language switch instead of freezing whatever `t` was
+   * live when the user clicked. Baking the composed string into this type
+   * once regressed exactly that (language switch didn't touch the banner);
+   * carrying data instead of a string is what keeps the bug from coming
+   * back. */
+  hit: SearchHitLabelParts;
 }
 
 type Status = "idle" | "loading" | "ok" | "error";
@@ -141,10 +147,10 @@ export default function NetworkSearchBox({
       onSelect({
         bbox: hit.focus.bbox,
         elements: hit.focus.elements.map((element) => ({ type: element.type, id: element.id })),
-        label: searchHitDisplayLabel(hit, t),
+        hit: { type: hit.type, id: hit.id, name: hit.name, label: hit.label },
       });
     },
-    [onSelect, t],
+    [onSelect],
   );
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {

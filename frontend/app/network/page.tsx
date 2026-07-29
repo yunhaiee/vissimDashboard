@@ -26,6 +26,7 @@ import {
   type FocusBbox,
   type FocusElementRef,
 } from "@/lib/networkFocus";
+import { searchHitDisplayLabel, type SearchHitLabelParts } from "@/lib/networkSearchLabel";
 import {
   addAllCapped,
   elementKey,
@@ -37,6 +38,7 @@ import {
   toggleItem,
 } from "@/lib/networkSelection";
 import { buildVehicleInputStacks, vehicleInputCompositionLabel } from "@/lib/vehicleInputStack";
+
 
 // NetworkViewer draws with d3 straight against the DOM, so it must stay
 // client-only (same reason DashboardMap/Leaflet is dynamically imported).
@@ -264,7 +266,7 @@ function NetworkPageContent() {
     key: string;
     bbox: FocusBbox;
     elements: FocusElementRef[];
-    label: string;
+    hit: SearchHitLabelParts;
   } | null>(null);
   const searchPulsing = useFocusPulse(searchSelection?.key ?? "");
   const searchFocusFlash = useMemo(
@@ -279,7 +281,7 @@ function NetworkPageContent() {
         key: nextFocusNonce(),
         bbox: selection.bbox,
         elements: selection.elements,
-        label: selection.label,
+        hit: selection.hit,
       });
     },
     [dismissFocus],
@@ -652,7 +654,7 @@ function NetworkPageContent() {
               : t("승인 대상 강조", "Approval target highlighted", "承認対象をハイライト")}
           </span>
           {searchSelection ? (
-            <span className="text-slate-500">{searchSelection.label}</span>
+            <span className="text-slate-500">{searchHitDisplayLabel(searchSelection.hit, t)}</span>
           ) : (
             focusBanner && <span className="text-slate-500">{focusBanner}</span>
           )}

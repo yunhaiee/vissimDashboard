@@ -2558,3 +2558,18 @@ candidate-selected check.
 
 **Known accepted limits:** a link crossing the box with no vertex inside is missed; box hit-test
 uses un-fanned element anchors; tooltips aren't suppressed mid-drag.
+
+## 2026-07-29 — Network search banner: carry hit data, not a baked label
+
+**Trigger.** `NetworkSearchSelection.label` was composed by `searchHitDisplayLabel(hit, t)` at
+CLICK time and stored as a string, so the banner froze in whatever language was active when the
+user clicked — a later ko→en/ja switch re-rendered every string on the page except this one.
+
+**Shipped.** The selection now carries `hit: SearchHitLabelParts` — the `{type, id, name,
+label}` subset the label helper actually reads, `Pick`ed from `NetworkSearchHit` — and both host
+pages (`/network`, `/dashboard` diagram) compose the string inline at render, so it re-localizes
+with everything else. The baked `label` field was removed outright rather than deprecated: the
+type has exactly two consumers, and a lingering pre-composed field invites the same bug back.
+Every other consumer of the stored selection was traced on both pages (pulse key, focus-flash
+memo, bbox zoom, clear button — all read data fields, none read the label); no moment-in-time
+snapshot consumer existed, so nothing legitimately keeps click-time composition.
