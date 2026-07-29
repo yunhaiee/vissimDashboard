@@ -38,6 +38,15 @@ def _shadow_model(
     signal_programs: list[dict[str, Any]] | None = None,
     evaluation_config: dict[str, Any] | None = None,
     priority_rules: list[dict[str, Any]] | None = None,
+    vehicle_types: list[dict[str, Any]] | None = None,
+    model2d3d_distributions: list[dict[str, Any]] | None = None,
+    weight_distributions: list[dict[str, Any]] | None = None,
+    power_distributions: list[dict[str, Any]] | None = None,
+    des_accel_functions: list[dict[str, Any]] | None = None,
+    max_accel_functions: list[dict[str, Any]] | None = None,
+    des_decel_functions: list[dict[str, Any]] | None = None,
+    max_decel_functions: list[dict[str, Any]] | None = None,
+    curve_speed_functions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -99,6 +108,27 @@ def _shadow_model(
     # same reasoning as the object classes above.
     if priority_rules is not None:
         shadow["priority_rules"] = priority_rules
+    # vehicle_types + its 8 target collections deliberately OMITTED by
+    # default too (QUEUE (v2a) unit) -- same reasoning as the object classes
+    # above.
+    if vehicle_types is not None:
+        shadow["vehicle_types"] = vehicle_types
+    if model2d3d_distributions is not None:
+        shadow["model2d3d_distributions"] = model2d3d_distributions
+    if weight_distributions is not None:
+        shadow["weight_distributions"] = weight_distributions
+    if power_distributions is not None:
+        shadow["power_distributions"] = power_distributions
+    if des_accel_functions is not None:
+        shadow["des_accel_functions"] = des_accel_functions
+    if max_accel_functions is not None:
+        shadow["max_accel_functions"] = max_accel_functions
+    if des_decel_functions is not None:
+        shadow["des_decel_functions"] = des_decel_functions
+    if max_decel_functions is not None:
+        shadow["max_decel_functions"] = max_decel_functions
+    if curve_speed_functions is not None:
+        shadow["curve_speed_functions"] = curve_speed_functions
     return shadow
 
 
@@ -277,6 +307,31 @@ def _priority_rule(
         "affect_driv_dir": affect_driv_dir,
         "slow_down_dist": slow_down_dist,
         "conflict_markers": conflict_markers,
+    }
+
+
+def _vehicle_type(
+    no: str,
+    *,
+    name: str = "HGV",
+    category: str = "HGV",
+    weight_distr_no: str | None = "2",
+    referencing_composition_nos: list[str] | None = None,
+) -> dict[str, Any]:
+    referencing = referencing_composition_nos or []
+    return {
+        "no": no,
+        "name": name,
+        "category": category,
+        "capacity": 0.0,
+        "cap_exact": False,
+        "weight_distr_no": weight_distr_no,
+        "references": {"weight_distr": None},
+        "referencing_composition_nos": {
+            "count": len(referencing),
+            "ids": referencing[:10],
+            "truncated": len(referencing) > 10,
+        },
     }
 
 
@@ -3873,6 +3928,128 @@ def test_priority_rule_object_not_found_fires_for_bogus_rule_no():
 
 
 # ---------------------------------------------------------------------------
+# vehicle_type_reference_target_not_found / vehicle_type_shared_by_
+# compositions -- QUEUE (v2a) unit: vehicle type properties, SCALARS/
+# REFERENCES only.
+# ---------------------------------------------------------------------------
+
+_VEHICLE_TYPE_FIXTURE = [_vehicle_type("200", weight_distr_no="2")]
+_WEIGHT_DISTRIBUTIONS_FIXTURE = [
+    {"no": "2", "name": "", "min": 2800.0, "max": 40000.0, "mean": 21400.0, "point_count": 2},
+    {"no": "3", "name": "", "min": 4000.0, "max": 12000.0, "mean": 8000.0, "point_count": 2},
+]
+
+
+def test_vehicle_type_object_not_found_fires_for_bogus_vehicle_type_no():
+    shadow = _shadow_model(vehicle_types=_VEHICLE_TYPE_FIXTURE, weight_distributions=_WEIGHT_DISTRIBUTIONS_FIXTURE)
+    action = _action("set_vehicle_type_reference", vehicle_type_no="999", field="weight_distr", target_no="3")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["object_class"] == "vehicle_types"
+
+
+def test_vehicle_type_reference_target_not_found_fires_for_a_bogus_target():
+    shadow = _shadow_model(vehicle_types=_VEHICLE_TYPE_FIXTURE, weight_distributions=_WEIGHT_DISTRIBUTIONS_FIXTURE)
+    action = _action("set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="999999")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "vehicle_type_reference_target_not_found"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    assert finding.details["field"] == "weight_distr"
+    assert finding.details["available"] == ["2", "3"]
+
+
+def test_vehicle_type_reference_target_not_found_checks_the_collection_matching_the_field():
+    # target_no="999999" would be VALID for des_accel_func (not fixtured
+    # here, so its own shadow list is empty/absent) -- the check must
+    # validate against weight_distributions specifically because field is
+    # "weight_distr", never against a different reference's collection.
+    shadow = _shadow_model(
+        vehicle_types=_VEHICLE_TYPE_FIXTURE,
+        weight_distributions=_WEIGHT_DISTRIBUTIONS_FIXTURE,
+        des_accel_functions=[{"no": "999999", "name": "irrelevant"}],
+    )
+    action = _action("set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="999999")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert any(f.constraint_id == "vehicle_type_reference_target_not_found" for f in findings)
+
+
+def test_vehicle_type_reference_target_not_found_silent_for_a_real_target():
+    shadow = _shadow_model(vehicle_types=_VEHICLE_TYPE_FIXTURE, weight_distributions=_WEIGHT_DISTRIBUTIONS_FIXTURE)
+    action = _action("set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="3")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_type_reference_target_not_found" for f in findings)
+
+
+def test_vehicle_type_reference_target_not_found_does_not_apply_to_other_tools():
+    shadow = _shadow_model(weight_distributions=_WEIGHT_DISTRIBUTIONS_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_type_reference_target_not_found" for f in findings)
+
+
+def test_vehicle_type_shared_by_compositions_fires_and_caps_the_list():
+    shadow = _shadow_model(
+        vehicle_types=[
+            _vehicle_type("200", referencing_composition_nos=[str(i) for i in range(1, 12)])  # 11 compositions
+        ],
+        weight_distributions=_WEIGHT_DISTRIBUTIONS_FIXTURE,
+    )
+    action = _action("set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="3")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "vehicle_type_shared_by_compositions"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "warn"
+    assert finding.details["referencing_compositions"]["count"] == 11
+    assert "more" in finding.messages["en"] or "외" in finding.messages["ko"]
+
+
+def test_vehicle_type_shared_by_compositions_silent_when_no_references():
+    shadow = _shadow_model(
+        vehicle_types=[_vehicle_type("200", referencing_composition_nos=[])],
+        weight_distributions=_WEIGHT_DISTRIBUTIONS_FIXTURE,
+    )
+    action = _action("set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="3")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_type_shared_by_compositions" for f in findings)
+
+
+def test_vehicle_type_shared_by_compositions_silent_when_target_missing():
+    shadow = _shadow_model(vehicle_types=[], weight_distributions=_WEIGHT_DISTRIBUTIONS_FIXTURE)
+    action = _action("set_vehicle_type_reference", vehicle_type_no="999", field="weight_distr", target_no="3")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_type_shared_by_compositions" for f in findings)
+
+
+def test_vehicle_type_shared_by_compositions_does_not_apply_to_other_tools():
+    shadow = _shadow_model(vehicle_types=[_vehicle_type("200", referencing_composition_nos=["1"])])
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_type_shared_by_compositions" for f in findings)
+
+
+# ---------------------------------------------------------------------------
 # des_speed_distribution_points_* -- QUEUE 3 (v2a) unit 3, the "legitimate
 # CC1 route" showcase. Every bound below mirrors
 # backend/tools/probe_des_speed_curves.py's own live silent-failure map
@@ -4231,9 +4408,15 @@ def test_registry_size_matches_m3_1_catalog_port():
     # defensive addition" shapes for the new set_des_speed_distribution_points
     # tool, mirroring the set_priority_rule_gap_headway/set_signal_green_split
     # precedents; des_speed_distribution_not_found already existed (v2a unit
-    # ⑧, gates set_des_speed_decision) and was NOT touched) == 72.
+    # ⑧, gates set_des_speed_decision) and was NOT touched) == 72, + 2 (QUEUE
+    # (v2a) unit, 2026-07-29: vehicle_type_reference_target_not_found /
+    # vehicle_type_shared_by_compositions -- both "not a §-numbered catalog
+    # entry, a defensive addition" shapes for the new
+    # set_vehicle_type_reference tool, mirroring the des_speed_distribution_
+    # not_found/vehicle_composition_referenced_by_vehicle_inputs precedents)
+    # == 74.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 72
+    assert len(get_registry()) == 74
 
 
 def test_registry_has_unique_ids():

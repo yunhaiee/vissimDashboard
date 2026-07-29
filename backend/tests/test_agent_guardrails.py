@@ -31,6 +31,7 @@ def _shadow_model(
     signal_program_splits: list[dict[str, Any]] | None = None,
     priority_rule_markers: list[dict[str, Any]] | None = None,
     des_speed_distributions: list[dict[str, Any]] | None = None,
+    vehicle_types: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -66,6 +67,10 @@ def _shadow_model(
         # no flattening needed) -- see tools_network._parse_speed_distributions
         # for the real shape this mirrors.
         "des_speed_distributions": des_speed_distributions if des_speed_distributions is not None else [],
+        # QUEUE (v2a) unit: vehicle_types itself (id = "no", no flattening
+        # needed) -- see tools_network._parse_vehicle_types for the real
+        # shape this mirrors.
+        "vehicle_types": vehicle_types if vehicle_types is not None else [],
     }
 
 
@@ -145,6 +150,40 @@ def _des_speed_entry(decision_no: str, veh_class_no: str, *, des_speed_distr_no:
         "des_speed_distr_no": des_speed_distr_no,
         "des_speed_distr_name": "55 mph",
     }
+
+
+def _vehicle_type_entry(
+    no: str,
+    *,
+    name: str = "HGV",
+    category: str = "HGV",
+    weight_distr_no: str | None = "2",
+    **extra_no_fields: str | None,
+) -> dict[str, Any]:
+    """QUEUE (v2a) unit -- mirrors tools_network._parse_vehicle_types' real
+    shape: every reference carries a flat "{field}_no" plus a derived,
+    ALWAYS-exempt "references"/"referencing_composition_nos" pair. Only
+    weight_distr_no is parametrized directly (the field every guardrails
+    test below writes); every other reference field defaults to None
+    (absent), same as a real PEDESTRIAN-category vehicle type -- pass extra
+    "{field}_no" kwargs (e.g. des_accel_func_no="3") to set others."""
+    fields = (
+        "model2d3d_distr_no",
+        "weight_distr_no",
+        "power_distr_no",
+        "des_accel_func_no",
+        "max_accel_func_no",
+        "des_decel_func_no",
+        "max_decel_func_no",
+        "des_curve_speed_func_no",
+    )
+    entry: dict[str, Any] = {"no": no, "name": name, "category": category, "capacity": 0.0, "cap_exact": False}
+    for field in fields:
+        entry[field] = extra_no_fields.get(field)
+    entry["weight_distr_no"] = weight_distr_no
+    entry["references"] = {field.removesuffix("_no"): None for field in fields}
+    entry["referencing_composition_nos"] = {"count": 0, "ids": [], "truncated": False}
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -1867,6 +1906,118 @@ def test_postwrite_priority_rule_gap_headway_gap_only_write_leaves_headway_exemp
     action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=5.5)
 
     report = engine.postwrite(action, before, after, _gap_headway_verification(5.5, 0.0))
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+# ---------------------------------------------------------------------------
+# postwrite — set_vehicle_type_reference (QUEUE (v2a) unit)
+#
+# The FIRST tool whose _WRITE_TARGET_FIELD_SPEC entry uses "value_field_param"
+# instead of a fixed "value_field" string -- the target field name (e.g.
+# "weight_distr_no") is resolved dynamically from the action's own "field"
+# param at both diff-exemption time and target-persisted-check time (see
+# guardrails._spec_value_field). Also exercises _ALWAYS_EXEMPT_FIELDS'
+# vehicle_types entry: "references"/"referencing_composition_nos" always
+# shift as a derived side effect of ANY reference write and must never
+# surface as "something else moved" evidence.
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_vehicle_type_reference_target_persisted_check_happy_path():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(vehicle_types=[_vehicle_type_entry("200", weight_distr_no="2")])
+    after = _shadow_model(vehicle_types=[_vehicle_type_entry("200", weight_distr_no="3")])
+    action = _action("set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="3")
+
+    report = engine.postwrite(action, before, after, {"written_value": "3", "readback_value": "3"})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_vehicle_type_reference_target_persisted_check_fires_when_not_persisted():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(vehicle_types=[_vehicle_type_entry("200", weight_distr_no="2")])
+    after = _shadow_model(
+        vehicle_types=[_vehicle_type_entry("200", weight_distr_no="2")]  # unchanged on disk
+    )
+    action = _action("set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="3")
+
+    report = engine.postwrite(action, before, after, {"written_value": "3", "readback_value": "3"})
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "vehicle_types"
+    assert check["object_id"] == "200"
+    assert check["field"] == "weight_distr_no"
+    assert check["saved_value"] == "2"
+
+
+def test_postwrite_vehicle_type_reference_resolves_a_different_field_correctly():
+    # A DIFFERENT "field" choice must exempt/check the MATCHING flat
+    # shadow-model field ("des_accel_func_no"), never "weight_distr_no".
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        vehicle_types=[_vehicle_type_entry("200", weight_distr_no="2", des_accel_func_no="2")]
+    )
+    after = _shadow_model(
+        vehicle_types=[_vehicle_type_entry("200", weight_distr_no="2", des_accel_func_no="3")]
+    )
+    action = _action("set_vehicle_type_reference", vehicle_type_no="200", field="des_accel_func", target_no="3")
+
+    report = engine.postwrite(action, before, after, {"written_value": "3", "readback_value": "3"})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_vehicle_type_reference_diff_flags_an_unrelated_sibling_change():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        vehicle_types=[
+            _vehicle_type_entry("200", weight_distr_no="2"),
+            _vehicle_type_entry("300", name="Bus", category="BUS", weight_distr_no="3"),
+        ]
+    )
+    after = _shadow_model(
+        vehicle_types=[
+            _vehicle_type_entry("200", weight_distr_no="3"),
+            _vehicle_type_entry("300", name="Bus", category="BUS", weight_distr_no="99"),  # unrelated change
+        ]
+    )
+    action = _action("set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="3")
+
+    report = engine.postwrite(action, before, after, {"written_value": "3", "readback_value": "3"})
+
+    assert report.blocking is True
+    evidence = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        item["object_class"] == "vehicle_types" and item["object_id"] == "300"
+        for item in evidence
+    )
+
+
+def test_postwrite_vehicle_type_reference_diff_exempts_the_derived_references_dict():
+    # "references"/"referencing_composition_nos" are PURELY DERIVED from the
+    # flat "{field}_no" fields plus each target collection's own data -- a
+    # correct write always also changes the resolved reference's own
+    # id/name/stats as an unavoidable side effect. Without the
+    # _ALWAYS_EXEMPT_FIELDS entry this would false-positive as "something
+    # else moved" on every real write.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(vehicle_types=[_vehicle_type_entry("200", weight_distr_no="2")])
+    after_entry = _vehicle_type_entry("200", weight_distr_no="3")
+    after_entry["references"] = {
+        **after_entry["references"],
+        "weight_distr": {"no": "3", "name": "", "min": 4000.0, "max": 12000.0, "mean": 8000.0, "point_count": 2},
+    }
+    after_entry["referencing_composition_nos"] = {"count": 2, "ids": ["1", "4"], "truncated": False}
+    after = _shadow_model(vehicle_types=[after_entry])
+    action = _action("set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="3")
+
+    report = engine.postwrite(action, before, after, {"written_value": "3", "readback_value": "3"})
 
     assert report.findings == []
     assert report.blocking is False

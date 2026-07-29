@@ -49,6 +49,8 @@ EXPECTED_TOOL_NAMES = {
     "get_signal_programs",
     # QUEUE 3 unit 2 adds get_priority_rules.
     "get_priority_rules",
+    # QUEUE (v2a) unit adds get_vehicle_types.
+    "get_vehicle_types",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -83,6 +85,7 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_signal_green_split",
     "set_priority_rule_gap_headway",
     "set_des_speed_distribution_points",
+    "set_vehicle_type_reference",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -1915,6 +1918,272 @@ def test_get_network_overview_includes_des_speed_decisions_section(
 
 
 # ---------------------------------------------------------------------------
+# get_vehicle_types / _parse_vehicle_types -- QUEUE (v2a) unit (the demo
+# network has none; ground truth mirrors Roundabout Billings.US's real
+# vehicle types 100/200/510, per the live probe,
+# backend/tools/probe_vehicle_types.py). Car (100) and HGV (200) carry every
+# reference field; Man (510, PEDESTRIAN) is missing weight_distr/power_distr/
+# des_curve_speed_func entirely (the live-verified nullable-per-category
+# finding) AND carries a model2D3DDistr (100) with NO matching
+# <model2D3DDistribution> element in this fixture -- a deliberately
+# UNRESOLVABLE reference, exercising _resolve_vehicle_type_reference's
+# defensive "unresolved" branch.
+# ---------------------------------------------------------------------------
+
+
+def test_get_vehicle_types_on_demo_data_is_empty_but_well_formed():
+    envelope = _dispatch("get_vehicle_types")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "vehicle_types": [], "truncated": False}
+    assert "hint" not in envelope["data"]
+
+
+_VEHICLE_TYPE_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <vehicleTypes>
+    <vehicleType no="100" name="Car" category="CAR" capacity="0" capExact="false"
+      model2D3DDistr="10" weightDistr="1" powerDistr="1"
+      desAccelFunc="1" maxAccelFunc="1" desDecelFunc="1" maxDecelFunc="1" desCurveSpeedFunc="1"/>
+    <vehicleType no="200" name="HGV" category="HGV" capacity="0" capExact="false"
+      model2D3DDistr="20" weightDistr="2" powerDistr="2"
+      desAccelFunc="2" maxAccelFunc="2" desDecelFunc="2" maxDecelFunc="2" desCurveSpeedFunc="11"/>
+    <vehicleType no="510" name="Man" category="PEDESTRIAN" capacity="0" capExact="true"
+      model2D3DDistr="100" desAccelFunc="5" maxAccelFunc="5" desDecelFunc="5" maxDecelFunc="5"/>
+  </vehicleTypes>
+  <vehicleCompositions>
+    <vehicleComposition no="1" name="Mix">
+      <vehCompRelFlows>
+        <vehicleCompositionRelativeFlow vehType="100" desSpeedDistr="50" relFlow="0.9"/>
+        <vehicleCompositionRelativeFlow vehType="200" desSpeedDistr="50" relFlow="0.1"/>
+      </vehCompRelFlows>
+    </vehicleComposition>
+  </vehicleCompositions>
+  <model2D3DDistributions>
+    <model2D3DDistribution no="10" name="Car">
+      <model2D3DDistrEl>
+        <model2D3DDistributionElement model2D3D="1" share="0.6"/>
+        <model2D3DDistributionElement model2D3D="2" share="0.4"/>
+      </model2D3DDistrEl>
+    </model2D3DDistribution>
+    <model2D3DDistribution no="20" name="HGV">
+      <model2D3DDistrEl>
+        <model2D3DDistributionElement model2D3D="3" share="1"/>
+      </model2D3DDistrEl>
+    </model2D3DDistribution>
+  </model2D3DDistributions>
+  <models2D3D>
+    <model2D3D no="1" name="Car A">
+      <model2D3DSegs><model2D3DSegment length="4.5"/></model2D3DSegs>
+    </model2D3D>
+    <model2D3D no="2" name="Car B">
+      <model2D3DSegs><model2D3DSegment length="5.5"/></model2D3DSegs>
+    </model2D3D>
+    <model2D3D no="3" name="Truck">
+      <model2D3DSegs><model2D3DSegment length="12.0"/></model2D3DSegs>
+    </model2D3D>
+  </models2D3D>
+  <weightDistributions>
+    <weightDistribution no="1" name="">
+      <distrDataPts><distributionDataPoint fx="0" x="700"/><distributionDataPoint fx="1" x="1500"/></distrDataPts>
+    </weightDistribution>
+    <weightDistribution no="2" name="">
+      <distrDataPts><distributionDataPoint fx="0" x="2800"/><distributionDataPoint fx="1" x="40000"/></distrDataPts>
+    </weightDistribution>
+  </weightDistributions>
+  <powerDistributions>
+    <powerDistribution no="1" name="">
+      <distrDataPts><distributionDataPoint fx="0" x="50"/><distributionDataPoint fx="1" x="120"/></distrDataPts>
+    </powerDistribution>
+    <powerDistribution no="2" name="">
+      <distrDataPts><distributionDataPoint fx="0" x="100"/><distributionDataPoint fx="1" x="500"/></distrDataPts>
+    </powerDistribution>
+  </powerDistributions>
+  <desAccelerationFunctions>
+    <desAccelerationFunction no="1" name="Car"/>
+    <desAccelerationFunction no="2" name="HGV"/>
+    <desAccelerationFunction no="5" name="Ped"/>
+  </desAccelerationFunctions>
+  <maxAccelerationFunctions>
+    <maxAccelerationFunction no="1" name="Car"/>
+    <maxAccelerationFunction no="2" name="HGV"/>
+    <maxAccelerationFunction no="5" name="Ped"/>
+  </maxAccelerationFunctions>
+  <desDecelerationFunctions>
+    <desDecelerationFunction no="1" name="Car"/>
+    <desDecelerationFunction no="2" name="HGV"/>
+    <desDecelerationFunction no="5" name="Ped"/>
+  </desDecelerationFunctions>
+  <maxDecelerationFunctions>
+    <maxDecelerationFunction no="1" name="Car"/>
+    <maxDecelerationFunction no="2" name="HGV"/>
+    <maxDecelerationFunction no="5" name="Ped"/>
+  </maxDecelerationFunctions>
+  <curvSpeedFuncs>
+    <curvSpeedFunc no="1" name="Road. Car."/>
+    <curvSpeedFunc no="11" name="HGV curve"/>
+  </curvSpeedFuncs>
+</network>
+"""
+
+
+@pytest.fixture()
+def vehicle_type_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "vehicle_types.inpx"
+    path.write_text(_VEHICLE_TYPE_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_vehicle_types_on_real_elements(vehicle_type_fixture_inpx: Path):
+    tools_network.set_active_inpx(vehicle_type_fixture_inpx)
+
+    envelope = _dispatch("get_vehicle_types")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 3
+    by_no = {vt["no"]: vt for vt in data["vehicle_types"]}
+
+    car = by_no["100"]
+    assert car["name"] == "Car"
+    assert car["category"] == "CAR"
+    assert car["cap_exact"] is False
+    assert car["weight_distr_no"] == "1"
+    assert car["references"]["weight_distr"] == {
+        "no": "1", "name": "", "min": 700.0, "max": 1500.0, "mean": 1100.0, "point_count": 2,
+    }
+    assert car["references"]["power_distr"] == {
+        "no": "1", "name": "", "min": 50.0, "max": 120.0, "mean": 85.0, "point_count": 2,
+    }
+    assert car["references"]["des_accel_func"] == {"no": "1", "name": "Car"}
+    assert car["references"]["des_curve_speed_func"] == {"no": "1", "name": "Road. Car."}
+    model2d3d = car["references"]["model2d3d_distr"]
+    assert model2d3d["no"] == "10"
+    assert model2d3d["model_count"] == 2
+    assert model2d3d["length_min_m"] == 4.5
+    assert model2d3d["length_max_m"] == 5.5
+    assert model2d3d["length_mean_m"] == 4.9  # (4.5*0.6 + 5.5*0.4) / 1.0
+    # Car (vehType=100) is ALSO one of composition no=1's entries.
+    assert car["referencing_composition_nos"] == {"count": 1, "ids": ["1"], "truncated": False}
+
+    hgv = by_no["200"]
+    assert hgv["references"]["model2d3d_distr"]["length_mean_m"] == 12.0
+    assert hgv["references"]["des_curve_speed_func"] == {"no": "11", "name": "HGV curve"}
+    assert hgv["referencing_composition_nos"] == {"count": 1, "ids": ["1"], "truncated": False}
+
+    # QUEUE (v2a) unit's own nullable-per-category live finding: PEDESTRIAN
+    # types carry no weight_distr/power_distr/des_curve_speed_func at all.
+    man = by_no["510"]
+    assert man["category"] == "PEDESTRIAN"
+    assert man["cap_exact"] is True
+    assert man["weight_distr_no"] is None
+    assert man["references"]["weight_distr"] is None
+    assert man["references"]["power_distr"] is None
+    assert man["references"]["des_curve_speed_func"] is None
+    # model2D3DDistr="100" has no matching <model2D3DDistribution> in this
+    # fixture -- a dangling reference resolves to "unresolved", never a crash.
+    assert man["references"]["model2d3d_distr"] == {"no": "100", "name": None, "unresolved": True}
+
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_get_vehicle_types_filters_by_vehicle_type_no(vehicle_type_fixture_inpx: Path):
+    tools_network.set_active_inpx(vehicle_type_fixture_inpx)
+
+    envelope = _dispatch("get_vehicle_types", vehicle_type_no="200")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["vehicle_types"][0]["no"] == "200"
+
+
+def test_get_vehicle_types_filters_by_vehicle_type_no_no_match_is_empty_not_an_error(
+    vehicle_type_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(vehicle_type_fixture_inpx)
+
+    envelope = _dispatch("get_vehicle_types", vehicle_type_no="9999")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "vehicle_types": []}
+
+
+def test_get_vehicle_types_rejects_unexpected_params(vehicle_type_fixture_inpx: Path):
+    tools_network.set_active_inpx(vehicle_type_fixture_inpx)
+
+    envelope = _dispatch("get_vehicle_types", bogus=1)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+def _many_vehicle_types_inpx(tmp_path: Path, count: int) -> Path:
+    types = "\n".join(
+        f'<vehicleType no="{i}" name="Type{i}" category="CAR" capacity="0" capExact="false"/>'
+        for i in range(1, count + 1)
+    )
+    xml = f"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<network>\n  <vehicleTypes>\n{types}\n  </vehicleTypes>\n</network>\n"
+    path = tmp_path / f"many_vehicle_types_{count}.inpx"
+    path.write_text(xml, encoding="utf-8")
+    return path
+
+
+def test_get_vehicle_types_unfiltered_call_on_large_network_is_capped_and_truncated(tmp_path: Path):
+    tools_network.set_active_inpx(_many_vehicle_types_inpx(tmp_path, 60))
+
+    envelope = _dispatch("get_vehicle_types")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 60
+    assert len(data["vehicle_types"]) == tools_network._VEHICLE_TYPES_DEFAULT_CAP
+    assert data["truncated"] is True
+    assert "hint" in data
+
+    followup = _dispatch("get_vehicle_types", vehicle_type_no="50")
+    assert followup["data"]["vehicle_types"][0]["no"] == "50"
+
+
+def test_resolve_object_finds_vehicle_type_by_name(vehicle_type_fixture_inpx: Path):
+    tools_network.set_active_inpx(vehicle_type_fixture_inpx)
+
+    envelope = _dispatch("resolve_object", query="HGV", object_type="vehicle_type")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["candidates"][0]["id"] == "200"
+    assert data["candidates"][0]["object_type"] == "vehicle_type"
+
+
+def test_get_network_overview_includes_vehicle_types_section(vehicle_type_fixture_inpx: Path):
+    tools_network.set_active_inpx(vehicle_type_fixture_inpx)
+
+    envelope = _dispatch("get_network_overview")
+
+    data = envelope["data"]
+    assert data["vehicle_types"]["count"] == 3
+    ids = {item["id"] for item in data["vehicle_types"]["items"]}
+    assert ids == {"100", "200", "510"}
+
+
+def test_build_shadow_model_populates_all_eight_vehicle_type_target_collections(
+    vehicle_type_fixture_inpx: Path,
+):
+    shadow = tools_network.build_shadow_model(vehicle_type_fixture_inpx)
+
+    assert {d["no"] for d in shadow["model2d3d_distributions"]} == {"10", "20"}
+    assert {d["no"] for d in shadow["weight_distributions"]} == {"1", "2"}
+    assert {d["no"] for d in shadow["power_distributions"]} == {"1", "2"}
+    assert {d["no"] for d in shadow["des_accel_functions"]} == {"1", "2", "5"}
+    assert {d["no"] for d in shadow["max_accel_functions"]} == {"1", "2", "5"}
+    assert {d["no"] for d in shadow["des_decel_functions"]} == {"1", "2", "5"}
+    assert {d["no"] for d in shadow["max_decel_functions"]} == {"1", "2", "5"}
+    assert {d["no"] for d in shadow["curve_speed_functions"]} == {"1", "11"}
+
+
+# ---------------------------------------------------------------------------
 # get_des_speed_distributions — points + reference counts, QUEUE 3 (v2a)
 # unit 3's own extension of unit ⑧'s {no, name}-only shape. Fixture wires up
 # ALL FOUR reference categories at once (des_speed_decisions,
@@ -2125,6 +2394,16 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         # QUEUE 3 unit 2
         "priority_rules",
         "priority_rule_markers",
+        # QUEUE (v2a) unit: vehicle type properties.
+        "vehicle_types",
+        "model2d3d_distributions",
+        "weight_distributions",
+        "power_distributions",
+        "des_accel_functions",
+        "max_accel_functions",
+        "des_decel_functions",
+        "max_decel_functions",
+        "curve_speed_functions",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -2154,6 +2433,19 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
     # list, not absent/None), same shape as signals/conflict_areas.
     assert shadow["vehicle_compositions"] == []
     assert shadow["vehicle_composition_entries"] == []
+    # QUEUE (v2a) unit: the demo .inpx carries no <vehicleType> (or any of
+    # the 8 target-collection) elements at all -- every one of these 9 shadow
+    # keys must still be present and well-formed (empty list, not
+    # absent/None), same shape as signals/conflict_areas/vehicle_compositions.
+    assert shadow["vehicle_types"] == []
+    assert shadow["model2d3d_distributions"] == []
+    assert shadow["weight_distributions"] == []
+    assert shadow["power_distributions"] == []
+    assert shadow["des_accel_functions"] == []
+    assert shadow["max_accel_functions"] == []
+    assert shadow["des_decel_functions"] == []
+    assert shadow["max_decel_functions"] == []
+    assert shadow["curve_speed_functions"] == []
 
 
 def test_build_shadow_model_is_mtime_cached_across_repeat_calls():

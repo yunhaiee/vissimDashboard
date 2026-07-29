@@ -956,3 +956,87 @@ def set_des_speed_distribution_points(params: SetDesSpeedDistributionPointsParam
         ),
         "verification": verification,
     }
+
+
+# ---------------------------------------------------------------------------
+# set_vehicle_type_reference(vehicle_type_no, field, target_no)
+#
+# QUEUE (v2a) unit -- "vehicle type properties, SCALARS/REFERENCES only".
+# A COM verb, shaped like set_conflict_area_status/set_des_speed_decision:
+# ONE object, ONE field, set -> get (readback) -> persist -> verification
+# envelope. Unlike set_priority_rule_gap_headway/set_signal_green_split
+# (fixed field NAMES, a value_field dict holding both), this tool's SINGLE
+# target field is chosen at call time via the "field" enum param -- the
+# task brief's own suggested shape ("set_vehicle_type_reference(vehicle_
+# type_no, field, target_no) with an explicit field whitelist"). Probed
+# live (backend/tools/probe_vehicle_types.py, Roundabout Billings.US): every
+# reference is fully independent (no shared-sum/renormalization semantics,
+# verified via a sibling-untouched check), and COM itself fails CLOSED on a
+# bogus target_no -- constraints.py's vehicle_type_reference_target_not_found
+# still refuses proactively (with a candidate list) so the failure reaches
+# the user as a structured refusal, mirroring set_des_speed_decision's own
+# des_speed_distribution_not_found precedent.
+# ---------------------------------------------------------------------------
+
+#: The 8 reference fields this unit ships a write verb for -- matches
+#: vissim_com.VissimController.VEHICLE_TYPE_REFERENCE_FIELDS' keys exactly
+#: (that dict is the single source of truth for the COM attribute id each
+#: maps to). Deliberately excludes category/capacity/capExact (scalars this
+#: unit ships READ-ONLY via get_vehicle_types -- see that tool's own
+#: docstring for the scope reasoning) and colorDistr1-4/occupDistr (real,
+#: probed COM attributes but outside the task brief's own "accel/decel
+#: curves, lengths, weight/power" scope).
+VEHICLE_TYPE_REFERENCE_FIELD_NAMES = (
+    "model2d3d_distr",
+    "weight_distr",
+    "power_distr",
+    "des_accel_func",
+    "max_accel_func",
+    "des_decel_func",
+    "max_decel_func",
+    "des_curve_speed_func",
+)
+
+
+class SetVehicleTypeReferenceParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    vehicle_type_no: str
+    field: Literal[
+        "model2d3d_distr",
+        "weight_distr",
+        "power_distr",
+        "des_accel_func",
+        "max_accel_func",
+        "des_decel_func",
+        "max_decel_func",
+        "des_curve_speed_func",
+    ]
+    target_no: str
+
+
+@tool(
+    name="set_vehicle_type_reference",
+    tier="write",
+    provider="edit",
+    params=SetVehicleTypeReferenceParams,
+)
+def set_vehicle_type_reference(params: SetVehicleTypeReferenceParams) -> dict[str, Any]:
+    """Reassign one of a vehicle type's DISTRIBUTION/FUNCTION references on the active edit session's working network -- field is one of model2d3d_distr (the 2D/3D model shapes used to draw/size this type, resolving to a length summary), weight_distr/power_distr (physical weight/power distributions), or des_accel_func/max_accel_func/des_decel_func/max_decel_func/des_curve_speed_func (the accel/decel/curve-speed FUNCTION curves this type follows). target_no is the target object's own number in ITS OWN collection (use get_vehicle_types first to see current assignments and valid target numbers). Each reference is fully independent -- reassigning one never changes any other vehicle type's own assignment. This only reassigns WHICH distribution/function the type points at; editing a distribution's or function's own curve is not supported by this agent."""
+    session = _require_session()
+    vehicle_type_no = _coerce_id(params.vehicle_type_no, "vehicle_type_no")
+    target_no = _coerce_id(params.target_no, "target_no")
+
+    session.set_vehicle_type_reference(vehicle_type_no, params.field, target_no)
+    readback = session.get_vehicle_type_reference(vehicle_type_no, params.field)
+    session.persist()
+
+    # written_value/readback_value are STRINGS -- target_no is an id (which
+    # distribution/function object), not a continuous physical quantity,
+    # matching set_des_speed_decision's own des_speed_distr_no convention.
+    verification: dict[str, Any] = {"written_value": params.target_no, "readback_value": readback}
+    message = (
+        f"Vehicle type {params.vehicle_type_no}'s {params.field} reference set to "
+        f"{params.target_no}."
+    )
+    return {"message": message, "verification": verification}

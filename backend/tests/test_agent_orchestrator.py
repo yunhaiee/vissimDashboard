@@ -36,6 +36,8 @@ EXPECTED_READ_TOOLS = {
     "get_signal_programs",
     # QUEUE 3 unit 2 adds get_priority_rules.
     "get_priority_rules",
+    # QUEUE (v2a) unit adds get_vehicle_types.
+    "get_vehicle_types",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -65,6 +67,8 @@ EXPECTED_WRITE_TOOLS = {
     "set_priority_rule_gap_headway",
     # QUEUE 3 (v2a) unit 3
     "set_des_speed_distribution_points",
+    # QUEUE (v2a) unit
+    "set_vehicle_type_reference",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

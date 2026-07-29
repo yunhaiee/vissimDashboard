@@ -109,6 +109,12 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # entries/signal-program-splits/priority-rule-markers, a distribution
     # already has a single-token identity, its own "no").
     "des_speed_distributions": "no",
+    # QUEUE (v2a) unit: vehicle types have a genuine single-token identity,
+    # their own "no" -- no flattening needed (unlike routes/composition-
+    # entries/des-speed-entries/priority-rule-markers above), since a
+    # vehicle type's reference fields are all flat attributes on the type
+    # object itself, not a nested per-assignment child collection.
+    "vehicle_types": "no",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -319,6 +325,27 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "none_means": "not_persisted",
         "coupled_fields": ("point_count", "points_truncated"),
     },
+    # QUEUE (v2a) unit: vehicle-type reference reassignment. Unlike EVERY
+    # other spec entry above, this tool's target field is not a fixed name
+    # -- it is chosen at CALL TIME by the action's own "field" param (one of
+    # 8 reference kinds; see tools_edit.py's VEHICLE_TYPE_REFERENCE_FIELD_
+    # NAMES). "value_field_param" names which params key holds that choice;
+    # _spec_value_field resolves the actual shadow-model field as
+    # f"{params[field]}_no" -- matching the des_speed_distr/des_speed_distr_no
+    # naming convention set_des_speed_decision's own spec entry already
+    # established (a reference field's flat shadow-model name is always the
+    # field's own name + "_no"). The reference field is a plain XML attribute
+    # the parser can always see whenever the vehicleType element itself
+    # exists (verified live -- backend/tools/probe_vehicle_types.py -- no
+    # opaque-blob case like signal cycle_time), so a None after a write IS
+    # evidence the write never reached the file, same as every other
+    # "not_persisted" entry above.
+    "set_vehicle_type_reference": {
+        "object_class": "vehicle_types",
+        "id_param": "vehicle_type_no",
+        "value_field_param": "field",
+        "none_means": "not_persisted",
+    },
 }
 
 # v2a unit ⑧: ``set_des_speed_decision`` is the first write tool whose action
@@ -400,7 +427,36 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
 # moving a desSpeedDistr/vehClassDesSpeedDistr/... reference around.
 _ALWAYS_EXEMPT_FIELDS: dict[str, frozenset[str]] = {
     "des_speed_distributions": frozenset({"referenced_by", "reference_count"}),
+    # QUEUE (v2a) unit: "references" (per-field resolved id+name+stats) and
+    # "referencing_composition_nos" on vehicle_types are BOTH purely derived
+    # -- the former from the flat "{field}_no" fields plus each target
+    # collection's own data, the latter from vehicle_composition_entries'
+    # own veh_type membership. Neither has a write path of its own (no tool
+    # sets them directly), matching the des_speed_distributions precedent
+    # above exactly -- see tools_network._parse_vehicle_types' own
+    # docstring.
+    "vehicle_types": frozenset({"references", "referencing_composition_nos"}),
 }
+
+
+def _spec_value_field(spec: dict[str, Any], action: dict[str, Any]) -> str:
+    """The top-level shadow-model field NAME this write's value lives in.
+
+    Every spec names it as a fixed ``"value_field"`` string EXCEPT
+    ``set_vehicle_type_reference`` (QUEUE (v2a) unit), whose target field is
+    chosen at CALL TIME by the action's own ``"field"`` param (one of 8
+    reference kinds) -- ``"value_field_param"`` names which params key holds
+    that choice, and the shadow model's own flat field is that value + "_no"
+    (matching the ``des_speed_distr``/``des_speed_distr_no`` naming
+    convention ``set_des_speed_decision``'s spec entry already established).
+    Every OTHER spec lacks ``"value_field_param"``, so this always falls
+    through to the existing fixed-string behavior for them, unchanged.
+    """
+    value_field_param = spec.get("value_field_param")
+    if value_field_param is None:
+        return spec["value_field"]
+    chosen = action.get("params", {}).get(value_field_param, "")
+    return f"{chosen}_no"
 
 
 def _target_id_for_spec(spec: dict[str, str], action: dict[str, Any]) -> str:
@@ -684,14 +740,15 @@ def _write_target_fields(spec: dict[str, str], action: dict[str, Any]) -> frozen
     the id field always also changes the name field as an unavoidable side
     effect -- ``coupled_fields`` generalizes the "exempt the whole derived
     group together" fix beyond the interval-specific shape v2 unit ⑤
-    introduced it for. ``action`` is accepted for signature symmetry with
-    :func:`_resolve_saved_value` but is not read here since v2 unit ⑤ made
-    this exemption interval_no-independent.
+    introduced it for. QUEUE (v2a) unit's ``set_vehicle_type_reference`` is
+    the reason ``action`` is now actually read (via :func:`_spec_value_field`)
+    rather than merely accepted for signature symmetry -- its own value
+    field name depends on the action's own ``field`` param.
     """
-    del action
+    value_field = _spec_value_field(spec, action)
     if spec.get("interval_param") is None:
-        return frozenset({spec["value_field"], *spec.get("coupled_fields", ())})
-    fields = {spec["value_field"], spec["interval_list_field"]}
+        return frozenset({value_field, *spec.get("coupled_fields", ())})
+    fields = {value_field, spec["interval_list_field"]}
     count_field = spec.get("interval_count_field")
     if count_field:
         fields.add(count_field)
@@ -709,8 +766,9 @@ def _resolve_saved_value(
     field NAME, not a specific list entry).
     """
     interval_no = _interval_no_from_action(spec, action)
+    value_field = _spec_value_field(spec, action)
     if interval_no == 1:
-        return spec["value_field"], target.get(spec["value_field"])
+        return value_field, target.get(value_field)
 
     intervals = target.get(spec["interval_list_field"]) or []
     key_field = spec["interval_key_field"]

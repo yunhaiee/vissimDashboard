@@ -141,9 +141,11 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ⬜ Dwell-time distributions
 - ✅ Signal green-splits within a program — shipped, see V1 edits (the blob writer
   turned out to be a COM-writable attribute, not an offline XML rewrite)
-- ⬜ Vehicle type properties (accel/decel curves, lengths, weight/power)
+- ✅ Vehicle type properties — shipped (Q3 unit ④, `get_vehicle_types` +
+  `set_vehicle_type_reference`, 8-field whitelist; accel/decel FUNCTION curve
+  editing remains probe-report-only — same ReplaceAll shape as unit ③, untested)
 
-**Status: 9 of 12 bullets shipped (one tool, `set_des_speed_decision`, satisfies both
+**Status: 10 of 12 bullets shipped (one tool, `set_des_speed_decision`, satisfies both
 the PAIRS and distribution-assignment line items).**
 
 ---

@@ -1562,6 +1562,137 @@ class VissimController:
     def available_priority_rule_nos(self) -> list[int]:
         return self._collection_nos(self.vissim.Net.PriorityRules)
 
+    # -----------------------------------------------------------------
+    # Vehicle-type reference-assignment verbs -- QUEUE (v2a) unit
+    #
+    # COM ids/behavior verified EMPIRICALLY live against Vissim 2026
+    # (backend/tools/probe_vehicle_types.py, "Roundabout Billings.US" clone).
+    #
+    # ``Net.VehicleTypes`` (``ItemByKey`` fails CLOSED for a bogus no, like
+    # every other per-object collection in this module except vehicle-
+    # composition/des-speed-decision/route entries) -> a FLAT attribute on
+    # the type object itself for each reference -- unlike conflict areas'
+    # separate No/LinkA/LinkB precedent, EVERY reference id here matches the
+    # vehicleType's own .inpx XML attribute spelling EXACTLY, including the
+    # "Curve" (not "Curv") spelling of ``DesCurveSpeedFunc`` -- even though
+    # the TARGET collection's own name is ``Net.CurvSpeedFuncs`` ("Curv", no
+    # e), matching the referenced XML section/element (``curvSpeedFuncs``/
+    # ``curvSpeedFunc``) instead. This spelling mismatch between a
+    # reference's OWN attribute id and its TARGET collection's name is a new,
+    # narrow landmine: never assume a reference id and its target collection
+    # share one spelling convention.
+    #
+    # **Nullable references, verified live.** A PEDESTRIAN vehicle type's
+    # ``WeightDistr``/``PowerDistr``/``DesCurveSpeedFunc`` (absent from the
+    # XML entirely on every real PEDESTRIAN type probed) read back as ``None``
+    # over COM too -- not an exception, not a sentinel number. This is
+    # DIFFERENT from the unit 3 (v2a queue) ``Net.AttValue`` fail-OPEN
+    # landmine (a genuinely UNKNOWN attribute id returning ``None``): here the
+    # attribute id itself is valid and works on every other vehicle type --
+    # the value is legitimately unset for THIS object. Getters below return
+    # ``str | None`` accordingly.
+    #
+    # **No shared-sum/renormalization semantics at all** (verified live,
+    # sibling-untouched check on a real 6-type network): each vehicle type's
+    # own reference assignment is fully independent, exactly like desired-
+    # speed decision assignments (v2a unit ⑧) -- never a raw-weight/
+    # normalized-share situation like route/vehicle-composition RelFlow.
+    #
+    # **COM itself fails CLOSED on a bogus reference target** (verified live:
+    # ``SetAttValue('WeightDistr', 999999)`` raises "Object 999999 of type
+    # Weight Distribution does not exist") -- the same protective pattern
+    # ``set_des_speed_decision`` found for ``DesSpeedDistr``; this codebase's
+    # own ``constraints.py`` ``vehicle_type_reference_target_not_found``
+    # still refuses proactively (with a candidate list) so the failure
+    # reaches the user as a structured refusal rather than this raw COM
+    # error string.
+    # -----------------------------------------------------------------
+
+    #: {planner-facing field name: COM AttValue id on the VehicleType object}
+    #: -- the SOLE source of truth mapping ``set_vehicle_type_reference``'s
+    #: ``field`` enum onto a real COM attribute, verified live (see the class
+    #: docstring above). Deliberately does NOT include ``category``/
+    #: ``capacity``/``capExact`` (verified live too, but out of this unit's
+    #: scope -- "SCALARS/REFERENCES only" per the task brief means the
+    #: REFERENCE half of that phrase is what ships a write verb; the
+    #: category enum and capacity/capExact scalars are read-only via
+    #: get_vehicle_types this unit, not independently justified as their own
+    #: write verb without a concrete use case).
+    VEHICLE_TYPE_REFERENCE_FIELDS: dict[str, str] = {
+        "model2d3d_distr": "Model2D3DDistr",
+        "weight_distr": "WeightDistr",
+        "power_distr": "PowerDistr",
+        "des_accel_func": "DesAccelFunc",
+        "max_accel_func": "MaxAccelFunc",
+        "des_decel_func": "DesDecelFunc",
+        "max_decel_func": "MaxDecelFunc",
+        "des_curve_speed_func": "DesCurveSpeedFunc",
+    }
+
+    def set_vehicle_type_reference(self, vehicle_type_no: int, field: str, target_no: int) -> None:
+        """Set one of a vehicle type's DISTRIBUTION/FUNCTION reference
+        attributes (``field`` -- one of :data:`VEHICLE_TYPE_REFERENCE_FIELDS`'
+        keys) to ``target_no`` (the target distribution/function's own
+        number in its OWN collection -- e.g. a ``Net.WeightDistributions``
+        number for ``field="weight_distr"``).
+
+        ``field`` is validated against :data:`VEHICLE_TYPE_REFERENCE_FIELDS`
+        here defensively (the caller's pydantic params model already
+        restricts it to a ``Literal`` of the same 8 values, so this should
+        never actually fail in practice -- kept for the same reason
+        ``_coerce_id`` stays defensive in ``tools_edit.py``: a clear
+        ``ValueError`` beats a confusing ``AttributeError`` deeper in COM).
+        """
+        attr_id = self.VEHICLE_TYPE_REFERENCE_FIELDS.get(field)
+        if attr_id is None:
+            raise ValueError(f"Unknown vehicle-type reference field: {field!r}")
+        try:
+            vehicle_type = self._item_by_key(
+                self.vissim.Net.VehicleTypes,
+                vehicle_type_no,
+                "Vehicle type",
+                self.available_vehicle_type_nos(),
+            )
+            vehicle_type.SetAttValue(attr_id, target_no)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set vehicle type {vehicle_type_no} {field} to {target_no}: {exc}"
+            ) from exc
+
+    def get_vehicle_type_reference(self, vehicle_type_no: int, field: str) -> str | None:
+        """Paired getter for :meth:`set_vehicle_type_reference`.
+
+        Returns the target's number as a STRING (matching the shadow model's
+        own string-typed reference-number fields, the same convention
+        :meth:`get_des_speed_decision` established for a distribution
+        reference) -- or ``None`` when this vehicle type genuinely carries no
+        value for ``field`` (the live-verified PEDESTRIAN-category nullable-
+        reference finding above; NOT a raised error).
+        """
+        attr_id = self.VEHICLE_TYPE_REFERENCE_FIELDS.get(field)
+        if attr_id is None:
+            raise ValueError(f"Unknown vehicle-type reference field: {field!r}")
+        try:
+            vehicle_type = self._item_by_key(
+                self.vissim.Net.VehicleTypes,
+                vehicle_type_no,
+                "Vehicle type",
+                self.available_vehicle_type_nos(),
+            )
+            value = vehicle_type.AttValue(attr_id)
+            return None if value is None else str(value)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read vehicle type {vehicle_type_no} {field}: {exc}"
+            ) from exc
+
+    def available_vehicle_type_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.VehicleTypes)
+
     def get_sim_sec(self) -> float:
         try:
             value = float(self.vissim.Simulation.AttValue("SimSec"))

@@ -71,7 +71,13 @@ def test_health_check_runner_against_demo_dataset():
     # seven need a proposed action's own "points" param, so none opts into
     # the dataset scan either, same shape as the priority-rule additions
     # above.
-    assert report["summary"]["edit_time_only_n"] == 58
+    # 60, not 58: the QUEUE (v2a) unit (2026-07-29) added two more
+    # preflight-only constraints for the new set_vehicle_type_reference tool
+    # (vehicle_type_reference_target_not_found / vehicle_type_shared_by_
+    # compositions) -- both need a proposed action's own "field"/"target_no"
+    # params, so neither opts into the dataset scan either, same shape as
+    # every addition above.
+    assert report["summary"]["edit_time_only_n"] == 60
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

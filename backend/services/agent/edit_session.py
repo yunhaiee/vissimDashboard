@@ -299,6 +299,18 @@ class VissimEditSession:
     def get_priority_rule_gap_headway(self, priority_rule_no: int, marker_index: int) -> dict[str, float]:
         return self._ensure_connected().get_priority_rule_gap_headway(priority_rule_no, marker_index)
 
+    # QUEUE (v2a) unit: vehicle-type distribution/function reference
+    # verbs. Each reference field is a flat, independent attribute on the
+    # VehicleType object itself -- no shared-sum semantics, no paired
+    # writes (see VissimController.set_vehicle_type_reference's own module
+    # comment for the full live-verified writeup).
+
+    def set_vehicle_type_reference(self, vehicle_type_no: int, field: str, target_no: int) -> None:
+        self._ensure_connected().set_vehicle_type_reference(vehicle_type_no, field, target_no)
+
+    def get_vehicle_type_reference(self, vehicle_type_no: int, field: str) -> str | None:
+        return self._ensure_connected().get_vehicle_type_reference(vehicle_type_no, field)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

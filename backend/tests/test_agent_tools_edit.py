@@ -266,6 +266,15 @@ class FakeEditSession:
         self._record("get_des_speed_distribution_points", distribution_no=distribution_no)
         return self._readback["des_speed_distribution_points"]
 
+    def set_vehicle_type_reference(self, vehicle_type_no: int, field: str, target_no: int) -> None:
+        self._record(
+            "set_vehicle_type_reference", vehicle_type_no=vehicle_type_no, field=field, target_no=target_no
+        )
+
+    def get_vehicle_type_reference(self, vehicle_type_no: int, field: str) -> str | None:
+        self._record("get_vehicle_type_reference", vehicle_type_no=vehicle_type_no, field=field)
+        return self._readback["vehicle_type_reference"]
+
     def persist(self) -> None:
         self.persist_calls += 1
 
@@ -334,6 +343,10 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
                 "distribution_no": "25",
                 "points": [{"speed_kmh": 0.0, "cum_fraction": 0.0}, {"speed_kmh": 50.0, "cum_fraction": 1.0}],
             },
+        ),
+        (
+            "set_vehicle_type_reference",
+            {"vehicle_type_no": "200", "field": "weight_distr", "target_no": "3"},
         ),
     ],
 )
@@ -1585,6 +1598,132 @@ def test_set_des_speed_distribution_points_empty_list_is_schema_legal_refused_by
 
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "tool_execution_error"
+
+
+# ---------------------------------------------------------------------------
+# set_vehicle_type_reference(vehicle_type_no, field, target_no) -- QUEUE
+# (v2a) unit
+# ---------------------------------------------------------------------------
+
+
+def test_set_vehicle_type_reference_happy_path():
+    session = FakeEditSession(readback={"vehicle_type_reference": "3"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="3"
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": "3", "readback_value": "3"}
+    assert "weight_distr" in envelope["message"]
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {"op": "set_vehicle_type_reference", "vehicle_type_no": 200, "field": "weight_distr", "target_no": 3},
+        {"op": "get_vehicle_type_reference", "vehicle_type_no": 200, "field": "weight_distr"},
+    ]
+    # vehicle_type_no/target_no were coerced str -> int at the COM boundary.
+    assert isinstance(session.calls[0]["vehicle_type_no"], int)
+    assert isinstance(session.calls[0]["target_no"], int)
+
+
+def test_set_vehicle_type_reference_a_different_field_dispatches_that_field():
+    session = FakeEditSession(readback={"vehicle_type_reference": "2"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_type_reference", vehicle_type_no="200", field="des_accel_func", target_no="2"
+    )
+
+    assert envelope["status"] == "ok"
+    assert session.calls[0]["field"] == "des_accel_func"
+
+
+def test_set_vehicle_type_reference_readback_mismatch_still_reports_ok_envelope():
+    session = FakeEditSession(readback={"vehicle_type_reference": "2"})  # write was 3, readback shows 2
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="3"
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": "3", "readback_value": "2"}
+
+
+def test_set_vehicle_type_reference_vissim_refusal_surfaces_as_structured_error():
+    session = FakeEditSession(
+        raise_on={
+            "set_vehicle_type_reference": RuntimeError(
+                "Could not set vehicle type 200 weight_distr to 999999: Object 999999 of type "
+                "Weight Distribution does not exist."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="999999"
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "Weight Distribution does not exist" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+def test_set_vehicle_type_reference_invalid_field_is_rejected_at_param_layer():
+    session = FakeEditSession(readback={"vehicle_type_reference": "3"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_type_reference", vehicle_type_no="200", field="not_a_real_field", target_no="3"
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_vehicle_type_reference_extra_param_is_rejected_before_the_tool_ever_runs():
+    session = FakeEditSession(readback={"vehicle_type_reference": "3"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_type_reference",
+        vehicle_type_no="200",
+        field="weight_distr",
+        target_no="3",
+        extra_field="nope",
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_vehicle_type_reference_non_numeric_target_no_is_rejected_not_a_crash():
+    session = FakeEditSession(readback={"vehicle_type_reference": "3"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr", target_no="not-a-number"
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert session.calls == []
+
+
+def test_set_vehicle_type_reference_missing_required_param_is_rejected():
+    session = FakeEditSession(readback={"vehicle_type_reference": "3"})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_vehicle_type_reference", vehicle_type_no="200", field="weight_distr")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
 
 
 # ---------------------------------------------------------------------------

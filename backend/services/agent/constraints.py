@@ -535,6 +535,20 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "distribution_no",
     },
+    # QUEUE (v2a) unit: set_vehicle_type_reference added to the
+    # object_not_found / _TOOL_TARGET_SPEC lockstep table -- this only
+    # covers the VEHICLE-TYPE-level lookup (vehicle_types object class,
+    # keyed by vehicle_type_no); whether the proposed target_no exists in
+    # the CORRECT target collection for the action's own "field" is a
+    # dedicated check (vehicle_type_reference_target_not_found, below) --
+    # mirrors des_speed_distribution_not_found's own split from
+    # set_des_speed_decision's primary-target lookup.
+    "set_vehicle_type_reference": {
+        "object_class": "vehicle_types",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "vehicle_type_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -547,6 +561,7 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "des_speed_decisions": {"ko": "희망속도결정", "en": "desired speed decision", "ja": "希望速度決定"},
     "priority_rules": {"ko": "우선순위 규칙", "en": "priority rule", "ja": "優先ルール"},
     "des_speed_distributions": {"ko": "희망속도분포", "en": "desired-speed distribution", "ja": "希望速度分布"},
+    "vehicle_types": {"ko": "차량 유형", "en": "vehicle type", "ja": "車両タイプ"},
 }
 
 
@@ -703,6 +718,8 @@ register(
             "set_priority_rule_gap_headway",
             # QUEUE 3 (v2a) unit 3 -- easy to forget (unit ② caught this).
             "set_des_speed_distribution_points",
+            # QUEUE (v2a) unit -- vehicle type properties.
+            "set_vehicle_type_reference",
         ],
         phase="preflight",
         tier="refuse",
@@ -6509,5 +6526,165 @@ register(
         "reference(s) total: {refs_en}. Editing this curve affects every one of them at once.",
         message_ja="速度分布 '{distribution_no}' は共有対象です -- 合計{reference_count}件が参照中: "
         "{refs_ja}。この曲線を編集すると、これらすべてに同時に影響します。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# vehicle_type_reference_target_not_found (refuse, preflight) -- QUEUE (v2a)
+# unit
+#
+# Not a §-numbered catalog entry. COM itself already fails CLOSED on a bogus
+# reference target (verified live, backend/tools/probe_vehicle_types.py:
+# SetAttValue raises "Object 999999 of type Weight Distribution does not
+# exist") -- this check exists so the refusal comes WITH a reason and a
+# candidate list BEFORE ever touching COM, per the guardrail doctrine,
+# mirroring des_speed_distribution_not_found's own precedent exactly. Which
+# shadow-model list validates target_no depends on the action's own "field"
+# param -- a vehicle type has EIGHT different reference kinds, each pointing
+# at a DIFFERENT target collection (unlike des_speed_decision's single
+# des_speed_distributions target).
+# ---------------------------------------------------------------------------
+
+#: {field: shadow_model key for that field's target collection} -- mirrors
+#: tools_network._parse_vehicle_types' own reference_lookups table and
+#: vissim_com.VissimController.VEHICLE_TYPE_REFERENCE_FIELDS' keys exactly.
+_VEHICLE_TYPE_REFERENCE_TARGET_SPEC: dict[str, str] = {
+    "model2d3d_distr": "model2d3d_distributions",
+    "weight_distr": "weight_distributions",
+    "power_distr": "power_distributions",
+    "des_accel_func": "des_accel_functions",
+    "max_accel_func": "max_accel_functions",
+    "des_decel_func": "des_decel_functions",
+    "max_decel_func": "max_decel_functions",
+    "des_curve_speed_func": "curve_speed_functions",
+}
+
+
+def _check_vehicle_type_reference_target_not_found(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_vehicle_type_reference":
+        return None
+
+    params = action.get("params", {})
+    field = str(params.get("field", ""))
+    shadow_key = _VEHICLE_TYPE_REFERENCE_TARGET_SPEC.get(field)
+    if shadow_key is None:
+        # An unknown field value never reaches here -- the params model's
+        # own Literal enum already rejects it as invalid_params before
+        # dispatch. Kept defensive (a fixture/future caller bypassing the
+        # pydantic layer degrades silently rather than KeyErrors).
+        return None
+
+    targets = shadow_model.get(shadow_key, [])
+    known_nos = [str(t.get("no", "")) for t in targets]
+    known_no_set = set(known_nos)
+
+    target_no = str(params.get("target_no", "")) if params.get("target_no") is not None else ""
+    if not target_no or target_no in known_no_set:
+        return None
+
+    candidates = difflib.get_close_matches(target_no, known_nos, n=5) or sorted(known_no_set)[:20]
+    return Finding(
+        constraint_id="vehicle_type_reference_target_not_found",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "vehicle_type_reference_target_not_found",
+            field=field,
+            target_no=target_no,
+            candidates=", ".join(candidates) if candidates else "-",
+        ),
+        suggested_fix={"candidates": candidates},
+        details={"field": field, "target_no": target_no, "available": sorted(known_no_set)},
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_type_reference_target_not_found",
+        applies_to=["set_vehicle_type_reference"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_vehicle_type_reference_target_not_found,
+        message_ko="대상 번호 '{target_no}'({field})가 이 네트워크에 존재하지 않습니다. 사용 가능한 "
+        "번호: {candidates}.",
+        message_en="Target '{target_no}' ({field}) does not exist in this network. "
+        "Available numbers: {candidates}.",
+        message_ja="対象番号 '{target_no}'({field})はこのネットワークに存在しません。利用可能な"
+        "番号: {candidates}。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# vehicle_type_shared_by_compositions (warn, preflight) -- QUEUE (v2a) unit
+#
+# The "⑧/③ lesson", the task brief's own explicit ask: a vehicle type is
+# referenced by composition relFlows (tools_network._vehicle_type_
+# composition_refs) -- editing ANY of its references (which distribution/
+# function it uses) changes behavior for every vehicle of this type
+# generated by every one of those compositions' demand streams at once.
+# Always fires when there is at least one referencing composition, silent
+# otherwise (an unreferenced/scratch vehicle type is free to reassign
+# without warning) -- same policy as des_speed_distribution_points_shared_
+# target and vehicle_composition_referenced_by_vehicle_inputs above.
+# ---------------------------------------------------------------------------
+
+
+def _check_vehicle_type_shared_by_compositions(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_vehicle_type_reference":
+        return None
+
+    params = action.get("params", {})
+    vehicle_type_no = str(params.get("vehicle_type_no", ""))
+    vehicle_type = _find_by_field(shadow_model.get("vehicle_types", []), "no", vehicle_type_no)
+    if vehicle_type is None:
+        return None  # missing target is object_not_found's job (#1)
+
+    refs = vehicle_type.get("referencing_composition_nos") or {}
+    count = refs.get("count", 0)
+    if not count:
+        return None
+
+    ids = refs.get("ids", [])
+    ids_ko, ids_en, ids_ja = _capped_join(ids, "개 차량조성", "vehicle composition(s)", "件の車両構成")
+    truncated_note_ko = "" if not refs.get("truncated") else f" (총 {count}개 중 일부만 표시)"
+    truncated_note_en = "" if not refs.get("truncated") else f" (showing some of {count})"
+    truncated_note_ja = "" if not refs.get("truncated") else f" (合計{count}件中の一部のみ表示)"
+
+    return Finding(
+        constraint_id="vehicle_type_shared_by_compositions",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "vehicle_type_shared_by_compositions",
+            vehicle_type_no=vehicle_type_no,
+            count=count,
+            ids_ko=ids_ko + truncated_note_ko,
+            ids_en=ids_en + truncated_note_en,
+            ids_ja=ids_ja + truncated_note_ja,
+        ),
+        suggested_fix=None,
+        details={"vehicle_type_no": vehicle_type_no, "referencing_compositions": refs},
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_type_shared_by_compositions",
+        applies_to=["set_vehicle_type_reference"],
+        phase="preflight",
+        tier="warn",
+        check=_check_vehicle_type_shared_by_compositions,
+        message_ko="차량 유형 '{vehicle_type_no}'는 {count}개의 차량 조성에서 참조됩니다: {ids_ko}. "
+        "이 참조를 변경하면 해당 조성을 사용하는 모든 수요에 동시에 영향을 줍니다.",
+        message_en="Vehicle type '{vehicle_type_no}' is referenced by {count} vehicle composition(s): "
+        "{ids_en}. Changing this reference affects every demand stream using those compositions at once.",
+        message_ja="車両タイプ '{vehicle_type_no}' は{count}件の車両構成から参照されています: {ids_ja}。"
+        "この参照を変更すると、それらの構成を使用するすべての需要に同時に影響します。",
     )
 )

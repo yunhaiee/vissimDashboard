@@ -62,7 +62,18 @@ all — each vehicle class's distribution assignment is fully independent. See
 findings, including COM's fail-closed behavior on a bogus distribution
 reference), and ``des_speed_distributions`` (flat no/name list, shared with
 ``set_reduced_speed_area``'s own distribution object type — see
-:func:`_parse_speed_distributions`).
+:func:`_parse_speed_distributions`), and ``vehicle_types`` (QUEUE (v2a) unit:
+parsed here directly from ``<vehicleType>`` — scalars (no/name/category/
+capacity/cap_exact) plus every DISTRIBUTION/FUNCTION reference the type
+carries, resolved to cheap stats (id+name, plus min/max/mean for weight/
+power/length) and a flat ``"{field}_no"`` id per reference for guardrails.py.
+The 8 referenced target collections (``model2d3d_distributions``,
+``weight_distributions``, ``power_distributions``, ``des_accel_functions``,
+``max_accel_functions``, ``des_decel_functions``, ``max_decel_functions``,
+``curve_speed_functions``) are also exposed as their own flat shadow-model
+lists, purely so constraints.py can validate a proposed write target. See
+:func:`_parse_vehicle_types`'s own docstring for the live-verified findings,
+including nullable references on PEDESTRIAN-category types).
 
 ``resolve_object`` is the "network-RAG" pattern (research-digest #10): a
 small, deterministic lexical top-k retrieval over the shadow model's objects.
@@ -103,6 +114,7 @@ ObjectType = Literal[
     "vehicle_composition",
     "des_speed_decision",
     "priority_rule",
+    "vehicle_type",
 ]
 
 # {object_type: {shadow_key, id_field, name_field}} — the one place that maps
@@ -147,6 +159,14 @@ _OBJECT_TYPE_SPECS: dict[str, dict[str, str]] = {
     # empirically ALWAYS blank on real priority rules (verified live and
     # statically across every real network probed), same as des_speed_decision.
     "priority_rule": {"shadow_key": "priority_rules", "id_field": "no", "name_field": "name"},
+    # QUEUE (v2a) unit: keyed against the FLAT "vehicle_types" list (a
+    # vehicle type has a genuine single-token identity, its own "no" --
+    # unlike routing_decision/vehicle_composition/des_speed_decision/
+    # priority_rule above, there is no nested-vs-flat split needed here; a
+    # SPECIFIC reference within a vehicle type is addressed by
+    # set_vehicle_type_reference's own vehicle_type_no+field params, not
+    # through this generic object_type machinery).
+    "vehicle_type": {"shadow_key": "vehicle_types", "id_field": "no", "name_field": "name"},
 }
 
 _TOP_K = 5
@@ -927,6 +947,341 @@ def _parse_speed_distributions(
     return result
 
 
+# ---------------------------------------------------------------------------
+# get_vehicle_types -- QUEUE (v2a) unit: vehicle type properties,
+# SCALARS/REFERENCES only.
+#
+# Probed live (backend/tools/probe_vehicle_types.py, Roundabout Billings.US):
+# ``Net.VehicleTypes`` -> a FLAT VehicleType object whose scalar attributes
+# (No/Name/Category/Capacity/CapExact) and REFERENCE attributes
+# (Model2D3DDistr/WeightDistr/PowerDistr/DesAccelFunc/MaxAccelFunc/
+# DesDecelFunc/MaxDecelFunc/DesCurveSpeedFunc) ALL match the .inpx XML
+# attribute spelling exactly -- no CycTm/NodeRes-style COM-id mismatch here.
+# Every reference is independent (no shared-sum/renormalization semantics,
+# verified live via a sibling-untouched check), and COM itself fails CLOSED
+# on a bogus reference target. See ``vissim_com.VissimController.
+# set_vehicle_type_reference``'s own module comment for the full write-side
+# writeup (including the ONE genuine landmine: ``DesCurveSpeedFunc``'s
+# attribute id keeps the "Curve" spelling but its TARGET collection is
+# ``Net.CurvSpeedFuncs``, "Curv" -- never assume a reference id and its
+# target collection share a spelling convention).
+#
+# **The catalog bullet's real writable surface, as the task brief predicted:**
+# length/weight/power/accel/decel are NOT scalars on the type itself --
+# ``model2D3DDistr``/``weightDistr``/``powerDistr``/``des*AccelFunc``/
+# ``des*DecelFunc``/``desCurveSpeedFunc`` are all REFERENCES to a DIFFERENT
+# object elsewhere (a 2D/3D model distribution, a weight/power distribution,
+# an accel/decel/curve-speed FUNCTION). This unit ships exactly that
+# reference-REASSIGNMENT surface (``set_vehicle_type_reference``) plus a
+# read tool that resolves each reference to cheap, informational stats --
+# never curve/model editing, which stays a documented probe report only (per
+# the task's own explicit "do NOT implement curve editing" instruction).
+#
+# **Nullable-per-category, verified both statically (168 real vehicleType
+# elements across all 25 example networks) and live:** every
+# ``category="PEDESTRIAN"`` vehicle type carries NO ``weightDistr``/
+# ``powerDistr``/``desCurveSpeedFunc`` attribute at all -- these three
+# references are genuinely OPTIONAL per category, not always-populated. The
+# parser below tolerates an absent reference cleanly (``None``), never
+# assumes every vehicle type carries every field.
+# ---------------------------------------------------------------------------
+
+
+def _parse_model2d3d_lengths_m(root: ET.Element) -> dict[str, float]:
+    """{model2D3D_no: length_m} from ``<models2D3D><model2D3D><model2D3DSegs>
+    <model2D3DSegment length="..."/></model2D3DSegs></model2D3D></models2D3D>``.
+
+    A vehicle SHAPE's own physical length, in METRES -- verified statically
+    against a real MILESPERHOUR-display network (Roundabout Billings.US,
+    ``netPara@unitLenShort="FEET"``): raw XML ``length`` values (e.g. ~5.97 m
+    for a "LtTruck - Ford F150") are already plausible METRIC lengths
+    regardless of the network's own display-unit setting, matching every
+    other "XML always stores metric" precedent in this codebase (speed
+    distribution ``x``, v2a unit ⑧'s desSpeedDecision ``Pos``) -- there is no
+    ``unitWeight``/``unitPower`` OR per-length-attribute display-unit
+    override for THIS attribute found in any real ``<netPara>`` scanned, so
+    no conversion is applied or needed here.
+
+    **Multi-segment approximation, flagged (not COM-verified):** a static
+    scan across all 25 example networks found ``model2D3D`` shapes with
+    1-95 segments (histogram: 422 single-segment, 36 two-segment, up to one
+    95-segment shape -- almost certainly a long train/rail consist). This
+    function SUMS every segment's own ``length`` as the shape's total
+    physical length -- a reasonable engineering reading (sequential body
+    sections chained end to end) for the common single/few-segment case, but
+    genuinely UNVERIFIED for the rare many-segment (rail) case; this is a
+    cheap, informational, READ-ONLY statistic never used to gate any write or
+    refusal, so the approximation's risk is display-only. A segment with no
+    parseable ``length`` contributes 0 to that shape's total (never raises,
+    never drops the shape from the result)."""
+    lengths: dict[str, float] = {}
+    for model in root.findall(".//models2D3D/model2D3D"):
+        no = model.get("no", "")
+        if not no:
+            continue
+        total = 0.0
+        for seg in model.findall("model2D3DSegs/model2D3DSegment"):
+            total += _coerce_float_or_none(seg.get("length")) or 0.0
+        lengths[no] = total
+    return lengths
+
+
+def _parse_model2d3d_distributions(root: ET.Element) -> dict[str, dict[str, Any]]:
+    """{no: {no, name, length_min_m, length_max_m, length_mean_m,
+    model_count}} from ``<model2D3DDistributions><model2D3DDistribution>
+    <model2D3DDistrEl><model2D3DDistributionElement model2D3D=".."
+    share=".."/></model2D3DDistrEl></model2D3DDistribution>
+    </model2D3DDistributions>``.
+
+    ``length_mean_m`` is SHARE-WEIGHTED, not a plain average -- verified
+    statically that ``share`` values do NOT reliably sum to 1.0 across a
+    distribution's own elements (e.g. a real 10-element "Car" distribution's
+    shares sum to ~1.63), the SAME "raw weight, not a pre-normalized share"
+    pattern this codebase has already found for route/vehicle-composition
+    RelFlow -- so the mean here normalizes by the elements' own share SUM,
+    not by assuming it is already 1. A shape id absent from
+    :func:`_parse_model2d3d_lengths_m`'s lookup (should not happen on real
+    data -- every ``model2D3D`` referenced by a distribution element is
+    expected to exist) is skipped from the min/max/mean computation rather
+    than crashing or silently contributing a 0-length phantom entry.
+    """
+    lengths = _parse_model2d3d_lengths_m(root)
+    result: dict[str, dict[str, Any]] = {}
+    for distr in root.findall(".//model2D3DDistributions/model2D3DDistribution"):
+        no = distr.get("no", "")
+        if not no:
+            continue
+        pairs: list[tuple[float, float]] = []
+        for el in distr.findall("model2D3DDistrEl/model2D3DDistributionElement"):
+            model_no = el.get("model2D3D", "")
+            length_m = lengths.get(model_no)
+            share = _coerce_float_or_none(el.get("share"))
+            if length_m is None or share is None:
+                continue
+            pairs.append((length_m, share))
+        share_sum = sum(share for _length, share in pairs)
+        result[no] = {
+            "no": no,
+            "name": distr.get("name", ""),
+            "length_min_m": min((length for length, _share in pairs), default=None),
+            "length_max_m": max((length for length, _share in pairs), default=None),
+            "length_mean_m": (
+                round(sum(length * share for length, share in pairs) / share_sum, 3)
+                if share_sum > 0
+                else None
+            ),
+            "model_count": len(pairs),
+        }
+    return result
+
+
+def _parse_generic_distribution_stats(
+    root: ET.Element, section_tag: str, element_tag: str
+) -> dict[str, dict[str, Any]]:
+    """{no: {no, name, min, max, mean, point_count}} for a ``<distrDataPts>
+    <distributionDataPoint fx="..." x="..."/></distrDataPts>``-shaped
+    distribution -- the EXACT same point shape ``speedDistribution`` uses
+    (:func:`_parse_speed_distribution_points`), reused here for
+    ``weightDistribution``/``powerDistribution`` (verified statically: e.g.
+    Beijing's ``weightDistribution no="1"`` is a plain 2-point
+    ``[(fx=0,x=700), (fx=1,x=1500)]`` curve). Values are read straight from
+    the XML in their native units (kg for weight, kW for power -- Vissim's
+    ``<netPara>`` carries no ``unitWeight``/``unitPower`` display-unit
+    attribute on ANY of the 25 real example networks scanned, unlike speed/
+    length, so no display-unit conversion path exists to guard against).
+
+    ``mean`` is the cumulative distribution's own probability-weighted mean
+    (trapezoidal: each consecutive pair's fx-delta as its probability mass,
+    the pair's own x-midpoint as its value) -- the standard way to summarize
+    a CDF's central tendency, not a plain arithmetic average of the point
+    x-values (which would overweight however many points happen to sit near
+    one end of the curve). ``min``/``max`` are the plain min/max of every
+    point's own ``x`` (correct regardless of whether the curve is monotonic).
+    A distribution with fewer than 2 usable points reports ``mean=None``
+    (nothing to weight between); ``min``/``max`` still resolve from whatever
+    points exist, or ``None`` for a genuinely empty curve.
+    """
+    result: dict[str, dict[str, Any]] = {}
+    for el in root.findall(f".//{section_tag}/{element_tag}"):
+        no = el.get("no", "")
+        if not no:
+            continue
+        points: list[tuple[float, float]] = []
+        for pt in el.findall("distrDataPts/distributionDataPoint"):
+            x = _coerce_float_or_none(pt.get("x"))
+            fx = _coerce_float_or_none(pt.get("fx"))
+            if x is None or fx is None:
+                continue
+            points.append((x, fx))
+
+        mean = None
+        if len(points) >= 2:
+            mass = 0.0
+            weighted = 0.0
+            for (x0, fx0), (x1, fx1) in zip(points, points[1:]):
+                weight = fx1 - fx0
+                weighted += weight * (x0 + x1) / 2.0
+                mass += weight
+            mean = round(weighted / mass, 3) if mass > 0 else None
+
+        result[no] = {
+            "no": no,
+            "name": el.get("name", ""),
+            "min": min((x for x, _fx in points), default=None),
+            "max": max((x for x, _fx in points), default=None),
+            "mean": mean,
+            "point_count": len(points),
+        }
+    return result
+
+
+def _parse_function_names(root: ET.Element, section_tag: str, element_tag: str) -> dict[str, dict[str, Any]]:
+    """{no: {no, name}} for one of the five accel/decel/curve-speed FUNCTION
+    collections (``desAccelerationFunctions``/``maxAccelerationFunctions``/
+    ``desDecelerationFunctions``/``maxDecelerationFunctions``/
+    ``curvSpeedFuncs``) -- id + name ONLY. Each function's own curve (a
+    speed-indexed acceleration/deceleration/curve-speed table, up to ~35
+    points on real data) is deliberately NOT parsed here: this unit's task
+    brief scopes function CURVE editing out entirely ("probe report only, do
+    NOT implement curve editing") -- these are read-only REFERENCE TARGETS
+    for :func:`_parse_vehicle_types`/``set_vehicle_type_reference`` to
+    validate against and name, nothing more.
+    """
+    return {
+        el.get("no", ""): {"no": el.get("no", ""), "name": el.get("name", "")}
+        for el in root.findall(f".//{section_tag}/{element_tag}")
+        if el.get("no")
+    }
+
+
+def _vehicle_type_composition_refs(vehicle_composition_entries: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """{veh_type: [composition_no, ...]} from the ALREADY-FLATTENED
+    ``vehicle_composition_entries`` (:func:`_flatten_vehicle_composition_entries`)
+    -- no new XML parsing needed, since every entry already carries both
+    ``veh_type`` and ``composition_no``. This is the reverse direction of the
+    existing composition->vehicle-input reference count
+    (:func:`_xml_vehicle_composition_refs`): "which compositions carry THIS
+    vehicle type" is exactly what the shared-collection warn constraint (the
+    "⑧/③ lesson" -- a vehicle type is referenced by composition relFlows)
+    needs to name on the approval card."""
+    refs: dict[str, list[str]] = {}
+    for entry in vehicle_composition_entries:
+        veh_type = str(entry.get("veh_type", ""))
+        composition_no = str(entry.get("composition_no", ""))
+        if not veh_type or not composition_no:
+            continue
+        owners = refs.setdefault(veh_type, [])
+        if composition_no not in owners:
+            owners.append(composition_no)
+    return refs
+
+
+def _resolve_vehicle_type_reference(
+    ref_no: str | None, lookup: dict[str, dict[str, Any]]
+) -> dict[str, Any] | None:
+    """The referenced object's own cheap-stats dict from ``lookup`` (one of
+    :func:`_parse_model2d3d_distributions`/:func:`_parse_generic_distribution_stats`/
+    :func:`_parse_function_names`'s return values), or ``None`` when
+    ``ref_no`` is absent (the live-verified PEDESTRIAN-category nullable-
+    reference finding) OR -- defensively, should not happen on real data --
+    the referenced no is not present in the target collection (a dangling
+    reference the read tool should show as "unresolvable" rather than
+    crash on)."""
+    if not ref_no:
+        return None
+    resolved = lookup.get(ref_no)
+    if resolved is None:
+        return {"no": ref_no, "name": None, "unresolved": True}
+    return resolved
+
+
+def _parse_vehicle_types(
+    root: ET.Element,
+    vehicle_composition_entries: list[dict[str, Any]],
+    model2d3d_distributions: dict[str, dict[str, Any]],
+    weight_distributions: dict[str, dict[str, Any]],
+    power_distributions: dict[str, dict[str, Any]],
+    des_accel_functions: dict[str, dict[str, Any]],
+    max_accel_functions: dict[str, dict[str, Any]],
+    des_decel_functions: dict[str, dict[str, Any]],
+    max_decel_functions: dict[str, dict[str, Any]],
+    curve_speed_functions: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """{no, name, category, capacity, cap_exact, references: {...},
+    referencing_composition_nos, <field>_no per reference field} per
+    ``<vehicleType>``.
+
+    Every reference field carries BOTH a flat ``"{field}_no"`` string (or
+    ``None``) -- the write-target/guardrails-comparable identity, matching
+    the ``des_speed_distr_no`` naming convention v2a unit ⑧'s
+    ``des_speed_decision_entries`` already established -- AND a resolved,
+    richer dict under ``references["{field}"]`` (id + name + cheap stats,
+    e.g. a weight distribution's min/max/mean; ``None`` when the field
+    itself is absent). ``references`` is purely DERIVED from the flat
+    ``*_no`` fields plus each target collection's own data (never written
+    directly by any tool), so ``guardrails.py``'s ``_ALWAYS_EXEMPT_FIELDS``
+    excludes it from the nothing-else-moved diff -- see that module's own
+    comment at the exemption.
+
+    ``referencing_composition_nos`` (:func:`_vehicle_type_composition_refs`,
+    bounded via :func:`_bounded_reference_ids`) is the "which vehicle
+    compositions carry this type" list the shared-collection warn constraint
+    needs -- also purely derived, also exempt.
+    """
+    composition_refs = _vehicle_type_composition_refs(vehicle_composition_entries)
+
+    reference_lookups: dict[str, dict[str, dict[str, Any]]] = {
+        "model2d3d_distr": model2d3d_distributions,
+        "weight_distr": weight_distributions,
+        "power_distr": power_distributions,
+        "des_accel_func": des_accel_functions,
+        "max_accel_func": max_accel_functions,
+        "des_decel_func": des_decel_functions,
+        "max_decel_func": max_decel_functions,
+        "des_curve_speed_func": curve_speed_functions,
+    }
+    # Vissim's own .inpx attribute name for each reference field, matching
+    # vissim_com.VissimController.VEHICLE_TYPE_REFERENCE_FIELDS' COM ids
+    # exactly in spelling (verified live, see that dict's own docstring) --
+    # this is the XML-side mirror of the SAME field vocabulary.
+    xml_attrs: dict[str, str] = {
+        "model2d3d_distr": "model2D3DDistr",
+        "weight_distr": "weightDistr",
+        "power_distr": "powerDistr",
+        "des_accel_func": "desAccelFunc",
+        "max_accel_func": "maxAccelFunc",
+        "des_decel_func": "desDecelFunc",
+        "max_decel_func": "maxDecelFunc",
+        "des_curve_speed_func": "desCurveSpeedFunc",
+    }
+
+    result: list[dict[str, Any]] = []
+    for vt in root.findall(".//vehicleTypes/vehicleType"):
+        no = vt.get("no", "")
+        if not no:
+            continue
+        cap_exact_raw = vt.get("capExact")
+
+        entry: dict[str, Any] = {
+            "no": no,
+            "name": vt.get("name", ""),
+            "category": vt.get("category", ""),
+            "capacity": _coerce_float_or_none(vt.get("capacity")),
+            "cap_exact": None if cap_exact_raw is None else cap_exact_raw.strip().lower() == "true",
+        }
+
+        references: dict[str, Any] = {}
+        for field, lookup in reference_lookups.items():
+            ref_no = vt.get(xml_attrs[field])
+            entry[f"{field}_no"] = ref_no
+            references[field] = _resolve_vehicle_type_reference(ref_no, lookup)
+        entry["references"] = references
+        entry["referencing_composition_nos"] = _bounded_reference_ids(composition_refs.get(no, []))
+
+        result.append(entry)
+    return result
+
+
 def _parse_lane_token(raw: str | None) -> tuple[str, str]:
     """``"<linkNo> <laneNo>"`` -> ``(link_no, lane_no)`` -- the SAME
     space-separated XML encoding every other lane-scoped element in this
@@ -1254,6 +1609,23 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
     des_speed_decisions = _parse_des_speed_decisions(root)
     signal_programs = parse_signal_programs(inpx_path)
     priority_rules = _parse_priority_rules(root)
+    vehicle_composition_entries = _flatten_vehicle_composition_entries(vehicle_compositions)
+    # QUEUE (v2a) unit: vehicle type properties. Each of the 8 reference
+    # target collections is parsed ONCE here (not re-parsed once per vehicle
+    # type inside _parse_vehicle_types) and exposed as its own top-level
+    # shadow-model list too -- both so constraints.py's
+    # vehicle_type_reference_target_not_found can validate a proposed
+    # target_no against the correct collection for the action's own "field",
+    # and so a future read tool could query them directly (not shipped this
+    # unit -- see get_vehicle_types' own docstring for the scope cut).
+    model2d3d_distributions = _parse_model2d3d_distributions(root)
+    weight_distributions = _parse_generic_distribution_stats(root, "weightDistributions", "weightDistribution")
+    power_distributions = _parse_generic_distribution_stats(root, "powerDistributions", "powerDistribution")
+    des_accel_functions = _parse_function_names(root, "desAccelerationFunctions", "desAccelerationFunction")
+    max_accel_functions = _parse_function_names(root, "maxAccelerationFunctions", "maxAccelerationFunction")
+    des_decel_functions = _parse_function_names(root, "desDecelerationFunctions", "desDecelerationFunction")
+    max_decel_functions = _parse_function_names(root, "maxDecelerationFunctions", "maxDecelerationFunction")
+    curve_speed_functions = _parse_function_names(root, "curvSpeedFuncs", "curvSpeedFunc")
     return {
         "links": net["links"],
         "nodes": net["nodes"],
@@ -1263,7 +1635,7 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         "routing_decisions": routing_decisions,
         "routes": _flatten_routes(routing_decisions),
         "vehicle_compositions": vehicle_compositions,
-        "vehicle_composition_entries": _flatten_vehicle_composition_entries(vehicle_compositions),
+        "vehicle_composition_entries": vehicle_composition_entries,
         # v2a unit ⑧
         "des_speed_decisions": des_speed_decisions,
         "des_speed_decision_entries": _flatten_des_speed_decision_entries(des_speed_decisions),
@@ -1286,6 +1658,32 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         # own docstring for the live-verified findings.
         "priority_rules": priority_rules,
         "priority_rule_markers": _flatten_priority_rule_markers(priority_rules),
+        # QUEUE (v2a) unit: vehicle type properties (scalars + references
+        # only -- see _parse_vehicle_types' own docstring). The 8 target
+        # collections are exposed as their own flat lists too, purely so
+        # constraints.py's vehicle_type_reference_target_not_found can
+        # validate a proposed target_no against the collection matching the
+        # action's own "field" param.
+        "vehicle_types": _parse_vehicle_types(
+            root,
+            vehicle_composition_entries,
+            model2d3d_distributions,
+            weight_distributions,
+            power_distributions,
+            des_accel_functions,
+            max_accel_functions,
+            des_decel_functions,
+            max_decel_functions,
+            curve_speed_functions,
+        ),
+        "model2d3d_distributions": list(model2d3d_distributions.values()),
+        "weight_distributions": list(weight_distributions.values()),
+        "power_distributions": list(power_distributions.values()),
+        "des_accel_functions": list(des_accel_functions.values()),
+        "max_accel_functions": list(max_accel_functions.values()),
+        "des_decel_functions": list(des_decel_functions.values()),
+        "max_decel_functions": list(max_decel_functions.values()),
+        "curve_speed_functions": list(curve_speed_functions.values()),
     }
 
 
@@ -2223,5 +2621,55 @@ def get_priority_rules(params: GetPriorityRulesParams) -> dict[str, Any]:
         result["hint"] = (
             f"Showing {len(capped)} of {total} priority rules. Narrow with "
             "priority_rule_no or link_no to see a specific one instead of the whole list."
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# get_vehicle_types -- QUEUE (v2a) unit
+#
+# BOUNDED OUTPUT from day one (the 2026-07-27 lesson), same shape as every
+# other get_* tool in this module -- an unfiltered call caps the list with an
+# explicit truncated flag + hint, and vehicle_type_no narrows to one. Real
+# networks carry far fewer vehicle types than desSpeedDecisions/conflict
+# areas (168 total across all 25 example networks, max 7 on one network), so
+# this cap is generous headroom, not a tuned-to-the-edge limit.
+# ---------------------------------------------------------------------------
+
+#: Item cap for an UNFILTERED get_vehicle_types call -- every real example
+#: network probed carries at most 7 vehicle types; 40 is generous headroom
+#: matching this module's other object-list caps' stated reasoning.
+_VEHICLE_TYPES_DEFAULT_CAP = 40
+
+
+class GetVehicleTypesParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    vehicle_type_no: str | None = Field(
+        default=None,
+        description="Exact vehicle type 'no' to return (narrows to at most one result).",
+    )
+
+
+@tool(name="get_vehicle_types", tier="read", provider="inspect", params=GetVehicleTypesParams)
+def get_vehicle_types(params: GetVehicleTypesParams) -> dict[str, Any]:
+    """Return the network's vehicle types -- id, name, category (CAR/HGV/BUS/BIKE/PEDESTRIAN/TRAM, read-only), capacity, and each DISTRIBUTION/FUNCTION reference this type points at: model2d3d_distr (the 2D/3D model shapes used to draw/size this type -- resolves to a length_min_m/length_max_m/length_mean_m summary), weight_distr and power_distr (resolve to min/max/mean), and des_accel_func/max_accel_func/des_decel_func/max_decel_func/des_curve_speed_func (the accel/decel/curve-speed FUNCTION curves this type follows -- resolve to id+name only; editing a function's own curve is not supported by this agent, only reassigning which function/distribution a type uses). Some references are legitimately absent on certain categories (e.g. PEDESTRIAN types carry no weight_distr/power_distr/des_curve_speed_func) -- a null reference is normal data, not an error. Also reports referencing_composition_nos: which vehicle compositions include this type -- editing any of this type's references changes behavior for every one of them at once. Use set_vehicle_type_reference(vehicle_type_no, field, target_no) to reassign a reference; field is one of model2d3d_distr/weight_distr/power_distr/des_accel_func/max_accel_func/des_decel_func/max_decel_func/des_curve_speed_func. Optionally filter by vehicle_type_no -- an unfiltered call on a large network returns only the first 40 (with an explicit truncated flag and a hint)."""
+    vehicle_types = _current_shadow_model()["vehicle_types"]
+
+    if params.vehicle_type_no is not None:
+        vehicle_types = [vt for vt in vehicle_types if str(vt.get("no")) == str(params.vehicle_type_no)]
+
+    total = len(vehicle_types)
+    filtered = params.vehicle_type_no is not None
+    if filtered:
+        return {"count": total, "vehicle_types": vehicle_types}
+
+    capped = vehicle_types[:_VEHICLE_TYPES_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {"count": total, "vehicle_types": capped, "truncated": truncated}
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} vehicle types. Narrow with vehicle_type_no "
+            "to see a specific one instead of the whole list."
         )
     return result

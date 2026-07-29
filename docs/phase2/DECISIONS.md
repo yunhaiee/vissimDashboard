@@ -2646,3 +2646,20 @@ guardrails regressions fixed en route: `_ALLOWS_NEW_OBJECTS_IN` (unit ② legiti
 distribution) and `_ALWAYS_EXEMPT_FIELDS` (derived reference counts shift on unrelated writes).
 Registry 65→72. Suite 1459/1/1 (controller re-ran; re-drove all tiers + the step-function
 acceptance live against the real model's 45 distributions).
+
+## 2026-07-29 — Q3 unit ④: vehicle-type properties shipped; the reference id says "Curve", its target collection says "Curv"
+
+Probed live (Roundabout Billings.US). The type's writable surface is 8 REFERENCE fields
+(model-2D/3D, weight, power, des/max accel/decel functions, curve-speed function) — the values
+live in the referenced distributions/functions, so the verb is reference assignment with a
+field whitelist, not scalar writes. Landmines: `DesCurveSpeedFunc`'s target collection is
+`Net.CurvSpeedFuncs` (spelling mismatch); PEDESTRIAN types legitimately carry NO
+weight/power/curve-speed (AttValue returns None — nullable-by-category, distinct from the
+fail-open landmine); bogus targets fail CLOSED with a clean error. `get_vehicle_types` resolves
+length (share-weighted, always metres via the model2D3D chain), weight/power stats entirely from
+static XML — zero COM for reads. First write tool whose target field name is chosen at call
+time → new `value_field_param` guardrails mechanism. Accel/decel FUNCTION curve editing:
+probe report only (same point-collection shape as unit ③'s ReplaceAll — untested, honest
+remainder). Registry 72→74. Suite 1491/1/1 (controller re-ran; re-drove read + all three
+constraint outcomes on the real model's 28 types — the shared-composition warn is correctly
+silent for type 200, which has zero composition refs on the real model). v2a now 10/12.
