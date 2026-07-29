@@ -572,6 +572,16 @@ def _capped_join(
 # #1 object_not_found (refuse, preflight)
 # ---------------------------------------------------------------------------
 
+#: Bounded envelope for the fuzzy-match fallback below (standing rule --
+#: suggestion lists reach LLM prompts, see the observation-budget incident).
+#: The real Murdoch model shares one name across groups of 3 vehicle inputs
+#: (one per vehicle class -- e.g. 107/207/307 are all "Jennalup ST_WB"), so a
+#: single matched name can legitimately expand to 3 owners. 10 comfortably
+#: fits that common single-group case with room for a couple more matches
+#: before truncating; a rarer multi-group match may get cut off mid-group,
+#: which is an acceptable trade-off for keeping the list bounded.
+_CANDIDATE_CAP = 10
+
 
 def _check_object_not_found(
     action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
@@ -589,31 +599,47 @@ def _check_object_not_found(
         return None
 
     # Fuzzy-match target_id against both ids and names, but always resolve
-    # back to the owning object's id: suggested_fix is machine-usable (a
+    # back to the owning object's id(s): suggested_fix is machine-usable (a
     # caller retries with suggested_fix[0] as input_no/sc_no), so a name
     # string leaking through would break that retry.
-    owner_id_by_string: dict[str, str] = {}
+    #
+    # A name is not always unique -- see _CANDIDATE_CAP's comment above. id
+    # strings stay 1:1 with themselves (ids are unique); only name strings
+    # fan out to a list of every owner that shares them, built in
+    # shadow-model order for a stable, reproducible result. If some other
+    # object's id string happens to collide with a shared name (pathological,
+    # not expected on real data), the id claim wins and is not merged into --
+    # ids stay 1:1.
+    owner_ids_by_string: dict[str, list[str]] = {}
+    id_claimed: set[str] = set()
     match_pool: list[str] = []
     for obj in objects:
         obj_id = str(obj.get(spec["id_field"], ""))
-        if obj_id and obj_id not in owner_id_by_string:
+        if obj_id and obj_id not in owner_ids_by_string:
             match_pool.append(obj_id)
-            owner_id_by_string[obj_id] = obj_id
+            owner_ids_by_string[obj_id] = [obj_id]
+            id_claimed.add(obj_id)
         name = obj.get(spec["name_field"])
         if name:
             name_str = str(name)
-            if name_str not in owner_id_by_string:
+            if name_str not in owner_ids_by_string:
                 match_pool.append(name_str)
-                owner_id_by_string[name_str] = obj_id
+                owner_ids_by_string[name_str] = [obj_id]
+            elif name_str not in id_claimed and obj_id not in owner_ids_by_string[name_str]:
+                owner_ids_by_string[name_str].append(obj_id)
 
     candidates: list[str] = []
     seen_ids: set[str] = set()
     for match in difflib.get_close_matches(target_id, match_pool, n=5):
-        owner_id = owner_id_by_string[match]
-        if owner_id in seen_ids:
-            continue
-        seen_ids.add(owner_id)
-        candidates.append(owner_id)
+        for owner_id in owner_ids_by_string[match]:
+            if owner_id in seen_ids:
+                continue
+            seen_ids.add(owner_id)
+            candidates.append(owner_id)
+            if len(candidates) >= _CANDIDATE_CAP:
+                break
+        if len(candidates) >= _CANDIDATE_CAP:
+            break
 
     labels = _OBJECT_CLASS_LABELS[spec["object_class"]]
     return Finding(

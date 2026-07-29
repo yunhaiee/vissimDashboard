@@ -329,6 +329,98 @@ def test_object_not_found_suggested_fix_resolves_name_match_to_owning_id():
     assert "Main Street EB" not in finding.suggested_fix
 
 
+# ---------------------------------------------------------------------------
+# object_not_found — fuzzy NAME match resolves to EVERY owner, not just the
+# first-registered one (v2 queue unit 1, 2026-07-29). The real Murdoch model
+# has 17 groups of 3 vehicle inputs sharing one name (e.g. 107/207/307 all
+# "Jennalup ST_WB", one per vehicle class); the pre-fix pool collapsed a
+# fuzzy name match to only the first owner it saw.
+# ---------------------------------------------------------------------------
+
+
+def test_object_not_found_suggested_fix_resolves_shared_name_to_all_owners():
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "501", "name": "Merricup Rd WB", "link": "620", "volume": 100.0},
+            {"no": "502", "name": "Merricup Rd WB", "link": "620", "volume": 50.0},
+            {"no": "503", "name": "Merricup Rd WB", "link": "620", "volume": 20.0},
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="Merricup Rd W", volume=600)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert set(matches[0].suggested_fix) == {"501", "502", "503"}
+
+
+def test_object_not_found_suggested_fix_unique_name_amid_shared_names_yields_one():
+    # A query fuzzy-matching a name that only ONE object carries must not
+    # leak owners from an unrelated shared-name group sitting in the same
+    # pool.
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "501", "name": "Merricup Rd WB", "link": "620", "volume": 100.0},
+            {"no": "502", "name": "Merricup Rd WB", "link": "620", "volume": 50.0},
+            {"no": "503", "name": "Merricup Rd WB", "link": "620", "volume": 20.0},
+            {"no": "999", "name": "Q Street", "link": "621", "volume": 10.0},
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="Q Streett", volume=600)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert matches[0].suggested_fix == ["999"]
+
+
+def test_object_not_found_suggested_fix_candidate_cap_bounds_multi_group_match():
+    # Bounded envelope (suggestion lists reach LLM prompts): a query that
+    # fuzzy-matches SEVERAL shared names at once (4 groups of 3 = 12
+    # candidate owners) must not balloon the list unboundedly. The cap fits
+    # 3 whole sibling groups plus one more owner before cutting off, rather
+    # than growing without bound or arbitrarily splitting every group evenly.
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "601", "name": "Merricup Rd A", "link": "900", "volume": 1.0},
+            {"no": "602", "name": "Merricup Rd A", "link": "900", "volume": 1.0},
+            {"no": "603", "name": "Merricup Rd A", "link": "900", "volume": 1.0},
+            {"no": "611", "name": "Merricup Rd B", "link": "901", "volume": 1.0},
+            {"no": "612", "name": "Merricup Rd B", "link": "901", "volume": 1.0},
+            {"no": "613", "name": "Merricup Rd B", "link": "901", "volume": 1.0},
+            {"no": "621", "name": "Merricup Rd C", "link": "902", "volume": 1.0},
+            {"no": "622", "name": "Merricup Rd C", "link": "902", "volume": 1.0},
+            {"no": "623", "name": "Merricup Rd C", "link": "902", "volume": 1.0},
+            {"no": "631", "name": "Merricup Rd D", "link": "903", "volume": 1.0},
+            {"no": "632", "name": "Merricup Rd D", "link": "903", "volume": 1.0},
+            {"no": "633", "name": "Merricup Rd D", "link": "903", "volume": 1.0},
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="Merricup Rd", volume=600)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    candidates = matches[0].suggested_fix
+    assert len(candidates) == 10  # capped, not the full 12
+    assert len(set(candidates)) == len(candidates)  # no duplicate ids emitted
+
+    groups = [
+        {"601", "602", "603"},
+        {"611", "612", "613"},
+        {"621", "622", "623"},
+        {"631", "632", "633"},
+    ]
+    cand_set = set(candidates)
+    full_groups = [g for g in groups if g <= cand_set]
+    partial_groups = [g for g in groups if cand_set & g and not (g <= cand_set)]
+    assert len(full_groups) == 3
+    assert len(partial_groups) == 1
+
+
 def test_object_not_found_fires_for_missing_signal():
     shadow = _shadow_model()
     action = _action("set_signal_cycle", sc_no="99", cycle=90)

@@ -2596,3 +2596,16 @@ healed (verified by live computed styles: `padding-left` 12.8→32px, /simulatio
 14→12px); every other `ui-*` + utility pairing had no colliding property, unchanged. The diff
 is pure relocation — zero declarations removed (verified mechanically), palette tokens
 untouched.
+
+## 2026-07-29 — Q3 unit ①: shared-name fuzzy-match completeness (closes the recorded miss-path follow-up)
+
+Both fuzzy-match fallback pools (`_check_object_not_found` in constraints.py,
+`_difflib_candidates` in tools_network.py) collapsed a shared name to its first-registered
+owner — on the real model (17 groups of 3 same-named vehicle inputs) a typo'd query got 1 of 3
+valid targets. The pools now map each name to every owner (ids stay 1:1; an id string can never
+be merged into by a colliding name), bounded by a new `_CANDIDATE_CAP = 10` per surface so a
+multi-group fuzzy match can't balloon the suggestion list — suggestion lists reach LLM prompts,
+and bounded envelopes are a standing rule. difflib's n=5 string-match count is untouched; the
+cap governs the emitted-owner dimension, which is the one this fix unbounded. Verified live:
+typo "Jenalup STWB" now yields ['107','207','307','111','211','311'] (the probe also surfaced a
+second real shared-name group, 111/211/311 "Jennalup St"). Suite 1373/1/1.

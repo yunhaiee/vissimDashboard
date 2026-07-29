@@ -301,6 +301,107 @@ def test_resolve_object_miss_returns_structured_object_not_found_with_candidates
     assert "1" in data["candidates"]
 
 
+def _vehicle_inputs_inpx(tmp_path: Path, tag: str, groups: list[tuple[str, list[str]]]) -> Path:
+    """A minimal .inpx with one link (``620``) and one ``<vehicleInput>`` per
+    (name, id) pair in ``groups`` -- e.g. ``[("Merricup", ["701", "702"])]``
+    puts TWO vehicle inputs on link 620, both named "Merricup". Mirrors the
+    sibling-disambiguation unit's inline fixture shape (no vehicleComposition/
+    timeIntVehVols needed -- _parse_vehicle_inputs handles their absence the
+    same way the demo .inpx's inputs do)."""
+    inputs_xml = "".join(
+        f'<vehicleInput no="{vid}" name="{name}" link="620"/>' for name, ids in groups for vid in ids
+    )
+    inpx = tmp_path / f"{tag}.inpx"
+    inpx.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?><network>'
+        '<links><link no="620" name="L"><geometry><linkPolyPts>'
+        '<linkPolyPoint x="0" y="0" zOffset="0"/><linkPolyPoint x="100" y="0" zOffset="0"/>'
+        '</linkPolyPts></geometry><lanes><lane width="3.5"/></lanes></link></links>'
+        f"<vehicleInputs>{inputs_xml}</vehicleInputs></network>",
+        encoding="utf-8",
+    )
+    return inpx
+
+
+# ---------------------------------------------------------------------------
+# resolve_object MISS path -- fuzzy match on a NAME shared by several owners
+# (v2 queue unit 1, 2026-07-29). Mirrors constraints.py's equivalent tests.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_object_miss_fuzzy_match_on_shared_name_yields_every_owner(tmp_path: Path):
+    """The real Murdoch model has 17 groups of 3 vehicle inputs sharing one
+    name (e.g. 107/207/307 all 'Jennalup ST_WB', one per vehicle class). A
+    fuzzy NAME match on the MISS path must resolve to every owner of that
+    name, not just the first-registered one (the pre-fix defect)."""
+    inpx = _vehicle_inputs_inpx(tmp_path, "shared", [("Merricup", ["701", "702", "703"])])
+    tools_network.set_active_inpx(inpx)
+
+    envelope = _dispatch("resolve_object", query="Merricop", object_type="vehicle_input")
+
+    data = envelope["data"]
+    assert data["found"] is False
+    assert data["error_type"] == "object_not_found"
+    assert set(data["candidates"]) == {"701", "702", "703"}
+
+
+def test_resolve_object_miss_fuzzy_match_on_unique_name_still_yields_one(tmp_path: Path):
+    """Same MISS-path fallback, but a query fuzzy-matching a name that only
+    ONE object carries must not leak owners from an unrelated shared-name
+    group sitting in the same pool."""
+    inpx = _vehicle_inputs_inpx(
+        tmp_path, "mixed", [("Merricup", ["701", "702", "703"]), ("Qstreet", ["999"])]
+    )
+    tools_network.set_active_inpx(inpx)
+
+    envelope = _dispatch("resolve_object", query="Qstreett", object_type="vehicle_input")
+
+    data = envelope["data"]
+    assert data["found"] is False
+    assert data["candidates"] == ["999"]
+
+
+def test_resolve_object_miss_fuzzy_match_candidate_cap_bounds_multi_group_match(tmp_path: Path):
+    """Bounded envelope (suggestion lists reach LLM prompts): a query that
+    fuzzy-matches SEVERAL shared names at once (4 groups of 3 = 12 candidate
+    owners) must not balloon the list unboundedly. _CANDIDATE_CAP (10) fits
+    3 whole sibling groups plus one more owner before cutting off, rather
+    than growing without bound or arbitrarily splitting every group evenly."""
+    inpx = _vehicle_inputs_inpx(
+        tmp_path,
+        "cap",
+        [
+            ("Merricup", ["801", "802", "803"]),
+            ("Berricup", ["811", "812", "813"]),
+            ("Terricup", ["821", "822", "823"]),
+            ("Kerricup", ["831", "832", "833"]),
+        ],
+    )
+    tools_network.set_active_inpx(inpx)
+
+    envelope = _dispatch("resolve_object", query="Nerricup", object_type="vehicle_input")
+
+    data = envelope["data"]
+    assert data["found"] is False
+    candidates = data["candidates"]
+    assert len(candidates) == 10  # capped, not the full 12
+    assert len(set(candidates)) == len(candidates)  # no duplicate ids emitted
+
+    groups = [
+        {"801", "802", "803"},
+        {"811", "812", "813"},
+        {"821", "822", "823"},
+        {"831", "832", "833"},
+    ]
+    cand_set = set(candidates)
+    full_groups = [g for g in groups if g <= cand_set]
+    partial_groups = [g for g in groups if cand_set & g and not (g <= cand_set)]
+    # every group is emitted whole until the cap is reached -- at most the
+    # LAST one touched may be cut short.
+    assert len(full_groups) == 3
+    assert len(partial_groups) == 1
+
+
 def test_resolve_object_rejects_unknown_object_type():
     envelope = _dispatch("resolve_object", query="anything", object_type="banana")
 

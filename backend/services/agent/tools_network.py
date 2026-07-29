@@ -1082,32 +1082,66 @@ def _candidate_disambiguators(otype: str, obj: dict[str, Any]) -> dict[str, Any]
     return extra
 
 
+#: Bounded envelope for _difflib_candidates' fallback list below (standing
+#: rule -- suggestion lists reach LLM prompts, see the observation-budget
+#: incident). Mirrors constraints.py's _CANDIDATE_CAP verbatim, including the
+#: reasoning: the real Murdoch model shares one name across groups of 3
+#: vehicle inputs (one per vehicle class -- e.g. 107/207/307 are all
+#: "Jennalup ST_WB"), so a single matched name can legitimately expand to 3
+#: owners. 10 comfortably fits that common single-group case with room for a
+#: couple more matches before truncating; a rarer multi-group match may get
+#: cut off mid-group, which is an acceptable trade-off for keeping the list
+#: bounded.
+_CANDIDATE_CAP = 10
+
+
 def _difflib_candidates(query: str, pool: list[tuple[str, str, str, dict[str, Any]]]) -> list[str]:
     """Fuzzy-match ``query`` against every object's id and name, always
-    resolving a hit back to the owning object's id.
+    resolving a hit back to the owning object's id(s).
 
     Mirrors constraints.py's ``_check_object_not_found`` id-resolution
     behavior (that helper is private and tool-specific, so this is a
     deliberate mirror rather than an import — see the M1.2 brief).
+
+    v2 queue unit 1 (2026-07-29): the sibling-disambiguation unit (2026-07-28,
+    above in :func:`_candidate_disambiguators`) fixed resolve_object's HIT
+    path -- a ranked match already returned every sibling. This MISS-path
+    fallback still collapsed a fuzzy NAME match to its first-registered
+    owner, because a name is not always unique: the real Murdoch model
+    shares one name across groups of 3 vehicle inputs (one per vehicle
+    class -- e.g. 107/207/307 are all "Jennalup ST_WB"). A fuzzy match
+    against that shared name now resolves to EVERY owner, not just the
+    first. id strings stay 1:1 with themselves (ids are unique); only name
+    strings fan out to a list of every owner that shares them, built in pool
+    order for a stable result.
     """
-    owner_id_by_string: dict[str, str] = {}
+    owner_ids_by_string: dict[str, list[str]] = {}
+    id_claimed: set[str] = set()
     match_pool: list[str] = []
     for obj_id, name, _otype, _obj in pool:
-        if obj_id and obj_id not in owner_id_by_string:
+        if obj_id and obj_id not in owner_ids_by_string:
             match_pool.append(obj_id)
-            owner_id_by_string[obj_id] = obj_id
-        if name and name not in owner_id_by_string:
-            match_pool.append(name)
-            owner_id_by_string[name] = obj_id
+            owner_ids_by_string[obj_id] = [obj_id]
+            id_claimed.add(obj_id)
+        if name:
+            if name not in owner_ids_by_string:
+                match_pool.append(name)
+                owner_ids_by_string[name] = [obj_id]
+            elif name not in id_claimed and obj_id not in owner_ids_by_string[name]:
+                owner_ids_by_string[name].append(obj_id)
 
     candidates: list[str] = []
     seen_ids: set[str] = set()
     for match in difflib.get_close_matches(query, match_pool, n=_TOP_K):
-        owner_id = owner_id_by_string[match]
-        if owner_id in seen_ids:
-            continue
-        seen_ids.add(owner_id)
-        candidates.append(owner_id)
+        for owner_id in owner_ids_by_string[match]:
+            if owner_id in seen_ids:
+                continue
+            seen_ids.add(owner_id)
+            candidates.append(owner_id)
+            if len(candidates) >= _CANDIDATE_CAP:
+                break
+        if len(candidates) >= _CANDIDATE_CAP:
+            break
     return candidates
 
 
