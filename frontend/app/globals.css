@@ -1,5 +1,119 @@
 @import "tailwindcss";
 
+/* These component-ish classes are deliberately inside Tailwind's
+   `components` layer (already named in the layer order Tailwind itself
+   declares via `@import "tailwindcss"` -> `@layer theme, base, components,
+   utilities;`). Cascade layers ignore source order entirely: ANY unlayered
+   author CSS beats EVERY layered rule, including `@layer utilities`, no
+   matter which comes later in the file. Before this was added, `.ui-input`/
+   `.ui-select`'s shorthand `padding`/`font-size` sat unlayered and silently
+   defeated every call-site padding/text-size utility paired with them (e.g.
+   NetworkSearchBox.tsx's `pl-8`/`pr-8` icon-clearance and clear-button
+   padding, simulation/page.tsx's `text-xs` on the API-base input) --
+   confirmed via computed-style inspection on the running app, not just
+   theory. Putting them in `components` restores the layer order every
+   author here was clearly assuming: utilities win. Audited before moving:
+   no other current call site relies on the old (broken) unlayered-wins
+   behavior, so this is a pure fix, not a visual change anywhere else.
+   NOTE: this block MUST stay directly after the `@import "tailwindcss"`
+   line. Empirically verified against this repo's actual dev build
+   (Next 16 + Turbopack): a `@layer components { ... }` block placed later
+   in this file -- anywhere after the unrelated plain CSS below -- gets
+   silently unwrapped back to unlayered rules by the bundler (the `@layer`
+   wrapper vanishes from the served CSS even though the source has it).
+   Placed immediately after the import, it merges correctly into the empty
+   `components` layer slot Tailwind's own import already declared. If you
+   need to add more component-ish classes, add them INSIDE this same block
+   rather than opening a new `@layer components { ... }` elsewhere in the
+   file -- re-verify with the served CSS (fetch the `app_globals_*.css`
+   chunk and check the `.your-class` rule is still textually inside
+   `@layer components { ... }`) if you do. */
+@layer components {
+  .ui-surface {
+    border: 1px solid var(--border-soft);
+    border-radius: 0.75rem;
+    background: var(--surface);
+    box-shadow: none;
+  }
+
+  .ui-surface-strong {
+    border: 1px solid var(--border-soft);
+    border-radius: 0.75rem;
+    background: var(--surface-strong);
+    box-shadow: var(--shadow-mid);
+  }
+
+  .ui-input,
+  .ui-select {
+    width: 100%;
+    border: 1px solid var(--border-soft);
+    border-radius: 0.6rem;
+    background: #131312;
+    color: var(--text-strong);
+    padding: 0.6rem 0.8rem;
+    font-size: 0.875rem;
+    transition: border-color 150ms ease, box-shadow 150ms ease;
+  }
+
+  .ui-input::placeholder {
+    color: var(--text-faint);
+  }
+
+  .ui-input:focus-visible,
+  .ui-select:focus-visible {
+    outline: none;
+    border-color: color-mix(in oklab, var(--accent) 65%, transparent);
+    box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.2);
+  }
+
+  .ui-button-primary {
+    border: 1px solid transparent;
+    border-radius: 0.6rem;
+    background: var(--text-strong);
+    color: #0b0b0b;
+    font-weight: 600;
+    transition: background-color 150ms ease, opacity 150ms ease;
+    box-shadow: none;
+  }
+
+  .ui-button-primary:hover {
+    background: #e8e8e5;
+  }
+
+  .ui-button-primary:disabled {
+    opacity: 0.45;
+  }
+
+  .ui-button-ghost {
+    border: 1px solid var(--border-soft);
+    border-radius: 0.6rem;
+    background: transparent;
+    color: var(--text-muted);
+    font-weight: 500;
+    transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease;
+  }
+
+  .ui-button-ghost:hover {
+    border-color: rgba(245, 243, 236, 0.24);
+    color: var(--text-strong);
+    background: rgba(245, 243, 236, 0.04);
+  }
+
+  .ui-button-danger {
+    border: 1px solid rgba(224, 133, 119, 0.35);
+    border-radius: 0.6rem;
+    background: rgba(224, 133, 119, 0.1);
+    color: #e49787;
+    font-weight: 500;
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
+
+  .ui-button-danger:hover {
+    border-color: rgba(224, 133, 119, 0.5);
+    background: rgba(224, 133, 119, 0.16);
+  }
+}
+
 /* ============================================================
    PALETTE LOCK — Claude Console dark theme (2026-07-23)
    Values sampled from platform.claude.com/dashboard (dark):
@@ -284,90 +398,6 @@ body {
 .app-content-inner {
   margin: 0 auto;
   width: 100%;
-}
-
-.ui-surface {
-  border: 1px solid var(--border-soft);
-  border-radius: 0.75rem;
-  background: var(--surface);
-  box-shadow: none;
-}
-
-.ui-surface-strong {
-  border: 1px solid var(--border-soft);
-  border-radius: 0.75rem;
-  background: var(--surface-strong);
-  box-shadow: var(--shadow-mid);
-}
-
-.ui-input,
-.ui-select {
-  width: 100%;
-  border: 1px solid var(--border-soft);
-  border-radius: 0.6rem;
-  background: #131312;
-  color: var(--text-strong);
-  padding: 0.6rem 0.8rem;
-  font-size: 0.875rem;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
-}
-
-.ui-input::placeholder {
-  color: var(--text-faint);
-}
-
-.ui-input:focus-visible,
-.ui-select:focus-visible {
-  outline: none;
-  border-color: color-mix(in oklab, var(--accent) 65%, transparent);
-  box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.2);
-}
-
-.ui-button-primary {
-  border: 1px solid transparent;
-  border-radius: 0.6rem;
-  background: var(--text-strong);
-  color: #0b0b0b;
-  font-weight: 600;
-  transition: background-color 150ms ease, opacity 150ms ease;
-  box-shadow: none;
-}
-
-.ui-button-primary:hover {
-  background: #e8e8e5;
-}
-
-.ui-button-primary:disabled {
-  opacity: 0.45;
-}
-
-.ui-button-ghost {
-  border: 1px solid var(--border-soft);
-  border-radius: 0.6rem;
-  background: transparent;
-  color: var(--text-muted);
-  font-weight: 500;
-  transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease;
-}
-
-.ui-button-ghost:hover {
-  border-color: rgba(245, 243, 236, 0.24);
-  color: var(--text-strong);
-  background: rgba(245, 243, 236, 0.04);
-}
-
-.ui-button-danger {
-  border: 1px solid rgba(224, 133, 119, 0.35);
-  border-radius: 0.6rem;
-  background: rgba(224, 133, 119, 0.1);
-  color: #e49787;
-  font-weight: 500;
-  transition: background-color 150ms ease, border-color 150ms ease;
-}
-
-.ui-button-danger:hover {
-  border-color: rgba(224, 133, 119, 0.5);
-  background: rgba(224, 133, 119, 0.16);
 }
 
 /* Map overlays sit on dark tiles: point-focus elements (tooltips,

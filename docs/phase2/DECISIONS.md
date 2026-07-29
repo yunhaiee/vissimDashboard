@@ -2573,3 +2573,26 @@ type has exactly two consumers, and a lingering pre-composed field invites the s
 Every other consumer of the stored selection was traced on both pages (pulse key, focus-flash
 memo, bbox zoom, clear button — all read data fields, none read the label); no moment-in-time
 snapshot consumer existed, so nothing legitimately keeps click-time composition.
+
+## 2026-07-29 — globals.css component classes moved into @layer components (search-icon overlap root cause)
+
+**Trigger.** The network search box's magnifier icon rendered on top of the placeholder text.
+The input carried `pl-8` to clear the icon — but it never applied.
+
+**Root cause.** Tailwind v4 puts all utilities inside cascade layers, and **any unlayered author
+CSS beats every layered rule regardless of source order**. `.ui-input`/`.ui-select` (and the
+other component-ish classes) sat unlayered in `globals.css`, so their `padding`/`font-size`
+shorthands silently defeated every Tailwind spacing/text utility paired with them at any call
+site — the icon clearance, the clear-button clearance (`pr-8`), and a previously unnoticed
+`text-xs` defeat on /simulation's API-base input.
+
+**Fix + landmine worth recording.** Wrapped the classes in `@layer components { ... }` — but the
+textbook fix DID NOTHING at first: this repo's Next 16 dev bundler silently strips a
+`@layer components` wrapper placed later in the file, flattening it back to unlayered CSS
+(verified by fetching the served bundle). The block only merges into Tailwind's pre-declared
+`components` layer slot when placed **immediately after `@import "tailwindcss"`** — an in-file
+NOTE now guards this. Blast radius audited call-site by call-site: the two real collisions are
+healed (verified by live computed styles: `padding-left` 12.8→32px, /simulation font-size
+14→12px); every other `ui-*` + utility pairing had no colliding property, unchanged. The diff
+is pure relocation — zero declarations removed (verified mechanically), palette tokens
+untouched.
