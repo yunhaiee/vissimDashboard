@@ -2481,3 +2481,45 @@ current value is not shown and why, instead of showing a stale number.
 first-writer-wins, so three same-named siblings collapse to one fuzzy-match candidate on the
 miss path (`constraints.py` + mirrored in `tools_network._difflib_candidates`). Hit path is
 correct. Follow-up unit.
+
+## 2026-07-29 — Roads and nodes gained the pre-click hover preview elements already had
+
+**Trigger.** User report: element glyphs show a light-accent hover preview before clicking, roads
+do not — so on the surface where hit-testing matters most (overlapping links/connectors), the
+user couldn't see what a click would select.
+
+**Shipped** (`NetworkViewer.tsx` only). The element layer's cascade trick (CSS classes beat
+presentation attributes; removing the class restores the drawn state exactly) extended to roads
+and nodes: `.link-hover`/`.link-selected` on `polyline[data-linkid]` (the road fills already
+carried the id for focus-flash), `.node-hover`/`.node-selected` on a new `data-nodeid` on the
+node dot. Stylesheet order preserves the established precedence everywhere:
+**hover < selected < focus-flash** — hovering a selected road cannot make it read deselected,
+and "look here" still beats both. Node hover survives zoom redraws via a ref + restamp at the
+end of `drawZoomDependent`, the same pattern `applyFocusFlash` already uses (the node dot is
+rebuilt every zoom tick; road fills draw once per network). No drop-shadow on road hover — a
+blurred halo along a viewport-length polyline reads smeary, unlike a glyph-sized dot.
+
+## 2026-07-29 — Base-workbook upload: stage-then-promote — a bad upload can no longer become the active 실측 데이터
+
+**Trigger.** `upload_base_workbook` persisted every upload as the active workbook BEFORE
+checking template conformance. A non-conforming file displaced the user's good workbook, the
+mapping modal opened as recovery — and cancelling it left the garbage state active permanently.
+The fix is not a better cleanup; it is never entering the bad state.
+
+**Shipped.** `load_base_workbook_bytes` parses uploaded bytes in memory to decide conformance
+before any write. Conforming: promoted exactly as before. Non-conforming: staged via the
+existing `inspect_workbook` path (which never touches the active file), and the response carries
+the STILL-ACTIVE workbook's data plus an additive `pending_mapping` block (staged token +
+inspect payload + warnings) — the frontend opens the mapping modal from that, one round-trip
+instead of two, and its React state never holds the garbage parse. `import_mapping` remains the
+single promotion point. Cancel calls a new idempotent `DELETE /base-workbook/mapping/{token}`
+(staging TTL GC is the backstop). A file that isn't readable as Excel now 400s instead of
+silently becoming the active workbook.
+
+**Caught in the unit's own pass, recorded as a general hazard:** `load_base_workbook` is
+`@lru_cache`d; annotating its returned dict in place would have corrupted the shared cached
+object for every caller. Copy before mutating a cached getter's return value.
+
+**Verified independently by the controller:** TestClient sequence good-upload → bad-upload →
+GET → cancel with isolated paths: active file byte-identical (sha256) across steps 2–4, the
+bad-upload response carried the good file's rows, cancel 204 twice (idempotent).

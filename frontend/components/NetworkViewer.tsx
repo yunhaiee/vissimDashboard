@@ -414,6 +414,24 @@ function applyFocusFlash(
   for (const key of flash.elementKeys) mark(`g[data-elkey='${CSS.escape(key)}']`);
 }
 
+// Road/node hover preview (defect fix, 2026-07-29) — node half of the fix.
+// The node dot (`circle[data-nodeid]` in gOverlay) is rebuilt by every
+// drawZoomDependent call, unlike the road fills below, so a hover class
+// stamped on it does not survive a zoom-driven redraw on its own. Re-select
+// by the CURRENT DOM's data-nodeid and restamp — same pattern as
+// applyFocusFlash above — called both from the node hit circle's own
+// mousemove/mouseleave (immediate feedback) and once more at the end of
+// every drawZoomDependent pass via hoveredNodeIdRef (redraw survival).
+// Roads need no counterpart: their hit polyline's mousemove/mouseleave
+// toggles `.link-hover` directly on the gFill polyline, which is drawn once
+// per network load and is never torn down by drawZoomDependent.
+function applyNodeHover(svgEl: SVGSVGElement | null, nodeId: string | null) {
+  if (!svgEl) return;
+  const sel = d3.select(svgEl);
+  sel.selectAll(".node-hover").classed("node-hover", false);
+  if (nodeId != null) sel.selectAll(`circle[data-nodeid='${CSS.escape(nodeId)}']`).classed("node-hover", true);
+}
+
 export default function NetworkViewer({
   network,
   results,
@@ -466,6 +484,20 @@ export default function NetworkViewer({
   // zoom/pan transform change (both inside the draw effect below), and on
   // selection-cleared (the effect just below this).
   const clickCycleRef = useRef<{ x: number; y: number; index: number } | null>(null);
+
+  // Road/node hover preview (defect fix, 2026-07-29) — holds the currently
+  // hovered node's id so it can be restamped after a redraw. Only nodes need
+  // this: the node dot (gOverlay) and its hit circle (gHitNodes) are BOTH
+  // torn down and rebuilt on every drawZoomDependent call (zoom ticks
+  // included), so a hover class stamped directly on the dot is lost the
+  // instant a zoom-driven redraw fires while the pointer hasn't moved. Road
+  // fills (gFill) are drawn once per network load and never rebuilt by
+  // drawZoomDependent, so they need no equivalent ref — see the comment on
+  // the gFill pass below. Reset to null only on a true network swap (mirrors
+  // zoomTransformRef/prevNetworkRef just below), not on every redraw, so
+  // hover survives a same-network redraw (e.g. an unrelated selection
+  // change) exactly like clickCycleRef does not need to.
+  const hoveredNodeIdRef = useRef<string | null>(null);
 
   const selectedNodeSet = useMemo(() => new Set((selectedNodeIds ?? []).map(String)), [selectedNodeIds]);
   // Stable scalar identity for the selected element, so a page re-rendering with
@@ -601,6 +633,10 @@ export default function NetworkViewer({
     if (prevNetworkRef.current !== network) {
       zoomTransformRef.current = d3.zoomIdentity;
       prevNetworkRef.current = network;
+      // A stale hovered node id from the OLD network could otherwise survive
+      // into the new one and, if the id happens to collide, restamp a hover
+      // class nothing is actually pointing at.
+      hoveredNodeIdRef.current = null;
     }
 
     const allPts = network.links.flatMap((l) => l.points ?? []);
@@ -785,12 +821,22 @@ export default function NetworkViewer({
 
     // Layer 2 — asphalt fills for every surface, same colour for links and
     // connectors. Selection recolors the fill stroke to accent (connectors
-    // included — that is now their selected treatment).
+    // included — that is now their selected treatment). Drawn ONCE per
+    // network load (this pass, unlike the element/node layers, is never
+    // rebuilt by drawZoomDependent), so the `.link-hover` class the gHit
+    // pass below toggles on this same element via its data-linkid needs no
+    // redraw-survival handling — it simply stays put across every zoom tick.
+    // `.link-selected` mirrors the `isSel` presentation attribute as a CSS
+    // class (defect fix, 2026-07-29): a hover class is equal-specificity to
+    // and would otherwise beat the `stroke` attribute set below, reading a
+    // selected+hovered road as merely hovered. See the <style> block for the
+    // hover-then-selected rule order that fixes this.
     drawn.forEach(({ pointsAttr, roadW, isSel, link }) => {
       gFill.append("polyline")
         // Approval-focus flash addressing. Links are drawn by the road passes
         // rather than as data-elkey element glyphs, so this is their
-        // equivalent handle — one attribute, no extra drawing pass.
+        // equivalent handle — one attribute, no extra drawing pass. Also the
+        // hover-preview handle the gHit pass below targets.
         .attr("data-linkid", String(link.id))
         .attr("points", pointsAttr)
         .attr("stroke", isSel ? ACCENT : ASPHALT_FILL)
@@ -798,6 +844,7 @@ export default function NetworkViewer({
         .attr("fill", "none")
         .attr("stroke-linecap", "round")
         .attr("stroke-linejoin", "round")
+        .classed("link-selected", isSel)
         .style("pointer-events", "none");
     });
 
@@ -1462,6 +1509,15 @@ export default function NetworkViewer({
 
         const dotFill = nodeMetric ? LOS_COLORS[nodeMetric.los] : NODE_FILL;
         gOverlay.append("circle")
+          // Hover preview (defect fix, 2026-07-29) — addressable handle for
+          // applyNodeHover / the node hit circle's mousemove below, same
+          // pattern as data-linkid on the road fills. `.node-selected`
+          // mirrors the `selected` presentation attribute as a CSS class for
+          // the same reason `.link-selected` does on roads: an equal-
+          // specificity hover class would otherwise beat the `stroke`
+          // attribute below and read a selected+hovered node as merely
+          // hovered.
+          .attr("data-nodeid", String(node.id))
           .attr("cx", cx)
           .attr("cy", cy)
           .attr("r", (selected ? 7 : 6) / k)
@@ -1469,6 +1525,7 @@ export default function NetworkViewer({
           .attr("stroke", selected ? ACCENT : NODE_STROKE)
           .attr("stroke-width", 1.5)
           .attr("vector-effect", "non-scaling-stroke")
+          .classed("node-selected", selected)
           .style("pointer-events", "none");
       });
 
@@ -1485,6 +1542,14 @@ export default function NetworkViewer({
         const nodeTooltipText = nodeMetric
           ? `${nodeName} · ${delayLabel} ${nodeMetric.delay.toFixed(1)}${secondsUnit} · LOS ${nodeMetric.los}`
           : nodeName;
+        // Hover preview (defect fix, 2026-07-29). Unlike the link hover
+        // above, the dot this addresses (gOverlay, `circle[data-nodeid]`) is
+        // itself rebuilt every time drawZoomDependent runs, so a bare class
+        // toggle here would not survive a zoom tick where the pointer never
+        // moved. hoveredNodeIdRef + applyNodeHover (restamped at the end of
+        // drawZoomDependent, below) covers that; the mousemove/mouseleave
+        // pair here just keeps the ref and the immediate DOM state in sync.
+        const nodeIdStr = String(node.id);
 
         const hit = gHitNodes.append("circle")
           .attr("cx", cx)
@@ -1495,8 +1560,16 @@ export default function NetworkViewer({
           .style("cursor", onNodeClick ? "pointer" : "default")
           .on("mousemove", (event: MouseEvent) => {
             setTooltip({ x: event.clientX, y: event.clientY, text: withOverlapHint(nodeTooltipText, event.clientX, event.clientY) });
+            if (hoveredNodeIdRef.current !== nodeIdStr) {
+              hoveredNodeIdRef.current = nodeIdStr;
+              applyNodeHover(svgRef.current, nodeIdStr);
+            }
           })
-          .on("mouseleave", () => setTooltip(null));
+          .on("mouseleave", () => {
+            setTooltip(null);
+            hoveredNodeIdRef.current = null;
+            applyNodeHover(svgRef.current, null);
+          });
         if (onNodeClick) {
           hit.on("click", (event: MouseEvent) => {
             if (isDragClick(event)) return;
@@ -1512,6 +1585,16 @@ export default function NetworkViewer({
       // asphalt exactly, and it actually tightens as the user zooms in
       // instead of staying fixed in world metres forever.
       drawn.forEach(({ pointsAttr, roadW, tooltipText, isConn, link, linkName }) => {
+        // Hover preview (defect fix, 2026-07-29) — same handle as the
+        // approval-focus flash: the gFill polyline for this exact
+        // link/connector, addressed by its data-linkid. `.link-hover` is
+        // toggled directly on it from this hit shape's existing tooltip
+        // mousemove/mouseleave pair rather than a parallel listener, so it
+        // stays inside the un-namespaced handlers gHit already owns (see
+        // mousemove.cycle on the svg element above, a DIFFERENT node —
+        // namespacing is not needed here since these are per-hit-shape
+        // listeners, not svg-level ones).
+        const linkHoverSelector = `polyline[data-linkid='${CSS.escape(String(link.id))}']`;
         const hit = gHit.append("polyline")
           .attr("points", pointsAttr)
           .attr("stroke", "transparent")
@@ -1521,8 +1604,12 @@ export default function NetworkViewer({
           .style("cursor", onLinkClick ? "pointer" : "default")
           .on("mousemove", (event: MouseEvent) => {
             setTooltip({ x: event.clientX, y: event.clientY, text: withOverlapHint(tooltipText, event.clientX, event.clientY) });
+            svg.selectAll(linkHoverSelector).classed("link-hover", true);
           })
-          .on("mouseleave", () => setTooltip(null));
+          .on("mouseleave", () => {
+            setTooltip(null);
+            svg.selectAll(linkHoverSelector).classed("link-hover", false);
+          });
         if (onLinkClick) {
           hit.on("click", (event: MouseEvent) => {
             if (isDragClick(event)) return;
@@ -1537,6 +1624,11 @@ export default function NetworkViewer({
       // Road-fill flashes are re-marked here too (harmless — applyFocusFlash
       // clears and reapplies the whole set) so one call covers both.
       applyFocusFlash(svgRef.current, focusFlashRef.current);
+      // This pass also just rebuilt every node dot (gOverlay) and hit circle
+      // (gHitNodes), so a node hover started before this redraw has to be
+      // restamped — see hoveredNodeIdRef's declaration for why only nodes
+      // (not links) need this.
+      applyNodeHover(svgRef.current, hoveredNodeIdRef.current);
       lastDrawnK = k;
     }
 
@@ -1771,6 +1863,37 @@ export default function NetworkViewer({
         }
         g[data-elkey].el-selected {
           filter: drop-shadow(0 0 5px rgba(76, 141, 255, 0.85));
+        }
+
+        /* Road/node hover preview (defect fix, 2026-07-29). Roads/connectors
+           and nodes had a hit target (tooltip) but no visual hover preview —
+           only element glyphs (above) recolored on hover. Same cascade
+           trick as el-hover/el-selected: a class toggle beats the drawn
+           presentation attribute, so removing the class restores whatever
+           was drawn (unselected or selected) with no attribute juggling.
+           Selected roads/nodes bake ACCENT as a *presentation attribute*
+           (stroke), which a same-specificity hover rule would beat
+           regardless of source order, so selection ALSO gets a same-shape
+           class rule here (.link-selected / .node-selected) — and exactly
+           like el-hover/el-selected, that rule is declared AFTER the hover
+           rule, so hovering an already-selected road/node still reads as
+           selected, not merely hovered. No drop-shadow on the road rule:
+           unlike a small glyph, a link polyline can span the whole
+           viewport, and a blurred shadow along its full length reads as
+           heavy/smeary rather than a crisp preview. The node dot is
+           glyph-sized, so it keeps the same light shadow the glyphs use. */
+        polyline[data-linkid].link-hover {
+          stroke: ${ACCENT_HOVER};
+        }
+        circle[data-nodeid].node-hover {
+          stroke: ${ACCENT_HOVER};
+          filter: drop-shadow(0 0 3px rgba(76, 141, 255, 0.55));
+        }
+        polyline[data-linkid].link-selected {
+          stroke: ${ACCENT};
+        }
+        circle[data-nodeid].node-selected {
+          stroke: ${ACCENT};
         }
 
         /* Approval-focus flash (2026-07-28). Same cascade trick as the
