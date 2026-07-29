@@ -839,6 +839,17 @@ export interface AssistantQueryRequest {
     name?: string;
     link?: string | null;
   } | null;
+  // Multi-select (v2 UX unit, 2026-07-29): 2+ selected elements travel here
+  // instead of the singular field above — see
+  // backend/routers/assistant.py's `_SelectionFieldsMixin`, which accepts
+  // (and merges) both, and lib/networkSelection.ts, which is where the
+  // client decides which of the two to populate.
+  selected_elements?: {
+    type: string;
+    id: string;
+    name?: string;
+    link?: string | null;
+  }[];
   allow_tool_execution?: boolean;
   response_language?: "ko" | "en" | "ja";
 }
@@ -934,6 +945,14 @@ export interface AgentQueryRequest {
     name?: string;
     link?: string | null;
   } | null;
+  // Multi-select (v2 UX unit, 2026-07-29): same split as
+  // AssistantQueryRequest's field above.
+  selected_elements?: {
+    type: string;
+    id: string;
+    name?: string;
+    link?: string | null;
+  }[];
 }
 
 export interface AgentStep {

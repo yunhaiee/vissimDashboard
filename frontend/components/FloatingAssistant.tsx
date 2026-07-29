@@ -102,14 +102,18 @@ type AssistantPageContext = {
   selectedScenarioNames?: string[];
   selectedNodeIds?: string[];
   selectedNodeNames?: string[];
-  // P6: what the user clicked in the rendered network. Both are published by
-  // /network and /dashboard and forwarded to the backend as
-  // selected_link_ids/selected_element, so "이 도로" / "this signal" resolves to
-  // a real object instead of the user having to type an id. `selectedLinks`
-  // carries 0-or-1 entries today (single-select) but is an array so a future
-  // multi-select needs no context-shape change.
+  // Multi-select (v2 UX unit, 2026-07-29): what the user has currently
+  // selected in the rendered network — 0, 1, or several of each. Published
+  // by /network and /dashboard and forwarded to the backend as
+  // selected_link_ids/selected_element(s), so "이 도로" / "이 세 개" resolves
+  // to real objects instead of the user having to type ids. The elements
+  // list carries the FULL selection; THIS component (not the host pages) is
+  // where the singular/plural HTTP-field split happens (exactly one ->
+  // legacy `selected_element`, two or more -> `selected_elements` — see
+  // backend/services/network_selection.py's element_selection_fields, which
+  // the same rule mirrors server-side).
   selectedLinks?: NetworkLinkRef[];
-  selectedElement?: NetworkElementRef | null;
+  selectedElements?: NetworkElementRef[];
   dataset?: {
     filename?: string;
     source?: string;
@@ -565,7 +569,13 @@ export default function FloatingAssistant() {
           // The backend re-resolves these against the parsed .inpx and caps/
           // sanitizes them at its own boundary — nothing here is trusted.
           selected_link_ids: activePageContext?.selectedLinks?.map((link) => link.id) ?? [],
-          selected_element: activePageContext?.selectedElement ?? null,
+          // Multi-select (v2 UX unit, 2026-07-29): the singular/plural
+          // HTTP-field split lives HERE, in the one place that actually talks
+          // to the backend — not duplicated into every host page. See
+          // selectionFieldsForRequest below and
+          // backend/services/network_selection.py's element_selection_fields
+          // for the server-side mirror of this same rule.
+          ...selectionFieldsForRequest(activePageContext),
           // Consent to run a real VISSIM change is never inferred from the
           // wording of the message (that used to be a client-side keyword
           // match a suggested starter chip could trigger by accident). The
@@ -687,7 +697,13 @@ export default function FloatingAssistant() {
           selected_scenario_ids: activePageContext?.selectedScenarioIds ?? [],
           selected_node_ids: activePageContext?.selectedNodeIds ?? [],
           selected_link_ids: activePageContext?.selectedLinks?.map((link) => link.id) ?? [],
-          selected_element: activePageContext?.selectedElement ?? null,
+          // Multi-select (v2 UX unit, 2026-07-29): the singular/plural
+          // HTTP-field split lives HERE, in the one place that actually talks
+          // to the backend — not duplicated into every host page. See
+          // selectionFieldsForRequest below and
+          // backend/services/network_selection.py's element_selection_fields
+          // for the server-side mirror of this same rule.
+          ...selectionFieldsForRequest(activePageContext),
         },
         {
           onStep: (event) => {
@@ -2724,20 +2740,43 @@ function buildContextChips(context: AssistantPageContext | null, t: Translate): 
   if (context.selectedNodeIds?.length) {
     chips.push(t(`${context.selectedNodeIds.length}\uac1c \ub178\ub4dc`, `${context.selectedNodeIds.length} nodes`, `${context.selectedNodeIds.length} \u30ce\u30fc\u30c9`));
   }
-  // P6: one chip per clicked diagram object, so the user can see exactly what
-  // the next message will carry. Labels reuse the viewer's own type vocabulary
-  // (lib/networkElements) — 연결로/링크 and the 11 element-class labels.
+  // Multi-select (v2 UX unit, 2026-07-29): one chip per currently-selected
+  // diagram object (0, 1, or several of each), so the user can see exactly
+  // what the next message will carry. Labels reuse the viewer's own type
+  // vocabulary (lib/networkElements) — 연결로/링크 and the 11 element-class
+  // labels.
   for (const link of context.selectedLinks ?? []) {
     chips.push(`${linkKindLabel(link.isConnector, t)} ${link.name || link.id}`);
   }
-  if (context.selectedElement) {
-    const element = context.selectedElement;
+  for (const element of context.selectedElements ?? []) {
     chips.push(`${elementTypeLabel(element.type, t)} ${element.name || element.id}`);
   }
   if (context.selectedScenarioNames?.length === 1) {
     chips.push(context.selectedScenarioNames[0]);
   }
   return chips;
+}
+
+// Multi-select (v2 UX unit, 2026-07-29): the ONE place the singular/plural
+// HTTP-field split for elements happens, shared by runPrompt's plain-
+// assistant request and runAgentPrompt's agent request below — exactly one
+// selected element keeps the legacy `selected_element` key (byte-identical
+// to what a pre-multi-select client sent), two or more use the plural
+// `selected_elements`, mirroring backend/services/network_selection.py's
+// `element_selection_fields`. Verified against
+// backend/routers/assistant.py's `_SelectionFieldsMixin`: the backend
+// actually accepts and merges EITHER shape regardless (a client sending only
+// the plural list with one entry would resolve identically), so this split
+// is a "match the documented contract" choice, not a functional
+// requirement — but matching it keeps a pre-multi-select single-element
+// request byte-identical to what P6 always sent.
+function selectionFieldsForRequest(
+  context: AssistantPageContext | null,
+): { selected_element: NetworkElementRef | null; selected_elements: NetworkElementRef[] } {
+  const elements = context?.selectedElements ?? [];
+  if (elements.length === 1) return { selected_element: elements[0], selected_elements: [] };
+  if (elements.length >= 2) return { selected_element: null, selected_elements: elements };
+  return { selected_element: null, selected_elements: [] };
 }
 
 function readStoredPanelSize(): AssistantPanelSize {

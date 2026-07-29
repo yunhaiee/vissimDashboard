@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
 import { NetworkData, NetworkElements, ScenarioResults } from "@/lib/api";
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, resolveLosGrade, type LosGrade } from "@/lib/los";
-import { ELEMENT_TYPE_LABELS, type NetworkElementRef } from "@/lib/networkElements";
+import { ELEMENT_TYPE_LABELS, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 import { buildVehicleInputStacks, vehicleInputCompositionLabel } from "@/lib/vehicleInputStack";
 import { useLanguage } from "@/components/LanguageProvider";
 
@@ -34,16 +34,25 @@ interface Props {
   results?: Record<string, ScenarioResults>;
   selectedScenario?: string;
   selectedNodeIds?: string[];
-  selectedLinkId?: string | null;
-  onNodeClick?: (nodeId: string, nodeName: string) => void;
-  onLinkClick?: (linkId: string, linkName: string, isConnector: boolean) => void;
+  // Multi-select (v2 UX unit, 2026-07-29, lib/networkSelection.ts). Was
+  // `selectedLinkId?: string | null` (single); now every link/connector id
+  // currently selected — order carries no rendering meaning, every match
+  // gets the same selected treatment.
+  selectedLinkIds?: string[];
+  // `additive` is true for a shift+click (add/remove into the existing
+  // selection) and false for a plain click (replace the whole selection with
+  // just this thing) — see lib/networkSelection.ts's replaceWith/toggleItem,
+  // which is what both host pages apply to whatever this callback reports.
+  onNodeClick?: (nodeId: string, nodeName: string, additive: boolean) => void;
+  onLinkClick?: (linkId: string, linkName: string, isConnector: boolean, additive: boolean) => void;
   // P6 (optional, purely additive): a click on any static element glyph
   // (signal head, detector, …). Absent, the element hit targets keep their
   // pre-P6 hover-only behaviour — tooltips, default cursor, no click handler.
-  onElementClick?: (ref: NetworkElementRef) => void;
-  // P6: `{type, id}` of the element currently selected by the page, drawn as a
-  // thin accent ring around its hit shape. Null/absent draws nothing.
-  selectedElement?: { type: string; id: string } | null;
+  onElementClick?: (ref: NetworkElementRef, additive: boolean) => void;
+  // Multi-select counterpart of the old singular `selectedElement`: every
+  // `{type, id}` currently selected, each drawn with the same thin accent
+  // ring around its hit shape.
+  selectedElements?: { type: string; id: string }[];
   // P4 (optional, purely additive): receives the current ViewProjection after
   // every redraw/resize and on every zoom/pan frame (rAF-throttled), and null
   // when there is nothing drawn. Held in a ref internally so passing it never
@@ -66,6 +75,20 @@ interface Props {
   // handoff's is the URL's `fseq`); it is only ever stringified into the
   // effect key below, never interpreted.
   zoomToBbox?: { x_min: number; y_min: number; x_max: number; y_max: number; nonce?: number | string } | null;
+  // Shift+drag box-select haul (v2 UX unit, 2026-07-29, Section C). Reported
+  // RAW — everything the box touched, uncapped — because the CAPS are a
+  // selection-state concern the page already owns (lib/networkSelection.ts's
+  // addAllCapped), not something the viewer should decide; the page merges
+  // this into its existing lists and decides what (if anything) got dropped.
+  // Nodes are hit by CENTER point, elements by ANCHOR point, links if ANY
+  // polyline vertex falls inside the box (a chord passing through the box
+  // without a vertex inside it is an accepted miss).
+  onBoxSelect?: (hits: { nodes: { id: string; name: string }[]; links: NetworkLinkRef[]; elements: NetworkElementRef[] }) => void;
+  // Plain click on empty diagram background clears the whole selection (the
+  // "전체 통일" plain-click design decision, extended to the empty case).
+  // Absent is a no-op, so a caller that has not wired this yet keeps the
+  // pre-existing no-op behaviour.
+  onBackgroundClick?: () => void;
 }
 
 // Road-surface palette — all drawn from the file's existing slate family; no new
@@ -437,14 +460,16 @@ export default function NetworkViewer({
   results,
   selectedScenario,
   selectedNodeIds,
-  selectedLinkId,
+  selectedLinkIds,
   onNodeClick,
   onLinkClick,
   onElementClick,
-  selectedElement,
+  selectedElements,
   onProjectionChange,
   focusFlash,
   zoomToBbox,
+  onBoxSelect,
+  onBackgroundClick,
 }: Props) {
   const { t } = useLanguage();
   const svgRef = useRef<SVGSVGElement>(null);
@@ -500,18 +525,43 @@ export default function NetworkViewer({
   const hoveredNodeIdRef = useRef<string | null>(null);
 
   const selectedNodeSet = useMemo(() => new Set((selectedNodeIds ?? []).map(String)), [selectedNodeIds]);
-  // Stable scalar identity for the selected element, so a page re-rendering with
-  // a fresh `{type, id}` object literal never forces a full redraw.
-  const selectedElementKey = selectedElement ? `${selectedElement.type}:${selectedElement.id}` : "";
+  // Multi-select (v2 UX unit, 2026-07-29). Sets for O(1) membership tests
+  // during the draw pass; stable scalar-string keys (content, not array
+  // identity) for the draw effect's dependency list below, so a page
+  // re-rendering with a fresh-identity-but-same-contents array never forces
+  // a full redraw — same reason the old singular `selectedElementKey`
+  // existed, generalized to a list.
+  const selectedLinkIdSet = useMemo(() => new Set((selectedLinkIds ?? []).map(String)), [selectedLinkIds]);
+  const selectedElementKeySet = useMemo(
+    () => new Set((selectedElements ?? []).map((el) => `${el.type}:${el.id}`)),
+    [selectedElements],
+  );
+  const selectedLinkIdsKey = useMemo(() => Array.from(selectedLinkIdSet).sort().join("|"), [selectedLinkIdSet]);
+  const selectedElementsKey = useMemo(() => Array.from(selectedElementKeySet).sort().join("|"), [selectedElementKeySet]);
   const isEmpty = network.links.length === 0;
 
   // Defect 2 — a fresh "nothing selected" state always starts the next
   // repeat-click sequence from the topmost candidate again.
   useEffect(() => {
-    if (selectedLinkId == null && selectedNodeSet.size === 0 && selectedElementKey === "") {
+    if (selectedLinkIdSet.size === 0 && selectedNodeSet.size === 0 && selectedElementKeySet.size === 0) {
       clickCycleRef.current = null;
     }
-  }, [selectedLinkId, selectedNodeSet, selectedElementKey]);
+  }, [selectedLinkIdSet, selectedNodeSet, selectedElementKeySet]);
+
+  // Multi-select shift-click cycling (Section B) needs to know the CURRENT
+  // selection at click time, not just a candidate index — "walk to the next
+  // candidate NOT already selected" requires membership tests the
+  // click.cycle capture handler (re-registered once per draw effect run,
+  // well before any later click) can read live. Mirrored into a ref on every
+  // selection change, same pattern as hiddenRef/focusFlashRef below.
+  const currentSelectionRef = useRef<{ linkIds: Set<string>; nodeIds: Set<string>; elementKeys: Set<string> }>({
+    linkIds: new Set(),
+    nodeIds: new Set(),
+    elementKeys: new Set(),
+  });
+  useEffect(() => {
+    currentSelectionRef.current = { linkIds: selectedLinkIdSet, nodeIds: selectedNodeSet, elementKeys: selectedElementKeySet };
+  }, [selectedLinkIdSet, selectedNodeSet, selectedElementKeySet]);
 
   // Layer visibility. `hidden` holds hidden layer keys — seeded from
   // DEFAULT_HIDDEN_LAYERS so a row can ship default-off without any extra
@@ -718,6 +768,25 @@ export default function NetworkViewer({
     const isDragClick = (event: MouseEvent) =>
       event.defaultPrevented || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 5;
 
+    // Plain click on empty diagram background clears the whole selection
+    // (Section B design decision, "전체 통일" extended to the empty case —
+    // today this is a no-op). `event.target === svgRef.current` is what
+    // "empty background" means here: every hit shape (`.nv-hit`) carries its
+    // own click handler, and neither the zoomable `g` group nor its child
+    // groups paint a fill of their own, so a click that does not land on a
+    // hit shape passes through to the <svg> root — nothing else in this tree
+    // can end up as the event's target. Shift+click on background stays a
+    // no-op (nothing to toggle); a click ending a real drag (pan OR a
+    // shift+drag box) is excluded by the same isDragClick guard every other
+    // click handler in this file uses.
+    svg.on("click.background", (event: MouseEvent) => {
+      if (!event.isTrusted) return;
+      if (isDragClick(event)) return;
+      if (event.shiftKey) return;
+      if (event.target !== svgRef.current) return;
+      onBackgroundClick?.();
+    });
+
     // Defect 2 (occluded-element cycling) — full interactive-shape stack at a
     // screen point, filtered to THIS diagram's own hit shapes (elementsFromPoint
     // returns topmost-first, i.e. already in the exact cycle order the spec
@@ -737,6 +806,22 @@ export default function NetworkViewer({
       if (n <= 1) return baseText;
       return `${baseText} · ${t(`${n}개 겹침 · 다시 클릭`, `${n} overlapping · click again`, `${n}件重複 · もう一度クリック`)}`;
     };
+    // Multi-select shift-click cycling (v2 UX unit, 2026-07-29) — is a
+    // candidate (a `.nv-hit` DOM node) currently selected? Reads whichever
+    // address attribute the shape carries (data-linkid / data-nodeid /
+    // data-elkey — every hit shape now carries exactly one, see the draw
+    // passes below) against currentSelectionRef, which mirrors the PAGE's
+    // own selection state rather than a viewer-local copy of it.
+    const isCandidateSelected = (el: Element): boolean => {
+      const sel = currentSelectionRef.current;
+      const linkId = el.getAttribute("data-hit-linkid");
+      if (linkId != null) return sel.linkIds.has(linkId);
+      const nodeId = el.getAttribute("data-hit-nodeid");
+      if (nodeId != null) return sel.nodeIds.has(nodeId);
+      const elkey = el.getAttribute("data-elkey");
+      if (elkey != null) return sel.elementKeys.has(elkey);
+      return false;
+    };
 
     // Defect 2 — repeat-click cycling. A CAPTURE-phase listener runs before any
     // hit shape's own bubble-phase "click" handler, so it can intercept a
@@ -748,6 +833,15 @@ export default function NetworkViewer({
     // to a direct click — this never reimplements the callbacks. `isTrusted`
     // distinguishes the real click that starts this from the synthetic one
     // this handler itself dispatches, so the re-dispatch does not recurse.
+    //
+    // Multi-select (v2 UX unit, 2026-07-29) adds a SEPARATE shift-aware branch
+    // ahead of the plain-click cycling below, which stays completely
+    // untouched — "add the topmost candidate NOT already selected" is a
+    // different rule from "advance the index by one regardless of selection
+    // state" (repeated shift+clicks must walk PAST anything already picked,
+    // even coming back to a point visited earlier in a different click
+    // sequence, which a bare index would not do on its own), so it needs
+    // currentSelectionRef, not just clickCycleRef's index.
     svg.on(
       "click.cycle",
       (event: MouseEvent) => {
@@ -756,8 +850,35 @@ export default function NetworkViewer({
         const { clientX, clientY } = event;
         const candidates = candidatesAt(clientX, clientY);
         const prev = clickCycleRef.current;
-        if (prev && candidates.length > 1 && Math.hypot(clientX - prev.x, clientY - prev.y) <= CLICK_CYCLE_PX) {
-          const nextIndex = (prev.index + 1) % candidates.length;
+        const repeat = !!prev && candidates.length > 1 && Math.hypot(clientX - prev.x, clientY - prev.y) <= CLICK_CYCLE_PX;
+
+        if (event.shiftKey && candidates.length > 1) {
+          const startIndex = repeat ? (prev!.index + 1) % candidates.length : 0;
+          let chosen = -1;
+          for (let step = 0; step < candidates.length; step++) {
+            const idx = (startIndex + step) % candidates.length;
+            if (!isCandidateSelected(candidates[idx])) {
+              chosen = idx;
+              break;
+            }
+          }
+          // Every candidate at this point is already selected (e.g. all three
+          // of a stack were added and the user shift-clicked again) — fall
+          // back to the plain next-in-line so the click still does something
+          // (toggles it back off) instead of silently no-op-ing.
+          if (chosen === -1) chosen = startIndex;
+          clickCycleRef.current = { x: clientX, y: clientY, index: chosen };
+          const target = candidates[chosen];
+          event.preventDefault();
+          event.stopPropagation();
+          target.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, cancelable: true, clientX, clientY, button: event.button, shiftKey: true }),
+          );
+          return;
+        }
+
+        if (repeat) {
+          const nextIndex = (prev!.index + 1) % candidates.length;
           clickCycleRef.current = { x: clientX, y: clientY, index: nextIndex };
           const target = candidates[nextIndex];
           event.preventDefault();
@@ -789,7 +910,7 @@ export default function NetworkViewer({
       .map((l) => {
         const pts = l.points.map((p) => [projX(p[0]), projY(p[1])] as Pt);
         const isConn = !!l.is_connector;
-        const isSel = selectedLinkId != null && String(selectedLinkId) === String(l.id);
+        const isSel = selectedLinkIdSet.has(String(l.id));
         const widthPx = linkWidthMeters(l) * pxPerMeter;
         // Connectors use the SAME width rule and floor as links — they are
         // pavement, not annotation, so a junction reads as one road surface.
@@ -805,6 +926,164 @@ export default function NetworkViewer({
 
     const roads = drawn.filter((d) => !d.isConn);
     const connectors = drawn.filter((d) => d.isConn);
+
+    // Shift+drag box-select (v2 UX unit, 2026-07-29, Section C). Hand-rolled
+    // rather than d3.brush: brush installs its own drag-gesture recognizer
+    // plus a full-extent overlay rect intercepting pointer events, which
+    // would need the SAME shift-vs-plain-drag split as `zoom`'s filter below
+    // (re-implemented, not reused) and would still race `zoom`'s own drag
+    // recognition for the "plain drag still pans" case — one more behaviour
+    // to keep in sync rather than fewer moving parts. A raw mousedown/
+    // mousemove/mouseup trio reuses the SAME down/isDragClick bookkeeping the
+    // click handlers already have, and draws directly in screen space (a
+    // `<rect>` sibling of `g`, never touched by the zoom group's transform)
+    // so it needs no coordinate translation of its own.
+    const isFiniteNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+    const brushRect = svg
+      .append("rect")
+      .attr("fill", ACCENT)
+      .attr("fill-opacity", 0.12)
+      .attr("stroke", ACCENT)
+      .attr("stroke-opacity", 0.85)
+      .attr("stroke-width", 1)
+      .attr("pointer-events", "none")
+      .style("display", "none");
+    let brushOrigin: Pt | null = null;
+    let brushDragging = false;
+    const BRUSH_MOVE_THRESHOLD_PX = 3;
+
+    // "elements by anchor point" (Section C). Most classes carry a plain x/y
+    // (the SAME field every draw pass below reads); ped_areas is a polygon
+    // with no single point (centroid substitutes); traveltime_sections_geo
+    // carries its point on start/end sub-objects instead of a top-level x/y.
+    // One extractor so the hit test and every draw pass agree on what "this
+    // element's point" means.
+    const elementAnchorRaw = (key: keyof NetworkElements, el: Record<string, unknown>): Pt | null => {
+      if (key === "ped_areas") {
+        const poly = el.polygon as [number, number][] | undefined;
+        if (!poly || poly.length < 3) return null;
+        let sx = 0;
+        let sy = 0;
+        let n = 0;
+        for (const p of poly) {
+          if (isFiniteNum(p?.[0]) && isFiniteNum(p?.[1])) {
+            sx += p[0];
+            sy += p[1];
+            n += 1;
+          }
+        }
+        return n > 0 ? [sx / n, sy / n] : null;
+      }
+      if (key === "traveltime_sections_geo") {
+        const start = el.start as { x?: unknown; y?: unknown } | undefined;
+        const end = el.end as { x?: unknown; y?: unknown } | undefined;
+        if (start && isFiniteNum(start.x) && isFiniteNum(start.y)) return [start.x, start.y];
+        if (end && isFiniteNum(end.x) && isFiniteNum(end.y)) return [end.x, end.y];
+        return null;
+      }
+      const x = el.x;
+      const y = el.y;
+      return isFiniteNum(x) && isFiniteNum(y) ? [x, y] : null;
+    };
+
+    // Hit-test everything against a SCREEN-space box [x0,y0]-[x1,y1] and
+    // report the raw haul to the page. `pts` on `drawn` entries and node/
+    // element raw coords are both in the PRE-zoom projected space (projX/
+    // projY); `zoomTransformRef.current` is the live transform that carries
+    // that space to the screen — the exact relationship the file's own
+    // ViewProjection contract documents at the top of this file.
+    const runBoxSelect = (x0: number, y0: number, x1: number, y1: number) => {
+      if (!onBoxSelect) return;
+      const transform = zoomTransformRef.current;
+      const inBox = (p: Pt): boolean => {
+        const sx = transform.applyX(p[0]);
+        const sy = transform.applyY(p[1]);
+        return sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1;
+      };
+
+      const hitNodes: { id: string; name: string }[] = [];
+      for (const node of network.nodes) {
+        if (inBox([projX(node.x), projY(node.y)])) {
+          hitNodes.push({ id: String(node.id), name: node.name || `${nodeLabel} ${node.id}` });
+        }
+      }
+
+      const hitLinks: NetworkLinkRef[] = [];
+      for (const { link, pts, isConn, linkName } of drawn) {
+        if (pts.some((p) => inBox(p))) {
+          hitLinks.push({ id: String(link.id), name: linkName, isConnector: isConn });
+        }
+      }
+
+      const hitElements: NetworkElementRef[] = [];
+      const elsForBox = network.elements;
+      if (elsForBox) {
+        for (const key of ELEMENT_Z_ORDER) {
+          const list = elsForBox[key];
+          if (!list) continue;
+          for (const el of list as unknown as Record<string, unknown>[]) {
+            const anchor = elementAnchorRaw(key, el);
+            if (!anchor || !inBox([projX(anchor[0]), projY(anchor[1])])) continue;
+            hitElements.push({
+              type: String(key),
+              id: String(el.id ?? ""),
+              name: String(el.name ?? ""),
+              link: el.link == null ? null : String(el.link),
+            });
+          }
+        }
+      }
+
+      if (hitNodes.length || hitLinks.length || hitElements.length) {
+        onBoxSelect({ nodes: hitNodes, links: hitLinks, elements: hitElements });
+      }
+    };
+
+    // Released outside the <svg> (still within the page) must still complete
+    // the box — a mouseup listener scoped to `svg` alone only fires when the
+    // event's target is inside the svg's subtree, which a fast drag past its
+    // edge (over the layers panel, the legend, …) escapes. Listening on
+    // `window` for the duration of an active drag is the standard fix; both
+    // listeners remove themselves the moment the drag ends (and the effect's
+    // cleanup below removes them again defensively, in case the component
+    // unmounts or redraws mid-drag).
+    function handleBrushMove(event: MouseEvent) {
+      if (!brushOrigin || !svgRef.current) return;
+      const [x, y] = d3.pointer(event, svgRef.current);
+      if (!brushDragging) {
+        if (Math.hypot(x - brushOrigin[0], y - brushOrigin[1]) < BRUSH_MOVE_THRESHOLD_PX) return;
+        brushDragging = true;
+      }
+      const x0 = Math.min(brushOrigin[0], x);
+      const x1 = Math.max(brushOrigin[0], x);
+      const y0 = Math.min(brushOrigin[1], y);
+      const y1 = Math.max(brushOrigin[1], y);
+      brushRect.style("display", null).attr("x", x0).attr("y", y0).attr("width", x1 - x0).attr("height", y1 - y0);
+    }
+    function handleBrushUp(event: MouseEvent) {
+      window.removeEventListener("mousemove", handleBrushMove);
+      window.removeEventListener("mouseup", handleBrushUp);
+      if (!brushOrigin || !svgRef.current) return;
+      const origin = brushOrigin;
+      const wasDragging = brushDragging;
+      brushOrigin = null;
+      brushDragging = false;
+      brushRect.style("display", "none");
+      // A shift+mousedown with no real movement is a shift+CLICK, not a box —
+      // fall through and let the normal click handlers (click.cycle included)
+      // process it via the browser's own click dispatch.
+      if (!wasDragging) return;
+      const [x, y] = d3.pointer(event, svgRef.current);
+      runBoxSelect(Math.min(origin[0], x), Math.min(origin[1], y), Math.max(origin[0], x), Math.max(origin[1], y));
+    }
+    svg.on("mousedown.brush", (event: MouseEvent) => {
+      if (!event.shiftKey) return;
+      event.preventDefault();
+      brushOrigin = d3.pointer(event, svgRef.current);
+      brushDragging = false;
+      window.addEventListener("mousemove", handleBrushMove);
+      window.addEventListener("mouseup", handleBrushUp);
+    });
 
     // Layer 1 — casings for every surface (links AND connectors) first, so
     // junction interiors merge cleanly instead of showing internal edges.
@@ -1055,8 +1334,7 @@ export default function NetworkViewer({
         name: String(name ?? ""),
         link: link == null ? null : String(link),
       });
-      const isSelectedElement = (ref: NetworkElementRef) =>
-        selectedElementKey !== "" && selectedElementKey === `${ref.type}:${ref.id}`;
+      const isSelectedElement = (ref: NetworkElementRef) => selectedElementKeySet.has(`${ref.type}:${ref.id}`);
       // Defect 2 — hover/selection recolors the glyph itself: a data-elkey'd <g>
       // gains an .el-hover / .el-selected class that the <style> block in the
       // JSX return turns into a stroke/fill/drop-shadow override. Replaces the
@@ -1081,7 +1359,7 @@ export default function NetworkViewer({
         if (onElementClick) {
           sel.style("cursor", "pointer").on("click", (event: MouseEvent) => {
             if (isDragClick(event)) return;
-            onElementClick(ref);
+            onElementClick(ref, event.shiftKey);
           });
         }
         if (isSelectedElement(ref)) setElClass(ref, "el-selected", true);
@@ -1552,6 +1830,14 @@ export default function NetworkViewer({
         const nodeIdStr = String(node.id);
 
         const hit = gHitNodes.append("circle")
+          // Multi-select (2026-07-29) — a SEPARATE address attribute from the
+          // visible dot's data-nodeid (deliberately not reused: the hover/
+          // selected/focus-flash CSS rules select on `circle[data-nodeid]`
+          // with no further scoping, so stamping that same attribute here
+          // would make THIS invisible, oversized hit circle match them too —
+          // a hover/selection/focus recolor would suddenly paint a 14px-radius
+          // ring nobody asked for). Read only by isCandidateSelected below.
+          .attr("data-hit-nodeid", nodeIdStr)
           .attr("cx", cx)
           .attr("cy", cy)
           .attr("r", 14 / k)
@@ -1573,7 +1859,7 @@ export default function NetworkViewer({
         if (onNodeClick) {
           hit.on("click", (event: MouseEvent) => {
             if (isDragClick(event)) return;
-            onNodeClick(String(node.id), nodeName);
+            onNodeClick(String(node.id), nodeName, event.shiftKey);
           });
         }
       });
@@ -1596,6 +1882,15 @@ export default function NetworkViewer({
         // listeners, not svg-level ones).
         const linkHoverSelector = `polyline[data-linkid='${CSS.escape(String(link.id))}']`;
         const hit = gHit.append("polyline")
+          // Multi-select (2026-07-29) — a SEPARATE address attribute from the
+          // visible fill's data-linkid (deliberately not reused: applyFocusFlash
+          // and the hover/selected CSS rules select on `[data-linkid]`/
+          // `polyline[data-linkid]` with no further scoping, so stamping that
+          // same attribute here would make THIS invisible, wide hit band match
+          // them too — a hover/selection/focus recolor would suddenly paint a
+          // band far wider than the actual road). Read only by
+          // isCandidateSelected below.
+          .attr("data-hit-linkid", String(link.id))
           .attr("points", pointsAttr)
           .attr("stroke", "transparent")
           .attr("stroke-width", Math.max(roadW, HIT_LINK_MIN_PX / k))
@@ -1613,7 +1908,7 @@ export default function NetworkViewer({
         if (onLinkClick) {
           hit.on("click", (event: MouseEvent) => {
             if (isDragClick(event)) return;
-            onLinkClick(String(link.id), linkName, isConn);
+            onLinkClick(String(link.id), linkName, isConn, event.shiftKey);
           });
         }
       });
@@ -1645,6 +1940,16 @@ export default function NetworkViewer({
     const maxZoomK = Math.max(10, 30 / pxPerMeter);
     const zoom = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.3, maxZoomK])
+      // Shift+drag box-select (Section C) needs to own shift-held mousedowns
+      // itself — d3-zoom's DEFAULT filter (`!event.ctrlKey && !event.button`,
+      // per the d3-zoom docs) already ALLOWS a shift-held mousedown, which is
+      // exactly what used to make a shift+drag pan the view instead of
+      // drawing a box. This declines ONLY that one case; wheel/pinch/plain
+      // drag/dblclick all fall through to the same default logic unchanged.
+      .filter((event: MouseEvent) => {
+        if (event.type === "mousedown" && event.shiftKey) return false;
+        return (!event.ctrlKey || event.type === "wheel") && !event.button;
+      })
       .on("zoom", (event) => {
         g.attr("transform", event.transform);
         // Defect 2 — a real user zoom/pan gesture invalidates the screen-
@@ -1760,8 +2065,34 @@ export default function NetworkViewer({
         cancelAnimationFrame(elementsRafRef.current);
         elementsRafRef.current = 0;
       }
+      // Belt-and-suspenders: a brush drag in progress when this effect tears
+      // down (network/selection change, resize, or unmount) must not leak its
+      // window-level listeners — handleBrushUp already removes them on a
+      // normal mouseup, this only covers the abnormal case.
+      window.removeEventListener("mousemove", handleBrushMove);
+      window.removeEventListener("mouseup", handleBrushUp);
     };
-  }, [network, nodeLosMap, selectedNodeSet, selectedLinkId, selectedElementKey, onNodeClick, onLinkClick, onElementClick, t, sizeNonce]);
+  // Deliberately keyed on selectedLinkIdsKey/selectedElementsKey (stable
+  // content-based strings), not the selectedLinkIdSet/selectedElementKeySet
+  // Sets the effect body actually reads for membership tests — a page
+  // re-rendering with a fresh-identity-but-same-contents Set must not force
+  // a full d3 redraw. Same intentional deviation the file's focusFlashRef
+  // effect above already suppresses this exact way.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    network,
+    nodeLosMap,
+    selectedNodeSet,
+    selectedLinkIdsKey,
+    selectedElementsKey,
+    onNodeClick,
+    onLinkClick,
+    onElementClick,
+    onBoxSelect,
+    onBackgroundClick,
+    t,
+    sizeNonce,
+  ]);
 
   // Programmatic fit-to-region (approval focus). Declared AFTER the draw
   // effect so React's in-order effect execution guarantees zoomBehaviorRef /

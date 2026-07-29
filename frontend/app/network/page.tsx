@@ -16,7 +16,7 @@ import {
   type NetworkData,
   type SimulationJob,
 } from "@/lib/api";
-import { elementTypeLabel, linkKindLabel, type NetworkElementRef } from "@/lib/networkElements";
+import { elementTypeLabel, linkKindLabel, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 import {
   buildFocusFlash,
   focusSignature,
@@ -26,6 +26,16 @@ import {
   type FocusBbox,
   type FocusElementRef,
 } from "@/lib/networkFocus";
+import {
+  addAllCapped,
+  elementKey,
+  linkKey,
+  MAX_SELECTED_ELEMENTS,
+  MAX_SELECTED_LINKS,
+  nodeKey,
+  replaceWith,
+  toggleItem,
+} from "@/lib/networkSelection";
 import { buildVehicleInputStacks, vehicleInputCompositionLabel } from "@/lib/vehicleInputStack";
 
 // NetworkViewer draws with d3 straight against the DOM, so it must stay
@@ -80,11 +90,53 @@ function NetworkPageContent() {
   const [reloadNonce, setReloadNonce] = useState(0);
   const [activeDataset, setActiveDataset] = useState<ActiveDataset | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
-  const [selectedLinkInfo, setSelectedLinkInfo] = useState<{ id: string; name: string; isConnector: boolean } | null>(null);
-  // P6: the one static element (signal head, detector, …) clicked in the
-  // diagram, if any. Single-select — clicking another replaces it, clicking the
-  // same one again clears it — same toggle semantics as the link selection.
-  const [selectedElementInfo, setSelectedElementInfo] = useState<NetworkElementRef | null>(null);
+  // Multi-select (v2 UX unit, 2026-07-29, lib/networkSelection.ts). Plain
+  // click REPLACES the whole selection with just the clicked thing (clicking
+  // the sole-selected item again clears it); shift+click adds/removes;
+  // shift+drag draws a box that adds everything inside. Links/elements moved
+  // from a single nullable slot to a capped LIST — nodes were already a list
+  // but their plain-click semantics change from "accumulate" to "replace"
+  // here too, via the SAME shared helpers, so all three channels agree.
+  const [selectedLinks, setSelectedLinks] = useState<NetworkLinkRef[]>([]);
+  // P6: the static elements (signal head, detector, …) clicked in the
+  // diagram — 0, 1, or several (see lib/networkSelection.ts's
+  // MAX_SELECTED_ELEMENTS, mirroring the backend's own cap).
+  const [selectedElements, setSelectedElements] = useState<NetworkElementRef[]>([]);
+  // Ephemeral "selection limit reached" notice (Section D) — cleared after a
+  // few seconds so it reads as a toast without needing a dedicated toast
+  // component (none exists on this page).
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  const selectionNoticeTimeoutRef = useRef<number | null>(null);
+  const showSelectionNotice = useCallback((message: string) => {
+    setSelectionNotice(message);
+    if (selectionNoticeTimeoutRef.current != null) window.clearTimeout(selectionNoticeTimeoutRef.current);
+    selectionNoticeTimeoutRef.current = window.setTimeout(() => setSelectionNotice(null), 4000);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (selectionNoticeTimeoutRef.current != null) window.clearTimeout(selectionNoticeTimeoutRef.current);
+    };
+  }, []);
+  // Mirrors for handleBoxSelect below, which needs to read the LATEST
+  // selection synchronously to combine it with the box's haul via
+  // addAllCapped — a functional setState updater's return value is not
+  // observable synchronously after the setState call returns (React defers
+  // running it), so three separate setSelectedX(prev => ...) calls cannot be
+  // used to compute one combined omitted-count the way a single read-then-
+  // write can. Same ref-mirror pattern app/dashboard/page.tsx's `selectedRef`
+  // already uses for the same reason.
+  const selectedNodeIdsRef = useRef<string[]>([]);
+  const selectedLinksRef = useRef<NetworkLinkRef[]>([]);
+  const selectedElementsRef = useRef<NetworkElementRef[]>([]);
+  useEffect(() => {
+    selectedNodeIdsRef.current = selectedNodeIds;
+  }, [selectedNodeIds]);
+  useEffect(() => {
+    selectedLinksRef.current = selectedLinks;
+  }, [selectedLinks]);
+  useEffect(() => {
+    selectedElementsRef.current = selectedElements;
+  }, [selectedElements]);
   // P2: the floating assistant's current agent session id, mirrored here via
   // the "vissim:agent-session" event so this page's refresh button can show
   // that session's in-progress edited working copy on demand -- see
@@ -335,8 +387,8 @@ function NetworkPageContent() {
   const handleDatasetChange = useCallback((dataset?: ActiveDataset) => {
     setActiveDataset(dataset ?? null);
     setSelectedNodeIds([]);
-    setSelectedLinkInfo(null);
-    setSelectedElementInfo(null);
+    setSelectedLinks([]);
+    setSelectedElements([]);
     // A search selection's bbox is in the OLD network's coordinate space --
     // keeping it across a dataset swap would fly the diagram to a location
     // that means nothing in the new one (same reason the selections above are
@@ -345,40 +397,133 @@ function NetworkPageContent() {
     setDatasetRevision(dataset?.revision ?? String(Date.now()));
   }, []);
 
-  // Mirror the dashboard's handleNodeClick semantics: clicking toggles the node
-  // in the comparison set, capped at six with the oldest dropped first.
-  const handleNodeClick = useCallback((nodeId: string) => {
+  // Multi-select (v2 UX unit, 2026-07-29): plain click REPLACES THE WHOLE
+  // selection — every channel, not just this one — with just this node
+  // (clicking the sole-selected node again clears it); shift+click toggles
+  // it into/out of the existing selection, capped at MAX_SELECTED_NODES.
+  // "전체 통일": mixing types (2 nodes + a link) is ONLY reachable via
+  // shift+click — a plain click always collapses back to a single-type,
+  // single-item selection, which is why the plain-click branch below also
+  // clears the OTHER two channels (reading their CURRENT length from the
+  // ref-mirrors declared above, synchronously, before deciding whether this
+  // is a toggle-off). `nodeName` stays unused here — this page always
+  // resolves node names live from `network` — but the parameter is still
+  // declared (not dropped) because NetworkViewer's onNodeClick passes
+  // `additive` as the THIRD positional argument; `additive` defaults to
+  // false so DashboardMap's Leaflet click path (only relevant on
+  // /dashboard, same handler shape) keeps working unchanged.
+  const handleNodeClick = useCallback((nodeId: string, _nodeName: string, additive: boolean = false) => {
     // Selecting anything retires the approval focus AND any search
     // selection — "look here" has served its purpose the moment the user
     // starts driving the diagram themselves.
     dismissFocus();
     setSearchSelection(null);
-    setSelectedNodeIds((prev) => {
-      if (prev.includes(nodeId)) {
-        return prev.filter((id) => id !== nodeId);
-      }
-      const next = [...prev, nodeId];
-      return next.length <= MAX_SELECTED_NODES ? next : next.slice(next.length - MAX_SELECTED_NODES);
-    });
-  }, [dismissFocus]);
+    if (additive) {
+      setSelectedNodeIds((prev) => {
+        const { next, capped } = toggleItem(prev, nodeId, nodeKey, MAX_SELECTED_NODES);
+        if (capped) showSelectionNotice(t(`교차로는 최대 ${MAX_SELECTED_NODES}개까지 선택할 수 있습니다.`, `You can select up to ${MAX_SELECTED_NODES} intersections.`));
+        return next;
+      });
+      return;
+    }
+    const otherChannelsEmpty = selectedLinksRef.current.length === 0 && selectedElementsRef.current.length === 0;
+    setSelectedNodeIds((prev) => replaceWith(prev, nodeId, nodeKey, otherChannelsEmpty));
+    setSelectedLinks([]);
+    setSelectedElements([]);
+  }, [dismissFocus, showSelectionNotice, t]);
 
   // P6: link/connector and element clicks are published as STRUCTURED context
-  // (selectedLinks/selectedElement, which FloatingAssistant forwards as
-  // selected_link_ids/selected_element), not just as a human-readable note —
-  // that upgrade is recorded in docs/phase2/DECISIONS.md. They stay separate
-  // from selected_node_ids because node ids key result/metric lookups while
-  // links and elements key the parsed network.
-  const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean) => {
+  // (selectedLinks/selectedElements, which FloatingAssistant forwards as
+  // selected_link_ids/selected_element(s)), not just as a human-readable note
+  // — that upgrade is recorded in docs/phase2/DECISIONS.md. They stay
+  // separate from selected_node_ids because node ids key result/metric
+  // lookups while links and elements key the parsed network. Same
+  // cross-channel plain-click replace as handleNodeClick above.
+  const handleLinkClick = useCallback((linkId: string, linkName: string, isConnector: boolean, additive: boolean) => {
     dismissFocus();
     setSearchSelection(null);
-    setSelectedLinkInfo((prev) => (prev && prev.id === linkId ? null : { id: linkId, name: linkName, isConnector }));
-  }, [dismissFocus]);
+    const item: NetworkLinkRef = { id: linkId, name: linkName, isConnector };
+    if (additive) {
+      setSelectedLinks((prev) => {
+        const { next, capped } = toggleItem(prev, item, linkKey, MAX_SELECTED_LINKS);
+        if (capped) showSelectionNotice(t(`링크/연결로는 최대 ${MAX_SELECTED_LINKS}개까지 선택할 수 있습니다.`, `You can select up to ${MAX_SELECTED_LINKS} links/connectors.`));
+        return next;
+      });
+      return;
+    }
+    const otherChannelsEmpty = selectedNodeIdsRef.current.length === 0 && selectedElementsRef.current.length === 0;
+    setSelectedLinks((prev) => replaceWith(prev, item, linkKey, otherChannelsEmpty));
+    setSelectedNodeIds([]);
+    setSelectedElements([]);
+  }, [dismissFocus, showSelectionNotice, t]);
 
-  const handleElementClick = useCallback((ref: NetworkElementRef) => {
+  const removeLinkSelection = useCallback((linkId: string) => {
+    setSelectedLinks((prev) => prev.filter((link) => link.id !== linkId));
+  }, []);
+
+  const handleElementClick = useCallback((ref: NetworkElementRef, additive: boolean) => {
     dismissFocus();
     setSearchSelection(null);
-    setSelectedElementInfo((prev) => (prev && prev.type === ref.type && prev.id === ref.id ? null : ref));
-  }, [dismissFocus]);
+    if (additive) {
+      setSelectedElements((prev) => {
+        const { next, capped } = toggleItem(prev, ref, elementKey, MAX_SELECTED_ELEMENTS);
+        if (capped) showSelectionNotice(t(`요소는 최대 ${MAX_SELECTED_ELEMENTS}개까지 선택할 수 있습니다.`, `You can select up to ${MAX_SELECTED_ELEMENTS} elements.`));
+        return next;
+      });
+      return;
+    }
+    const otherChannelsEmpty = selectedNodeIdsRef.current.length === 0 && selectedLinksRef.current.length === 0;
+    setSelectedElements((prev) => replaceWith(prev, ref, elementKey, otherChannelsEmpty));
+    setSelectedNodeIds([]);
+    setSelectedLinks([]);
+  }, [dismissFocus, showSelectionNotice, t]);
+
+  const removeElementSelection = useCallback((ref: NetworkElementRef) => {
+    setSelectedElements((prev) => prev.filter((el) => !(el.type === ref.type && el.id === ref.id)));
+  }, []);
+
+  // Shift+drag box-select (Section C) — the viewer reports everything the
+  // box touched, RAW; this is where the caps actually apply (the SAME
+  // toggleItem/addAllCapped helpers every other selection channel uses), so
+  // a box that oversells any one category is truncated with a notice rather
+  // than silently accepted or silently dropped.
+  const handleBoxSelect = useCallback(
+    (hits: { nodes: { id: string; name: string }[]; links: NetworkLinkRef[]; elements: NetworkElementRef[] }) => {
+      dismissFocus();
+      setSearchSelection(null);
+      // Computed synchronously from the refs (see their declaration above)
+      // BEFORE any setState call, then written with the plain resulting
+      // array — never `setSelectedX(prev => addAllCapped(prev, ...))`, since
+      // three independent functional updaters could not otherwise be
+      // combined into one omitted-count read back in this same tick.
+      const nodesResult = hits.nodes.length
+        ? addAllCapped(selectedNodeIdsRef.current, hits.nodes.map((n) => n.id), nodeKey, MAX_SELECTED_NODES)
+        : null;
+      const linksResult = hits.links.length
+        ? addAllCapped(selectedLinksRef.current, hits.links, linkKey, MAX_SELECTED_LINKS)
+        : null;
+      const elementsResult = hits.elements.length
+        ? addAllCapped(selectedElementsRef.current, hits.elements, elementKey, MAX_SELECTED_ELEMENTS)
+        : null;
+      if (nodesResult) setSelectedNodeIds(nodesResult.next);
+      if (linksResult) setSelectedLinks(linksResult.next);
+      if (elementsResult) setSelectedElements(elementsResult.next);
+      const totalOmitted = (nodesResult?.omitted ?? 0) + (linksResult?.omitted ?? 0) + (elementsResult?.omitted ?? 0);
+      if (totalOmitted > 0) {
+        showSelectionNotice(
+          t(`선택 개수 제한으로 ${totalOmitted}개 항목이 추가되지 않았습니다.`, `${totalOmitted} item(s) were not added because of the selection limit.`),
+        );
+      }
+    },
+    [dismissFocus, showSelectionNotice, t],
+  );
+
+  // Plain click on empty diagram background clears the whole selection.
+  const clearAllSelection = useCallback(() => {
+    setSelectedNodeIds([]);
+    setSelectedLinks([]);
+    setSelectedElements([]);
+  }, []);
 
   // Mirrors the dashboard/base-model pages' assistant page-context dispatch:
   // publish on mount/change and again whenever the floating assistant asks
@@ -408,13 +553,16 @@ function NetworkPageContent() {
                   revision: activeDataset.revision,
                 }
               : null,
-            // P6: structured selection, forwarded by FloatingAssistant as
-            // selected_link_ids/selected_element so the agent resolves the real
-            // link/element instead of guessing what "this road" meant. Always
-            // 0-or-1 entries today (single-select); the array shape leaves room
-            // for a future multi-select without another context-shape change.
-            selectedLinks: selectedLinkInfo ? [selectedLinkInfo] : [],
-            selectedElement: selectedElementInfo,
+            // Multi-select (v2 UX unit, 2026-07-29): the FULL current
+            // selection, forwarded by FloatingAssistant as
+            // selected_link_ids/selected_element(s) so the agent resolves the
+            // real link(s)/element(s) instead of guessing what "this road"
+            // meant. FloatingAssistant is where the singular/plural HTTP-
+            // field split for elements happens (exactly one -> legacy
+            // `selected_element`, two or more -> `selected_elements`) — this
+            // page just publishes the list.
+            selectedLinks,
+            selectedElements,
             notes: [
               selectedNodeIds.length > 0
                 ? t(
@@ -422,28 +570,17 @@ function NetworkPageContent() {
                     `${selectedNodeIds.length} intersection${selectedNodeIds.length > 1 ? "s" : ""} selected`,
                   )
                 : t("선택된 교차로 없음", "No intersections selected"),
-              // The human-readable mirror of selectedLinks/selectedElement above,
-              // kept so an answer can quote what is highlighted on screen.
-              ...(selectedLinkInfo
-                ? [
-                    [
-                      t("도식에서", "In the diagram,"),
-                      linkKindLabel(selectedLinkInfo.isConnector, t),
-                      selectedLinkInfo.name,
-                      t("선택됨", "selected"),
-                    ].join(" "),
-                  ]
-                : []),
-              ...(selectedElementInfo
-                ? [
-                    [
-                      t("도식에서", "In the diagram,"),
-                      elementTypeLabel(selectedElementInfo.type, t),
-                      selectedElementInfo.name || selectedElementInfo.id,
-                      t("선택됨", "selected"),
-                    ].join(" "),
-                  ]
-                : []),
+              // The human-readable mirror of selectedLinks/selectedElements
+              // above, kept so an answer can quote what is highlighted on
+              // screen — one line per selected link, then one per element.
+              ...selectedLinks.map((link) =>
+                [t("도식에서", "In the diagram,"), linkKindLabel(link.isConnector, t), link.name, t("선택됨", "selected")].join(" "),
+              ),
+              ...selectedElements.map((element) =>
+                [t("도식에서", "In the diagram,"), elementTypeLabel(element.type, t), element.name || element.id, t("선택됨", "selected")].join(
+                  " ",
+                ),
+              ),
             ],
             updatedAt: Date.now(),
           },
@@ -456,7 +593,7 @@ function NetworkPageContent() {
     return () => {
       window.removeEventListener("vissim:assistant-context-request", publishAssistantContext);
     };
-  }, [activeDataset, network, selectedElementInfo, selectedLinkInfo, selectedNodeIds, t]);
+  }, [activeDataset, network, selectedElements, selectedLinks, selectedNodeIds, t]);
 
   return (
     <div className="mx-auto w-full max-w-[96rem] space-y-6 pb-16">
@@ -557,11 +694,13 @@ function NetworkPageContent() {
             <NetworkViewer
               network={network}
               selectedNodeIds={selectedNodeIds}
-              selectedLinkId={selectedLinkInfo?.id ?? null}
-              selectedElement={selectedElementInfo}
+              selectedLinkIds={selectedLinks.map((link) => link.id)}
+              selectedElements={selectedElements}
               onNodeClick={handleNodeClick}
               onLinkClick={handleLinkClick}
               onElementClick={handleElementClick}
+              onBoxSelect={handleBoxSelect}
+              onBackgroundClick={clearAllSelection}
               onProjectionChange={projection.set}
               focusFlash={focusFlash}
               zoomToBbox={zoomToBbox}
@@ -696,9 +835,57 @@ function NetworkPageContent() {
         </section>
       )}
 
-      {selectedNodeIds.length > 0 && (
-        <p className="px-1 text-xs text-slate-500">
-          {t(`선택된 교차로 ${selectedNodeIds.length}개`, `${selectedNodeIds.length} intersection${selectedNodeIds.length > 1 ? "s" : ""} selected`)}
+      {/* Selection chips (v2 UX unit, 2026-07-29) — the unified node/link/
+          element selection, each removable on its own, plus one "clear all".
+          Reuses the rounded-pill chip idiom app/dashboard/page.tsx's
+          SelectedIntersectionPanel already established for nodes. */}
+      {(selectedNodeIds.length > 0 || selectedLinks.length > 0 || selectedElements.length > 0) && (
+        <div className="mx-1 flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200 bg-surface/70 px-3 py-2">
+          {selectedNodeIds.map((nodeId) => {
+            const nodeName = network?.nodes.find((candidate) => candidate.id === nodeId)?.name || `Node ${nodeId}`;
+            return (
+              <button
+                key={`node-${nodeId}`}
+                type="button"
+                onClick={() => setSelectedNodeIds((prev) => prev.filter((id) => id !== nodeId))}
+                className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+              >
+                {t("노드", "Node")} {nodeName} ×
+              </button>
+            );
+          })}
+          {selectedLinks.map((link) => (
+            <button
+              key={`link-${link.id}`}
+              type="button"
+              onClick={() => removeLinkSelection(link.id)}
+              className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+            >
+              {linkKindLabel(link.isConnector, t)} {link.name || link.id} ×
+            </button>
+          ))}
+          {selectedElements.map((element) => (
+            <button
+              key={`el-${element.type}-${element.id}`}
+              type="button"
+              onClick={() => removeElementSelection(element)}
+              className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+            >
+              {elementTypeLabel(element.type, t)} {element.name || element.id} ×
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={clearAllSelection}
+            className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 transition hover:text-slate-900"
+          >
+            {t("모두 지우기", "Clear all")}
+          </button>
+        </div>
+      )}
+      {selectionNotice && (
+        <p className="px-1 text-[11px] text-amber-600" role="status">
+          {selectionNotice}
         </p>
       )}
     </div>

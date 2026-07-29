@@ -2523,3 +2523,38 @@ object for every caller. Copy before mutating a cached getter's return value.
 **Verified independently by the controller:** TestClient sequence good-upload → bad-upload →
 GET → cancel with isolated paths: active file byte-identical (sha256) across steps 2–4, the
 bad-upload response carried the good file's rows, cancel 204 twice (idempotent).
+
+## 2026-07-29 — Multi-select in the network diagram (v2 UX queue, final unit)
+
+**Decisions (user's, 2026-07-28):** "전체 통일 — 일반 클릭은 교체" and "드래그 박스도 함께".
+
+**Shipped.** Plain click on any selectable thing (node/link/element) replaces the WHOLE
+selection — all three channels — with just that thing; nodes lose their old accumulate-on-click;
+clicking the sole-selected thing still deselects. Shift+click adds/removes with free type
+mixing; mixed selections are reachable ONLY via shift, which is what makes plain-click-replace
+safe. Repeated shift+clicks at one occluded point walk to the next NOT-yet-selected candidate —
+the co-located 3-stack problem became the selection mechanism (3 shift+clicks at one entry
+point = 107, 207, 307). Shift+drag draws a hand-rolled screen-space box (not d3.brush: brush
+brings its own gesture recognizer and would race d3-zoom's; the trio reuses the existing
+drag-click bookkeeping) that ADDS everything inside. `zoom.filter()` declines shift-mousedown
+only — d3's default filter allows shift, which would have produced a box AND a pan; wheel,
+pinch (ctrl+wheel), plain drag unchanged. Brush listeners live on `window` so a drag ending
+outside the SVG still completes. Plain click on empty background clears all (new behavior).
+
+**Caps mirror the backend and are never silent:** nodes 6, links `MAX_SELECTED_LINKS`=6,
+elements `MAX_SELECTED_ELEMENTS`=8 (both from `network_selection.py`); a truncated box-haul
+shows one combined ko/en notice.
+
+**Contract:** exactly 1 element → legacy singular `selected_element` (byte-identical to what P6
+always sent), 2+ → plural `selected_elements`; one function (`selectionFieldsForRequest`) owns
+the split. Probed against the live backend: 0 → None, 1 → element, 3 → all three resolved with
+name+link.
+
+**Caught in the unit's own pass:** the new invisible hit shapes could not reuse
+`data-linkid`/`data-nodeid` — `applyFocusFlash` and the hover/selected CSS select on those
+attributes without further scoping, so the 12px hit bands would have rendered as fat accent
+stripes. They carry `data-hit-linkid`/`data-hit-nodeid` instead, read only by the
+candidate-selected check.
+
+**Known accepted limits:** a link crossing the box with no vertex inside is missed; box hit-test
+uses un-fanned element anchors; tooltips aren't suppressed mid-drag.

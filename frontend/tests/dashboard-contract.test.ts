@@ -292,18 +292,14 @@ test("network preview page publishes assistant page context", () => {
     "expected network preview page to republish context when the floating assistant asks for it",
   );
   assert.match(page, /route: "\/network"/, "expected network preview page context to identify its own route");
-  // P6: diagram clicks publish STRUCTURED selection, not only a prose note —
-  // these two keys are what FloatingAssistant turns into selected_link_ids /
-  // selected_element on the request.
+  // Multi-select (v2 UX unit, 2026-07-29): diagram clicks publish the FULL
+  // selection as STRUCTURED lists, not only a prose note — these two keys
+  // are what FloatingAssistant turns into selected_link_ids /
+  // selected_element(s) on the request.
   assert.match(
     page,
-    /selectedLinks: selectedLinkInfo \? \[selectedLinkInfo\] : \[\]/,
-    "expected the network preview page to publish the clicked link as structured context",
-  );
-  assert.match(
-    page,
-    /selectedElement: selectedElementInfo/,
-    "expected the network preview page to publish the clicked element as structured context",
+    /selectedLinks,\s*selectedElements,/,
+    "expected the network preview page to publish the full link/element selection as structured context",
   );
 });
 
@@ -316,17 +312,20 @@ test("P6/P7: diagram selection reaches the assistant request AND the agent turn,
 
   // Element glyphs are clickable, guarded by the same click-vs-drag check the
   // link/node hit targets use, so a pan that ends over a glyph is not a click.
-  assert.match(networkViewer, /onElementClick\?: \(ref: NetworkElementRef\) => void/, "expected the viewer to expose element clicks");
   assert.match(
     networkViewer,
-    /sel\.style\("cursor", "pointer"\)\.on\("click", \(event: MouseEvent\) => \{\s*if \(isDragClick\(event\)\) return;\s*onElementClick\(ref\);/,
+    /onElementClick\?: \(ref: NetworkElementRef, additive: boolean\) => void/,
+    "expected the viewer to expose element clicks with the shift-click additive flag",
+  );
+  assert.match(
+    networkViewer,
+    /sel\.style\("cursor", "pointer"\)\.on\("click", \(event: MouseEvent\) => \{\s*if \(isDragClick\(event\)\) return;\s*onElementClick\(ref, event\.shiftKey\);/,
     "expected element clicks to reuse the drag guard before publishing a reference",
   );
 
   for (const [label, page] of [["network preview", networkPage], ["dashboard", dashboardPage]] as const) {
     assert.match(page, /onElementClick=\{handleElementClick\}/, `expected ${label} to wire element clicks`);
-    assert.match(page, /selectedLinks: selectedLinkInfo \? \[selectedLinkInfo\] : \[\]/, `expected ${label} to publish selected links`);
-    assert.match(page, /selectedElement: selectedElementInfo/, `expected ${label} to publish the selected element`);
+    assert.match(page, /selectedLinks,\s*selectedElements,/, `expected ${label} to publish the full multi-select link/element lists`);
   }
 
   assert.match(
@@ -334,13 +333,24 @@ test("P6/P7: diagram selection reaches the assistant request AND the agent turn,
     /selected_link_ids: activePageContext\?\.selectedLinks\?\.map\(\(link\) => link\.id\) \?\? \[\]/,
     "expected the floating assistant to send clicked links to the assistant API",
   );
+  // Multi-select (v2 UX unit, 2026-07-29): the singular/plural HTTP-field
+  // split for elements is centralized in selectionFieldsForRequest (exactly
+  // one selected element -> legacy `selected_element`, two or more ->
+  // `selected_elements`), shared by both the plain-assistant and agent-mode
+  // request builders below.
   assert.match(
     floatingAssistant,
-    /selected_element: activePageContext\?\.selectedElement \?\? null/,
-    "expected the floating assistant to send the clicked element to the assistant API",
+    /function selectionFieldsForRequest\(/,
+    "expected a single shared singular/plural element-field split for outgoing requests",
+  );
+  assert.match(
+    floatingAssistant,
+    /\.\.\.selectionFieldsForRequest\(activePageContext\)/,
+    "expected the floating assistant to send the clicked element(s) to the assistant API via the shared split",
   );
   assert.match(api, /selected_link_ids\?: string\[\]/, "expected the assistant request type to carry clicked link ids");
   assert.match(api, /selected_element\?: \{/, "expected the assistant request type to carry the clicked element");
+  assert.match(api, /selected_elements\?: \{/, "expected the assistant request type to carry the multi-select element list");
 
   // P7: agent mode sends the SAME selection (plus node/scenario ids, which had
   // never reached the agent at all) on its own streamAgentQuery payload — the
@@ -348,7 +358,7 @@ test("P6/P7: diagram selection reaches the assistant request AND the agent turn,
   // above pass whether or not it was wired.
   assert.match(
     floatingAssistant,
-    /session_id: agentSessionId \?\? undefined,[\s\S]*?selected_node_ids: activePageContext\?\.selectedNodeIds \?\? \[\],\s*selected_link_ids: activePageContext\?\.selectedLinks\?\.map\(\(link\) => link\.id\) \?\? \[\],\s*selected_element: activePageContext\?\.selectedElement \?\? null,/,
+    /session_id: agentSessionId \?\? undefined,[\s\S]*?selected_node_ids: activePageContext\?\.selectedNodeIds \?\? \[\],\s*selected_link_ids: activePageContext\?\.selectedLinks\?\.map\(\(link\) => link\.id\) \?\? \[\],[\s\S]*?\.\.\.selectionFieldsForRequest\(activePageContext\),/,
     "expected agent mode to send the on-screen selection with the agent turn",
   );
   assert.match(
