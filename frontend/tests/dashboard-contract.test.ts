@@ -14,7 +14,7 @@ test("main dashboard keeps scenario-comparison core composition", () => {
 
   assert.match(
     page,
-    /<DashboardScenarioPicker scenarios=\{scenarios\} selected=\{selected\} onChange=\{setSelected\} \/>/,
+    /<DashboardScenarioPicker scenarios=\{scenarios\} selected=\{selected\} onChange=\{handleSelectedChange\} \/>/,
     "expected dashboard-specific scenario picker on the main dashboard",
   );
   assert.match(page, /<DashboardMap/, "expected map comparison panel on main dashboard");

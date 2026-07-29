@@ -10,6 +10,11 @@ import NetworkSearchBox, { type NetworkSearchSelection } from "@/components/Netw
 import NodeFlowPanel from "@/components/NodeFlowPanel";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import {
+  clearStoredScenarioSelection,
+  readStoredScenarioSelection,
+  writeStoredScenarioSelection,
+} from "@/lib/dashboardSelectionStorage";
+import {
   fetchActiveDataset,
   fetchCompare,
   fetchCompareSummary,
@@ -184,6 +189,17 @@ export default function DashboardPage() {
   // Auto-seed a default intersection once per dataset so the performance and
   // flow panels are not empty on first load; reset on dataset change.
   const autoSeededNodesRef = useRef(false);
+  // Mirrors `selected` for reloadScenariosAndValidation below, which needs
+  // to READ the latest selection from inside an async .then() callback
+  // without going through setSelected's functional-updater form (that form
+  // would have to compute `next` inside the updater, which then has to be
+  // read back out to persist it to storage -- and the updater itself must
+  // stay a pure function of its `current` argument: React may invoke it
+  // more than once (StrictMode) or discard the render that queued it
+  // (concurrent features), so it must not have side effects and its return
+  // value isn't reliably observable synchronously after the setSelected
+  // call returns either). Kept in sync by the effect right below.
+  const selectedRef = useRef<string[]>([]);
   const hasUploadedDataset = activeDataset?.source === "uploaded";
   // Focus mode: with no curation spec every section is visible; with one,
   // only the LLM-chosen sections render (the header and curation bar always stay).
@@ -191,6 +207,9 @@ export default function DashboardPage() {
     (sectionId: string) => curationSpec == null || curationSpec.charts.includes(sectionId),
     [curationSpec],
   );
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
   const clearDashboardData = useCallback(() => {
     requestSerial.current += 1;
     loadSerial.current += 1;
@@ -205,9 +224,19 @@ export default function DashboardPage() {
     // An AI curation answer is only valid for the scenarios/data it was
     // computed against; a dataset change invalidates it immediately.
     setCurationSpec(null);
+    // The persisted comparison-set selection (see lib/dashboardSelectionStorage.ts)
+    // is scoped to the dataset it was made against; leaving it behind here
+    // would resurrect it against whatever dataset loads next.
+    clearStoredScenarioSelection();
   }, []);
 
-  const reloadScenariosAndValidation = useCallback((preferredScenarioId?: string | null) => {
+  // `revision` is threaded in as an argument (rather than read from the
+  // `datasetRevision` state var) because both call sites below set
+  // `datasetRevision` and call this function back-to-back in the same tick
+  // -- reading the state here could see the value from BEFORE that update
+  // committed. See lib/dashboardSelectionStorage.ts for why the restore is
+  // keyed by revision at all (id collision across datasets).
+  const reloadScenariosAndValidation = useCallback((revision: string, preferredScenarioId?: string | null) => {
     const loadId = ++loadSerial.current;
     setLoading(true);
     setError(null);
@@ -218,13 +247,31 @@ export default function DashboardPage() {
       if (scenarioOut.status === "fulfilled") {
         const items = scenarioOut.value;
         setScenarios(items);
-        setSelected((current) => {
-          const validCurrent = current.filter((id) => items.some((item) => item.id === id));
-          if (preferredScenarioId && items.some((item) => item.id === preferredScenarioId)) {
-            return [preferredScenarioId, ...validCurrent.filter((id) => id !== preferredScenarioId)].slice(0, 4);
-          }
-          return validCurrent.length > 0 ? validCurrent.slice(0, 4) : items.slice(0, 4).map((item) => item.id);
-        });
+        // Read the latest selection from the ref (kept in sync by the
+        // effect above `clearDashboardData`) rather than via setSelected's
+        // functional-updater form: the updater callback would have to
+        // compute `next` AND persist it, but it must stay a pure function
+        // of its `current` argument (React may invoke it more than once in
+        // StrictMode, or discard it entirely under concurrent rendering),
+        // so the write has to happen out here regardless. Computing `next`
+        // out here too keeps the read and the write on the same footing.
+        const current = selectedRef.current;
+        const validCurrent = current.filter((id) => items.some((item) => item.id === id));
+        let next: string[];
+        if (preferredScenarioId && items.some((item) => item.id === preferredScenarioId)) {
+          next = [preferredScenarioId, ...validCurrent.filter((id) => id !== preferredScenarioId)].slice(0, 4);
+        } else if (validCurrent.length > 0) {
+          // A selection the user (or a preceding call) already made is
+          // restored in full -- the 4-cap below only bounds the
+          // AUTOMATIC first-visit pick, not a deliberate selection that
+          // happens to be bigger than 4.
+          next = validCurrent;
+        } else {
+          const restored = readStoredScenarioSelection(revision)?.filter((id) => items.some((item) => item.id === id));
+          next = restored && restored.length > 0 ? restored : items.slice(0, 4).map((item) => item.id);
+        }
+        setSelected(next);
+        writeStoredScenarioSelection(revision, next);
       } else {
         setScenarios([]);
         setSelected([]);
@@ -235,6 +282,18 @@ export default function DashboardPage() {
       setLoading(false);
     });
   }, [t]);
+
+  // The picker's onChange goes through this (instead of setSelected
+  // directly) so a manual selection change is persisted the moment it
+  // happens -- see lib/dashboardSelectionStorage.ts. datasetRevision is
+  // read from state here (not threaded as an argument like the two
+  // reloadScenariosAndValidation call sites) because by the time a user can
+  // click the picker the dataset load has already settled; there's no
+  // same-tick staleness risk to guard against.
+  const handleSelectedChange = useCallback((next: string[]) => {
+    setSelected(next);
+    writeStoredScenarioSelection(datasetRevision, next);
+  }, [datasetRevision]);
 
   const loadActiveDataset = useCallback(() => {
     let cancelled = false;
@@ -249,12 +308,13 @@ export default function DashboardPage() {
       .then((dataset) => {
         if (cancelled) return;
         setActiveDataset(dataset);
-        setDatasetRevision(dataset.revision ?? "default");
+        const revision = dataset.revision ?? "default";
+        setDatasetRevision(revision);
         setDatasetLoading(false);
         setError(null);
 
         if (dataset.source === "uploaded") {
-          reloadScenariosAndValidation();
+          reloadScenariosAndValidation(revision);
         } else {
           clearDashboardData();
           setLoading(false);
@@ -366,14 +426,17 @@ export default function DashboardPage() {
     function handleAssistantSimulationComplete(event: Event) {
       if (!hasUploadedDataset) return;
       const detail = (event as CustomEvent<AssistantSimulationCompleteDetail>).detail;
-      reloadScenariosAndValidation(detail?.scenarioResultId ?? null);
+      // Same dataset, so datasetRevision is already settled by the time a
+      // simulation can complete (unlike the loadActiveDataset/handleDatasetChange
+      // call sites, which set it in the same tick they call this).
+      reloadScenariosAndValidation(datasetRevision, detail?.scenarioResultId ?? null);
     }
 
     window.addEventListener("vissim:assistant-simulation-complete", handleAssistantSimulationComplete);
     return () => {
       window.removeEventListener("vissim:assistant-simulation-complete", handleAssistantSimulationComplete);
     };
-  }, [hasUploadedDataset, reloadScenariosAndValidation]);
+  }, [hasUploadedDataset, reloadScenariosAndValidation, datasetRevision]);
 
   const activeScenarios = useMemo(
     () => scenarios.filter((scenario) => selected.includes(scenario.id)),
@@ -549,12 +612,13 @@ export default function DashboardPage() {
     setSelectedLinkInfo(null);
     setSelectedElementInfo(null);
     setDiagramSearchSelection(null);
-    setDatasetRevision(dataset?.revision ?? String(Date.now()));
+    const revision = dataset?.revision ?? String(Date.now());
+    setDatasetRevision(revision);
     setDatasetLoading(false);
     setError(null);
 
     if (dataset?.source === "uploaded") {
-      reloadScenariosAndValidation();
+      reloadScenariosAndValidation(revision);
     } else {
       setLoading(false);
     }
@@ -667,7 +731,7 @@ export default function DashboardPage() {
         </div>
         <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
           {hasUploadedDataset ? (
-            <DashboardScenarioPicker scenarios={scenarios} selected={selected} onChange={setSelected} />
+            <DashboardScenarioPicker scenarios={scenarios} selected={selected} onChange={handleSelectedChange} />
           ) : (
             <DashboardDatasetGate />
           )}
@@ -2059,8 +2123,8 @@ function DashboardScenarioPicker({
           <p className="text-xs font-semibold text-slate-800">{t("시나리오 비교 세트", "Scenario Comparison Set")}</p>
           <p className="mt-0.5 text-[11px] text-slate-500">
             {t(
-              "KPI, 지도, 교차로 비교에 포함할 시나리오를 선택합니다. 새로고침하면 최대 4개까지만 자동으로 다시 선택됩니다.",
-              "Choose scenarios to include in KPI, map, and node comparisons. On reload, only up to 4 are automatically reselected.",
+              "KPI, 지도, 교차로 비교에 포함할 시나리오를 선택합니다. 선택 내용은 저장되어 페이지를 이동했다가 돌아와도 유지됩니다.",
+              "Choose scenarios to include in KPI, map, and node comparisons. Your selection is saved and stays intact when you navigate away and back.",
             )}
           </p>
         </div>

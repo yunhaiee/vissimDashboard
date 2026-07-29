@@ -2384,3 +2384,44 @@ truncated to its first entry.
 
 **Consequence.** Context only; no gate, tool permission or preflight behavior changes with it,
 exactly as P7 established for singular selection.
+
+## 2026-07-29 — Scenario palette: 15 curated colors + generated extension; comparison-set selection persists across routes
+
+**Trigger.** With 11+ scenarios the comparison-set colors repeated (`SCENARIO_PALETTE[index % 10]`
+made scenario 11 byte-identical to scenario 1), and navigating away from /dashboard and back
+silently replaced the user's selection with the automatic first-four.
+
+**Palette (`lib/scenarioPalette.ts`).**
+
+1. *Curated set extended 10 → 15, indices 0–8 byte-identical.* Existing screenshots, the demo
+   video, and muscle memory depend on scenario 1 staying `#4c8dff`. Index 9's neutral grey was
+   replaced (`#9aa0ab` → `#1edecd`): it measured ΔE00 8.22 from `METRIC_BAR_COLOR`, close enough
+   to be ambiguous at a 2.5px picker dot.
+2. *CIEDE2000, not CIE76.* The first attempt optimized CIE76, which overestimates difference at
+   high chroma; its farthest-point search walked to the sRGB gamut corners and produced a neon
+   set whose true worst pair was ΔE00 6.51 (two near-identical deep blues) while claiming 19.98.
+   Lesson recorded here on purpose: **a distinctness search is only as good as its metric, and it
+   will exploit the metric's weakest region.** The redo constrains candidates to the original
+   nine's measured CIELAB envelope (C* 34–66, L* 56–80), floors every controlled pair at the
+   palette's inherited worst (ΔE00 9.14, `#f2704d`/`#e08a5a`), and caps any 60° hue band at 3
+   entries.
+3. *15, not 20, and that's a measured ceiling.* Three independent searches capped at exactly 6
+   new colors before the hue-band rule broke — a property of where the original nine already sit.
+   Forcing 20 reopens either failure (fluorescent outliers or a 4-deep hue bucket).
+4. *Index ≥ 15 generates instead of wrapping* — golden-angle hue in CIELAB polar coordinates,
+   gamut-clamped, same envelope. Known honest limit: within 20 scenarios the worst generated-vs-
+   curated pair is ΔE00 4.82; beyond that, ~3.5 pairs appear. Distinguishable-but-similar is the
+   mathematical best in a bounded single-family gamut; exact repetition is what's now impossible.
+5. Pre-existing overlaps now stated in-file under the correct metric: scenario amber vs north
+   direction ΔE00 3.74, pink vs south 5.38 — inherited, out of scope, recorded.
+
+**Selection persistence (`app/dashboard/page.tsx` + new `lib/dashboardSelectionStorage.ts`).**
+
+1. *Keyed by dataset revision, not just filtered by id.* Scenario ids are sequential per dataset
+   (`S000001`…), so a different dataset plausibly reuses them; an id-only restore would silently
+   resurrect a selection that means something else. Exact revision match or nothing.
+2. *The 4-cap now bounds only the automatic pick.* A deliberate 7-scenario selection restores as
+   7; `items.slice(0, 4)` remains the first-visit/miss fallback.
+3. `clearDashboardData()` wipes the stored value — dataset change may not resurrect a selection.
+4. Storage I/O happens outside React state updaters (updaters must stay pure; StrictMode
+   double-invokes them), via a ref of the committed selection.
