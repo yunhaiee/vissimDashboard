@@ -253,30 +253,21 @@ def _real_counts_from_baseam_sheet(ws) -> dict[str, NodeRealCounts]:
     return result
 
 
-@lru_cache(maxsize=8)
-def load_base_workbook(excel_path: str) -> dict[str, Any]:
-    """Parse the standard base-model validation workbook."""
-    p = Path(excel_path)
+def _base_workbook_payload_from_workbook(wb, filename: str, path: str) -> dict[str, Any]:
+    """Build the normalized base-workbook payload from an already-open
+    ``openpyxl`` workbook. Shared by :func:`load_base_workbook` (reads from
+    the active workbook's path) and :func:`load_base_workbook_bytes` (parses
+    freshly-uploaded bytes in memory, before any decision to persist them) so
+    the two never drift on what counts as a "clean" parse.
+    """
     payload: dict[str, Any] = {
-        "exists": p.exists(),
-        "filename": p.name,
-        "path": str(p),
+        "exists": True,
+        "filename": filename,
+        "path": path,
         "counts": [],
         "travel_times": [],
         "warnings": [],
     }
-    if not _HAS_OPENPYXL:
-        payload["warnings"].append("openpyxl is not installed.")
-        return payload
-    if not p.exists():
-        payload["warnings"].append("Validation workbook was not found.")
-        return payload
-
-    try:
-        wb = openpyxl.load_workbook(p, data_only=True)
-    except Exception as exc:
-        payload["warnings"].append(f"Failed to open validation workbook: {exc}")
-        return payload
 
     payload["sheets"] = list(wb.sheetnames)
     if "Counts" in wb.sheetnames:
@@ -295,6 +286,83 @@ def load_base_workbook(excel_path: str) -> dict[str, Any]:
         payload["warnings"].append("TravelTimes sheet was not found.")
 
     return payload
+
+
+@lru_cache(maxsize=8)
+def load_base_workbook(excel_path: str) -> dict[str, Any]:
+    """Parse the standard base-model validation workbook (read from disk)."""
+    p = Path(excel_path)
+    if not _HAS_OPENPYXL:
+        return {
+            "exists": p.exists(),
+            "filename": p.name,
+            "path": str(p),
+            "counts": [],
+            "travel_times": [],
+            "warnings": ["openpyxl is not installed."],
+        }
+    if not p.exists():
+        return {
+            "exists": False,
+            "filename": p.name,
+            "path": str(p),
+            "counts": [],
+            "travel_times": [],
+            "warnings": ["Validation workbook was not found."],
+        }
+
+    try:
+        wb = openpyxl.load_workbook(p, data_only=True)
+    except Exception as exc:
+        return {
+            "exists": True,
+            "filename": p.name,
+            "path": str(p),
+            "counts": [],
+            "travel_times": [],
+            "warnings": [f"Failed to open validation workbook: {exc}"],
+        }
+
+    return _base_workbook_payload_from_workbook(wb, p.name, str(p))
+
+
+def load_base_workbook_bytes(filename: str, content: bytes) -> dict[str, Any]:
+    """Parse freshly-uploaded workbook bytes WITHOUT touching disk or the
+    active workbook.
+
+    Used by ``POST /api/validation/base-workbook`` (routers/validation.py) to
+    decide, BEFORE persisting anything, whether an upload conforms to the
+    standard template -- the stage-then-promote flow this pairs with, so a
+    non-conforming upload never displaces the active workbook. Returns the
+    exact same shape :func:`load_base_workbook` does (parsed via the same
+    ``_base_workbook_payload_from_workbook``), just with ``path`` empty since
+    there is no persisted file yet. See docs/phase2/DECISIONS.md if an entry
+    was recorded for this.
+    """
+    name = Path(filename).name or "real_counts.xlsx"
+    if not _HAS_OPENPYXL:
+        return {
+            "exists": False,
+            "filename": name,
+            "path": "",
+            "counts": [],
+            "travel_times": [],
+            "warnings": ["openpyxl is not installed."],
+        }
+
+    try:
+        wb = openpyxl.load_workbook(BytesIO(content), data_only=True)
+    except Exception as exc:
+        return {
+            "exists": False,
+            "filename": name,
+            "path": "",
+            "counts": [],
+            "travel_times": [],
+            "warnings": [f"Uploaded file could not be read as an Excel workbook: {exc}"],
+        }
+
+    return _base_workbook_payload_from_workbook(wb, name, "")
 
 
 def create_base_workbook_template() -> bytes:

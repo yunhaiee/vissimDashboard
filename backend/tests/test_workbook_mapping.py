@@ -19,7 +19,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
-from services import validation, workbook_mapping
+from services import datasets, validation, workbook_mapping
+from services.validation import create_base_workbook_template
 
 MURDOCH_DRIVE_PATH = Path(r"C:\Users\user\Downloads\Murdoch Drive_Scenario Model_0624\Scenario TurningMovements_review.xlsx")
 
@@ -363,3 +364,187 @@ def test_resolve_endpoint_recomputes_mapping_for_a_different_header_row(client):
     payload = response.json()
     assert payload["headers"] == ["이동류", "교차로ID", "교차로명", "실측", "모델", "시간대구분"]
     assert payload["proposed_counts_mapping"]["movement"]["column"] == 0
+
+
+# --------------------------------------------------------------------------
+# Stage-then-promote: POST /api/validation/base-workbook itself (the path the
+# frontend always tries FIRST) must never let a non-conforming upload
+# displace the active workbook. See routers/validation.py's
+# upload_base_workbook docstring -- a template-conforming file is promoted
+# exactly as before; a non-conforming file is staged (same staging dir
+# /inspect uses) and the response describes the STILL-ACTIVE workbook, with
+# a `pending_mapping` block carrying the staged upload_token + inspect
+# payload + warnings.
+# --------------------------------------------------------------------------
+
+def _bad_layout_workbook() -> bytes:
+    """A readable .xlsx that matches none of the three known Counts shapes
+    and has no TravelTimes sheet -- guaranteed non-conforming."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["Random", "Header", "Layout"])
+    ws.append([1, 2, 3])
+    return _xlsx_bytes(wb)
+
+
+def test_conforming_upload_still_promotes_to_active(client):
+    """Unchanged behavior for the common case: a template-shaped file becomes
+    the active workbook in one call, response has pending_mapping: null."""
+    content = create_base_workbook_template()
+    response = _post_bytes(client, "/api/validation/base-workbook", content, "real_counts.xlsx")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["exists"] is True
+    assert payload["pending_mapping"] is None
+    assert len(payload["counts"]) > 0
+
+    get_response = client.get("/api/validation/base-workbook")
+    assert get_response.json()["counts"] == payload["counts"]
+
+
+def test_non_conforming_upload_leaves_active_workbook_byte_identical(client):
+    good_content = create_base_workbook_template()
+    upload_good = _post_bytes(client, "/api/validation/base-workbook", good_content, "real_counts.xlsx")
+    assert upload_good.status_code == 200
+    good_payload = upload_good.json()
+
+    active_path = datasets.get_active_real_counts_excel()
+    active_bytes_before = active_path.read_bytes()
+
+    upload_bad = _post_bytes(client, "/api/validation/base-workbook", _bad_layout_workbook(), "bad.xlsx")
+    assert upload_bad.status_code == 200
+    bad_payload = upload_bad.json()
+
+    # The active workbook file on disk is byte-for-byte unchanged.
+    assert active_path.read_bytes() == active_bytes_before
+
+    # The response's top-level fields describe that STILL-ACTIVE workbook --
+    # never the rejected upload's (empty) parse.
+    assert bad_payload["exists"] is True
+    assert bad_payload["filename"] == good_payload["filename"]
+    assert bad_payload["counts"] == good_payload["counts"]
+    assert bad_payload["travel_times"] == good_payload["travel_times"]
+
+    # ...while pending_mapping carries the staged rejected upload, ready for
+    # the mapping UI without asking the user to upload again.
+    pending = bad_payload["pending_mapping"]
+    assert pending is not None
+    assert pending["upload_token"]
+    assert pending["filename"] == "bad.xlsx"
+    assert pending["warnings"], "expected the template-parse warnings that explain the rejection"
+    assert any(sheet["name"] == "Sheet1" for sheet in pending["sheets"])
+
+    # GET (every other consumer) also still reflects the good workbook.
+    get_response = client.get("/api/validation/base-workbook")
+    assert get_response.json()["counts"] == good_payload["counts"]
+
+
+def test_non_conforming_upload_with_no_active_workbook_reports_empty_state(client, monkeypatch, tmp_path):
+    # Start from a known-clean slate (other tests in this session-scoped
+    # ambient-state fixture may have already uploaded a workbook), and make
+    # sure the module-level default-demo-data fallback can't paper over it.
+    client.delete("/api/validation/base-workbook")
+    monkeypatch.setattr(datasets, "REAL_COUNTS_EXCEL", tmp_path / "missing_default_real_counts.xlsx")
+
+    response = _post_bytes(client, "/api/validation/base-workbook", _bad_layout_workbook(), "bad.xlsx")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["exists"] is False
+    assert payload["counts"] == []
+    assert payload["pending_mapping"] is not None
+    assert payload["pending_mapping"]["upload_token"]
+
+
+def test_upload_rejects_non_excel_bytes_without_touching_active(client):
+    good_content = create_base_workbook_template()
+    _post_bytes(client, "/api/validation/base-workbook", good_content, "real_counts.xlsx")
+    active_path = datasets.get_active_real_counts_excel()
+    active_bytes_before = active_path.read_bytes()
+
+    response = _post_bytes(client, "/api/validation/base-workbook", b"not an excel file at all", "junk.xlsx")
+    assert response.status_code == 400
+    assert active_path.read_bytes() == active_bytes_before
+
+
+def test_upload_rejects_wrong_extension_without_touching_active_or_staging(client):
+    good_content = create_base_workbook_template()
+    _post_bytes(client, "/api/validation/base-workbook", good_content, "real_counts.xlsx")
+    active_path = datasets.get_active_real_counts_excel()
+    active_bytes_before = active_path.read_bytes()
+
+    response = _post_bytes(client, "/api/validation/base-workbook", good_content, "real_counts.csv")
+    assert response.status_code == 400
+    assert active_path.read_bytes() == active_bytes_before
+
+
+def test_pending_mapping_token_from_upload_can_be_imported_and_promotes(client):
+    """The mapping flow operates on the SAME staged copy the rejected upload
+    created -- no second upload -- and import_mapping is the one and only
+    promotion point."""
+    good_content = create_base_workbook_template()
+    _post_bytes(client, "/api/validation/base-workbook", good_content, "real_counts.xlsx")
+
+    content = _build_custom_layout_workbook()
+    upload_response = _post_bytes(client, "/api/validation/base-workbook", content, "custom.xlsx")
+    assert upload_response.status_code == 200
+    pending = upload_response.json()["pending_mapping"]
+    assert pending is not None
+    token = pending["upload_token"]
+    proposed = pending["proposed_mapping"]["counts"]
+    assert proposed is not None and proposed["sheet"] == "구간별교통량"
+
+    body = {
+        "upload_token": token,
+        "counts": {
+            "sheet": proposed["sheet"],
+            "header_row": proposed["header_row"],
+            "fields": {name: guess["column"] for name, guess in proposed["fields"].items()},
+        },
+    }
+    import_response = client.post("/api/validation/base-workbook/mapping/import", json=body)
+    assert import_response.status_code == 200
+    imported_payload = import_response.json()
+    assert len(imported_payload["counts"]) == 3
+
+    get_response = client.get("/api/validation/base-workbook")
+    assert get_response.json()["counts"] == imported_payload["counts"]
+
+
+def test_cancel_leaves_active_workbook_untouched_and_discard_is_the_chosen_cleanup(client):
+    """Cancelling the mapping modal (no import call) must leave the active
+    workbook exactly as it was -- true by construction here, since the
+    non-conforming upload never touched it. This also proves DELETE
+    /base-workbook/mapping/{token} (the discard route added for the cancel
+    button) actually removes the staged copy, not just returning 204 for
+    show."""
+    good_content = create_base_workbook_template()
+    good_upload = _post_bytes(client, "/api/validation/base-workbook", good_content, "real_counts.xlsx")
+    good_payload = good_upload.json()
+    active_path = datasets.get_active_real_counts_excel()
+    active_bytes_before = active_path.read_bytes()
+
+    content = _build_custom_layout_workbook()
+    upload_response = _post_bytes(client, "/api/validation/base-workbook", content, "custom.xlsx")
+    token = upload_response.json()["pending_mapping"]["upload_token"]
+
+    delete_response = client.delete(f"/api/validation/base-workbook/mapping/{token}")
+    assert delete_response.status_code == 204
+
+    # Active workbook: untouched.
+    assert active_path.read_bytes() == active_bytes_before
+    get_response = client.get("/api/validation/base-workbook")
+    assert get_response.json()["counts"] == good_payload["counts"]
+
+    # The staged copy is actually gone -- a later import attempt on the same
+    # (now-discarded) token 404s rather than silently succeeding.
+    reimport = client.post(
+        "/api/validation/base-workbook/mapping/import",
+        json={"upload_token": token, "counts": {"sheet": "구간별교통량", "header_row": 3, "fields": {"movement": 0}}},
+    )
+    assert reimport.status_code == 404
+
+
+def test_discard_mapping_endpoint_is_idempotent_on_unknown_token(client):
+    response = client.delete("/api/validation/base-workbook/mapping/not-a-real-token")
+    assert response.status_code == 204

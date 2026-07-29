@@ -13,6 +13,7 @@ from services.validation import (
     create_base_workbook_template,
     geh,
     load_base_workbook,
+    load_base_workbook_bytes,
     load_real_counts,
     pct_error,
 )
@@ -65,16 +66,62 @@ def get_base_workbook():
 
 @router.post("/base-workbook")
 async def upload_base_workbook(request: Request, x_filename: str | None = Header(None)):
-    """Upload a standalone standard validation workbook."""
+    """Upload a standalone standard validation workbook.
+
+    Stage-then-promote: the uploaded bytes are parsed IN MEMORY first (see
+    ``load_base_workbook_bytes``). Only a template-conforming file is
+    persisted as the active workbook -- exactly the prior behavior, zero
+    extra steps for the common case. A non-conforming file is NEVER written
+    over the active workbook; instead it is staged the same way
+    ``POST /base-workbook/inspect`` already does (``workbook_mapping.
+    inspect_workbook``, which stages + proposes a column mapping in one
+    pass), and the response is the STILL-ACTIVE workbook's data with a
+    ``pending_mapping`` block added: the staged ``upload_token``, the sheet/
+    mapping-proposal data ``WorkbookMappingModal`` needs, and the warnings
+    that explain the rejection. This lets the frontend open the mapping UI
+    without a second upload, and guarantees cancelling that UI is a no-op --
+    the active workbook was never touched to begin with. See
+    services/workbook_mapping.py's module docstring and
+    docs/phase2/DECISIONS.md if an entry was recorded for this.
+    """
     query_filename = request.query_params.get("filename")
     filename = unquote(query_filename or x_filename or "real_counts.xlsx")
     content = await request.body()
-    try:
-        save_active_real_counts_excel(filename, content)
+
+    # Same extension gate save_active_real_counts_excel has always enforced --
+    # checked up front so an obviously-wrong file never even gets staged.
+    if not filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Only .xlsx validation workbooks are supported.")
+
+    attempt = load_base_workbook_bytes(filename, content)
+    conforms = not attempt["warnings"] and bool(attempt["counts"] or attempt["travel_times"])
+
+    if conforms:
+        try:
+            save_active_real_counts_excel(filename, content)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         clear_validation_caches()
-        return load_base_workbook(str(get_active_real_counts_excel()))
+        # load_base_workbook is @lru_cache'd -- copy before adding a key so
+        # this response's `pending_mapping` field never leaks into the cached
+        # object every other caller (GET /base-workbook, exporters.py, ...)
+        # shares.
+        result = dict(load_base_workbook(str(get_active_real_counts_excel())))
+        result["pending_mapping"] = None
+        return result
+
+    # Non-conforming: stage it (never touches the active workbook) and hand
+    # back the mapping UI's full inspect payload alongside the unchanged
+    # active workbook data.
+    try:
+        inspect_result = workbook_mapping.inspect_workbook(filename, content)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Same lru_cache aliasing hazard as above -- copy before mutating.
+    active = dict(load_base_workbook(str(get_active_real_counts_excel())))
+    active["pending_mapping"] = {**inspect_result, "warnings": attempt["warnings"]}
+    return active
 
 
 @router.delete("/base-workbook")
@@ -175,6 +222,17 @@ def import_base_workbook_mapping(payload: WorkbookMappingRequest):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/base-workbook/mapping/{token}")
+def discard_base_workbook_mapping(token: str):
+    """Discard a staged (not-yet-imported) upload -- called when the user
+    cancels the mapping modal. Idempotent no-op on an unknown/already-
+    discarded/expired token; safe to call blind, and never touches the
+    active workbook (staging never does -- see import_mapping's docstring
+    for the one point that promotes a staged file to active)."""
+    workbook_mapping.discard_staged_workbook(token)
+    return Response(status_code=204)
 
 
 @router.get("/compare")

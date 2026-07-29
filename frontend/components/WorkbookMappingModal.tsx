@@ -38,7 +38,12 @@ const TRAVEL_FIELDS: FieldDef[] = [
 ];
 
 interface WorkbookMappingModalProps {
-  inspectResult: WorkbookInspectResponse;
+  // Additionally carries the template-parse `warnings` that explain WHY this
+  // upload didn't map cleanly, when opened from a rejected upload (see
+  // base-model/page.tsx's handleWorkbookUpload / upload_base_workbook's
+  // stage-then-promote response). Optional so this stays a plain
+  // WorkbookInspectResponse-shaped prop for any other future caller.
+  inspectResult: WorkbookInspectResponse & { warnings?: string[] };
   onClose: () => void;
   onImported: (workbook: BaseWorkbookResponse) => void;
 }
@@ -239,6 +244,21 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {inspectResult.warnings && inspectResult.warnings.length > 0 && (
+            <div className="mb-4 space-y-1 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+              <p className="text-xs font-bold uppercase tracking-wide text-amber-700">
+                {t(
+                  "표준 템플릿으로 가져오지 못한 이유 (기존 데이터는 그대로 유지됩니다)",
+                  "Why the standard template import didn't work (your existing data is untouched)",
+                )}
+              </p>
+              {inspectResult.warnings.map((warning, idx) => (
+                <p key={idx} className="text-xs leading-relaxed text-amber-800">
+                  {warning}
+                </p>
+              ))}
+            </div>
+          )}
           <MappingSection
             title={t("1. 교통량 (Counts)", "1. Traffic Counts")}
             sheetNames={inspectResult.sheets.map((s) => s.name)}

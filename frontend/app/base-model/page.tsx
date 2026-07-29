@@ -32,11 +32,11 @@ import BaseValidationMap, { type BaseValidationMapNode } from "@/components/Base
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import WorkbookMappingModal from "@/components/WorkbookMappingModal";
 import {
+  discardBaseWorkbookMapping,
   fetchActiveDataset,
   fetchBaseWorkbook,
   fetchResults,
   fetchScenarios,
-  inspectBaseWorkbook,
   resetBaseWorkbook,
   uploadBaseWorkbook,
   type ActiveDataset,
@@ -191,11 +191,12 @@ export default function BaseModelPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedValidationNodeIds, setSelectedValidationNodeIds] = useState<string[]>([]);
   const [activeValidationNodeId, setActiveValidationNodeId] = useState<string | null>(null);
-  // Column-mapping flow (non-template workbook layouts): set once an
-  // uploaded file comes back from the standard importer with warnings, so
-  // the mapping modal can offer a way forward instead of leaving the user
-  // stuck. See WorkbookMappingModal + backend/services/workbook_mapping.py.
-  const [mappingInspect, setMappingInspect] = useState<WorkbookInspectResponse | null>(null);
+  // Column-mapping flow (non-template workbook layouts): set from the
+  // `pending_mapping` block a non-conforming upload's response carries (see
+  // uploadBaseWorkbook's stage-then-promote docs above `handleWorkbookUpload`
+  // below). That upload never touched the active workbook, so the mapping
+  // modal is purely a way forward -- there is nothing to undo on cancel.
+  const [mappingInspect, setMappingInspect] = useState<(WorkbookInspectResponse & { warnings: string[] }) | null>(null);
   const requestSerial = useRef(0);
 
   const selectedScenarioId = period === "AM" ? amScenarioId : pmScenarioId;
@@ -407,22 +408,21 @@ export default function BaseModelPage() {
     setUploading(true);
     setError(null);
     try {
-      // Try the standard template importer first -- a file shaped like
-      // real_counts.xlsx (sheets literally named Counts/TravelTimes) imports
-      // exactly as it always has, zero extra steps.
+      // Stage-then-promote (backend/routers/validation.py upload_base_workbook):
+      // a file shaped like real_counts.xlsx (sheets literally named Counts/
+      // TravelTimes) is promoted to the active workbook and this response IS
+      // that new active state -- imports exactly as it always has, zero extra
+      // steps. A non-conforming file is NEVER promoted: the backend leaves
+      // the active workbook untouched and this response describes THAT
+      // unchanged state instead, with `pending_mapping` carrying the staged
+      // upload's token + inspect data (already staged server-side -- no
+      // second upload needed) so the column-mapping modal can offer a way
+      // forward. Either way `nextWorkbook`'s top-level fields are always the
+      // correct thing to render -- never the rejected upload's garbage parse.
       const nextWorkbook = await uploadBaseWorkbook(file);
       setWorkbook(nextWorkbook);
-      const mapsCleanly = nextWorkbook.warnings.length === 0 && (nextWorkbook.counts.length > 0 || nextWorkbook.travel_times.length > 0);
-      if (mapsCleanly) return;
-
-      // Non-conforming layout (real consulting workbooks rarely use the
-      // template's sheet names/columns) -- offer the column-mapping flow
-      // instead of leaving the user with an unexplained empty dashboard.
-      try {
-        const inspected = await inspectBaseWorkbook(file);
-        setMappingInspect(inspected);
-      } catch (inspectError) {
-        setError(inspectError instanceof Error ? inspectError.message : String(inspectError));
+      if (nextWorkbook.pending_mapping) {
+        setMappingInspect(nextWorkbook.pending_mapping);
       }
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : String(uploadError));
@@ -431,7 +431,15 @@ export default function BaseModelPage() {
     }
   }, []);
 
-  const handleMappingClose = useCallback(() => setMappingInspect(null), []);
+  const handleMappingClose = useCallback(() => {
+    // The active workbook was never touched by a staged-but-unmapped upload
+    // (stage-then-promote), so closing is safe by construction -- this is
+    // just best-effort cleanup of the staged copy, not an undo.
+    if (mappingInspect) {
+      discardBaseWorkbookMapping(mappingInspect.upload_token).catch(() => {});
+    }
+    setMappingInspect(null);
+  }, [mappingInspect]);
 
   const handleMappingImported = useCallback((nextWorkbook: BaseWorkbookResponse) => {
     setWorkbook(nextWorkbook);

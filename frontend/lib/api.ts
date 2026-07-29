@@ -1906,6 +1906,15 @@ export interface BaseWorkbookResponse {
   warnings: string[];
   // Time periods actually present in the uploaded Counts sheet (AM before PM).
   periods?: string[];
+  // Additive: present (non-null) only on the response to a POST /base-workbook
+  // whose upload did NOT conform to the standard template (backend/routers/
+  // validation.py's upload_base_workbook -- stage-then-promote). When set,
+  // the REST of this response is the STILL-ACTIVE workbook, unchanged; this
+  // block carries the staged upload's own inspect payload (everything
+  // WorkbookMappingModal needs) plus the template-parse warnings that caused
+  // the rejection. A plain GET /base-workbook, or a promoted (conforming)
+  // upload, always has this null/absent.
+  pending_mapping?: (WorkbookInspectResponse & { warnings: string[] }) | null;
 }
 
 export async function fetchBaseWorkbook(): Promise<BaseWorkbookResponse> {
@@ -2098,6 +2107,19 @@ export async function inspectBaseWorkbook(file: File): Promise<WorkbookInspectRe
   const r = await apiMutationFetch(path, { method: "POST", cache: "no-store", body: file });
   if (!r.ok) throw new Error(await readApiError(r));
   return r.json();
+}
+
+// Best-effort cleanup for a staged-but-abandoned upload (the user cancelled
+// the mapping modal without importing). Safe to call blind -- the backend
+// treats an unknown/already-discarded/expired token as a no-op (204), and
+// staging-dir TTL GC (workbook_mapping.py, 2h) covers it either way, so a
+// failed call here is not worth surfacing as a user-facing error.
+export async function discardBaseWorkbookMapping(token: string): Promise<void> {
+  const r = await apiMutationFetch(`/api/validation/base-workbook/mapping/${encodeURIComponent(token)}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(await readApiError(r));
 }
 
 export async function resolveBaseWorkbookMappingSheet(
