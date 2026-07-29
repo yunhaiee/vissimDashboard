@@ -97,6 +97,13 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # entry: an IntSupplyData blob write that accidentally moved a DIFFERENT
     # signal group's window now surfaces as diff evidence).
     "signal_program_splits": "id",
+    # QUEUE 3 unit 2: the FLAT priority_rule_markers list
+    # tools_network._flatten_priority_rule_markers builds (not the nested
+    # "priority_rules" -- a conflict marker's own identity is the (rule,
+    # marker_index) pair, mirroring "routes"/"vehicle_composition_entries"/
+    # "des_speed_decision_entries" above exactly). Required by BOTH postwrite
+    # checks, same as every flat entry above.
+    "priority_rule_markers": "id",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -260,6 +267,24 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "object_class": "signal_program_splits",
         "id_param_parts": ("sc_no", "program_no", "sg_no"),
         "value_field": "green_window",
+        "none_means": "not_persisted",
+    },
+    # QUEUE 3 unit 2: priority-rule conflict-marker gap/headway. TWO-part
+    # identity (priority_rule_no + marker_index -- a conflict marker has no
+    # single-token identity in Vissim itself, matching the routes/
+    # composition-entries/des-speed-entries precedent). value_field is the
+    # gap_headway DICT ({gap_time_s, headway_m}) -- ONE field holding both
+    # sub-values, mirroring set_signal_green_split's green_window shape
+    # exactly (see tools_network._flatten_priority_rule_markers's own
+    # docstring for why gap_time_s/headway_m are NOT also separate top-level
+    # fields here). none_means "not_persisted": the parser can always see
+    # both attributes whenever the conflictMarker element itself exists
+    # (verified live -- backend/tools/probe_priority_rules.py -- no
+    # opaque-blob case like signal cycle_time).
+    "set_priority_rule_gap_headway": {
+        "object_class": "priority_rule_markers",
+        "id_param_parts": ("priority_rule_no", "marker_index"),
+        "value_field": "gap_headway",
         "none_means": "not_persisted",
     },
 }

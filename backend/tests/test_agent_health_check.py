@@ -57,7 +57,13 @@ def test_health_check_runner_against_demo_dataset():
     # 48, not 47: the sibling-disambiguation unit (2026-07-28) added
     # vehicle_input_siblings_share_link, a preflight-only constraint that no
     # dataset scan opts into -- so it lands in edit_time_only, by design.
-    assert report["summary"]["edit_time_only_n"] == 48
+    # 51, not 48: QUEUE 3 unit 2 (2026-07-29) added three more preflight-only
+    # constraints for the new set_priority_rule_gap_headway tool
+    # (priority_rule_marker_not_found / priority_rule_gap_headway_invalid /
+    # priority_rule_gap_headway_implausible) -- all three need a proposed
+    # action's params, so none opts into the dataset scan either, same shape
+    # as vehicle_input_siblings_share_link above.
+    assert report["summary"]["edit_time_only_n"] == 51
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

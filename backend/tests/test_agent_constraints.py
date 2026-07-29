@@ -37,6 +37,7 @@ def _shadow_model(
     des_speed_distributions: list[dict[str, Any]] | None = None,
     signal_programs: list[dict[str, Any]] | None = None,
     evaluation_config: dict[str, Any] | None = None,
+    priority_rules: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -94,6 +95,10 @@ def _shadow_model(
     # unit, 2026-07-28) -- same reasoning as the object classes above.
     if evaluation_config is not None:
         shadow["evaluation_config"] = evaluation_config
+    # priority_rules deliberately OMITTED by default too (QUEUE 3 unit 2) --
+    # same reasoning as the object classes above.
+    if priority_rules is not None:
+        shadow["priority_rules"] = priority_rules
     return shadow
 
 
@@ -225,6 +230,54 @@ def _des_speed_decision(
 
 def _speed_distribution(no: str, name: str) -> dict[str, Any]:
     return {"no": no, "name": name}
+
+
+def _conflict_marker(
+    marker_index: int,
+    *,
+    link: str = "632",
+    lane: str = "1",
+    pos: float = 9.0,
+    gap_time_s: float | None = 2.5,
+    headway_m: float | None = 20.0,
+    max_speed: float | None = 180.0,
+    effect_driv_dir: str = "FORWARD",
+) -> dict[str, Any]:
+    return {
+        "marker_index": marker_index,
+        "link": link,
+        "lane": lane,
+        "pos": pos,
+        "gap_time_s": gap_time_s,
+        "headway_m": headway_m,
+        "max_speed": max_speed,
+        "effect_driv_dir": effect_driv_dir,
+    }
+
+
+def _priority_rule(
+    no: str,
+    conflict_markers: list[dict[str, Any]],
+    *,
+    name: str = "",
+    link: str = "11467",
+    lane: str = "1",
+    pos: float = 5.0,
+    sig_state: str = "GREEN",
+    affect_driv_dir: str = "FORWARD",
+    slow_down_dist: float | None = 3.0,
+) -> dict[str, Any]:
+    return {
+        "no": no,
+        "name": name,
+        "link": link,
+        "lane": lane,
+        "pos": pos,
+        "sig_state": sig_state,
+        "affect_driv_dir": affect_driv_dir,
+        "slow_down_dist": slow_down_dist,
+        "conflict_markers": conflict_markers,
+    }
 
 
 def _action(tool: str, **params: Any) -> dict[str, Any]:
@@ -3636,6 +3689,190 @@ def test_des_speed_distribution_not_found_does_not_apply_to_other_tools():
 
 
 # ---------------------------------------------------------------------------
+# priority_rule_marker_not_found / priority_rule_gap_headway_invalid /
+# priority_rule_gap_headway_implausible -- QUEUE 3 unit 2
+# ---------------------------------------------------------------------------
+
+_PRIORITY_RULE_FIXTURE = [
+    _priority_rule("4", [_conflict_marker(1, gap_time_s=3.2, headway_m=0.0), _conflict_marker(2, gap_time_s=0.0, headway_m=10.0)]),
+]
+
+
+def test_priority_rule_marker_not_found_fires_for_bogus_marker_index():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=99, gap_time_s=3.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "priority_rule_marker_not_found"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    assert finding.details["marker_count"] == 2
+    assert finding.suggested_fix["candidates"] == ["1", "2"]
+    _assert_well_formed_messages(finding, must_contain_ko="충돌 마커")
+
+
+def test_priority_rule_marker_not_found_silent_for_a_real_marker_index():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=2, gap_time_s=3.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "priority_rule_marker_not_found" for f in findings)
+
+
+def test_priority_rule_marker_not_found_defers_to_object_not_found_when_rule_missing():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="999", marker_index=1, gap_time_s=3.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "priority_rule_marker_not_found" for f in findings)
+    assert any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_priority_rule_marker_not_found_does_not_apply_to_unrelated_tool():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "priority_rule_marker_not_found" for f in findings)
+
+
+@pytest.mark.parametrize("bad_value", [-1.0, -0.001, float("nan"), float("inf"), float("-inf")])
+def test_priority_rule_gap_headway_invalid_fires_for_negative_or_non_finite_gap(bad_value):
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=bad_value)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "priority_rule_gap_headway_invalid"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details["invalid_fields"] == {"gap_time_s": bad_value}
+
+
+def test_priority_rule_gap_headway_invalid_fires_for_negative_headway():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, headway_m=-5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "priority_rule_gap_headway_invalid"]
+    assert len(matches) == 1
+    assert matches[0].details["invalid_fields"] == {"headway_m": -5.0}
+
+
+def test_priority_rule_gap_headway_invalid_fires_once_for_both_fields_bad():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=-1.0, headway_m=-2.0
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "priority_rule_gap_headway_invalid"]
+    assert len(matches) == 1
+    assert matches[0].details["invalid_fields"] == {"gap_time_s": -1.0, "headway_m": -2.0}
+
+
+@pytest.mark.parametrize("zero_field,other_field", [("gap_time_s", "headway_m"), ("headway_m", "gap_time_s")])
+def test_priority_rule_gap_headway_invalid_silent_for_zero_the_most_common_real_value(zero_field, other_field):
+    # Real data check: 0 is the single most common legitimate value on both
+    # attributes (13/20 conflict markers on the real Murdoch Drive model
+    # carry minGapTime="0") -- refusing it would make this tool unable to
+    # even reproduce a network's own existing data. See the constraint's own
+    # module comment for the full live-probe evidence.
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, **{zero_field: 0.0}
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "priority_rule_gap_headway_invalid" for f in findings)
+
+
+def test_priority_rule_gap_headway_invalid_does_not_apply_to_other_tools():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "priority_rule_gap_headway_invalid" for f in findings)
+
+
+def test_priority_rule_gap_headway_implausible_fires_above_the_gap_bound():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=15.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "priority_rule_gap_headway_implausible"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert "gap_time_s=15.0" in matches[0].messages["en"]
+
+
+def test_priority_rule_gap_headway_implausible_fires_above_the_headway_bound():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, headway_m=80.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "priority_rule_gap_headway_implausible"]
+    assert len(matches) == 1
+    assert "headway_m=80.0" in matches[0].messages["en"]
+
+
+def test_priority_rule_gap_headway_implausible_silent_within_observed_real_ranges():
+    # 8s / 30m are the highest real values observed across two live-probed
+    # networks (Roundabout Buehl.DE + the real Murdoch Drive model) -- both
+    # must stay silent.
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=8.0, headway_m=30.0
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "priority_rule_gap_headway_implausible" for f in findings)
+
+
+def test_priority_rule_gap_headway_implausible_silent_at_zero():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=0.0, headway_m=0.0
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "priority_rule_gap_headway_implausible" for f in findings)
+
+
+def test_priority_rule_gap_headway_implausible_does_not_apply_to_other_tools():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "priority_rule_gap_headway_implausible" for f in findings)
+
+
+def test_priority_rule_object_not_found_fires_for_bogus_rule_no():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="999", marker_index=1, gap_time_s=3.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["object_class"] == "priority_rules"
+
+
+# ---------------------------------------------------------------------------
 # M3.1 — final registry shape (all 4 batches landed)
 # ---------------------------------------------------------------------------
 
@@ -3681,9 +3918,15 @@ def test_registry_size_matches_m3_1_catalog_port():
     # link -- NOT a §-numbered catalog entry, a defensive addition specific to
     # set_vehicle_input_volume, in the same family as #3 latent_demand_
     # overflow but about the class MIX rather than the capacity; #3 itself was
-    # made sibling-aware IN PLACE, not added) == 62.
+    # made sibling-aware IN PLACE, not added) == 62, + 3 (QUEUE 3 unit 2,
+    # 2026-07-29: priority_rule_marker_not_found / priority_rule_gap_headway_
+    # invalid / priority_rule_gap_headway_implausible -- all three "not a
+    # §-numbered catalog entry, a defensive addition" shapes for the new
+    # set_priority_rule_gap_headway tool, mirroring the des_speed_decision_
+    # entry_not_found / vehicle_composition_weight_invalid / vehicle_
+    # composition_share_drastic_change precedents) == 65.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 62
+    assert len(get_registry()) == 65
 
 
 def test_registry_has_unique_ids():

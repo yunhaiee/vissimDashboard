@@ -2609,3 +2609,20 @@ and bounded envelopes are a standing rule. difflib's n=5 string-match count is u
 cap governs the emitted-owner dimension, which is the one this fix unbounded. Verified live:
 typo "Jenalup STWB" now yields ['107','207','307','111','211','311'] (the probe also surfaced a
 second real shared-name group, 111/211/311 "Jennalup St"). Suite 1373/1/1.
+
+## 2026-07-29 — Q3 unit ②: priority-rule gap/headway shipped; "headway" is a metres-valued alias, not a third attribute
+
+Probed live (Vissim 2026 example `Roundabout Buehl.DE`, 61 rules/124 markers — the real Murdoch
+model has 13 rules/20 markers but `load_network` raises on it, a pre-existing landmine no prior
+unit hit because none ever COM-loaded the real dataset; flagged as its own follow-up task, not
+fixed in-unit). Findings that beat the brief's guesses, all evidence-based: `MinGapTime`
+(seconds) and `MinClear` (metres) are the two real writable attributes; **`MinHdwy` is a
+COM-level alias of `MinClear`** (73/73 non-zero readings equal; a write through the alias
+persists as `minClear=`; Vissim's own error text captions it "Minimum clearance"; the XML has no
+hdwy attribute at all — controller re-verified that last point against the real model's 20
+markers). Conflict markers have NO identity attribute and no ItemByKey — marker addressing is a
+synthesized 1-based ordinal, the worst entry-identity landmine yet. Constraint tiers deviate
+from the brief deliberately: refuse only negative/non-finite (0 is the most common real value —
+13/20 Murdoch markers; refusing it would make the tool unable to restate a network's own data),
+warn above 10s gap / 50m clearance. Registry 62→65. Suite 1417/1/1 (controller re-ran; also
+re-drove all four tiers + both miss paths live against the real model's shadow side).

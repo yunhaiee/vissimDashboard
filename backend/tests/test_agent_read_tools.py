@@ -47,6 +47,8 @@ EXPECTED_TOOL_NAMES = {
     "get_des_speed_distributions",
     # v2a unit ⑨ adds get_signal_programs.
     "get_signal_programs",
+    # QUEUE 3 unit 2 adds get_priority_rules.
+    "get_priority_rules",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -66,6 +68,7 @@ EXPECTED_TOOL_NAMES = {
 # v2 unit (7) adds set_vehicle_composition_share, the ninth.
 # v2a unit ⑧ adds set_des_speed_decision, the tenth.
 # v2a unit ⑨ adds set_signal_green_split, the eleventh.
+# QUEUE 3 unit 2 adds set_priority_rule_gap_headway, the twelfth.
 EXPECTED_WRITE_TOOL_NAMES = {
     "set_vehicle_input_volume",
     "set_signal_cycle",
@@ -78,6 +81,7 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_vehicle_composition_share",
     "set_des_speed_decision",
     "set_signal_green_split",
+    "set_priority_rule_gap_headway",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -711,6 +715,225 @@ def test_build_shadow_model_parses_conflict_areas_from_real_xml(conflict_area_fi
     passive = [ca for ca in shadow["conflict_areas"] if ca["status"] == "PASSIVE"]
     assert len(passive) == 1
     assert passive[0]["link_pair"] == ("3", "12")  # a real tuple at the unit level (pre-JSON)
+
+
+# ---------------------------------------------------------------------------
+# get_priority_rules / _parse_priority_rules -- QUEUE 3 unit 2 (the demo
+# network has no <priorityRule> elements; a synthetic fixture with real ones,
+# mirroring the conflict-area fixture's shape immediately above)
+# ---------------------------------------------------------------------------
+
+_PRIORITY_RULE_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links>
+    <link no="11467" name="Minor approach"><lanes><lane width="3.5"/></lanes></link>
+    <link no="632" name="Major road"><lanes><lane width="3.5"/></lanes></link>
+  </links>
+  <priorityRules>
+    <priorityRule no="132" name="" lane="11467 1" pos="5.045" sigState="GREEN"
+                   affectDrivDir="FORWARD" slowDownDist="3">
+      <conflictMarkers>
+        <conflictMarker lane="632 1" pos="9" minGapTime="2.5" minClear="20" maxSpeed="180"
+                         effectDrivDir="FORWARD"/>
+        <conflictMarker lane="632 2" pos="9" minGapTime="2.5" minClear="20" maxSpeed="180"
+                         effectDrivDir="FORWARD"/>
+      </conflictMarkers>
+    </priorityRule>
+    <priorityRule no="134" name="" lane="608 2" pos="47.7" sigState="GREEN"
+                   affectDrivDir="FORWARD" slowDownDist="3">
+      <conflictMarkers>
+        <conflictMarker lane="609 1" pos="21.5" minGapTime="0" minClear="15" maxSpeed="12"
+                         effectDrivDir="FORWARD"/>
+      </conflictMarkers>
+    </priorityRule>
+  </priorityRules>
+</network>
+"""
+
+
+@pytest.fixture()
+def priority_rule_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "priority_rules.inpx"
+    path.write_text(_PRIORITY_RULE_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_priority_rules_on_demo_data_is_empty_but_well_formed():
+    """The demo .inpx carries no <priorityRule> elements at all -- the tool
+    must return an empty, well-formed list rather than erroring."""
+    envelope = _dispatch("get_priority_rules")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "priority_rules": [], "truncated": False}
+    assert "hint" not in envelope["data"]
+
+
+def test_get_priority_rules_on_real_priority_rule_elements(priority_rule_fixture_inpx: Path):
+    tools_network.set_active_inpx(priority_rule_fixture_inpx)
+
+    envelope = _dispatch("get_priority_rules")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 2
+    by_no = {pr["no"]: pr for pr in data["priority_rules"]}
+    rule = by_no["132"]
+    assert rule["link"] == "11467"
+    assert rule["lane"] == "1"
+    assert rule["sig_state"] == "GREEN"
+    assert len(rule["conflict_markers"]) == 2
+    marker1 = rule["conflict_markers"][0]
+    assert marker1 == {
+        "marker_index": 1,
+        "link": "632",
+        "lane": "1",
+        "pos": 9.0,
+        "gap_time_s": 2.5,
+        "headway_m": 20.0,
+        "max_speed": 180.0,
+        "effect_driv_dir": "FORWARD",
+    }
+    assert rule["conflict_markers"][1]["marker_index"] == 2
+    # rule 134's single marker legitimately has gap_time_s=0 -- real,
+    # common data, not missing/absent.
+    assert by_no["134"]["conflict_markers"][0]["gap_time_s"] == 0.0
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_get_priority_rules_filters_by_priority_rule_no(priority_rule_fixture_inpx: Path):
+    tools_network.set_active_inpx(priority_rule_fixture_inpx)
+
+    envelope = _dispatch("get_priority_rules", priority_rule_no="134")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["priority_rules"][0]["no"] == "134"
+    assert "truncated" not in data
+    assert "hint" not in data
+
+
+def test_get_priority_rules_filters_by_priority_rule_no_no_match_is_empty_not_an_error(
+    priority_rule_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(priority_rule_fixture_inpx)
+
+    envelope = _dispatch("get_priority_rules", priority_rule_no="9999")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "priority_rules": []}
+
+
+def test_get_priority_rules_filters_by_link_no_matches_rule_link(priority_rule_fixture_inpx: Path):
+    tools_network.set_active_inpx(priority_rule_fixture_inpx)
+
+    envelope = _dispatch("get_priority_rules", link_no="11467")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["priority_rules"][0]["no"] == "132"
+
+
+def test_get_priority_rules_filters_by_link_no_matches_conflict_marker_link(
+    priority_rule_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(priority_rule_fixture_inpx)
+
+    # link 632 is not rule 132's OWN link (that's 11467) -- it only appears
+    # on this rule's conflict markers, matching get_conflict_areas'
+    # either-side-of-the-pair filter precedent.
+    envelope = _dispatch("get_priority_rules", link_no="632")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["priority_rules"][0]["no"] == "132"
+
+
+def test_get_priority_rules_rejects_unexpected_params(priority_rule_fixture_inpx: Path):
+    tools_network.set_active_inpx(priority_rule_fixture_inpx)
+
+    envelope = _dispatch("get_priority_rules", bogus=1)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+_MANY_PRIORITY_RULES_INPX_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links></links>
+  <priorityRules>
+{rules}
+  </priorityRules>
+</network>
+"""
+
+
+def _many_priority_rules_inpx(tmp_path: Path, count: int) -> Path:
+    rules = "\n".join(
+        f'    <priorityRule no="{i}" name="" lane="{i} 1" pos="1.0" sigState="GREEN" '
+        f'affectDrivDir="FORWARD" slowDownDist="3">'
+        f'<conflictMarkers><conflictMarker lane="{i + 1000} 1" pos="1" minGapTime="1" '
+        f'minClear="5" maxSpeed="50" effectDrivDir="FORWARD"/></conflictMarkers></priorityRule>'
+        for i in range(1, count + 1)
+    )
+    path = tmp_path / f"many_priority_rules_{count}.inpx"
+    path.write_text(_MANY_PRIORITY_RULES_INPX_TEMPLATE.format(rules=rules), encoding="utf-8")
+    return path
+
+
+def test_get_priority_rules_unfiltered_call_on_large_network_is_capped_and_truncated(tmp_path: Path):
+    tools_network.set_active_inpx(_many_priority_rules_inpx(tmp_path, 61))
+
+    envelope = _dispatch("get_priority_rules")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 61  # the TRUE total, never hidden
+    assert len(data["priority_rules"]) == tools_network._PRIORITY_RULES_DEFAULT_CAP
+    assert data["truncated"] is True
+    assert "40" in data["hint"] and "61" in data["hint"]
+    followup = _dispatch("get_priority_rules", priority_rule_no="50")
+    assert followup["data"]["count"] == 1
+    assert followup["data"]["priority_rules"][0]["no"] == "50"
+
+
+def test_get_priority_rules_unfiltered_call_under_cap_is_not_truncated(tmp_path: Path):
+    tools_network.set_active_inpx(_many_priority_rules_inpx(tmp_path, 10))
+
+    envelope = _dispatch("get_priority_rules")
+
+    data = envelope["data"]
+    assert data["count"] == 10
+    assert len(data["priority_rules"]) == 10
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_build_shadow_model_parses_priority_rules_from_real_xml(priority_rule_fixture_inpx: Path):
+    shadow = tools_network.build_shadow_model(priority_rule_fixture_inpx)
+
+    assert len(shadow["priority_rules"]) == 2
+    flat = shadow["priority_rule_markers"]
+    assert len(flat) == 3  # rule 132 has 2 markers, rule 134 has 1
+    by_id = {m["id"]: m for m in flat}
+    assert by_id["132.1"]["gap_headway"] == {"gap_time_s": 2.5, "headway_m": 20.0}
+    assert by_id["132.2"]["gap_headway"] == {"gap_time_s": 2.5, "headway_m": 20.0}
+    assert by_id["134.1"]["gap_headway"] == {"gap_time_s": 0.0, "headway_m": 15.0}
+    assert by_id["132.1"]["priority_rule_no"] == "132"
+
+
+def test_get_network_overview_includes_priority_rules_section(priority_rule_fixture_inpx: Path):
+    tools_network.set_active_inpx(priority_rule_fixture_inpx)
+
+    envelope = _dispatch("get_network_overview")
+
+    data = envelope["data"]
+    assert data["priority_rules"]["count"] == 2
+    ids = {item["id"] for item in data["priority_rules"]["items"]}
+    assert ids == {"132", "134"}
 
 
 def test_resolve_object_finds_conflict_area_by_display_name(conflict_area_fixture_inpx: Path):
@@ -1716,6 +1939,9 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "signal_program_splits",
         # health-check unit (2026-07-28): static evaluation-armed flags.
         "evaluation_config",
+        # QUEUE 3 unit 2
+        "priority_rules",
+        "priority_rule_markers",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2

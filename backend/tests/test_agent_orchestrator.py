@@ -34,6 +34,8 @@ EXPECTED_READ_TOOLS = {
     "get_des_speed_distributions",
     # v2a unit ⑨ adds get_signal_programs.
     "get_signal_programs",
+    # QUEUE 3 unit 2 adds get_priority_rules.
+    "get_priority_rules",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -59,6 +61,8 @@ EXPECTED_WRITE_TOOLS = {
     "set_des_speed_decision",
     # v2a unit ⑨
     "set_signal_green_split",
+    # QUEUE 3 unit 2
+    "set_priority_rule_gap_headway",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

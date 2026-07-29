@@ -131,14 +131,16 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ✅ Desired-speed decision PAIRS (set + restore, atomic) — shipped, see V1 edits
 - ✅ Desired-speed distribution assignment — shipped (same tool as PAIRS)
 - ⬜ Desired-speed/time DISTRIBUTION curve editing (the legitimate CC1 route)
-- ⬜ Priority-rule gap/headway parameters
+- ✅ Priority-rule gap/headway parameters — shipped (Q3 unit ②, `get_priority_rules` +
+  `set_priority_rule_gap_headway`; live-proven: `MinHdwy` is a COM alias of `MinClear`,
+  metres — one underlying "minimum clearance" value, not a third attribute)
 - ⬜ Driving-behavior params via duplicate-then-edit (expert-gated)
 - ⬜ Dwell-time distributions
 - ✅ Signal green-splits within a program — shipped, see V1 edits (the blob writer
   turned out to be a COM-writable attribute, not an offline XML rewrite)
 - ⬜ Vehicle type properties (accel/decel curves, lengths, weight/power)
 
-**Status: 7 of 12 bullets shipped (one tool, `set_des_speed_decision`, satisfies both
+**Status: 8 of 12 bullets shipped (one tool, `set_des_speed_decision`, satisfies both
 the PAIRS and distribution-assignment line items).**
 
 ---

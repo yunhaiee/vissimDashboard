@@ -17,8 +17,10 @@ docs/phase2/DECISIONS.md, "postwrite gains a target-persisted check").
 Param names for the object-targeting tools (vehicle input, signal cycle,
 signal offset, conflict area status, -- v2 unit ⑥ -- routing decision
 route relative flow, -- v2 unit ⑦ -- vehicle composition relative
-flow, and -- v2a unit ⑧ -- desired-speed decision distribution assignment)
-match ``guardrails._WRITE_TARGET_FIELD_SPEC`` EXACTLY
+flow, -- v2a unit ⑧ -- desired-speed decision distribution assignment,
+-- v2a unit ⑨ -- signal green split, and -- QUEUE 3 unit 2 --
+priority-rule conflict-marker gap/headway) match
+``guardrails._WRITE_TARGET_FIELD_SPEC`` EXACTLY
 (tool name AND field names) -- that table is what lets the postwrite
 "nothing else moved" diff exempt each tool's own intended target field;
 drifting a name here silently reintroduces false-positive diff evidence on
@@ -805,3 +807,90 @@ def set_signal_green_split(params: SetSignalGreenSplitParams) -> dict[str, Any]:
             "program_no": written["program_no"],
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# set_priority_rule_gap_headway(priority_rule_no, marker_index, gap_time_s,
+#                                headway_m)
+#
+# QUEUE 3 unit 2. A COM verb, shaped like set_signal_green_split: ONE object
+# (a priority rule's conflict marker), TWO related numeric fields written
+# together in one call and verified as one compound value_field
+# (guardrails.py). Unlike green_start_s/green_end_s (always both meaningful
+# together, a window), gap_time_s and headway_m are two INDEPENDENT safety
+# parameters a caller may reasonably want to change one at a time -- so both
+# are OPTIONAL here (at least one required), not both mandatory like
+# green_split's window edges. The field NOT given is still read back and
+# reported (its current, unchanged value) so the result always shows the
+# complete pair, matching green_split's "value_field is a dict holding both
+# sub-values, compared whole" guardrails mechanism unmodified.
+#
+# CENTRAL FINDING (backend/tools/probe_priority_rules.py, live-verified):
+# headway_m is Vissim's MinClear/MinHdwy attribute -- COM exposes it under
+# TWO aliases that write the SAME underlying value (Vissim's own error text
+# calls it "Minimum clearance"), and it is a spatial clearance in METRES,
+# NOT a time in seconds, despite "headway" (and the "Hdwy" COM alias)
+# suggesting a temporal quantity. See vissim_com.set_priority_rule_gap_headway's
+# own module comment for the full write+persist+reload proof.
+# ---------------------------------------------------------------------------
+
+
+class SetPriorityRuleGapHeadwayParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    priority_rule_no: str
+    # 1-based, per rule -- a synthesized ordinal (conflict markers carry no
+    # identity attribute of their own at all; see get_priority_rules).
+    marker_index: int = Field(ge=1)
+    gap_time_s: float | None = None
+    headway_m: float | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> "SetPriorityRuleGapHeadwayParams":
+        if self.gap_time_s is None and self.headway_m is None:
+            raise ValueError(
+                "At least one of gap_time_s or headway_m must be given -- a call that changes "
+                "neither has nothing to do."
+            )
+        return self
+
+
+@tool(
+    name="set_priority_rule_gap_headway",
+    tier="write",
+    provider="edit",
+    params=SetPriorityRuleGapHeadwayParams,
+)
+def set_priority_rule_gap_headway(params: SetPriorityRuleGapHeadwayParams) -> dict[str, Any]:
+    """Set a priority rule's conflict marker's critical gap time (gap_time_s, seconds -- the acceptable gap a yielding vehicle needs before crossing/merging) and/or minimum clearance (headway_m, METRES -- Vissim's own COM alias for this attribute is MinHdwy, but it is the SAME underlying value as its "minimum clearance" attribute: a spatial buffer kept from the conflicting vehicle, NOT a time, despite the name) on the active edit session's working network. Give either field alone to change just that one, or both together -- the field you don't give is still read back and reported at its current, unchanged value so the result always shows the complete pair. marker_index is 1-based, per rule (see get_priority_rules for the current values and marker count)."""
+    session = _require_session()
+    priority_rule_no = _coerce_id(params.priority_rule_no, "priority_rule_no")
+
+    written = session.set_priority_rule_gap_headway(
+        priority_rule_no, params.marker_index, params.gap_time_s, params.headway_m
+    )
+    readback = session.get_priority_rule_gap_headway(priority_rule_no, params.marker_index)
+    session.persist()
+
+    # written_value/readback_value carry EXACTLY the same key set (the
+    # set_signal_green_split precedent): constraint #6 compares them
+    # recursively with numeric tolerance, so both sides must agree on shape.
+    # The UNCHANGED field's own current value (echoed identically by
+    # set_priority_rule_gap_headway/get_priority_rule_gap_headway) appears
+    # in both dicts on purpose -- there is nothing to "diff out" since it is
+    # identical on both sides by construction when not written this call.
+    verification: dict[str, Any] = {
+        "written_value": {"gap_time_s": written["gap_time_s"], "headway_m": written["headway_m"]},
+        "readback_value": {"gap_time_s": readback["gap_time_s"], "headway_m": readback["headway_m"]},
+    }
+    changed: list[str] = []
+    if params.gap_time_s is not None:
+        changed.append(f"gap time -> {params.gap_time_s}s")
+    if params.headway_m is not None:
+        changed.append(f"headway/clearance -> {params.headway_m}m")
+    message = (
+        f"Priority rule {params.priority_rule_no} conflict marker {params.marker_index}: "
+        f"{', '.join(changed)} (now gap_time_s={readback['gap_time_s']}, "
+        f"headway_m={readback['headway_m']})."
+    )
+    return {"message": message, "verification": verification}

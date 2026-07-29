@@ -265,6 +265,25 @@ class VissimEditSession:
     ) -> dict[str, Any]:
         return self._ensure_connected().get_signal_green_split(sc_no, sg_no, program_no)
 
+    # QUEUE 3 unit 2: priority-rule conflict-marker gap/headway verbs.
+    # marker_index is a synthesized 1-based ordinal (no natural identity
+    # exists -- see VissimController.set_priority_rule_gap_headway's own
+    # module comment for the full landmine writeup).
+
+    def set_priority_rule_gap_headway(
+        self,
+        priority_rule_no: int,
+        marker_index: int,
+        gap_time_s: float | None,
+        headway_m: float | None,
+    ) -> dict[str, float]:
+        return self._ensure_connected().set_priority_rule_gap_headway(
+            priority_rule_no, marker_index, gap_time_s, headway_m
+        )
+
+    def get_priority_rule_gap_headway(self, priority_rule_no: int, marker_index: int) -> dict[str, float]:
+        return self._ensure_connected().get_priority_rule_gap_headway(priority_rule_no, marker_index)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

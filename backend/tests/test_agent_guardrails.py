@@ -29,6 +29,7 @@ def _shadow_model(
     vehicle_composition_entries: list[dict[str, Any]] | None = None,
     des_speed_decision_entries: list[dict[str, Any]] | None = None,
     signal_program_splits: list[dict[str, Any]] | None = None,
+    priority_rule_markers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -56,6 +57,10 @@ def _shadow_model(
         # see tools_network._flatten_signal_program_splits for the real shape
         # this mirrors.
         "signal_program_splits": signal_program_splits if signal_program_splits is not None else [],
+        # QUEUE 3 unit 2: the FLAT priority_rule_markers list (id =
+        # "{priority_rule_no}.{marker_index}") -- see tools_network.
+        # _flatten_priority_rule_markers for the real shape this mirrors.
+        "priority_rule_markers": priority_rule_markers if priority_rule_markers is not None else [],
     }
 
 
@@ -86,6 +91,27 @@ def _route(
 
 def _action(tool: str, **params: Any) -> dict[str, Any]:
     return {"tool": tool, "params": params}
+
+
+def _priority_rule_marker_entry(
+    priority_rule_no: str,
+    marker_index: int,
+    *,
+    gap_time_s: float | None = 3.2,
+    headway_m: float | None = 0.0,
+    link: str = "632",
+) -> dict[str, Any]:
+    return {
+        "id": f"{priority_rule_no}.{marker_index}",
+        "priority_rule_no": priority_rule_no,
+        "marker_index": marker_index,
+        "link": link,
+        "lane": "1",
+        "pos": 9.0,
+        "gap_headway": {"gap_time_s": gap_time_s, "headway_m": headway_m},
+        "max_speed": 180.0,
+        "effect_driv_dir": "FORWARD",
+    }
 
 
 def _des_speed_entry(decision_no: str, veh_class_no: str, *, des_speed_distr_no: str | None = "50") -> dict[str, Any]:
@@ -1523,6 +1549,130 @@ def test_postwrite_signal_green_split_diff_flags_an_unrelated_sgs_window_change(
         item["object_class"] == "signal_program_splits" and item["object_id"] == "1.2.2"
         for item in evidence
     )
+
+
+# ---------------------------------------------------------------------------
+# postwrite -- set_priority_rule_gap_headway target-persisted check /
+# nothing-else-moved diff -- QUEUE 3 unit 2
+# ---------------------------------------------------------------------------
+
+
+def _gap_headway_verification(gap_time_s: float, headway_m: float) -> dict[str, Any]:
+    pair = {"gap_time_s": gap_time_s, "headway_m": headway_m}
+    return {"written_value": dict(pair), "readback_value": dict(pair)}
+
+
+def test_postwrite_priority_rule_gap_headway_target_persisted_check_happy_path():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0)]
+    )
+    after = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=5.5, headway_m=22.0)]
+    )
+    action = _action(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=5.5, headway_m=22.0
+    )
+
+    report = engine.postwrite(action, before, after, _gap_headway_verification(5.5, 22.0))
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_priority_rule_gap_headway_target_persisted_check_fires_when_not_persisted():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0)]
+    )
+    after = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0)]
+    )  # unchanged -- the write never reached the saved file
+    action = _action(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=5.5, headway_m=22.0
+    )
+
+    report = engine.postwrite(action, before, after, _gap_headway_verification(5.5, 22.0))
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "priority_rule_markers"
+    assert check["object_id"] == "4.1"
+    assert check["field"] == "gap_headway"
+    assert check["saved_value"] == {"gap_time_s": 3.2, "headway_m": 0.0}
+
+
+def test_postwrite_priority_rule_gap_headway_partial_field_persistence_still_fires():
+    # Only ONE of the two fields reached the file -- the dict-valued
+    # gap_headway compare must flag it (this is exactly why both fields live
+    # in one value_field, mirroring set_signal_green_split's green_window).
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0)]
+    )
+    after = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=5.5, headway_m=0.0)]
+    )  # gap_time_s landed, headway_m did not
+    action = _action(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=5.5, headway_m=22.0
+    )
+
+    report = engine.postwrite(action, before, after, _gap_headway_verification(5.5, 22.0))
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_id"] == "4.1"
+
+
+def test_postwrite_priority_rule_gap_headway_diff_flags_an_unrelated_sibling_marker_change():
+    # The write touched a DIFFERENT marker on the SAME rule too -- the
+    # nothing-else-moved diff must surface it as evidence (the whole reason
+    # priority_rule_markers joined _SHADOW_OBJECT_ID_FIELDS).
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        priority_rule_markers=[
+            _priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0),
+            _priority_rule_marker_entry("4", 2, gap_time_s=0.0, headway_m=10.0),
+        ]
+    )
+    after = _shadow_model(
+        priority_rule_markers=[
+            _priority_rule_marker_entry("4", 1, gap_time_s=5.5, headway_m=22.0),
+            _priority_rule_marker_entry("4", 2, gap_time_s=1.0, headway_m=10.0),  # NOT the target
+        ]
+    )
+    action = _action(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=5.5, headway_m=22.0
+    )
+
+    report = engine.postwrite(action, before, after, _gap_headway_verification(5.5, 22.0))
+
+    assert report.blocking is True
+    evidence = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        item["object_class"] == "priority_rule_markers" and item["object_id"] == "4.2"
+        for item in evidence
+    )
+
+
+def test_postwrite_priority_rule_gap_headway_gap_only_write_leaves_headway_exempt():
+    # Writing ONLY gap_time_s -- headway_m's own current value is still
+    # echoed in BOTH written_value/readback_value (tools_edit.py's own
+    # design), so the compound gap_headway field must be exempted whole,
+    # not flagged as "headway_m changed" evidence.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0)]
+    )
+    after = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=5.5, headway_m=0.0)]
+    )
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=5.5)
+
+    report = engine.postwrite(action, before, after, _gap_headway_verification(5.5, 0.0))
+
+    assert report.findings == []
+    assert report.blocking is False
 
 
 # ---------------------------------------------------------------------------

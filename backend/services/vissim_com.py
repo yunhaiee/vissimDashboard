@@ -1222,6 +1222,169 @@ class VissimController:
         (which does not exist -- ``AttributeError`` on ``Net``)."""
         return self._collection_nos(self.vissim.Net.SpeedDistributions)
 
+    # -----------------------------------------------------------------
+    # Priority-rule gap/headway verbs -- QUEUE 3 unit 2
+    #
+    # COM ids verified EMPIRICALLY live against Vissim 2026
+    # (backend/tools/probe_priority_rules.py, Roundabout Buehl.DE clone --
+    # the real Murdoch Drive production model has 13 real <priorityRule>
+    # elements too (verified statically, 20 conflict markers, same attribute
+    # set), but VissimController.load_network itself RAISES on that file
+    # ("The network file could not be loaded.") -- reproduced against both a
+    # full-directory clone AND the original path directly, so it is not a
+    # clone/sibling-asset problem. Root cause NOT diagnosed here (out of
+    # scope for a priority-rule probe; flagged separately in this unit's
+    # report) -- no prior v2/v2a unit ever actually COM-loaded this file
+    # either, every live-COM probe/check in this codebase uses a real Vissim
+    # EXAMPLE network, mirroring the v2a unit ⑧ precedent (Beijing had zero
+    # desSpeedDecisions -> Roundabout Billings.US substituted).
+    #
+    # Net.PriorityRules -> per-rule .ConflictMarkers child collection (matches
+    # the XML child tag ConflictMarkers/conflictMarker exactly, mirroring
+    # every other per-object child collection in this codebase). A conflict
+    # marker carries NO "No"/identity attribute of its own at all (verified
+    # live: AttValue('No') raises "Could not find attribute with ID NO") AND
+    # the ConflictMarkers collection has NO ItemByKey (verified live via
+    # hasattr) -- the SAME "no ItemByKey" landmine unit ⑦/⑧ found for
+    # vehicle-composition/des-speed-decision entries, but WORSE here: those
+    # entries at least had a real distinguishing attribute (VehType/VehClass)
+    # to scan-and-match on; a conflict marker has none at all. GetAll()
+    # order was verified live to match the .inpx's own document order (every
+    # marker's values compared 1:1 against a fresh XML parse of the same
+    # file, before AND after a write+persist round trip), so marker identity
+    # here is a SYNTHESIZED 1-based ordinal index within its rule's own
+    # ConflictMarkers.GetAll() order -- :meth:`_priority_rule_marker_by_index`.
+    #
+    # CENTRAL FINDING: the task's "gap/headway" framing maps onto TWO REAL,
+    # independently-writable per-marker attributes -- but NOT the two most
+    # XML-attribute-obvious ones. ``minGapTime``/``MinGapTime`` (values 0-8s
+    # observed across two real networks, XML attribute name matches the COM
+    # id exactly) is unambiguously the "gap" -- a TIME, the critical/
+    # acceptable gap a yielding vehicle needs. The SECOND task-requested
+    # parameter, "headway", does NOT exist under any id spelled that way
+    # AS A DISTINCT ATTRIBUTE -- but live probing found ``AttValue('MinHdwy')``
+    # DOES work. A network-wide scan (61 rules, 124 markers, 73 with a
+    # non-zero reading) plus a direct write-then-persist test PROVED
+    # ``MinHdwy`` is an ALIAS for the SAME underlying attribute as
+    # ``MinClear`` (the XML's own ``minClear`` attribute): every non-zero
+    # ``MinHdwy`` reading exactly equalled that SAME marker's own
+    # ``MinClear`` reading (73/73 checked, zero counterexamples); writing
+    # ``MinHdwy`` to 2.5 changed the value ``MinClear`` read back as 2.5 and
+    # persisted to the saved XML as ``minClear="2.5"`` (``minGapTime``
+    # untouched); and Vissim's own COM error text for an out-of-range
+    # ``MinHdwy`` write names the attribute "Minimum clearance" ("AttValue
+    # failed: Value -1 m is lower than minimum value of attribute Minimum
+    # clearance (Min: 0 m)"), not "headway" -- confirming Vissim's own
+    # internal caption for this attribute is "minimum clearance", with
+    # ``MinHdwy`` as a secondary COM-only alias id. It is also a SPATIAL
+    # CLEARANCE in METRES (unit "m" in the error text; observed values 0-30
+    # across two real networks), NOT a time in seconds, despite the "Hdwy"
+    # spelling. This codebase writes/reads it via ``MinClear`` (matches the
+    # .inpx attribute name exactly, the same "prefer the XML-matching id"
+    # convention every prior unit followed), and names the tool-facing param
+    # ``headway_m`` (not ``headway_s``) so the unit is never ambiguous in
+    # code -- see docs/phase2/DECISIONS.md for the drafted entry recording
+    # this as a deviation from the task brief's literal "seconds" framing
+    # for headway.
+    # -----------------------------------------------------------------
+
+    def _priority_rule_marker_by_index(self, rule: Any, marker_index: int) -> Any:
+        """The rule's ``ConflictMarkers`` entry at 1-based ``marker_index``,
+        in ``GetAll()`` order (verified live to match the .inpx's own
+        document order -- see this block's own comment). Raises
+        :class:`VissimObjectNotFoundError` listing how many markers the rule
+        actually has when out of range -- mirrors
+        :meth:`_des_speed_decision_entry_by_veh_class`'s contract even
+        though the underlying identity mechanism (ordinal position, not a
+        matched attribute value) differs, because there is no attribute to
+        match on at all (see this block's own comment)."""
+        markers = list(rule.ConflictMarkers.GetAll())
+        if 1 <= marker_index <= len(markers):
+            return markers[marker_index - 1]
+        raise VissimObjectNotFoundError(
+            f"Conflict marker index {marker_index} does not exist on this priority rule. "
+            f"It has {len(markers)} conflict marker(s), indexed 1..{len(markers)}."
+        )
+
+    def set_priority_rule_gap_headway(
+        self,
+        priority_rule_no: int,
+        marker_index: int,
+        gap_time_s: float | None,
+        headway_m: float | None,
+    ) -> dict[str, float]:
+        """Set a priority rule conflict marker's critical gap time
+        (``MinGapTime``, seconds) and/or minimum clearance/"headway"
+        (``MinClear``, METRES -- see this block's own module comment) --
+        either field alone, or both in the same call (at least one must be
+        given; enforced by the caller's params model, not here). Returns
+        ``{"gap_time_s", "headway_m"}`` with the value ACTUALLY IN EFFECT
+        after this call for each -- when a field is not given, its CURRENT
+        (unchanged) value is read and returned instead, so the caller always
+        gets a complete pair to verify against (mirrors
+        :meth:`set_signal_green_split`'s always-both-edges verification
+        shape).
+
+        Both attributes fail CLOSED on a negative value (verified live:
+        ``SetAttValue('MinGapTime', -1)``/``SetAttValue('MinClear', -1)``
+        both RAISE, "... is lower than minimum value ... (Min: 0 ...)") --
+        Vissim's own floor is 0, not >0: real data legitimately carries 0 on
+        both attributes (a majority of the real Murdoch Drive model's own 20
+        conflict markers have ``minGapTime="0"``), so this codebase's own
+        preflight refuses NEGATIVE values, not non-positive ones (see
+        ``constraints.py``'s ``priority_rule_gap_headway_invalid`` docstring
+        for the full reasoning) -- this method still lets Vissim's own raise
+        be the final backstop for any caller that bypasses preflight.
+        """
+        try:
+            rule = self._item_by_key(
+                self.vissim.Net.PriorityRules,
+                priority_rule_no,
+                "Priority rule",
+                self.available_priority_rule_nos(),
+            )
+            marker = self._priority_rule_marker_by_index(rule, marker_index)
+            if gap_time_s is not None:
+                marker.SetAttValue("MinGapTime", gap_time_s)
+            if headway_m is not None:
+                marker.SetAttValue("MinClear", headway_m)
+            return {
+                "gap_time_s": float(marker.AttValue("MinGapTime")),
+                "headway_m": float(marker.AttValue("MinClear")),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set priority rule {priority_rule_no} conflict marker "
+                f"{marker_index} gap_time_s={gap_time_s} headway_m={headway_m}: {exc}"
+            ) from exc
+
+    def get_priority_rule_gap_headway(self, priority_rule_no: int, marker_index: int) -> dict[str, float]:
+        """Paired getter for :meth:`set_priority_rule_gap_headway`."""
+        try:
+            rule = self._item_by_key(
+                self.vissim.Net.PriorityRules,
+                priority_rule_no,
+                "Priority rule",
+                self.available_priority_rule_nos(),
+            )
+            marker = self._priority_rule_marker_by_index(rule, marker_index)
+            return {
+                "gap_time_s": float(marker.AttValue("MinGapTime")),
+                "headway_m": float(marker.AttValue("MinClear")),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read priority rule {priority_rule_no} conflict marker "
+                f"{marker_index} gap/headway: {exc}"
+            ) from exc
+
+    def available_priority_rule_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.PriorityRules)
+
     def get_sim_sec(self) -> float:
         try:
             value = float(self.vissim.Simulation.AttValue("SimSec"))

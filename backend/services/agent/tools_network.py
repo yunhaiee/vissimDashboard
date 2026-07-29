@@ -102,6 +102,7 @@ ObjectType = Literal[
     "routing_decision",
     "vehicle_composition",
     "des_speed_decision",
+    "priority_rule",
 ]
 
 # {object_type: {shadow_key, id_field, name_field}} — the one place that maps
@@ -137,6 +138,15 @@ _OBJECT_TYPE_SPECS: dict[str, dict[str, str]] = {
     # still work fine off "no" alone when name is empty, same as every other
     # object type here.
     "des_speed_decision": {"shadow_key": "des_speed_decisions", "id_field": "no", "name_field": "name"},
+    # QUEUE 3 unit 2: keyed against the NESTED "priority_rules" list (one
+    # entry per rule, not per conflict marker) -- same split as
+    # "routing_decision"/"vehicle_composition"/"des_speed_decision" above. A
+    # specific MARKER within a rule is addressed by
+    # set_priority_rule_gap_headway's own priority_rule_no+marker_index
+    # params, not through this generic object_type machinery. ``name`` is
+    # empirically ALWAYS blank on real priority rules (verified live and
+    # statically across every real network probed), same as des_speed_decision.
+    "priority_rule": {"shadow_key": "priority_rules", "id_field": "no", "name_field": "name"},
 }
 
 _TOP_K = 5
@@ -831,6 +841,126 @@ def _parse_des_speed_decisions(root: ET.Element) -> list[dict[str, Any]]:
     return result
 
 
+def _parse_priority_rules(root: ET.Element) -> list[dict[str, Any]]:
+    """{no, name, link, lane, pos, sig_state, affect_driv_dir,
+    slow_down_dist, conflict_markers: [{marker_index, link, lane, pos,
+    gap_time_s, headway_m, max_speed, effect_driv_dir}]} per
+    ``<priorityRule>``.
+
+    QUEUE 3 unit 2 (2026-07-29). COM surface verified live
+    (``backend/tools/probe_priority_rules.py``, Roundabout Buehl.DE clone --
+    the real Murdoch Drive production model has 13 real ``<priorityRule>``
+    elements too, 20 conflict markers, the SAME attribute set confirmed
+    statically, but ``VissimController.load_network`` itself RAISES on that
+    file -- see the probe's own module comment; a pre-existing, unrelated
+    landmine, not something this unit introduces): ``Net.PriorityRules``
+    (``GetAll()`` count 61 == the XML element count) -> per-rule
+    ``.ConflictMarkers`` child collection (matches the XML child tag exactly,
+    count matched too) -> per-marker ``AttValue('MinGapTime'/'MinClear'/...)``,
+    all plain scalar attributes.
+
+    ``lane`` is parsed via the SAME "<linkNo> <laneNo>" two-token XML
+    convention as des-speed-decisions/reduced-speed-areas
+    (:func:`_parse_lane_token`); COM's own ``AttValue('Lane')`` returns a
+    DIFFERENT hyphenated ``"10066-1"`` form (v2a unit ⑧'s Lane landmine,
+    reconfirmed live here for priority rules too) -- not used, parsed
+    straight from XML like every other object this module builds. A rule can
+    carry NO ``lane`` at all (observed on the real Murdoch model, rule
+    no=143: an internally-generated stop-line rule at a node, ``intLink``
+    attribute instead) -- ``link``/``lane`` are both ``""`` in that case,
+    never guessed.
+
+    **``headway_m`` is a DISTANCE (metres), not a time**, despite the name
+    -- see ``vissim_com.VissimController.set_priority_rule_gap_headway``'s
+    own module comment for the full live-verified finding: Vissim's COM
+    alias ``MinHdwy`` and the XML's own ``minClear`` attribute are THE SAME
+    underlying value (Vissim's own error text calls it "Minimum clearance").
+    Parsed here straight from the XML ``minClear`` attribute.
+
+    ``marker_index`` is a SYNTHESIZED 1-based ordinal (document order) --
+    conflict markers carry no identity attribute of their own at all (no
+    ``no``, verified live: ``AttValue('No')`` raises) and Vissim's own
+    ``ConflictMarkers`` collection has no ``ItemByKey`` (verified live) --
+    see ``vissim_com.py``'s own comment block for the full landmine writeup.
+    """
+    result: list[dict[str, Any]] = []
+    for pr in root.findall(".//priorityRule"):
+        link_no, lane_no = _parse_lane_token(pr.get("lane"))
+        markers: list[dict[str, Any]] = []
+        for idx, cm in enumerate(pr.findall(".//conflictMarker"), start=1):
+            cm_link, cm_lane = _parse_lane_token(cm.get("lane"))
+            markers.append(
+                {
+                    "marker_index": idx,
+                    "link": cm_link,
+                    "lane": cm_lane,
+                    "pos": _coerce_float_or_none(cm.get("pos")),
+                    "gap_time_s": _coerce_float_or_none(cm.get("minGapTime")),
+                    "headway_m": _coerce_float_or_none(cm.get("minClear")),
+                    "max_speed": _coerce_float_or_none(cm.get("maxSpeed")),
+                    "effect_driv_dir": cm.get("effectDrivDir", ""),
+                }
+            )
+        result.append(
+            {
+                "no": pr.get("no", ""),
+                "name": pr.get("name", ""),
+                "link": link_no,
+                "lane": lane_no,
+                "pos": _coerce_float_or_none(pr.get("pos")),
+                "sig_state": pr.get("sigState", ""),
+                "affect_driv_dir": pr.get("affectDrivDir", ""),
+                "slow_down_dist": _coerce_float_or_none(pr.get("slowDownDist")),
+                "conflict_markers": markers,
+            }
+        )
+    return result
+
+
+def _flatten_priority_rule_markers(priority_rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A flat, one-entry-per-(rule, marker) view of ``priority_rules``, keyed
+    by a synthesized ``"{rule_no}.{marker_index}"`` ``id`` -- mirrors
+    :func:`_flatten_routes`/:func:`_flatten_vehicle_composition_entries`/
+    :func:`_flatten_des_speed_decision_entries`'s established precedent, for
+    the identical reason: a conflict marker has no single-token identity in
+    Vissim itself (see :func:`_parse_priority_rules`'s docstring).
+
+    ``gap_headway`` bundles ``{gap_time_s, headway_m}`` as ONE compound field
+    -- mirroring :func:`_flatten_signal_program_splits`'s ``green_window``
+    exactly, for the SAME reason: ``set_priority_rule_gap_headway`` writes
+    both in one call (either field alone, or both together) and
+    ``guardrails.py``'s ``_WRITE_TARGET_FIELD_SPEC`` exempts ONE named
+    ``value_field`` per tool, compared whole by the recursive numeric-
+    tolerant ``_values_differ``. ``gap_time_s``/``headway_m`` are
+    DELIBERATELY not ALSO exposed as separate top-level keys here (unlike
+    ``green_window``'s siblings ``amber_s``/``min_green_s``, which are
+    genuinely different values) -- a duplicate top-level copy of either
+    field would sit OUTSIDE the ``gap_headway`` exemption and false-positive
+    as "something else moved" on every real write, the exact coupled-fields
+    lesson v2a unit ⑧ already recorded.
+    """
+    flat: list[dict[str, Any]] = []
+    for pr in priority_rules:
+        for marker in pr["conflict_markers"]:
+            flat.append(
+                {
+                    "id": f"{pr['no']}.{marker['marker_index']}",
+                    "priority_rule_no": pr["no"],
+                    "marker_index": marker["marker_index"],
+                    "link": marker["link"],
+                    "lane": marker["lane"],
+                    "pos": marker["pos"],
+                    "gap_headway": {
+                        "gap_time_s": marker["gap_time_s"],
+                        "headway_m": marker["headway_m"],
+                    },
+                    "max_speed": marker["max_speed"],
+                    "effect_driv_dir": marker["effect_driv_dir"],
+                }
+            )
+    return flat
+
+
 def _flatten_des_speed_decision_entries(des_speed_decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A flat, one-entry-per-(decision, vehClass) view of
     ``des_speed_decisions``, keyed by a synthesized ``"{decision_no}.
@@ -922,6 +1052,7 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
     vehicle_compositions = _parse_vehicle_compositions(root)
     des_speed_decisions = _parse_des_speed_decisions(root)
     signal_programs = parse_signal_programs(inpx_path)
+    priority_rules = _parse_priority_rules(root)
     return {
         "links": net["links"],
         "nodes": net["nodes"],
@@ -946,6 +1077,14 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         # health-check unit (2026-07-28): static evaluation-armed flags, see
         # _parse_evaluation_config's own docstring.
         "evaluation_config": _parse_evaluation_config(root),
+        # QUEUE 3 unit 2 (2026-07-29): priority-rule conflict-marker
+        # gap/headway parameters -- nested for the planner
+        # (get_priority_rules), flat for guardrails.py (the nothing-else-
+        # moved diff + target-persisted check), same split as
+        # routes/composition/des-speed entries. See _parse_priority_rules's
+        # own docstring for the live-verified findings.
+        "priority_rules": priority_rules,
+        "priority_rule_markers": _flatten_priority_rule_markers(priority_rules),
     }
 
 
@@ -1812,4 +1951,76 @@ def get_signal_programs(params: GetSignalProgramsParams) -> dict[str, Any]:
                 f"Showing {len(rendered)} of {total} signal controllers. Narrow with "
                 "controller_no to see a specific one instead of the whole list."
             )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# get_priority_rules -- QUEUE 3 unit 2
+#
+# BOUNDED OUTPUT from day one (the 2026-07-27 lesson): a single real network
+# can carry hundreds of priority rules (Signalization RBC Boise.US: 419) --
+# an unfiltered call caps the list at _PRIORITY_RULES_DEFAULT_CAP with an
+# explicit truncated flag + hint, and priority_rule_no/link_no filters to
+# narrow (link_no mirrors get_conflict_areas'/get_des_speed_decisions' own
+# link_no filter, matching either the rule's own link or any of its conflict
+# markers' link -- a user asking "priority rules on link 6" plausibly means
+# either side).
+# ---------------------------------------------------------------------------
+
+#: Item cap for an UNFILTERED get_priority_rules call -- Boise.US alone has
+#: 419 real rules; 40 stays comfortably inside even the compact snippet
+#: budget for a typical entry shape (rule fields + a handful of conflict
+#: markers each).
+_PRIORITY_RULES_DEFAULT_CAP = 40
+
+
+class GetPriorityRulesParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    priority_rule_no: str | None = Field(
+        default=None,
+        description="Exact priority rule 'no' to return (narrows to at most one result).",
+    )
+    link_no: str | None = Field(
+        default=None,
+        description=(
+            "Return only priority rules positioned on this link, OR whose conflict marker(s) "
+            "reference this link."
+        ),
+    )
+
+
+def _priority_rule_matches_link(rule: dict[str, Any], link_no: str) -> bool:
+    if str(rule.get("link", "")) == link_no:
+        return True
+    return any(str(m.get("link", "")) == link_no for m in rule.get("conflict_markers", []))
+
+
+@tool(name="get_priority_rules", tier="read", provider="inspect", params=GetPriorityRulesParams)
+def get_priority_rules(params: GetPriorityRulesParams) -> dict[str, Any]:
+    """Return the network's priority rules (yield/stop points on a minor link) with each conflict marker's gap/headway parameters. gap_time_s is the critical gap (SECONDS) a yielding vehicle needs before crossing/merging. headway_m is Vissim's minimum-clearance parameter -- despite being called "headway" via Vissim's own MinHdwy COM alias, it is a spatial clearance in METRES (not seconds) kept from the conflicting vehicle; 0 is a common, legitimate value on both fields (no gap/clearance required at that point), not missing data. Use marker_index (1-based, per rule) with set_priority_rule_gap_headway to edit a specific marker. Optionally filter by priority_rule_no (exact match) or link_no (the rule's own link, or either side of any of its conflict markers) -- an unfiltered call on a large network returns only the first 40 (with an explicit truncated flag and a hint), so narrow with these filters rather than requesting the whole list."""
+    priority_rules = _current_shadow_model()["priority_rules"]
+
+    if params.priority_rule_no is not None:
+        priority_rules = [
+            pr for pr in priority_rules if str(pr.get("no")) == str(params.priority_rule_no)
+        ]
+    if params.link_no is not None:
+        priority_rules = [
+            pr for pr in priority_rules if _priority_rule_matches_link(pr, str(params.link_no))
+        ]
+
+    total = len(priority_rules)
+    filtered = params.priority_rule_no is not None or params.link_no is not None
+    if filtered:
+        return {"count": total, "priority_rules": priority_rules}
+
+    capped = priority_rules[:_PRIORITY_RULES_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {"count": total, "priority_rules": capped, "truncated": truncated}
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} priority rules. Narrow with "
+            "priority_rule_no or link_no to see a specific one instead of the whole list."
+        )
     return result

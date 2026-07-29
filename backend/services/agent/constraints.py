@@ -508,6 +508,20 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "sc_name",
         "param": "sc_no",
     },
+    # QUEUE 3 unit 2: set_priority_rule_gap_headway added to the
+    # object_not_found / _TOOL_TARGET_SPEC lockstep table -- this only
+    # covers the RULE-level lookup (priority_rules object class, keyed by
+    # priority rule no, param "priority_rule_no"); the deeper lookup (does
+    # marker_index exist on that rule) has no single flat id to check, so it
+    # is a dedicated check (priority_rule_marker_not_found, below) -- the
+    # same split routes/composition entries/des-speed entries/signal-program
+    # splits established.
+    "set_priority_rule_gap_headway": {
+        "object_class": "priority_rules",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "priority_rule_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -518,6 +532,7 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "routing_decisions": {"ko": "차량 경로 결정", "en": "vehicle routing decision", "ja": "車両経路決定"},
     "vehicle_compositions": {"ko": "차량 조성", "en": "vehicle composition", "ja": "車両構成"},
     "des_speed_decisions": {"ko": "희망속도결정", "en": "desired speed decision", "ja": "希望速度決定"},
+    "priority_rules": {"ko": "우선순위 규칙", "en": "priority rule", "ja": "優先ルール"},
 }
 
 
@@ -671,6 +686,7 @@ register(
             "set_vehicle_composition_share",
             "set_des_speed_decision",
             "set_signal_green_split",
+            "set_priority_rule_gap_headway",
         ],
         phase="preflight",
         tier="refuse",
@@ -5751,5 +5767,233 @@ register(
         "を {volume} veh/h に変更しても他のインプットのボリュームはそのまま残ります — 流入部の総需要"
         "が増えると同時に、車種構成比自体が変わります。{mix_ja}車種構成比を維持するには、他の車両"
         "インプットも同じ比率で調整する必要があります。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# priority_rule_marker_not_found (refuse, preflight) — QUEUE 3 unit 2
+#
+# Not a §-numbered catalog entry; mirrors route_not_found_in_decision/
+# vehicle_composition_entry_not_found/des_speed_decision_entry_not_found's
+# exact split (the RULE-level lookup is object_not_found's job (#1), already
+# covered via _TOOL_TARGET_SPEC). A conflict marker has NO identity
+# attribute of its own at all (verified live, backend/tools/
+# probe_priority_rules.py: AttValue('No') on a marker raises) and its own
+# COM collection has no ItemByKey (verified live via hasattr) — WORSE than
+# routes/composition-entries/des-speed-entries, which at least had a real
+# attribute (route_no/veh_type/veh_class) to match on; a marker's identity
+# here is a SYNTHESIZED 1-based ordinal (tools_network._parse_priority_rules'
+# own docstring), so this check is the ONLY place a bogus marker_index gets
+# a structured refusal (with the rule's real marker count) before COM ever
+# sees it — vissim_com.VissimController._priority_rule_marker_by_index
+# raises its own VissimObjectNotFoundError as a backstop, mirrored here.
+# ---------------------------------------------------------------------------
+
+
+def _check_priority_rule_marker_not_found(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_priority_rule_gap_headway":
+        return None
+
+    params = action.get("params", {})
+    rule_no = str(params.get("priority_rule_no", ""))
+    raw_marker_index = params.get("marker_index")
+
+    rule = _find_by_field(shadow_model.get("priority_rules", []), "no", rule_no)
+    if rule is None:
+        return None  # missing rule is object_not_found's job (#1)
+
+    markers = rule.get("conflict_markers", [])
+    marker_indexes = [str(m.get("marker_index", "")) for m in markers]
+    if str(raw_marker_index) in marker_indexes:
+        return None
+
+    count = len(markers)
+    return Finding(
+        constraint_id="priority_rule_marker_not_found",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "priority_rule_marker_not_found",
+            rule_no=rule_no,
+            marker_index=raw_marker_index,
+            count=count,
+        ),
+        suggested_fix={"candidates": marker_indexes},
+        details={"priority_rule_no": rule_no, "marker_index": raw_marker_index, "marker_count": count},
+    )
+
+
+register(
+    Constraint(
+        id="priority_rule_marker_not_found",
+        applies_to=["set_priority_rule_gap_headway"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_priority_rule_marker_not_found,
+        message_ko="우선순위 규칙 '{rule_no}'에 충돌 마커 인덱스 {marker_index}가 없습니다. 이 "
+        "규칙에는 충돌 마커가 {count}개 있으며, 1부터 {count}까지의 번호로 지정해야 합니다.",
+        message_en="Priority rule '{rule_no}' has no conflict marker at index {marker_index}. This "
+        "rule has {count} conflict marker(s), indexed 1..{count}.",
+        message_ja="優先ルール '{rule_no}' にはインデックス {marker_index} の競合マーカーが"
+        "ありません。このルールには競合マーカーが {count} 件あり、1〜{count} の番号で指定する必要が"
+        "あります。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# priority_rule_gap_headway_invalid (refuse, preflight) — QUEUE 3 unit 2
+#
+# Not a §-numbered catalog entry. The task brief's own draft wording said
+# "hard refusal for non-positive values" — verified WRONG against real data
+# before implementing (backend/tools/probe_priority_rules.py's live scan):
+# 0 is a common, LEGITIMATE value for both attributes on real networks (13
+# of the real Murdoch Drive model's own 20 conflict markers carry
+# minGapTime="0"; dozens more do on Roundabout Buehl.DE) — meaning "no gap
+# required"/"no clearance required" at that specific conflict point.
+# Refusing 0 would make this tool unable to even reproduce a network's own
+# existing legitimate data. Vissim's own live-verified floor is exactly 0,
+# not >0 (SetAttValue(-1) on EITHER attribute RAISES: "... is lower than
+# minimum value ... (Min: 0 ...)"), so this check refuses NEGATIVE (and
+# non-numeric — pydantic's own float typing already catches most of this
+# before dispatch, but a caller bypassing the params model, or NaN which
+# float() accepts, would not be) values, matching Vissim's own semantics
+# rather than the brief's un-probed guess. See docs/phase2/DECISIONS.md for
+# the drafted entry recording this as a probe-driven deviation.
+# ---------------------------------------------------------------------------
+
+
+def _check_priority_rule_gap_headway_invalid(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_priority_rule_gap_headway":
+        return None
+
+    params = action.get("params", {})
+    bad_fields: dict[str, Any] = {}
+    for field_name in ("gap_time_s", "headway_m"):
+        raw = params.get(field_name)
+        if raw is None:
+            continue
+        value = _coerce_number(raw)
+        if value is None or not math.isfinite(value) or value < 0:
+            bad_fields[field_name] = raw
+
+    if not bad_fields:
+        return None
+
+    fields_text = ", ".join(f"{k}={v}" for k, v in bad_fields.items())
+    return Finding(
+        constraint_id="priority_rule_gap_headway_invalid",
+        tier="refuse",
+        phase="preflight",
+        messages=_render("priority_rule_gap_headway_invalid", fields_text=fields_text),
+        suggested_fix={"min": "0 or greater", "must_be": "finite"},
+        details={"invalid_fields": bad_fields},
+    )
+
+
+register(
+    Constraint(
+        id="priority_rule_gap_headway_invalid",
+        applies_to=["set_priority_rule_gap_headway"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_priority_rule_gap_headway_invalid,
+        message_ko="요청한 값이 유효하지 않습니다: {fields_text}. gap_time_s와 headway_m은 모두 "
+        "0 이상의 유한한 값이어야 합니다 (Vissim 자체가 음수를 거부합니다).",
+        message_en="The requested value(s) are invalid: {fields_text}. Both gap_time_s and "
+        "headway_m must be finite numbers >= 0 (Vissim itself rejects negative values).",
+        message_ja="指定された値が無効です: {fields_text}。gap_time_s と headway_m は両方とも0以上"
+        "の有限の値である必要があります(Vissim自体が負の値を拒否します)。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# priority_rule_gap_headway_implausible (warn, preflight) — QUEUE 3 unit 2
+#
+# Not a §-numbered catalog entry. The task brief's draft bounds ("critical
+# gaps beyond roughly 2-10s, headways beyond roughly 1-8s") assumed headway
+# is a TIME — disproven live (vissim_com.set_priority_rule_gap_headway's own
+# module comment: headway_m/MinClear/MinHdwy is a spatial clearance in
+# METRES, observed 0-30 across two real networks, not seconds). Bounds
+# below are re-derived from what was actually measured, not the brief's
+# un-probed guess:
+#   - gap_time_s: warn only ABOVE 10s. The brief's own upper bound is kept
+#     (real observed data tops out at 8s on Roundabout Buehl.DE, so 10s
+#     already sits above every genuine value seen); the brief's LOWER bound
+#     (2s) is dropped outright — 0s is the SINGLE MOST COMMON real value
+#     (see priority_rule_gap_headway_invalid's own comment), so warning on
+#     it would be constant noise on real data, not a signal.
+#   - headway_m: warn only ABOVE 50m. No real value observed anywhere near
+#     that (max seen: 30m on Roundabout Buehl.DE); 50m is roughly 1.7x the
+#     observed maximum, a deliberately generous margin so ordinary real
+#     values never trip it while a value an order of magnitude off (e.g. a
+#     typo, or a unit mix-up with a much larger quantity) still does. Same
+#     "0 is common and legitimate, never warn on the low end" reasoning as
+#     gap_time_s.
+# Fires per-field independently (a call can trip zero, one, or both).
+# ---------------------------------------------------------------------------
+
+_GAP_TIME_WARN_ABOVE_S = 10.0
+_HEADWAY_WARN_ABOVE_M = 50.0
+
+
+def _check_priority_rule_gap_headway_implausible(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_priority_rule_gap_headway":
+        return None
+
+    params = action.get("params", {})
+    flags: list[str] = []
+
+    gap_time_s = _coerce_number(params.get("gap_time_s"))
+    if gap_time_s is not None and math.isfinite(gap_time_s) and gap_time_s > _GAP_TIME_WARN_ABOVE_S:
+        flags.append(f"gap_time_s={gap_time_s}s (> {_GAP_TIME_WARN_ABOVE_S}s)")
+
+    headway_m = _coerce_number(params.get("headway_m"))
+    if headway_m is not None and math.isfinite(headway_m) and headway_m > _HEADWAY_WARN_ABOVE_M:
+        flags.append(f"headway_m={headway_m}m (> {_HEADWAY_WARN_ABOVE_M}m)")
+
+    if not flags:
+        return None
+
+    flags_text = "; ".join(flags)
+    return Finding(
+        constraint_id="priority_rule_gap_headway_implausible",
+        tier="warn",
+        phase="preflight",
+        messages=_render("priority_rule_gap_headway_implausible", flags_text=flags_text),
+        suggested_fix=None,
+        details={
+            "gap_time_s": gap_time_s,
+            "headway_m": headway_m,
+            "gap_time_warn_above_s": _GAP_TIME_WARN_ABOVE_S,
+            "headway_warn_above_m": _HEADWAY_WARN_ABOVE_M,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="priority_rule_gap_headway_implausible",
+        applies_to=["set_priority_rule_gap_headway"],
+        phase="preflight",
+        tier="warn",
+        check=_check_priority_rule_gap_headway_implausible,
+        message_ko="요청한 값이 실제 교통공학적으로 이례적으로 큽니다: {flags_text}. 의도한 값이 "
+        "맞는지 확인해 주세요 — 단위 실수(예: 분 단위를 초 단위 자리에 입력)가 아닌지 점검하는 것이 "
+        "좋습니다.",
+        message_en="The requested value is unusually large for a real traffic-engineering "
+        "parameter: {flags_text}. Please confirm this is intended — this shape often indicates a "
+        "units mistake (e.g. entering minutes where seconds/metres were expected).",
+        message_ja="指定された値は実際の交通工学パラメータとして異例に大きいです: {flags_text}。"
+        "意図した値かご確認ください — 単位の誤り(例: 秒/メートルの代わりに分を入力)でないか確認する"
+        "ことをお勧めします。",
     )
 )

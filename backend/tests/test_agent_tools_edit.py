@@ -213,6 +213,35 @@ class FakeEditSession:
         self._record("get_signal_green_split", sc_no=sc_no, sg_no=sg_no, program_no=program_no)
         return self._readback["signal_green_split"]
 
+    def set_priority_rule_gap_headway(
+        self,
+        priority_rule_no: int,
+        marker_index: int,
+        gap_time_s: float | None,
+        headway_m: float | None,
+    ) -> dict[str, float]:
+        self._record(
+            "set_priority_rule_gap_headway",
+            priority_rule_no=priority_rule_no,
+            marker_index=marker_index,
+            gap_time_s=gap_time_s,
+            headway_m=headway_m,
+        )
+        # Mirrors VissimController.set_priority_rule_gap_headway's return
+        # shape (the "in effect after this call" pair) -- a separate key
+        # from the "get" readback below (default: same dict) lets a test
+        # rig a genuine mismatch, same as set_signal_green_split's own
+        # "_written" / plain key split.
+        return self._readback.get("priority_rule_gap_headway_written", self._readback.get(
+            "priority_rule_gap_headway"
+        ))
+
+    def get_priority_rule_gap_headway(self, priority_rule_no: int, marker_index: int) -> dict[str, float]:
+        self._record(
+            "get_priority_rule_gap_headway", priority_rule_no=priority_rule_no, marker_index=marker_index
+        )
+        return self._readback["priority_rule_gap_headway"]
+
     def persist(self) -> None:
         self.persist_calls += 1
 
@@ -270,6 +299,10 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
                 "green_start_s": 1.0,
                 "green_end_s": 20.0,
             },
+        ),
+        (
+            "set_priority_rule_gap_headway",
+            {"priority_rule_no": "4", "marker_index": 1, "gap_time_s": 5.0},
         ),
     ],
 )
@@ -1258,6 +1291,167 @@ def test_set_signal_green_split_missing_program_no_is_rejected():
 
     envelope = _dispatch(
         "set_signal_green_split", sc_no="1", sg_no="1", green_start_s=1.0, green_end_s=8.0
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+# ---------------------------------------------------------------------------
+# set_priority_rule_gap_headway -- QUEUE 3 unit 2
+# ---------------------------------------------------------------------------
+
+
+def test_set_priority_rule_gap_headway_both_fields_happy_path():
+    session = FakeEditSession(
+        readback={"priority_rule_gap_headway": {"gap_time_s": 5.5, "headway_m": 22.0}}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_priority_rule_gap_headway",
+        priority_rule_no="4",
+        marker_index=1,
+        gap_time_s=5.5,
+        headway_m=22.0,
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": {"gap_time_s": 5.5, "headway_m": 22.0},
+        "readback_value": {"gap_time_s": 5.5, "headway_m": 22.0},
+    }
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {
+            "op": "set_priority_rule_gap_headway",
+            "priority_rule_no": 4,
+            "marker_index": 1,
+            "gap_time_s": 5.5,
+            "headway_m": 22.0,
+        },
+        {"op": "get_priority_rule_gap_headway", "priority_rule_no": 4, "marker_index": 1},
+    ]
+    # priority_rule_no was coerced str -> int at the COM boundary.
+    assert isinstance(session.calls[0]["priority_rule_no"], int)
+    assert "gap time -> 5.5s" in envelope["message"]
+    assert "headway/clearance -> 22.0m" in envelope["message"]
+
+
+def test_set_priority_rule_gap_headway_gap_only_still_reports_the_full_pair():
+    # headway_m not given -- the tool must still pass None through (no write
+    # to that attribute) but the resulting envelope always carries BOTH
+    # fields (the unchanged headway_m read back at its current value).
+    session = FakeEditSession(
+        readback={"priority_rule_gap_headway": {"gap_time_s": 5.5, "headway_m": 0.0}}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=5.5
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": {"gap_time_s": 5.5, "headway_m": 0.0},
+        "readback_value": {"gap_time_s": 5.5, "headway_m": 0.0},
+    }
+    assert session.calls[0] == {
+        "op": "set_priority_rule_gap_headway",
+        "priority_rule_no": 4,
+        "marker_index": 1,
+        "gap_time_s": 5.5,
+        "headway_m": None,
+    }
+    assert "gap time -> 5.5s" in envelope["message"]
+    assert "headway/clearance" not in envelope["message"]
+
+
+def test_set_priority_rule_gap_headway_headway_only():
+    session = FakeEditSession(
+        readback={"priority_rule_gap_headway": {"gap_time_s": 3.2, "headway_m": 22.0}}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, headway_m=22.0
+    )
+
+    assert envelope["status"] == "ok"
+    assert session.calls[0] == {
+        "op": "set_priority_rule_gap_headway",
+        "priority_rule_no": 4,
+        "marker_index": 1,
+        "gap_time_s": None,
+        "headway_m": 22.0,
+    }
+    assert "headway/clearance -> 22.0m" in envelope["message"]
+    assert "gap time ->" not in envelope["message"]
+
+
+def test_set_priority_rule_gap_headway_neither_field_rejected_at_param_layer():
+    session = FakeEditSession(readback={"priority_rule_gap_headway": {}})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_priority_rule_gap_headway_readback_mismatch_still_reports_ok_envelope():
+    # The tool's OWN job is only to report both values -- comparing them and
+    # refusing on mismatch is guardrails.py's postwrite job (constraint #6).
+    session = FakeEditSession(
+        readback={
+            "priority_rule_gap_headway_written": {"gap_time_s": 5.5, "headway_m": 22.0},
+            "priority_rule_gap_headway": {"gap_time_s": 3.2, "headway_m": 22.0},
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=5.5
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": {"gap_time_s": 5.5, "headway_m": 22.0},
+        "readback_value": {"gap_time_s": 3.2, "headway_m": 22.0},
+    }
+
+
+def test_set_priority_rule_gap_headway_vissim_refusal_surfaces_as_structured_error():
+    # The exact live refusal shape from the probe: a negative value raises.
+    session = FakeEditSession(
+        raise_on={
+            "set_priority_rule_gap_headway": RuntimeError(
+                "AttValue failed: Value -1 s is lower than minimum value of attribute Minimum "
+                "gap time (Min: 0 s)."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=-1.0
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "lower than minimum value" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+def test_set_priority_rule_gap_headway_marker_index_zero_rejected_at_param_layer():
+    # marker_index is 1-based (ge=1) -- 0 is never a valid ordinal.
+    session = FakeEditSession(readback={"priority_rule_gap_headway": {}})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_priority_rule_gap_headway", priority_rule_no="4", marker_index=0, gap_time_s=5.0
     )
 
     assert envelope["status"] == "error"
