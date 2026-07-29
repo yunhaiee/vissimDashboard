@@ -130,7 +130,10 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ✅ Vehicle composition shares — shipped, see V1 reads/edits
 - ✅ Desired-speed decision PAIRS (set + restore, atomic) — shipped, see V1 edits
 - ✅ Desired-speed distribution assignment — shipped (same tool as PAIRS)
-- ⬜ Desired-speed/time DISTRIBUTION curve editing (the legitimate CC1 route)
+- ✅ Desired-speed/time DISTRIBUTION curve editing — shipped (Q3 unit ③,
+  `set_des_speed_distribution_points`, atomic ReplaceAll; the silent-failure map —
+  decreasing speeds, mid-curve fraction reversals, absurd speeds all silently
+  accepted by COM — is closed by refuse-tier constraints)
 - ✅ Priority-rule gap/headway parameters — shipped (Q3 unit ②, `get_priority_rules` +
   `set_priority_rule_gap_headway`; live-proven: `MinHdwy` is a COM alias of `MinClear`,
   metres — one underlying "minimum clearance" value, not a third attribute)
@@ -140,7 +143,7 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
   turned out to be a COM-writable attribute, not an offline XML rewrite)
 - ⬜ Vehicle type properties (accel/decel curves, lengths, weight/power)
 
-**Status: 8 of 12 bullets shipped (one tool, `set_des_speed_decision`, satisfies both
+**Status: 9 of 12 bullets shipped (one tool, `set_des_speed_decision`, satisfies both
 the PAIRS and distribution-assignment line items).**
 
 ---

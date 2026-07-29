@@ -1223,6 +1223,183 @@ class VissimController:
         return self._collection_nos(self.vissim.Net.SpeedDistributions)
 
     # -----------------------------------------------------------------
+    # Desired-speed DISTRIBUTION curve (points) verbs -- QUEUE 3 (v2a) unit 3
+    #
+    # COM ids/behavior verified EMPIRICALLY live against Vissim 2026
+    # (backend/tools/probe_des_speed_curves.py, "Roundabout Billings.US"
+    # clone -- the SAME network unit ⑧'s own des-speed-decision probe used).
+    #
+    # ``Net.SpeedDistributions`` (unit ⑧'s own finding, reused unchanged) ->
+    # per-distribution ``.SpeedDistrDatPts`` child collection (matches the
+    # XML child tag ``speedDistrDatPts`` exactly) of point objects carrying
+    # ``X`` (speed) / ``FX`` (cumulative fraction). The type library
+    # (``ISpeedDistributionDataPointContainer``) exposes ``GetAll`` and
+    # ``ReplaceAll`` but genuinely NO ``ItemByKey``, NO
+    # ``AddSpeedDistributionDataPoint``/``RemoveSpeedDistributionDataPoint``
+    # -- confirmed live via ``hasattr`` -- unlike the sibling
+    # ``ISpeedDistributionContainer`` one level up (distributions
+    # themselves), which DOES have ``ItemByKey``/``Add``/``Remove``. COM
+    # itself offers no per-point surgery primitive for an EXISTING
+    # distribution's points: only whole-collection ``ReplaceAll`` (this
+    # module's exclusive write path here) or per-point ``SetAttValue`` on an
+    # object already returned by ``GetAll()``. Per-point ``SetAttValue`` was
+    # tried live and found UNRELIABLE (worked in one isolated retest, but a
+    # fuller probe run -- more COM calls between fetching the point object
+    # and mutating it -- left the value COMPLETELY UNCHANGED with no
+    # exception at all, a genuine silent no-op) -- this codebase never uses
+    # it, exclusively writing through ``ReplaceAll``'s atomic whole-curve
+    # replace, exactly matching the task's own "atomic full-curve replace
+    # beats point surgery" directive, now backed by a live-verified reason
+    # beyond design taste: point-level writes are demonstrably unreliable
+    # over this COM surface.
+    #
+    # **``ReplaceAll`` SHAPE LANDMINE (live-verified, easy to get silently
+    # wrong):** ``Elements`` must be a FLAT, alternating sequence
+    # ``(x1, fx1, x2, fx2, ..., xn, fxn)`` -- e.g. ``(0, 0, 50, 0.5, 100, 1)``
+    # for a 3-point curve. A NESTED tuple-of-(x, fx)-pairs shape (the more
+    # "obviously correct"-looking guess, e.g. ``((0, 0), (50, 0.5), (100,
+    # 1))``) is SILENTLY IGNORED: the call reports success (no exception,
+    # matching the documented "at least 2 items" length check, which DOES
+    # fire correctly even for a nested shape since only the outer length is
+    # inspected first) but a fresh ``GetAll()`` -- even via a brand-new
+    # ``Net.SpeedDistributions.ItemByKey(...).SpeedDistrDatPts`` handle, not
+    # a stale collection reference -- shows the ORIGINAL, untouched points.
+    # Verified with three candidate shapes (nested (x,fx) tuples, nested
+    # (fx,x) tuples, nested lists) -- ALL THREE silently no-op; only the flat
+    # alternating sequence actually replaces the collection. This is exactly
+    # the kind of "reports success, does nothing" trap the whole validation
+    # layer exists to catch -- documented here so it is never re-guessed.
+    #
+    # **UNITS LANDMINE (live-verified, both directions):** ``X`` is read AND
+    # WRITTEN in the network's OWN display unit
+    # (``Net.NetPara.AttValue('UnitSpeed')`` -- ``"KILOMETERSPERHOUR"`` or
+    # ``"MILESPERHOUR"`` on the 25 real Vissim 2026 example networks scanned,
+    # 21/4 split), NOT always km/h -- the SAME "COM reports/accepts the
+    # display unit; the .inpx ALWAYS stores km/h internally" pattern unit
+    # ⑧'s own probe found for ``Pos`` (read-only there). Proven for BOTH
+    # directions here: on a MILESPERHOUR-display network, writing X=40/X=80
+    # via ``ReplaceAll`` and then persisting + re-parsing the SAVED XML
+    # showed ``x="64.37376"``/``x="128.74752"`` -- EXACTLY 40/80 * 1.609344
+    # (the mph-to-km/h conversion constant), not the literal 40/80 written.
+    # ``FX`` needs NO conversion (unitless [0, 1], verified to round-trip
+    # exactly regardless of display unit). This module converts at the COM
+    # boundary so every caller above it (edit_session.py, tools_edit.py,
+    # guardrails.py, the shadow model) deals exclusively in genuine km/h,
+    # matching :func:`services.agent.tools_network._parse_speed_distribution_points`'s
+    # own km/h-native XML parsing -- never guessed, never left for a caller
+    # to get wrong.
+    #
+    # **Vissim's OWN validation, live-verified via the silent-failure map**
+    # (``backend/tools/probe_des_speed_curves.py``'s own transcript has the
+    # full table): REJECTS (COM raises) a curve with fewer than 2 points,
+    # any FX outside [0, 1], a first point whose FX != 0, a last point whose
+    # FX != 1, and any speed < 0 (Vissim's own floor is 0, matching the
+    # priority-rule gap/headway floor). SILENTLY ACCEPTS a genuine speed
+    # DECREASE between consecutive points, FX that decreases in the MIDDLE
+    # of the curve (as long as the first/last points are 0/1), an absurdly
+    # large speed (unbounded upward), an exact duplicate point, and --
+    # correctly, matching real PTV-authored data ("Rollercoaster.inpx") --
+    # two consecutive points sharing the SAME speed with DIFFERENT FX (a
+    # legitimate step function). ``constraints.py``'s own preflight checks
+    # close every SILENTLY-ACCEPTED gap; the ones Vissim already refuses are
+    # still re-checked proactively so the failure reaches the caller as a
+    # structured refusal, not a raw COM error string.
+    # -----------------------------------------------------------------
+
+    _KMH_PER_MPH = 1.609344
+
+    def _net_unit_speed(self) -> str:
+        """The active network's own speed display unit
+        (``Net.NetPara.AttValue('UnitSpeed')``) -- ``"KILOMETERSPERHOUR"`` or
+        ``"MILESPERHOUR"`` on every real Vissim 2026 example network
+        probed. Defensively defaults to km/h (no conversion) on any
+        failure -- matches the .inpx's own fallback when ``<netPara>``
+        itself is absent (the synthetic demo network's case)."""
+        try:
+            return str(self.vissim.Net.NetPara.AttValue("UnitSpeed") or "").strip().upper()
+        except Exception:
+            return "KILOMETERSPERHOUR"
+
+    def _speed_kmh_to_com(self, speed_kmh: float, unit: str) -> float:
+        if unit == "MILESPERHOUR":
+            return speed_kmh / self._KMH_PER_MPH
+        return speed_kmh
+
+    def _speed_com_to_kmh(self, value: float, unit: str) -> float:
+        if unit == "MILESPERHOUR":
+            return value * self._KMH_PER_MPH
+        return value
+
+    def get_des_speed_distribution_points(self, distribution_no: int) -> list[dict[str, float]]:
+        """The distribution's current curve as ``[{"speed_kmh", "cum_fraction"},
+        ...]`` in document order, genuine km/h regardless of the network's
+        own display unit (see this block's own module comment)."""
+        try:
+            distribution = self._item_by_key(
+                self.vissim.Net.SpeedDistributions,
+                distribution_no,
+                "Speed distribution",
+                self.available_des_speed_distribution_nos(),
+            )
+            unit = self._net_unit_speed()
+            points = []
+            for point in distribution.SpeedDistrDatPts.GetAll():
+                points.append(
+                    {
+                        "speed_kmh": self._speed_com_to_kmh(float(point.AttValue("X")), unit),
+                        "cum_fraction": float(point.AttValue("FX")),
+                    }
+                )
+            return points
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read speed distribution {distribution_no} points: {exc}") from exc
+
+    def set_des_speed_distribution_points(
+        self, distribution_no: int, points: list[dict[str, float]]
+    ) -> list[dict[str, float]]:
+        """Atomic full-curve replace: ``ReplaceAll`` on the distribution's
+        ``SpeedDistrDatPts`` collection with a FLAT, alternating
+        ``(x1, fx1, x2, fx2, ...)`` sequence -- the ONLY ``Elements`` shape
+        that actually takes effect (see this block's own module comment for
+        the nested-tuple silent-no-op landmine). ``points`` speeds are
+        genuine km/h; converted to the network's own display unit at the
+        COM boundary, then the ACTUAL post-write values are read back and
+        converted back to km/h for the return -- never merely echoing the
+        caller's own input, so a caller relying on this return value never
+        needs to guess whether Vissim silently modified anything Beyond
+        raising.
+
+        Raises whatever Vissim's own ``ReplaceAll`` raises for an invalid
+        curve (fewer than 2 points, FX outside [0, 1], first/last FX not
+        0/1, negative speed -- see the silent-failure map in this block's
+        own module comment) -- ``constraints.py``'s own preflight checks
+        exist so these are refused BEFORE ever reaching this call, with a
+        structured, bilingual reason instead of this raw COM error string.
+        """
+        try:
+            distribution = self._item_by_key(
+                self.vissim.Net.SpeedDistributions,
+                distribution_no,
+                "Speed distribution",
+                self.available_des_speed_distribution_nos(),
+            )
+            unit = self._net_unit_speed()
+            flat: list[float] = []
+            for point in points:
+                flat.append(self._speed_kmh_to_com(float(point["speed_kmh"]), unit))
+                flat.append(float(point["cum_fraction"]))
+            distribution.SpeedDistrDatPts.ReplaceAll(tuple(flat))
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not replace speed distribution {distribution_no} points: {exc}"
+            ) from exc
+        return self.get_des_speed_distribution_points(distribution_no)
+
+    # -----------------------------------------------------------------
     # Priority-rule gap/headway verbs -- QUEUE 3 unit 2
     #
     # COM ids verified EMPIRICALLY live against Vissim 2026

@@ -242,6 +242,21 @@ class VissimEditSession:
     def get_des_speed_decision(self, decision_no: int, veh_class_no: int) -> str:
         return self._ensure_connected().get_des_speed_decision(decision_no, veh_class_no)
 
+    # QUEUE 3 (v2a) unit 3: desired-speed DISTRIBUTION curve (points) verbs.
+    # Atomic full-curve replace only -- COM offers no per-point surgery
+    # primitive that actually works reliably (see
+    # VissimController.set_des_speed_distribution_points's own module
+    # comment for the live-verified silent-no-op finding on per-point
+    # SetAttValue, and the ReplaceAll flat-sequence shape landmine).
+
+    def set_des_speed_distribution_points(
+        self, distribution_no: int, points: list[dict[str, float]]
+    ) -> list[dict[str, float]]:
+        return self._ensure_connected().set_des_speed_distribution_points(distribution_no, points)
+
+    def get_des_speed_distribution_points(self, distribution_no: int) -> list[dict[str, float]]:
+        return self._ensure_connected().get_des_speed_distribution_points(distribution_no)
+
     # v2a unit ⑨: fixed-time signal-program green-split verbs. FIXEDTIME
     # controllers are written via the COM-writable IntSupplyData program
     # blob, FIXEDTIMESIMPLE via plain EndRed/EndGreen attributes — both

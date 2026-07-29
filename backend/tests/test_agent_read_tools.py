@@ -82,6 +82,7 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_des_speed_decision",
     "set_signal_green_split",
     "set_priority_rule_gap_headway",
+    "set_des_speed_distribution_points",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -1911,6 +1912,188 @@ def test_get_network_overview_includes_des_speed_decisions_section(
     assert data["des_speed_decisions"]["count"] == 3
     ids = {item["id"] for item in data["des_speed_decisions"]["items"]}
     assert ids == {"6", "7", "8"}
+
+
+# ---------------------------------------------------------------------------
+# get_des_speed_distributions — points + reference counts, QUEUE 3 (v2a)
+# unit 3's own extension of unit ⑧'s {no, name}-only shape. Fixture wires up
+# ALL FOUR reference categories at once (des_speed_decisions,
+# vehicle_compositions, reduced_speed_areas, "other" via <ptLine>), plus a
+# genuinely unreferenced distribution (no=99) to prove reference_count == 0
+# is reported honestly, not omitted.
+# ---------------------------------------------------------------------------
+
+_DES_SPEED_DISTRIBUTION_POINTS_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links>
+    <link no="6" name="Ring"><lanes><lane width="3.5"/></lanes></link>
+  </links>
+  <vehicleClasses>
+    <vehicleClass no="10" name="Car"/>
+  </vehicleClasses>
+  <desSpeedDecisions>
+    <desSpeedDecision anmFlag="false" lane="6 1" name="" no="6" pos="108.744" timeFrom="0" timeTo="2147483647">
+      <vehClassDesSpeedDistr>
+        <vehClassDesSpeedDistribution desSpeedDistr="50" vehClass="10"/>
+      </vehClassDesSpeedDistr>
+    </desSpeedDecision>
+  </desSpeedDecisions>
+  <vehicleCompositions>
+    <vehicleComposition no="1" name="Standard">
+      <vehCompRelFlows>
+        <vehicleCompositionRelativeFlow desSpeedDistr="50" relFlow="0.9" vehType="100"/>
+      </vehCompRelFlows>
+    </vehicleComposition>
+  </vehicleCompositions>
+  <reducedSpeedAreas>
+    <reducedSpeedArea anmFlag="false" lane="6 1" length="10" name="rsa1" no="1" pos="0" timeFrom="0" timeTo="2147483647">
+      <vehClassSpeedRed>
+        <vehClassSpeedReduction decel="2" desSpeedDistr="25" vehClass="10"/>
+      </vehClassSpeedRed>
+    </reducedSpeedArea>
+  </reducedSpeedAreas>
+  <ptLine desSpeedDistr="50" name="Line 1" no="1"/>
+  <speedDistributions>
+    <speedDistribution name="25 mph" no="25">
+      <speedDistrDatPts>
+        <speedDistributionDataPoint fx="0" x="0"/>
+        <speedDistributionDataPoint fx="0.5" x="20"/>
+        <speedDistributionDataPoint fx="1" x="40.2"/>
+      </speedDistrDatPts>
+    </speedDistribution>
+    <speedDistribution name="55 mph" no="50">
+      <speedDistrDatPts>
+        <speedDistributionDataPoint fx="0" x="0"/>
+        <speedDistributionDataPoint fx="1" x="88.51"/>
+      </speedDistrDatPts>
+    </speedDistribution>
+    <speedDistribution name="unused" no="99">
+      <speedDistrDatPts>
+        <speedDistributionDataPoint fx="0" x="0"/>
+        <speedDistributionDataPoint fx="1" x="10"/>
+      </speedDistrDatPts>
+    </speedDistribution>
+  </speedDistributions>
+</network>
+"""
+
+
+@pytest.fixture()
+def des_speed_distribution_points_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "des_speed_distribution_points.inpx"
+    path.write_text(_DES_SPEED_DISTRIBUTION_POINTS_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_des_speed_distributions_includes_points(
+    des_speed_distribution_points_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(des_speed_distribution_points_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_distributions")
+
+    assert envelope["status"] == "ok"
+    by_no = {d["no"]: d for d in envelope["data"]["des_speed_distributions"]}
+
+    dist_25 = by_no["25"]
+    assert dist_25["points"] == [
+        {"speed_kmh": 0.0, "cum_fraction": 0.0},
+        {"speed_kmh": 20.0, "cum_fraction": 0.5},
+        {"speed_kmh": 40.2, "cum_fraction": 1.0},
+    ]
+    assert dist_25["point_count"] == 3
+    assert dist_25["points_truncated"] is False
+
+    dist_50 = by_no["50"]
+    assert dist_50["points"] == [
+        {"speed_kmh": 0.0, "cum_fraction": 0.0},
+        {"speed_kmh": 88.51, "cum_fraction": 1.0},
+    ]
+    assert dist_50["point_count"] == 2
+
+
+def test_get_des_speed_distributions_reference_counts_all_four_categories(
+    des_speed_distribution_points_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(des_speed_distribution_points_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_distributions")
+    by_no = {d["no"]: d for d in envelope["data"]["des_speed_distributions"]}
+
+    # no=50: referenced by ONE desired-speed decision entry, ONE vehicle-
+    # composition entry, and ONE "other" element (ptLine) -- zero reduced
+    # speed areas.
+    dist_50 = by_no["50"]
+    refs_50 = dist_50["referenced_by"]
+    assert refs_50["des_speed_decisions"] == {"count": 1, "ids": ["6.10"], "truncated": False}
+    assert refs_50["vehicle_compositions"] == {"count": 1, "ids": ["1.100"], "truncated": False}
+    assert refs_50["reduced_speed_areas"] == {"count": 0, "ids": [], "truncated": False}
+    assert refs_50["other"] == {"count": 1, "by_tag": {"ptLine": 1}}
+    assert dist_50["reference_count"] == 3
+
+    # no=25: referenced by ONE reduced speed area only.
+    dist_25 = by_no["25"]
+    refs_25 = dist_25["referenced_by"]
+    assert refs_25["reduced_speed_areas"] == {"count": 1, "ids": ["1"], "truncated": False}
+    assert refs_25["des_speed_decisions"] == {"count": 0, "ids": [], "truncated": False}
+    assert refs_25["vehicle_compositions"] == {"count": 0, "ids": [], "truncated": False}
+    assert refs_25["other"] == {"count": 0, "by_tag": {}}
+    assert dist_25["reference_count"] == 1
+
+    # no=99: genuinely unreferenced -- reported honestly as zero, not omitted.
+    dist_99 = by_no["99"]
+    assert dist_99["reference_count"] == 0
+    refs_99 = dist_99["referenced_by"]
+    assert refs_99["des_speed_decisions"]["count"] == 0
+    assert refs_99["vehicle_compositions"]["count"] == 0
+    assert refs_99["reduced_speed_areas"]["count"] == 0
+    assert refs_99["other"]["count"] == 0
+
+
+def test_get_des_speed_distributions_points_are_capped_and_truncated_on_a_huge_curve(
+    tmp_path: Path,
+):
+    many_points = "".join(
+        f'<speedDistributionDataPoint fx="{i / 40:.4f}" x="{i}"/>' for i in range(41)
+    )
+    inpx = f"""<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <speedDistributions>
+    <speedDistribution name="huge" no="1">
+      <speedDistrDatPts>{many_points}</speedDistrDatPts>
+    </speedDistribution>
+  </speedDistributions>
+</network>
+"""
+    path = tmp_path / "huge_distribution.inpx"
+    path.write_text(inpx, encoding="utf-8")
+    tools_network.set_active_inpx(path)
+
+    envelope = _dispatch("get_des_speed_distributions")
+
+    dist = envelope["data"]["des_speed_distributions"][0]
+    assert dist["point_count"] == 41
+    assert len(dist["points"]) == tools_network._SPEED_DISTRIBUTION_POINTS_CAP
+    assert dist["points_truncated"] is True
+
+
+def test_get_des_speed_distributions_backward_compatible_with_no_points_at_all(
+    des_speed_decision_fixture_inpx: Path,
+):
+    # v2a unit ⑧'s ORIGINAL fixture has <speedDistribution> elements with NO
+    # <speedDistrDatPts> child at all -- the extension must degrade to an
+    # empty points list, never crash or omit the new keys.
+    tools_network.set_active_inpx(des_speed_decision_fixture_inpx)
+
+    envelope = _dispatch("get_des_speed_distributions")
+
+    assert envelope["status"] == "ok"
+    for dist in envelope["data"]["des_speed_distributions"]:
+        assert dist["points"] == []
+        assert dist["point_count"] == 0
+        assert dist["points_truncated"] is False
+        assert "referenced_by" in dist
+        assert "reference_count" in dist
 
 
 # ---------------------------------------------------------------------------

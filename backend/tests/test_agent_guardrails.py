@@ -30,6 +30,7 @@ def _shadow_model(
     des_speed_decision_entries: list[dict[str, Any]] | None = None,
     signal_program_splits: list[dict[str, Any]] | None = None,
     priority_rule_markers: list[dict[str, Any]] | None = None,
+    des_speed_distributions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -61,6 +62,10 @@ def _shadow_model(
         # "{priority_rule_no}.{marker_index}") -- see tools_network.
         # _flatten_priority_rule_markers for the real shape this mirrors.
         "priority_rule_markers": priority_rule_markers if priority_rule_markers is not None else [],
+        # QUEUE 3 (v2a) unit 3: des_speed_distributions itself (id = "no",
+        # no flattening needed) -- see tools_network._parse_speed_distributions
+        # for the real shape this mirrors.
+        "des_speed_distributions": des_speed_distributions if des_speed_distributions is not None else [],
     }
 
 
@@ -111,6 +116,23 @@ def _priority_rule_marker_entry(
         "gap_headway": {"gap_time_s": gap_time_s, "headway_m": headway_m},
         "max_speed": 180.0,
         "effect_driv_dir": "FORWARD",
+    }
+
+
+def _speed_distribution(no: str, points: list[dict[str, float]], *, name: str = "test distribution") -> dict[str, Any]:
+    return {
+        "no": no,
+        "name": name,
+        "points": points,
+        "point_count": len(points),
+        "points_truncated": False,
+        "referenced_by": {
+            "des_speed_decisions": {"count": 0, "ids": [], "truncated": False},
+            "vehicle_compositions": {"count": 0, "ids": [], "truncated": False},
+            "reduced_speed_areas": {"count": 0, "ids": [], "truncated": False},
+            "other": {"count": 0, "by_tag": {}},
+        },
+        "reference_count": 0,
     }
 
 
@@ -395,6 +417,181 @@ def test_postwrite_diff_flags_an_added_object_in_an_unrelated_list():
     assert report.blocking is True
     diff = report.first_refusal().details["nothing_else_moved_diff"]
     assert {"object_class": "vehicle_inputs", "object_id": "99", "change": "added"} in diff
+
+
+# ---------------------------------------------------------------------------
+# set_des_speed_distribution_points -- QUEUE 3 (v2a) unit 3
+# ---------------------------------------------------------------------------
+
+_VALID_CURVE_POINTS = [{"speed_kmh": 0.0, "cum_fraction": 0.0}, {"speed_kmh": 50.0, "cum_fraction": 1.0}]
+_NEW_CURVE_POINTS = [
+    {"speed_kmh": 0.0, "cum_fraction": 0.0},
+    {"speed_kmh": 30.0, "cum_fraction": 0.5},
+    {"speed_kmh": 60.0, "cum_fraction": 1.0},
+]
+
+
+def test_postwrite_des_speed_distribution_points_happy_path_no_findings():
+    action = _action("set_des_speed_distribution_points", distribution_no="25", points=_NEW_CURVE_POINTS)
+    before = _shadow_model(des_speed_distributions=[_speed_distribution("25", _VALID_CURVE_POINTS)])
+    after = _shadow_model(des_speed_distributions=[_speed_distribution("25", _NEW_CURVE_POINTS)])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": _NEW_CURVE_POINTS, "readback_value": _NEW_CURVE_POINTS}
+    )
+
+    # point_count went 2 -> 3 as an unavoidable derived side effect of the
+    # curve growing by one point -- "coupled_fields" must exempt it, exactly
+    # like des_speed_distr_name's own coupling lesson (unit ⑧).
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_des_speed_distribution_points_diff_flags_an_unrelated_distribution_change():
+    action = _action("set_des_speed_distribution_points", distribution_no="25", points=_NEW_CURVE_POINTS)
+    before = _shadow_model(
+        des_speed_distributions=[
+            _speed_distribution("25", _VALID_CURVE_POINTS),
+            _speed_distribution("50", _VALID_CURVE_POINTS),
+        ]
+    )
+    after = _shadow_model(
+        des_speed_distributions=[
+            _speed_distribution("25", _NEW_CURVE_POINTS),
+            _speed_distribution("50", _NEW_CURVE_POINTS),  # unrelated drift -- no tool touched no=50
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": _NEW_CURVE_POINTS, "readback_value": _NEW_CURVE_POINTS}
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        entry["object_class"] == "des_speed_distributions" and entry["object_id"] == "50"
+        for entry in diff
+    )
+
+
+def test_postwrite_des_speed_distribution_points_target_persisted_check_fires_on_mismatch():
+    action = _action("set_des_speed_distribution_points", distribution_no="25", points=_NEW_CURVE_POINTS)
+    before = _shadow_model(des_speed_distributions=[_speed_distribution("25", _VALID_CURVE_POINTS)])
+    # The saved file's points DON'T match what was supposedly written --
+    # simulates a write that succeeded over COM but never reached disk.
+    after = _shadow_model(des_speed_distributions=[_speed_distribution("25", _VALID_CURVE_POINTS)])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": _NEW_CURVE_POINTS, "readback_value": _NEW_CURVE_POINTS}
+    )
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "des_speed_distributions"
+    assert check["object_id"] == "25"
+    assert check["saved_value"] == _VALID_CURVE_POINTS
+
+
+def test_postwrite_diff_suppresses_set_reduced_speed_area_own_new_distribution():
+    # QUEUE 3 (v2a) unit 3's own regression fix: set_reduced_speed_area (v2
+    # unit ②) legitimately injects a BRAND NEW speedDistribution as part of
+    # its own sanctioned XML-injection write -- this must NOT read as
+    # "something else moved" now that des_speed_distributions is tracked.
+    action = _action("set_reduced_speed_area", link_id="101", speed_kmh=40.0, from_m=10.0, length_m=50.0)
+    before = _shadow_model(des_speed_distributions=[])
+    after = _shadow_model(des_speed_distributions=[_speed_distribution("1", _VALID_CURVE_POINTS, name="agent_reduced_speed_link_101")])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action,
+        before,
+        after,
+        {
+            "written_value": {"link_id": "101", "speed_kmh": 40.0, "from_m": 10.0, "length_m": 50.0},
+            "readback_value": {"link_id": "101", "speed_kmh": 40.0, "from_m": 10.0, "length_m": 50.0},
+        },
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_never_flags_des_speed_distributions_referenced_by_or_reference_count():
+    # QUEUE 3 (v2a) unit 3's SECOND regression fix, found live-testing this
+    # same addition against a REAL parsed shadow model (not a hand-built
+    # fixture): set_des_speed_decision reassigning a decision's vehClass=10
+    # from distribution 50 to distribution 25 legitimately changes BOTH
+    # distributions' OWN referenced_by/reference_count (purely derived from
+    # the des_speed_decisions list) -- a tool whose OWN target object_class
+    # is "des_speed_decision_entries", never "des_speed_distributions" at
+    # all. No per-tool coupled_fields entry could cover this (the shifting
+    # field lives on a DIFFERENT object_class than the one the tool wrote
+    # to) -- these two fields must be blanket-exempt for every tool.
+    action = _action(
+        "set_des_speed_decision", decision_no="6", veh_class_no="10", des_speed_distr_no="25"
+    )
+    before = _shadow_model(
+        des_speed_decision_entries=[_des_speed_entry("6", "10", des_speed_distr_no="50")],
+        des_speed_distributions=[
+            {**_speed_distribution("25", _VALID_CURVE_POINTS), "reference_count": 0},
+            {
+                **_speed_distribution("50", _VALID_CURVE_POINTS),
+                "reference_count": 1,
+                "referenced_by": {
+                    "des_speed_decisions": {"count": 1, "ids": ["6.10"], "truncated": False},
+                    "vehicle_compositions": {"count": 0, "ids": [], "truncated": False},
+                    "reduced_speed_areas": {"count": 0, "ids": [], "truncated": False},
+                    "other": {"count": 0, "by_tag": {}},
+                },
+            },
+        ],
+    )
+    after = _shadow_model(
+        des_speed_decision_entries=[
+            {**_des_speed_entry("6", "10", des_speed_distr_no="25"), "des_speed_distr_name": "25 mph"}
+        ],
+        des_speed_distributions=[
+            {
+                **_speed_distribution("25", _VALID_CURVE_POINTS),
+                "reference_count": 1,
+                "referenced_by": {
+                    "des_speed_decisions": {"count": 1, "ids": ["6.10"], "truncated": False},
+                    "vehicle_compositions": {"count": 0, "ids": [], "truncated": False},
+                    "reduced_speed_areas": {"count": 0, "ids": [], "truncated": False},
+                    "other": {"count": 0, "by_tag": {}},
+                },
+            },
+            {**_speed_distribution("50", _VALID_CURVE_POINTS), "reference_count": 0},
+        ],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": "25", "readback_value": "25"}
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_still_flags_an_added_distribution_for_a_tool_not_opted_in():
+    # The suppression is tool-SPECIFIC (_ALLOWS_NEW_OBJECTS_IN), not a
+    # blanket "never flag added distributions" rule -- an unrelated tool
+    # (here, an ordinary vehicle-input write) that somehow left a phantom
+    # new distribution behind must still be flagged as evidence.
+    action = _action("set_vehicle_input_volume", input_no="1", volume=600)
+    before = _shadow_model(des_speed_distributions=[])
+    after = _shadow_model(des_speed_distributions=[_speed_distribution("1", _VALID_CURVE_POINTS)])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 600, "readback_value": 600})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {"object_class": "des_speed_distributions", "object_id": "1", "change": "added"} in diff
 
 
 def test_postwrite_diff_and_value_mismatch_can_both_fire_together():

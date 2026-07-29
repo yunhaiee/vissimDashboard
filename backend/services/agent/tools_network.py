@@ -698,13 +698,152 @@ def _parse_vehicle_class_names(root: ET.Element) -> dict[str, str]:
     return {vc.get("no", ""): vc.get("name", "") for vc in root.findall(".//vehicleClasses/vehicleClass")}
 
 
-def _parse_speed_distributions(root: ET.Element) -> list[dict[str, Any]]:
-    """{no, name} per ``<speedDistributions><speedDistribution>``.
+#: Points shown per distribution on an UNFILTERED/filtered
+#: get_des_speed_distributions call -- the real max observed across all 25
+#: Vissim 2026 example networks' 559 real speedDistribution elements is 20
+#: points (histogram: {2: 284, 3: 29, 4: 64, 5: 15, 6: 12, 8: 28, 9: 4, 10:
+#: 21, 11: 44, 14: 22, 15: 22, 19: 7, 20: 7}) -- 30 comfortably covers every
+#: real distribution with headroom, so truncation should never fire on real
+#: data today; it exists as a bound, not a tuned-to-the-edge limit.
+_SPEED_DISTRIBUTION_POINTS_CAP = 30
 
-    v2a unit ⑧ (2026-07-27). This is the SAME distribution object type
+#: Bounded candidate-id list per reference category (des_speed_decisions /
+#: vehicle_compositions / reduced_speed_areas) in each distribution's
+#: ``referenced_by`` -- mirrors constraints.py's own ``_CANDIDATE_CAP``
+#: reasoning (suggestion/reference lists reach LLM prompts; bounded envelopes
+#: are a standing rule, QUEUE 3 unit 1's fix). The COUNT is always the real,
+#: untruncated total; only the enumerated id list is capped.
+_SPEED_DISTRIBUTION_REFERENCE_CAP = 10
+
+#: Real, non-vehicle-composition/non-desSpeedDecision XML element types that
+#: ALSO carry a ``desSpeedDistr`` attribute, found by a network-wide static
+#: grep across all 25 real Vissim 2026 example networks (public-transport
+#: lines, pedestrian composition relative flows, area-behavior-type time
+#: profiles, dynamic-assignment per-vehicle-class distributions -- 434
+#: combined occurrences: ptLine 159, pedestrianCompositionRelativeFlow 136,
+#: vehClassDynAssignDesSpeedDistribution 112, areaBehaviorTypeElement 7).
+#: None of these features have a shadow-model object representation of their
+#: own (public transport, pedestrians, area behavior types, and dynamic
+#: assignment are all out of this unit's scope) -- rather than silently
+#: omitting them from the reference count entirely (dishonest: the task
+#: brief's own "and anything else reference each distribution" ask), this
+#: unit counts them GENERICALLY by tag name (no per-object id, since there is
+#: no id-bearing shadow object to name) so the shared-collection warning's
+#: total is honest even though these categories can't be enumerated by id.
+_OTHER_SPEED_DISTRIBUTION_REFERENCE_TAGS = (
+    "ptLine",
+    "pedestrianCompositionRelativeFlow",
+    "areaBehaviorTypeElement",
+    "vehClassDynAssignDesSpeedDistribution",
+)
+
+
+def _parse_speed_distribution_points(distribution_el: ET.Element) -> list[dict[str, float | None]]:
+    """[{speed_kmh, cum_fraction}, ...] per ``<speedDistrDatPts>
+    <speedDistributionDataPoint fx="..." x="..."/></speedDistrDatPts>``, in
+    document order.
+
+    QUEUE 3 (v2a) unit 3 (2026-07-29). ``x`` is ALWAYS the speed in
+    kilometers per hour in the .inpx REGARDLESS of the network's own
+    ``netPara@unitSpeed`` display setting -- verified statically (a
+    "MILESPERHOUR"-display network's own distribution named "55 mph" carries
+    raw XML points x="72.42"/x="104.61", and 104.61 / 1.609344 = 65.0 mph,
+    the distribution's own upper-bound label) AND live over COM
+    (``backend/tools/probe_des_speed_curves.py``: writing X=40/X=80 via
+    SetAttValue/ReplaceAll on that SAME MILESPERHOUR network persisted to the
+    saved XML as x="64.37376"/x="128.74752" -- EXACTLY 40/80 *
+    1.609344, the mph-to-km/h conversion factor). This parser reads straight
+    from XML (never COM), so it always returns genuine km/h with no
+    conversion needed -- the COM-side conversion this same finding requires
+    lives entirely in ``vissim_com.VissimController.set_des_speed_
+    distribution_points``/``get_des_speed_distribution_points`` (the write
+    path), never here.
+
+    ``fx`` is the cumulative fraction, unitless, verified live to need NO
+    conversion regardless of display unit.
+    """
+    points: list[dict[str, float | None]] = []
+    for pt in distribution_el.findall("speedDistrDatPts/speedDistributionDataPoint"):
+        points.append(
+            {
+                "speed_kmh": _coerce_float_or_none(pt.get("x")),
+                "cum_fraction": _coerce_float_or_none(pt.get("fx")),
+            }
+        )
+    return points
+
+
+def _bounded_reference_ids(ids: list[str]) -> dict[str, Any]:
+    """{count, ids, truncated} for one ``referenced_by`` category -- ``count``
+    is always the real, untruncated total; ``ids`` is capped at
+    ``_SPEED_DISTRIBUTION_REFERENCE_CAP``."""
+    capped = ids[:_SPEED_DISTRIBUTION_REFERENCE_CAP]
+    return {"count": len(ids), "ids": capped, "truncated": len(ids) > len(capped)}
+
+
+def _reduced_speed_area_distribution_refs(root: ET.Element) -> dict[str, list[str]]:
+    """{distribution_no: [reduced_speed_area_no, ...]} from
+    ``<reducedSpeedAreas><reducedSpeedArea><vehClassSpeedRed>
+    <vehClassSpeedReduction desSpeedDistr="..."/>`` -- the SAME distribution
+    object type ``set_reduced_speed_area`` (v2 unit ②) already injects into
+    (see :func:`_parse_speed_distributions`'s own docstring), read back here
+    ONLY for reference counting (this unit does not build a full
+    reduced-speed-area shadow object list -- that is out of scope; a future
+    unit reading reduced speed areas back from XML should replace this
+    reference-only scan with a real parser feeding the same shadow key)."""
+    refs: dict[str, list[str]] = {}
+    for area in root.findall(".//reducedSpeedAreas/reducedSpeedArea"):
+        area_no = area.get("no", "")
+        if not area_no:
+            continue
+        for reduction in area.findall(".//vehClassSpeedReduction"):
+            distr_no = (reduction.get("desSpeedDistr") or "").strip()
+            if not distr_no:
+                continue
+            owners = refs.setdefault(distr_no, [])
+            if area_no not in owners:
+                owners.append(area_no)
+    return refs
+
+
+def _other_speed_distribution_reference_counts(root: ET.Element) -> dict[str, dict[str, int]]:
+    """{distribution_no: {tag_name: count}} for every real XML element type
+    (other than desSpeedDecision/vehicleCompositionRelativeFlow/
+    reducedSpeedArea, all counted with their own id-bearing owners
+    elsewhere) that ALSO carries a ``desSpeedDistr`` attribute -- see
+    :data:`_OTHER_SPEED_DISTRIBUTION_REFERENCE_TAGS`'s own docstring for the
+    static-scan evidence. Counted generically by tag (no owner id) since none
+    of these features have a shadow-model object of their own."""
+    counts: dict[str, dict[str, int]] = {}
+    for tag in _OTHER_SPEED_DISTRIBUTION_REFERENCE_TAGS:
+        for el in root.iter(tag):
+            distr_no = (el.get("desSpeedDistr") or "").strip()
+            if not distr_no:
+                continue
+            per_distr = counts.setdefault(distr_no, {})
+            per_distr[tag] = per_distr.get(tag, 0) + 1
+    return counts
+
+
+def _parse_speed_distributions(
+    root: ET.Element,
+    des_speed_decisions: list[dict[str, Any]] | None = None,
+    vehicle_compositions: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """{no, name, points, point_count, points_truncated, referenced_by,
+    reference_count} per ``<speedDistributions><speedDistribution>``.
+
+    v2a unit ⑧ (2026-07-27) shipped {no, name}; QUEUE 3 (v2a) unit 3
+    (2026-07-29) EXTENDS it in place with points + reference counts (per the
+    task brief: "Check whether unit ⑧ already shipped a
+    get_des_speed_distributions... If so, EXTEND it... rather than
+    duplicating") -- the envelope shape stays backward-compatible (every
+    existing {no, name} consumer still works; new keys are additive).
+
+    This is the SAME distribution object type
     :func:`services.simulation_network_builder.inject_reduced_speed_area`
     already injects for ``set_reduced_speed_area`` (v2 unit ②) -- confirmed
-    at the COM level too by this unit's own probe
+    at the COM level too by unit ⑧'s own probe
     (``backend/tools/probe_des_speed_decisions.py``, Roundabout Billings.US):
     the collection is ``Net.SpeedDistributions`` (``Net.DesSpeedDistributions``
     does NOT exist -- ``AttributeError``), not a dedicated per-feature
@@ -719,11 +858,73 @@ def _parse_speed_distributions(root: ET.Element) -> list[dict[str, Any]]:
     ``constraints.py``'s ``des_speed_distribution_not_found`` still refuses
     proactively (with a candidate list) so the failure is a structured
     refusal, not a raw COM error string, per the guardrail doctrine.
+
+    **Reference counting (this unit's own addition, the "⑧ lesson" --
+    ``SpeedDistributions is one shared collection"):** a distribution can be
+    referenced by desired-speed decisions (``des_speed_decisions[].
+    veh_class_assignments[].des_speed_distr_no``), vehicle compositions
+    (``vehicle_compositions[].entries[].des_speed_distr`` -- VERIFIED live by
+    a static grep, NOT assumed from the task brief's own parenthetical: every
+    real ``<vehicleCompositionRelativeFlow>`` across all 25 example networks
+    DOES carry a ``desSpeedDistr`` attribute, 305 total occurrences), reduced
+    speed areas (:func:`_reduced_speed_area_distribution_refs`), and four
+    further real XML element types with no shadow-model object of their own
+    (:func:`_other_speed_distribution_reference_counts`). ``reference_count``
+    is the grand total across every category; ``referenced_by`` is silent
+    (all-zero categories) for an unreferenced distribution, matching the
+    guardrail doctrine's "silent when there's nothing to warn about" norm.
     """
-    return [
-        {"no": d.get("no", ""), "name": d.get("name", "")}
-        for d in root.findall(".//speedDistributions/speedDistribution")
-    ]
+    des_speed_decisions = des_speed_decisions or []
+    vehicle_compositions = vehicle_compositions or []
+
+    decision_refs: dict[str, list[str]] = {}
+    for dec in des_speed_decisions:
+        for assignment in dec.get("veh_class_assignments", []):
+            distr_no = str(assignment.get("des_speed_distr_no", "") or "").strip()
+            if not distr_no:
+                continue
+            decision_refs.setdefault(distr_no, []).append(f"{dec.get('no', '')}.{assignment.get('veh_class_no', '')}")
+
+    composition_refs: dict[str, list[str]] = {}
+    for comp in vehicle_compositions:
+        for entry in comp.get("entries", []):
+            distr_no = str(entry.get("des_speed_distr", "") or "").strip()
+            if not distr_no:
+                continue
+            composition_refs.setdefault(distr_no, []).append(f"{comp.get('no', '')}.{entry.get('veh_type', '')}")
+
+    reduced_speed_area_refs = _reduced_speed_area_distribution_refs(root)
+    other_ref_counts = _other_speed_distribution_reference_counts(root)
+
+    result: list[dict[str, Any]] = []
+    for d in root.findall(".//speedDistributions/speedDistribution"):
+        no = d.get("no", "")
+        all_points = _parse_speed_distribution_points(d)
+        capped_points = all_points[:_SPEED_DISTRIBUTION_POINTS_CAP]
+
+        dec_ids = decision_refs.get(no, [])
+        comp_ids = composition_refs.get(no, [])
+        rsa_ids = reduced_speed_area_refs.get(no, [])
+        other_by_tag = other_ref_counts.get(no, {})
+        other_total = sum(other_by_tag.values())
+
+        result.append(
+            {
+                "no": no,
+                "name": d.get("name", ""),
+                "points": capped_points,
+                "point_count": len(all_points),
+                "points_truncated": len(all_points) > len(capped_points),
+                "referenced_by": {
+                    "des_speed_decisions": _bounded_reference_ids(dec_ids),
+                    "vehicle_compositions": _bounded_reference_ids(comp_ids),
+                    "reduced_speed_areas": _bounded_reference_ids(rsa_ids),
+                    "other": {"count": other_total, "by_tag": other_by_tag},
+                },
+                "reference_count": len(dec_ids) + len(comp_ids) + len(rsa_ids) + other_total,
+            }
+        )
+    return result
 
 
 def _parse_lane_token(raw: str | None) -> tuple[str, str]:
@@ -1066,7 +1267,7 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         # v2a unit ⑧
         "des_speed_decisions": des_speed_decisions,
         "des_speed_decision_entries": _flatten_des_speed_decision_entries(des_speed_decisions),
-        "des_speed_distributions": _parse_speed_distributions(root),
+        "des_speed_distributions": _parse_speed_distributions(root, des_speed_decisions, vehicle_compositions),
         # v2a unit ⑨: fixed-time signal-program green splits — nested for the
         # planner (get_signal_programs), flat for guardrails.py (the
         # nothing-else-moved diff + target-persisted check), same split as
@@ -1736,7 +1937,7 @@ class GetDesSpeedDistributionsParams(BaseModel):
     params=GetDesSpeedDistributionsParams,
 )
 def get_des_speed_distributions(params: GetDesSpeedDistributionsParams) -> dict[str, Any]:
-    """Return the network's speed distributions (id, name) -- these are the valid targets for set_des_speed_decision's des_speed_distr_no and restore_distr_no params; a number not in this list will be refused before it ever reaches Vissim. Shared with set_reduced_speed_area (one distribution object type, two features). Optionally filter by distribution_no -- an unfiltered call on a large network returns only the first 60 (with an explicit truncated flag and a hint)."""
+    """Return the network's speed distributions -- id, name, the cumulative curve's data points (speed_kmh, cum_fraction; capped at 30 per distribution with a points_truncated flag -- no real network has ever needed more), and referenced_by (how many desired-speed decisions, vehicle compositions, reduced-speed areas, and other network elements point at this distribution, each a {count, ids, truncated} bounded list, plus reference_count as the grand total -- editing a distribution's points affects EVERY one of these). These are the valid targets for set_des_speed_decision's des_speed_distr_no/restore_distr_no and set_des_speed_distribution_points' distribution_no; a number not in this list will be refused before it ever reaches Vissim. Shared with set_reduced_speed_area (one distribution object type, several features). Optionally filter by distribution_no -- an unfiltered call on a large network returns only the first 60 (with an explicit truncated flag and a hint)."""
     distributions = _current_shadow_model()["des_speed_distributions"]
 
     if params.distribution_no is not None:

@@ -104,6 +104,11 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # "des_speed_decision_entries" above exactly). Required by BOTH postwrite
     # checks, same as every flat entry above.
     "priority_rule_markers": "id",
+    # QUEUE 3 (v2a) unit 3: des_speed_distributions itself (no flattening
+    # needed -- unlike routes/composition-entries/des-speed-decision-
+    # entries/signal-program-splits/priority-rule-markers, a distribution
+    # already has a single-token identity, its own "no").
+    "des_speed_distributions": "no",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -287,6 +292,33 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "value_field": "gap_headway",
         "none_means": "not_persisted",
     },
+    # QUEUE 3 (v2a) unit 3: desired-speed distribution curve, ATOMIC
+    # full-curve replace. value_field is "points" -- a LIST of {speed_kmh,
+    # cum_fraction} dicts, the FIRST list-shaped (not dict-shaped) top-level
+    # value_field in this table; guardrails.py's own _values_differ already
+    # recurses structurally through lists of dicts (length + element-wise
+    # compare), so no new comparison machinery is needed -- the whole
+    # replaced curve is compared as one atomic unit, matching "atomic
+    # full-curve replace beats point surgery" exactly: a half-applied edit
+    # (wrong length, or any one point off) fails the compare as a WHOLE,
+    # never a false partial pass. none_means "not_persisted": the parser
+    # can always see a distribution's points whenever the speedDistribution
+    # element itself exists (plain XML attributes, no opaque-blob case like
+    # signal cycle_time). "coupled_fields" -- "point_count"/
+    # "points_truncated" are DERIVED from "points" at parse time
+    # (tools_network._parse_speed_distributions), so a write that changes
+    # the point COUNT always also changes those two fields as an
+    # unavoidable side effect -- the SAME "exempt the whole derived group
+    # together" lesson unit ⑧'s des_speed_distr_name coupling taught
+    # (_write_target_fields's own docstring), applied here BEFORE ever
+    # shipping rather than found live and patched after.
+    "set_des_speed_distribution_points": {
+        "object_class": "des_speed_distributions",
+        "id_param": "distribution_no",
+        "value_field": "points",
+        "none_means": "not_persisted",
+        "coupled_fields": ("point_count", "points_truncated"),
+    },
 }
 
 # v2a unit ⑧: ``set_des_speed_decision`` is the first write tool whose action
@@ -317,6 +349,57 @@ _PAIRED_EXTRA_TARGET_SPEC: dict[str, dict[str, Any]] = {
         # unavoidable parse-time side effect.
         "coupled_fields": ("des_speed_distr_name",),
     },
+}
+
+# QUEUE 3 (v2a) unit 3's own regression fix: adding "des_speed_distributions"
+# to _SHADOW_OBJECT_ID_FIELDS (needed for THIS unit's own
+# set_des_speed_distribution_points postwrite verification) newly exposed a
+# PRE-EXISTING, sanctioned behavior of v2 unit ②'s set_reduced_speed_area --
+# it legitimately injects a BRAND NEW <speedDistribution> as part of its own
+# XML-injection write (services.simulation_network_builder.
+# inject_reduced_speed_area), which the diff had never been able to see
+# before (no shadow key tracked distributions at all pre-unit-3). Newly
+# ADDED objects have no per-tool exemption mechanism today -- the
+# _WRITE_TARGET_FIELD_SPEC/_PAIRED_EXTRA_TARGET_SPEC machinery above only
+# ever exempts FIELD-level changes on an object present in BOTH before/after
+# (an "added" id is unconditional evidence in _diff_object_list, by
+# construction: there is no before-side object to attach an exempt field
+# list to). Rather than design a brand-new "allowed to add" mechanism broad
+# enough for arbitrary future tools, this is a small, ADDITIVE opt-in
+# (mirroring the coupled_fields/trigger_param precedent already established
+# twice in this file): a tool names the object_class(es) its OWN sanctioned
+# action is known to add brand-new objects into, and every id ADDED to that
+# class during THIS tool's write is treated as expected, never evidence.
+# Every OTHER tool's behavior is byte-unchanged: this dict is empty for
+# them, so "added" stays unconditional evidence exactly as before.
+_ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
+    "set_reduced_speed_area": frozenset({"des_speed_distributions"}),
+}
+
+# QUEUE 3 (v2a) unit 3's SECOND regression fix, found live-testing this same
+# addition against a REAL parsed (not hand-built) shadow model:
+# "des_speed_distributions"' own "referenced_by"/"reference_count" fields
+# (tools_network._parse_speed_distributions) are PURELY DERIVED from OTHER
+# object lists (des_speed_decisions, vehicle_compositions, a static XML scan)
+# -- no tool ever writes them directly, and no tool's own
+# _WRITE_TARGET_FIELD_SPEC entry could ever name them as its "intended
+# target" (coupled_fields exempts a field only WITHIN the writing tool's own
+# target object_class -- but here the field that shifts lives on a
+# DIFFERENT object_class than the one the tool actually wrote to: e.g.
+# set_des_speed_decision reassigning decision 6's vehClass=10 from
+# distribution 50 to 25 legitimately changes BOTH distributions' OWN
+# reference_count/referenced_by, even though the tool's target object_class
+# is "des_speed_decision_entries", not "des_speed_distributions" at all).
+# Reproduced live: a genuine, correct set_des_speed_decision write against a
+# real two-decision two-distribution network false-positived as "something
+# else moved" on BOTH distributions before this fix. Since these two fields
+# can NEVER be a tool's own intended write target for ANY tool (there is no
+# verb that sets them), the correct fix is a BLANKET, tool-agnostic
+# exemption for this object_class -- not a per-tool coupled_fields entry,
+# which would need to enumerate every current and future tool capable of
+# moving a desSpeedDistr/vehClassDesSpeedDistr/... reference around.
+_ALWAYS_EXEMPT_FIELDS: dict[str, frozenset[str]] = {
+    "des_speed_distributions": frozenset({"referenced_by", "reference_count"}),
 }
 
 
@@ -493,6 +576,9 @@ def _diff_object_list(
     before: list[dict[str, Any]],
     after: list[dict[str, Any]],
     exempt_targets: list[tuple[str, frozenset[str]]] | None,
+    *,
+    suppress_added: bool = False,
+    always_exempt_fields: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Structural diff of one shadow-model object list, id-keyed.
 
@@ -509,6 +595,23 @@ def _diff_object_list(
     ``(id, fields)`` tuple could no longer represent every tool's needs.
     Every other addition, removal, or field-level change becomes one
     evidence entry.
+
+    ``suppress_added`` (QUEUE 3 (v2a) unit 3, see ``_ALLOWS_NEW_OBJECTS_IN``)
+    — when true, a brand-new id present only in ``after`` is expected
+    (the calling tool's own sanctioned action legitimately creates one),
+    not evidence. Removals are NEVER suppressed by this flag — an
+    unexpectedly vanished object stays evidence regardless.
+
+    ``always_exempt_fields`` (QUEUE 3 (v2a) unit 3's SECOND regression fix,
+    see ``_ALWAYS_EXEMPT_FIELDS``) — field names that never become evidence
+    for ANY object in this object_class, regardless of WHICH tool wrote or
+    which object is the tool's own named target. Unlike ``exempt_targets``
+    (tool-specific, target-specific) this is for fields that are PURELY
+    DERIVED from other object lists and have no write path of their own at
+    all (e.g. a distribution's own reference count, which shifts whenever
+    ANY OTHER tool reassigns something to point at a different
+    distribution) — no per-tool spec could enumerate every tool capable of
+    moving such a reference, so the field itself is exempt everywhere.
     """
     before_by_id = _index_by_id(before, id_field)
     after_by_id = _index_by_id(after, id_field)
@@ -516,11 +619,14 @@ def _diff_object_list(
 
     for obj_id in sorted(set(before_by_id) - set(after_by_id)):
         evidence.append({"object_class": object_class, "object_id": obj_id, "change": "removed"})
-    for obj_id in sorted(set(after_by_id) - set(before_by_id)):
-        evidence.append({"object_class": object_class, "object_id": obj_id, "change": "added"})
+    if not suppress_added:
+        for obj_id in sorted(set(after_by_id) - set(before_by_id)):
+            evidence.append({"object_class": object_class, "object_id": obj_id, "change": "added"})
     for obj_id in sorted(set(before_by_id) & set(after_by_id)):
         before_obj, after_obj = before_by_id[obj_id], after_by_id[obj_id]
         for field_name in sorted(set(before_obj) | set(after_obj)):
+            if field_name in always_exempt_fields:
+                continue
             if exempt_targets is not None and any(
                 target_id == obj_id and field_name in fields for target_id, fields in exempt_targets
             ):
@@ -653,6 +759,8 @@ def _nothing_else_moved_diff(
                 (extra_target_id, frozenset({extra_spec["value_field"], *extra_spec.get("coupled_fields", ())}))
             )
 
+    allow_new = _ALLOWS_NEW_OBJECTS_IN.get(tool, frozenset())
+
     evidence: list[dict[str, Any]] = []
     for object_class, id_field in _SHADOW_OBJECT_ID_FIELDS.items():
         evidence.extend(
@@ -662,6 +770,8 @@ def _nothing_else_moved_diff(
                 before_model.get(object_class, []),
                 after_model.get(object_class, []),
                 exemptions.get(object_class),
+                suppress_added=object_class in allow_new,
+                always_exempt_fields=_ALWAYS_EXEMPT_FIELDS.get(object_class, frozenset()),
             )
         )
     return evidence

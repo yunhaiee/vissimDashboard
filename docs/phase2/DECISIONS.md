@@ -2626,3 +2626,23 @@ from the brief deliberately: refuse only negative/non-finite (0 is the most comm
 13/20 Murdoch markers; refusing it would make the tool unable to restate a network's own data),
 warn above 10s gap / 50m clearance. Registry 62→65. Suite 1417/1/1 (controller re-ran; also
 re-drove all four tiers + both miss paths live against the real model's shadow side).
+
+## 2026-07-29 — Q3 unit ③: desired-speed curve editing shipped; the silent-failure map is the product
+
+Probed live (Roundabout Billings.US): `SpeedDistrDatPts` has no ItemByKey, no add/remove —
+atomic `ReplaceAll` is the only reliable write path, per-point `SetAttValue` silently no-ops
+under COM-call pressure, and `ReplaceAll` demands a FLAT alternating `(x,fx,...)` sequence —
+nested pairs report success and change nothing. `X` follows the display-unit landmine (proven
+both directions on a MILESPERHOUR network); converted at the controller boundary so everything
+above speaks km/h. **The silent-failure map:** Vissim silently accepts decreasing speeds,
+mid-curve fraction reversals, absurd speeds (99999), and duplicate points; it rejects <2 points,
+fractions outside [0,1], endpoints ≠ 0/1, negative speeds. Every silently-accepted row is now a
+refuse-tier constraint; every rejected row is refused proactively with a clear reason. Real PTV
+data disproved the brief's "strictly increasing" guess — 19 legitimate step-function
+distributions exist in example networks, so only genuine decreases refuse. The ⑧ lesson became
+`..._shared_target` (warn): on the real model distr 60 carries 120 decisions + 16 SLK
+composition entries (the client's actual calibration data) and every edit says so. Two
+guardrails regressions fixed en route: `_ALLOWS_NEW_OBJECTS_IN` (unit ② legitimately creates a
+distribution) and `_ALWAYS_EXEMPT_FIELDS` (derived reference counts shift on unrelated writes).
+Registry 65→72. Suite 1459/1/1 (controller re-ran; re-drove all tiers + the step-function
+acceptance live against the real model's 45 distributions).

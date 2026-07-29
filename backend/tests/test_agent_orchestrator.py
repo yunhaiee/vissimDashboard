@@ -63,6 +63,8 @@ EXPECTED_WRITE_TOOLS = {
     "set_signal_green_split",
     # QUEUE 3 unit 2
     "set_priority_rule_gap_headway",
+    # QUEUE 3 (v2a) unit 3
+    "set_des_speed_distribution_points",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

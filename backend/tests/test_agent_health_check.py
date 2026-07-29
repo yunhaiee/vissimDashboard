@@ -63,7 +63,15 @@ def test_health_check_runner_against_demo_dataset():
     # priority_rule_gap_headway_implausible) -- all three need a proposed
     # action's params, so none opts into the dataset scan either, same shape
     # as vehicle_input_siblings_share_link above.
-    assert report["summary"]["edit_time_only_n"] == 51
+    # 58, not 51: QUEUE 3 (v2a) unit 3 (2026-07-29) added seven more
+    # preflight-only constraints for the new
+    # set_des_speed_distribution_points tool (des_speed_distribution_points_
+    # count_invalid / _speed_negative / _speed_not_monotonic / _fraction_
+    # invalid / _speed_implausible / _duplicate / _shared_target) -- all
+    # seven need a proposed action's own "points" param, so none opts into
+    # the dataset scan either, same shape as the priority-rule additions
+    # above.
+    assert report["summary"]["edit_time_only_n"] == 58
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

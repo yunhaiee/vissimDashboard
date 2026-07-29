@@ -3873,6 +3873,303 @@ def test_priority_rule_object_not_found_fires_for_bogus_rule_no():
 
 
 # ---------------------------------------------------------------------------
+# des_speed_distribution_points_* -- QUEUE 3 (v2a) unit 3, the "legitimate
+# CC1 route" showcase. Every bound below mirrors
+# backend/tools/probe_des_speed_curves.py's own live silent-failure map
+# (see that check's own registration comment in constraints.py).
+# ---------------------------------------------------------------------------
+
+
+def _points(pairs: list[tuple[float, float]]) -> list[dict[str, float]]:
+    return [{"speed_kmh": speed, "cum_fraction": fraction} for speed, fraction in pairs]
+
+
+_VALID_CURVE = [(0.0, 0.0), (30.0, 0.5), (60.0, 1.0)]
+
+
+def test_des_speed_distribution_points_object_not_found_fires_for_bogus_distribution_no():
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points", distribution_no="999", points=_points(_VALID_CURVE)
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["object_class"] == "des_speed_distributions"
+
+
+@pytest.mark.parametrize("bad_points", [[], _points([(50.0, 1.0)])])
+def test_des_speed_distribution_points_count_invalid_fires_for_fewer_than_2(bad_points):
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action("set_des_speed_distribution_points", distribution_no="25", points=bad_points)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "des_speed_distribution_points_count_invalid"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details["point_count"] == len(bad_points)
+    _assert_well_formed_messages(matches[0], must_contain_ko="속도분포 곡선")
+
+
+def test_des_speed_distribution_points_count_invalid_silent_for_exactly_2():
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points", distribution_no="25", points=_points([(0.0, 0.0), (50.0, 1.0)])
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "des_speed_distribution_points_count_invalid" for f in findings)
+
+
+def test_des_speed_distribution_points_speed_negative_fires():
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points",
+        distribution_no="25",
+        points=_points([(-10.0, 0.0), (50.0, 1.0)]),
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "des_speed_distribution_points_speed_negative"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details["negative_speeds_kmh"] == [-10.0]
+
+
+def test_des_speed_distribution_points_speed_negative_silent_for_zero():
+    # 0 km/h is a legitimate real value (a near-stationary desired speed),
+    # not merely "not negative" as a technicality.
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points",
+        distribution_no="25",
+        points=_points([(0.0, 0.0), (0.0, 1.0)]),
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "des_speed_distribution_points_speed_negative" for f in findings)
+
+
+def test_des_speed_distribution_points_speed_not_monotonic_fires_for_a_genuine_decrease():
+    # Vissim itself SILENTLY ACCEPTS this (live-verified) -- this codebase's
+    # own exclusive screen.
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points",
+        distribution_no="25",
+        points=_points([(0.0, 0.0), (100.0, 0.5), (50.0, 1.0)]),
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [
+        f for f in findings if f.constraint_id == "des_speed_distribution_points_speed_not_monotonic"
+    ]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details["decrease_at_index"] == 2
+
+
+def test_des_speed_distribution_points_speed_not_monotonic_silent_for_equal_speeds():
+    # The legitimate "step function" pattern -- real, PTV-authored data
+    # (Rollercoaster.inpx) uses this shape; must NOT be refused.
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points",
+        distribution_no="25",
+        points=_points([(50.0, 0.0), (50.0, 1.0)]),
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "des_speed_distribution_points_speed_not_monotonic" for f in findings
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_curve,expected_snippet",
+    [
+        ([(0.0, 0.0), (50.0, 0.5), (100.0, 1.5)], "1.5"),  # fx above 1
+        ([(0.0, -0.2), (50.0, 0.5), (100.0, 1.0)], "0.2"),  # fx below 0 (first point)
+        ([(0.0, 0.2), (50.0, 0.5), (100.0, 1.0)], "0.2"),  # first fx != 0
+        ([(0.0, 0.0), (50.0, 0.5), (100.0, 0.9)], "0.9"),  # last fx != 1
+        ([(0.0, 0.0), (50.0, 0.9), (70.0, 0.3), (100.0, 1.0)], "0.3"),  # mid-curve reversal
+    ],
+)
+def test_des_speed_distribution_points_fraction_invalid_fires(bad_curve, expected_snippet):
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points", distribution_no="25", points=_points(bad_curve)
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "des_speed_distribution_points_fraction_invalid"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert expected_snippet in matches[0].messages["en"]
+
+
+def test_des_speed_distribution_points_fraction_invalid_silent_for_a_valid_curve():
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points", distribution_no="25", points=_points(_VALID_CURVE)
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "des_speed_distribution_points_fraction_invalid" for f in findings
+    )
+
+
+def test_des_speed_distribution_points_speed_implausible_warns_above_bound():
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points",
+        distribution_no="25",
+        points=_points([(0.0, 0.0), (99999.0, 1.0)]),
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [
+        f for f in findings if f.constraint_id == "des_speed_distribution_points_speed_implausible"
+    ]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["implausible_speeds_kmh"] == [99999.0]
+
+
+def test_des_speed_distribution_points_speed_implausible_silent_within_real_observed_range():
+    # 205 km/h is the highest real value observed across all 25 Vissim
+    # example networks -- must not warn comfortably below the 250 km/h bound.
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points",
+        distribution_no="25",
+        points=_points([(0.0, 0.0), (205.0, 1.0)]),
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "des_speed_distribution_points_speed_implausible" for f in findings
+    )
+
+
+def test_des_speed_distribution_points_duplicate_warns_for_an_exact_duplicate():
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points",
+        distribution_no="25",
+        points=_points([(0.0, 0.0), (50.0, 0.5), (50.0, 0.5), (100.0, 1.0)]),
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "des_speed_distribution_points_duplicate"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["duplicate_points"] == [{"speed_kmh": 50.0, "cum_fraction": 0.5}]
+
+
+def test_des_speed_distribution_points_duplicate_silent_for_the_legitimate_step_function():
+    # Same speed, DIFFERENT fraction -- a real curve shape, not a duplicate.
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_des_speed_distribution_points",
+        distribution_no="25",
+        points=_points([(50.0, 0.0), (50.0, 1.0)]),
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "des_speed_distribution_points_duplicate" for f in findings)
+
+
+def test_des_speed_distribution_points_shared_target_warns_with_bounded_ids():
+    shared_distribution = {
+        "no": "50",
+        "name": "55 mph",
+        "reference_count": 3,
+        "referenced_by": {
+            "des_speed_decisions": {"count": 1, "ids": ["6.10"], "truncated": False},
+            "vehicle_compositions": {"count": 1, "ids": ["1.100"], "truncated": False},
+            "reduced_speed_areas": {"count": 0, "ids": [], "truncated": False},
+            "other": {"count": 1, "by_tag": {"ptLine": 1}},
+        },
+    }
+    shadow = _shadow_model(des_speed_distributions=[shared_distribution])
+    action = _action(
+        "set_des_speed_distribution_points", distribution_no="50", points=_points(_VALID_CURVE)
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "des_speed_distribution_points_shared_target"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "warn"
+    assert finding.details["reference_count"] == 3
+    assert "6.10" in finding.messages["en"]
+    assert "1.100" in finding.messages["en"]
+    _assert_well_formed_messages(finding, must_contain_ko="공유 대상")
+
+
+def test_des_speed_distribution_points_shared_target_silent_when_unreferenced():
+    unreferenced_distribution = {
+        "no": "99",
+        "name": "unused",
+        "reference_count": 0,
+        "referenced_by": {
+            "des_speed_decisions": {"count": 0, "ids": [], "truncated": False},
+            "vehicle_compositions": {"count": 0, "ids": [], "truncated": False},
+            "reduced_speed_areas": {"count": 0, "ids": [], "truncated": False},
+            "other": {"count": 0, "by_tag": {}},
+        },
+    }
+    shadow = _shadow_model(des_speed_distributions=[unreferenced_distribution])
+    action = _action(
+        "set_des_speed_distribution_points", distribution_no="99", points=_points(_VALID_CURVE)
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "des_speed_distribution_points_shared_target" for f in findings
+    )
+
+
+@pytest.mark.parametrize(
+    "constraint_id",
+    [
+        "des_speed_distribution_points_count_invalid",
+        "des_speed_distribution_points_speed_negative",
+        "des_speed_distribution_points_speed_not_monotonic",
+        "des_speed_distribution_points_fraction_invalid",
+        "des_speed_distribution_points_speed_implausible",
+        "des_speed_distribution_points_duplicate",
+        "des_speed_distribution_points_shared_target",
+    ],
+)
+def test_des_speed_distribution_points_checks_do_not_apply_to_other_tools(constraint_id):
+    shadow = _shadow_model(des_speed_distributions=_DES_SPEED_DISTRIBUTIONS_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == constraint_id for f in findings)
+
+
+# ---------------------------------------------------------------------------
 # M3.1 — final registry shape (all 4 batches landed)
 # ---------------------------------------------------------------------------
 
@@ -3924,9 +4221,19 @@ def test_registry_size_matches_m3_1_catalog_port():
     # §-numbered catalog entry, a defensive addition" shapes for the new
     # set_priority_rule_gap_headway tool, mirroring the des_speed_decision_
     # entry_not_found / vehicle_composition_weight_invalid / vehicle_
-    # composition_share_drastic_change precedents) == 65.
+    # composition_share_drastic_change precedents) == 65, + 7 (QUEUE 3 (v2a)
+    # unit 3, 2026-07-29: des_speed_distribution_points_count_invalid /
+    # des_speed_distribution_points_speed_negative / des_speed_distribution_
+    # points_speed_not_monotonic / des_speed_distribution_points_fraction_
+    # invalid / des_speed_distribution_points_speed_implausible /
+    # des_speed_distribution_points_duplicate / des_speed_distribution_
+    # points_shared_target -- all seven "not a §-numbered catalog entry, a
+    # defensive addition" shapes for the new set_des_speed_distribution_points
+    # tool, mirroring the set_priority_rule_gap_headway/set_signal_green_split
+    # precedents; des_speed_distribution_not_found already existed (v2a unit
+    # ⑧, gates set_des_speed_decision) and was NOT touched) == 72.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 65
+    assert len(get_registry()) == 72
 
 
 def test_registry_has_unique_ids():

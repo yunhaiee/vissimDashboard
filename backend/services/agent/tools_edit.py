@@ -18,8 +18,9 @@ Param names for the object-targeting tools (vehicle input, signal cycle,
 signal offset, conflict area status, -- v2 unit ⑥ -- routing decision
 route relative flow, -- v2 unit ⑦ -- vehicle composition relative
 flow, -- v2a unit ⑧ -- desired-speed decision distribution assignment,
--- v2a unit ⑨ -- signal green split, and -- QUEUE 3 unit 2 --
-priority-rule conflict-marker gap/headway) match
+-- v2a unit ⑨ -- signal green split, -- QUEUE 3 unit 2 --
+priority-rule conflict-marker gap/headway, and -- QUEUE 3 (v2a) unit 3 --
+desired-speed DISTRIBUTION curve points) match
 ``guardrails._WRITE_TARGET_FIELD_SPEC`` EXACTLY
 (tool name AND field names) -- that table is what lets the postwrite
 "nothing else moved" diff exempt each tool's own intended target field;
@@ -894,3 +895,64 @@ def set_priority_rule_gap_headway(params: SetPriorityRuleGapHeadwayParams) -> di
         f"headway_m={readback['headway_m']})."
     )
     return {"message": message, "verification": verification}
+
+
+# ---------------------------------------------------------------------------
+# set_des_speed_distribution_points(distribution_no, points)
+#
+# QUEUE 3 (v2a) unit 3 -- the "legitimate CC1 route" showcase. ATOMIC
+# full-curve replace: the whole point list is replaced in one call, never a
+# single point edited in place. This is not merely a design preference --
+# COM's own SpeedDistrDatPts collection offers no reliable per-point surgery
+# at all (see VissimController.set_des_speed_distribution_points's own
+# module comment: no ItemByKey, no per-point Add/Remove, and per-point
+# SetAttValue was live-verified to sometimes silently no-op) -- ReplaceAll
+# (atomic, whole-collection) is the ONLY mechanism this codebase trusts.
+# ---------------------------------------------------------------------------
+
+
+class SpeedDistributionPointParam(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Deliberately NOT bounded here (no ge=0/le=1, no min_length on the
+    # parent list) -- every mathematical invariant (>= 2 points, fraction in
+    # [0, 1], non-decreasing speed/fraction, endpoints 0/1) is a
+    # constraints.py preflight refuse-tier check instead, per the guardrail
+    # doctrine: a bare pydantic ValidationError has no ko/en/ja rendering
+    # and no candidate/suggested-fix machinery, so every semantic bound
+    # belongs in the constraint catalog, not the params model.
+    speed_kmh: float
+    cum_fraction: float
+
+
+class SetDesSpeedDistributionPointsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    distribution_no: str
+    points: list[SpeedDistributionPointParam]
+
+
+@tool(
+    name="set_des_speed_distribution_points",
+    tier="write",
+    provider="edit",
+    params=SetDesSpeedDistributionPointsParams,
+)
+def set_des_speed_distribution_points(params: SetDesSpeedDistributionPointsParams) -> dict[str, Any]:
+    """Atomically replace a desired-speed distribution's ENTIRE cumulative curve on the active edit session's working network -- points is the complete new point list (each {speed_kmh, cum_fraction}), replacing the whole curve in one operation, never editing a single point in isolation. This is the LEGITIMATE way to change how fast traffic wants to go (editing driving-behavior CC parameters directly is a separate, expert-gated capability). Requirements Vissim itself enforces (curve needs >= 2 points; every cum_fraction in [0, 1]; the first point's cum_fraction must be exactly 0.0 and the last exactly 1.0) plus requirements only this codebase checks (Vissim silently accepts a genuine speed decrease between points, a mid-curve fraction reversal, or an absurdly large speed -- all refused here before ever reaching Vissim; two consecutive points sharing the SAME speed with different fractions is legitimate -- a step-function curve seen in real data). A distribution may be a SHARED target: use get_des_speed_distributions first to see which desired-speed decisions, vehicle compositions, reduced-speed areas, and other elements reference it -- editing it here changes the curve for every one of them simultaneously."""
+    session = _require_session()
+    distribution_no = _coerce_id(params.distribution_no, "distribution_no")
+    points = [{"speed_kmh": p.speed_kmh, "cum_fraction": p.cum_fraction} for p in params.points]
+
+    session.set_des_speed_distribution_points(distribution_no, points)
+    readback = session.get_des_speed_distribution_points(distribution_no)
+    session.persist()
+
+    verification: dict[str, Any] = {"written_value": points, "readback_value": readback}
+    return {
+        "message": (
+            f"Desired-speed distribution {params.distribution_no}'s curve replaced with "
+            f"{len(points)} point(s): {readback}."
+        ),
+        "verification": verification,
+    }

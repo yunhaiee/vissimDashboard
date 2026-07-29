@@ -242,6 +242,30 @@ class FakeEditSession:
         )
         return self._readback["priority_rule_gap_headway"]
 
+    def set_des_speed_distribution_points(
+        self, distribution_no: int, points: list[dict[str, float]]
+    ) -> list[dict[str, float]]:
+        self._record(
+            "set_des_speed_distribution_points", distribution_no=distribution_no, points=points
+        )
+        # Mirrors VissimController.set_des_speed_distribution_points's own
+        # return (an immediate post-write readback) -- a separate
+        # "..._set_return" key (default: falls back to the plain readback
+        # key) lets a test rig a genuine mismatch, same as
+        # set_priority_rule_gap_headway's own "_written"/plain key split.
+        # The TOOL ITSELF ignores this return value (see tools_edit.py --
+        # written_value is always the caller's own intended points, never
+        # whatever the setter call returns), so it exists here only for
+        # completeness/symmetry with the real session's own method shape.
+        return self._readback.get(
+            "des_speed_distribution_points_set_return",
+            self._readback.get("des_speed_distribution_points"),
+        )
+
+    def get_des_speed_distribution_points(self, distribution_no: int) -> list[dict[str, float]]:
+        self._record("get_des_speed_distribution_points", distribution_no=distribution_no)
+        return self._readback["des_speed_distribution_points"]
+
     def persist(self) -> None:
         self.persist_calls += 1
 
@@ -303,6 +327,13 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
         (
             "set_priority_rule_gap_headway",
             {"priority_rule_no": "4", "marker_index": 1, "gap_time_s": 5.0},
+        ),
+        (
+            "set_des_speed_distribution_points",
+            {
+                "distribution_no": "25",
+                "points": [{"speed_kmh": 0.0, "cum_fraction": 0.0}, {"speed_kmh": 50.0, "cum_fraction": 1.0}],
+            },
         ),
     ],
 )
@@ -1457,6 +1488,103 @@ def test_set_priority_rule_gap_headway_marker_index_zero_rejected_at_param_layer
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "invalid_params"
     assert session.calls == []
+
+
+# ---------------------------------------------------------------------------
+# set_des_speed_distribution_points -- QUEUE 3 (v2a) unit 3
+# ---------------------------------------------------------------------------
+
+
+def test_set_des_speed_distribution_points_happy_path():
+    new_points = [
+        {"speed_kmh": 0.0, "cum_fraction": 0.0},
+        {"speed_kmh": 30.0, "cum_fraction": 0.5},
+        {"speed_kmh": 60.0, "cum_fraction": 1.0},
+    ]
+    session = FakeEditSession(readback={"des_speed_distribution_points": new_points})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_distribution_points",
+        distribution_no="25",
+        points=new_points,
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": new_points,
+        "readback_value": new_points,
+    }
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {"op": "set_des_speed_distribution_points", "distribution_no": 25, "points": new_points},
+        {"op": "get_des_speed_distribution_points", "distribution_no": 25},
+    ]
+    # distribution_no was coerced str -> int at the COM boundary.
+    assert isinstance(session.calls[0]["distribution_no"], int)
+    assert "3 point(s)" in envelope["message"]
+
+
+def test_set_des_speed_distribution_points_readback_mismatch_still_reports_ok_envelope():
+    # The tool's OWN job is only to report both values -- comparing them and
+    # refusing on mismatch is guardrails.py's postwrite job (constraint #6).
+    written_points = [{"speed_kmh": 0.0, "cum_fraction": 0.0}, {"speed_kmh": 50.0, "cum_fraction": 1.0}]
+    saved_points = [{"speed_kmh": 0.0, "cum_fraction": 0.0}, {"speed_kmh": 49.0, "cum_fraction": 1.0}]
+    session = FakeEditSession(readback={"des_speed_distribution_points": saved_points})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_distribution_points", distribution_no="25", points=written_points
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": written_points,
+        "readback_value": saved_points,
+    }
+
+
+def test_set_des_speed_distribution_points_vissim_refusal_surfaces_as_structured_error():
+    # The exact live refusal shape from the probe: fewer than 2 points.
+    session = FakeEditSession(
+        raise_on={
+            "set_des_speed_distribution_points": RuntimeError(
+                "Container SpeedDistributionDataPoints must contain at least 2 item(s)."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_des_speed_distribution_points",
+        distribution_no="25",
+        points=[{"speed_kmh": 50.0, "cum_fraction": 1.0}],
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "at least 2 item" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+def test_set_des_speed_distribution_points_empty_list_is_schema_legal_refused_by_constraints_not_pydantic():
+    # An empty points list is NOT rejected at the pydantic layer (no
+    # min_length on the model) -- per this unit's own design, the ">= 2
+    # points" invariant is entirely constraints.py's job (bilingual,
+    # structured), not a bare pydantic ValidationError. Exercised here only
+    # to confirm dispatch-level plumbing accepts the shape; the actual
+    # refusal is covered in test_agent_constraints.py.
+    session = FakeEditSession(raise_on={
+        "set_des_speed_distribution_points": RuntimeError(
+            "Container SpeedDistributionDataPoints must contain at least 2 item(s)."
+        )
+    })
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_des_speed_distribution_points", distribution_no="25", points=[])
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
 
 
 # ---------------------------------------------------------------------------
