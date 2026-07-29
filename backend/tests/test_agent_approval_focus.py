@@ -161,6 +161,84 @@ def test_vehicle_input_volume_focus_against_demo_network():
     assert link["points"]  # sanity: the context link really does have geometry
 
 
+def test_vehicle_input_volume_focus_omits_composition_and_siblings_on_a_network_without_them():
+    """Sibling-disambiguation unit (2026-07-28): the extra fields are
+    OPTIONAL. The demo network has no vehicle compositions at all and one
+    input per link, so its focus element must keep the exact historical
+    ``{type, id, label}`` shape -- nothing nulled, nothing invented."""
+    focus = resolve_focus(
+        "set_vehicle_input_volume",
+        {"input_no": "1", "volume": 600},
+        shadow_model=_demo_shadow_model(),
+        inpx_path=DEMO_INPX,
+    )
+
+    element = next(e for e in focus["elements"] if e["type"] == "vehicle_input")
+    assert set(element.keys()) == {"type", "id", "label"}
+
+
+def test_vehicle_input_volume_focus_carries_composition_and_same_point_siblings(tmp_path: Path):
+    """The real client model's shape: three inputs, one per vehicle class, on
+    ONE link at ONE coordinate, all sharing the SAME name -- so ``label``
+    alone cannot disambiguate and ``composition``/``siblings`` must."""
+    inpx = tmp_path / "siblings.inpx"
+    inpx.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?><network>'
+        '<links><link no="620" name="Jennalup St WB"><geometry><linkPolyPts>'
+        '<linkPolyPoint x="0" y="0" zOffset="0"/><linkPolyPoint x="100" y="0" zOffset="0"/>'
+        '</linkPolyPts></geometry><lanes><lane width="3.5"/></lanes></link></links>'
+        '<vehicleCompositions>'
+        '<vehicleComposition no="1" name="Class1"/>'
+        '<vehicleComposition no="2" name="Class2-5"/>'
+        '<vehicleComposition no="3" name="Class6-9"/>'
+        "</vehicleCompositions>"
+        '<vehicleInputs>'
+        '<vehicleInput no="107" name="Jennalup ST_WB" link="620"><timeIntVehVols>'
+        '<timeIntervalVehVolume timeInt="1 0" volume="127.3" vehComp="1"/></timeIntVehVols></vehicleInput>'
+        '<vehicleInput no="207" name="Jennalup ST_WB" link="620"><timeIntVehVols>'
+        '<timeIntervalVehVolume timeInt="1 0" volume="19" vehComp="2"/></timeIntVehVols></vehicleInput>'
+        '<vehicleInput no="307" name="Jennalup ST_WB" link="620"><timeIntVehVols>'
+        '<timeIntervalVehVolume timeInt="1 0" volume="0.95" vehComp="3"/></timeIntVehVols></vehicleInput>'
+        "</vehicleInputs></network>",
+        encoding="utf-8",
+    )
+    shadow_model = build_shadow_model(inpx)
+
+    focus = resolve_focus(
+        "set_vehicle_input_volume",
+        {"input_no": "107", "volume": 6000},
+        shadow_model=shadow_model,
+        inpx_path=inpx,
+    )
+
+    element = next(e for e in focus["elements"] if e["type"] == "vehicle_input")
+    assert element == {
+        "type": "vehicle_input",
+        "id": "107",
+        "label": "Jennalup ST_WB",
+        "composition": "Class1",
+        "composition_no": "1",
+        "siblings": ["207", "307"],
+    }
+
+    # Each sibling gets its OWN class and its own sibling list -- this is the
+    # payload the card needs to say WHICH of the three stacked glyphs is
+    # being written.
+    for input_no, composition, siblings in (
+        ("207", "Class2-5", ["107", "307"]),
+        ("307", "Class6-9", ["107", "207"]),
+    ):
+        sibling_focus = resolve_focus(
+            "set_vehicle_input_volume",
+            {"input_no": input_no, "volume": 100},
+            shadow_model=shadow_model,
+            inpx_path=inpx,
+        )
+        element = next(e for e in sibling_focus["elements"] if e["type"] == "vehicle_input")
+        assert element["composition"] == composition
+        assert element["siblings"] == siblings
+
+
 def test_vehicle_input_volume_focus_unknown_id_degrades_gracefully():
     focus = resolve_focus(
         "set_vehicle_input_volume",

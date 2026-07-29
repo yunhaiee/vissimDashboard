@@ -143,7 +143,7 @@ class _FocusAccumulator:
     bbox. Only the bbox math changed."""
 
     def __init__(self) -> None:
-        self.elements: list[dict[str, str]] = []
+        self.elements: list[dict[str, Any]] = []
         self._seen: set[tuple[str, str]] = set()
         self._x_min: float | None = None
         self._x_max: float | None = None
@@ -154,7 +154,15 @@ class _FocusAccumulator:
         self._ay_min: float | None = None
         self._ay_max: float | None = None
 
-    def add_element(self, elem_type: str, elem_id: Any, label: str | None) -> None:
+    def add_element(
+        self, elem_type: str, elem_id: Any, label: str | None, extra: dict[str, Any] | None = None
+    ) -> None:
+        """Record one focus element. ``extra`` merges OPTIONAL, type-specific
+        disambiguation fields onto it (sibling-disambiguation unit,
+        2026-07-28) — empty/None values are dropped rather than shipped as
+        nulls, so every element type that has nothing extra to say keeps the
+        exact ``{type, id, label}`` shape it always had, and a network that
+        lacks the datum never carries an empty placeholder."""
         elem_id_str = str(elem_id or "")
         if not elem_id_str:
             return
@@ -162,7 +170,12 @@ class _FocusAccumulator:
         if key in self._seen:
             return
         self._seen.add(key)
-        self.elements.append({"type": elem_type, "id": elem_id_str, "label": label or elem_id_str})
+        element: dict[str, Any] = {"type": elem_type, "id": elem_id_str, "label": label or elem_id_str}
+        for field, value in (extra or {}).items():
+            if value in (None, "", [], {}):
+                continue
+            element[field] = value
+        self.elements.append(element)
 
     def add_point(self, x: Any, y: Any) -> None:
         if x is None or y is None:
@@ -407,6 +420,63 @@ def _point_along_polyline(points: Any, distance_m: Any) -> tuple[float, float] |
 # ---------------------------------------------------------------------------
 
 
+#: Coordinate rounding (metres) used to decide "these two vehicle inputs are
+#: drawn on the SAME pixel". inpx_parser places every vehicle input at its
+#: link's start point (pos 0), so real siblings are bit-identical, not merely
+#: close -- the tolerance exists only so a float round-trip can never split a
+#: genuine stack, never to merge two inputs a user could actually distinguish
+#: on screen.
+_SAME_POINT_DECIMALS = 3
+
+#: Cap on the ``siblings`` list shipped per focus element. This module ships
+#: ids, not geometry, deliberately (see resolve_focus's docstring) -- three is
+#: the real-world number on the client model (one input per vehicle class) and
+#: eight is the same display cap constraints._capped_join uses, so the payload
+#: cannot grow with network size.
+_MAX_FOCUS_SIBLINGS = 8
+
+
+def _same_point_vehicle_input_siblings(
+    elements: dict[str, Any], item: dict[str, Any], input_no: str
+) -> list[str]:
+    """Ids of the OTHER vehicle inputs drawn at the same coordinate as
+    ``item``, in element order, capped at ``_MAX_FOCUS_SIBLINGS``.
+
+    Why this exists (sibling-disambiguation unit, 2026-07-28): the real
+    client model puts three vehicle inputs — one per vehicle class — on the
+    same link at the same exact (x, y), so the approval card's mini-map draws
+    one dot for what are three separate editable objects and the network
+    map's tooltip names whichever one happens to be painted last. The focus
+    payload is the only channel that knows WHICH one is being written, so it
+    is the right place to also say which ones it is stacked on top of."""
+    x = item.get("x")
+    y = item.get("y")
+    if x is None or y is None:
+        return []
+    try:
+        key = (round(float(x), _SAME_POINT_DECIMALS), round(float(y), _SAME_POINT_DECIMALS))
+    except (TypeError, ValueError):
+        return []
+    siblings: list[str] = []
+    for other in elements.get("vehicle_inputs", []):
+        other_id = str(other.get("id", ""))
+        if not other_id or other_id == input_no:
+            continue
+        try:
+            other_key = (
+                round(float(other.get("x")), _SAME_POINT_DECIMALS),
+                round(float(other.get("y")), _SAME_POINT_DECIMALS),
+            )
+        except (TypeError, ValueError):
+            continue
+        if other_key != key:
+            continue
+        siblings.append(other_id)
+        if len(siblings) >= _MAX_FOCUS_SIBLINGS:
+            break
+    return siblings
+
+
 def _resolve_vehicle_input_volume(
     params: dict[str, Any], shadow_model: dict[str, Any], elements: dict[str, Any]
 ) -> _FocusAccumulator:
@@ -416,7 +486,24 @@ def _resolve_vehicle_input_volume(
     item = next((e for e in elements.get("vehicle_inputs", []) if str(e.get("id")) == input_no), None)
     if item is None:
         return acc
-    acc.add_element("vehicle_input", input_no, item.get("name") or input_no)
+    # `label` (the input's NAME) is shared verbatim by every sibling on the
+    # real client model -- all three of link 620's inputs are "Jennalup ST_WB"
+    # -- so the name ALONE cannot disambiguate. `composition` is the datum
+    # that can, and `siblings` names the other objects hiding under the same
+    # pixel so the card can say so instead of leaving the user to guess.
+    # Both are omitted when unknown (add_element drops empty values), so a
+    # network without compositions ships the unchanged {type, id, label}.
+    acc.add_element(
+        "vehicle_input",
+        input_no,
+        item.get("name") or input_no,
+        extra={
+            "composition": item.get("composition_name") or "",
+            "composition_no": item.get("composition_no") or "",
+            "composition_varies_by_interval": bool(item.get("composition_varies_by_interval")) or None,
+            "siblings": _same_point_vehicle_input_siblings(elements, item, input_no),
+        },
+    )
     # The vehicle input's OWN point anchors the view -- its host link, added
     # below for context, is often the full length of an approach.
     acc.add_anchor(item.get("x"), item.get("y"))
@@ -701,6 +788,34 @@ def resolve_focus(
     ``"conflict_area"`` entries carry no geometry of their own (conflict
     areas have none) and exist only so the frontend's caption can name the
     conflict area itself alongside the two links it draws.
+
+    **Optional per-type disambiguation fields** (sibling-disambiguation unit,
+    2026-07-28). An element may carry extra keys BEYOND ``type``/``id``/
+    ``label``; every one of them is omitted, never nulled, when its datum is
+    absent, so the base shape above is still exactly what a consumer gets for
+    any element type or any network that has nothing extra to say. Currently
+    only ``"vehicle_input"`` adds any, and it adds these:
+
+    * ``composition`` -- the vehicle composition's NAME (e.g. ``"Class1"``).
+      The reason this field exists: on the real client model ``label`` (the
+      input's own name) is shared VERBATIM by every input on the link -- all
+      three of link 620's inputs are named ``"Jennalup ST_WB"`` -- so the
+      label alone cannot tell 107 from 207 from 307. The composition can.
+    * ``composition_no`` -- the raw ``vehComp`` number behind that name, for
+      a network that numbers compositions but does not name them.
+    * ``composition_varies_by_interval`` -- ``True`` (and only ever ``True``;
+      omitted otherwise) when this input's intervals reference DIFFERENT
+      compositions, in which case ``composition``/``composition_no`` are
+      absent because there is no single honest answer.
+    * ``siblings`` -- ids of the other vehicle inputs drawn at the SAME
+      coordinate, e.g. ``["207", "307"]``, capped at ``_MAX_FOCUS_SIBLINGS``.
+      Ids only, in keeping with this module's ids-not-geometry rule.
+
+    So the real payload for the worked case is::
+
+        {"type": "vehicle_input", "id": "107", "label": "Jennalup ST_WB",
+         "composition": "Class1", "composition_no": "1",
+         "siblings": ["207", "307"]}
 
     ``bbox`` is the region worth LOOKING AT, in raw network metres -- not
     the extent of everything in ``elements``. For a target with a real point

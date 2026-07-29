@@ -76,14 +76,26 @@ function buildHandoffPrompt(finding: HealthCheckFinding, t: Translate): string {
       );
     }
     case "latent_demand_overflow": {
+      // FIX 4 (2026-07-28): the check became sibling-aware (a vehicle input's
+      // link commonly carries several OTHER inputs, one per vehicle class --
+      // see constraints.py's _check_latent_demand_overflow), so "this input's
+      // OWN volume exceeds capacity" is frequently false; what actually
+      // exceeds capacity is the LINK total (this input + every sibling, at
+      // the interval being evaluated). sibling_volume_total/
+      // link_total_volume/interval_no are real Finding.details keys now
+      // carried into the target (health_check.py's _FIX_TARGET_FIELDS) --
+      // state the TRUE breakdown instead of the false direct inequality.
       const inputNo = targetStr(target, "input_no");
       const linkId = targetStr(target, "link_id");
       const volume = targetStr(target, "volume");
       const capacity = targetStr(target, "capacity");
+      const intervalNo = targetStr(target, "interval_no");
+      const siblingTotal = targetStr(target, "sibling_volume_total");
+      const linkTotal = targetStr(target, "link_total_volume");
       return t(
-        `차량 입력 ${inputNo}(링크 ${linkId})의 유입량 ${volume} veh/h가 대략적 용량 ${capacity} veh/h를 초과합니다. 현재 유입량 설정을 확인하고 조정안을 제안해줘.`,
-        `Vehicle input ${inputNo} (link ${linkId})'s volume ${volume} veh/h exceeds the rough capacity ${capacity} veh/h. Check the current input setting and propose an adjustment.`,
-        `車両インプット${inputNo}(リンク${linkId})の交通量 ${volume} veh/h がおおよその容量 ${capacity} veh/h を超えています。現在のインプット設定を確認し、調整案を提案してください。`,
+        `차량 입력 ${inputNo}(링크 ${linkId}, 구간 ${intervalNo})의 유입량 ${volume} veh/h에 같은 링크의 다른 차량 입력 합계 ${siblingTotal} veh/h를 더한 링크 총 수요 ${linkTotal} veh/h가 대략적 용량 ${capacity} veh/h를 초과합니다. 현재 유입량 설정을 확인하고 조정안을 제안해줘.`,
+        `Vehicle input ${inputNo} (link ${linkId}, interval ${intervalNo})'s volume ${volume} veh/h plus ${siblingTotal} veh/h from other vehicle inputs on the same link gives a link total of ${linkTotal} veh/h, which exceeds the rough capacity ${capacity} veh/h. Check the current input setting and propose an adjustment.`,
+        `車両インプット${inputNo}(リンク${linkId}、区間${intervalNo})の交通量 ${volume} veh/h に同じリンクの他の車両インプット合計 ${siblingTotal} veh/h を加えたリンク総需要 ${linkTotal} veh/h が、おおよその容量 ${capacity} veh/h を超えています。現在のインプット設定を確認し、調整案を提案してください。`,
       );
     }
     case "cycle_below_intergreen_sum": {

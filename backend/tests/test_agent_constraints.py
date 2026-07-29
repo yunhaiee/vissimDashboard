@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -7,6 +8,15 @@ import pytest
 from services.agent.constraints import Finding, get_registry, run_checks
 
 LANGS = ("ko", "en", "ja")
+
+# The active real client model, used ONLY by the sibling-disambiguation
+# regression tests at the bottom of this file (everything else here is
+# synthetic by design). Same skipif convention as test_network_search.py.
+ACTIVE_REAL_INPX = Path(__file__).resolve().parents[2] / "runtime" / "uploads" / "current" / "current.inpx"
+_requires_real_dataset = pytest.mark.skipif(
+    not ACTIVE_REAL_INPX.is_file(),
+    reason=f"real active dataset not present on this machine: {ACTIVE_REAL_INPX}",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -763,6 +773,391 @@ def test_latent_demand_overflow_skipped_when_vehicle_input_missing():
     findings = run_checks("preflight", action, shadow, {})
 
     assert not any(f.constraint_id == "latent_demand_overflow" for f in findings)
+
+
+# --- #3, sibling-aware capacity (sibling-disambiguation unit, 2026-07-28) ---
+#
+# The real client model puts THREE vehicle inputs on every demand link, one
+# per vehicle class, so the pre-fix check -- which compared ONE input's
+# proposed volume against the WHOLE link's capacity -- under-counted on 100%
+# of its possible targets. _jennalup_shadow() reproduces the exact measured
+# case (runtime/uploads/current/current.inpx link 620, 1 lane, capacity 1900,
+# inputs 107/207/307 at 127.3/19.0/0.95 veh/h) synthetically, so the
+# regression is pinned on every machine, with or without the real dataset.
+
+
+def _jennalup_shadow() -> dict[str, Any]:
+    return _shadow_model(
+        links=[{"id": "620", "name": "Jennalup St WB", "lanes": 1, "length": 240.0}],
+        vehicle_inputs=[
+            {
+                "no": "107",
+                "name": "Jennalup ST_WB",
+                "link": "620",
+                "volume": 127.3,
+                "composition_no": "1",
+                "composition_name": "Class1",
+            },
+            {
+                "no": "207",
+                "name": "Jennalup ST_WB",
+                "link": "620",
+                "volume": 19.0,
+                "composition_no": "2",
+                "composition_name": "Class2-5",
+            },
+            {
+                "no": "307",
+                "name": "Jennalup ST_WB",
+                "link": "620",
+                "volume": 0.95,
+                "composition_no": "3",
+                "composition_name": "Class6-9",
+            },
+        ],
+    )
+
+
+def test_latent_demand_overflow_fires_when_siblings_push_link_total_over_capacity():
+    """REGRESSION PIN for the exact silent failure the pre-fix check let
+    through: 1881 on input 107 is BELOW the 1-lane link's 1900 capacity, so
+    the old per-input comparison stayed silent, while the link's real
+    post-write demand is 1881 + 19.0 + 0.95 = 1900.95 -- over capacity."""
+    shadow = _jennalup_shadow()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=1881.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "latent_demand_overflow"]
+    assert len(matches) == 1, "the pre-fix check was silent here -- that is the bug"
+    finding = matches[0]
+    assert finding.tier == "warn"
+    assert finding.details["sibling_input_nos"] == ["207", "307"]
+    assert finding.details["sibling_volume_total"] == 19.95
+    assert finding.details["link_total_volume"] == 1900.95
+    assert finding.details["capacity"] == 1900
+    _assert_well_formed_messages(finding, must_contain_ko="1900.95")
+
+
+def test_latent_demand_overflow_silent_when_link_total_including_siblings_fits():
+    """The other end of the same window: 1880 leaves the link at 1899.95,
+    inside capacity, so the sibling-aware check must NOT start crying wolf
+    just because siblings exist."""
+    shadow = _jennalup_shadow()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=1880.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "latent_demand_overflow" for f in findings)
+
+
+def test_latent_demand_overflow_message_states_the_auditable_breakdown():
+    shadow = _jennalup_shadow()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000)
+
+    finding = next(
+        f for f in run_checks("preflight", action, shadow, {}) if f.constraint_id == "latent_demand_overflow"
+    )
+
+    ko = finding.messages["ko"]
+    for part in ("6000", "19.95", "6019.95", "1900"):  # proposed, siblings, total, capacity
+        assert part in ko, f"the breakdown must be auditable; missing {part!r}"
+    assert "6019.95" in finding.messages["en"] and "6019.95" in finding.messages["ja"]
+
+
+def test_latent_demand_overflow_max_recommended_volume_leaves_room_for_siblings():
+    """The pre-fix suggested_fix (max_recommended_volume == capacity) was
+    ITSELF an overflow: 1900 + 19.95 = 1919.95."""
+    shadow = _jennalup_shadow()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000)
+
+    finding = next(
+        f for f in run_checks("preflight", action, shadow, {}) if f.constraint_id == "latent_demand_overflow"
+    )
+
+    assert finding.suggested_fix == {"max_recommended_volume": 1880.05}
+    assert finding.suggested_fix["max_recommended_volume"] + 19.95 == pytest.approx(1900)
+
+
+def test_latent_demand_overflow_does_not_double_count_the_target_own_volume():
+    """The target's CURRENT volume must be excluded -- only its PROPOSED one
+    counts. Input 107 currently carries 127.3; proposing 1870 leaves the link
+    at 1889.95 (fits). Double-counting would give 2017.25 and a false fire."""
+    shadow = _jennalup_shadow()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=1870.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "latent_demand_overflow" for f in findings)
+
+
+def test_latent_demand_overflow_counts_unknown_sibling_volume_as_zero_and_says_so():
+    shadow = _shadow_model(
+        links=[{"id": "620", "name": "Jennalup St WB", "lanes": 1, "length": 240.0}],
+        vehicle_inputs=[
+            {"no": "107", "name": "A", "link": "620", "volume": 100.0},
+            {"no": "207", "name": "B", "link": "620", "volume": None},
+        ],
+    )
+    action = _action("set_vehicle_input_volume", input_no="107", volume=2000)
+
+    finding = next(
+        f for f in run_checks("preflight", action, shadow, {}) if f.constraint_id == "latent_demand_overflow"
+    )
+
+    assert finding.details["sibling_volume_unknown_count"] == 1
+    assert finding.details["sibling_volume_total"] == 0.0
+    # A lower-bound total must never be presented as a complete one.
+    assert "0으로" in finding.messages["ko"]
+    _assert_well_formed_messages(finding, must_contain_ko="2000")
+
+
+def test_latent_demand_overflow_ignores_vehicle_inputs_on_other_links():
+    shadow = _shadow_model(
+        links=[{"id": "620", "name": "L", "lanes": 1, "length": 240.0}],
+        vehicle_inputs=[
+            {"no": "107", "name": "A", "link": "620", "volume": 100.0},
+            {"no": "999", "name": "elsewhere", "link": "621", "volume": 5000.0},
+        ],
+    )
+    action = _action("set_vehicle_input_volume", input_no="107", volume=1800)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "latent_demand_overflow" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# #3 / vehicle_input_siblings_share_link — interval-blindness fix
+# (2026-07-28, second pass). Both checks used to read every vehicle input's
+# TOP-LEVEL `volume` field, which is interval 1's value BY DEFINITION
+# (tools_network._parse_vehicle_inputs) -- so a write that named interval_no
+# > 1 got compared against interval 1's sibling demand. Measured live
+# (runtime/uploads/current/current.inpx, link 620): siblings 207+307's real
+# per-interval totals are {1: 19.95, 2: 21.0, 3: 21.0, 4: 21.0, 5: 21.0,
+# 6: 18.9} veh/h; the pre-fix checks reported 19.95 for EVERY interval_no.
+# _jennalup_shadow_multi_interval() reproduces the exact measured per-input
+# per-interval numbers synthetically, so the regression is pinned on every
+# machine, with or without the real dataset (see the real-dataset-gated
+# mirror test near the bottom of this file for the live proof).
+# ---------------------------------------------------------------------------
+
+
+def _jennalup_shadow_multi_interval() -> dict[str, Any]:
+    return _shadow_model(
+        links=[{"id": "620", "name": "Jennalup St WB", "lanes": 1, "length": 240.0}],
+        vehicle_inputs=[
+            {
+                "no": "107",
+                "name": "Jennalup ST_WB",
+                "link": "620",
+                "volume": 127.3,
+                "composition_no": "1",
+                "composition_name": "Class1",
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 127.3, "continuous": False},
+                    {"interval_no": 2, "from_s": 900.0, "volume": 134.0, "continuous": False},
+                    {"interval_no": 3, "from_s": 1800.0, "volume": 134.0, "continuous": False},
+                    {"interval_no": 4, "from_s": 2700.0, "volume": 134.0, "continuous": False},
+                    {"interval_no": 5, "from_s": 3600.0, "volume": 134.0, "continuous": False},
+                    {"interval_no": 6, "from_s": 4500.0, "volume": 120.6, "continuous": False},
+                ],
+            },
+            {
+                "no": "207",
+                "name": "Jennalup ST_WB",
+                "link": "620",
+                "volume": 19.0,
+                "composition_no": "2",
+                "composition_name": "Class2-5",
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 19.0, "continuous": False},
+                    {"interval_no": 2, "from_s": 900.0, "volume": 20.0, "continuous": False},
+                    {"interval_no": 3, "from_s": 1800.0, "volume": 20.0, "continuous": False},
+                    {"interval_no": 4, "from_s": 2700.0, "volume": 20.0, "continuous": False},
+                    {"interval_no": 5, "from_s": 3600.0, "volume": 20.0, "continuous": False},
+                    {"interval_no": 6, "from_s": 4500.0, "volume": 18.0, "continuous": False},
+                ],
+            },
+            {
+                "no": "307",
+                "name": "Jennalup ST_WB",
+                "link": "620",
+                "volume": 0.95,
+                "composition_no": "3",
+                "composition_name": "Class6-9",
+                "volumes": [
+                    {"interval_no": 1, "from_s": 0.0, "volume": 0.95, "continuous": False},
+                    {"interval_no": 2, "from_s": 900.0, "volume": 1.0, "continuous": False},
+                    {"interval_no": 3, "from_s": 1800.0, "volume": 1.0, "continuous": False},
+                    {"interval_no": 4, "from_s": 2700.0, "volume": 1.0, "continuous": False},
+                    {"interval_no": 5, "from_s": 3600.0, "volume": 1.0, "continuous": False},
+                    {"interval_no": 6, "from_s": 4500.0, "volume": 0.9, "continuous": False},
+                ],
+            },
+        ],
+    )
+
+
+_MEASURED_SIBLING_TOTALS_BY_INTERVAL = {1: 19.95, 2: 21.0, 3: 21.0, 4: 21.0, 5: 21.0, 6: 18.9}
+
+
+def test_latent_demand_overflow_reads_sibling_volume_at_the_written_interval_not_interval_1():
+    """REGRESSION PIN: before the fix, sibling_volume_total was 19.95 (interval
+    1's value) for EVERY interval_no. Now it must match the measured
+    per-interval ground truth exactly."""
+    shadow = _jennalup_shadow_multi_interval()
+
+    for interval_no, expected_total in _MEASURED_SIBLING_TOTALS_BY_INTERVAL.items():
+        action = _action(
+            "set_vehicle_input_volume", input_no="107", volume=6000, interval_no=interval_no
+        )
+        finding = next(
+            f
+            for f in run_checks("preflight", action, shadow, {})
+            if f.constraint_id == "latent_demand_overflow"
+        )
+        assert finding.details["sibling_volume_total"] == expected_total, interval_no
+        assert finding.details["interval_no"] == interval_no
+        assert finding.details["link_total_volume"] == round(6000 + expected_total, 4)
+        assert f"구간 {interval_no}" in finding.messages["ko"]
+        assert f"interval {interval_no}" in finding.messages["en"]
+
+
+def test_latent_demand_overflow_interval_no_defaults_to_1_when_omitted():
+    """set_vehicle_input_volume's OWN interval_no default is 1
+    (tools_edit.SetVehicleInputVolumeParams.interval_no: int = Field(
+    default=1, ...)) -- the check must match that default exactly, not
+    assume it."""
+    shadow = _jennalup_shadow_multi_interval()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000)  # no interval_no
+
+    finding = next(
+        f for f in run_checks("preflight", action, shadow, {}) if f.constraint_id == "latent_demand_overflow"
+    )
+
+    assert finding.details["interval_no"] == 1
+    assert finding.details["sibling_volume_total"] == 19.95
+
+
+def test_vehicle_input_siblings_share_link_uses_sibling_and_target_volume_at_the_written_interval():
+    shadow = _jennalup_shadow_multi_interval()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000, interval_no=6)
+
+    finding = next(
+        f
+        for f in run_checks("preflight", action, shadow, {})
+        if f.constraint_id == "vehicle_input_siblings_share_link"
+    )
+
+    assert finding.details["interval_no"] == 6
+    assert finding.details["sibling_volume_total"] == 18.9
+    # 107's OWN interval-6 volume (120.6) + siblings' interval-6 total
+    # (18.9) -- NOT interval 1's 127.3 + 19.95.
+    assert finding.details["old_link_total_volume"] == 139.5
+    assert "구간 6" in finding.messages["ko"]
+    # The sibling label must show 207's interval-6 volume (18.0), not its
+    # interval-1 volume (19.0).
+    assert "207(Class2-5, 18.0 veh/h)" in finding.messages["ko"]
+
+
+def test_vehicle_input_siblings_share_link_interval_no_defaults_to_1_when_omitted():
+    shadow = _jennalup_shadow_multi_interval()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000)  # no interval_no
+
+    finding = next(
+        f
+        for f in run_checks("preflight", action, shadow, {})
+        if f.constraint_id == "vehicle_input_siblings_share_link"
+    )
+
+    assert finding.details["interval_no"] == 1
+    assert finding.details["sibling_volume_total"] == 19.95
+    assert finding.details["old_link_total_volume"] == 147.25  # 127.3 + 19.95, interval 1
+
+
+# ---------------------------------------------------------------------------
+# #3 suggested_fix — never recommend a ceiling that fails its own check
+# (FIX 3, 2026-07-28). ``max(capacity - sibling_total, 0.0)`` used to clamp
+# to 0.0 and present it as a working recommendation even when the siblings
+# ALONE already exceed capacity -- re-running the check at that "fix" still
+# fired, because 0 + sibling_total is still > capacity. No value of the
+# target input (not even 0) can clear the finding in that state.
+# ---------------------------------------------------------------------------
+
+
+def test_latent_demand_overflow_suggested_fix_states_impossibility_when_siblings_alone_exceed_capacity():
+    shadow = _shadow_model(
+        links=[{"id": "620", "name": "L", "lanes": 1, "length": 240.0}],
+        vehicle_inputs=[
+            {"no": "107", "name": "A", "link": "620", "volume": 100.0},
+            {"no": "207", "name": "B", "link": "620", "volume": 1000.0},
+            {"no": "307", "name": "C", "link": "620", "volume": 1000.0},  # siblings alone: 2000 > capacity 1900
+        ],
+    )
+    action = _action("set_vehicle_input_volume", input_no="107", volume=50.0)
+
+    finding = next(
+        f for f in run_checks("preflight", action, shadow, {}) if f.constraint_id == "latent_demand_overflow"
+    )
+
+    assert finding.suggested_fix == {
+        "max_recommended_volume": None,
+        "fixable_by_reducing_this_input": False,
+        "sibling_volume_total": 2000.0,
+        "capacity": 1900,
+        "excess_from_siblings_alone": 100.0,
+    }
+    assert finding.details["fixable_by_reducing_this_input"] is False
+    assert finding.details["max_recommended_volume"] is None
+    # The old bug, proven: 0 (the old clamp's "recommendation") still fires.
+    zero_action = _action("set_vehicle_input_volume", input_no="107", volume=0.0)
+    assert any(
+        f.constraint_id == "latent_demand_overflow" for f in run_checks("preflight", zero_action, shadow, {})
+    ), "0 must still overflow -- proving no value of this input alone can fix it"
+    _assert_well_formed_messages(finding, must_contain_ko="아무리 줄여도")
+    assert "even to 0" in finding.messages["en"]
+
+
+def test_latent_demand_overflow_suggested_fix_still_clears_when_siblings_leave_room():
+    """The normal (fixable) path is unchanged by FIX 3: the recommendation
+    is a plain single-key dict, and re-running the check at exactly that
+    value clears the finding."""
+    shadow = _jennalup_shadow()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000)
+
+    finding = next(
+        f for f in run_checks("preflight", action, shadow, {}) if f.constraint_id == "latent_demand_overflow"
+    )
+    assert finding.suggested_fix == {"max_recommended_volume": 1880.05}
+    assert finding.details["fixable_by_reducing_this_input"] is True
+
+    fixed_action = _action(
+        "set_vehicle_input_volume", input_no="107", volume=finding.suggested_fix["max_recommended_volume"]
+    )
+    assert not any(
+        f.constraint_id == "latent_demand_overflow" for f in run_checks("preflight", fixed_action, shadow, {})
+    ), "the recommended ceiling must actually clear its own check"
+
+
+@_requires_real_dataset
+def test_real_dataset_latent_demand_overflow_sibling_totals_match_measured_ground_truth_per_interval():
+    """The exact live acceptance case FIX 2 was built against."""
+    from services.agent.tools_network import build_shadow_model
+
+    shadow = build_shadow_model(ACTIVE_REAL_INPX)
+
+    for interval_no, expected_total in _MEASURED_SIBLING_TOTALS_BY_INTERVAL.items():
+        action = _action(
+            "set_vehicle_input_volume", input_no="107", volume=6000, interval_no=interval_no
+        )
+        finding = next(
+            f
+            for f in run_checks("preflight", action, shadow, {})
+            if f.constraint_id == "latent_demand_overflow"
+        )
+        assert finding.details["sibling_volume_total"] == expected_total, interval_no
+        assert finding.details["link_total_volume"] == round(6000 + expected_total, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -3189,9 +3584,14 @@ def test_registry_size_matches_m3_1_catalog_port():
     # NOT extensions of any M2/v2 write tool's own gate; they only ever fire
     # from services.agent.health_check's whole-network scan, never from
     # guardrails.py's real preflight/postwrite/postrun run_checks() calls --
-    # see the Phase alias's own comment just above class Finding) == 61.
+    # see the Phase alias's own comment just above class Finding) == 61, + 1
+    # (sibling-disambiguation unit, 2026-07-28: vehicle_input_siblings_share_
+    # link -- NOT a §-numbered catalog entry, a defensive addition specific to
+    # set_vehicle_input_volume, in the same family as #3 latent_demand_
+    # overflow but about the class MIX rather than the capacity; #3 itself was
+    # made sibling-aware IN PLACE, not added) == 62.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 61
+    assert len(get_registry()) == 62
 
 
 def test_registry_has_unique_ids():
@@ -3328,6 +3728,265 @@ def test_signal_program_split_not_found_fires_for_bogus_sg():
     assert len(matches) == 1
     assert matches[0].details["reason"] == "sg_not_found"
     assert matches[0].suggested_fix["candidates"] == ["1", "2", "3"]
+
+
+# ---------------------------------------------------------------------------
+# vehicle_input_siblings_share_link (sibling-disambiguation unit, 2026-07-28)
+#
+# Reuses _jennalup_shadow() (defined with the #3 tests above) -- the same
+# measured link-620 group the capacity regression pins, since both checks are
+# about the same real-world shape: three vehicle inputs, one per vehicle
+# class, sharing one link and one coordinate.
+# ---------------------------------------------------------------------------
+
+
+def test_vehicle_input_siblings_share_link_fires_when_link_carries_other_inputs():
+    shadow = _jennalup_shadow()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "vehicle_input_siblings_share_link"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "warn"
+    assert finding.phase == "preflight"
+    assert finding.suggested_fix is None
+    assert finding.details["sibling_input_nos"] == ["207", "307"]
+    _assert_well_formed_messages(finding, must_contain_ko="6000")
+
+
+def test_vehicle_input_siblings_share_link_silent_when_input_is_alone_on_its_link():
+    # The default fixture has exactly one vehicle input on link 101 -- nothing
+    # to confuse it with, and no class mix to shift.
+    shadow = _shadow_model()
+    action = _action("set_vehicle_input_volume", input_no="1", volume=1200)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_input_siblings_share_link" for f in findings)
+
+
+def test_vehicle_input_siblings_share_link_skipped_when_vehicle_input_missing():
+    shadow = _jennalup_shadow()
+    action = _action("set_vehicle_input_volume", input_no="does-not-exist", volume=6000)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_input_siblings_share_link" for f in findings)
+
+
+def test_vehicle_input_siblings_share_link_does_not_apply_to_other_tools():
+    shadow = _jennalup_shadow()
+    action = _action("set_sim_duration", duration=3600)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "vehicle_input_siblings_share_link" for f in findings)
+
+
+def test_vehicle_input_siblings_share_link_names_every_sibling_with_class_and_volume():
+    shadow = _jennalup_shadow()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000)
+
+    finding = next(
+        f
+        for f in run_checks("preflight", action, shadow, {})
+        if f.constraint_id == "vehicle_input_siblings_share_link"
+    )
+
+    for lang in LANGS:
+        message = finding.messages[lang]
+        assert "207(Class2-5, 19.0 veh/h)" in message
+        assert "307(Class6-9, 0.95 veh/h)" in message
+    # The TARGET's own class is named too -- that is the whole point: 107,
+    # 207 and 307 share a name ("Jennalup ST_WB") and differ only by class.
+    assert "Class1" in finding.messages["ko"]
+
+
+def test_vehicle_input_siblings_share_link_reports_the_class_mix_shift():
+    """The measured Jennalup case: setting 107 to 6000 leaves 207+307 at
+    19.95 veh/h, so the non-Class1 share of the approach collapses from
+    19.95/147.25 = 13.5% to 19.95/6019.95 = 0.3%."""
+    shadow = _jennalup_shadow()
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000)
+
+    finding = next(
+        f
+        for f in run_checks("preflight", action, shadow, {})
+        if f.constraint_id == "vehicle_input_siblings_share_link"
+    )
+
+    assert finding.details["old_link_total_volume"] == 147.25
+    assert finding.details["new_link_total_volume"] == 6019.95
+    assert finding.details["other_classes_share_pct_before"] == 13.5
+    assert finding.details["other_classes_share_pct_after"] == 0.3
+    for lang in LANGS:
+        assert "13.5" in finding.messages[lang] and "0.3" in finding.messages[lang]
+
+
+def test_vehicle_input_siblings_share_link_omits_mix_estimate_when_a_volume_is_unknown():
+    """A sibling with no known volume must not produce an invented
+    percentage -- the warning still fires (the siblings are still there), it
+    just says the shift could not be computed."""
+    shadow = _shadow_model(
+        links=[{"id": "620", "name": "L", "lanes": 1, "length": 240.0}],
+        vehicle_inputs=[
+            {"no": "107", "name": "A", "link": "620", "volume": 127.3, "composition_name": "Class1"},
+            {"no": "207", "name": "A", "link": "620", "volume": None, "composition_name": "Class2-5"},
+        ],
+    )
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000)
+
+    finding = next(
+        f
+        for f in run_checks("preflight", action, shadow, {})
+        if f.constraint_id == "vehicle_input_siblings_share_link"
+    )
+
+    assert finding.details["other_classes_share_pct_before"] is None
+    assert finding.details["other_classes_share_pct_after"] is None
+    assert "207(Class2-5, ? veh/h)" in finding.messages["ko"]
+    _assert_well_formed_messages(finding, must_contain_ko="6000")
+
+
+def test_vehicle_input_siblings_share_link_falls_back_to_veh_comp_number_when_unnamed():
+    shadow = _shadow_model(
+        links=[{"id": "620", "name": "L", "lanes": 1, "length": 240.0}],
+        vehicle_inputs=[
+            {"no": "107", "name": "A", "link": "620", "volume": 100.0, "composition_no": "1"},
+            {"no": "207", "name": "A", "link": "620", "volume": 50.0, "composition_no": "2"},
+        ],
+    )
+    action = _action("set_vehicle_input_volume", input_no="107", volume=400)
+
+    finding = next(
+        f
+        for f in run_checks("preflight", action, shadow, {})
+        if f.constraint_id == "vehicle_input_siblings_share_link"
+    )
+
+    assert "vehComp 2" in finding.messages["ko"]
+    assert "vehComp 1" in finding.messages["en"]
+
+
+def test_vehicle_input_siblings_share_link_reports_varying_composition_honestly():
+    """The XML puts vehComp on each <timeIntervalVehVolume>, so an input MAY
+    reference different compositions per interval (0 of the 51 real inputs
+    do). When it does, no single class name is claimed."""
+    shadow = _shadow_model(
+        links=[{"id": "620", "name": "L", "lanes": 1, "length": 240.0}],
+        vehicle_inputs=[
+            {
+                "no": "107",
+                "name": "A",
+                "link": "620",
+                "volume": 100.0,
+                "composition_no": "",
+                "composition_name": "",
+                "composition_nos": ["1", "2"],
+                "composition_varies_by_interval": True,
+            },
+            {"no": "207", "name": "A", "link": "620", "volume": 50.0, "composition_name": "Class2-5"},
+        ],
+    )
+    action = _action("set_vehicle_input_volume", input_no="107", volume=400)
+
+    finding = next(
+        f
+        for f in run_checks("preflight", action, shadow, {})
+        if f.constraint_id == "vehicle_input_siblings_share_link"
+    )
+
+    assert "vehComp 1, 2" in finding.messages["ko"]
+    assert "varies by interval" in finding.messages["en"]
+
+
+def test_vehicle_input_siblings_share_link_works_without_any_composition_data():
+    """A network whose vehicle inputs carry no vehComp at all (the synthetic
+    demo file) must still get a usable warning -- and must NOT have a class
+    name invented for it."""
+    shadow = _shadow_model(
+        links=[{"id": "620", "name": "L", "lanes": 1, "length": 240.0}],
+        vehicle_inputs=[
+            {"no": "1", "name": "A", "link": "620", "volume": 100.0},
+            {"no": "2", "name": "B", "link": "620", "volume": 50.0},
+        ],
+    )
+    action = _action("set_vehicle_input_volume", input_no="1", volume=400)
+
+    finding = next(
+        f
+        for f in run_checks("preflight", action, shadow, {})
+        if f.constraint_id == "vehicle_input_siblings_share_link"
+    )
+
+    assert "2(50.0 veh/h)" in finding.messages["ko"]
+    assert "Class" not in finding.messages["ko"]
+    _assert_well_formed_messages(finding, must_contain_ko="400")
+
+
+# ---------------------------------------------------------------------------
+# Real-dataset regression (sibling-disambiguation unit, 2026-07-28)
+#
+# The synthetic _jennalup_shadow() tests above pin the LOGIC on every
+# machine. This pins the same case end to end against the ACTUAL client model
+# -- so a parser regression that stopped carrying compositions, or a link/
+# volume drift, is caught here rather than in front of the user.
+# ---------------------------------------------------------------------------
+
+
+@_requires_real_dataset
+def test_real_dataset_link_620_sibling_group_matches_measured_ground_truth():
+    from services.agent.tools_network import build_shadow_model
+
+    shadow = build_shadow_model(ACTIVE_REAL_INPX)
+    on_620 = [vi for vi in shadow["vehicle_inputs"] if str(vi.get("link")) == "620"]
+
+    assert [(vi["no"], vi["composition_name"], vi["volume"]) for vi in on_620] == [
+        ("107", "Class1", 127.3),
+        ("207", "Class2-5(SLK 1.47_7-8AM&3-4PM)", 19.0),
+        ("307", "Class6-9(SLK 1.47_7-8AM&3-4PM)", 0.95),
+    ]
+    # All three share one name -- the reason the composition had to be carried.
+    assert {vi["name"] for vi in on_620} == {"Jennalup ST_WB"}
+
+
+@_requires_real_dataset
+def test_real_dataset_regression_1881_on_input_107_is_no_longer_silent():
+    """The exact silent failure the pre-fix capacity check let through on the
+    real model: 1881 < the 1-lane link's 1900 capacity, but the link's real
+    post-write demand is 1900.95."""
+    from services.agent.tools_network import build_shadow_model
+
+    shadow = build_shadow_model(ACTIVE_REAL_INPX)
+    action = _action("set_vehicle_input_volume", input_no="107", volume=1881.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+    latent = [f for f in findings if f.constraint_id == "latent_demand_overflow"]
+
+    assert len(latent) == 1
+    assert latent[0].details["link_total_volume"] == 1900.95
+    assert latent[0].details["sibling_input_nos"] == ["207", "307"]
+    assert latent[0].suggested_fix == {"max_recommended_volume": 1880.05}
+
+
+@_requires_real_dataset
+def test_real_dataset_setting_input_107_to_6000_reports_the_heavy_vehicle_share_collapse():
+    from services.agent.tools_network import build_shadow_model
+
+    shadow = build_shadow_model(ACTIVE_REAL_INPX)
+    action = _action("set_vehicle_input_volume", input_no="107", volume=6000)
+
+    finding = next(
+        f
+        for f in run_checks("preflight", action, shadow, {})
+        if f.constraint_id == "vehicle_input_siblings_share_link"
+    )
+
+    assert finding.details["other_classes_share_pct_before"] == 13.5
+    assert finding.details["other_classes_share_pct_after"] == 0.3
+    assert "Class6-9(SLK 1.47_7-8AM&3-4PM)" in finding.messages["ko"]
 
 
 def test_signal_program_split_not_found_fires_for_controller_without_program_data():

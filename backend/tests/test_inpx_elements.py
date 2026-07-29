@@ -260,6 +260,90 @@ def test_vehicle_inputs_unknown_link_skipped():
     assert inpx_parser.parse_network_elements(root)["vehicle_inputs"] == []
 
 
+# --- vehicle-input composition (sibling-disambiguation unit, 2026-07-28) ----
+#
+# Every vehicle input on a link resolves to the link's start point, so N
+# inputs on one link land on ONE pixel. On the real client model that N is
+# always 3 (one per vehicle class) and all three share the same NAME too, so
+# the composition is the only field that tells the stacked glyphs apart.
+
+_THREE_SIBLING_INPUTS = (
+    '<vehicleCompositions>'
+    '<vehicleComposition no="1" name="Class1"/>'
+    '<vehicleComposition no="2" name="Class2-5"/>'
+    '<vehicleComposition no="3" name="Class6-9"/>'
+    '</vehicleCompositions>'
+    '<vehicleInputs>'
+    '<vehicleInput no="107" name="Jennalup ST_WB" link="1">'
+    '<timeIntVehVols><timeIntervalVehVolume timeInt="1 0" volume="127.3" vehComp="1"/></timeIntVehVols>'
+    "</vehicleInput>"
+    '<vehicleInput no="207" name="Jennalup ST_WB" link="1">'
+    '<timeIntVehVols><timeIntervalVehVolume timeInt="1 0" volume="19" vehComp="2"/></timeIntVehVols>'
+    "</vehicleInput>"
+    '<vehicleInput no="307" name="Jennalup ST_WB" link="1">'
+    '<timeIntVehVols><timeIntervalVehVolume timeInt="1 0" volume="0.95" vehComp="3"/></timeIntVehVols>'
+    "</vehicleInput>"
+    "</vehicleInputs>"
+)
+
+
+def test_vehicle_inputs_carry_resolved_composition_name():
+    root = _network_with_link_and(_THREE_SIBLING_INPUTS)
+    inputs = inpx_parser.parse_network_elements(root)["vehicle_inputs"]
+
+    assert [(vi["id"], vi["composition_no"], vi["composition_name"]) for vi in inputs] == [
+        ("107", "1", "Class1"),
+        ("207", "2", "Class2-5"),
+        ("307", "3", "Class6-9"),
+    ]
+    # The reason the composition is needed at all: name AND coordinate are
+    # identical across all three.
+    assert len({vi["name"] for vi in inputs}) == 1
+    assert len({(vi["x"], vi["y"]) for vi in inputs}) == 1
+
+
+def test_vehicle_inputs_without_veh_comp_get_empty_composition_not_a_fabricated_one():
+    root = _network_with_link_and('<vehicleInputs><vehicleInput no="1" name="VI1" link="1"/></vehicleInputs>')
+    vi = inpx_parser.parse_network_elements(root)["vehicle_inputs"][0]
+
+    assert vi["composition_no"] == ""
+    assert vi["composition_name"] == ""
+    assert vi["composition_nos"] == []
+    assert vi["composition_varies_by_interval"] is False
+
+
+def test_vehicle_input_composition_varying_across_intervals_is_not_collapsed_to_the_first():
+    """vehComp lives on each <timeIntervalVehVolume>, not on <vehicleInput>,
+    so the schema permits per-interval variation (0 of the 51 real client
+    inputs do it). When it happens, no single composition is claimed."""
+    root = _network_with_link_and(
+        '<vehicleCompositions><vehicleComposition no="1" name="Class1"/>'
+        '<vehicleComposition no="2" name="Class2-5"/></vehicleCompositions>'
+        '<vehicleInputs><vehicleInput no="1" name="VI1" link="1"><timeIntVehVols>'
+        '<timeIntervalVehVolume timeInt="1 0" volume="100" vehComp="1"/>'
+        '<timeIntervalVehVolume timeInt="1 900000" volume="120" vehComp="2"/>'
+        "</timeIntVehVols></vehicleInput></vehicleInputs>"
+    )
+    vi = inpx_parser.parse_network_elements(root)["vehicle_inputs"][0]
+
+    assert vi["composition_varies_by_interval"] is True
+    assert vi["composition_nos"] == ["1", "2"]
+    assert vi["composition_no"] == "" and vi["composition_name"] == ""
+
+
+def test_vehicle_input_composition_number_kept_when_the_network_names_no_compositions():
+    root = _network_with_link_and(
+        '<vehicleInputs><vehicleInput no="1" name="VI1" link="1"><timeIntVehVols>'
+        '<timeIntervalVehVolume timeInt="1 0" volume="100" vehComp="7"/>'
+        "</timeIntVehVols></vehicleInput></vehicleInputs>"
+    )
+    vi = inpx_parser.parse_network_elements(root)["vehicle_inputs"][0]
+
+    assert vi["composition_no"] == "7"
+    assert vi["composition_name"] == ""  # unresolvable, not invented
+    assert vi["composition_nos"] == ["7"]
+
+
 def test_reduced_speed_area_with_length_includes_end_point():
     root = _network_with_link_and(
         '<reducedSpeedAreas><reducedSpeedArea no="1" name="RSA1" lane="1 2" pos="10" length="20"/></reducedSpeedAreas>'

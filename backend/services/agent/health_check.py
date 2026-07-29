@@ -425,7 +425,22 @@ def _derive_kind_and_tool(
 # only for the handoff prompt.
 _FIX_TARGET_FIELDS: dict[str, tuple[str, ...]] = {
     "volume_out_of_range": ("input_no", "volume"),
-    "latent_demand_overflow": ("input_no", "volume", "link_id", "lanes", "capacity"),
+    # FIX 4 (2026-07-28): latent_demand_overflow became sibling-aware
+    # (link_total_volume = THIS input's volume + every other vehicle input's
+    # volume on the same link) but this allowlist wasn't updated when that
+    # landed, so the handoff payload carried no sibling total or link total —
+    # frontend/app/health/page.tsx's own prompt template then asserted
+    # "volume {volume} exceeds capacity {capacity}", which is false whenever
+    # siblings exist (the LINK total exceeds capacity, not necessarily this
+    # one input's own volume — measured live: volume 1200.0 does not exceed
+    # capacity 1900). sibling_volume_total/link_total_volume/interval_no are
+    # all real Finding.details keys (see constraints.py's
+    # _check_latent_demand_overflow) and now ground the prompt in what is
+    # actually true.
+    "latent_demand_overflow": (
+        "input_no", "volume", "link_id", "lanes", "capacity", "interval_no",
+        "sibling_volume_total", "link_total_volume",
+    ),
     "cycle_below_intergreen_sum": ("sc_no", "cycle", "min_sum"),
     "ring_barrier_splits_sum_mismatch": ("sc_no", "cycle", "split_sum"),
     "green_split_outside_cycle": ("sc_no", "program_no", "sg_no", "green_start_s", "green_end_s", "cycle_s"),

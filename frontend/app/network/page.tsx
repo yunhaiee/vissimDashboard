@@ -26,6 +26,7 @@ import {
   type FocusBbox,
   type FocusElementRef,
 } from "@/lib/networkFocus";
+import { buildVehicleInputStacks, vehicleInputCompositionLabel } from "@/lib/vehicleInputStack";
 
 // NetworkViewer draws with d3 straight against the DOM, so it must stay
 // client-only (same reason DashboardMap/Leaflet is dynamically imported).
@@ -155,6 +156,38 @@ function NetworkPageContent() {
     if (!activeFocus) return null;
     const conflict = activeFocus.elements.find((element) => element.type === "conflict_area");
     const links = activeFocus.elements.filter((element) => element.type === "link");
+    // Vehicle inputs FIRST (sibling-disambiguation unit, 2026-07-28). This
+    // branch is the reported defect: a focus of [vehicle_input:107, link:620]
+    // fell straight through to the single-link branch below and the banner
+    // read "승인 대상 강조 링크 620" -- it named the HOST LINK of the write,
+    // never the object written, while the map's tooltip named a different
+    // sibling stacked on the same pixel. The element was never dropped from
+    // the URL or the flash; it was simply never consulted for text.
+    //
+    // The URL carries type+id only (lib/networkFocus.ts strips labels so they
+    // cannot go stale on a language switch), so name and vehicle class are
+    // re-resolved here against the network geometry this page already has --
+    // and both are simply omitted when unknown.
+    const vehicleInput = activeFocus.elements.find((element) => element.type === "vehicle_input");
+    if (vehicleInput) {
+      const inputs = network?.elements?.vehicle_inputs ?? [];
+      const item = inputs.find((candidate) => String(candidate.id) === vehicleInput.id);
+      const slot = buildVehicleInputStacks(inputs).get(vehicleInput.id);
+      const parts = [t(`차량 입력 ${vehicleInput.id}`, `Vehicle input ${vehicleInput.id}`, `車両入力${vehicleInput.id}`)];
+      if (item?.name) parts.push(item.name);
+      const composition = vehicleInputCompositionLabel(item, t);
+      if (composition) parts.push(composition);
+      if (slot && slot.size > 1) {
+        parts.push(
+          t(
+            `같은 지점 차량 입력 ${slot.size}개 중 이 1개`,
+            `1 of ${slot.size} vehicle inputs at this point`,
+            `同じ地点の車両入力${slot.size}件のうちこの1件`,
+          ),
+        );
+      }
+      return parts.join(" · ");
+    }
     if (conflict) {
       const pair = links
         .slice(0, 2)
@@ -166,7 +199,7 @@ function NetworkPageContent() {
     if (links.length === 1) return t(`링크 ${links[0].id}`, `Link ${links[0].id}`, `リンク${links[0].id}`);
     const count = activeFocus.elements.length;
     return t(`대상 요소 ${count}개`, `${count} target element${count === 1 ? "" : "s"}`, `対象要素${count}個`);
-  }, [activeFocus, t]);
+  }, [activeFocus, network, t]);
 
   // --- Network search selection (2026-07-28) ------------------------------
   // A SEPARATE focus "slot" from the URL-sourced approval focus above — a

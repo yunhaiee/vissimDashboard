@@ -2425,3 +2425,59 @@ silently replaced the user's selection with the automatic first-four.
 3. `clearDashboardData()` wipes the stored value — dataset change may not resurrect a selection.
 4. Storage I/O happens outside React state updaters (updaters must stay pure; StrictMode
    double-invokes them), via a ref of the committed selection.
+
+## 2026-07-29 — Co-located vehicle inputs disambiguated end to end; sibling capacity checks made honest (unit + adversarial fix pass)
+
+**Trigger.** A user set vehicle input 107 to 6000 veh/h. The write was correct, but the network
+map named 307 — the real Murdoch model puts THREE inputs (one per vehicle class) at the identical
+coordinate on every demand link, sharing one name. 51 inputs, 17 groups of exactly 3; `vehComp`
+aligns perfectly with the hundreds digit (1xx→Class1, 2xx→Class2-5, 3xx→Class6-9). The user had
+no way to check the right object was touched — and the capacity guardrail compared one input's
+volume against link capacity as if its siblings didn't exist.
+
+**Shipped.** Composition (`composition_no`/`composition_name`) on every vehicle-input surface:
+shadow model, `get_vehicle_inputs`, `resolve_object` candidates, approval focus (`composition`,
+`composition_no`, `siblings` — omitted, never nulled, when absent; `data/practice.inpx` elements
+stay byte-identical `{type,id,label}`), the approval card (identity line + composition chip +
+before→after + sibling note), the map thumbnail (stack fan-out: target filled, siblings hollow),
+the /network banner (a `[vehicle_input, link]` pair no longer falls through to the link branch),
+and the diagram tooltip. `latent_demand_overflow` now sums same-link siblings; new warn-tier
+`vehicle_input_siblings_share_link` states the class-mix shift a single-input change causes
+(13.5% → 0.3% on the worked example), silent when the input is alone on its link. Registry 61→62.
+
+**The adversarial pass then found, and a fix round closed, four defects — recorded because each
+is a canonical failure mode:**
+
+1. *The disambiguation fields made the siblings invisible.* The added fields grew
+   `get_vehicle_inputs` to 42KB against the planner's 12KB observation budget; truncation left 15
+   of 51 inputs visible — all class 1xx, because **the .inpx declares inputs in composition-major
+   document order**, so any prefix truncation is class-blind. 207/307, the unit's own worked
+   example, vanished from the observation. Fix: omit per-interval/varies fields when uniform
+   (scoped to `tools_network.py`; the `inpx_parser.py` map helper keeps its own pinned contract),
+   `input_no`/`link_no`/`composition_no` filters + measured cap 20 + link-grouped ordering so a
+   prefix is complete sibling groups (the `get_conflict_areas` D1 shape). After: 11.5KB, 20/51
+   shown, all three classes, 107/207/307 all visible. A feature that adds observation payload
+   must be measured against the observation budget — "more data" can subtract information.
+2. *Interval blindness.* Both checks summed siblings' top-level `volume` — interval 1 by
+   definition — whatever interval was being written, printing exact-looking totals that exist at
+   no point in time (188 silent-overflow / 47 false-warn windows on the live model). Fix:
+   `_volume_at_interval`, default resolved from the write tool's own `interval_no=1` default
+   (verified, not assumed); messages name the interval their numbers came from.
+3. *A recommendation that fails its own check.* With siblings alone over capacity the clamp
+   emitted `max_recommended_volume: 0.0` — still overflowing. Now an explicit
+   `fixable_by_reducing_this_input: false` state with the sibling arithmetic. Never ship a
+   suggested_fix the constraint itself would refuse.
+4. *A guardrail's message layer must be updated with its arithmetic.* `_FIX_TARGET_FIELDS`
+   wasn't, so the /health page asserted "1200 exceeds 1900" — literally false; the LINK total
+   exceeds. Handoff now carries sibling/link totals + interval; ko/en/ja sentences state the
+   true breakdown.
+
+**Also fixed in passing:** the approval card's bare "107 → 6000" line was replaced by a detail
+block whose before-value comes from `/api/network/search` (active dataset only) and is shown
+ONLY while base == working copy — once the conversation has edited the model, the card says the
+current value is not shown and why, instead of showing a stale number.
+
+**Left open, deliberately:** `_check_object_not_found`'s name→id candidate pool is
+first-writer-wins, so three same-named siblings collapse to one fuzzy-match candidate on the
+miss path (`constraints.py` + mirrored in `tools_network._difflib_candidates`). Hit path is
+correct. Follow-up unit.

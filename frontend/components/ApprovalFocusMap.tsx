@@ -26,6 +26,7 @@ import {
   type NetworkData,
 } from "@/lib/api";
 import { buildNetworkFocusHref, withFocusNonce } from "@/lib/networkFocus";
+import { buildVehicleInputStacks } from "@/lib/vehicleInputStack";
 
 // The route the focus handoff lands on. Re-triggering the focus while ALREADY
 // here is a view change, not a journey, so it replaces the history entry
@@ -52,6 +53,27 @@ const VIEW_MARGIN = 8;
 const ACCENT = "#4c8dff";
 const MUTED_LINK = "#c7cfdb";
 const HIGHLIGHT_LINK = ACCENT;
+
+// Stacked vehicle inputs (sibling-disambiguation unit, 2026-07-28). Three
+// inputs on one link all resolve to that link's start point, so a naive
+// thumbnail draws ONE dot for three separately-editable objects -- the exact
+// ambiguity this card exists to remove. The stack is fanned instead: the write
+// target keeps the accent dot, its siblings become smaller hollow rings, so
+// "there are three here and this is the one" is visible without reading a
+// word. Step is in viewBox units (the map is a fixed 320x200 box), sized so
+// two r=4.5 dots clear each other with a visible gap.
+const STACK_FAN_STEP = 11;
+const SIBLING_DOT_R = 3.2;
+
+// Screen-space perpendicular for a raw element angle -- the same convention,
+// including the Y-flip, as NetworkViewer's own dirsFromAngle. Kept identical
+// on purpose: a stack must fan along the SAME axis here as it does on the full
+// diagram, or the thumbnail stops being a preview of the thing it links to.
+function acrossFromAngle(angleDeg: number | null | undefined): [number, number] {
+  const rad = ((Number.isFinite(angleDeg as number) ? (angleDeg as number) : 0) * Math.PI) / 180;
+  const along: [number, number] = [Math.cos(rad), -Math.sin(rad)];
+  return [-along[1], along[0]];
+}
 
 // The WORLD bbox is expanded by this multiple of its own span on each side
 // before fitting, so the fitted view spans (1 + 2*PAD_RATIO)x the bbox.
@@ -186,6 +208,28 @@ function buildCaption(
   t: (ko: string, en: string, ja?: string) => string,
 ): string {
   const primary = primaryFocusLabel(action, t);
+  // Vehicle inputs (sibling-disambiguation unit, 2026-07-28): the id alone is
+  // not an identification when three inputs share one pixel AND one name, so
+  // the caption carries the vehicle class -- the only field that separates
+  // them -- and says out loud how many objects the single dot below stands
+  // for. Both come from the focus payload; both are simply omitted when the
+  // backend has nothing to say (a network with no compositions, an older
+  // backend), leaving the caption exactly as it was.
+  if (action?.tool === "set_vehicle_input_volume") {
+    const el = focus.elements.find((candidate) => candidate.type === "vehicle_input");
+    const parts = [primary];
+    if (el?.composition) parts.push(el.composition);
+    else if (el?.composition_varies_by_interval) {
+      parts.push(t("차종 조성 구간별 상이", "class mix varies by interval", "車種構成が時間帯別に異なる"));
+    }
+    const stackSize = (el?.siblings?.length ?? 0) + 1;
+    if (stackSize > 1) {
+      parts.push(
+        t(`같은 지점 ${stackSize}개 중 1개`, `1 of ${stackSize} at this point`, `同じ地点${stackSize}件のうち1件`),
+      );
+    }
+    return parts.join(" · ");
+  }
   if (action?.tool !== "set_conflict_area_status") return primary;
   const linkIds = focus.elements.filter((e) => e.type === "link").slice(0, 2);
   if (linkIds.length < 2) return primary;
@@ -314,6 +358,44 @@ export default function ApprovalFocusMap({
               );
             })}
             {Array.from(highlightSets.pointsByListKey.entries()).flatMap(([listKey, ids]) => {
+              // Vehicle inputs draw the whole same-point STACK, not just the
+              // focused id: the siblings are what made a single dot
+              // misleading, so they are drawn (muted, hollow) rather than left
+              // invisible. Ordering comes from the shared stack helper, so the
+              // fan matches the full diagram's fan element for element.
+              if (listKey === "vehicle_inputs") {
+                const inputs = network.elements?.vehicle_inputs ?? [];
+                const stacks = buildVehicleInputStacks(inputs);
+                const drawn = new Set<string>();
+                return inputs
+                  .filter((item) => ids.has(item.id))
+                  .flatMap((item) => {
+                    const slot = stacks.get(String(item.id));
+                    const members = slot?.members ?? [item];
+                    const across = acrossFromAngle(item.angle);
+                    return members
+                      .filter((member) => !drawn.has(String(member.id)))
+                      .map((member, memberIndex) => {
+                        drawn.add(String(member.id));
+                        const offset = (memberIndex - (members.length - 1) / 2) * (members.length > 1 ? STACK_FAN_STEP : 0);
+                        const cx = projX(member.x) + across[0] * offset;
+                        const cy = projY(member.y) + across[1] * offset;
+                        const isTarget = ids.has(String(member.id));
+                        return (
+                          <circle
+                            key={`vehicle_inputs-${member.id}`}
+                            cx={cx}
+                            cy={cy}
+                            r={isTarget ? 4.5 : SIBLING_DOT_R}
+                            fill={isTarget ? ACCENT : "none"}
+                            stroke={isTarget ? "#ffffff" : MUTED_LINK}
+                            strokeWidth={1.2}
+                            filter={isTarget ? "url(#approval-focus-glow)" : undefined}
+                          />
+                        );
+                      });
+                  });
+              }
               const list = (network.elements?.[listKey as keyof NonNullable<NetworkData["elements"]>] ?? []) as {
                 id: string;
                 x: number;

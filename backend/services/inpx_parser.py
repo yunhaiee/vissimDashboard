@@ -605,7 +605,58 @@ def _parse_link_pos_elements(root: ET.Element, xpath: str, link_index: dict) -> 
     return result
 
 
+def vehicle_composition_names(root: ET.Element) -> dict:
+    """``{composition_no: composition_name}`` from ``<vehicleComposition>``.
+
+    Shared by this module's map-geometry vehicle-input parse and (via import)
+    by ``services.agent.tools_network``'s shadow-model parse, so the two can
+    never drift on how a ``vehComp`` number resolves to a human-readable
+    class name."""
+    return {c.get("no", ""): (c.get("name") or "") for c in root.findall(".//vehicleComposition")}
+
+
+def vehicle_input_composition_fields(el: ET.Element, comp_names: dict) -> dict:
+    """The composition roll-up for one ``<vehicleInput>``, as four fields.
+
+    **Why a roll-up rather than a single field** (sibling-disambiguation unit,
+    2026-07-28). ``vehComp`` does NOT live on ``<vehicleInput>`` itself — it
+    lives on each ``<timeIntervalVehVolume>`` CHILD, so the schema permits one
+    input to feed a different vehicle class in each time interval. Measured on
+    the active real client model (Murdoch Drive, ``runtime/uploads/current/
+    current.inpx``): 51 vehicle inputs, every one of them references EXACTLY
+    ONE composition across all of its 6 intervals — 0 inputs vary. But
+    "does not occur in this dataset" is not "cannot occur", so the varying
+    case is represented rather than silently collapsed to the first interval:
+
+    * ``composition_no`` / ``composition_name`` — the single composition when
+      the input is uniform, ``""`` when it varies (or when no ``vehComp``
+      attribute is present at all, e.g. the synthetic demo network).
+    * ``composition_nos`` — every DISTINCT composition number, in interval
+      order. ``[]`` when the element carries no ``vehComp`` anywhere.
+    * ``composition_varies_by_interval`` — ``True`` only when
+      ``len(composition_nos) > 1``.
+
+    A consumer that wants one label reads ``composition_name`` and gets ``""``
+    (a truthful "not a single class") rather than a confident wrong answer;
+    a consumer that wants the whole truth reads ``composition_nos``.
+    """
+    nos: list = []
+    for tv in el.findall(".//timeIntervalVehVolume"):
+        comp_no = tv.get("vehComp")
+        if not comp_no or comp_no in nos:
+            continue
+        nos.append(comp_no)
+    single = nos[0] if len(nos) == 1 else ""
+    return {
+        "composition_no": single,
+        "composition_name": comp_names.get(single, "") if single else "",
+        "composition_nos": nos,
+        "composition_varies_by_interval": len(nos) > 1,
+    }
+
+
 def _parse_vehicle_inputs(root: ET.Element, link_index: dict) -> list:
+    comp_names = vehicle_composition_names(root)
     result = []
     for el in root.findall(".//vehicleInputs/vehicleInput"):
         link_id = el.get("link") or None
@@ -616,6 +667,11 @@ def _parse_vehicle_inputs(root: ET.Element, link_index: dict) -> list:
         if resolved is None:
             continue
         x, y, angle = resolved
+        # Every vehicle input on a link resolves to the link's START point
+        # (pos 0), so N inputs on one link land on ONE pixel. On the real
+        # client model that is always 3 (one per vehicle class), which is why
+        # the composition fields below are the ONLY thing that tells the map's
+        # three stacked glyphs apart -- see vehicle_input_composition_fields.
         result.append({
             "id": el.get("no", ""),
             "name": el.get("name", ""),
@@ -623,6 +679,7 @@ def _parse_vehicle_inputs(root: ET.Element, link_index: dict) -> list:
             "x": x,
             "y": y,
             "angle": angle,
+            **vehicle_input_composition_fields(el, comp_names),
         })
     return result
 

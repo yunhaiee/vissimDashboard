@@ -8,6 +8,7 @@ real tools (docs/phase2/02-ROADMAP.md M1.2).
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,16 @@ from services.agent.toolkit import default_registry, dispatch, render_contract
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 KOREAN_FIXTURE_INPX = FIXTURES_DIR / "korean_object_names.inpx"
+
+# The active real client model, used ONLY by the sibling-disambiguation
+# real-dataset regression test (FIX 1, 2026-07-28) -- everything else here is
+# synthetic by design. Same skipif convention as test_agent_constraints.py /
+# test_network_search.py.
+ACTIVE_REAL_INPX = Path(__file__).resolve().parents[2] / "runtime" / "uploads" / "current" / "current.inpx"
+_requires_real_dataset = pytest.mark.skipif(
+    not ACTIVE_REAL_INPX.is_file(),
+    reason=f"real active dataset not present on this machine: {ACTIVE_REAL_INPX}",
+)
 
 EXPECTED_TOOL_NAMES = {
     "get_network_overview",
@@ -305,21 +316,99 @@ def test_resolve_object_rejects_unknown_object_type():
 def test_get_vehicle_inputs_on_demo_data_has_no_volume_children():
     """The demo .inpx's <vehicleInput> elements carry no/name/link attrs and
     no volume children — volume must come back None, never crash. v2 unit ⑤:
-    interval_count/volumes are now real fields too (0/[] here, not absent)."""
+    interval_count/volumes are now real fields too (0/[] here, not absent).
+
+    FIX 1 (2026-07-28): ``composition_nos``/``composition_varies_by_interval``
+    are now OMITTED (not present-but-empty) when the composition doesn't
+    vary across intervals -- true of every input here (the demo network has
+    no <vehicleComposition> and no vehComp attrs at all, so it trivially
+    doesn't vary). See tools_network._parse_vehicle_inputs's "Omit-when-
+    uniform" docstring section for the payload-bloat measurement this closes.
+    """
     envelope = _dispatch("get_vehicle_inputs")
 
     assert envelope["status"] == "ok"
     data = envelope["data"]
     assert data["count"] == 6
     assert len(data["vehicle_inputs"]) == 6
+    # Well under the default cap, so an unfiltered call still returns
+    # everything -- truncated must say so honestly.
+    assert data["truncated"] is False
+    assert "hint" not in data
     for vi in data["vehicle_inputs"]:
-        assert set(vi.keys()) == {"no", "name", "link", "volume", "interval_count", "volumes"}
+        assert set(vi.keys()) == {
+            "no",
+            "name",
+            "link",
+            "volume",
+            "interval_count",
+            "volumes",
+            # sibling-disambiguation unit (2026-07-28)
+            "composition_no",
+            "composition_name",
+            # composition_nos/composition_varies_by_interval: OMITTED here,
+            # not present-but-empty -- see FIX 1's docstring above.
+        }
         assert vi["volume"] is None
         assert vi["interval_count"] == 0
         assert vi["volumes"] == []
+        # The demo network has no <vehicleComposition> and no vehComp attrs:
+        # empty, never a fabricated class.
+        assert vi["composition_no"] == "" and vi["composition_name"] == ""
     first = next(vi for vi in data["vehicle_inputs"] if vi["no"] == "1")
     assert first["name"] == "Main St EB"
     assert first["link"] == "101"
+
+
+def test_get_vehicle_inputs_carries_the_composition_that_distinguishes_same_named_siblings(
+    tmp_path: Path,
+):
+    """Sibling-disambiguation unit (2026-07-28). The real client model puts
+    three vehicle inputs on one link, all with the SAME name, differing only
+    by vehicle class — so no/name/link alone gave the planner three
+    indistinguishable objects. The composition is what tells them apart."""
+    inpx = tmp_path / "siblings.inpx"
+    inpx.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?><network>'
+        '<links><link no="620" name="Jennalup St WB"><geometry><linkPolyPts>'
+        '<linkPolyPoint x="0" y="0" zOffset="0"/><linkPolyPoint x="100" y="0" zOffset="0"/>'
+        '</linkPolyPts></geometry><lanes><lane width="3.5"/></lanes></link></links>'
+        '<vehicleCompositions><vehicleComposition no="1" name="Class1"/>'
+        '<vehicleComposition no="2" name="Class2-5"/></vehicleCompositions>'
+        '<vehicleInputs>'
+        '<vehicleInput no="107" name="Jennalup ST_WB" link="620"><timeIntVehVols>'
+        '<timeIntervalVehVolume timeInt="1 0" volume="127.3" vehComp="1"/></timeIntVehVols></vehicleInput>'
+        '<vehicleInput no="207" name="Jennalup ST_WB" link="620"><timeIntVehVols>'
+        '<timeIntervalVehVolume timeInt="1 0" volume="19" vehComp="2"/></timeIntVehVols></vehicleInput>'
+        "</vehicleInputs></network>",
+        encoding="utf-8",
+    )
+    tools_network.set_active_inpx(inpx)
+
+    data = _dispatch("get_vehicle_inputs")["data"]
+
+    by_no = {vi["no"]: vi for vi in data["vehicle_inputs"]}
+    assert by_no["107"]["name"] == by_no["207"]["name"]  # the whole problem
+    assert (by_no["107"]["composition_no"], by_no["107"]["composition_name"]) == ("1", "Class1")
+    assert (by_no["207"]["composition_no"], by_no["207"]["composition_name"]) == ("2", "Class2-5")
+    # FIX 1 (2026-07-28): neither input's composition varies across its (one)
+    # interval, so the per-interval composition_no key and the
+    # composition_nos/composition_varies_by_interval keys are all OMITTED --
+    # the input-level composition_no/composition_name above already say
+    # everything there is to say. See _parse_vehicle_inputs's "Omit-when-
+    # uniform" docstring section.
+    assert "composition_no" not in by_no["107"]["volumes"][0]
+    assert "composition_nos" not in by_no["107"]
+    assert "composition_varies_by_interval" not in by_no["107"]
+
+    # ...and resolve_object, which is how the planner finds them by name.
+    candidates = _dispatch("resolve_object", query="Jennalup ST_WB", object_type="vehicle_input")["data"][
+        "candidates"
+    ]
+    resolved = {c["id"]: c for c in candidates}
+    assert resolved["107"]["composition_name"] == "Class1"
+    assert resolved["207"]["composition_name"] == "Class2-5"
+    assert resolved["107"]["link"] == resolved["207"]["link"] == "620"
 
 
 def test_get_signal_controllers_on_demo_data_is_empty_but_well_formed():
@@ -592,16 +681,218 @@ def test_get_vehicle_inputs_parses_multi_interval_volumes(multi_interval_fixture
     multi = next(vi for vi in data["vehicle_inputs"] if vi["no"] == "2")
     assert multi["volume"] == 1000.0  # backward-compat: interval 1's volume
     assert multi["interval_count"] == 3
+    # FIX 1 (2026-07-28): all three intervals name the SAME composition (no
+    # variation), so the per-interval composition_no key is OMITTED -- the
+    # input-level composition_no/composition_name below already say it once.
+    # See _parse_vehicle_inputs's "Omit-when-uniform" docstring section for
+    # the payload-bloat measurement this closes (this exact repetition, ~7KB
+    # over 306 intervals on the real 51-input model, was the single biggest
+    # contributor).
     assert multi["volumes"] == [
         {"interval_no": 1, "from_s": 0.0, "volume": 1000.0, "continuous": False},
         {"interval_no": 2, "from_s": 1200.0, "volume": 1000.0, "continuous": True},
         {"interval_no": 3, "from_s": 1800.0, "volume": 1000.0, "continuous": True},
     ]
+    # This fixture's network declares no <vehicleComposition> at all, so the
+    # number survives and the name stays empty rather than being invented.
+    assert multi["composition_no"] == "100"
+    assert multi["composition_name"] == ""
+    # Not varying -> composition_nos/composition_varies_by_interval OMITTED
+    # entirely (present-but-empty would still be a truncation-budget cost for
+    # zero information -- see FIX 1's docstring).
+    assert "composition_nos" not in multi
+    assert "composition_varies_by_interval" not in multi
 
     single = next(vi for vi in data["vehicle_inputs"] if vi["no"] == "9")
     assert single["volume"] is None
     assert single["interval_count"] == 0
     assert single["volumes"] == []
+    assert "composition_nos" not in single
+
+
+def test_get_vehicle_inputs_represents_varying_composition_honestly(tmp_path: Path):
+    """FIX 1's other half of "omit when uniform": when a composition DOES
+    vary across intervals (schema-legal even though 0/51 real inputs do it —
+    see vehicle_input_composition_fields's own docstring), nothing is
+    trimmed -- collapsing it would be exactly the silent lie this project
+    exists to prevent, not a size optimization."""
+    inpx = tmp_path / "varying.inpx"
+    inpx.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?><network>'
+        '<links><link no="11" name="Border Rd"><lanes><lane width="3.5"/></lanes></link></links>'
+        '<vehicleCompositions><vehicleComposition no="1" name="Class1"/>'
+        '<vehicleComposition no="2" name="Class2"/></vehicleCompositions>'
+        '<vehicleInputs><vehicleInput no="2" name="" link="11"><timeIntVehVols>'
+        '<timeIntervalVehVolume cont="false" timeInt="1 0" vehComp="1" volume="1000"/>'
+        '<timeIntervalVehVolume cont="false" timeInt="1 1200000" vehComp="2" volume="500"/>'
+        "</timeIntVehVols></vehicleInput></vehicleInputs></network>",
+        encoding="utf-8",
+    )
+    tools_network.set_active_inpx(inpx)
+
+    data = _dispatch("get_vehicle_inputs")["data"]
+
+    vi = next(v for v in data["vehicle_inputs"] if v["no"] == "2")
+    # Varies -> input-level composition_no/composition_name are the honest
+    # "not a single class" empty string (vehicle_input_composition_fields's
+    # own contract), and ALL of the per-interval/_nos/varies data is present.
+    assert vi["composition_no"] == "" and vi["composition_name"] == ""
+    assert vi["composition_nos"] == ["1", "2"]
+    assert vi["composition_varies_by_interval"] is True
+    assert [iv["composition_no"] for iv in vi["volumes"]] == ["1", "2"]
+
+
+# ---------------------------------------------------------------------------
+# get_vehicle_inputs — filters, default cap, link-grouping (FIX 1, 2026-07-28)
+#
+# The bug this closes: the real .inpx declares every <vehicleInput> in
+# composition-MAJOR order (every class-1 input, THEN every class-2, THEN
+# every class-3), so a document-order prefix truncation shows one vehicle
+# class network-wide and drops every other class's inputs entirely --
+# reproduced synthetically here so the regression is pinned without the real
+# dataset.
+# ---------------------------------------------------------------------------
+
+
+def _many_links_siblings_inpx(tmp_path: Path, link_count: int) -> Path:
+    """A synthetic .inpx with ``link_count`` links, each carrying 3 vehicle
+    inputs (one per composition class 1/2/3), declared in COMPOSITION-MAJOR
+    document order -- ALL class-1 inputs first (one per link), THEN all
+    class-2, THEN all class-3 -- mirroring the real Murdoch Drive model's own
+    measured document order exactly (verified live: its first 18
+    <vehicleInput> elements are composition_no "1", covering every one of
+    its 17 links, before a single "2xx" appears)."""
+    links_xml = "".join(
+        f'<link no="{i}" name="L{i}"><lanes><lane width="3.5"/></lanes></link>' for i in range(1, link_count + 1)
+    )
+    inputs_xml = []
+    for cls in (1, 2, 3):
+        for i in range(1, link_count + 1):
+            no = f"{cls}{i:02d}"
+            inputs_xml.append(
+                f'<vehicleInput no="{no}" name="N{i}" link="{i}"><timeIntVehVols>'
+                f'<timeIntervalVehVolume timeInt="1 0" volume="{i}.0" vehComp="{cls}"/>'
+                "</timeIntVehVols></vehicleInput>"
+            )
+    path = tmp_path / f"many_links_{link_count}.inpx"
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?><network>'
+        f"<links>{links_xml}</links>"
+        '<vehicleCompositions><vehicleComposition no="1" name="Class1"/>'
+        '<vehicleComposition no="2" name="Class2"/><vehicleComposition no="3" name="Class3"/>'
+        "</vehicleCompositions>"
+        f"<vehicleInputs>{''.join(inputs_xml)}</vehicleInputs></network>",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_get_vehicle_inputs_unfiltered_call_groups_by_link_not_document_order(tmp_path: Path):
+    """REGRESSION PIN for the measured live bug: with document-order
+    truncation, a 17-group/51-input network's first N items are ALL class 1
+    (the old, undeniable failure -- 15/51 shown, every one class "1", 207/307
+    absent entirely). Link-grouping must show COMPLETE sibling groups
+    instead, spanning every class, within the default cap."""
+    tools_network.set_active_inpx(_many_links_siblings_inpx(tmp_path, 17))
+
+    envelope = _dispatch("get_vehicle_inputs")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 51
+    assert len(data["vehicle_inputs"]) == tools_network._VEHICLE_INPUTS_DEFAULT_CAP
+    assert data["truncated"] is True
+    assert "20" in data["hint"] and "51" in data["hint"]
+    shown_classes = {vi["composition_no"] for vi in data["vehicle_inputs"]}
+    # The whole point: more than just class "1" survives the cap.
+    assert shown_classes == {"1", "2", "3"}
+    # Link 6's own group (101 06/206/306 -- 3-digit-padded no) is fully
+    # inside the first 20 grouped items (6th link, 3 items each -> position
+    # 16-18), exactly like the real link-620 worked example.
+    shown_nos = {vi["no"] for vi in data["vehicle_inputs"]}
+    assert {"106", "206", "306"} <= shown_nos
+
+
+def test_get_vehicle_inputs_filters_by_link_no_returns_the_whole_sibling_group(tmp_path: Path):
+    tools_network.set_active_inpx(_many_links_siblings_inpx(tmp_path, 17))
+
+    envelope = _dispatch("get_vehicle_inputs", link_no="6")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 3
+    assert {vi["no"] for vi in data["vehicle_inputs"]} == {"106", "206", "306"}
+    # A filtered call is already bounded by the model's own query -- no cap.
+    assert "truncated" not in data
+    assert "hint" not in data
+
+
+def test_get_vehicle_inputs_filters_by_input_no_exact_match(tmp_path: Path):
+    tools_network.set_active_inpx(_many_links_siblings_inpx(tmp_path, 17))
+
+    envelope = _dispatch("get_vehicle_inputs", input_no="307")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["vehicle_inputs"][0]["no"] == "307"
+    assert data["vehicle_inputs"][0]["link"] == "7"
+
+
+def test_get_vehicle_inputs_filters_by_composition_no(tmp_path: Path):
+    tools_network.set_active_inpx(_many_links_siblings_inpx(tmp_path, 17))
+
+    envelope = _dispatch("get_vehicle_inputs", composition_no="3")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 17
+    assert all(vi["composition_no"] == "3" for vi in data["vehicle_inputs"])
+
+
+def test_get_vehicle_inputs_unfiltered_call_under_cap_is_not_truncated():
+    # The demo network (6 inputs) is well under the cap.
+    envelope = _dispatch("get_vehicle_inputs")
+
+    data = envelope["data"]
+    assert data["count"] == 6
+    assert len(data["vehicle_inputs"]) == 6
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_get_vehicle_inputs_rejects_unexpected_params():
+    envelope = _dispatch("get_vehicle_inputs", bogus=1)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+@_requires_real_dataset
+def test_real_dataset_get_vehicle_inputs_unfiltered_call_surfaces_all_three_link_620_siblings():
+    """The exact live acceptance case FIX 1 was built against: an unfiltered
+    call, rendered under the planner's real 12000-char recent-observation
+    budget, must show input 207 AND 307 -- not just 107 -- and every one of
+    Murdoch Drive's three composition classes."""
+    from services.agent import planner
+
+    tools_network.set_active_inpx(ACTIVE_REAL_INPX)
+    try:
+        envelope = _dispatch("get_vehicle_inputs")
+
+        assert envelope["status"] == "ok"
+        assert envelope["data"]["count"] == 51
+
+        rendered = planner._render_observation(envelope, 12000, "ko")
+        assert len(rendered) <= 12000
+        parsed = json.loads(rendered)
+        shown = [vi for vi in parsed["data"]["vehicle_inputs"] if isinstance(vi, dict)]
+        shown_nos = {vi["no"] for vi in shown}
+        assert "207" in shown_nos, "the sibling-disambiguation unit's whole point: 207 must be visible"
+        assert "307" in shown_nos, "the sibling-disambiguation unit's whole point: 307 must be visible"
+        assert {vi["composition_no"] for vi in shown} == {"1", "2", "3"}
+    finally:
+        tools_network.set_active_inpx(None)
 
 
 # ---------------------------------------------------------------------------

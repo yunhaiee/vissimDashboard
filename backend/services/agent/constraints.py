@@ -709,9 +709,141 @@ register(
 
 # ---------------------------------------------------------------------------
 # #3 latent_demand_overflow (warn, preflight)
+#
+# SIBLING-BLINDNESS FIXED (sibling-disambiguation unit, 2026-07-28). The
+# original check compared ONE input's proposed volume against the WHOLE
+# link's capacity and never looked at the other vehicle inputs feeding the
+# same link -- which on the real client model is never fewer than two others:
+# Murdoch Drive has 51 vehicle inputs in 17 groups of 3 (one per vehicle
+# class), so EVERY possible target of this check was under-counted, 100% of
+# the time.
+#
+# Measured silent failure it let through (runtime/uploads/current/
+# current.inpx, link 620 = 1 lane, capacity 1900): inputs 107/207/307 carry
+# 127.3 / 19.0 / 0.95 veh/h. Proposing 1881 on 107 passed with ZERO findings
+# while the link's real post-write demand would be 1900.95 -- over capacity.
+# The whole silent window was any proposed V in (1880.05, 1900.0]. And even
+# when the old check DID fire it reported the wrong numbers: at the user's
+# real 6000 request it said "6000 exceeds 1900" when the link would actually
+# carry 6019.95, and its suggested_fix (max_recommended_volume = 1900) was
+# ITSELF an overflow -- 1900 + 19.95 = 1919.95.
+#
+# The fix is the sibling-sum pattern this file already uses four times over
+# (route_relative_flow_split_confirm, vehicle_composition_share_
+# redistribution_gap, signal_cycle_change_may_break_corridor_sync,
+# signal_green_split_change_confirm): enumerate every OTHER object sharing
+# the host, sum, and report the breakdown so the number is auditable rather
+# than asserted. The target itself is excluded by ``no`` so its CURRENT
+# volume is never double-counted alongside its PROPOSED one.
+#
+# INTERVAL-BLINDNESS FIXED (2026-07-28, second pass). The sibling-sum fix
+# above still read every sibling's TOP-LEVEL ``volume`` field, which
+# ``tools_network._parse_vehicle_inputs`` DEFINES to be interval 1's value
+# ALWAYS -- so a write that names ``interval_no`` > 1 got compared against
+# interval 1's sibling demand, not the interval actually being written.
+# Measured live on link 620 (siblings 207+307's real per-interval totals are
+# ``{1: 19.95, 2: 21.0, 3: 21.0, 4: 21.0, 5: 21.0, 6: 18.9}``): a preflight
+# check at ``interval_no`` 1, 2, or 6 reported ``sibling_volume_total=19.95``
+# and ``link_total_volume=6019.95`` EVERY time -- a "link total" that exists
+# at no point in time (the proposed interval's value plus interval 1's
+# sibling values). Fixed by reading each sibling's volume via
+# :func:`_volume_at_interval` (interval-aware) instead of its top-level
+# ``volume`` field; see that function's own docstring for the exact
+# fallback contract that keeps every pre-existing (interval-naive) fixture
+# in this test file passing byte-for-byte.
 # ---------------------------------------------------------------------------
 
 _ROUGH_LANE_CAPACITY_VEH_PER_H = 1900
+
+
+def _sibling_vehicle_inputs(
+    shadow_model: dict[str, Any], link_id: str, input_no: str
+) -> list[dict[str, Any]]:
+    """Every vehicle input on ``link_id`` OTHER than ``input_no``, in shadow-
+    model order. The one place "sibling vehicle input" is defined, shared by
+    #3 and by ``vehicle_input_siblings_share_link`` below so the two can never
+    disagree about who the siblings are."""
+    if not link_id:
+        return []
+    return [
+        vi
+        for vi in shadow_model.get("vehicle_inputs", [])
+        if str(vi.get("link", "")) == link_id and str(vi.get("no", "")) != input_no
+    ]
+
+
+def _interval_no_default_1(params: dict[str, Any]) -> int:
+    """``params["interval_no"]``, defaulting to 1 -- the SAME default
+    ``set_vehicle_input_volume`` itself uses (``tools_edit.py``'s
+    ``SetVehicleInputVolumeParams.interval_no: int = Field(default=1, ...)``,
+    verified against that field, not assumed) -- so a write that omits
+    ``interval_no`` and a check evaluating that same write always agree on
+    which interval is in play. Mirrors the identical ``params.get(
+    "interval_no", 1)`` + int-coerce-with-fallback pattern this module
+    already uses for #44/route_relative_flow_interval_out_of_range/
+    set_route_relative_flow's own interval_no handling."""
+    raw_interval_no = params.get("interval_no", 1)
+    interval_no = _coerce_number(raw_interval_no, cast=int)
+    return interval_no if interval_no is not None else 1
+
+
+def _volume_at_interval(vehicle_input: dict[str, Any], interval_no: int) -> float | None:
+    """The vehicle input's OWN volume AT ``interval_no`` (1-based) -- the
+    interval-blindness fix both #3 and ``vehicle_input_siblings_share_link``
+    needed (2026-07-28): both used to read the top-level ``volume`` field,
+    which ``tools_network._parse_vehicle_inputs`` DEFINES to be interval 1's
+    value ALWAYS, regardless which interval a write actually targets.
+
+    Reads ``volumes[]`` (the shadow model's real per-interval truth) first.
+    Falls back to the top-level ``volume`` field ONLY for ``interval_no ==
+    1`` when the input carries NO per-interval data at all (``volumes``
+    empty/absent -- the synthetic demo network, and every fixture in this
+    test suite written before per-interval volumes existed): that field is
+    DEFINED to mirror interval 1 exactly in that shape, never a guess, so
+    every existing interval-naive fixture keeps working byte-for-byte.
+
+    Any other miss -- ``interval_no > 1`` with no matching entry, i.e. this
+    input has FEWER intervals than the one being asked about -- returns
+    ``None``: honestly unknown, not silently 0. The caller's existing
+    ``sibling_volume_unknown_count``/``sibling_unknown`` convention (see
+    :func:`_sibling_volume_total`) carries that forward into the message and
+    ``details`` rather than understating demand."""
+    volumes = vehicle_input.get("volumes") or []
+    for entry in volumes:
+        if _coerce_number(entry.get("interval_no"), cast=int) == interval_no:
+            return _coerce_number(entry.get("volume"))
+    if interval_no == 1 and not volumes:
+        return _coerce_number(vehicle_input.get("volume"))
+    return None
+
+
+def _sibling_volume_total(siblings: list[dict[str, Any]], interval_no: int = 1) -> tuple[float, int]:
+    """``(summed volume AT interval_no, number of siblings whose volume at
+    that interval was unknown)``.
+
+    INTERVAL-AWARE (2026-07-28 fix -- was interval-blind; see #3's own
+    comment block above for the measured false-total windows this produced).
+    Reads each sibling's volume via :func:`_volume_at_interval`, not its
+    top-level ``volume`` field (interval 1's value BY DEFINITION), so a
+    write to interval 6 is compared against interval 6's sibling demand, not
+    interval 1's. ``interval_no`` defaults to 1 -- both callers pass their
+    own resolved value; the default only matters for a caller (or test) that
+    doesn't care which interval, matching the pre-fix behavior exactly.
+
+    A sibling with no known volume at ``interval_no`` (missing data, or the
+    sibling genuinely has FEWER intervals than the one being asked about)
+    contributes 0 to the sum -- so the total is a LOWER BOUND, never an
+    invention -- and the count is returned so the message can say so out
+    loud instead of quietly presenting a partial sum as complete."""
+    total = 0.0
+    unknown = 0
+    for sibling in siblings:
+        value = _volume_at_interval(sibling, interval_no)
+        if value is None:
+            unknown += 1
+            continue
+        total += value
+    return round(total, 4), unknown
 
 
 def _check_latent_demand_overflow(
@@ -728,6 +860,7 @@ def _check_latent_demand_overflow(
     volume = _coerce_number(raw_volume)
     if volume is None:
         return None
+    interval_no = _interval_no_default_1(params)
 
     vehicle_input = _find_by_field(shadow_model.get("vehicle_inputs", []), "no", input_no)
     if vehicle_input is None:
@@ -743,8 +876,81 @@ def _check_latent_demand_overflow(
         return None
 
     capacity = lanes * _ROUGH_LANE_CAPACITY_VEH_PER_H
-    if volume <= capacity:
+    siblings = _sibling_vehicle_inputs(shadow_model, link_id, input_no)
+    sibling_total, sibling_unknown = _sibling_volume_total(siblings, interval_no)
+    link_total = round(volume + sibling_total, 4)
+    if link_total <= capacity:
         return None
+
+    # FIX 3 (2026-07-28): when the siblings ALONE already meet or exceed
+    # capacity, no value of THIS input -- not even 0 -- can bring the link
+    # total back under capacity. The old `max(capacity - sibling_total, 0.0)`
+    # clamp presented 0.0 as a working ceiling in that state; re-running the
+    # check at exactly that recommendation still fired (0 + sibling_total >
+    # capacity), because it IS still an overflow. Never emit a recommendation
+    # that fails its own check: state the impossibility instead of a number
+    # that doesn't work.
+    unfixable_by_this_input_alone = sibling_total > capacity
+    max_recommended_volume = None if unfixable_by_this_input_alone else round(max(capacity - sibling_total, 0.0), 4)
+
+    if not siblings:
+        breakdown_ko = f"이 링크의 차량 입력은 '{input_no}' 하나뿐이므로 구간 {interval_no}의 링크 총 " \
+            f"수요는 요청값 그대로 {link_total} veh/h입니다."
+        breakdown_en = f"Input '{input_no}' is the only vehicle input on this link, so interval " \
+            f"{interval_no}'s link total is the requested value itself, {link_total} veh/h."
+        breakdown_ja = f"このリンクの車両インプットは '{input_no}' のみのため、区間{interval_no}の" \
+            f"リンク総需要は要求値そのままの {link_total} veh/h です。"
+    else:
+        breakdown_ko = f"같은 링크의 다른 차량 입력 {len(siblings)}개의 구간 {interval_no} 합계 " \
+            f"{sibling_total} veh/h를 더하면 링크 총 수요는 {volume} + {sibling_total} = " \
+            f"{link_total} veh/h입니다."
+        breakdown_en = f"Adding the {len(siblings)} other vehicle input(s) on the same link at " \
+            f"interval {interval_no} ({sibling_total} veh/h combined), the link total becomes " \
+            f"{volume} + {sibling_total} = {link_total} veh/h."
+        breakdown_ja = f"同じリンクの他の車両インプット {len(siblings)} 件の区間{interval_no}の合計 " \
+            f"{sibling_total} veh/h を加えると、リンク総需要は {volume} + {sibling_total} = " \
+            f"{link_total} veh/h です。"
+
+    if sibling_unknown:
+        breakdown_ko += f" (다른 차량 입력 {sibling_unknown}개는 구간 {interval_no}의 볼륨을 알 수 " \
+            "없어(해당 구간이 없거나 값이 없음) 0으로 계산했으므로 실제 총 수요는 이보다 클 수 " \
+            "있습니다.)"
+        breakdown_en += f" ({sibling_unknown} sibling input(s) have no known volume at interval " \
+            f"{interval_no} (missing that interval, or a missing value) and were counted as 0, so " \
+            "the real link total may be higher.)"
+        breakdown_ja += f" (他の車両インプット {sibling_unknown} 件は区間{interval_no}のボリュームが" \
+            "不明(その区間がない、または値がない)のため0として計算しており、実際の総需要はこれより" \
+            "大きい可能性があります。)"
+
+    if unfixable_by_this_input_alone:
+        excess_from_siblings = round(sibling_total - capacity, 4)
+        fix_note_ko = f"다른 차량 입력들만으로도 이미 구간 {interval_no}의 용량 {capacity} veh/h를 " \
+            f"{excess_from_siblings} veh/h 초과했으므로, '{input_no}'을(를) 아무리 줄여도(0까지 " \
+            "포함) 이 초과는 해결되지 않습니다. 다른 차량 입력의 볼륨을 줄이거나 링크의 차로 수" \
+            "(용량)를 늘려야 합니다."
+        fix_note_en = f"The other vehicle input(s) ALONE already exceed interval {interval_no}'s " \
+            f"capacity {capacity} veh/h by {excess_from_siblings} veh/h, so reducing '{input_no}' " \
+            "-- even to 0 -- cannot fix this. Either the other vehicle inputs' volumes must be " \
+            "reduced, or the link's capacity (lane count) must be increased."
+        fix_note_ja = f"他の車両インプットだけで既に区間{interval_no}の容量 {capacity} veh/h を " \
+            f"{excess_from_siblings} veh/h 超過しているため、'{input_no}' をどれだけ(0まで)減らして" \
+            "もこの超過は解消されません。他の車両インプットのボリュームを減らすか、リンクの車線数" \
+            "(容量)を増やす必要があります。"
+        suggested_fix: dict[str, Any] | None = {
+            "max_recommended_volume": None,
+            "fixable_by_reducing_this_input": False,
+            "sibling_volume_total": sibling_total,
+            "capacity": capacity,
+            "excess_from_siblings_alone": excess_from_siblings,
+        }
+    else:
+        fix_note_ko = f"다른 차량 입력을 그대로 두려면 이 입력의 구간 {interval_no} 권장 상한은 " \
+            f"{max_recommended_volume} veh/h입니다."
+        fix_note_en = "To leave the other vehicle inputs untouched, the recommended ceiling for " \
+            f"THIS input at interval {interval_no} is {max_recommended_volume} veh/h."
+        fix_note_ja = f"他の車両インプットをそのままにする場合、このインプットの区間{interval_no}の" \
+            f"推奨上限は {max_recommended_volume} veh/h です。"
+        suggested_fix = {"max_recommended_volume": max_recommended_volume}
 
     return Finding(
         constraint_id="latent_demand_overflow",
@@ -752,13 +958,34 @@ def _check_latent_demand_overflow(
         phase="preflight",
         messages=_render(
             "latent_demand_overflow",
+            input_no=input_no,
             volume=raw_volume,
             capacity=capacity,
             link_id=link_id,
             lanes=lanes,
+            interval_no=interval_no,
+            link_total=link_total,
+            breakdown_ko=breakdown_ko,
+            breakdown_en=breakdown_en,
+            breakdown_ja=breakdown_ja,
+            fix_note_ko=fix_note_ko,
+            fix_note_en=fix_note_en,
+            fix_note_ja=fix_note_ja,
         ),
-        suggested_fix={"max_recommended_volume": capacity},
-        details={"volume": volume, "capacity": capacity, "link_id": link_id, "lanes": lanes},
+        suggested_fix=suggested_fix,
+        details={
+            "volume": volume,
+            "capacity": capacity,
+            "link_id": link_id,
+            "lanes": lanes,
+            "interval_no": interval_no,
+            "sibling_input_nos": [str(s.get("no", "")) for s in siblings],
+            "sibling_volume_total": sibling_total,
+            "sibling_volume_unknown_count": sibling_unknown,
+            "link_total_volume": link_total,
+            "max_recommended_volume": max_recommended_volume,
+            "fixable_by_reducing_this_input": not unfixable_by_this_input_alone,
+        },
     )
 
 
@@ -769,13 +996,16 @@ register(
         phase="preflight",
         tier="warn",
         check=_check_latent_demand_overflow,
-        message_ko="요청한 볼륨 {volume} veh/h가 링크 '{link_id}'(차로 {lanes}개)의 대략적 용량 "
-        "{capacity} veh/h를 초과합니다. 초과 수요는 화면에 보이지 않는 잠재 수요로 대기하게 됩니다.",
-        message_en="Requested volume {volume} veh/h exceeds the rough capacity {capacity} "
-        "veh/h of link '{link_id}' ({lanes} lanes). Excess demand will queue invisibly as "
-        "latent demand.",
-        message_ja="指定した交通量 {volume} veh/h はリンク '{link_id}'(車線数 {lanes})のおおよその"
-        "容量 {capacity} veh/h を超えています。超過分は目に見えない潜在需要として滞留します。",
+        message_ko="차량 입력 '{input_no}'에 요청한 볼륨 {volume} veh/h (구간 {interval_no}). "
+        "{breakdown_ko} 이는 링크 '{link_id}'(차로 {lanes}개)의 대략적 용량 {capacity} veh/h를 "
+        "초과합니다. 초과 수요는 화면에 보이지 않는 잠재 수요로 대기하게 됩니다. {fix_note_ko}",
+        message_en="Requested volume {volume} veh/h for vehicle input '{input_no}' (interval "
+        "{interval_no}). {breakdown_en} That exceeds the rough capacity {capacity} veh/h of link "
+        "'{link_id}' ({lanes} lanes). Excess demand will queue invisibly as latent demand. "
+        "{fix_note_en}",
+        message_ja="車両インプット '{input_no}' に指定した交通量 {volume} veh/h(区間{interval_no})。"
+        "{breakdown_ja}これはリンク '{link_id}'(車線数 {lanes})のおおよその容量 {capacity} veh/h を"
+        "超えています。超過分は目に見えない潜在需要として滞留します。{fix_note_ja}",
     )
 )
 
@@ -5271,5 +5501,229 @@ register(
         message_ja="希望速度決定エントリ {entries_ja}(decision.vehClass)が存在しない希望速度分布"
         "番号を参照しています。Vissim COMはこのような参照への書き込みを拒否しますが"
         "(\"Object N of type Speed Distribution does not exist\")、データ自体は既に壊れています。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# vehicle_input_siblings_share_link (warn, preflight) — sibling-
+# disambiguation unit, 2026-07-28
+#
+# Not a §-numbered catalog entry; a defensive addition specific to
+# set_vehicle_input_volume, in the same family as #3 latent_demand_overflow
+# (capacity) but about a DIFFERENT failure: not "too much traffic" but "the
+# wrong MIX of traffic", and, upstream of that, "the user cannot tell which
+# of three identical-looking objects is being written".
+#
+# The real client model (Murdoch Drive, runtime/uploads/current/current.inpx)
+# puts THREE vehicle inputs on every one of its 17 demand links — 51 inputs,
+# 17 groups of 3, each group sharing the same name, the same link AND the
+# same exact (x, y) coordinate, differing only by vehicle composition
+# (hundreds digit == vehComp: 1xx→"Class1", 2xx→"Class2-5", 3xx→"Class6-9").
+# Because they resolve to one pixel, the network map's tooltip named 307
+# while the agent was correctly writing 107, and the user had no way to
+# verify the right object was touched (the write WAS right; the product gave
+# them nothing to check it against).
+#
+# The semantic trap this constraint states out loud: a vehicle input feeds
+# exactly ONE composition's stream, so setting one input's volume does NOT
+# scale the approach's demand — it re-mixes it. Worked example, the exact
+# request the user made: link 620 carries 107 = 127.3 (Class1), 207 = 19.0
+# (Class2-5), 307 = 0.95 (Class6-9). Setting 107 to 6000 leaves 207 and 307
+# untouched, so the non-Class1 share of the approach collapses from
+# 19.95/147.25 = 13.5% to 19.95/6019.95 = 0.3% — the heavy vehicles do not
+# scale with the light ones, and nothing in Vissim says so.
+#
+# Silent when the target is the only input on its link (nothing to confuse it
+# with, and the mix cannot shift), so single-input networks — the synthetic
+# demo file included — never see this warning.
+# ---------------------------------------------------------------------------
+
+
+def _vehicle_input_composition_label(vehicle_input: dict[str, Any]) -> tuple[str, str, str]:
+    """``(ko, en, ja)`` naming the composition a vehicle input feeds.
+
+    Three honest cases, never a fabricated class name: a single known
+    composition (its name, or its bare ``vehComp`` number when the network
+    names no compositions), a composition that DIFFERS across the input's
+    time intervals (the schema permits it — see ``services.inpx_parser.
+    vehicle_input_composition_fields``; 0 of the 51 real inputs do it), and
+    no composition datum at all (a network whose ``<timeIntervalVehVolume>``
+    children carry no ``vehComp``, e.g. the synthetic demo file)."""
+    if vehicle_input.get("composition_varies_by_interval"):
+        nos = ", ".join(str(n) for n in (vehicle_input.get("composition_nos") or []))
+        return (
+            f"차종 조성이 구간마다 다름: vehComp {nos}",
+            f"composition varies by interval: vehComp {nos}",
+            f"車両構成が区間ごとに異なる: vehComp {nos}",
+        )
+    name = str(vehicle_input.get("composition_name", "") or "").strip()
+    if name:
+        return (f"차종 조성 '{name}'", f"composition '{name}'", f"車両構成 '{name}'")
+    comp_no = str(vehicle_input.get("composition_no", "") or "").strip()
+    if comp_no:
+        return (f"차종 조성 vehComp {comp_no}", f"composition vehComp {comp_no}", f"車両構成 vehComp {comp_no}")
+    return ("차종 조성 미상", "composition unknown", "車両構成不明")
+
+
+def _sibling_vehicle_input_labels(siblings: list[dict[str, Any]], interval_no: int = 1) -> list[str]:
+    """``["207(Class2-5, 19.0 veh/h)", ...]`` — one display token per sibling,
+    deliberately built ONCE and reused verbatim in all three languages
+    (``_capped_join``'s established contract): every token is a number, an
+    object name Vissim itself authored, or the language-neutral Vissim
+    attribute spelling ``vehComp``, so nothing in it needs translating.
+
+    ``volume`` is read AT ``interval_no`` (2026-07-28 interval-blindness fix
+    — see #3's own comment block for the measured issue this and
+    :func:`_sibling_volume_total` share), not the sibling's top-level
+    ``volume`` field, so a sibling's displayed number always matches the
+    interval the finding's own numbers are computed for."""
+    labels: list[str] = []
+    for sibling in siblings:
+        sibling_no = str(sibling.get("no", "") or "?")
+        volume = _volume_at_interval(sibling, interval_no)
+        # "?" for an unknown volume, not a localized phrase -- this token is
+        # reused verbatim across ko/en/ja (route_relative_flow_split_confirm
+        # uses the same "?" convention for an unknown old value).
+        volume_text = f"{volume} veh/h" if volume is not None else "? veh/h"
+        name = str(sibling.get("composition_name", "") or "").strip()
+        if sibling.get("composition_varies_by_interval"):
+            comp_text = "vehComp " + "/".join(str(n) for n in (sibling.get("composition_nos") or []))
+        elif name:
+            comp_text = name
+        else:
+            comp_no = str(sibling.get("composition_no", "") or "").strip()
+            comp_text = f"vehComp {comp_no}" if comp_no else ""
+        labels.append(f"{sibling_no}({comp_text}, {volume_text})" if comp_text else f"{sibling_no}({volume_text})")
+    return labels
+
+
+def _check_vehicle_input_siblings_share_link(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_vehicle_input_volume":
+        return None
+
+    params = action.get("params", {})
+    input_no = str(params.get("input_no", ""))
+    raw_volume = params.get("volume")
+    if raw_volume is None:
+        return None
+    volume = _coerce_number(raw_volume)
+    if volume is None:
+        return None
+    interval_no = _interval_no_default_1(params)
+
+    vehicle_input = _find_by_field(shadow_model.get("vehicle_inputs", []), "no", input_no)
+    if vehicle_input is None:
+        return None  # missing target is object_not_found's job (#1)
+
+    link_id = str(vehicle_input.get("link", ""))
+    siblings = _sibling_vehicle_inputs(shadow_model, link_id, input_no)
+    if not siblings:
+        return None  # nothing to confuse it with, and no mix to shift
+
+    sibling_total, sibling_unknown = _sibling_volume_total(siblings, interval_no)
+    labels = _sibling_vehicle_input_labels(siblings, interval_no)
+    siblings_ko, siblings_en, siblings_ja = _capped_join(labels, "개", "vehicle inputs", "件")
+    target_comp_ko, target_comp_en, target_comp_ja = _vehicle_input_composition_label(vehicle_input)
+
+    # 2026-07-28 interval-blindness fix: the TARGET's own "old" volume must
+    # also be read AT interval_no -- its top-level `volume` field is
+    # interval 1's value BY DEFINITION, same trap as the siblings' totals.
+    old_volume = _volume_at_interval(vehicle_input, interval_no)
+    old_total = round(old_volume + sibling_total, 4) if old_volume is not None else None
+    new_total = round(volume + sibling_total, 4)
+    old_other_pct: float | None = None
+    new_other_pct: float | None = None
+    if not sibling_unknown and old_total is not None and old_total > 0 and new_total > 0:
+        old_other_pct = round(sibling_total / old_total * 100, 1)
+        new_other_pct = round(sibling_total / new_total * 100, 1)
+
+    if old_other_pct is not None and new_other_pct is not None:
+        mix_ko = (
+            f"다른 차종이 이 진입로의 구간 {interval_no} 전체 수요에서 차지하는 비중은 "
+            f"{old_other_pct}%에서 {new_other_pct}%로 바뀝니다(구간 {interval_no} 링크 총 수요 "
+            f"{old_total} → {new_total} veh/h)."
+        )
+        mix_en = (
+            f"At interval {interval_no}, the other vehicle classes' share of this approach's total "
+            f"demand moves from {old_other_pct}% to {new_other_pct}% (link total {old_total} → "
+            f"{new_total} veh/h)."
+        )
+        mix_ja = (
+            f"区間{interval_no}で他の車種がこの流入部の総需要に占める割合は {old_other_pct}% から "
+            f"{new_other_pct}% に変わります(リンク総需要 {old_total} → {new_total} veh/h)。"
+        )
+    else:
+        mix_ko = f"구간 {interval_no}에서 일부 차량 입력의 현재 볼륨을 알 수 없어 구성비 변화는 " \
+            "계산하지 못했습니다."
+        mix_en = f"The resulting mix shift at interval {interval_no} could not be computed (a " \
+            "vehicle input's current volume at that interval is unknown)."
+        mix_ja = f"区間{interval_no}で一部の車両インプットの現在のボリュームが不明なため、構成比の" \
+            "変化は計算できませんでした。"
+
+    return Finding(
+        constraint_id="vehicle_input_siblings_share_link",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "vehicle_input_siblings_share_link",
+            input_no=input_no,
+            link_id=link_id,
+            sibling_count=len(siblings),
+            volume=raw_volume,
+            interval_no=interval_no,
+            target_comp_ko=target_comp_ko,
+            target_comp_en=target_comp_en,
+            target_comp_ja=target_comp_ja,
+            siblings_ko=siblings_ko,
+            siblings_en=siblings_en,
+            siblings_ja=siblings_ja,
+            mix_ko=mix_ko,
+            mix_en=mix_en,
+            mix_ja=mix_ja,
+        ),
+        suggested_fix=None,
+        details={
+            "input_no": input_no,
+            "link_id": link_id,
+            "interval_no": interval_no,
+            "sibling_input_nos": [str(s.get("no", "")) for s in siblings],
+            "sibling_volume_total": sibling_total,
+            "sibling_volume_unknown_count": sibling_unknown,
+            "old_link_total_volume": old_total,
+            "new_link_total_volume": new_total,
+            "other_classes_share_pct_before": old_other_pct,
+            "other_classes_share_pct_after": new_other_pct,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_input_siblings_share_link",
+        applies_to=["set_vehicle_input_volume"],
+        phase="preflight",
+        tier="warn",
+        check=_check_vehicle_input_siblings_share_link,
+        message_ko="차량 입력 '{input_no}'({target_comp_ko})은(는) 링크 '{link_id}'의 같은 진입 "
+        "지점을 다른 차량 입력 {sibling_count}개와 공유합니다: {siblings_ko}. 차량 입력 하나는 한 "
+        "차종 조성의 교통류만 담당하므로, '{input_no}'의 구간 {interval_no} 볼륨을 {volume} veh/h로 "
+        "바꿔도 나머지 차량 입력의 볼륨은 그대로 남습니다 — 진입로 전체 수요가 그만큼 늘어나는 동시에 "
+        "차종 구성비 자체가 달라집니다. {mix_ko} 차종 구성비를 유지하려면 나머지 차량 입력도 같은 "
+        "비율로 조정해야 합니다.",
+        message_en="Vehicle input '{input_no}' ({target_comp_en}) shares the same entry point on "
+        "link '{link_id}' with {sibling_count} other vehicle input(s): {siblings_en}. One vehicle "
+        "input feeds exactly ONE composition's stream, so setting '{input_no}''s interval "
+        "{interval_no} volume to {volume} veh/h leaves the other inputs' volumes untouched — the "
+        "approach's total demand rises AND its vehicle-class mix changes. {mix_en} To preserve the "
+        "class mix, the other vehicle inputs must be scaled by the same factor.",
+        message_ja="車両インプット '{input_no}'({target_comp_ja})は、リンク '{link_id}' の同じ流入"
+        "地点を他の車両インプット {sibling_count} 件と共有しています: {siblings_ja}。1つの車両"
+        "インプットは1つの車両構成の交通流のみを担うため、'{input_no}' の区間{interval_no}のボリューム"
+        "を {volume} veh/h に変更しても他のインプットのボリュームはそのまま残ります — 流入部の総需要"
+        "が増えると同時に、車種構成比自体が変わります。{mix_ja}車種構成比を維持するには、他の車両"
+        "インプットも同じ比率で調整する必要があります。",
     )
 )

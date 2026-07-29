@@ -13,6 +13,7 @@ import {
   approveAgentAction,
   downloadAgentModel,
   fetchAssistantStatus,
+  fetchNetworkSearch,
   fetchSimulationJob,
   fetchSimulationResults,
   streamAgentQuery,
@@ -291,6 +292,13 @@ export default function FloatingAssistant() {
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<FloatingMessage[]>([]);
+  // Has this conversation persisted a write yet? Every approved write lands in
+  // the agent session's working copy, never in the active dataset (that is
+  // what AgentModelDownloadLink exists for), so the first `wroteModel` turn is
+  // the exact moment the base model stops being an honest "current value" for
+  // an approval card. Conversation-scoped by construction: 새 대화 clears
+  // `messages` and starts a fresh session/working copy.
+  const modelEdited = useMemo(() => messages.some((message) => message.wroteModel === true), [messages]);
   const [status, setStatus] = useState<AssistantStatus | null>(null);
   const [statusChecking, setStatusChecking] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -1131,6 +1139,7 @@ export default function FloatingAssistant() {
                     declined={declinedExecutionIds.has(message.id)}
                     onConfirmExecute={() => confirmPromptExecution(message)}
                     onDeclineExecute={() => declinePromptExecution(message.id)}
+                    modelEdited={modelEdited}
                     onResolveApproval={(approved) => {
                       if (message.agentApproval) void runAgentApproval(message.id, message.agentApproval, approved);
                     }}
@@ -1189,6 +1198,7 @@ function FloatingChatMessage({
   declined,
   onConfirmExecute,
   onDeclineExecute,
+  modelEdited,
   onResolveApproval,
 }: {
   message: FloatingMessage;
@@ -1197,6 +1207,10 @@ function FloatingChatMessage({
   declined: boolean;
   onConfirmExecute: () => void;
   onDeclineExecute: () => void;
+  /** Whether THIS conversation has already persisted a write -- forwarded to
+   * the approval card, which uses it to decide whether the base model's
+   * "current value" is still true (see VehicleInputActionDetail). */
+  modelEdited: boolean;
   /** M2.3: resolves this message's write-approval card, if it has one. */
   onResolveApproval: (approved: boolean) => void;
 }) {
@@ -1247,7 +1261,7 @@ function FloatingChatMessage({
           </>
         )}
         {!isUser && message.agentApproval && (
-          <AgentApprovalCard approval={message.agentApproval} onRun={() => onResolveApproval(true)} onCancelApproval={() => onResolveApproval(false)} />
+          <AgentApprovalCard approval={message.agentApproval} modelEdited={modelEdited} onRun={() => onResolveApproval(true)} onCancelApproval={() => onResolveApproval(false)} />
         )}
         {!isUser && message.wroteModel && message.writeSessionId && (
           <AgentModelDownloadLink sessionId={message.writeSessionId} />
@@ -1475,12 +1489,226 @@ function AgentModelDownloadLink({ sessionId }: { sessionId: string }) {
   );
 }
 
+// --- Vehicle-input approval target (sibling-disambiguation unit, 2026-07-28) ---
+//
+// The defect, verbatim: "i prompted 107, but it is trying to fix input for
+// 307, not 107 (i dont even know if 107 exists.)" The write targeted 107 and
+// was correct; the card said only "차량 입력 107 → 6000 veh/h", which is
+// unverifiable when the network map draws 107, 207 and 307 on ONE pixel under
+// ONE shared name. This block makes the card answer, without the user opening
+// the map at all: which object (id + name + VEHICLE CLASS, the only field that
+// separates the three), what it is today, and what else is hiding under it.
+//
+// `volume` is NOT on the approval wire payload, and the value the write will
+// replace lives in the agent session's working copy -- which no endpoint
+// exposes numerically. The one place a vehicle input's volume is readable from
+// the client is GET /api/network/search (backend/routers/search.py), and that
+// endpoint reads the ACTIVE dataset, explicitly never a session working copy.
+// So the "before" value here is the BASE model's, which is exact right up
+// until this conversation persists its first write and then silently is not.
+// Hence `baselineTrusted` below: the value is shown only while base == working
+// by construction, and its absence is explained rather than left blank. A card
+// that showed "127.3 → 5000" for an input this session had already moved to
+// 3000 would be a wrong number on an approval screen, which is the one thing
+// this product must never do.
+type VehicleInputBaseline = { volume: number | null; link: string | null };
+
+// Module-level, promise-valued, same pattern (and same reasoning) as
+// ApprovalFocusMap's network cache: repeated renders of the same card -- and a
+// re-proposal of the same input later in the conversation -- never refetch.
+// Failed lookups are evicted so one transient error doesn't wedge every later
+// card into "no current value".
+const vehicleInputBaselineCache = new Map<string, Promise<VehicleInputBaseline | null>>();
+
+function fetchVehicleInputBaseline(inputNo: string): Promise<VehicleInputBaseline | null> {
+  const cached = vehicleInputBaselineCache.get(inputNo);
+  if (cached) return cached;
+  const promise = fetchNetworkSearch(inputNo, { limit: 8 }).then((response) => {
+    // Id-exact, family-exact: a query like "107" can also match a link name,
+    // and only the vehicle input with THIS id is the object being written.
+    const hit = response.results.find((result) => result.type === "vehicle_input" && String(result.id) === inputNo);
+    if (!hit) return null;
+    const detail = (hit.label?.detail ?? {}) as Record<string, unknown>;
+    const volume = typeof detail.volume === "number" && Number.isFinite(detail.volume) ? detail.volume : null;
+    return { volume, link: detail.link == null ? null : String(detail.link) };
+  });
+  vehicleInputBaselineCache.set(inputNo, promise);
+  promise.catch(() => {
+    vehicleInputBaselineCache.delete(inputNo);
+  });
+  return promise;
+}
+
+function useVehicleInputBaseline(inputNo: string | null): VehicleInputBaseline | null {
+  const [baseline, setBaseline] = useState<VehicleInputBaseline | null>(null);
+  useEffect(() => {
+    if (!inputNo) {
+      setBaseline(null);
+      return;
+    }
+    let cancelled = false;
+    fetchVehicleInputBaseline(inputNo)
+      .then((value) => {
+        if (!cancelled) setBaseline(value);
+      })
+      .catch(() => {
+        // No current value is a fine outcome -- the arrow line still renders
+        // the requested volume. Never an error blob on an approval card.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inputNo]);
+  return baseline;
+}
+
+/** Trailing zeros are noise on a volume ("127.30 → 6000.00"); more than two
+ * decimals is float exhaust, not data. */
+function formatVolume(value: number): string {
+  return String(Math.round(value * 100) / 100);
+}
+
+function VehicleInputActionDetail({
+  action,
+  focus,
+  modelEdited,
+}: {
+  action: AgentAction;
+  focus: AgentApprovalFocus | undefined;
+  modelEdited: boolean;
+}) {
+  const { t } = useLanguage();
+  const params = action.params ?? {};
+  const inputNo = params.input_no == null ? "" : String(params.input_no);
+  const rawInterval = Number(params.interval_no ?? 1);
+  const intervalNo = Number.isFinite(rawInterval) ? rawInterval : 1;
+  // The searchable volume is interval 1's (network_search's
+  // `_detail_vehicle_input` reads the shadow model's scalar `volume`), so a
+  // write aimed at any other interval has no honest "before" to show -- and
+  // the interval itself becomes load-bearing on the card, since input 107 has
+  // six of them and every one of them renders identically today.
+  const firstInterval = intervalNo === 1;
+
+  // Captured ONCE, when this card mounts -- i.e. the moment the approval
+  // arrived, before the user could have approved anything. Reading the live
+  // prop instead would make the value vanish from the card the instant the
+  // user pressed 실행 (that turn sets wroteModel), which reads as the card
+  // retracting the number it just justified itself with.
+  const [baselineTrusted] = useState(() => !modelEdited);
+  const wantsBaseline = baselineTrusted && firstInterval && inputNo !== "";
+  const baseline = useVehicleInputBaseline(wantsBaseline ? inputNo : null);
+
+  const element = focus?.elements.find((el) => el.type === "vehicle_input" && el.id === inputNo);
+  const hostLinkId = focus?.elements.find((el) => el.type === "link")?.id ?? null;
+  // Cross-check before believing the number: the search hit comes from the
+  // active dataset while the focus comes from this session's working copy. If
+  // they disagree about which link the input sits on, they are not describing
+  // the same object (a dataset swapped mid-conversation, say) -- show nothing.
+  const baselineUsable =
+    baseline != null && (baseline.link == null || hostLinkId == null || baseline.link === hostLinkId);
+  const currentVolume = baselineUsable ? baseline?.volume ?? null : null;
+
+  // "차종 조성" is the vocabulary the backend's own warnings on this same card
+  // use for a vehicle composition, so the chip and the amber strips below it
+  // name the same object the same way. The varying case is already a full
+  // sentence and takes no prefix -- prefixing it would read "차종 조성 차종
+  // 조성 구간별 상이", and the en prefix would stutter against every real
+  // composition name on this model ("Composition Class1" is fine, "Class
+  // Class1" is not).
+  const compositionChip = element?.composition
+    ? t(`차종 조성 ${element.composition}`, `Composition ${element.composition}`, `車種構成 ${element.composition}`)
+    : element?.composition_varies_by_interval
+      ? t("차종 조성 구간별 상이", "Class mix varies by interval", "車種構成が時間帯別に異なる")
+      : "";
+  const stackIds = [inputNo, ...(element?.siblings ?? [])]
+    .filter((id) => id !== "")
+    .sort((a, b) => (Number(a) - Number(b) || a.localeCompare(b)));
+
+  const hiddenBaselineNote = !wantsBaseline
+    ? !firstInterval
+      ? t(
+          `현재값 미표시 · 시간 구간 ${intervalNo} 값은 조회할 수 없습니다`,
+          `Current value hidden · interval ${intervalNo} value is not readable`,
+          `現在値は非表示 · 期間${intervalNo}の値は取得できません`,
+        )
+      : t(
+          "현재값 미표시 · 이 대화에서 모델이 이미 편집되었습니다",
+          "Current value hidden · this conversation has already edited the model",
+          "現在値は非表示 · この会話で既にモデルを編集しています",
+        )
+    : null;
+
+  return (
+    <div className="mt-1">
+      <p className="text-[11px] leading-5 text-slate-600">
+        <span className="font-semibold text-slate-800">
+          {t(`차량 입력 ${inputNo}`, `Vehicle input ${inputNo}`, `車両入力 ${inputNo}`)}
+        </span>
+        {element?.label ? <span> · {element.label}</span> : null}
+        {!firstInterval ? (
+          <span> · {t(`시간 구간 ${intervalNo}`, `interval ${intervalNo}`, `期間 ${intervalNo}`)}</span>
+        ) : null}
+      </p>
+
+      {compositionChip && (
+        <span className="mt-1 inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">
+          {compositionChip}
+        </span>
+      )}
+
+      <p className="mt-1 text-[11px] font-semibold text-slate-800">
+        {currentVolume != null && <span className="font-normal text-slate-500">{formatVolume(currentVolume)} </span>}
+        <span className="font-normal text-slate-500">→ </span>
+        {`${params.volume} veh/h`}
+      </p>
+
+      {hiddenBaselineNote && <p className="mt-0.5 text-[10px] leading-4 text-slate-500">{hiddenBaselineNote}</p>}
+
+      {stackIds.length > 1 && (
+        <p className="mt-1 text-[10px] leading-4 text-slate-500">
+          {t(
+            `같은 지점에 차량 입력 ${stackIds.length}개(${stackIds.join(", ")}) · 이번 변경은 ${inputNo}에만 적용됩니다`,
+            `${stackIds.length} vehicle inputs share this point (${stackIds.join(", ")}) · this change touches ${inputNo} only`,
+            `同じ地点に車両入力${stackIds.length}件(${stackIds.join(", ")}) · 今回の変更は${inputNo}のみ`,
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** One action row's "what exactly is being changed" line. Split out so the
+ * vehicle-input case can own hooks (a baseline fetch) without every other tool
+ * paying for them, and so the plain-string `agentActionDetail` below stays
+ * exactly what it was for the other eleven verbs. */
+function AgentActionDetail({
+  action,
+  focus,
+  modelEdited,
+}: {
+  action: AgentAction;
+  focus: AgentApprovalFocus | undefined;
+  modelEdited: boolean;
+}) {
+  const { t } = useLanguage();
+  if (action.tool === "set_vehicle_input_volume") {
+    return <VehicleInputActionDetail action={action} focus={focus} modelEdited={modelEdited} />;
+  }
+  return <p className="mt-0.5 text-[11px] text-slate-600">{agentActionDetail(action, t)}</p>;
+}
+
 function AgentApprovalCard({
   approval,
+  modelEdited,
   onRun,
   onCancelApproval,
 }: {
   approval: AgentApprovalState;
+  /** True when THIS conversation has already persisted a write, i.e. the
+   * session's working copy has diverged from the active dataset -- which is
+   * what decides whether a base-model "current value" is still the truth. See
+   * VehicleInputActionDetail's own comment. */
+  modelEdited: boolean;
   onRun: () => void;
   onCancelApproval: () => void;
 }) {
@@ -1502,7 +1730,7 @@ function AgentApprovalCard({
               <p className="text-[11px] font-semibold text-slate-700">{agentActionLabel(action.tool, t)}</p>
               <PreflightStatusChip warningCount={approval.warnings.length} />
             </div>
-            <p className="mt-0.5 text-[11px] text-slate-600">{agentActionDetail(action, t)}</p>
+            <AgentActionDetail action={action} focus={approval.focus} modelEdited={modelEdited} />
           </div>
         ))}
       </div>
@@ -1589,17 +1817,17 @@ function agentActionLabel(tool: string, t: Translate): string {
 
 // Readable "field -> new value" line per action, param names matching
 // backend/services/agent/tools_edit.py's pydantic params models exactly
-// (input_no/volume, sc_no/cycle, sc_no/offset, seconds, seed). Falls back to
-// a plain key=value dump for an unrecognized tool.
+// (sc_no/cycle, sc_no/offset, seconds, seed). Falls back to a plain key=value
+// dump for an unrecognized tool.
+//
+// set_vehicle_input_volume deliberately has NO case here any more: a bare
+// "차량 입력 107 → 6000 veh/h" is exactly the line the user could not verify
+// (2026-07-28 sibling-disambiguation unit). It is rendered by
+// VehicleInputActionDetail above instead, which needs several elements and a
+// fetch and so cannot be one string.
 function agentActionDetail(action: AgentAction, t: Translate): string {
   const params = action.params ?? {};
   switch (action.tool) {
-    case "set_vehicle_input_volume":
-      return t(
-        `차량 입력 ${params.input_no} → ${params.volume} veh/h`,
-        `Vehicle input ${params.input_no} → ${params.volume} veh/h`,
-        `車両入力 ${params.input_no} → ${params.volume} veh/h`,
-      );
     case "set_signal_cycle":
       return t(
         `신호제어기 ${params.sc_no} 주기 → ${params.cycle}초`,

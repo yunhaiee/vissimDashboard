@@ -89,7 +89,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import config
 from services.agent.toolkit import tool
-from services.inpx_parser import parse_network
+from services.inpx_parser import parse_network, vehicle_composition_names, vehicle_input_composition_fields
 from services import signal_parser
 from services.signal_parser import parse_signal_controllers, parse_signal_programs
 
@@ -209,7 +209,45 @@ def _parse_time_interval_start_s(raw: str | None) -> float | None:
 
 
 def _parse_vehicle_inputs(root: ET.Element) -> list[dict[str, Any]]:
-    """{no, name, link, volume, interval_count, volumes} per <vehicleInput>.
+    """{no, name, link, volume, interval_count, volumes, composition_no,
+    composition_name} + (only when the composition varies across intervals)
+    {composition_nos, composition_varies_by_interval} per <vehicleInput>.
+
+    ``composition_*`` -- sibling-disambiguation unit (2026-07-28). The real
+    client model puts THREE vehicle inputs on the same link at the same
+    coordinate, one per vehicle class (Murdoch Drive: 51 inputs in 17 groups
+    of 3, e.g. link 620 carries 107/207/307, all named "Jennalup ST_WB"), and
+    until this unit NOTHING in the shadow model could tell them apart -- so
+    ``get_vehicle_inputs``, ``resolve_object``, the constraint catalog and the
+    approval card all saw three indistinguishable objects. The composition
+    IS the distinguishing datum, and it was already being read once (see
+    :func:`_xml_vehicle_composition_refs`) but only in the reverse direction.
+    Shared roll-up logic lives in ``services.inpx_parser.
+    vehicle_input_composition_fields`` (imported, not duplicated) so the map
+    geometry and the shadow model can never disagree; see that function's
+    docstring for the per-interval-``vehComp`` reality and how a
+    composition that VARIES across intervals is represented honestly rather
+    than collapsed to interval 1.
+
+    **Omit-when-uniform (2026-07-28 fix, this-tool-only -- the shared
+    ``vehicle_input_composition_fields`` helper and its OWN map-geometry
+    caller, ``inpx_parser._parse_vehicle_inputs``, keep emitting all four
+    fields unconditionally; only this agent-facing shape changes).**
+    Measured against the real 51-input client model at the planner's 12000-
+    char recent-observation budget: an unfiltered ``get_vehicle_inputs`` call
+    cost 42336 envelope chars and only 15/51 inputs (every one class ``1``)
+    survived truncation -- 207/307 never appeared at all. ~7.0KB of that was
+    ``volumes[i]["composition_no"]`` repeated once per interval (306
+    repetitions of a value 0/51 real inputs ever vary), and another ~3.4KB
+    was ``composition_nos``/``composition_varies_by_interval`` restating the
+    SAME non-varying fact as ``composition_no`` alone. Neither per-interval
+    ``composition_no`` (below) nor the two ``_nos``/``varies`` fields are
+    emitted when ``composition_varies_by_interval`` is False -- the input-
+    level ``composition_no``/``composition_name`` already say everything
+    there is to say in that (0/51, but schema-legal) case. When it DOES
+    vary, all of it is represented -- collapsing to interval 1 would be
+    exactly the silent lie this project exists to prevent, not a size
+    optimization.
 
     ``volume``/``interval_count``/``volumes`` -- v2 unit ⑤ (2026-07-24):
     ``volumes`` is now populated for real, one entry per
@@ -231,29 +269,40 @@ def _parse_vehicle_inputs(root: ET.Element) -> list[dict[str, Any]]:
     all (the demo file's case -- ``interval_count`` is ``0``, ``volumes`` is
     ``[]`` there, not absent).
     """
+    comp_names = vehicle_composition_names(root)
     result: list[dict[str, Any]] = []
     for vi in root.findall(".//vehicleInput"):
+        comp_fields = vehicle_input_composition_fields(vi, comp_names)
+        varies = bool(comp_fields.get("composition_varies_by_interval"))
         intervals: list[dict[str, Any]] = []
         for idx, vol_el in enumerate(vi.findall(".//timeIntervalVehVolume"), start=1):
-            intervals.append(
-                {
-                    "interval_no": idx,
-                    "from_s": _parse_time_interval_start_s(vol_el.get("timeInt")),
-                    "volume": _coerce_float_or_none(vol_el.get("volume")),
-                    "continuous": (vol_el.get("cont") or "").strip().lower() == "true",
-                }
-            )
-        volume = intervals[0]["volume"] if intervals else None
-        result.append(
-            {
-                "no": vi.get("no", ""),
-                "name": vi.get("name", ""),
-                "link": vi.get("link", ""),
-                "volume": volume,
-                "interval_count": len(intervals),
-                "volumes": intervals,
+            interval: dict[str, Any] = {
+                "interval_no": idx,
+                "from_s": _parse_time_interval_start_s(vol_el.get("timeInt")),
+                "volume": _coerce_float_or_none(vol_el.get("volume")),
+                "continuous": (vol_el.get("cont") or "").strip().lower() == "true",
             }
-        )
+            if varies:
+                # Only worth a byte when it can actually disagree with the
+                # input-level composition_no -- see this function's own
+                # "Omit-when-uniform" docstring section.
+                interval["composition_no"] = vol_el.get("vehComp") or ""
+            intervals.append(interval)
+        volume = intervals[0]["volume"] if intervals else None
+        entry: dict[str, Any] = {
+            "no": vi.get("no", ""),
+            "name": vi.get("name", ""),
+            "link": vi.get("link", ""),
+            "volume": volume,
+            "interval_count": len(intervals),
+            "volumes": intervals,
+            "composition_no": comp_fields["composition_no"],
+            "composition_name": comp_fields["composition_name"],
+        }
+        if varies:
+            entry["composition_nos"] = comp_fields["composition_nos"]
+            entry["composition_varies_by_interval"] = True
+        result.append(entry)
     return result
 
 
@@ -983,19 +1032,57 @@ def _score(query: str, obj_id: str, obj_name: str) -> float:
     return round(len(overlap) / len(query_tokens), 4)
 
 
-def _iter_candidate_objects(shadow: dict[str, Any], object_type: str | None) -> list[tuple[str, str, str]]:
-    """(id, name, object_type) tuples for every object of the requested
-    type(s) — every type when ``object_type`` is None."""
+def _iter_candidate_objects(
+    shadow: dict[str, Any], object_type: str | None
+) -> list[tuple[str, str, str, dict[str, Any]]]:
+    """(id, name, object_type, object) tuples for every object of the
+    requested type(s) — every type when ``object_type`` is None. The object
+    itself rides along so :func:`_candidate_disambiguators` can pull
+    type-specific fields off it without a second lookup."""
     object_types = [object_type] if object_type else list(_OBJECT_TYPE_SPECS.keys())
-    pool: list[tuple[str, str, str]] = []
+    pool: list[tuple[str, str, str, dict[str, Any]]] = []
     for otype in object_types:
         spec = _OBJECT_TYPE_SPECS[otype]
         for obj in shadow.get(spec["shadow_key"], []):
-            pool.append((str(obj.get(spec["id_field"], "")), str(obj.get(spec["name_field"], "")), otype))
+            pool.append(
+                (str(obj.get(spec["id_field"], "")), str(obj.get(spec["name_field"], "")), otype, obj)
+            )
     return pool
 
 
-def _difflib_candidates(query: str, pool: list[tuple[str, str, str]]) -> list[str]:
+def _candidate_disambiguators(otype: str, obj: dict[str, Any]) -> dict[str, Any]:
+    """Extra, type-specific fields carried on a ``resolve_object`` candidate
+    purely so the caller can tell same-named objects apart.
+
+    Sibling-disambiguation unit (2026-07-28): on the real client model a
+    vehicle input's ``name`` is shared verbatim by all three inputs on its
+    link (one per vehicle class -- e.g. 107/207/307 are ALL "Jennalup ST_WB"),
+    so id+name+score alone gave the planner three identical-looking rows and
+    no basis for choosing. ``link`` + the composition tell them apart. Only
+    non-empty fields are attached, so the candidate shape stays exactly as it
+    was for every object type that has nothing extra to say (and for a
+    network whose inputs carry no ``vehComp`` at all, e.g. the synthetic demo
+    file -- nothing is fabricated)."""
+    if otype != "vehicle_input":
+        return {}
+    extra: dict[str, Any] = {}
+    link = str(obj.get("link", "") or "")
+    if link:
+        extra["link"] = link
+    composition_no = str(obj.get("composition_no", "") or "")
+    if composition_no:
+        extra["composition_no"] = composition_no
+    composition_name = str(obj.get("composition_name", "") or "")
+    if composition_name:
+        extra["composition_name"] = composition_name
+    if obj.get("composition_varies_by_interval"):
+        # Honest about the schema's per-interval vehComp: no single
+        # composition to name, so hand back every one it does reference.
+        extra["composition_nos"] = list(obj.get("composition_nos") or [])
+    return extra
+
+
+def _difflib_candidates(query: str, pool: list[tuple[str, str, str, dict[str, Any]]]) -> list[str]:
     """Fuzzy-match ``query`` against every object's id and name, always
     resolving a hit back to the owning object's id.
 
@@ -1005,7 +1092,7 @@ def _difflib_candidates(query: str, pool: list[tuple[str, str, str]]) -> list[st
     """
     owner_id_by_string: dict[str, str] = {}
     match_pool: list[str] = []
-    for obj_id, name, _otype in pool:
+    for obj_id, name, _otype, _obj in pool:
         if obj_id and obj_id not in owner_id_by_string:
             match_pool.append(obj_id)
             owner_id_by_string[obj_id] = obj_id
@@ -1038,8 +1125,14 @@ def resolve_object(params: ResolveObjectParams) -> dict[str, Any]:
     pool = _iter_candidate_objects(shadow, params.object_type)
 
     scored = [
-        {"id": obj_id, "name": name, "object_type": otype, "score": score}
-        for obj_id, name, otype in pool
+        {
+            "id": obj_id,
+            "name": name,
+            "object_type": otype,
+            "score": score,
+            **_candidate_disambiguators(otype, obj),
+        }
+        for obj_id, name, otype, obj in pool
         if (score := _score(params.query, obj_id, name)) > 0
     ]
     scored.sort(key=lambda candidate: (-candidate["score"], candidate["id"]))
@@ -1056,19 +1149,129 @@ def resolve_object(params: ResolveObjectParams) -> dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # get_vehicle_inputs / get_signal_controllers
+#
+# FIX 1 (2026-07-28) -- two compounding, pre-existing defects the sibling-
+# disambiguation unit's new composition fields made undeniable. Both are
+# fixed the same way get_conflict_areas' D1 live-demo fix was (2026-07-27):
+# read that constraint's own comment block below before touching this one,
+# same shape is followed here.
+#
+# (a) Payload bloat is fixed at the SOURCE (``_parse_vehicle_inputs``'s own
+#     "Omit-when-uniform" docstring section above) -- nothing to do here.
+#
+# (b) No filters + document-order truncation. Measured live against the real
+#     51-input Murdoch Drive model (backend/tools/... probe, scratch-only,
+#     not committed): the .inpx declares every <vehicleInput> in
+#     composition-MAJOR order -- ALL 17 class-"1" inputs first, THEN all 17
+#     class-"2", THEN all 17 class-"3" -- so an item-boundary truncation that
+#     keeps a document-order PREFIX (planner._render_observation's own
+#     truncation, or any naive tool-side cap) keeps exactly ONE vehicle class
+#     network-wide and drops every other class's inputs entirely. That is the
+#     measured bug: an unfiltered call at the planner's 12000-char recent-
+#     observation budget showed 15/51, every one class "1"; 207 and 307 (the
+#     worked example's non-Class1 siblings) were not in the observation at
+#     all. GetVehicleInputsParams gained input_no/link_no/composition_no
+#     filters so the model CAN narrow (previously ``model_fields == {}}``,
+#     making the truncation marker's "narrow your query" advice
+#     unfollowable), and an unfiltered call now (1) reorders its OWN display
+#     list (see :func:`_group_vehicle_inputs_by_link` -- the shadow model's
+#     own ``vehicle_inputs`` order is untouched; every other consumer,
+#     constraints.py/health_check.py/approval_focus.py, is unaffected) so a
+#     shown PREFIX is a prefix of COMPLETE sibling groups instead of one
+#     class, and (2) applies a measured default cap + explicit machine-
+#     readable ``truncated`` flag + ``hint``, exactly like get_conflict_areas.
 # ---------------------------------------------------------------------------
+
+#: Item cap for an UNFILTERED get_vehicle_inputs call -- MEASURED (not
+#: guessed) against the real 51-input model, post the per-item trimming
+#: above: one item there averages ~550-600 chars (a multi-interval
+#: ``volumes`` list is the dominant cost, unlike get_conflict_areas' much
+#: flatter ~120 chars/item), so 40 (that constraint's own cap) would already
+#: be ~22KB, nearly double the 12000-char recent-observation budget on its
+#: own. 20 items (grouped by link -- see above) measured at 11391 envelope
+#: chars including the truncated+hint fields, comfortably under budget with
+#: margin, and -- the acceptance case -- still covers the worked example
+#: (link 620, the 6th distinct link, is fully inside the first 20 grouped
+#: items) with two items of slack besides.
+_VEHICLE_INPUTS_DEFAULT_CAP = 20
 
 
 class GetVehicleInputsParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    input_no: str | None = Field(
+        default=None,
+        description="Exact vehicle input 'no' to return (narrows to at most one result).",
+    )
+    link_no: str | None = Field(
+        default=None,
+        description=(
+            "Return every vehicle input on this link -- e.g. every sibling sharing one entry "
+            "point (several vehicle inputs, one per vehicle class, commonly share a link)."
+        ),
+    )
+    composition_no: str | None = Field(
+        default=None,
+        description="Return only vehicle inputs that feed this vehicle composition.",
+    )
+
+
+def _vehicle_input_matches_composition(vehicle_input: dict[str, Any], composition_no: str) -> bool:
+    if str(vehicle_input.get("composition_no", "") or "") == composition_no:
+        return True
+    return composition_no in {str(n) for n in (vehicle_input.get("composition_nos") or [])}
+
+
+def _group_vehicle_inputs_by_link(vehicle_inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``vehicle_inputs`` REORDERED so every link's own inputs sit adjacent,
+    in link first-appearance order -- this tool's OWN display order only
+    (the shadow model's ``vehicle_inputs`` list keeps document order for
+    every other consumer; nothing else reads this reordering). See the FIX 1
+    comment block above for the measured reason this exists: document order
+    on the real model is composition-class-major (every class-1 input, THEN
+    every class-2, THEN every class-3), so a document-order prefix is
+    class-blind; a link-grouped prefix is a prefix of COMPLETE sibling
+    groups instead. Stable sort (Python's ``sorted``) preserves each link's
+    own inputs in their original relative order (e.g. 107 before 207 before
+    307), it only moves WHICH link's group comes next."""
+    first_seen: dict[str, int] = {}
+    for vi in vehicle_inputs:
+        link = str(vi.get("link", "") or "")
+        if link not in first_seen:
+            first_seen[link] = len(first_seen)
+    return sorted(vehicle_inputs, key=lambda vi: first_seen.get(str(vi.get("link", "") or ""), -1))
+
 
 @tool(name="get_vehicle_inputs", tier="read", provider="inspect", params=GetVehicleInputsParams)
 def get_vehicle_inputs(params: GetVehicleInputsParams) -> dict[str, Any]:
-    """Return the network's vehicle input objects (id, name, link, volume)."""
-    del params  # no fields
+    """Return the network's vehicle input objects (no, name, link, volume, per-interval volumes, and the vehicle composition each one feeds -- composition_no/composition_name; several inputs commonly share ONE link and ONE name, one per vehicle class, and the composition is what tells them apart). Optionally filter by input_no (exact match), link_no (every vehicle input on that link -- e.g. every sibling at one entry point), or composition_no (every input feeding that composition). An unfiltered call on a large network returns only the first 20, GROUPED BY LINK so the shown prefix is a prefix of complete sibling groups rather than a single vehicle class (with an explicit truncated flag and a hint) -- narrow with these filters, especially link_no, rather than requesting the whole list."""
     vehicle_inputs = _current_shadow_model()["vehicle_inputs"]
-    return {"count": len(vehicle_inputs), "vehicle_inputs": vehicle_inputs}
+
+    if params.input_no is not None:
+        vehicle_inputs = [vi for vi in vehicle_inputs if str(vi.get("no")) == str(params.input_no)]
+    if params.link_no is not None:
+        vehicle_inputs = [vi for vi in vehicle_inputs if str(vi.get("link")) == str(params.link_no)]
+    if params.composition_no is not None:
+        vehicle_inputs = [
+            vi for vi in vehicle_inputs if _vehicle_input_matches_composition(vi, str(params.composition_no))
+        ]
+
+    total = len(vehicle_inputs)
+    filtered = params.input_no is not None or params.link_no is not None or params.composition_no is not None
+    if filtered:
+        # A filtered call is already expected to return a small, bounded
+        # result -- the model asked for something specific, so no cap.
+        return {"count": total, "vehicle_inputs": vehicle_inputs}
+
+    capped = _group_vehicle_inputs_by_link(vehicle_inputs)[:_VEHICLE_INPUTS_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {"count": total, "vehicle_inputs": capped, "truncated": truncated}
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} vehicle inputs (grouped by link). Narrow with "
+            "input_no, link_no, or composition_no to see a specific one instead of the whole list."
+        )
+    return result
 
 
 class GetSignalControllersParams(BaseModel):

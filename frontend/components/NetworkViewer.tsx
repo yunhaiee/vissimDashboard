@@ -4,6 +4,7 @@ import * as d3 from "d3";
 import { NetworkData, NetworkElements, ScenarioResults } from "@/lib/api";
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, resolveLosGrade, type LosGrade } from "@/lib/los";
 import { ELEMENT_TYPE_LABELS, type NetworkElementRef } from "@/lib/networkElements";
+import { buildVehicleInputStacks, vehicleInputCompositionLabel } from "@/lib/vehicleInputStack";
 import { useLanguage } from "@/components/LanguageProvider";
 
 // Phase 3 P4 — the viewer's screen projection, published so an overlay (the
@@ -170,6 +171,18 @@ const HIT_SEGMENT_MIN_PX = 14;     // segment hit-target floor, screen px (uncha
 // drawn asphalt exactly (roadW, no extra padding); below it (a hairline
 // connector at low zoom) the band still gets a minimum on-screen width.
 const HIT_LINK_MIN_PX = 12;
+// Sibling fan-out (2026-07-28) — screen-space step between vehicle-input
+// glyphs that share one point. Every vehicle input resolves to its link's
+// START point, so on the real client model three of them (one per vehicle
+// class, all with the SAME name) are drawn at one pixel: the last one painted
+// owned the tooltip, and a focus flash on any other was buried under two
+// opaque glyphs. Chosen against HIT_POINT_MIN_PX (11): larger, so each glyph's
+// own centre is covered by its OWN hit circle and hovering a specific arrow
+// names that arrow -- but only slightly larger, so the circles still overlap
+// between centres and the repeat-click cycling (CLICK_CYCLE_PX above) stays
+// both reachable and advertised by its "N개 겹침" hint rather than being
+// designed out.
+const GLYPH_FAN_MIN_PX = 13;
 // Defect 2 (2026-07-28) — a click within this many screen px of the previous
 // click, with the candidate stack under the cursor unchanged, advances the
 // occlusion-stack cycle instead of reselecting the topmost hit shape.
@@ -1089,12 +1102,36 @@ export default function NetworkViewer({
 
       // vehicle_inputs — small filled entry arrow at link start, pointing along
       // travel. Scaled ~30% down from Unit C so it reads as a cue, not a badge.
-      for (const v of els.vehicle_inputs ?? []) {
+      //
+      // Fanned across the entry when several inputs share the point
+      // (sibling-disambiguation unit, 2026-07-28). A vehicle input carries no
+      // position of its own -- `inpx_parser._parse_vehicle_inputs` resolves
+      // every one of them to `point_at_pos(points, 0)` -- so the real client
+      // model's three inputs per demand link (one per vehicle class, all named
+      // identically) drew three pixel-identical arrows and three
+      // pixel-identical hit circles. Measured consequence: the user's approval
+      // target was the FIRST painted of the three, i.e. covered by two glyphs
+      // at fill-opacity 0.85 (~2% of its focus flash survived), while the
+      // LAST painted owned every tooltip and the first click. Spreading them
+      // along the across-road axis is the same "fan" the approval card's
+      // thumbnail draws, in the same shared order (lib/vehicleInputStack.ts),
+      // and it makes the count itself visible: three arrows means three
+      // separately-editable objects here.
+      const vehicleInputs = els.vehicle_inputs ?? [];
+      const vehicleInputStacks = buildVehicleInputStacks(vehicleInputs);
+      for (const v of vehicleInputs) {
         if (!finite(v.x) || !finite(v.y)) continue;
-        const c = P(v.x, v.y);
+        const anchor = P(v.x, v.y);
         const { along, across } = dirsFromAngle(v.angle);
         const L = Math.max(roadWidthMFor(v.link) * pxM * 0.49, 10 / k);
         const w = L * 0.42;
+        const slot = vehicleInputStacks.get(String(v.id));
+        const stackSize = slot?.size ?? 1;
+        // Metre-true once the glyphs are big enough to need it, screen-floored
+        // below that — the same rule every other floor in this pass follows.
+        const fanStep = Math.max(w * 2.4, GLYPH_FAN_MIN_PX / k);
+        const fanOffset = stackSize > 1 ? ((slot?.index ?? 0) - (stackSize - 1) / 2) * fanStep : 0;
+        const c: Pt = [anchor[0] + across[0] * fanOffset, anchor[1] + across[1] * fanOffset];
         const tip: Pt = [c[0] + along[0] * L, c[1] + along[1] * L];
         const bl: Pt = [c[0] + across[0] * w, c[1] + across[1] * w];
         const br: Pt = [c[0] - across[0] * w, c[1] - across[1] * w];
@@ -1105,7 +1142,20 @@ export default function NetworkViewer({
           .attr("fill", ELEMENT_SLATE)
           .attr("fill-opacity", 0.85)
           .style("pointer-events", "none");
-        hitPoint("vehicle_inputs", [(c[0] + tip[0]) / 2, (c[1] + tip[1]) / 2], Math.max(w, HIT_POINT_MIN_PX / k), `${typeLabel.vehicle_inputs} ${v.id} · ${v.name}`, elementRef("vehicle_inputs", v.id, v.name, v.link));
+        // The vehicle CLASS is the only field that separates same-point
+        // siblings (their names are identical), so it rides in the tooltip
+        // whenever the model states one; the stack size says how many objects
+        // this entry point actually holds.
+        const composition = vehicleInputCompositionLabel(v, t);
+        const tooltipText = [
+          `${typeLabel.vehicle_inputs} ${v.id}`,
+          v.name,
+          composition ?? "",
+          stackSize > 1 ? t(`같은 지점 ${stackSize}개`, `${stackSize} at this point`, `同じ地点${stackSize}件`) : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        hitPoint("vehicle_inputs", [(c[0] + tip[0]) / 2, (c[1] + tip[1]) / 2], Math.max(w, HIT_POINT_MIN_PX / k), tooltipText, elementRef("vehicle_inputs", v.id, v.name, v.link));
       }
 
       // reduced_speed_areas — translucent amber band along the lane (x,y)->(end).

@@ -54,7 +54,10 @@ def test_health_check_runner_against_demo_dataset():
     report = HealthCheckRunner().run(DEMO_INPX, dataset_meta=None)
 
     assert report["summary"]["checked_n"] == 14
-    assert report["summary"]["edit_time_only_n"] == 47
+    # 48, not 47: the sibling-disambiguation unit (2026-07-28) added
+    # vehicle_input_siblings_share_link, a preflight-only constraint that no
+    # dataset scan opts into -- so it lands in edit_time_only, by design.
+    assert report["summary"]["edit_time_only_n"] == 48
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.
@@ -159,12 +162,22 @@ def test_health_check_runner_catches_every_fabricated_defect(unhealthy_fixture_i
         "des_speed_distribution_orphan_reference",
     }
 
-    assert report["summary"]["findings_by_severity"] == {"issue": 1, "warning": 6, "info": 0}
+    # 7 warnings, not 6, since the sibling-disambiguation unit (2026-07-28)
+    # made latent_demand_overflow sibling-aware: link 41 carries BOTH vehicle
+    # inputs (3000 + 500 = 3500 veh/h against a 1-lane 1900 capacity), so the
+    # per-object scan now flags both as participating in the overflow. Input
+    # "2" (500 veh/h on its own) was previously invisible here despite being
+    # part of the same over-subscribed link.
+    assert report["summary"]["findings_by_severity"] == {"issue": 1, "warning": 7, "info": 0}
 
+    assert len(by_id["latent_demand_overflow"]) == 2
     latent = by_id["latent_demand_overflow"][0]
     assert latent["severity"] == "warning"
     assert latent["details"]["link_id"] == "41"
     assert latent["object_refs"] == ["41"]
+    # Both findings agree on the LINK's total, which is the auditable number.
+    for entry in by_id["latent_demand_overflow"]:
+        assert entry["details"]["link_total_volume"] == 3500.0
 
     cont = by_id["vehicle_input_cont_volume_mismatch"][0]
     assert cont["details"]["mismatched_input_intervals"] == ["2.2"]
@@ -419,12 +432,44 @@ def test_suggested_action_end_to_end_shape_on_unhealthy_fixture(unhealthy_fixtur
     # needed to act, sourced from the scan's own action params
     # (input_no/sc_no are NOT in these constraints' own `details` — see
     # _fix_target's docstring) merged with the check's own details.
-    fix = by_id["latent_demand_overflow"]["suggested_action"]
+    #
+    # Sibling-disambiguation unit (2026-07-28): link 41 now yields one
+    # latent_demand_overflow per participating input, so this picks input "1"
+    # explicitly rather than relying on dict-collapse order. Its recommended
+    # ceiling is 1900 - 500 (the sibling's volume) = 1400, NOT the raw
+    # capacity — the old answer would itself have left the link at 2400.
+    fix = next(
+        f for f in report["findings"]
+        if f["constraint_id"] == "latent_demand_overflow" and f["suggested_action"]["target"]["input_no"] == "1"
+    )["suggested_action"]
     assert fix["kind"] == "fix"
     assert fix["tool"] == "set_vehicle_input_volume"
     assert fix["target"]["input_no"] == "1"
     assert fix["target"]["volume"] == 3000.0
-    assert fix["target"]["suggested_fix"] == {"max_recommended_volume": 1900}
+    assert fix["target"]["suggested_fix"] == {"max_recommended_volume": 1400.0}
+    # FIX 4 (2026-07-28): _FIX_TARGET_FIELDS now carries the sibling/link-
+    # total fields the check itself computes, so the handoff prompt can state
+    # the TRUE inequality (link total exceeds capacity) instead of falsely
+    # asserting this one input's own volume does.
+    assert fix["target"]["sibling_volume_total"] == 500.0
+    assert fix["target"]["link_total_volume"] == 3500.0
+    assert fix["target"]["interval_no"] == 1
+
+    # The exact false-inequality case FIX 4 closes: input "2"'s OWN volume
+    # (500) does NOT exceed capacity (1900) -- only the LINK total (3500,
+    # input "1"'s 3000 + this input's own 500) does. Before this fix, the
+    # frontend handoff prompt had no way to say that (no sibling/link-total
+    # fields in the target at all) and stated "500 exceeds 1900", which is
+    # false.
+    fix2 = next(
+        f for f in report["findings"]
+        if f["constraint_id"] == "latent_demand_overflow" and f["suggested_action"]["target"]["input_no"] == "2"
+    )["suggested_action"]
+    assert fix2["target"]["volume"] == 500.0
+    assert fix2["target"]["capacity"] == 1900
+    assert fix2["target"]["volume"] < fix2["target"]["capacity"]  # the false inequality FIX 4 closes
+    assert fix2["target"]["link_total_volume"] == 3500.0
+    assert fix2["target"]["link_total_volume"] > fix2["target"]["capacity"]  # what's actually true
 
     fix_green = by_id["green_split_outside_cycle"]["suggested_action"]
     assert fix_green["kind"] == "fix"

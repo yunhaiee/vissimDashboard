@@ -321,6 +321,19 @@ export interface SignalHeadElement {
   sc: string | null;
 }
 
+// Every vehicle input on a link resolves to that link's START point, so N
+// inputs on one link land on ONE pixel -- on the real client model always 3,
+// one per vehicle class, all carrying the SAME `name`. The composition fields
+// (sibling-disambiguation unit, 2026-07-28; backend/services/inpx_parser.py's
+// `vehicle_input_composition_fields`) are therefore the only thing that tells
+// the stacked glyphs apart. All four are optional here because `vehComp` is
+// itself optional in the .inpx schema (the synthetic demo network has none)
+// and because an older backend omits them entirely -- consumers must degrade
+// to "no class shown", never to a guess. `composition_name` is `""` when the
+// input feeds a DIFFERENT class in different time intervals, in which case
+// `composition_varies_by_interval` is true and `composition_nos` lists every
+// class it feeds: a truthful "not one class" rather than interval 1's answer
+// presented as the whole story.
 export interface VehicleInputElement {
   id: string;
   name: string;
@@ -328,6 +341,10 @@ export interface VehicleInputElement {
   x: number;
   y: number;
   angle: number;
+  composition_no?: string;
+  composition_name?: string;
+  composition_nos?: string[];
+  composition_varies_by_interval?: boolean;
 }
 
 export interface ReducedSpeedAreaElement {
@@ -960,10 +977,30 @@ export interface AgentWarning {
 // elements.vehicle_inputs). "conflict_area" carries no geometry of its own
 // (conflict areas have none) -- it exists only so the caption can name the
 // conflict area itself alongside the two links drawn for it.
+// The optional fields below are per-type extras the backend attaches only
+// when it has something true to say (sibling-disambiguation unit,
+// 2026-07-28): `approval_focus.add_element` DROPS an empty value rather than
+// nulling it, so an element with nothing extra -- and every network without
+// vehicle compositions -- still ships the historical `{type, id, label}`
+// exactly. They are all vehicle-input fields today:
+//   * `composition` / `composition_no` -- WHICH vehicle class this input
+//     feeds. `label` alone cannot disambiguate a stack: all three of link
+//     620's inputs are literally named "Jennalup ST_WB".
+//   * `composition_varies_by_interval` -- present (true) only when the input
+//     feeds different classes in different intervals, in which case the two
+//     fields above are absent because there is no single honest answer.
+//   * `siblings` -- ids of the OTHER vehicle inputs drawn at this exact
+//     coordinate, capped at 8. Ids only, never geometry (this payload
+//     deliberately ships no coordinates -- see AgentApprovalFocus below); the
+//     client re-resolves them against the network geometry it already fetches.
 export interface AgentApprovalFocusElement {
   type: "link" | "conflict_area" | "signal_head" | "vehicle_input" | "des_speed_decision";
   id: string;
   label: string;
+  composition?: string;
+  composition_no?: string;
+  composition_varies_by_interval?: boolean;
+  siblings?: string[];
 }
 
 // backend/services/agent/approval_focus.py's `resolve_focus` return shape.
