@@ -32,6 +32,7 @@ def _shadow_model(
     priority_rule_markers: list[dict[str, Any]] | None = None,
     des_speed_distributions: list[dict[str, Any]] | None = None,
     vehicle_types: list[dict[str, Any]] | None = None,
+    time_distributions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -71,6 +72,10 @@ def _shadow_model(
         # needed) -- see tools_network._parse_vehicle_types for the real
         # shape this mirrors.
         "vehicle_types": vehicle_types if vehicle_types is not None else [],
+        # QUEUE (Q3, v2a) unit 5: time_distributions itself (id = "no", no
+        # flattening needed) -- see tools_network._parse_time_distributions
+        # for the real shape this mirrors.
+        "time_distributions": time_distributions if time_distributions is not None else [],
     }
 
 
@@ -135,6 +140,34 @@ def _speed_distribution(no: str, points: list[dict[str, float]], *, name: str = 
             "des_speed_decisions": {"count": 0, "ids": [], "truncated": False},
             "vehicle_compositions": {"count": 0, "ids": [], "truncated": False},
             "reduced_speed_areas": {"count": 0, "ids": [], "truncated": False},
+            "other": {"count": 0, "by_tag": {}},
+        },
+        "reference_count": 0,
+    }
+
+
+def _time_distribution(
+    no: str,
+    *,
+    name: str = "test time distribution",
+    dist_type: str = "NORMAL",
+    mean_s: float | None = 25.0,
+    std_dev_s: float | None = 5.0,
+    points: list[dict[str, float]] | None = None,
+) -> dict[str, Any]:
+    points = points if points is not None else []
+    return {
+        "no": no,
+        "name": name,
+        "type": dist_type,
+        "mean_std_dev": {"mean_s": mean_s, "std_dev_s": std_dev_s},
+        "points": points,
+        "point_count": len(points),
+        "points_truncated": False,
+        "referenced_by": {
+            "pt_stops": {"count": 0, "ids": [], "truncated": False},
+            "pt_vehicle_class_overrides": {"count": 0, "ids": [], "truncated": False},
+            "driving_behaviors": {"count": 0, "ids": [], "truncated": False},
             "other": {"count": 0, "by_tag": {}},
         },
         "reference_count": 0,
@@ -2207,4 +2240,196 @@ def test_disabled_engine_returns_no_findings_for_every_phase(monkeypatch: pytest
         [],
         False,
         True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# postwrite -- set_time_distribution_normal / set_time_distribution_points
+# target-persisted check / nothing-else-moved diff -- QUEUE (Q3, v2a) unit 5
+# ---------------------------------------------------------------------------
+
+
+def _time_distribution_normal_verification(mean_s: float, std_dev_s: float) -> dict[str, Any]:
+    pair = {"mean_s": mean_s, "std_dev_s": std_dev_s}
+    return {"written_value": dict(pair), "readback_value": dict(pair)}
+
+
+def test_postwrite_time_distribution_normal_target_persisted_check_happy_path():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(time_distributions=[_time_distribution("550", mean_s=10.0, std_dev_s=2.0)])
+    after = _shadow_model(time_distributions=[_time_distribution("550", mean_s=42.0, std_dev_s=7.5)])
+    action = _action("set_time_distribution_normal", time_distribution_no="550", mean_s=42.0, std_dev_s=7.5)
+
+    report = engine.postwrite(action, before, after, _time_distribution_normal_verification(42.0, 7.5))
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_time_distribution_normal_target_persisted_check_fires_when_not_persisted():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(time_distributions=[_time_distribution("550", mean_s=10.0, std_dev_s=2.0)])
+    after = _shadow_model(time_distributions=[_time_distribution("550", mean_s=10.0, std_dev_s=2.0)])  # unchanged
+    action = _action("set_time_distribution_normal", time_distribution_no="550", mean_s=42.0, std_dev_s=7.5)
+
+    report = engine.postwrite(action, before, after, _time_distribution_normal_verification(42.0, 7.5))
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "time_distributions"
+    assert check["object_id"] == "550"
+    assert check["saved_value"] == {"mean_s": 10.0, "std_dev_s": 2.0}
+
+
+def test_postwrite_time_distribution_normal_partial_field_persistence_still_fires():
+    # mean landed, std_dev drifted to a DIFFERENT value than intended -- the
+    # ONE compound value_field ("mean_std_dev") must catch a half-applied
+    # write, mirroring set_priority_rule_gap_headway's own partial-field
+    # lesson exactly.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(time_distributions=[_time_distribution("550", mean_s=10.0, std_dev_s=2.0)])
+    after = _shadow_model(time_distributions=[_time_distribution("550", mean_s=42.0, std_dev_s=2.0)])
+    action = _action("set_time_distribution_normal", time_distribution_no="550", mean_s=42.0, std_dev_s=7.5)
+
+    report = engine.postwrite(action, before, after, _time_distribution_normal_verification(42.0, 7.5))
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_id"] == "550"
+
+
+def test_postwrite_time_distribution_normal_diff_flags_an_unrelated_distribution_change():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        time_distributions=[
+            _time_distribution("550", mean_s=10.0, std_dev_s=2.0),
+            _time_distribution("1003", mean_s=5.0, std_dev_s=1.0),
+        ]
+    )
+    after = _shadow_model(
+        time_distributions=[
+            _time_distribution("550", mean_s=42.0, std_dev_s=7.5),
+            _time_distribution("1003", mean_s=99.0, std_dev_s=1.0),  # unrelated drift
+        ]
+    )
+    action = _action("set_time_distribution_normal", time_distribution_no="550", mean_s=42.0, std_dev_s=7.5)
+
+    report = engine.postwrite(action, before, after, _time_distribution_normal_verification(42.0, 7.5))
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        entry["object_class"] == "time_distributions" and entry["object_id"] == "1003"
+        for entry in diff
+    )
+
+
+def test_postwrite_time_distribution_reference_count_drift_on_an_unrelated_distribution_is_exempt():
+    # QUEUE (Q3, v2a) unit 5's own regression-avoidance: "referenced_by"/
+    # "reference_count" are PURELY DERIVED (no tool writes them directly) --
+    # a write elsewhere in the network can legitimately shift them on an
+    # UNRELATED distribution (e.g. a PT-line edit adding a new dwellTmDistr
+    # reference) without that becoming false-positive "something else moved"
+    # evidence, mirroring des_speed_distributions'/vehicle_types' own
+    # _ALWAYS_EXEMPT_FIELDS precedent exactly.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        time_distributions=[
+            _time_distribution("550", mean_s=10.0, std_dev_s=2.0),
+            _time_distribution("1003", mean_s=5.0, std_dev_s=1.0),
+        ]
+    )
+    after_data = [
+        _time_distribution("550", mean_s=42.0, std_dev_s=7.5),
+        _time_distribution("1003", mean_s=5.0, std_dev_s=1.0),
+    ]
+    after_data[1]["reference_count"] = 1
+    after_data[1]["referenced_by"]["pt_stops"] = {"count": 1, "ids": ["10.5"], "truncated": False}
+    after = _shadow_model(time_distributions=after_data)
+    action = _action("set_time_distribution_normal", time_distribution_no="550", mean_s=42.0, std_dev_s=7.5)
+
+    report = engine.postwrite(action, before, after, _time_distribution_normal_verification(42.0, 7.5))
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+_VALID_TIME_DISTRIBUTION_CURVE = [{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}]
+_NEW_TIME_DISTRIBUTION_CURVE = [
+    {"duration_s": 0.0, "cum_fraction": 0.0},
+    {"duration_s": 2.0, "cum_fraction": 0.4},
+    {"duration_s": 5.0, "cum_fraction": 1.0},
+]
+
+
+def test_postwrite_time_distribution_points_happy_path_no_findings():
+    action = _action("set_time_distribution_points", time_distribution_no="200", points=_NEW_TIME_DISTRIBUTION_CURVE)
+    before = _shadow_model(
+        time_distributions=[_time_distribution("200", dist_type="EMPIRICAL", points=_VALID_TIME_DISTRIBUTION_CURVE)]
+    )
+    after = _shadow_model(
+        time_distributions=[_time_distribution("200", dist_type="EMPIRICAL", points=_NEW_TIME_DISTRIBUTION_CURVE)]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {"written_value": _NEW_TIME_DISTRIBUTION_CURVE, "readback_value": _NEW_TIME_DISTRIBUTION_CURVE},
+    )
+
+    # point_count went 2 -> 3 as an unavoidable derived side effect of the
+    # curve growing by one point -- "coupled_fields" must exempt it, exactly
+    # like des_speed_distribution_points' own point_count coupling.
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_time_distribution_points_target_persisted_check_fires_on_mismatch():
+    action = _action("set_time_distribution_points", time_distribution_no="200", points=_NEW_TIME_DISTRIBUTION_CURVE)
+    before = _shadow_model(
+        time_distributions=[_time_distribution("200", dist_type="EMPIRICAL", points=_VALID_TIME_DISTRIBUTION_CURVE)]
+    )
+    after = _shadow_model(
+        time_distributions=[_time_distribution("200", dist_type="EMPIRICAL", points=_VALID_TIME_DISTRIBUTION_CURVE)]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {"written_value": _NEW_TIME_DISTRIBUTION_CURVE, "readback_value": _NEW_TIME_DISTRIBUTION_CURVE},
+    )
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "time_distributions"
+    assert check["object_id"] == "200"
+    assert check["saved_value"] == _VALID_TIME_DISTRIBUTION_CURVE
+
+
+def test_postwrite_time_distribution_points_diff_flags_an_unrelated_distribution_change():
+    action = _action("set_time_distribution_points", time_distribution_no="200", points=_NEW_TIME_DISTRIBUTION_CURVE)
+    before = _shadow_model(
+        time_distributions=[
+            _time_distribution("200", dist_type="EMPIRICAL", points=_VALID_TIME_DISTRIBUTION_CURVE),
+            _time_distribution("180", dist_type="EMPIRICAL", points=_VALID_TIME_DISTRIBUTION_CURVE),
+        ]
+    )
+    after = _shadow_model(
+        time_distributions=[
+            _time_distribution("200", dist_type="EMPIRICAL", points=_NEW_TIME_DISTRIBUTION_CURVE),
+            _time_distribution("180", dist_type="EMPIRICAL", points=_NEW_TIME_DISTRIBUTION_CURVE),  # unrelated drift
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {"written_value": _NEW_TIME_DISTRIBUTION_CURVE, "readback_value": _NEW_TIME_DISTRIBUTION_CURVE},
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        entry["object_class"] == "time_distributions" and entry["object_id"] == "180"
+        for entry in diff
     )

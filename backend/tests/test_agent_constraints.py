@@ -47,6 +47,7 @@ def _shadow_model(
     des_decel_functions: list[dict[str, Any]] | None = None,
     max_decel_functions: list[dict[str, Any]] | None = None,
     curve_speed_functions: list[dict[str, Any]] | None = None,
+    time_distributions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -129,6 +130,10 @@ def _shadow_model(
         shadow["max_decel_functions"] = max_decel_functions
     if curve_speed_functions is not None:
         shadow["curve_speed_functions"] = curve_speed_functions
+    # time_distributions deliberately OMITTED by default too (QUEUE (Q3,
+    # v2a) unit 5) -- same reasoning as the object classes above.
+    if time_distributions is not None:
+        shadow["time_distributions"] = time_distributions
     return shadow
 
 
@@ -260,6 +265,40 @@ def _des_speed_decision(
 
 def _speed_distribution(no: str, name: str) -> dict[str, Any]:
     return {"no": no, "name": name}
+
+
+def _time_distribution(
+    no: str,
+    *,
+    name: str = "",
+    dist_type: str = "NORMAL",
+    mean_s: float | None = 25.0,
+    std_dev_s: float | None = 5.0,
+    points: list[dict[str, Any]] | None = None,
+    point_count: int | None = None,
+    points_truncated: bool = False,
+    reference_count: int = 0,
+    referenced_by: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    points = points if points is not None else []
+    empty_ref = {"count": 0, "ids": [], "truncated": False}
+    return {
+        "no": no,
+        "name": name,
+        "type": dist_type,
+        "mean_std_dev": {"mean_s": mean_s, "std_dev_s": std_dev_s},
+        "points": points,
+        "point_count": point_count if point_count is not None else len(points),
+        "points_truncated": points_truncated,
+        "referenced_by": referenced_by
+        or {
+            "pt_stops": empty_ref,
+            "pt_vehicle_class_overrides": empty_ref,
+            "driving_behaviors": empty_ref,
+            "other": {"count": 0, "by_tag": {}},
+        },
+        "reference_count": reference_count,
+    }
 
 
 def _conflict_marker(
@@ -4414,9 +4453,21 @@ def test_registry_size_matches_m3_1_catalog_port():
     # entry, a defensive addition" shapes for the new
     # set_vehicle_type_reference tool, mirroring the des_speed_distribution_
     # not_found/vehicle_composition_referenced_by_vehicle_inputs precedents)
-    # == 74.
+    # == 74, + 10 (QUEUE (Q3, v2a) unit 5, dwell-time distributions:
+    # time_distribution_type_mismatch / time_distribution_mean_or_stddev_
+    # negative / time_distribution_mean_implausible / time_distribution_
+    # points_count_invalid / time_distribution_points_duration_negative /
+    # time_distribution_points_duration_not_monotonic / time_distribution_
+    # points_fraction_invalid / time_distribution_points_duration_
+    # implausible / time_distribution_points_duplicate / time_distribution_
+    # shared_target -- all ten "not a §-numbered catalog entry, a defensive
+    # addition" shapes for the two new set_time_distribution_normal/
+    # set_time_distribution_points tools, mirroring the set_priority_rule_
+    # gap_headway/set_des_speed_distribution_points precedents; object_
+    # not_found already existed and was EXTENDED in place to gate both new
+    # tools, not added) == 84.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 74
+    assert len(get_registry()) == 84
 
 
 def test_registry_has_unique_ids():
@@ -5248,3 +5299,418 @@ def test_signal_program_split_not_found_names_stage_based_as_the_real_reason():
     assert matches[0].details["reason"] == "stage_based_program"
     assert matches[0].suggested_fix is None
     assert "현시" in matches[0].messages["ko"]
+
+
+# ---------------------------------------------------------------------------
+# Time-distribution edits -- QUEUE (Q3, v2a) unit 5
+# ---------------------------------------------------------------------------
+
+_TIME_DISTRIBUTION_FIXTURE = [
+    _time_distribution("1", dist_type="NORMAL", mean_s=0.5, std_dev_s=0.0),
+    _time_distribution("25", dist_type="NORMAL", mean_s=25.0, std_dev_s=5.0),
+    _time_distribution(
+        "200",
+        dist_type="EMPIRICAL",
+        mean_s=3.0,
+        std_dev_s=0.5,
+        points=[{"duration_s": 2.0, "cum_fraction": 0.0}, {"duration_s": 4.0, "cum_fraction": 1.0}],
+    ),
+    _time_distribution(
+        "999",
+        dist_type="NORMAL",
+        mean_s=10.0,
+        std_dev_s=2.0,
+        reference_count=3,
+        referenced_by={
+            "pt_stops": {"count": 2, "ids": ["10.5", "10.6"], "truncated": False},
+            "pt_vehicle_class_overrides": {"count": 0, "ids": [], "truncated": False},
+            "driving_behaviors": {"count": 1, "ids": ["1:cc1"], "truncated": False},
+            "other": {"count": 0, "by_tag": {}},
+        },
+    ),
+]
+
+
+def test_time_distribution_type_mismatch_refuses_normal_verb_on_empirical_target():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_normal", time_distribution_no="200", mean_s=77.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_type_mismatch"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details == {"distribution_no": "200", "actual_type": "EMPIRICAL", "tool": "set_time_distribution_normal"}
+    assert matches[0].suggested_fix == {"use_tool": "set_time_distribution_points"}
+    _assert_well_formed_messages(matches[0], must_contain_ko="200")
+
+
+def test_time_distribution_type_mismatch_refuses_points_verb_on_normal_target():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="25",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 10.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_type_mismatch"]
+    assert len(matches) == 1
+    assert matches[0].details["actual_type"] == "NORMAL"
+    assert matches[0].suggested_fix == {"use_tool": "set_time_distribution_normal"}
+
+
+def test_time_distribution_type_mismatch_silent_when_types_match():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    normal_action = _action("set_time_distribution_normal", time_distribution_no="25", mean_s=30.0)
+    points_action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 10.0, "cum_fraction": 1.0}],
+    )
+
+    for action in (normal_action, points_action):
+        findings = run_checks("preflight", action, shadow, {})
+        assert not any(f.constraint_id == "time_distribution_type_mismatch" for f in findings)
+
+
+def test_time_distribution_type_mismatch_defers_to_object_not_found_when_target_missing():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_normal", time_distribution_no="777", mean_s=1.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_type_mismatch" for f in findings)
+    assert any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_time_distribution_type_mismatch_does_not_apply_to_other_tools():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_type_mismatch" for f in findings)
+
+
+@pytest.mark.parametrize("bad_value", [-1.0, -0.001, float("nan"), float("inf"), float("-inf")])
+def test_time_distribution_mean_or_stddev_negative_fires_for_bad_mean(bad_value):
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_normal", time_distribution_no="25", mean_s=bad_value)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_mean_or_stddev_negative"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details["invalid_fields"] == {"mean_s": bad_value}
+
+
+def test_time_distribution_mean_or_stddev_negative_fires_for_bad_stddev():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_normal", time_distribution_no="25", std_dev_s=-2.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_mean_or_stddev_negative"]
+    assert len(matches) == 1
+    assert matches[0].details["invalid_fields"] == {"std_dev_s": -2.0}
+
+
+def test_time_distribution_mean_or_stddev_negative_silent_for_zero_stddev_a_common_real_value():
+    # Real data check: zero stdDev is common and legitimate (many real
+    # distributions across all 25 example networks carry stdDev="0").
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_normal", time_distribution_no="25", mean_s=25.0, std_dev_s=0.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_mean_or_stddev_negative" for f in findings)
+
+
+def test_time_distribution_mean_or_stddev_negative_does_not_apply_to_other_tools():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_mean_or_stddev_negative" for f in findings)
+
+
+def test_time_distribution_mean_implausible_warns_above_bound():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_normal", time_distribution_no="25", mean_s=9999.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_mean_implausible"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["mean_s"] == 9999.0
+
+
+def test_time_distribution_mean_implausible_silent_for_real_legitimate_values():
+    # Real data check: 2700s ("Parking Duration") is a genuine legitimate
+    # value observed in a real Vissim 2026 example network -- must stay
+    # under the bound with headroom.
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_normal", time_distribution_no="25", mean_s=2700.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_mean_implausible" for f in findings)
+
+
+@pytest.mark.parametrize(
+    "bad_points",
+    [
+        [],
+        [{"duration_s": 5.0, "cum_fraction": 1.0}],
+    ],
+)
+def test_time_distribution_points_count_invalid_fires_for_fewer_than_2(bad_points):
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_points", time_distribution_no="200", points=bad_points)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_points_count_invalid"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details["point_count"] == len(bad_points)
+
+
+def test_time_distribution_points_count_invalid_silent_for_exactly_2():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_points_count_invalid" for f in findings)
+
+
+def test_time_distribution_points_duration_negative_fires():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": -5.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_points_duration_negative"]
+    assert len(matches) == 1
+    assert matches[0].details["negative_durations_s"] == [-5.0]
+
+
+def test_time_distribution_points_duration_not_monotonic_fires():
+    # Live-verified: Vissim itself SILENTLY ACCEPTS a duration decrease --
+    # this refusal is this codebase's own proactive screen.
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 20.0, "cum_fraction": 0.5}, {"duration_s": 10.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_points_duration_not_monotonic"]
+    assert len(matches) == 1
+    assert matches[0].details["decrease_at_index"] == 2
+
+
+def test_time_distribution_points_duration_not_monotonic_silent_for_equal_consecutive_durations():
+    # A legitimate step-function curve (same duration, different fraction).
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 10.0, "cum_fraction": 0.0}, {"duration_s": 10.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_points_duration_not_monotonic" for f in findings)
+
+
+@pytest.mark.parametrize(
+    "points,expected_fragment",
+    [
+        ([{"duration_s": 0.0, "cum_fraction": 0.2}, {"duration_s": 10.0, "cum_fraction": 1.0}], "0.0"),
+        ([{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 10.0, "cum_fraction": 0.9}], "1.0"),
+        ([{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 10.0, "cum_fraction": 1.5}], "범위"),
+        ([{"duration_s": 0.0, "cum_fraction": -0.2}, {"duration_s": 10.0, "cum_fraction": 1.0}], "범위"),
+    ],
+)
+def test_time_distribution_points_fraction_invalid_fires(points, expected_fragment):
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_points", time_distribution_no="200", points=points)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_points_fraction_invalid"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert expected_fragment in matches[0].messages["ko"]
+
+
+def test_time_distribution_points_fraction_invalid_fires_for_middle_reversal_vissim_silently_accepts():
+    # Live-verified: Vissim only validates first/last FX and silently
+    # accepts a mid-curve reversal -- this codebase's own proactive screen.
+    # Endpoints are 0.0/1.0 here so ONLY the middle-reversal branch can fire.
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 0.9}, {"duration_s": 8.0, "cum_fraction": 0.5}, {"duration_s": 10.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_points_fraction_invalid"]
+    assert len(matches) == 1
+    assert matches[0].details["cum_fractions"] == [0.0, 0.9, 0.5, 1.0]
+
+
+def test_time_distribution_points_fraction_invalid_silent_for_valid_curve():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 0.5}, {"duration_s": 10.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_points_fraction_invalid" for f in findings)
+
+
+def test_time_distribution_points_duration_implausible_warns_above_bound():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 99999.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_points_duration_implausible"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["implausible_durations_s"] == [99999.0]
+
+
+def test_time_distribution_points_duration_implausible_silent_for_real_legitimate_value():
+    # Real data check: 1800s is a genuine legitimate point value observed in
+    # a real Vissim 2026 example network -- must stay under the bound.
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 1800.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_points_duration_implausible" for f in findings)
+
+
+def test_time_distribution_points_duplicate_warns():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 0.5}, {"duration_s": 5.0, "cum_fraction": 0.5}, {"duration_s": 10.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_points_duplicate"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["duplicate_points"] == [{"duration_s": 5.0, "cum_fraction": 0.5}]
+
+
+def test_time_distribution_points_duplicate_silent_for_a_legit_step_function():
+    # Same duration, DIFFERENT fraction is a legitimate step function, not a
+    # duplicate.
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 10.0, "cum_fraction": 0.0}, {"duration_s": 10.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_points_duplicate" for f in findings)
+
+
+def test_time_distribution_shared_target_warns_with_bounded_ids():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_normal", time_distribution_no="999", mean_s=15.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_shared_target"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["reference_count"] == 3
+    assert "10.5" in matches[0].messages["en"]
+    assert "1:cc1" in matches[0].messages["en"]
+
+
+def test_time_distribution_shared_target_applies_to_points_verb_too():
+    shadow = _shadow_model(
+        time_distributions=[
+            _time_distribution(
+                "200",
+                dist_type="EMPIRICAL",
+                points=[{"duration_s": 2.0, "cum_fraction": 0.0}, {"duration_s": 4.0, "cum_fraction": 1.0}],
+                reference_count=1,
+                referenced_by={
+                    "pt_stops": {"count": 0, "ids": [], "truncated": False},
+                    "pt_vehicle_class_overrides": {"count": 0, "ids": [], "truncated": False},
+                    "driving_behaviors": {"count": 1, "ids": ["1:zipper"], "truncated": False},
+                    "other": {"count": 0, "by_tag": {}},
+                },
+            )
+        ]
+    )
+    action = _action(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 10.0, "cum_fraction": 1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "time_distribution_shared_target"]
+    assert len(matches) == 1
+    assert "1:zipper" in matches[0].messages["en"]
+
+
+def test_time_distribution_shared_target_silent_when_unreferenced():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_time_distribution_normal", time_distribution_no="25", mean_s=30.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_shared_target" for f in findings)
+
+
+def test_time_distribution_shared_target_does_not_apply_to_other_tools():
+    shadow = _shadow_model(time_distributions=_TIME_DISTRIBUTION_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "time_distribution_shared_target" for f in findings)

@@ -38,6 +38,8 @@ EXPECTED_READ_TOOLS = {
     "get_priority_rules",
     # QUEUE (v2a) unit adds get_vehicle_types.
     "get_vehicle_types",
+    # QUEUE (Q3, v2a) unit 5 adds get_time_distributions.
+    "get_time_distributions",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -69,6 +71,9 @@ EXPECTED_WRITE_TOOLS = {
     "set_des_speed_distribution_points",
     # QUEUE (v2a) unit
     "set_vehicle_type_reference",
+    # QUEUE (Q3, v2a) unit 5
+    "set_time_distribution_normal",
+    "set_time_distribution_points",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

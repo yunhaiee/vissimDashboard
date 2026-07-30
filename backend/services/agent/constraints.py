@@ -549,6 +549,29 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "vehicle_type_no",
     },
+    # QUEUE (Q3, v2a) unit 5: set_time_distribution_normal AND
+    # set_time_distribution_points BOTH added to the object_not_found /
+    # _TOOL_TARGET_SPEC lockstep table -- unlike every prior pair of sibling
+    # write tools in this table, both target the SAME single-token identity
+    # (time_distributions object class, keyed by "no") since a time
+    # distribution has one flat "no" regardless of which half (mean/stdDev
+    # vs points) a given call edits; the TYPE-appropriateness of which verb
+    # is being called against which distribution is a SEPARATE dedicated
+    # check (time_distribution_type_mismatch, below) -- mirrors the
+    # des_speed_distribution_not_found/set_des_speed_decision split's own
+    # "existence is generic, appropriateness is dedicated" precedent.
+    "set_time_distribution_normal": {
+        "object_class": "time_distributions",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "time_distribution_no",
+    },
+    "set_time_distribution_points": {
+        "object_class": "time_distributions",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "time_distribution_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -562,6 +585,7 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "priority_rules": {"ko": "우선순위 규칙", "en": "priority rule", "ja": "優先ルール"},
     "des_speed_distributions": {"ko": "희망속도분포", "en": "desired-speed distribution", "ja": "希望速度分布"},
     "vehicle_types": {"ko": "차량 유형", "en": "vehicle type", "ja": "車両タイプ"},
+    "time_distributions": {"ko": "시간분포", "en": "time distribution", "ja": "時間分布"},
 }
 
 
@@ -720,6 +744,10 @@ register(
             "set_des_speed_distribution_points",
             # QUEUE (v2a) unit -- vehicle type properties.
             "set_vehicle_type_reference",
+            # QUEUE (Q3, v2a) unit 5 -- dwell-time distributions, both verbs
+            # (easy to forget -- unit ② caught this).
+            "set_time_distribution_normal",
+            "set_time_distribution_points",
         ],
         phase="preflight",
         tier="refuse",
@@ -6686,5 +6714,643 @@ register(
         "{ids_en}. Changing this reference affects every demand stream using those compositions at once.",
         message_ja="車両タイプ '{vehicle_type_no}' は{count}件の車両構成から参照されています: {ids_ja}。"
         "この参照を変更すると、それらの構成を使用するすべての需要に同時に影響します。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# Time-distribution edits (set_time_distribution_normal /
+# set_time_distribution_points) -- QUEUE (Q3, v2a) unit 5, dwell-time
+# distributions.
+#
+# Not §-numbered catalog entries. Live-verified (backend/tools/
+# probe_dwell_time_distributions.py, "BRT Priority Texas.US"): Net.
+# TimeDistributions holds BOTH representations on every object (Mean/StdDev
+# scalars, an EMPIRICAL-only DurDistrDataPts curve) but only ONE actually
+# drives simulated sampling, selected by the object's own "type" attribute
+# -- Vissim's own COM layer already refuses a Mean/StdDev write on an
+# EMPIRICAL target ("Attribute Mean cannot be changed"), but the REVERSE
+# direction (a points ReplaceAll against a NORMAL target's empty
+# DurDistrDataPts) was not tested live against a real object (destructive,
+# low-value probe step) -- time_distribution_type_mismatch refuses BOTH
+# directions proactively rather than trusting the untested one to also fail
+# closed, per the guardrail doctrine.
+# ---------------------------------------------------------------------------
+
+
+def _check_time_distribution_type_mismatch(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    tool = action.get("tool")
+    if tool not in ("set_time_distribution_normal", "set_time_distribution_points"):
+        return None
+
+    params = action.get("params", {})
+    distribution_no = str(params.get("time_distribution_no", ""))
+    distribution = _find_by_field(shadow_model.get("time_distributions", []), "no", distribution_no)
+    if distribution is None:
+        return None  # missing target is object_not_found's job (#1)
+
+    actual_type = str(distribution.get("type", "") or "").upper()
+    expected_type = "NORMAL" if tool == "set_time_distribution_normal" else "EMPIRICAL"
+    if actual_type == expected_type:
+        return None
+
+    other_tool = "set_time_distribution_points" if tool == "set_time_distribution_normal" else "set_time_distribution_normal"
+    return Finding(
+        constraint_id="time_distribution_type_mismatch",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "time_distribution_type_mismatch",
+            distribution_no=distribution_no,
+            actual_type=actual_type or "unknown",
+            expected_type=expected_type,
+            other_tool=other_tool,
+        ),
+        suggested_fix={"use_tool": other_tool},
+        details={"distribution_no": distribution_no, "actual_type": actual_type, "tool": tool},
+    )
+
+
+register(
+    Constraint(
+        id="time_distribution_type_mismatch",
+        applies_to=["set_time_distribution_normal", "set_time_distribution_points"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_time_distribution_type_mismatch,
+        message_ko="시간분포 '{distribution_no}'의 실제 유형은 {actual_type}이며, 이 도구는 "
+        "{expected_type} 분포에만 사용할 수 있습니다. {actual_type} 분포의 실제 표본 추출 값은 이 "
+        "필드를 편집해도 바뀌지 않습니다 — 대신 {other_tool}을(를) 사용해 주세요.",
+        message_en="Time distribution '{distribution_no}' is actually {actual_type}-type, but this "
+        "tool only applies to {expected_type} distributions. Editing this field would not change "
+        "what a {actual_type} distribution actually samples — use {other_tool} instead.",
+        message_ja="時間分布 '{distribution_no}' の実際のタイプは{actual_type}であり、このツールは"
+        "{expected_type}分布にのみ使用できます。{actual_type}分布の実際のサンプリング値はこの"
+        "フィールドを編集しても変わりません — 代わりに{other_tool}を使用してください。",
+    )
+)
+
+
+def _check_time_distribution_mean_or_stddev_negative(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_time_distribution_normal":
+        return None
+
+    params = action.get("params", {})
+    bad_fields: dict[str, Any] = {}
+    for field_name in ("mean_s", "std_dev_s"):
+        raw = params.get(field_name)
+        if raw is None:
+            continue
+        value = _coerce_number(raw)
+        if value is None or not math.isfinite(value) or value < 0:
+            bad_fields[field_name] = raw
+
+    if not bad_fields:
+        return None
+
+    fields_text = ", ".join(f"{k}={v}" for k, v in bad_fields.items())
+    return Finding(
+        constraint_id="time_distribution_mean_or_stddev_negative",
+        tier="refuse",
+        phase="preflight",
+        messages=_render("time_distribution_mean_or_stddev_negative", fields_text=fields_text),
+        suggested_fix={"min": "0 or greater", "must_be": "finite"},
+        details={"invalid_fields": bad_fields},
+    )
+
+
+register(
+    Constraint(
+        id="time_distribution_mean_or_stddev_negative",
+        applies_to=["set_time_distribution_normal"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_time_distribution_mean_or_stddev_negative,
+        message_ko="요청한 값이 유효하지 않습니다: {fields_text}. mean_s와 std_dev_s는 모두 0 이상의 "
+        "유한한 값이어야 합니다 (Vissim 자체가 음수를 거부합니다 — \"is lower than minimum value of "
+        "attribute Mean/Standard deviation (Min: 0 s)\"). std_dev_s=0은 실제 데이터에서 흔한 "
+        "정상값입니다.",
+        message_en="The requested value(s) are invalid: {fields_text}. Both mean_s and std_dev_s "
+        "must be finite numbers >= 0 (Vissim itself rejects negative values — \"is lower than "
+        "minimum value of attribute Mean/Standard deviation (Min: 0 s)\"). std_dev_s=0 is a common, "
+        "legitimate value in real data.",
+        message_ja="指定された値が無効です: {fields_text}。mean_s と std_dev_s は両方とも0以上の"
+        "有限の値である必要があります(Vissim自体が負の値を拒否します — \"is lower than minimum "
+        "value of attribute Mean/Standard deviation (Min: 0 s)\")。std_dev_s=0は実データでよく見ら"
+        "れる正常な値です。",
+    )
+)
+
+
+# Bound reasoning: a network-wide static scan across all 25 real Vissim 2026
+# example networks found the largest REAL, non-sentinel mean value at 2700s
+# (Karlsruhe 3D's own "2700 s (Parking Duration)" distribution) -- 3600s (1
+# hour) gives that real value headroom while still catching two genuine
+# sentinel-scale outliers also found in the same scan (Air Taxi Vertiport's
+# "Permanent" = 9999s, Cableways' "Forever" = 99999s) as an intentional WARN,
+# not a refusal -- these are legitimate PTV-authored data, but a human asked
+# to confirm an hour-plus dwell/wait time is exactly the "legal but
+# suspicious" case this tier exists for.
+_TIME_DISTRIBUTION_MEAN_IMPLAUSIBLE_ABOVE_S = 3600.0
+
+
+def _check_time_distribution_mean_implausible(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_time_distribution_normal":
+        return None
+
+    mean_s = _coerce_number(action.get("params", {}).get("mean_s"))
+    if mean_s is None or not math.isfinite(mean_s) or mean_s <= _TIME_DISTRIBUTION_MEAN_IMPLAUSIBLE_ABOVE_S:
+        return None
+
+    return Finding(
+        constraint_id="time_distribution_mean_implausible",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "time_distribution_mean_implausible",
+            mean_s=mean_s,
+            bound=_TIME_DISTRIBUTION_MEAN_IMPLAUSIBLE_ABOVE_S,
+        ),
+        suggested_fix=None,
+        details={"mean_s": mean_s, "warn_above_s": _TIME_DISTRIBUTION_MEAN_IMPLAUSIBLE_ABOVE_S},
+    )
+
+
+register(
+    Constraint(
+        id="time_distribution_mean_implausible",
+        applies_to=["set_time_distribution_normal"],
+        phase="preflight",
+        tier="warn",
+        check=_check_time_distribution_mean_implausible,
+        message_ko="비현실적으로 큰 평균값입니다: {mean_s}초 ({bound}초 초과). 실제 25개 Vissim 예제 "
+        "네트워크 전체에서 관측된 가장 큰 (특수 목적이 아닌) 평균값은 2700초였습니다 — 의도한 값이 "
+        "맞는지, 단위 실수(예: 분 단위 값을 초 단위 자리에 입력)가 아닌지 확인해 주세요.",
+        message_en="Unrealistically large mean value: {mean_s}s (above {bound}s). The largest "
+        "ordinary-purpose mean observed across all 25 real Vissim example networks was 2700s -- "
+        "please confirm this is intended and not a units mistake (e.g. minutes entered where "
+        "seconds were expected).",
+        message_ja="非現実的に大きい平均値です: {mean_s}秒 ({bound}秒超過)。実際の25個のVissim例題"
+        "ネットワーク全体で観測された(特殊目的でない)最大の平均値は2700秒でした — 意図した値かどうか、"
+        "単位の誤り(例: 分単位の値を秒単位として入力)でないかご確認ください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# Time-distribution DISTRIBUTION curve edits (set_time_distribution_points)
+# -- mirrors QUEUE 3 (v2a) unit 3's own des_speed_distribution_points_*
+# family exactly (same ReplaceAll mechanism, independently re-verified live
+# for duration rather than assumed to generalize from speed -- see
+# vissim_com.VissimController's own time-distribution module comment).
+# ---------------------------------------------------------------------------
+
+
+def _time_distribution_points_from_params(
+    params: dict[str, Any],
+) -> list[tuple[float | None, float | None]] | None:
+    """[(duration_s, cum_fraction), ...] from a proposed
+    ``set_time_distribution_points`` action's own ``points`` param, mirroring
+    :func:`_speed_distribution_points_from_params` exactly (``None`` -- the
+    whole return -- when ``points`` itself is missing/malformed, so every
+    check below degrades silently)."""
+    raw_points = params.get("points")
+    if not isinstance(raw_points, list):
+        return None
+    result: list[tuple[float | None, float | None]] = []
+    for raw_point in raw_points:
+        if not isinstance(raw_point, dict):
+            return None
+        result.append(
+            (_coerce_number(raw_point.get("duration_s")), _coerce_number(raw_point.get("cum_fraction")))
+        )
+    return result
+
+
+def _check_time_distribution_points_count_invalid(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_time_distribution_points":
+        return None
+    points = _time_distribution_points_from_params(action.get("params", {}))
+    if points is None or len(points) >= 2:
+        return None
+
+    return Finding(
+        constraint_id="time_distribution_points_count_invalid",
+        tier="refuse",
+        phase="preflight",
+        messages=_render("time_distribution_points_count_invalid", count=len(points)),
+        suggested_fix=None,
+        details={"point_count": len(points)},
+    )
+
+
+register(
+    Constraint(
+        id="time_distribution_points_count_invalid",
+        applies_to=["set_time_distribution_points"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_time_distribution_points_count_invalid,
+        message_ko="시간분포 곡선은 최소 2개의 점이 필요합니다 (요청: {count}개). Vissim COM 자체가 "
+        "\"Container DurationDistributionDataPoints must contain at least 2 item(s)\"로 이 요청을 "
+        "거부합니다.",
+        message_en="A time-distribution curve needs at least 2 points (requested: {count}). "
+        "Vissim COM itself refuses this (\"Container DurationDistributionDataPoints must contain "
+        "at least 2 item(s)\").",
+        message_ja="時間分布曲線には最低2点が必要です(要求: {count}点)。Vissim COM自体がこの要求を"
+        "拒否します(\"Container DurationDistributionDataPoints must contain at least 2 item(s)\")。",
+    )
+)
+
+
+def _check_time_distribution_points_duration_negative(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_time_distribution_points":
+        return None
+    points = _time_distribution_points_from_params(action.get("params", {}))
+    if not points:
+        return None
+
+    offenders = [duration for duration, _ in points if duration is not None and duration < 0]
+    if not offenders:
+        return None
+
+    offenders_text = ", ".join(str(v) for v in offenders)
+    return Finding(
+        constraint_id="time_distribution_points_duration_negative",
+        tier="refuse",
+        phase="preflight",
+        messages=_render("time_distribution_points_duration_negative", offenders=offenders_text),
+        suggested_fix=None,
+        details={"negative_durations_s": offenders},
+    )
+
+
+register(
+    Constraint(
+        id="time_distribution_points_duration_negative",
+        applies_to=["set_time_distribution_points"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_time_distribution_points_duration_negative,
+        message_ko="음수 시간값은 허용되지 않습니다: {offenders}초. Vissim의 시간 하한은 0입니다.",
+        message_en="Negative duration values are not allowed: {offenders}s. Vissim's own floor "
+        "for duration is 0.",
+        message_ja="負の時間値は許可されません: {offenders}秒。Vissimの時間の下限は0です。",
+    )
+)
+
+
+def _check_time_distribution_points_duration_not_monotonic(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_time_distribution_points":
+        return None
+    points = _time_distribution_points_from_params(action.get("params", {}))
+    if not points or len(points) < 2:
+        return None
+
+    durations = [duration for duration, _ in points]
+    if any(duration is None for duration in durations):
+        return None
+
+    for i in range(1, len(durations)):
+        if durations[i] < durations[i - 1]:
+            return Finding(
+                constraint_id="time_distribution_points_duration_not_monotonic",
+                tier="refuse",
+                phase="preflight",
+                messages=_render(
+                    "time_distribution_points_duration_not_monotonic",
+                    index=i,
+                    prev_duration=durations[i - 1],
+                    duration=durations[i],
+                ),
+                suggested_fix=None,
+                details={"durations_s": durations, "decrease_at_index": i},
+            )
+    return None
+
+
+register(
+    Constraint(
+        id="time_distribution_points_duration_not_monotonic",
+        applies_to=["set_time_distribution_points"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_time_distribution_points_duration_not_monotonic,
+        message_ko="시간값은 점을 따라 감소할 수 없습니다: 점 {index}의 시간 {duration}초가 이전 점의 "
+        "{prev_duration}초보다 낮습니다. Vissim 자체는 이 오류를 조용히 허용하므로(silently "
+        "accepted, 실측 확인됨), 이 코드가 직접 거부합니다 (같은 시간이 연속되는 것은 허용됩니다 -- "
+        "실제 데이터에 존재하는 계단형 곡선).",
+        message_en="Duration must not decrease across points: point {index}'s duration of "
+        "{duration}s is lower than the previous point's {prev_duration}s. Vissim itself silently "
+        "accepts this (live-verified) -- this refusal is this codebase's own screen (an EQUAL "
+        "duration across consecutive points is allowed -- a legitimate step-function curve seen in "
+        "real data).",
+        message_ja="時間値は点を追うごとに減少できません: 点{index}の時間 {duration}秒 が直前の点の "
+        "{prev_duration}秒 より低くなっています。Vissim自体はこれを黙って受け入れるため(実測確認済み)、"
+        "この拒否は本コードベース独自のチェックです(連続する点で同じ時間になることは許可されます — "
+        "実データに存在する階段状の曲線)。",
+    )
+)
+
+
+_TIME_DISTRIBUTION_FRACTION_ENDPOINT_TOLERANCE = 1e-9
+
+
+def _check_time_distribution_points_fraction_invalid(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_time_distribution_points":
+        return None
+    points = _time_distribution_points_from_params(action.get("params", {}))
+    if not points:
+        return None
+
+    fractions = [fraction for _, fraction in points]
+    if any(fraction is None for fraction in fractions):
+        return None
+
+    reason_ko = reason_en = reason_ja = None
+    out_of_range = [f for f in fractions if f < 0.0 or f > 1.0]
+    if out_of_range:
+        text = ", ".join(str(v) for v in out_of_range)
+        reason_ko = f"누적확률(fraction)이 [0, 1] 범위를 벗어났습니다: {text}."
+        reason_en = f"Cumulative fraction outside [0, 1]: {text}."
+        reason_ja = f"累積確率(fraction)が[0, 1]の範囲外です: {text}。"
+    elif abs(fractions[0] - 0.0) > _TIME_DISTRIBUTION_FRACTION_ENDPOINT_TOLERANCE:
+        reason_ko = f"첫 점의 fraction은 정확히 0.0이어야 합니다 (요청: {fractions[0]})."
+        reason_en = f"The first point's fraction must be exactly 0.0 (requested: {fractions[0]})."
+        reason_ja = f"最初の点のfractionは正確に0.0である必要があります(要求: {fractions[0]})。"
+    elif abs(fractions[-1] - 1.0) > _TIME_DISTRIBUTION_FRACTION_ENDPOINT_TOLERANCE:
+        reason_ko = f"마지막 점의 fraction은 정확히 1.0이어야 합니다 (요청: {fractions[-1]})."
+        reason_en = f"The last point's fraction must be exactly 1.0 (requested: {fractions[-1]})."
+        reason_ja = f"最後の点のfractionは正確に1.0である必要があります(要求: {fractions[-1]})。"
+    else:
+        for i in range(1, len(fractions)):
+            if fractions[i] < fractions[i - 1]:
+                reason_ko = (
+                    f"fraction은 점을 따라 감소할 수 없습니다: 점 {i}의 {fractions[i]}가 이전 점의 "
+                    f"{fractions[i - 1]}보다 낮습니다 (Vissim은 처음/끝 점만 검사하고 중간 값의 "
+                    "역전은 조용히 허용합니다)."
+                )
+                reason_en = (
+                    f"Fraction must not decrease across points: point {i}'s {fractions[i]} is "
+                    f"lower than the previous point's {fractions[i - 1]} (Vissim only validates "
+                    "the first/last points and silently accepts a reversal in the middle)."
+                )
+                reason_ja = (
+                    f"fractionは点を追うごとに減少できません: 点{i}の{fractions[i]}が直前の点の "
+                    f"{fractions[i - 1]}より低くなっています(Vissimは最初/最後の点のみ検証し、中間の"
+                    "逆転は黙って受け入れます)。"
+                )
+                break
+
+    if reason_ko is None:
+        return None
+
+    return Finding(
+        constraint_id="time_distribution_points_fraction_invalid",
+        tier="refuse",
+        phase="preflight",
+        messages={"ko": reason_ko, "en": reason_en, "ja": reason_ja},
+        suggested_fix=None,
+        details={"cum_fractions": fractions},
+    )
+
+
+register(
+    Constraint(
+        id="time_distribution_points_fraction_invalid",
+        applies_to=["set_time_distribution_points"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_time_distribution_points_fraction_invalid,
+        message_ko="{ko}",
+        message_en="{en}",
+        message_ja="{ja}",
+    )
+)
+
+
+# Bound reasoning: a network-wide static scan across all 25 real Vissim 2026
+# example networks found the largest REAL point (x/duration) value inside
+# any EMPIRICAL timeDistribution's own durDistrDataPts at 1800s (Karlsruhe
+# 3D's distribution no=1050) -- 3600s (1 hour), matching this unit's own
+# mean-implausible bound for consistency, gives that real value 2x headroom.
+_TIME_DISTRIBUTION_POINTS_DURATION_IMPLAUSIBLE_ABOVE_S = 3600.0
+
+
+def _check_time_distribution_points_duration_implausible(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_time_distribution_points":
+        return None
+    points = _time_distribution_points_from_params(action.get("params", {}))
+    if not points:
+        return None
+
+    offenders = [
+        duration
+        for duration, _ in points
+        if duration is not None and duration > _TIME_DISTRIBUTION_POINTS_DURATION_IMPLAUSIBLE_ABOVE_S
+    ]
+    if not offenders:
+        return None
+
+    offenders_text = ", ".join(str(v) for v in offenders)
+    return Finding(
+        constraint_id="time_distribution_points_duration_implausible",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "time_distribution_points_duration_implausible",
+            offenders=offenders_text,
+            bound=_TIME_DISTRIBUTION_POINTS_DURATION_IMPLAUSIBLE_ABOVE_S,
+        ),
+        suggested_fix=None,
+        details={
+            "implausible_durations_s": offenders,
+            "warn_above_s": _TIME_DISTRIBUTION_POINTS_DURATION_IMPLAUSIBLE_ABOVE_S,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="time_distribution_points_duration_implausible",
+        applies_to=["set_time_distribution_points"],
+        phase="preflight",
+        tier="warn",
+        check=_check_time_distribution_points_duration_implausible,
+        message_ko="비현실적으로 큰 시간값입니다: {offenders}초 ({bound}초 초과). 실제 25개 Vissim "
+        "예제 네트워크 전체에서 관측된 가장 큰 곡선 점 값은 1800초였습니다 — 의도한 값이 맞는지 "
+        "확인해 주세요.",
+        message_en="Unrealistically large duration value(s): {offenders}s (above {bound}s). The "
+        "largest curve-point value observed across all 25 real Vissim example networks was 1800s "
+        "-- please confirm this is intended.",
+        message_ja="非現実的に大きい時間値です: {offenders}秒 ({bound}秒超過)。実際の25個のVissim"
+        "例題ネットワーク全体で観測された曲線点の最大値は1800秒でした — 意図した値かどうかご確認くだ"
+        "さい。",
+    )
+)
+
+
+def _check_time_distribution_points_duplicate(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_time_distribution_points":
+        return None
+    points = _time_distribution_points_from_params(action.get("params", {}))
+    if not points:
+        return None
+
+    seen: set[tuple[float, float]] = set()
+    duplicates: list[tuple[float, float]] = []
+    for duration, fraction in points:
+        if duration is None or fraction is None:
+            continue
+        key = (duration, fraction)
+        if key in seen and key not in duplicates:
+            duplicates.append(key)
+        seen.add(key)
+    if not duplicates:
+        return None
+
+    duplicates_text = ", ".join(f"({duration}, {fraction})" for duration, fraction in duplicates)
+    return Finding(
+        constraint_id="time_distribution_points_duplicate",
+        tier="warn",
+        phase="preflight",
+        messages=_render("time_distribution_points_duplicate", duplicates=duplicates_text),
+        suggested_fix=None,
+        details={"duplicate_points": [{"duration_s": d, "cum_fraction": f} for d, f in duplicates]},
+    )
+
+
+register(
+    Constraint(
+        id="time_distribution_points_duplicate",
+        applies_to=["set_time_distribution_points"],
+        phase="preflight",
+        tier="warn",
+        check=_check_time_distribution_points_duplicate,
+        message_ko="완전히 동일한 점이 중복됩니다 (시간, fraction): {duplicates}. Vissim은 이를 "
+        "허용하지만 곡선 모양에 아무 의미도 더하지 않습니다 -- 실수가 아닌지 확인해 주세요.",
+        message_en="Exact duplicate point(s) (duration, fraction): {duplicates}. Vissim allows "
+        "this, but a duplicate adds nothing to the curve's shape -- please confirm this is not a "
+        "mistake.",
+        message_ja="完全に同一の点が重複しています(時間, fraction): {duplicates}。Vissimはこれを"
+        "許可しますが、曲線の形には何も追加しません -- 誤りでないかご確認ください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# time_distribution_shared_target (warn, preflight) -- the "⑧/③ lesson"
+# generalized a third time: TimeDistributions is ONE SHARED collection,
+# referenced by PT-stop dwell assignments, per-vehicle-class dwell
+# overrides, driving-behavior CC1/zipper-overtake time, and further sites
+# with no shadow-model object of their own (see tools_network.
+# _parse_time_distributions' own docstring for the reference-counting
+# machinery this reuses). Applies to BOTH write tools -- editing either
+# representation (mean/stdDev OR points) of a shared distribution affects
+# every referencing object simultaneously. Always warns when there is at
+# least one reference, silent when the distribution is unreferenced.
+# ---------------------------------------------------------------------------
+
+
+def _check_time_distribution_shared_target(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    tool = action.get("tool")
+    if tool not in ("set_time_distribution_normal", "set_time_distribution_points"):
+        return None
+
+    params = action.get("params", {})
+    distribution_no = str(params.get("time_distribution_no", ""))
+    distribution = _find_by_field(shadow_model.get("time_distributions", []), "no", distribution_no)
+    if distribution is None:
+        return None  # missing target is object_not_found's job (#1)
+
+    referenced_by = distribution.get("referenced_by") or {}
+    reference_count = distribution.get("reference_count", 0)
+    if not reference_count:
+        return None
+
+    pt_stops = referenced_by.get("pt_stops", {})
+    veh_class_overrides = referenced_by.get("pt_vehicle_class_overrides", {})
+    driving_behaviors = referenced_by.get("driving_behaviors", {})
+    other = referenced_by.get("other", {})
+
+    parts_ko: list[str] = []
+    parts_en: list[str] = []
+    parts_ja: list[str] = []
+    for ref, unit_ko, unit_en, unit_ja in (
+        (pt_stops, "개 PT 정류장 대기시간 배정", "PT-stop dwell assignment(s)", "件のPT停留所停車時間割当"),
+        (veh_class_overrides, "개 차종별 대기시간 재정의", "per-vehicle-class dwell override(s)", "件の車種別停車時間上書き"),
+        (driving_behaviors, "개 주행행태(CC1/지퍼합류시간)", "driving-behavior CC1/zipper-overtake assignment(s)", "件の走行挙動(CC1/ジッパー合流時間)"),
+    ):
+        count = ref.get("count", 0)
+        if not count:
+            continue
+        ids_text = ", ".join(ref.get("ids", []))
+        suffix_ko = "" if not ref.get("truncated") else f" (총 {count}개 중 일부만 표시)"
+        suffix_en = "" if not ref.get("truncated") else f" (showing some of {count})"
+        suffix_ja = "" if not ref.get("truncated") else f" (合計{count}件中の一部のみ表示)"
+        parts_ko.append(f"{count}{unit_ko}[{ids_text}]{suffix_ko}")
+        parts_en.append(f"{count} {unit_en} [{ids_text}]{suffix_en}")
+        parts_ja.append(f"{count}{unit_ja}[{ids_text}]{suffix_ja}")
+
+    other_count = other.get("count", 0)
+    if other_count:
+        parts_ko.append(f"기타 네트워크 요소 {other_count}건 (개별 ID 없음)")
+        parts_en.append(f"{other_count} other network element(s) (no individual ids)")
+        parts_ja.append(f"その他のネットワーク要素{other_count}件(個別ID無し)")
+
+    refs_ko = "; ".join(parts_ko)
+    refs_en = "; ".join(parts_en)
+    refs_ja = "; ".join(parts_ja)
+
+    return Finding(
+        constraint_id="time_distribution_shared_target",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "time_distribution_shared_target",
+            distribution_no=distribution_no,
+            reference_count=reference_count,
+            refs_ko=refs_ko,
+            refs_en=refs_en,
+            refs_ja=refs_ja,
+        ),
+        suggested_fix=None,
+        details={"distribution_no": distribution_no, "referenced_by": referenced_by, "reference_count": reference_count},
+    )
+
+
+register(
+    Constraint(
+        id="time_distribution_shared_target",
+        applies_to=["set_time_distribution_normal", "set_time_distribution_points"],
+        phase="preflight",
+        tier="warn",
+        check=_check_time_distribution_shared_target,
+        message_ko="시간분포 '{distribution_no}'는 공유 대상입니다 -- 총 {reference_count}건이 "
+        "참조 중: {refs_ko}. 이 값을 수정하면 이들 전부에 동시에 영향을 줍니다.",
+        message_en="Time distribution '{distribution_no}' is a SHARED target -- {reference_count} "
+        "reference(s) total: {refs_en}. Editing this value affects every one of them at once.",
+        message_ja="時間分布 '{distribution_no}' は共有対象です -- 合計{reference_count}件が参照中: "
+        "{refs_ja}。この値を編集すると、これらすべてに同時に影響します。",
     )
 )

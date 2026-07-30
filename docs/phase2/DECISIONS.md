@@ -2663,3 +2663,20 @@ probe report only (same point-collection shape as unit ③'s ReplaceAll — unte
 remainder). Registry 72→74. Suite 1491/1/1 (controller re-ran; re-drove read + all three
 constraint outcomes on the real model's 28 types — the shared-composition warn is correctly
 silent for type 200, which has zero composition refs on the real model). v2a now 10/12.
+
+## 2026-07-31 — Q3 unit ⑤: dwell-time distributions shipped; the real object model is one GLOBAL collection
+
+Probed statically across all 25 example networks, then live (`BRT Priority Texas.US` — the
+static-scan's first pick also fails COM LoadNet, the second such network found). Verdict:
+`Net.TimeDistributions` (No/Name/Type/Mean/StdDev, XML-exact, fail-closed) is the single home;
+PT-stop dwell attributes are references INTO it, not value stores; stop-sign dwell does not
+exist anywhere (disproves the brief's own example). Its consumers span 7 sites incl.
+`drivingBehavior.w99cc1Distr` — empirically confirming the guide's "CC1 is a Time Distribution
+reference" claim, which unit ⑥ inherits. Vissim itself refuses Mean edits on an EMPIRICAL
+target; we refuse the reverse proactively. `Type` is COM-writable both directions — a landmine
+deliberately never exposed as a verb. Registry 74→84. Real-model findings worth telling the
+client: the Murdoch model HAS PT (16 stops / 12 lines / 19 line-stops), all 18 active dwell
+assignments share ONE normal distribution (no=10, 10s±2s), and five staged `BusDwell_*`
+empirical curves exist UNREFERENCED — built but never wired in. Suite 1552/1/1 (controller
+re-ran; re-drove type-mismatch both directions, shared-target warn on the 18-ref distribution,
+monotonicity refuse and implausible-mean warn against the real model).

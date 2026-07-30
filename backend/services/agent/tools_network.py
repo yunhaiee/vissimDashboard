@@ -73,7 +73,16 @@ The 8 referenced target collections (``model2d3d_distributions``,
 ``curve_speed_functions``) are also exposed as their own flat shadow-model
 lists, purely so constraints.py can validate a proposed write target. See
 :func:`_parse_vehicle_types`'s own docstring for the live-verified findings,
-including nullable references on PEDESTRIAN-category types).
+including nullable references on PEDESTRIAN-category types), and
+``time_distributions`` (QUEUE (Q3, v2a) unit 5: parsed here directly from
+``<timeDistributions><timeDistribution>`` — no/name/type/mean_std_dev
+plus, for EMPIRICAL-type entries, the ``durDistrDataPts`` curve; a genuinely
+SHARED collection referenced by PT-stop dwell-time assignments,
+per-vehicle-class dwell overrides, driving-behavior CC1/zipper-overtake time
+(confirming 00-EXECUTION-GUIDE.md's own CC1 claim empirically), and further
+sites with no shadow-model object of their own — NOT stop signs, disproving
+this unit's own task-brief guess. See :func:`_parse_time_distributions`'s
+own docstring for the live-verified findings).
 
 ``resolve_object`` is the "network-RAG" pattern (research-digest #10): a
 small, deterministic lexical top-k retrieval over the shadow model's objects.
@@ -948,6 +957,233 @@ def _parse_speed_distributions(
 
 
 # ---------------------------------------------------------------------------
+# get_time_distributions -- QUEUE (Q3, v2a) unit 5: dwell-time distributions
+#
+# Probed live (backend/tools/probe_dwell_time_distributions.py, "BRT
+# Priority Texas.US" -- "Signalization RBC Boise.US", this unit's static
+# scan's original richest-PT-network pick, RAISES on LoadNet itself, a NEW
+# landmine; substituted per the "pick a different real example network"
+# precedent every prior probe-first unit has set). ``Net.TimeDistributions``
+# -> No/Name/Type/Mean/StdDev matching the .inpx XML spelling exactly (no
+# CycTm-class landmine); ``Type`` is ``"NORMAL"`` (mean/stdDev drive
+# sampling) or ``"EMPIRICAL"`` (a ``<durDistrDataPts>`` child of (x duration,
+# fx cumulative-fraction) points drives sampling instead, the SAME shape
+# unit 3's ``speedDistrDatPts`` already established). An EMPIRICAL element's
+# own mean/stdDev are a FROZEN, live-verified NOT-recomputed-from-points
+# informational summary -- editing them is refused, both by Vissim's own COM
+# layer ("Attribute Mean cannot be changed") and proactively by this
+# codebase (see ``set_time_distribution_normal``'s own docstring).
+#
+# THIS IS A GENUINELY SHARED COLLECTION (the "⑧ lesson" generalized again):
+# a network-wide static scan across all 25 real Vissim 2026 example networks
+# found SEVEN real reference sites, none of them "stop signs" (DISPROVING
+# this unit's own task brief's example guess -- ``<stopSign>`` carries NO
+# time-distribution reference of any kind on any real network scanned):
+# ``ptLineStop``/``partialPTLineStop.dwellTmDistr`` (409+4, PT-stop dwell
+# time), ``vehClassDwellTimeDistribution.dwellTmDistr`` (327, a nested
+# PER-VEHICLE-CLASS override), ``drivingBehavior.w99cc1Distr``/
+# ``zipperOvtTmDistr`` (81+, CONFIRMS 00-EXECUTION-GUIDE.md's "CC1 is a
+# reference to a Time Distribution object" claim empirically), ``ptLine.
+# entryTmDistr`` (22, PT network-entry wait -- NOT a dwell time),
+# ``parkingLot``/``defRefsParkingLot.dirChgDurDist`` (parking direction-
+# change duration), and ``area.tmDistr`` (pedestrian queue-area wait time) --
+# the last four counted generically by tag (no shadow-model object of their
+# own), same policy :func:`_other_speed_distribution_reference_counts`
+# already established.
+# ---------------------------------------------------------------------------
+
+#: Points shown per distribution on an UNFILTERED/filtered
+#: get_time_distributions call -- the real max observed across all 25
+#: Vissim 2026 example networks' 30 real EMPIRICAL ``timeDistribution``
+#: elements is 4 points; 30 mirrors ``_SPEED_DISTRIBUTION_POINTS_CAP``'s own
+#: headroom reasoning for the sibling collection, not a tuned-to-the-edge
+#: limit.
+_TIME_DISTRIBUTION_POINTS_CAP = 30
+
+#: (tag, attribute) pairs for real XML sites that reference a
+#: timeDistribution number but have no shadow-model object of their own in
+#: this codebase -- found by the network-wide static scan described in this
+#: block's own module comment. Counted generically by tag (no owner id),
+#: the SAME "honest total, no per-object enumeration" policy
+#: :data:`_OTHER_SPEED_DISTRIBUTION_REFERENCE_TAGS` already established.
+_OTHER_TIME_DISTRIBUTION_REFERENCE_SITES: tuple[tuple[str, str], ...] = (
+    ("ptLine", "entryTmDistr"),
+    ("parkingLot", "dirChgDurDist"),
+    ("defRefsParkingLot", "dirChgDurDist"),
+    ("area", "tmDistr"),
+)
+
+
+def _parse_time_distribution_points(distribution_el: ET.Element) -> list[dict[str, float | None]]:
+    """[{duration_s, cum_fraction}, ...] per ``<durDistrDataPts>
+    <durationDistributionDataPoint fx="..." x="..."/></durDistrDataPts>``, in
+    document order. Only ``type="EMPIRICAL"`` ``<timeDistribution>`` elements
+    carry this child; a NORMAL one returns ``[]``. Genuine seconds, no unit
+    conversion needed -- live-verified (unlike unit 3's speed-in-mph
+    landmine) that Vissim has no per-network "display unit" setting for
+    durations."""
+    points: list[dict[str, float | None]] = []
+    for pt in distribution_el.findall("durDistrDataPts/durationDistributionDataPoint"):
+        points.append(
+            {
+                "duration_s": _coerce_float_or_none(pt.get("x")),
+                "cum_fraction": _coerce_float_or_none(pt.get("fx")),
+            }
+        )
+    return points
+
+
+def _pt_line_stop_dwell_refs(root: ET.Element) -> dict[str, list[str]]:
+    """{distribution_no: ["{pt_line_no}.{pt_stop_no}", ...]} from every real
+    ``<ptLineStop>``/``<partialPTLineStop dwellTmDistr="...">``, id-ed by its
+    OWNER ``<ptLine>``'s own ``no`` (a ptLineStop carries no identity
+    attribute of its own -- it references its stop via a ``ptStop``
+    attribute instead)."""
+    refs: dict[str, list[str]] = {}
+    for pt_line in root.findall(".//ptLine"):
+        line_no = pt_line.get("no", "")
+        for stop_tag in ("ptLineStop", "partialPTLineStop"):
+            for stop in pt_line.findall(f".//{stop_tag}"):
+                distr_no = (stop.get("dwellTmDistr") or "").strip()
+                if not distr_no:
+                    continue
+                owner_id = f"{line_no}.{stop.get('ptStop', '')}"
+                owners = refs.setdefault(distr_no, [])
+                if owner_id not in owners:
+                    owners.append(owner_id)
+    return refs
+
+
+def _pt_line_stop_veh_class_override_refs(root: ET.Element) -> dict[str, list[str]]:
+    """{distribution_no: ["{pt_line_no}.{pt_stop_no}.{veh_class}", ...]}
+    from every real ``<vehClassDwellTimeDistribution dwellTmDistr="...">``,
+    a PER-VEHICLE-CLASS dwell-time override nested inside a
+    ptLineStop/partialPTLineStop."""
+    refs: dict[str, list[str]] = {}
+    for pt_line in root.findall(".//ptLine"):
+        line_no = pt_line.get("no", "")
+        for stop_tag in ("ptLineStop", "partialPTLineStop"):
+            for stop in pt_line.findall(f".//{stop_tag}"):
+                stop_no = stop.get("ptStop", "")
+                for override in stop.findall(".//vehClassDwellTimeDistribution"):
+                    distr_no = (override.get("dwellTmDistr") or "").strip()
+                    if not distr_no:
+                        continue
+                    owner_id = f"{line_no}.{stop_no}.{override.get('vehClass', '')}"
+                    owners = refs.setdefault(distr_no, [])
+                    if owner_id not in owners:
+                        owners.append(owner_id)
+    return refs
+
+
+def _driving_behavior_time_distribution_refs(root: ET.Element) -> dict[str, list[str]]:
+    """{distribution_no: ["{driving_behavior_no}:cc1" | "...:zipper", ...]}
+    from every real ``<drivingBehavior w99cc1Distr="..."
+    zipperOvtTmDistr="...">`` -- CONFIRMS 00-EXECUTION-GUIDE.md's "CC1 is a
+    reference to a Time Distribution object" claim empirically (w99cc1Distr
+    genuinely resolves into this exact collection, verified live via
+    backend/tools/probe_dwell_time_distributions.py's own scalar-attribute
+    discovery)."""
+    refs: dict[str, list[str]] = {}
+    for db in root.findall(".//drivingBehavior"):
+        db_no = db.get("no", "")
+        for attr, label in (("w99cc1Distr", "cc1"), ("zipperOvtTmDistr", "zipper")):
+            distr_no = (db.get(attr) or "").strip()
+            if not distr_no:
+                continue
+            owner_id = f"{db_no}:{label}"
+            owners = refs.setdefault(distr_no, [])
+            if owner_id not in owners:
+                owners.append(owner_id)
+    return refs
+
+
+def _other_time_distribution_reference_counts(root: ET.Element) -> dict[str, dict[str, int]]:
+    """{distribution_no: {tag_name: count}} for every real XML element type
+    (other than ptLineStop/partialPTLineStop/vehClassDwellTimeDistribution/
+    drivingBehavior, all counted with their own id-bearing owners elsewhere)
+    that ALSO carries a time-distribution reference -- see
+    :data:`_OTHER_TIME_DISTRIBUTION_REFERENCE_SITES`'s own docstring for the
+    static-scan evidence."""
+    counts: dict[str, dict[str, int]] = {}
+    for tag, attr in _OTHER_TIME_DISTRIBUTION_REFERENCE_SITES:
+        for el in root.iter(tag):
+            distr_no = (el.get(attr) or "").strip()
+            if not distr_no:
+                continue
+            per_distr = counts.setdefault(distr_no, {})
+            per_distr[tag] = per_distr.get(tag, 0) + 1
+    return counts
+
+
+def _parse_time_distributions(root: ET.Element) -> list[dict[str, Any]]:
+    """{no, name, type, mean_std_dev, points, point_count, points_truncated,
+    referenced_by, reference_count} per
+    ``<timeDistributions><timeDistribution>``.
+
+    QUEUE (Q3, v2a) unit 5 (2026-07-29+). See this section's own module
+    comment for the full live-verified findings (collection name, attribute
+    spellings, the EMPIRICAL-mean-is-frozen finding, and the "genuinely
+    shared collection, NOT stop signs" reference-site scan).
+
+    ``mean_std_dev`` bundles ``{mean_s, std_dev_s}`` as ONE compound field --
+    mirroring ``_flatten_signal_program_splits``' ``green_window``/
+    ``_flatten_priority_rule_markers``' ``gap_headway`` exactly, for the SAME
+    reason: ``set_time_distribution_normal`` writes both in one call (either
+    field alone, or both together) and ``guardrails.py``'s
+    ``_WRITE_TARGET_FIELD_SPEC`` exempts ONE named ``value_field`` per tool,
+    compared whole by the recursive numeric-tolerant ``_values_differ``.
+    Deliberately NOT ALSO exposed as separate top-level keys (the
+    ``gap_headway`` precedent's own documented reason: a duplicate top-level
+    copy would sit OUTSIDE the exemption and false-positive as "something
+    else moved" on every real write).
+
+    ``reference_count`` is the grand total across every category;
+    ``referenced_by`` is silent (all-zero categories) for an unreferenced
+    distribution, matching :func:`_parse_speed_distributions`'s own norm.
+    """
+    pt_stop_refs = _pt_line_stop_dwell_refs(root)
+    veh_class_override_refs = _pt_line_stop_veh_class_override_refs(root)
+    driving_behavior_refs = _driving_behavior_time_distribution_refs(root)
+    other_ref_counts = _other_time_distribution_reference_counts(root)
+
+    result: list[dict[str, Any]] = []
+    for d in root.findall(".//timeDistributions/timeDistribution"):
+        no = d.get("no", "")
+        all_points = _parse_time_distribution_points(d)
+        capped_points = all_points[:_TIME_DISTRIBUTION_POINTS_CAP]
+
+        pt_ids = pt_stop_refs.get(no, [])
+        veh_class_ids = veh_class_override_refs.get(no, [])
+        behavior_ids = driving_behavior_refs.get(no, [])
+        other_by_tag = other_ref_counts.get(no, {})
+        other_total = sum(other_by_tag.values())
+
+        result.append(
+            {
+                "no": no,
+                "name": d.get("name", ""),
+                "type": d.get("type", ""),
+                "mean_std_dev": {
+                    "mean_s": _coerce_float_or_none(d.get("mean")),
+                    "std_dev_s": _coerce_float_or_none(d.get("stdDev")),
+                },
+                "points": capped_points,
+                "point_count": len(all_points),
+                "points_truncated": len(all_points) > len(capped_points),
+                "referenced_by": {
+                    "pt_stops": _bounded_reference_ids(pt_ids),
+                    "pt_vehicle_class_overrides": _bounded_reference_ids(veh_class_ids),
+                    "driving_behaviors": _bounded_reference_ids(behavior_ids),
+                    "other": {"count": other_total, "by_tag": other_by_tag},
+                },
+                "reference_count": len(pt_ids) + len(veh_class_ids) + len(behavior_ids) + other_total,
+            }
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # get_vehicle_types -- QUEUE (v2a) unit: vehicle type properties,
 # SCALARS/REFERENCES only.
 #
@@ -1684,6 +1920,13 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         "des_decel_functions": list(des_decel_functions.values()),
         "max_decel_functions": list(max_decel_functions.values()),
         "curve_speed_functions": list(curve_speed_functions.values()),
+        # QUEUE (Q3, v2a) unit 5: dwell-time distributions -- see
+        # _parse_time_distributions' own docstring for the live-verified
+        # findings (a genuinely shared collection, referenced by PT-stop
+        # dwell assignments, driving-behavior CC1/zipper-overtake time,
+        # parking direction-change duration, and pedestrian-area wait time
+        # -- NOT stop signs, disproving this unit's own task brief).
+        "time_distributions": _parse_time_distributions(root),
     }
 
 
@@ -2671,5 +2914,52 @@ def get_vehicle_types(params: GetVehicleTypesParams) -> dict[str, Any]:
         result["hint"] = (
             f"Showing {len(capped)} of {total} vehicle types. Narrow with vehicle_type_no "
             "to see a specific one instead of the whole list."
+        )
+    return result
+
+
+#: Item cap for an UNFILTERED get_time_distributions call -- the real max
+#: observed on one network across all 25 Vissim 2026 examples is 20
+#: (BRT Priority Texas.US); 60 mirrors _DES_SPEED_DISTRIBUTIONS_DEFAULT_CAP's
+#: own generous-headroom reasoning for the sibling collection.
+_TIME_DISTRIBUTIONS_DEFAULT_CAP = 60
+
+
+class GetTimeDistributionsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    time_distribution_no: str | None = Field(
+        default=None,
+        description="Exact time-distribution 'no' to return (narrows to at most one result).",
+    )
+
+
+@tool(
+    name="get_time_distributions",
+    tier="read",
+    provider="inspect",
+    params=GetTimeDistributionsParams,
+)
+def get_time_distributions(params: GetTimeDistributionsParams) -> dict[str, Any]:
+    """Return the network's time distributions -- id, name, type (NORMAL, driven by mean_std_dev, or EMPIRICAL, driven by a cumulative curve of points instead -- an EMPIRICAL distribution's OWN mean_std_dev is a frozen informational summary that does NOT drive its actual sampled behavior and cannot be edited), mean_std_dev ({mean_s, std_dev_s}, seconds), points (duration_s, cum_fraction; capped at 30 with a points_truncated flag; empty for NORMAL distributions), and referenced_by (how many PT-stop dwell-time assignments, per-vehicle-class dwell overrides, driving-behavior CC1/zipper-overtake-time assignments, and other network elements -- parking direction-change duration, PT-line entry wait time, pedestrian-area wait time -- point at this distribution, each a {count, ids, truncated} bounded list, plus reference_count as the grand total). This is a SHARED collection: editing one distribution's mean_s/std_dev_s or points changes behavior for EVERY referencing element at once. Use set_time_distribution_normal(time_distribution_no, mean_s, std_dev_s) on a NORMAL distribution, or set_time_distribution_points(time_distribution_no, points) on an EMPIRICAL one -- calling the wrong verb for a distribution's own type is refused. Optionally filter by time_distribution_no -- an unfiltered call on a large network returns only the first 60 (with an explicit truncated flag and a hint)."""
+    distributions = _current_shadow_model()["time_distributions"]
+
+    if params.time_distribution_no is not None:
+        distributions = [
+            d for d in distributions if str(d.get("no")) == str(params.time_distribution_no)
+        ]
+
+    total = len(distributions)
+    filtered = params.time_distribution_no is not None
+    if filtered:
+        return {"count": total, "time_distributions": distributions}
+
+    capped = distributions[:_TIME_DISTRIBUTIONS_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {"count": total, "time_distributions": capped, "truncated": truncated}
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} time distributions. Narrow with "
+            "time_distribution_no to see a specific one instead of the whole list."
         )
     return result

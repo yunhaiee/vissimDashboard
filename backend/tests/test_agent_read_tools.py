@@ -51,6 +51,8 @@ EXPECTED_TOOL_NAMES = {
     "get_priority_rules",
     # QUEUE (v2a) unit adds get_vehicle_types.
     "get_vehicle_types",
+    # QUEUE (Q3, v2a) unit 5 adds get_time_distributions.
+    "get_time_distributions",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -86,6 +88,9 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_priority_rule_gap_headway",
     "set_des_speed_distribution_points",
     "set_vehicle_type_reference",
+    # QUEUE (Q3, v2a) unit 5
+    "set_time_distribution_normal",
+    "set_time_distribution_points",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -2404,6 +2409,8 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "des_decel_functions",
         "max_decel_functions",
         "curve_speed_functions",
+        # QUEUE (Q3, v2a) unit 5: dwell-time distributions.
+        "time_distributions",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -2937,3 +2944,171 @@ def test_get_signal_programs_stage_based_adds_no_flat_split_targets(
 
     ids = {s["id"] for s in shadow["signal_program_splits"]}
     assert ids == {"9.11.1"}
+
+
+# ---------------------------------------------------------------------------
+# get_time_distributions -- QUEUE (Q3, v2a) unit 5
+# ---------------------------------------------------------------------------
+
+
+def test_get_time_distributions_on_demo_data_is_empty_but_well_formed():
+    envelope = _dispatch("get_time_distributions")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "time_distributions": [], "truncated": False}
+    assert "hint" not in envelope["data"]
+
+
+_TIME_DISTRIBUTION_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <timeDistributions>
+    <timeDistribution no="1" name="0.5 s" type="NORMAL" mean="0.5" stdDev="0"/>
+    <timeDistribution no="15" name="15 s" type="NORMAL" mean="15" stdDev="5"/>
+    <timeDistribution no="25" name="25 s" type="NORMAL" mean="25" stdDev="5"/>
+    <timeDistribution no="60" name="60 s" type="NORMAL" mean="60" stdDev="10"/>
+    <timeDistribution no="200" name="2-4 s" type="EMPIRICAL" mean="3" stdDev="0.5">
+      <durDistrDataPts>
+        <durationDistributionDataPoint fx="0" x="2"/>
+        <durationDistributionDataPoint fx="1" x="4"/>
+      </durDistrDataPts>
+    </timeDistribution>
+    <timeDistribution no="999" name="unused" type="NORMAL" mean="10" stdDev="2"/>
+  </timeDistributions>
+  <drivingBehaviors>
+    <drivingBehavior no="1" name="DB1" w99cc1Distr="1" zipperOvtTmDistr="200"/>
+  </drivingBehaviors>
+  <ptLines>
+    <ptLine no="10" name="Bus 1" entryTmDistr="15">
+      <lineStops>
+        <ptLineStop ptStop="5" dwellTmDistr="25" active="true">
+          <vehClassDwellTimeDistribution vehClass="100" dwellTmDistr="60"/>
+        </ptLineStop>
+      </lineStops>
+    </ptLine>
+  </ptLines>
+</network>
+"""
+
+
+@pytest.fixture()
+def time_distribution_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "time_distributions.inpx"
+    path.write_text(_TIME_DISTRIBUTION_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_time_distributions_on_real_elements(time_distribution_fixture_inpx: Path):
+    tools_network.set_active_inpx(time_distribution_fixture_inpx)
+
+    envelope = _dispatch("get_time_distributions")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 6
+    by_no = {td["no"]: td for td in data["time_distributions"]}
+
+    # no=1: driving-behavior CC1 reference -- CONFIRMS the "CC1 is a
+    # reference to a Time Distribution object" landmine end to end.
+    cc1_target = by_no["1"]
+    assert cc1_target["type"] == "NORMAL"
+    assert cc1_target["mean_std_dev"] == {"mean_s": 0.5, "std_dev_s": 0.0}
+    assert cc1_target["points"] == []
+    assert cc1_target["point_count"] == 0
+    assert cc1_target["referenced_by"]["driving_behaviors"] == {"count": 1, "ids": ["1:cc1"], "truncated": False}
+    assert cc1_target["reference_count"] == 1
+
+    # no=15: referenced only via ptLine.entryTmDistr -- a real site with no
+    # shadow-model object of its own, counted generically under "other".
+    entry_target = by_no["15"]
+    assert entry_target["referenced_by"]["other"] == {"count": 1, "by_tag": {"ptLine": 1}}
+    assert entry_target["reference_count"] == 1
+    assert entry_target["referenced_by"]["pt_stops"] == {"count": 0, "ids": [], "truncated": False}
+
+    # no=25: referenced via ptLineStop.dwellTmDistr, owner-id-ed by
+    # "{pt_line_no}.{pt_stop_no}".
+    dwell_target = by_no["25"]
+    assert dwell_target["referenced_by"]["pt_stops"] == {"count": 1, "ids": ["10.5"], "truncated": False}
+    assert dwell_target["reference_count"] == 1
+
+    # no=60: referenced ONLY via the nested per-vehicle-class override.
+    override_target = by_no["60"]
+    assert override_target["referenced_by"]["pt_vehicle_class_overrides"] == {
+        "count": 1, "ids": ["10.5.100"], "truncated": False,
+    }
+    assert override_target["reference_count"] == 1
+
+    # no=200: EMPIRICAL -- points drive sampling, mean_std_dev is a frozen
+    # informational summary (live-verified elsewhere it cannot be edited).
+    empirical = by_no["200"]
+    assert empirical["type"] == "EMPIRICAL"
+    assert empirical["mean_std_dev"] == {"mean_s": 3.0, "std_dev_s": 0.5}
+    assert empirical["points"] == [
+        {"duration_s": 2.0, "cum_fraction": 0.0},
+        {"duration_s": 4.0, "cum_fraction": 1.0},
+    ]
+    assert empirical["point_count"] == 2
+    assert empirical["points_truncated"] is False
+    assert empirical["referenced_by"]["driving_behaviors"] == {"count": 1, "ids": ["1:zipper"], "truncated": False}
+    assert empirical["reference_count"] == 1
+
+    # no=999: genuinely unreferenced -- every category silent, matching the
+    # guardrail doctrine's "silent when there's nothing to warn about" norm.
+    unused = by_no["999"]
+    assert unused["reference_count"] == 0
+    assert unused["referenced_by"]["pt_stops"] == {"count": 0, "ids": [], "truncated": False}
+    assert unused["referenced_by"]["other"] == {"count": 0, "by_tag": {}}
+
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_get_time_distributions_filters_by_time_distribution_no(time_distribution_fixture_inpx: Path):
+    tools_network.set_active_inpx(time_distribution_fixture_inpx)
+
+    envelope = _dispatch("get_time_distributions", time_distribution_no="200")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"]["count"] == 1
+    assert envelope["data"]["time_distributions"][0]["no"] == "200"
+    assert "truncated" not in envelope["data"]
+
+
+def test_get_time_distributions_filters_by_time_distribution_no_no_match_is_empty_not_an_error(
+    time_distribution_fixture_inpx: Path,
+):
+    tools_network.set_active_inpx(time_distribution_fixture_inpx)
+
+    envelope = _dispatch("get_time_distributions", time_distribution_no="999999")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "time_distributions": []}
+
+
+def test_get_time_distributions_rejects_unexpected_params(time_distribution_fixture_inpx: Path):
+    tools_network.set_active_inpx(time_distribution_fixture_inpx)
+
+    envelope = _dispatch("get_time_distributions", bogus_param="nope")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+def test_get_time_distributions_unfiltered_call_on_large_network_is_capped_and_truncated(
+    tmp_path: Path,
+):
+    entries = "".join(
+        f'<timeDistribution no="{n}" name="d{n}" type="NORMAL" mean="{n}" stdDev="1"/>'
+        for n in range(1, 90)
+    )
+    path = tmp_path / "many_time_distributions.inpx"
+    path.write_text(f"<network><timeDistributions>{entries}</timeDistributions></network>", encoding="utf-8")
+    tools_network.set_active_inpx(path)
+
+    envelope = _dispatch("get_time_distributions")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 89
+    assert len(data["time_distributions"]) == 60  # _TIME_DISTRIBUTIONS_DEFAULT_CAP
+    assert data["truncated"] is True
+    assert "time_distribution_no" in data["hint"]

@@ -115,6 +115,10 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # vehicle type's reference fields are all flat attributes on the type
     # object itself, not a nested per-assignment child collection.
     "vehicle_types": "no",
+    # QUEUE (Q3, v2a) unit 5: time distributions have a genuine single-token
+    # identity, their own "no" -- no flattening needed, same reasoning as
+    # des_speed_distributions/vehicle_types above.
+    "time_distributions": "no",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -346,6 +350,33 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "value_field_param": "field",
         "none_means": "not_persisted",
     },
+    # QUEUE (Q3, v2a) unit 5: dwell-time distributions. Mean/StdDev is a
+    # DICT holding both sub-values ("mean_std_dev": {mean_s, std_dev_s}),
+    # mirroring set_priority_rule_gap_headway's own gap_headway shape --
+    # one field holding both edges, compared whole by the recursive
+    # numeric-tolerant _values_differ. none_means "not_persisted": Mean/
+    # StdDev are plain XML attributes the parser can always see whenever the
+    # timeDistribution element itself exists (verified live -- backend/
+    # tools/probe_dwell_time_distributions.py -- no opaque-blob case like
+    # signal cycle_time), so a None after a write IS evidence the write
+    # never reached the file.
+    "set_time_distribution_normal": {
+        "object_class": "time_distributions",
+        "id_param": "time_distribution_no",
+        "value_field": "mean_std_dev",
+        "none_means": "not_persisted",
+    },
+    # Atomic full-curve points replace, mirroring set_des_speed_distribution_
+    # points' own spec entry exactly (same list-of-dicts value_field shape,
+    # same derived point_count/points_truncated coupling -- see that entry's
+    # own comment for the full reasoning, unchanged here).
+    "set_time_distribution_points": {
+        "object_class": "time_distributions",
+        "id_param": "time_distribution_no",
+        "value_field": "points",
+        "none_means": "not_persisted",
+        "coupled_fields": ("point_count", "points_truncated"),
+    },
 }
 
 # v2a unit ⑧: ``set_des_speed_decision`` is the first write tool whose action
@@ -436,6 +467,16 @@ _ALWAYS_EXEMPT_FIELDS: dict[str, frozenset[str]] = {
     # above exactly -- see tools_network._parse_vehicle_types' own
     # docstring.
     "vehicle_types": frozenset({"references", "referencing_composition_nos"}),
+    # QUEUE (Q3, v2a) unit 5: "referenced_by"/"reference_count" on
+    # time_distributions are PURELY DERIVED from OTHER object lists (PT-line
+    # dwell assignments, driving behaviors, and a static XML scan of further
+    # reference sites) -- no tool ever writes them directly, matching the
+    # des_speed_distributions/vehicle_types precedents above exactly. A
+    # write via set_vehicle_type_reference or any future PT/driving-behavior
+    # editing tool could legitimately move a reference and shift these
+    # fields on an UNRELATED time_distributions entry -- the same "blanket,
+    # tool-agnostic exemption" reasoning those two entries already document.
+    "time_distributions": frozenset({"referenced_by", "reference_count"}),
 }
 
 

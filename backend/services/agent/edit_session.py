@@ -311,6 +311,28 @@ class VissimEditSession:
     def get_vehicle_type_reference(self, vehicle_type_no: int, field: str) -> str | None:
         return self._ensure_connected().get_vehicle_type_reference(vehicle_type_no, field)
 
+    # QUEUE (Q3, v2a) unit 5: time-distribution verbs. Mean/StdDev on a
+    # NORMAL distribution, atomic full-curve points replace on an EMPIRICAL
+    # one -- see VissimController's own module comment (time-distribution
+    # block) for the full live-verified writeup, including Vissim's own
+    # refusal to let Mean/StdDev be edited on an EMPIRICAL-type object.
+
+    def set_time_distribution_normal(
+        self, time_distribution_no: int, mean_s: float | None, std_dev_s: float | None
+    ) -> dict[str, Any]:
+        return self._ensure_connected().set_time_distribution_normal(time_distribution_no, mean_s, std_dev_s)
+
+    def get_time_distribution(self, time_distribution_no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_time_distribution(time_distribution_no)
+
+    def set_time_distribution_points(
+        self, time_distribution_no: int, points: list[dict[str, float]]
+    ) -> list[dict[str, float]]:
+        return self._ensure_connected().set_time_distribution_points(time_distribution_no, points)
+
+    def get_time_distribution_points(self, time_distribution_no: int) -> list[dict[str, float]]:
+        return self._ensure_connected().get_time_distribution_points(time_distribution_no)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

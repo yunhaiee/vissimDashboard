@@ -275,6 +275,42 @@ class FakeEditSession:
         self._record("get_vehicle_type_reference", vehicle_type_no=vehicle_type_no, field=field)
         return self._readback["vehicle_type_reference"]
 
+    def set_time_distribution_normal(
+        self, time_distribution_no: int, mean_s: float | None, std_dev_s: float | None
+    ) -> dict[str, Any]:
+        self._record(
+            "set_time_distribution_normal",
+            time_distribution_no=time_distribution_no,
+            mean_s=mean_s,
+            std_dev_s=std_dev_s,
+        )
+        # Mirrors VissimController.set_time_distribution_normal's own return
+        # (an immediate post-write readback of the full scalar dict) -- a
+        # separate "..._set_return" key (default: falls back to the plain
+        # readback key) lets a test rig a genuine mismatch, same as
+        # set_priority_rule_gap_headway's own "_written"/plain key split.
+        return self._readback.get(
+            "time_distribution_normal_set_return", self._readback.get("time_distribution")
+        )
+
+    def get_time_distribution(self, time_distribution_no: int) -> dict[str, Any]:
+        self._record("get_time_distribution", time_distribution_no=time_distribution_no)
+        return self._readback["time_distribution"]
+
+    def set_time_distribution_points(
+        self, time_distribution_no: int, points: list[dict[str, float]]
+    ) -> list[dict[str, float]]:
+        self._record(
+            "set_time_distribution_points", time_distribution_no=time_distribution_no, points=points
+        )
+        return self._readback.get(
+            "time_distribution_points_set_return", self._readback.get("time_distribution_points")
+        )
+
+    def get_time_distribution_points(self, time_distribution_no: int) -> list[dict[str, float]]:
+        self._record("get_time_distribution_points", time_distribution_no=time_distribution_no)
+        return self._readback["time_distribution_points"]
+
     def persist(self) -> None:
         self.persist_calls += 1
 
@@ -1724,6 +1760,242 @@ def test_set_vehicle_type_reference_missing_required_param_is_rejected():
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "invalid_params"
     assert session.calls == []
+
+
+# ---------------------------------------------------------------------------
+# set_time_distribution_normal(time_distribution_no, mean_s, std_dev_s) --
+# QUEUE (Q3, v2a) unit 5
+# ---------------------------------------------------------------------------
+
+
+def test_set_time_distribution_normal_both_fields_happy_path():
+    session = FakeEditSession(
+        readback={"time_distribution": {"no": "550", "name": "550 s", "type": "NORMAL", "mean_s": 42.0, "std_dev_s": 7.5}}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_time_distribution_normal", time_distribution_no="550", mean_s=42.0, std_dev_s=7.5
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": {"mean_s": 42.0, "std_dev_s": 7.5},
+        "readback_value": {"mean_s": 42.0, "std_dev_s": 7.5},
+    }
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {"op": "set_time_distribution_normal", "time_distribution_no": 550, "mean_s": 42.0, "std_dev_s": 7.5},
+        {"op": "get_time_distribution", "time_distribution_no": 550},
+    ]
+    # time_distribution_no was coerced str -> int at the COM boundary.
+    assert isinstance(session.calls[0]["time_distribution_no"], int)
+    assert "mean -> 42.0s" in envelope["message"]
+    assert "std dev -> 7.5s" in envelope["message"]
+
+
+def test_set_time_distribution_normal_mean_only_still_reports_the_full_pair():
+    session = FakeEditSession(
+        readback={"time_distribution": {"no": "550", "name": "550 s", "type": "NORMAL", "mean_s": 42.0, "std_dev_s": 0.0}}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_time_distribution_normal", time_distribution_no="550", mean_s=42.0)
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": {"mean_s": 42.0, "std_dev_s": 0.0},
+        "readback_value": {"mean_s": 42.0, "std_dev_s": 0.0},
+    }
+    assert session.calls[0] == {
+        "op": "set_time_distribution_normal",
+        "time_distribution_no": 550,
+        "mean_s": 42.0,
+        "std_dev_s": None,
+    }
+    assert "mean -> 42.0s" in envelope["message"]
+    assert "std dev ->" not in envelope["message"]
+
+
+def test_set_time_distribution_normal_neither_field_rejected_at_param_layer():
+    session = FakeEditSession(readback={"time_distribution": {}})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_time_distribution_normal", time_distribution_no="550")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_time_distribution_normal_readback_mismatch_still_reports_ok_envelope():
+    # The tool's OWN job is only to report both values -- comparing them and
+    # refusing on mismatch is guardrails.py's postwrite job (constraint #6).
+    # The SET call's own return (used for written_value) is DELIBERATELY a
+    # SEPARATE readback key from the plain GET (used for readback_value) --
+    # confirms the tool never trusts the set call's own return as "proof".
+    session = FakeEditSession(
+        readback={
+            "time_distribution_normal_set_return": {"no": "550", "mean_s": 42.0, "std_dev_s": 7.5},
+            "time_distribution": {"no": "550", "mean_s": 41.9, "std_dev_s": 7.5},
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_time_distribution_normal", time_distribution_no="550", mean_s=42.0)
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": {"mean_s": 42.0, "std_dev_s": 7.5},
+        "readback_value": {"mean_s": 41.9, "std_dev_s": 7.5},
+    }
+
+
+def test_set_time_distribution_normal_vissim_refusal_surfaces_as_structured_error():
+    # The exact live refusal shape from the probe: an EMPIRICAL target raises.
+    session = FakeEditSession(
+        raise_on={
+            "set_time_distribution_normal": RuntimeError(
+                "Could not set time distribution 200 mean_s=77.0 std_dev_s=None: AttValue failed: "
+                "Object 200: 2-4 s: Attribute Mean cannot be changed."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_time_distribution_normal", time_distribution_no="200", mean_s=77.0)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "Attribute Mean cannot be changed" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+def test_set_time_distribution_normal_extra_param_is_rejected_before_the_tool_ever_runs():
+    session = FakeEditSession(readback={"time_distribution": {"mean_s": 1.0, "std_dev_s": 1.0}})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_time_distribution_normal", time_distribution_no="550", mean_s=1.0, extra_field="nope"
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_time_distribution_normal_no_active_session_is_a_structured_error():
+    envelope = _dispatch("set_time_distribution_normal", time_distribution_no="550", mean_s=1.0)
+
+    assert envelope["status"] == "error"
+    assert "no_edit_session" in envelope["message"]
+
+
+# ---------------------------------------------------------------------------
+# set_time_distribution_points(time_distribution_no, points) -- QUEUE
+# (Q3, v2a) unit 5
+# ---------------------------------------------------------------------------
+
+
+def test_set_time_distribution_points_happy_path():
+    session = FakeEditSession(
+        readback={"time_distribution_points": [{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}]}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}],
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {
+        "written_value": [{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}],
+        "readback_value": [{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}],
+    }
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {
+            "op": "set_time_distribution_points",
+            "time_distribution_no": 200,
+            "points": [{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}],
+        },
+        {"op": "get_time_distribution_points", "time_distribution_no": 200},
+    ]
+    assert isinstance(session.calls[0]["time_distribution_no"], int)
+
+
+def test_set_time_distribution_points_readback_mismatch_still_reports_ok_envelope():
+    session = FakeEditSession(
+        readback={"time_distribution_points": [{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 4.0, "cum_fraction": 1.0}]}
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}],
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"]["written_value"] != envelope["verification"]["readback_value"]
+
+
+def test_set_time_distribution_points_vissim_refusal_surfaces_as_structured_error():
+    session = FakeEditSession(
+        raise_on={
+            "set_time_distribution_points": RuntimeError(
+                "Could not replace time distribution 200 points: Container "
+                "DurationDistributionDataPoints must contain at least 2 item(s)."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 5.0, "cum_fraction": 1.0}],
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "at least 2 item" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+def test_set_time_distribution_points_empty_list_is_schema_legal_refused_by_constraints_not_pydantic():
+    # An empty points list is NOT rejected at the pydantic layer (no
+    # min_length on the model) -- per this unit's own design (mirroring
+    # set_des_speed_distribution_points exactly), the ">= 2 points"
+    # invariant is entirely constraints.py's job. Exercised here only to
+    # confirm dispatch-level plumbing accepts the shape; the actual refusal
+    # is covered in test_agent_constraints.py.
+    session = FakeEditSession(
+        raise_on={
+            "set_time_distribution_points": RuntimeError(
+                "Container DurationDistributionDataPoints must contain at least 2 item(s)."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_time_distribution_points", time_distribution_no="200", points=[])
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+
+
+def test_set_time_distribution_points_no_active_session_is_a_structured_error():
+    envelope = _dispatch(
+        "set_time_distribution_points",
+        time_distribution_no="200",
+        points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}],
+    )
+
+    assert envelope["status"] == "error"
+    assert "no_edit_session" in envelope["message"]
 
 
 # ---------------------------------------------------------------------------

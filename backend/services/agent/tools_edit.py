@@ -1040,3 +1040,120 @@ def set_vehicle_type_reference(params: SetVehicleTypeReferenceParams) -> dict[st
         f"{params.target_no}."
     )
     return {"message": message, "verification": verification}
+
+
+# ---------------------------------------------------------------------------
+# set_time_distribution_normal(time_distribution_no, mean_s, std_dev_s)
+# set_time_distribution_points(time_distribution_no, points)
+#
+# QUEUE (Q3, v2a) unit 5 -- dwell-time distributions. TWO write verbs for ONE
+# shared object type (Net.TimeDistributions), gated by the distribution's OWN
+# "type" attribute: NORMAL distributions carry mean_s/std_dev_s (this
+# codebase's own proactive gate on top of Vissim's live-verified own refusal
+# -- "Attribute Mean cannot be changed" on an EMPIRICAL target), EMPIRICAL
+# distributions carry an atomic full-curve points replace (unit 3's proven
+# ReplaceAll shape, re-verified live for this sibling COM collection --
+# backend/tools/probe_dwell_time_distributions.py). Both mirror
+# set_priority_rule_gap_headway's/set_des_speed_distribution_points' own
+# shapes exactly -- see vissim_com.VissimController's own time-distribution
+# module comment for the full live-verified writeup (Mean/StdDev proven NOT
+# to auto-recompute from points or vice versa, so neither setter needs a
+# coupled_fields sibling-scalar entry -- only the points setter needs one,
+# for its own derived point_count/points_truncated).
+# ---------------------------------------------------------------------------
+
+
+class SetTimeDistributionNormalParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    time_distribution_no: str
+    mean_s: float | None = None
+    std_dev_s: float | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> "SetTimeDistributionNormalParams":
+        if self.mean_s is None and self.std_dev_s is None:
+            raise ValueError(
+                "At least one of mean_s or std_dev_s must be given -- a call that changes "
+                "neither has nothing to do."
+            )
+        return self
+
+
+@tool(
+    name="set_time_distribution_normal",
+    tier="write",
+    provider="edit",
+    params=SetTimeDistributionNormalParams,
+)
+def set_time_distribution_normal(params: SetTimeDistributionNormalParams) -> dict[str, Any]:
+    """Set a NORMAL-type time distribution's mean_s and/or std_dev_s (SECONDS) on the active edit session's working network -- either field alone, or both in the same call. time_distribution_no must refer to a distribution whose type is NORMAL (use get_time_distributions first to check) -- calling this on an EMPIRICAL distribution is refused (its actual sampled behavior comes from its points, not these fields; use set_time_distribution_points instead). This is a SHARED object type: get_time_distributions' referenced_by shows every PT-stop dwell assignment, driving-behavior CC1/zipper-overtake-time assignment, and other element pointing at this distribution -- editing it changes behavior for every one of them simultaneously."""
+    session = _require_session()
+    time_distribution_no = _coerce_id(params.time_distribution_no, "time_distribution_no")
+
+    written = session.set_time_distribution_normal(time_distribution_no, params.mean_s, params.std_dev_s)
+    # A SEPARATE, independent readback -- never trust the set call's own
+    # return value as "proof it landed" (mirrors set_priority_rule_gap_
+    # headway's own written/readback split exactly; write_verification_
+    # failed (#6) would be meaningless if both sides came from one call).
+    readback = session.get_time_distribution(time_distribution_no)
+    session.persist()
+
+    verification: dict[str, Any] = {
+        "written_value": {"mean_s": written["mean_s"], "std_dev_s": written["std_dev_s"]},
+        "readback_value": {"mean_s": readback["mean_s"], "std_dev_s": readback["std_dev_s"]},
+    }
+    changed: list[str] = []
+    if params.mean_s is not None:
+        changed.append(f"mean -> {params.mean_s}s")
+    if params.std_dev_s is not None:
+        changed.append(f"std dev -> {params.std_dev_s}s")
+    message = (
+        f"Time distribution {params.time_distribution_no}: {', '.join(changed)} "
+        f"(now mean_s={readback['mean_s']}, std_dev_s={readback['std_dev_s']})."
+    )
+    return {"message": message, "verification": verification}
+
+
+class TimeDistributionPointParam(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Deliberately NOT bounded here -- every mathematical invariant (>= 2
+    # points, fraction in [0, 1], non-decreasing duration/fraction, endpoints
+    # 0/1) is a constraints.py preflight refuse-tier check instead, mirroring
+    # SpeedDistributionPointParam's own reasoning exactly.
+    duration_s: float
+    cum_fraction: float
+
+
+class SetTimeDistributionPointsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    time_distribution_no: str
+    points: list[TimeDistributionPointParam]
+
+
+@tool(
+    name="set_time_distribution_points",
+    tier="write",
+    provider="edit",
+    params=SetTimeDistributionPointsParams,
+)
+def set_time_distribution_points(params: SetTimeDistributionPointsParams) -> dict[str, Any]:
+    """Atomically replace an EMPIRICAL time distribution's ENTIRE cumulative duration curve on the active edit session's working network -- points is the complete new point list (each {duration_s, cum_fraction}), replacing the whole curve in one operation, never editing a single point in isolation. time_distribution_no must refer to a distribution whose type is EMPIRICAL (use get_time_distributions first to check) -- calling this on a NORMAL distribution is refused (use set_time_distribution_normal instead). Requirements Vissim itself enforces (curve needs >= 2 points; every cum_fraction in [0, 1]; the first point's cum_fraction must be exactly 0.0 and the last exactly 1.0; duration_s cannot be negative) plus requirements only this codebase checks (Vissim silently accepts a genuine duration DECREASE between points, a mid-curve fraction reversal, or an absurdly large duration -- all refused here before ever reaching Vissim; two consecutive points sharing the SAME duration with different fractions is legitimate -- a step-function curve seen in real data). A distribution may be a SHARED target: use get_time_distributions first to see which PT-stop dwell assignments, driving behaviors, and other elements reference it -- editing it here changes the curve for every one of them simultaneously."""
+    session = _require_session()
+    time_distribution_no = _coerce_id(params.time_distribution_no, "time_distribution_no")
+    points = [{"duration_s": p.duration_s, "cum_fraction": p.cum_fraction} for p in params.points]
+
+    session.set_time_distribution_points(time_distribution_no, points)
+    readback = session.get_time_distribution_points(time_distribution_no)
+    session.persist()
+
+    verification: dict[str, Any] = {"written_value": points, "readback_value": readback}
+    return {
+        "message": (
+            f"Time distribution {params.time_distribution_no}'s curve replaced with "
+            f"{len(points)} point(s): {readback}."
+        ),
+        "verification": verification,
+    }

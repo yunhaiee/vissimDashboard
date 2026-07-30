@@ -77,7 +77,17 @@ def test_health_check_runner_against_demo_dataset():
     # compositions) -- both need a proposed action's own "field"/"target_no"
     # params, so neither opts into the dataset scan either, same shape as
     # every addition above.
-    assert report["summary"]["edit_time_only_n"] == 60
+    # 70, not 60: QUEUE (Q3, v2a) unit 5 (dwell-time distributions) added ten
+    # more preflight-only constraints for the two new
+    # set_time_distribution_normal/set_time_distribution_points tools
+    # (time_distribution_type_mismatch / _mean_or_stddev_negative /
+    # _mean_implausible / points_count_invalid / points_duration_negative /
+    # points_duration_not_monotonic / points_fraction_invalid /
+    # points_duration_implausible / points_duplicate / shared_target) -- all
+    # ten need a proposed action's own params (time_distribution_no plus
+    # mean_s/std_dev_s/points), so none opts into the dataset scan either,
+    # same shape as every addition above.
+    assert report["summary"]["edit_time_only_n"] == 70
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.
