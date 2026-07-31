@@ -391,6 +391,82 @@ def set_conflict_area_status(params: SetConflictAreaStatusParams) -> dict[str, A
 
 
 # ---------------------------------------------------------------------------
+# set_lane_closure(link_id, lane_index, vehicle_classes) -- v2b unit (1)
+#
+# The catalog's "Lane closure / reopen" bullet. PROBED live before shipping
+# (backend/tools/probe_lane_closure.py): Vissim's OWN native mechanism is a
+# COM attribute, ``Lane.BlockedVehClasses`` -- a comma-separated vehicle
+# class list, empty string = fully open -- not a distinct network-object
+# type (no ``Net.LaneClosures``-shaped collection exists at all; a
+# type-library scan for any Lane/Closure-named COM interface found none
+# beyond the routing-decision "managed lanes" family, which is an unrelated
+# feature). This IS a genuinely structural edit at the .inpx level even
+# though it is a plain COM ``SetAttValue`` call, exactly like the other
+# object-targeting verbs in this module: the probe's saved-file diff showed
+# a non-empty blocked set serializes as a NEW child element
+# (``<blockedVehClasses><intObjectRef key="10"/>...</blockedVehClasses>``)
+# that does not otherwise exist on an open lane -- clearing it back to an
+# empty list (REOPEN) removes that child element on the next save. See
+# ``services.vissim_com.VissimController.set_lane_blocked_vehicle_classes``'s
+# own docstring for the full probe findings.
+#
+# One setter expresses both directions (mirrors ``set_conflict_area_status``'s
+# "one setter, several states including the safe default" shape):
+# ``vehicle_classes=[]`` IS the reopen call -- no separate tool. No "close
+# to ALL classes" wildcard exists on live COM, so a full closure means the
+# caller enumerates every vehicle class number it wants blocked.
+# ---------------------------------------------------------------------------
+
+
+class SetLaneClosureParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_id: str
+    #: 1-based ordinal position within the link's ``<lanes>`` -- matches
+    #: live COM's own ``Lane.AttValue("Index")`` numbering (see
+    #: ``_parse_link_lanes``'s docstring); lanes have no other identity.
+    lane_index: int = Field(ge=1)
+    #: Vehicle-class numbers to block (e.g. ``["20"]`` for HGVs). Empty list
+    #: reopens the lane to every class.
+    vehicle_classes: list[str] = Field(default_factory=list)
+
+
+@tool(name="set_lane_closure", tier="write", provider="edit", params=SetLaneClosureParams)
+def set_lane_closure(params: SetLaneClosureParams) -> dict[str, Any]:
+    """Close one lane to a specific set of vehicle classes (COM attribute BlockedVehClasses), or reopen it by passing an empty vehicle_classes list -- the per-lane, per-class closure Vissim's own COM surface actually supports; there is no "close to every class" wildcard, so a full closure means listing every class number to block."""
+    session = _require_session()
+    link_id = _coerce_id(params.link_id, "link_id")
+    try:
+        # Sorted (not caller order): COM's own serialized <intObjectRef>
+        # child order is not guaranteed to mirror SetAttValue's input order,
+        # and guardrails.py's target-persisted/diff compares are list
+        # order-sensitive -- writing (and comparing against) a canonical
+        # ascending order sidesteps a spurious mismatch regardless of what
+        # Vissim actually does internally.
+        vehicle_classes = sorted({int(vc) for vc in params.vehicle_classes})
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"vehicle_classes={params.vehicle_classes!r} must be integer class numbers") from exc
+
+    session.set_lane_closure(link_id, params.lane_index, vehicle_classes)
+    readback = session.get_lane_closure(link_id, params.lane_index)
+    session.persist()
+
+    written_value = [str(vc) for vc in vehicle_classes]
+    readback_value = [str(vc) for vc in readback]
+    if vehicle_classes:
+        message = (
+            f"Lane {params.lane_index} of link {params.link_id} closed to vehicle class(es) "
+            f"{', '.join(written_value)}."
+        )
+    else:
+        message = f"Lane {params.lane_index} of link {params.link_id} reopened to all vehicle classes."
+    return {
+        "message": message,
+        "verification": {"written_value": written_value, "readback_value": readback_value},
+    }
+
+
+# ---------------------------------------------------------------------------
 # set_reduced_speed_area(link_id, speed_kmh, from_m, length_m)
 #
 # v2 unit (2). NOT a COM verb -- see the module docstring's "v2 unit (2)"

@@ -88,6 +88,9 @@ EXPECTED_WRITE_TOOLS = {
     # like every other tool in this set, gated exactly the same way; each
     # step it applies dispatches through its own already-registered tool).
     "apply_edit_plan",
+    # v2b unit (1): lane closure/reopen (one setter, both directions -- see
+    # tools_edit.py's own docstring).
+    "set_lane_closure",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

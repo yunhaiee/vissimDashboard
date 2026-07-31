@@ -2863,3 +2863,25 @@ fenced for the concurrent MRWA-pack unit) — follow-up adds an always-fires war
 code-guaranteed. Standing finding: **`data/practice.inpx` is NOT live-COM-loadable** (no
 vissimVersion, missing real-export sections — a hand-authored static fixture); every live
 check substitutes an Examples Demo network, and that is now the recorded convention.
+
+## 2026-07-31 — Q4 ①: the v2b XML-build spine shipped; "lane closure" has no native object
+
+Probed before building: zero dedicated closure object exists in any of 20 example networks,
+the COM type library, or the schema — the real mechanism is `Lane.BlockedVehClasses`, a COM
+setter that is nonetheless STRUCTURAL at the XML level (a non-empty set serializes as a new
+`<blockedVehClasses><intObjectRef/></blockedVehClasses>` child; empty removes it). So
+`set_lane_closure` ships as one verb (`vehicle_classes=[]` IS reopen), and the spine's
+genuinely-structural proof pair is `remove_last_lane`/`add_lane` — last-lane-scoped because
+lanes have NO identity attribute (ordinal addressing; removing a middle lane would silently
+renumber every `"{link} {lane}"` reference in RSAs/priority rules). Spine components
+(services/inpx_structure.py, all reusable): schema-aware construction/removal +
+alphabetical-section insertion + max+1 id allocation; reparse verification; bidirectional
+reference integrity on a data-driven extensible registry (removal refuses NAMING the
+referrers); and the COM load oracle as structural postwrite — an edit that reparses clean but
+fails Vissim's own load is rolled back to exact pre-edit bytes before the caller sees it.
+Proven: `rollback_last_edit`'s diff-driven exemption generalizes to structural adds/removes
+with ZERO new rollback code. Shadow model gained `link_lanes` — and on first contact with the
+real model read 530 lanes including genuine pre-existing blocks (lane 505.1 blocks classes
+1030/1635 — the client's own bus-lane coding). Net zero new constraints (#37 was
+forward-declared for this verb in 2026-07-29; a lane-index preflight is a recorded follow-up).
+Registry 90→91. Suite 1780/1/1 (controller re-ran). v2b: 1/13 + spine.

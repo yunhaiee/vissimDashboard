@@ -393,6 +393,54 @@ def _parse_conflict_areas(root: ET.Element) -> list[dict[str, Any]]:
     return result
 
 
+def _parse_link_lanes(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{id, link_id, lane_index, width, blocked_vehicle_classes}`` per
+    ``<lane>`` -- v2b unit (1)'s shadow-model seed for ``set_lane_closure``.
+
+    Mirrors the routes/vehicle_composition_entries precedent: a lane has no
+    single-token identity of its own in the .inpx (``<lane width="..."/>``,
+    no ``no``/``id`` attribute at all -- confirmed against every real Vissim
+    2026 example network), so ``lane_index`` is the SAME 1-based ordinal
+    (document position within ``<lanes>``) live COM's own ``Lane.
+    AttValue("Index")`` returns (``backend/tools/probe_lane_closure.py``) --
+    the .inpx's document order and COM's ``Index`` numbering agree by
+    construction, not by convention alone.
+
+    ``blocked_vehicle_classes`` reads a real-but-previously-unparsed .inpx
+    shape (verified live, same probe): a lane with ANY blocked class
+    serializes as ``<lane ...><blockedVehClasses><intObjectRef key="10"/>
+    ...</blockedVehClasses></lane>`` -- a CHILD ELEMENT, one ``<intObjectRef>``
+    per blocked class, not a plain attribute (unlike ``conflictArea``'s
+    ``status``). A lane with no closure omits ``<blockedVehClasses>``
+    entirely (every real example network today), which is the empty-list
+    case here -- ``[]``, never ``None``, so the target-persisted postwrite
+    check's "not_persisted" semantics work exactly like ``status``/``volume``.
+    """
+    result: list[dict[str, Any]] = []
+    for link in root.findall(".//links/link"):
+        link_id = link.get("no", "")
+        lanes_el = link.find("lanes")
+        if lanes_el is None:
+            continue
+        for lane_index, lane in enumerate(lanes_el.findall("lane"), start=1):
+            blocked_el = lane.find("blockedVehClasses")
+            blocked = (
+                [ref.get("key", "") for ref in blocked_el.findall("intObjectRef") if ref.get("key")]
+                if blocked_el is not None
+                else []
+            )
+            result.append(
+                {
+                    "id": f"{link_id}.{lane_index}",
+                    "link_id": link_id,
+                    "lane_index": lane_index,
+                    "width": float(lane.get("width", "3.5") or 3.5),
+                    "blocked_vehicle_classes": blocked,
+                }
+            )
+    return result
+
+
 def _parse_evaluation_config(root: ET.Element) -> dict[str, Any]:
     """{present, net_perf_eval_act, link_eval_act, queue_eval_act,
     ln_chg_eval_act, eval_interval_s} from the .inpx's top-level
@@ -2148,6 +2196,9 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         "vehicle_inputs": _parse_vehicle_inputs(root),
         "signals": [_signal_to_contract_shape(info) for info in signals_by_sc_no.values()],
         "conflict_areas": _parse_conflict_areas(root),
+        # v2b unit (1): flat per-lane closure state, see _parse_link_lanes's
+        # own docstring.
+        "link_lanes": _parse_link_lanes(root),
         "routing_decisions": routing_decisions,
         "routes": _flatten_routes(routing_decisions),
         "vehicle_compositions": vehicle_compositions,

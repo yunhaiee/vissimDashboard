@@ -122,6 +122,15 @@ class FakeEditSession:
         self._record("get_conflict_area", conflict_area_no=conflict_area_no)
         return self._readback["conflict_area"]
 
+    def set_lane_closure(self, link_no: int, lane_index: int, vehicle_classes: list[int]) -> None:
+        self._record(
+            "set_lane_closure", link_no=link_no, lane_index=lane_index, vehicle_classes=vehicle_classes
+        )
+
+    def get_lane_closure(self, link_no: int, lane_index: int) -> list[int]:
+        self._record("get_lane_closure", link_no=link_no, lane_index=lane_index)
+        return self._readback["lane_closure"]
+
     def set_route_relative_flow(
         self, decision_no: int, route_no: int, rel_flow: float, interval_no: int = 1
     ) -> None:
@@ -425,6 +434,10 @@ def _dispatch(name: str, **params: Any) -> dict[str, Any]:
         (
             "set_vehicle_type_reference",
             {"vehicle_type_no": "200", "field": "weight_distr", "target_no": "3"},
+        ),
+        (
+            "set_lane_closure",
+            {"link_id": "101", "lane_index": 1, "vehicle_classes": ["20"]},
         ),
     ],
 )
@@ -2290,6 +2303,91 @@ def test_non_numeric_id_string_is_rejected_with_a_clear_error_not_a_crash():
     assert envelope["status"] == "error"
     assert envelope["error_type"] == "tool_execution_error"
     assert session.persist_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# set_lane_closure — v2b unit (1)
+# ---------------------------------------------------------------------------
+
+
+def test_set_lane_closure_happy_path():
+    session = FakeEditSession(readback={"lane_closure": [10, 20]})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_lane_closure", link_id="101", lane_index=1, vehicle_classes=["20", "10"]
+    )
+
+    assert envelope["status"] == "ok"
+    # Sorted (not caller order) -- see the tool's own docstring.
+    assert envelope["verification"] == {"written_value": ["10", "20"], "readback_value": ["10", "20"]}
+    assert "closed to vehicle class(es) 10, 20" in envelope["message"]
+    assert session.persist_calls == 1
+    assert session.calls == [
+        {"op": "set_lane_closure", "link_no": 101, "lane_index": 1, "vehicle_classes": [10, 20]},
+        {"op": "get_lane_closure", "link_no": 101, "lane_index": 1},
+    ]
+    assert isinstance(session.calls[0]["link_no"], int)
+
+
+def test_set_lane_closure_empty_list_is_the_reopen_call():
+    session = FakeEditSession(readback={"lane_closure": []})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_lane_closure", link_id="101", lane_index=2, vehicle_classes=[])
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": [], "readback_value": []}
+    assert "reopened to all vehicle classes" in envelope["message"]
+    assert session.calls[0] == {
+        "op": "set_lane_closure", "link_no": 101, "lane_index": 2, "vehicle_classes": [],
+    }
+
+
+def test_set_lane_closure_deduplicates_and_sorts_vehicle_classes():
+    session = FakeEditSession(readback={"lane_closure": [10, 20]})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_lane_closure", link_id="101", lane_index=1, vehicle_classes=["20", "10", "20"]
+    )
+
+    assert envelope["verification"]["written_value"] == ["10", "20"]
+    assert session.calls[0]["vehicle_classes"] == [10, 20]
+
+
+def test_set_lane_closure_readback_mismatch_still_reports_ok_envelope():
+    # Same discipline as every other tool: comparing written vs read-back is
+    # guardrails.py's postwrite job, not this tool's.
+    session = FakeEditSession(readback={"lane_closure": []})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_lane_closure", link_id="101", lane_index=1, vehicle_classes=["20"])
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": ["20"], "readback_value": []}
+
+
+def test_set_lane_closure_rejects_non_integer_vehicle_class():
+    session = FakeEditSession(readback={"lane_closure": []})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_lane_closure", link_id="101", lane_index=1, vehicle_classes=["car"])
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert session.calls == []
+
+
+def test_set_lane_closure_rejects_lane_index_below_one_at_param_layer():
+    session = FakeEditSession(readback={"lane_closure": []})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_lane_closure", link_id="101", lane_index=0, vehicle_classes=[])
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ def _shadow_model(
     time_distributions: list[dict[str, Any]] | None = None,
     driving_behaviors: list[dict[str, Any]] | None = None,
     link_behavior_type_assignments: list[dict[str, Any]] | None = None,
+    link_lanes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -87,6 +88,10 @@ def _shadow_model(
         "link_behavior_type_assignments": (
             link_behavior_type_assignments if link_behavior_type_assignments is not None else []
         ),
+        # v2b unit (1): the FLAT link_lanes list (id = "{link_id}.{lane_index}")
+        # -- see tools_network._parse_link_lanes for the real shape this
+        # mirrors.
+        "link_lanes": link_lanes if link_lanes is not None else [],
     }
 
 
@@ -137,6 +142,18 @@ def _priority_rule_marker_entry(
         "gap_headway": {"gap_time_s": gap_time_s, "headway_m": headway_m},
         "max_speed": 180.0,
         "effect_driv_dir": "FORWARD",
+    }
+
+
+def _link_lane_entry(
+    link_id: str, lane_index: int, *, blocked_vehicle_classes: list[str] | None = None, width: float = 3.5
+) -> dict[str, Any]:
+    return {
+        "id": f"{link_id}.{lane_index}",
+        "link_id": link_id,
+        "lane_index": lane_index,
+        "width": width,
+        "blocked_vehicle_classes": blocked_vehicle_classes if blocked_vehicle_classes is not None else [],
     }
 
 
@@ -1935,6 +1952,117 @@ def test_postwrite_priority_rule_gap_headway_diff_flags_an_unrelated_sibling_mar
         item["object_class"] == "priority_rule_markers" and item["object_id"] == "4.2"
         for item in evidence
     )
+
+
+# ---------------------------------------------------------------------------
+# postwrite -- set_lane_closure target-persisted check / nothing-else-moved
+# diff -- v2b unit (1)
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_lane_closure_target_persisted_check_happy_path():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(link_lanes=[_link_lane_entry("101", 1)])
+    after = _shadow_model(link_lanes=[_link_lane_entry("101", 1, blocked_vehicle_classes=["10", "20"])])
+    action = _action("set_lane_closure", link_id="101", lane_index=1, vehicle_classes=["10", "20"])
+    verification = {"written_value": ["10", "20"], "readback_value": ["10", "20"]}
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_lane_closure_target_persisted_check_fires_when_not_persisted():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(link_lanes=[_link_lane_entry("101", 1)])
+    after = _shadow_model(link_lanes=[_link_lane_entry("101", 1)])  # unchanged -- write never landed
+    action = _action("set_lane_closure", link_id="101", lane_index=1, vehicle_classes=["10", "20"])
+    verification = {"written_value": ["10", "20"], "readback_value": ["10", "20"]}
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "link_lanes"
+    assert check["object_id"] == "101.1"
+    assert check["field"] == "blocked_vehicle_classes"
+    assert check["saved_value"] == []
+
+
+def test_postwrite_lane_closure_reopen_target_persisted_check_happy_path():
+    # vehicle_classes=[] (reopen) is a legitimate, fully-persisted state --
+    # [] -> [] must NOT read as "not persisted" (see _WRITE_TARGET_FIELD_
+    # SPEC's own none_means="not_persisted" comment: only a Python None,
+    # never an empty list, is evidence of a dropped write here).
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(link_lanes=[_link_lane_entry("101", 1, blocked_vehicle_classes=["20"])])
+    after = _shadow_model(link_lanes=[_link_lane_entry("101", 1, blocked_vehicle_classes=[])])
+    action = _action("set_lane_closure", link_id="101", lane_index=1, vehicle_classes=[])
+    verification = {"written_value": [], "readback_value": []}
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_lane_closure_diff_flags_an_unrelated_sibling_lane_change():
+    # The write touched a DIFFERENT lane of the SAME link too -- the
+    # nothing-else-moved diff must surface it as evidence.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        link_lanes=[_link_lane_entry("101", 1), _link_lane_entry("101", 2)]
+    )
+    after = _shadow_model(
+        link_lanes=[
+            _link_lane_entry("101", 1, blocked_vehicle_classes=["20"]),
+            _link_lane_entry("101", 2, blocked_vehicle_classes=["10"]),  # NOT the target
+        ]
+    )
+    action = _action("set_lane_closure", link_id="101", lane_index=1, vehicle_classes=["20"])
+    verification = {"written_value": ["20"], "readback_value": ["20"]}
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.blocking is True
+    evidence = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        item["object_class"] == "link_lanes" and item["object_id"] == "101.2"
+        for item in evidence
+    )
+
+
+def test_diff_shadow_models_reports_a_structurally_removed_lane():
+    # The general oracle rollback_last_edit itself calls (guardrails.
+    # diff_shadow_models, no tool-specific exemption at all) must see a
+    # STRUCTURALLY removed link_lanes entry as "removed" evidence -- the
+    # spine's remove_last_lane's own proof point that the pre-existing
+    # diff machinery generalizes to structural adds/removes, not just
+    # field-level attribute writes.
+    from services.agent.guardrails import diff_shadow_models
+
+    before = _shadow_model(
+        link_lanes=[_link_lane_entry("101", 1), _link_lane_entry("101", 2)]
+    )
+    after = _shadow_model(link_lanes=[_link_lane_entry("101", 1)])
+
+    evidence = diff_shadow_models(before, after)
+
+    assert {"object_class": "link_lanes", "object_id": "101.2", "change": "removed"} in evidence
+
+
+def test_diff_shadow_models_reports_a_structurally_added_lane():
+    from services.agent.guardrails import diff_shadow_models
+
+    before = _shadow_model(link_lanes=[_link_lane_entry("101", 1)])
+    after = _shadow_model(
+        link_lanes=[_link_lane_entry("101", 1), _link_lane_entry("101", 2)]
+    )
+
+    evidence = diff_shadow_models(before, after)
+
+    assert {"object_class": "link_lanes", "object_id": "101.2", "change": "added"} in evidence
 
 
 def test_postwrite_priority_rule_gap_headway_gap_only_write_leaves_headway_exempt():

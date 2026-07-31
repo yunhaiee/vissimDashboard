@@ -130,6 +130,12 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # "default" or a veh_class_no, mirroring "routes"/"vehicle_composition_
     # entries"/etc above exactly).
     "link_behavior_type_assignments": "id",
+    # v2b unit (1): the FLAT link_lanes list tools_network._parse_link_lanes
+    # builds -- a lane's own identity is the (link_id, lane_index) pair (no
+    # single-token id of its own, mirroring routes/vehicle_composition_
+    # entries/etc above exactly). Required by BOTH postwrite checks, same as
+    # every flat entry above.
+    "link_lanes": "id",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -428,6 +434,21 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "value_field": "driving_behavior_no",
         "none_means": "not_persisted",
         "coupled_fields": ("driving_behavior_name",),
+    },
+    # v2b unit (1): lane closure. TWO-part identity (link_id + lane_index --
+    # a lane has no single-token identity, mirroring routes/vehicle-
+    # composition-entries/etc above exactly). none_means "not_persisted":
+    # the parser can always see a lane's blocked-class list whenever the
+    # <lane> element itself exists (empty list when no <blockedVehClasses>
+    # child is present -- never None -- see tools_network._parse_link_lanes's
+    # own docstring), so a None target-persisted read here would only ever
+    # mean the (link_id, lane_index) entry itself vanished from the after
+    # model, which the diff's own "removed" evidence already owns.
+    "set_lane_closure": {
+        "object_class": "link_lanes",
+        "id_param_parts": ("link_id", "lane_index"),
+        "value_field": "blocked_vehicle_classes",
+        "none_means": "not_persisted",
     },
 }
 

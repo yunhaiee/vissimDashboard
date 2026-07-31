@@ -1,0 +1,372 @@
+"""Tests for v2b unit (1)'s XML-build spine (``services/inpx_structure.py``):
+element construction/removal helpers, reparse verification, reference-
+integrity verification (both directions -- refuse-on-referenced removal,
+dangling-reference-on-add), and the structural proof pair
+(``remove_last_lane``/``add_lane``) against synthetic fixtures. No live COM
+anywhere in this file -- every ``apply_structural_edit`` call here passes
+``run_load_check=False`` (component 4, the COM load oracle, is proven
+separately by ``backend/tools/lane_removal_structural_live_check.py`` and
+the live transcript pasted in this unit's report).
+
+``_fixture_with_links`` derives a synthetic network by swapping ONLY
+``data/practice.inpx``'s ``<links>...</links>`` section for hand-built test
+content, keeping every other section (already proven parseable by the
+existing ``test_build_shadow_model_has_exactly_the_contract_keys`` pin)
+untouched -- this sidesteps having to hand-author a full, independently
+valid .inpx from scratch for every edge case.
+"""
+from __future__ import annotations
+
+import re
+import shutil
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import pytest
+
+from services import inpx_structure as struct
+
+PRACTICE_INPX = Path(__file__).resolve().parents[2] / "data" / "practice.inpx"
+
+_LINKS_RE = re.compile(r"<links>.*?</links>", re.DOTALL)
+
+
+def _fixture_with_links(tmp_path: Path, links_inner_xml: str, name: str = "fixture.inpx") -> Path:
+    text = PRACTICE_INPX.read_text(encoding="utf-8")
+    assert _LINKS_RE.search(text), "practice.inpx must contain a <links>...</links> section"
+    new_text = _LINKS_RE.sub(f"<links>{links_inner_xml}</links>", text, count=1)
+    path = tmp_path / name
+    path.write_text(new_text, encoding="utf-8")
+    return path
+
+
+def _copy_practice(tmp_path: Path, name: str = "practice_copy.inpx") -> Path:
+    dest = tmp_path / name
+    shutil.copyfile(PRACTICE_INPX, dest)
+    return dest
+
+
+# ---------------------------------------------------------------------------
+# Component 1: element construction/removal helpers
+# ---------------------------------------------------------------------------
+
+
+def test_get_or_create_top_level_section_returns_existing_untouched():
+    root = ET.fromstring("<network><areaBehaviorTypes/><links/></network>")
+    section = struct.get_or_create_top_level_section(root, "links")
+    assert section is root.find("links")
+    assert len(root) == 2  # nothing new inserted
+
+
+def test_get_or_create_top_level_section_inserts_at_alphabetical_position():
+    # areaBehaviorTypes, links already present; "conflictAreas" sorts
+    # between them alphabetically.
+    root = ET.fromstring("<network><areaBehaviorTypes/><links/></network>")
+    section = struct.get_or_create_top_level_section(root, "conflictAreas")
+    tags = [child.tag for child in root]
+    assert tags == ["areaBehaviorTypes", "conflictAreas", "links"]
+    assert section is root.find("conflictAreas")
+
+
+def test_get_or_create_top_level_section_appends_when_it_sorts_last():
+    root = ET.fromstring("<network><areaBehaviorTypes/></network>")
+    struct.get_or_create_top_level_section(root, "zoo")
+    assert [child.tag for child in root] == ["areaBehaviorTypes", "zoo"]
+
+
+def test_next_id_max_plus_one():
+    container = ET.fromstring('<links><link no="3"/><link no="7"/><link no="1"/></links>')
+    assert struct.next_id(container, "link", "no") == "8"
+
+
+def test_next_id_empty_container_starts_at_one():
+    container = ET.fromstring("<links/>")
+    assert struct.next_id(container, "link", "no") == "1"
+
+
+def test_next_id_ignores_non_numeric_ids():
+    container = ET.fromstring('<links><link no="abc"/><link no="4"/></links>')
+    assert struct.next_id(container, "link", "no") == "5"
+
+
+# ---------------------------------------------------------------------------
+# Component 2: reparse verification
+# ---------------------------------------------------------------------------
+
+
+def test_verify_reparse_succeeds_on_practice_inpx(tmp_path: Path):
+    path = _copy_practice(tmp_path)
+    shadow = struct.verify_reparse(path)
+    assert len(shadow["links"]) == 16
+
+
+def test_verify_reparse_raises_on_malformed_xml(tmp_path: Path):
+    path = tmp_path / "broken.inpx"
+    path.write_text("<network><links><link no=\"1\">", encoding="utf-8")
+    with pytest.raises(struct.ReparseVerificationError):
+        struct.verify_reparse(path)
+
+
+def test_verify_reparse_raises_when_expect_fails(tmp_path: Path):
+    path = _copy_practice(tmp_path)
+    with pytest.raises(struct.ReparseVerificationError):
+        struct.verify_reparse(path, expect=lambda shadow: len(shadow["links"]) == 999)
+
+
+def test_verify_reparse_passes_when_expect_succeeds(tmp_path: Path):
+    path = _copy_practice(tmp_path)
+    shadow = struct.verify_reparse(path, expect=lambda shadow: len(shadow["links"]) == 16)
+    assert len(shadow["links"]) == 16
+
+
+# ---------------------------------------------------------------------------
+# Component 3a: reference integrity -- plain id (links referenced by
+# connectors), against practice.inpx's REAL (fixture-convention) connectors:
+# fromLinkEndPt lane="101 1", fromLinkEndPt lane="140 1", toLinkEndPt
+# lane="140 1", toLinkEndPt lane="208 1".
+# ---------------------------------------------------------------------------
+
+
+def test_find_id_references_finds_connector_referencing_link():
+    root = ET.parse(PRACTICE_INPX).getroot()
+    referrers = struct.find_id_references(root, "links", "101")
+    assert len(referrers) == 1
+    assert referrers[0]["tag"] == "fromLinkEndPt"
+    assert referrers[0]["value"] == "101 1"
+
+
+def test_find_id_references_finds_link_referenced_by_both_endpoints():
+    root = ET.parse(PRACTICE_INPX).getroot()
+    referrers = struct.find_id_references(root, "links", "140")
+    assert len(referrers) == 2
+    tags = sorted(r["tag"] for r in referrers)
+    assert tags == ["fromLinkEndPt", "toLinkEndPt"]
+
+
+def test_find_id_references_empty_for_unreferenced_link():
+    root = ET.parse(PRACTICE_INPX).getroot()
+    assert struct.find_id_references(root, "links", "301") == []
+
+
+# ---------------------------------------------------------------------------
+# Component 3b: reference integrity -- lane tokens
+# ---------------------------------------------------------------------------
+
+
+def test_find_lane_token_references_finds_connector_lane_reference():
+    root = ET.parse(PRACTICE_INPX).getroot()
+    referrers = struct.find_lane_token_references(root, "101", 1)
+    assert len(referrers) == 1
+    assert referrers[0]["site"] == "connector fromLinkEndPt (lane form)"
+
+
+def test_find_lane_token_references_empty_for_unreferenced_lane():
+    root = ET.parse(PRACTICE_INPX).getroot()
+    # Link 101 has 3 lanes; only lane 1 is referenced (see the test above).
+    assert struct.find_lane_token_references(root, "101", 2) == []
+    assert struct.find_lane_token_references(root, "101", 3) == []
+
+
+def test_find_lane_token_references_matches_nested_connector_objectref():
+    # The REAL-Vissim-export shape (verified live against Urban Intersection
+    # Beijing.CN, see the module docstring) -- a connector's own <lane> child
+    # carries <fromLanes>/<toLanes><objectRef key="<link> <lane>"/>, distinct
+    # from practice.inpx's simplified fromLinkEndPt-lane-attribute form.
+    root = ET.fromstring(
+        '<network><links>'
+        '<link no="9"><lanes><lane/><lane/></lanes></link>'
+        '<link no="14"><lanes><lane/></lanes></link>'
+        '<link no="61"><fromLinkEndPt link="9" pos="1"/>'
+        '<lanes><lane><fromLanes><objectRef key="9 2"/></fromLanes>'
+        '<toLanes><objectRef key="14 1"/></toLanes></lane></lanes>'
+        '<toLinkEndPt link="14" pos="0"/></link>'
+        '</links></network>'
+    )
+    referrers = struct.find_lane_token_references(root, "9", 2)
+    assert len(referrers) == 1
+    assert referrers[0]["site"] == "connector fromLanes"
+    referrers_to = struct.find_lane_token_references(root, "14", 1)
+    assert len(referrers_to) == 1
+    assert referrers_to[0]["site"] == "connector toLanes"
+
+
+# ---------------------------------------------------------------------------
+# Component 3c: reference integrity -- dangling references on ADD
+# ---------------------------------------------------------------------------
+
+
+def test_check_new_object_references_detects_dangling_reference():
+    root = ET.fromstring(
+        '<network><links>'
+        '<link no="1"/>'
+        '<link no="2"><fromLinkEndPt link="999" pos="0"/></link>'
+        '</links></network>'
+    )
+    dangling = struct.check_new_object_references(
+        root, referring_xpath=".//links/link/fromLinkEndPt", ref_attr="link", target_object_class="links"
+    )
+    assert dangling == [{"tag": "fromLinkEndPt", "attribute": "link", "value": "999"}]
+
+
+def test_check_new_object_references_clean_when_target_exists():
+    root = ET.fromstring(
+        '<network><links>'
+        '<link no="1"/>'
+        '<link no="2"><fromLinkEndPt link="1" pos="0"/></link>'
+        '</links></network>'
+    )
+    dangling = struct.check_new_object_references(
+        root, referring_xpath=".//links/link/fromLinkEndPt", ref_attr="link", target_object_class="links"
+    )
+    assert dangling == []
+
+
+# ---------------------------------------------------------------------------
+# The proof pair: remove_last_lane / add_lane (no live COM -- run_load_
+# check=False; the load oracle itself is proven live separately)
+# ---------------------------------------------------------------------------
+
+_UNREFERENCED_TWO_LANE_LINK = (
+    '<link no="1" name="A"><geometry><linkPolyPts>'
+    '<linkPolyPoint x="0" y="0" zOffset="0"/><linkPolyPoint x="100" y="0" zOffset="0"/>'
+    '</linkPolyPts></geometry><lanes><lane width="3.5"/><lane width="3.66"/></lanes></link>'
+)
+
+_REFERENCED_LAST_LANE_FIXTURE = (
+    '<link no="1" name="A"><geometry><linkPolyPts>'
+    '<linkPolyPoint x="0" y="0" zOffset="0"/><linkPolyPoint x="100" y="0" zOffset="0"/>'
+    '</linkPolyPts></geometry><lanes><lane width="3.5"/><lane width="3.5"/></lanes></link>'
+    '<link no="2" name="connector"><fromLinkEndPt link="1" pos="10"/>'
+    '<geometry><linkPolyPts><linkPolyPoint x="100" y="0" zOffset="0"/>'
+    '<linkPolyPoint x="120" y="0" zOffset="0"/></linkPolyPts></geometry>'
+    '<lanes><lane><fromLanes><objectRef key="1 2"/></fromLanes></lane></lanes>'
+    '<toLinkEndPt link="3" pos="0"/></link>'
+    '<link no="3" name="B"><geometry><linkPolyPts>'
+    '<linkPolyPoint x="120" y="0" zOffset="0"/><linkPolyPoint x="200" y="0" zOffset="0"/>'
+    '</linkPolyPts></geometry><lanes><lane width="3.5"/></lanes></link>'
+)
+
+
+def test_remove_last_lane_happy_path(tmp_path: Path):
+    path = _fixture_with_links(tmp_path, _UNREFERENCED_TWO_LANE_LINK)
+    result = struct.remove_last_lane(path, "1", run_load_check=False)
+
+    assert result["metadata"] == {"link_no": "1", "removed_lane_index": 2, "removed_width": 3.66}
+    assert result["load_check_result"] is None
+    target_link = next(l for l in result["shadow_model"]["links"] if l["id"] == "1")
+    assert target_link["lanes"] == 1
+
+    # Byte-level: reparsing straight from disk (not the in-memory tree)
+    # shows the same thing -- the save genuinely reached the file.
+    fresh = struct.verify_reparse(path)
+    fresh_link = next(l for l in fresh["links"] if l["id"] == "1")
+    assert fresh_link["lanes"] == 1
+
+
+def test_remove_last_lane_refuses_when_last_lane_is_referenced(tmp_path: Path):
+    path = _fixture_with_links(tmp_path, _REFERENCED_LAST_LANE_FIXTURE)
+    original_bytes = path.read_bytes()
+
+    with pytest.raises(struct.ReferenceIntegrityError) as excinfo:
+        struct.remove_last_lane(path, "1", run_load_check=False)
+
+    assert excinfo.value.referrers[0]["tag"] == "objectRef"
+    assert excinfo.value.referrers[0]["value"] == "1 2"
+    # Refused BEFORE any write -- the file is untouched.
+    assert path.read_bytes() == original_bytes
+
+
+def test_remove_last_lane_refuses_on_a_links_last_remaining_lane(tmp_path: Path):
+    path = _fixture_with_links(
+        tmp_path,
+        '<link no="1" name="A"><geometry><linkPolyPts>'
+        '<linkPolyPoint x="0" y="0" zOffset="0"/><linkPolyPoint x="100" y="0" zOffset="0"/>'
+        '</linkPolyPts></geometry><lanes><lane width="3.5"/></lanes></link>',
+    )
+    with pytest.raises(ValueError, match="last remaining lane"):
+        struct.remove_last_lane(path, "1", run_load_check=False)
+
+
+def test_remove_last_lane_raises_for_unknown_link(tmp_path: Path):
+    path = _fixture_with_links(tmp_path, _UNREFERENCED_TWO_LANE_LINK)
+    with pytest.raises(ValueError, match="not found"):
+        struct.remove_last_lane(path, "999", run_load_check=False)
+
+
+def test_add_lane_happy_path(tmp_path: Path):
+    path = _fixture_with_links(tmp_path, _UNREFERENCED_TWO_LANE_LINK)
+    result = struct.add_lane(path, "1", width=3.25, run_load_check=False)
+
+    assert result["metadata"] == {"link_no": "1", "added_lane_index": 3, "width": 3.25}
+    target_link = next(l for l in result["shadow_model"]["links"] if l["id"] == "1")
+    assert target_link["lanes"] == 3
+    assert target_link["lane_widths"][-1] == pytest.approx(3.25)
+
+
+def test_remove_then_add_lane_round_trips_lane_count(tmp_path: Path):
+    """The reopen half: remove the last lane, then add one back -- lane
+    COUNT is restored (byte-for-byte restoration of the exact removed lane
+    is rollback_last_edit's job, proven in test_agent_rollback_structural.py;
+    this test only proves add_lane's own reparse-verified contract)."""
+    path = _fixture_with_links(tmp_path, _UNREFERENCED_TWO_LANE_LINK)
+    before = struct.verify_reparse(path)
+    before_count = next(l for l in before["links"] if l["id"] == "1")["lanes"]
+
+    struct.remove_last_lane(path, "1", run_load_check=False)
+    struct.add_lane(path, "1", width=3.5, run_load_check=False)
+
+    after = struct.verify_reparse(path)
+    after_count = next(l for l in after["links"] if l["id"] == "1")["lanes"]
+    assert after_count == before_count
+
+
+# ---------------------------------------------------------------------------
+# apply_structural_edit's own COM-load-oracle rollback contract, exercised
+# with a fake oracle (no real COM) -- proves the rollback-on-load-failure
+# path byte-for-byte without spending a Vissim licence seat.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_structural_edit_reverts_bytes_when_load_oracle_fails(tmp_path: Path, monkeypatch):
+    path = _fixture_with_links(tmp_path, _UNREFERENCED_TWO_LANE_LINK)
+    original_bytes = path.read_bytes()
+
+    monkeypatch.setattr(
+        struct,
+        "run_load_oracle",
+        lambda p: {"load_ok": True, "load_error": None, "init_ok": False, "init_error": "boom", "err_content": None},
+    )
+
+    def _mutate(root: ET.Element):
+        link = struct._find_link(root, "1")
+        link.find("lanes").findall("lane")[-1].attrib["width"] = "99"
+        return {}
+
+    with pytest.raises(struct.StructuralEditRolledBackError) as excinfo:
+        struct.apply_structural_edit(path, _mutate, run_load_check=True)
+
+    assert excinfo.value.load_check_result["init_error"] == "boom"
+    # The working copy is back to its EXACT pre-mutation bytes.
+    assert path.read_bytes() == original_bytes
+
+
+def test_apply_structural_edit_keeps_edit_when_load_oracle_passes(tmp_path: Path, monkeypatch):
+    path = _fixture_with_links(tmp_path, _UNREFERENCED_TWO_LANE_LINK)
+
+    monkeypatch.setattr(
+        struct,
+        "run_load_oracle",
+        lambda p: {"load_ok": True, "load_error": None, "init_ok": True, "init_error": None, "err_content": None},
+    )
+
+    def _mutate(root: ET.Element):
+        link = struct._find_link(root, "1")
+        link.find("lanes").findall("lane")[-1].attrib["width"] = "9.0"
+        return {"ok": True}
+
+    result = struct.apply_structural_edit(path, _mutate, run_load_check=True)
+    assert result["metadata"] == {"ok": True}
+    assert result["load_check_result"]["init_ok"] is True
+    fresh = struct.verify_reparse(path)
+    target = next(l for l in fresh["links"] if l["id"] == "1")
+    assert target["lane_widths"][-1] == pytest.approx(9.0)

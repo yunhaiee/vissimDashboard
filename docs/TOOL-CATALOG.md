@@ -160,7 +160,11 @@ the PAIRS and distribution-assignment line items).**
 
 ## V2b — structural/physical tier (XML-build + reparse + reference-integrity verification)
 
-- ⬜ Lane closure / reopen
+- ✅ Lane closure / reopen — shipped (Q4 ①, `set_lane_closure`; attribute-level via COM
+  BlockedVehClasses, structural at XML; the v2b SPINE landed with it: services/
+  inpx_structure.py — construction/removal, reparse verification, bidirectional
+  reference integrity, COM-load-oracle postwrite; structural proof pair
+  remove_last_lane/add_lane, not yet planner-registered)
 - ⬜ Full link closure
 - ⬜ Add / remove / reroute links & connectors
 - ⬜ Link geometry edits (lanes / length / curvature)

@@ -632,6 +632,25 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "link_behavior_type_no",
     },
+    # v2b unit (1): set_lane_closure added to the object_not_found /
+    # _TOOL_TARGET_SPEC lockstep table -- this only covers the LINK-level
+    # lookup (links object class, keyed by "id", param "link_id"); whether
+    # lane_index actually exists on that link has no single flat id the
+    # generic machinery can check (a lane has no identity of its own -- see
+    # tools_network._parse_link_lanes's docstring), so that deeper check is
+    # NOT a dedicated constraints.py check today (documented gap, closest
+    # verifiable subset per the roadmap's gap protocol) -- it is enforced by
+    # services.vissim_com.VissimController._lane_by_index, which fails
+    # CLOSED with the link's real available lane indices (verified live,
+    # backend/tools/probe_lane_closure.py). A future unit can add a
+    # dedicated lane_not_found_on_link preflight check mirroring
+    # route_not_found_in_decision's own split from this table.
+    "set_lane_closure": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_id",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {

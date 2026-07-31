@@ -104,6 +104,9 @@ EXPECTED_WRITE_TOOL_NAMES = {
     # its own -- each step dispatches through its own already-registered
     # tool).
     "apply_edit_plan",
+    # v2b unit (1) adds set_lane_closure (one setter, both closure/reopen
+    # directions -- see tools_edit.py's own docstring).
+    "set_lane_closure",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -2577,6 +2580,8 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "link_behavior_types",
         "driving_behaviors",
         "link_behavior_type_assignments",
+        # v2b unit (1): flat per-lane closure state.
+        "link_lanes",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -2619,6 +2624,16 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
     assert shadow["des_decel_functions"] == []
     assert shadow["max_decel_functions"] == []
     assert shadow["curve_speed_functions"] == []
+    # v2b unit (1): the demo .inpx's 16 links carry 40 lanes total (verified
+    # directly against data/practice.inpx before pinning); none carry a
+    # <blockedVehClasses> child (no real network ever does today — see
+    # _parse_link_lanes's own docstring), so every entry's own field reads
+    # the empty-list "open" default, never absent/None.
+    assert len(shadow["link_lanes"]) == 40
+    assert all(entry["blocked_vehicle_classes"] == [] for entry in shadow["link_lanes"])
+    assert {entry["id"] for entry in shadow["link_lanes"] if entry["link_id"] == "101"} == {
+        "101.1", "101.2", "101.3",
+    }
 
 
 def test_build_shadow_model_is_mtime_cached_across_repeat_calls():

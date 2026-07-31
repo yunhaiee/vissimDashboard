@@ -891,6 +891,99 @@ class VissimController:
     def available_conflict_area_nos(self) -> list[int]:
         return self._collection_nos(self.vissim.Net.ConflictAreas)
 
+    # ---------------------------------------------------------------------
+    # Lane closure -- v2b unit (1). COM attribute id ``BlockedVehClasses``
+    # (verified empirically live against Vissim 2026,
+    # ``backend/tools/probe_lane_closure.py`` on Roundabout Billings.US):
+    # a comma-separated list of vehicle-class numbers (e.g. ``"10,20"``,
+    # semicolon REJECTED -- "is not a valid key list"), empty string
+    # ``""`` means the lane is open to every class. This is Vissim's own
+    # native per-lane, per-vehicle-class closure mechanism -- attribute-level
+    # over COM (a plain ``AttValue``/``SetAttValue`` pair, exactly like
+    # ``set_conflict_area_status``), but genuinely STRUCTURAL in the saved
+    # .inpx: a lane with a non-empty blocked set serializes with a NEW child
+    # element the probe confirmed does not otherwise exist,
+    # ``<lane>...<blockedVehClasses><intObjectRef key="10"/>...</lane>``
+    # (one ``<intObjectRef>`` per blocked class) -- clearing it back to ``""``
+    # removes that child element entirely on the next save. No "close to
+    # ALL classes" wildcard was found on live COM; a full closure means the
+    # caller enumerates every class number it wants blocked.
+    #
+    # A ``Lane`` is reached as ``Net.Links.ItemByKey(link_no).Lanes.
+    # ItemByKey(lane_index)`` -- lanes have NO identity attribute of their
+    # own in the .inpx (``<lane width="..."/>``, no ``no``/``id``); COM's
+    # own ``Lanes`` collection keys them by the SAME 1-based ordinal
+    # (``Index``) the .inpx document order already implies (verified live:
+    # ``Lanes.ItemByKey(1)`` returns the lane whose own ``AttValue("Index")``
+    # reads back ``1``).
+    # ---------------------------------------------------------------------
+
+    def _lane_by_index(self, link_no: int, lane_index: int) -> Any:
+        link = self._item_by_key(
+            self.vissim.Net.Links, link_no, "Link", self._collection_nos(self.vissim.Net.Links)
+        )
+        try:
+            return link.Lanes.ItemByKey(lane_index)
+        except Exception as exc:
+            available = self.available_lane_indices(link_no)
+            raise VissimObjectNotFoundError(
+                f"Lane {lane_index} does not exist on link {link_no} in the loaded VISSIM "
+                f"network. Available lane indices for link {link_no}: "
+                f"{_format_available_keys(available)}."
+            ) from exc
+
+    def available_lane_indices(self, link_no: int) -> list[int]:
+        try:
+            link = self.vissim.Net.Links.ItemByKey(link_no)
+            return sorted(int(lane.AttValue("Index")) for lane in link.Lanes.GetAll())
+        except Exception:
+            return []
+
+    @staticmethod
+    def _format_blocked_vehicle_classes(vehicle_classes: list[int]) -> str:
+        return ",".join(str(int(vc)) for vc in vehicle_classes)
+
+    @staticmethod
+    def _parse_blocked_vehicle_classes(raw: Any) -> list[int]:
+        text = str(raw or "").strip()
+        if not text:
+            return []
+        return [int(token) for token in text.split(",") if token.strip()]
+
+    def set_lane_blocked_vehicle_classes(
+        self, link_no: int, lane_index: int, vehicle_classes: list[int]
+    ) -> None:
+        """Set the exact set of vehicle classes blocked from one lane
+        (``BlockedVehClasses``) -- REPLACES whatever was blocked before,
+        same "one setter, several states including the safe open default"
+        shape as :meth:`set_conflict_area_status`. An empty list is the
+        REOPEN case: the lane becomes open to every vehicle class again.
+        """
+        try:
+            lane = self._lane_by_index(link_no, lane_index)
+            lane.SetAttValue(
+                "BlockedVehClasses", self._format_blocked_vehicle_classes(vehicle_classes)
+            )
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set lane {lane_index} of link {link_no} BlockedVehClasses="
+                f"{vehicle_classes!r}: {exc}"
+            ) from exc
+
+    def get_lane_blocked_vehicle_classes(self, link_no: int, lane_index: int) -> list[int]:
+        """Paired getter for :meth:`set_lane_blocked_vehicle_classes`."""
+        try:
+            lane = self._lane_by_index(link_no, lane_index)
+            return self._parse_blocked_vehicle_classes(lane.AttValue("BlockedVehClasses"))
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read lane {lane_index} of link {link_no} BlockedVehClasses: {exc}"
+            ) from exc
+
     def set_route_relative_flow(
         self, decision_no: int, route_no: int, rel_flow: float, interval_no: int = 1
     ) -> None:

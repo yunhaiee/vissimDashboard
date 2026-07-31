@@ -206,6 +206,14 @@ class VissimEditSession:
     def get_conflict_area(self, conflict_area_no: int) -> dict[str, Any]:
         return self._ensure_connected().get_conflict_area(conflict_area_no)
 
+    # v2b unit (1): lane closure -- per-lane, per-vehicle-class BlockedVehClasses.
+
+    def set_lane_closure(self, link_no: int, lane_index: int, vehicle_classes: list[int]) -> None:
+        self._ensure_connected().set_lane_blocked_vehicle_classes(link_no, lane_index, vehicle_classes)
+
+    def get_lane_closure(self, link_no: int, lane_index: int) -> list[int]:
+        return self._ensure_connected().get_lane_blocked_vehicle_classes(link_no, lane_index)
+
     # v2 unit ⑥: static routing decision route relative-flow verbs.
 
     def set_route_relative_flow(
