@@ -183,6 +183,94 @@ def test_clone_does_not_copy_non_allowlisted_files_or_subdirectories(tmp_path: P
     assert not (work_dir / "network.results").exists()
 
 
+# ---------------------------------------------------------------------------
+# ArtifactManager — scenario-management normalization
+#
+# ROOT CAUSE (verified live, backend/tools/probe_murdoch_load.py): the real
+# client dataset is a PTV Vision "Place Under Scenario Management" export
+# (<netPara underScenMngm="true"> baked into its own .inpx XML), and
+# VissimController.load_network's LoadNet call RAISES a generic com_error
+# ("The network file could not be loaded.") for exactly that class of file.
+# clone()/rollback_to(0) must flip the flag to "false" in the WORKING COPY
+# only -- never source_inpx -- so the working copy stays loadable.
+# ---------------------------------------------------------------------------
+
+
+def _scenario_managed_inpx_bytes() -> bytes:
+    """DEMO_INPX's own content with <netPara underScenMngm="true"> injected
+    -- a realistic, shadow-model-parseable fixture (DEMO_INPX itself has no
+    underScenMngm attribute at all: <netPara northDir="0">)."""
+    text = DEMO_INPX.read_text(encoding="utf-8")
+    assert '<netPara northDir="0">' in text, "DEMO_INPX fixture shape changed -- update this helper"
+    marked = text.replace(
+        '<netPara northDir="0">', '<netPara northDir="0" underScenMngm="true">'
+    )
+    return marked.encode("utf-8")
+
+
+def test_clone_normalizes_scenario_management_flag_in_working_copy_only(tmp_path: Path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_inpx = source_dir / "network.inpx"
+    source_inpx.write_bytes(_scenario_managed_inpx_bytes())
+    original_source_bytes = source_inpx.read_bytes()
+
+    work_dir = tmp_path / "work"
+    manager = ArtifactManager(source_inpx=source_inpx, work_dir=work_dir)
+
+    manager.clone()
+
+    # source_inpx is untouched (rule 4: never edit the active dataset in place).
+    assert source_inpx.read_bytes() == original_source_bytes
+    assert b'underScenMngm="true"' in original_source_bytes
+
+    # the WORKING COPY has the flag flipped, every other byte the same.
+    working_text = manager.working_path.read_text(encoding="utf-8")
+    assert 'underScenMngm="false"' in working_text
+    assert 'underScenMngm="true"' not in working_text
+    source_text = original_source_bytes.decode("utf-8")
+    assert working_text == source_text.replace(
+        'underScenMngm="true"', 'underScenMngm="false"'
+    )
+
+
+def test_clone_leaves_non_scenario_managed_network_byte_identical(tmp_path: Path):
+    # DEMO_INPX itself has no underScenMngm attribute -- confirms the
+    # normalization is a true no-op (not just idempotent) for the
+    # overwhelmingly common case, matching every existing example network.
+    manager = ArtifactManager(source_inpx=DEMO_INPX, work_dir=tmp_path)
+
+    manager.clone()
+
+    assert manager.working_path.read_bytes() == DEMO_INPX.read_bytes()
+
+
+def test_rollback_to_zero_reapplies_scenario_management_normalization(tmp_path: Path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_inpx = source_dir / "network.inpx"
+    source_inpx.write_bytes(_scenario_managed_inpx_bytes())
+
+    work_dir = tmp_path / "work"
+    manager = ArtifactManager(source_inpx=source_inpx, work_dir=work_dir)
+    manager.clone()
+    pristine_working_text = manager.working_path.read_text(encoding="utf-8")
+    assert 'underScenMngm="false"' in pristine_working_text
+
+    # Mutate the working copy (simulating an in-session edit) then roll back.
+    manager.working_path.write_text(
+        pristine_working_text.replace('underScenMngm="false"', 'underScenMngm="true"'),
+        encoding="utf-8",
+    )
+
+    manager.rollback_to(0)
+
+    restored_text = manager.working_path.read_text(encoding="utf-8")
+    assert 'underScenMngm="false"' in restored_text
+    assert 'underScenMngm="true"' not in restored_text
+    assert restored_text == pristine_working_text
+
+
 def test_clone_parses_initial_shadow_model(tmp_path: Path):
     manager = ArtifactManager(source_inpx=DEMO_INPX, work_dir=tmp_path)
 

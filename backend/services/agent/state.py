@@ -142,6 +142,89 @@ def _copy_sibling_assets(source_inpx: Path, work_dir: Path) -> list[str]:
     return copied
 
 
+# ---------------------------------------------------------------------------
+# Scenario-management normalization -- WORKING COPY ONLY, never source_inpx.
+#
+# ROOT CAUSE (verified live, backend/tools/probe_murdoch_load.py, 2026-07-31):
+# the real client dataset (a PTV Vision "Place Under Scenario Management"
+# export -- it sits next to project.vissimpdb/Scenarios/Modifications) makes
+# VissimController.load_network's LoadNet call RAISE a generic, low-
+# information com_error ("VISSIM.Vissim.2600: The network file could not be
+# loaded.") for exactly one reason: the file's own
+# ``<netPara underScenMngm="true">`` self-declaration. This is NOT a Vissim-
+# version-compatibility gate (an older-installed-Vissim hypothesis was
+# directly ruled out live: the installed build is NEWER than the failing
+# file's own build, yet files from both an OLDER and a STILL NEWER build
+# than the failing one load fine, and a header-swap test that rewrote ONLY
+# the vissimVersion string to a known-good build, no other byte changed,
+# still failed identically). Every Vissim 2026 example network checked
+# declares ``underScenMngm="false"`` and loads fine; flipping ONLY that one
+# attribute to "false" on a byte-identical-otherwise copy of the real
+# client file was verified live to LOAD SUCCESSFULLY with object counts
+# matching the source XML's own ground truth EXACTLY (312 links / 6 signal
+# controllers / 51 vehicle inputs / 6 nodes / 216 conflict areas / 28
+# vehicle types, including vehicle type 1030's real name "Transperth" read
+# back correctly).
+#
+# This mirrors a fix this codebase already needed once before, for a
+# DIFFERENT cloning path: services/simulation_network_builder.py's
+# ``_make_network_standalone`` (written for the job-based "interactive"
+# simulation run) already does
+# ``net_para.set("underScenMngm", "false")`` for exactly this reason. The
+# agent-edit/load_check cloning path (this module) never went through that
+# builder, which is why it alone stayed broken against the real dataset.
+#
+# Deliberately NOT a ``LoadNet(path, additive=True)`` fix in
+# services/vissim_com.py (tried and rejected): "additive" mode merges the
+# file into Vissim's own "New" default in-memory project instead of
+# replacing it, and was found live to silently ADD 11 extra vehicle types
+# (39 live vs the file's own 28) that do not belong to the source network
+# at all -- exactly the kind of silent-wrong-numbers pollution
+# 00-EXECUTION-GUIDE.md SS4 warns about, and it would have had to run on
+# whatever raw path a caller passes ``VissimController.load_network``,
+# including the one call site (``services/vissim_tool.py``'s
+# ``get_vissim_status``) that loads the ACTIVE SOURCE DIRECTLY, not a
+# clone -- writing anywhere near that path is exactly what rule 4 forbids.
+# Normalizing the WORKING COPY here, where this module already guarantees
+# it owns a throwaway file, avoids both problems at once.
+# ---------------------------------------------------------------------------
+
+_UNDER_SCEN_MNGM_TRUE_RE = re.compile(r'\bunderScenMngm="true"')
+
+
+def _disable_scenario_management_flag(working_path: Path) -> bool:
+    """Flip ``<netPara underScenMngm="true">`` to ``"false"`` IN THE WORKING
+    COPY (``working_path`` — never ``source_inpx``) if present, a plain
+    regex scan/rewrite of the raw file (not a full XML parse/reserialize,
+    so every other byte is untouched). See the module-level comment above
+    for the full, empirically verified root-cause story.
+
+    A false negative (attribute absent, or an unreadable file) is the safe
+    default: the working copy is simply left as-is, exactly as it always
+    was before this fix. Returns ``True`` iff a rewrite happened
+    (informational only — no caller needs to branch on this)."""
+    try:
+        text = working_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    new_text, n = _UNDER_SCEN_MNGM_TRUE_RE.subn('underScenMngm="false"', text)
+    if n == 0:
+        return False
+    try:
+        working_path.write_text(new_text, encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "ArtifactManager: could not normalize underScenMngm in working copy %s",
+            working_path, exc_info=True,
+        )
+        return False
+    logger.info(
+        "ArtifactManager: normalized underScenMngm=\"true\" -> \"false\" in the working "
+        "copy %s (%d occurrence(s)) -- source_inpx untouched", working_path, n,
+    )
+    return True
+
+
 @dataclass
 class StepRecord:
     """One summarized step in an agent session's history.
@@ -377,6 +460,13 @@ class ArtifactManager:
         the initial shadow model and returns a deep copy of it (see the
         ``shadow_model`` property).
 
+        Also normalizes a scenario-management export's
+        ``underScenMngm="true"`` self-declaration to ``"false"`` in the
+        WORKING COPY only (:func:`_disable_scenario_management_flag` — see
+        its module-level comment for why: without this, ``VissimController.
+        load_network`` cannot ``LoadNet`` the working copy at all for a
+        dataset placed under PTV Vision scenario management).
+
         Raises:
             RuntimeError: see ``_guard_against_clobbering_unsaved_work`` —
                 refuses to overwrite a working copy that carries edits no
@@ -386,6 +476,7 @@ class ArtifactManager:
         self._guard_against_clobbering_unsaved_work()
         shutil.copyfile(self.source_inpx, self.working_path)
         _copy_sibling_assets(self.source_inpx, self.work_dir)
+        _disable_scenario_management_flag(self.working_path)
         self._refresh_shadow_model()
         return self.shadow_model
 
@@ -419,7 +510,10 @@ class ArtifactManager:
         ``edit_000.inpx`` (numbering starts at 1, from the first
         ``save_version()`` call). This lets a caller roll back a session's
         very first write — before any ``save_version()`` has ever run — back
-        to the untouched clone, not just to a later saved version.
+        to the untouched clone, not just to a later saved version. Re-applies
+        the same scenario-management normalization ``clone()`` does
+        (:func:`_disable_scenario_management_flag`) so this path can't
+        silently regress a working copy back to an unloadable state.
 
         Raises:
             RuntimeError: ``version=0`` but ``clone()`` has not been called
@@ -432,6 +526,11 @@ class ArtifactManager:
                     "ArtifactManager.clone() must be called before rollback_to(0)"
                 )
             shutil.copyfile(self.source_inpx, self.working_path)
+            # Mirrors clone()'s own normalization -- restoring straight from
+            # source_inpx must not silently re-introduce underScenMngm="true"
+            # into the working copy (see _disable_scenario_management_flag's
+            # module-level comment).
+            _disable_scenario_management_flag(self.working_path)
             self._refresh_shadow_model()
             return
 

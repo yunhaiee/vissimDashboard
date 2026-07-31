@@ -2777,3 +2777,21 @@ deliberate "not a schema change" conservatism with field evidence in hand. Cap a
 re-measured: worst case ≤12% of the observation budget, `_CANDIDATE_CAP` stays 10. Consumer
 audit found one bare-id pin in test_agent_guardrails.py (outside the agent's file set —
 controller applied the one-liner). Suite: only the pre-existing RAG failure remains.
+
+## 2026-07-31 — Murdoch COM-load failure root-caused and fixed: it was the scenario-management flag, not the file, not the install
+
+Vissim's error is generically unhelpful ("The network file could not be loaded", no .err file).
+Root cause: the client dataset is a "Place Under Scenario Management" export — its own XML says
+`<netPara underScenMngm="true">`, and `LoadNet(additive=False)` raises for exactly that class.
+The version hypothesis was properly DISPROVEN (installed 2026.00-09 is newer than the file's
+2026.00-05; a header-swap test changed nothing; files both older and newer load fine).
+**A tempting wrong fix was rejected on evidence:** `additive=True` loads — and silently merges
+11 default vehicle types from Vissim's blank project into the model (39 vs the source's 28).
+Silent wrong numbers, refused. The shipped fix normalizes `underScenMngm` to `"false"` in the
+WORKING COPY only (`ArtifactManager.clone()` / `rollback_to(0)`; the source file is never
+written), mirroring `simulation_network_builder._make_network_standalone` — the job-run path
+had this fix for months; the agent-edit/load_check clone path simply never received it.
+Live-proven end to end on a real-dataset clone (`load_check` ok; controller re-ran the COM load
+independently: 312 links / 28 vehicle types / 6 controllers, source sha unchanged). Boise's
+same-looking failure is unrelated (RBC controller licensing). Consequence: **every COM apply
+now works against the real client model — demo Part 2 no longer needs the example network.**
