@@ -2831,3 +2831,18 @@ care. Default palette seeded from `scenarioPalette.ts` via a new `getDefaultRepo
 report and dashboard colors cannot drift (the one approved scope addition). Suite 1739 green +
 15 new tests; the only new failure seen in the agent's run was a transient 529 on the live-API
 smoke test, unrelated.
+
+## 2026-07-31 — Phase 0.6: Category 1/2/3 validation profiles shipped
+
+MRWA §5 Table 5-12/5-13 thresholds centralized into `lib/validationProfiles.ts` (all three
+categories, each entry carrying its guideline citation) + `lib/validationCategoryStorage.ts`
+(persisted, deliberately NOT dataset-revision-scoped — the review category is a property of
+the engagement, not the data). Segmented selector on /base-model; default Cat 1 = today's
+byte-identical behavior; live-verified that Cat 2 flips every criterion label and the
+pass/fail comparisons ride the same profile object. Recorded gaps, not hidden: flow-band
+aggregate targets and R² minimums are DEFINED for all categories but render display-only (no
+pass/fail evaluation existed and none was built here); the ±15%-or-1-minute alternate
+travel-time band is captured as data while the page still applies flat ±15% (pre-existing);
+report-path thresholds unexamined (out of this unit's bounds). The unit also surfaced two more
+pre-existing broken pins hiding behind the known base-model failure (the contract test aborts
+at first failure, masking later ones) — chip filed.

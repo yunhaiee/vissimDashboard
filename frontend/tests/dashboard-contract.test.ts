@@ -109,6 +109,10 @@ test("base model page wires workbook validation and Category 1 checks", () => {
   const page = read("app/base-model/page.tsx");
   const api = read("lib/api.ts");
   const datasetBanner = read("components/VissimDatasetBanner.tsx");
+  // Category 1/2/3 thresholds moved out of page.tsx into a shared module
+  // (Phase 0 item 0.6, 2026-07-31) so every consumer reads the same numbers
+  // instead of each hard-coding its own CATEGORY_ONE-style constant.
+  const validationProfiles = read("lib/validationProfiles.ts");
 
   assert.match(page, /fetchBaseWorkbook\(\)/, "expected base workbook loading");
   assert.match(page, /uploadBaseWorkbook/, "expected standalone workbook upload support");
@@ -132,7 +136,13 @@ test("base model page wires workbook validation and Category 1 checks", () => {
   assert.match(page, /C\/O/, "expected counted or observed volume definition");
   assert.match(page, /observed_travel_time_sec/, "expected observed travel time handling");
   assert.match(page, /model_travel_time_sec/, "expected model travel time handling");
-  assert.match(page, /travelWithinPct: 100/, "expected Category 1 travel time threshold");
+  assert.match(
+    validationProfiles,
+    /travelWithinPct: 100/,
+    "expected Category 1 travel time threshold (centralized in lib/validationProfiles.ts as of Phase 0 item 0.6)",
+  );
+  assert.match(page, /getActiveProfile\(category\)/, "expected base-model page to resolve thresholds through the shared validation-profile module");
+  assert.match(page, /ValidationCategorySelector/, "expected a Category 1\/2\/3 selector on the base-model validation page");
   assert.match(page, /CountComparisonOverview/, "expected visual count comparison overview");
   assert.match(page, /CountNodeDirectionMatrixRow/, "expected node rows in the intersection-by-direction matrix");
   assert.match(page, /CountDirectionMatrixCell/, "expected cardinal-direction comparison cells");

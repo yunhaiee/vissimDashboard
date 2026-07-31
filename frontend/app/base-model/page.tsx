@@ -32,6 +32,17 @@ import BaseValidationMap, { type BaseValidationMapNode } from "@/components/Base
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import WorkbookMappingModal from "@/components/WorkbookMappingModal";
 import {
+  readStoredValidationCategory,
+  writeStoredValidationCategory,
+} from "@/lib/validationCategoryStorage";
+import {
+  DEFAULT_VALIDATION_CATEGORY,
+  getActiveProfile,
+  VALIDATION_CATEGORY_ORDER,
+  type ValidationCategory,
+  type ValidationProfile,
+} from "@/lib/validationProfiles";
+import {
   discardBaseWorkbookMapping,
   fetchActiveDataset,
   fetchBaseWorkbook,
@@ -133,14 +144,9 @@ type CountDirectionGroup = {
   missingCount: number;
 };
 
-const CATEGORY_ONE = {
-  gehUnder5Pct: 95,
-  gehUnder10Pct: 100,
-  travelWithinPct: 100,
-};
+// Category 1/2/3 thresholds live in lib/validationProfiles.ts -- see
+// getActiveProfile() below. Do not reintroduce a local constant here.
 
-const TRAVEL_TIME_TOLERANCE_PCT = 15;
-const TRAVEL_TIME_TOLERANCE = TRAVEL_TIME_TOLERANCE_PCT / 100;
 const SECONDS_PER_MINUTE = 60;
 const BASE_WORKBOOK_TEMPLATE_PATH = "/api/validation/base-workbook/template";
 const MAX_SELECTED_VALIDATION_NODES = 8;
@@ -197,7 +203,31 @@ export default function BaseModelPage() {
   // below). That upload never touched the active workbook, so the mapping
   // modal is purely a way forward -- there is nothing to undo on cancel.
   const [mappingInspect, setMappingInspect] = useState<(WorkbookInspectResponse & { warnings: string[] }) | null>(null);
+  // Review category (MRWA Cat 1/2/3) -- a property of the REVIEW, not of the
+  // loaded dataset (see lib/validationCategoryStorage.ts). Starts at the
+  // default (Category 1, today's behavior) and is swapped in from storage
+  // by the effect below rather than a lazy useState initializer, so the
+  // client's first render matches SSR output and only updates after mount
+  // (same convention the dashboard page follows for its own stored
+  // selection -- see readStoredScenarioSelection in app/dashboard/page.tsx).
+  const [category, setCategory] = useState<ValidationCategory>(DEFAULT_VALIDATION_CATEGORY);
   const requestSerial = useRef(0);
+
+  useEffect(() => {
+    const stored = readStoredValidationCategory();
+    if (stored) setCategory(stored);
+  }, []);
+
+  const handleCategoryChange = useCallback((next: ValidationCategory) => {
+    setCategory(next);
+    writeStoredValidationCategory(next);
+  }, []);
+
+  // Deliberately NOT reset by handleDatasetChange -- a dataset swap changes
+  // which model is being validated, not which MRWA tier the review was
+  // scoped into. See lib/validationCategoryStorage.ts for the same
+  // reasoning applied to persistence.
+  const activeProfile = useMemo(() => getActiveProfile(category), [category]);
 
   const selectedScenarioId = period === "AM" ? amScenarioId : pmScenarioId;
   const selectedScenario = scenarios.find((scenario) => scenario.id === selectedScenarioId) ?? null;
@@ -310,12 +340,13 @@ export default function BaseModelPage() {
       workbook.travel_times.filter((row) => row.period === period),
       scenarioResult,
       period,
+      activeProfile.travelTolerancePct,
     ),
-    [scenarioResult, workbook.travel_times, period],
+    [scenarioResult, workbook.travel_times, period, activeProfile],
   );
 
-  const countStats = useMemo(() => summarizeCounts(countComparisons), [countComparisons]);
-  const countVisualSummary = useMemo(() => summarizeCountVisuals(countComparisons), [countComparisons]);
+  const countStats = useMemo(() => summarizeCounts(countComparisons, activeProfile), [countComparisons, activeProfile]);
+  const countVisualSummary = useMemo(() => summarizeCountVisuals(countComparisons, activeProfile), [countComparisons, activeProfile]);
   const countGroups = useMemo(() => groupCountComparisonsByNode(countComparisons), [countComparisons]);
   const validationMapNodes = useMemo(() => buildValidationMapNodes(countGroups), [countGroups]);
   const validationGroupsById = useMemo(
@@ -340,7 +371,7 @@ export default function BaseModelPage() {
         .filter((name): name is string => Boolean(name)),
     [effectiveSelectedValidationNodeIds, validationGroupsById],
   );
-  const travelStats = useMemo(() => summarizeTravelTimes(travelPoints), [travelPoints]);
+  const travelStats = useMemo(() => summarizeTravelTimes(travelPoints, activeProfile), [travelPoints, activeProfile]);
   const travelRoutes = useMemo(() => groupTravelPointsByRoute(travelPoints), [travelPoints]);
   const pieData = useMemo<BandStat[]>(
     () => [
@@ -353,12 +384,21 @@ export default function BaseModelPage() {
 
   const flowBandStats = useMemo(() => summarizeFlowBands(countComparisons), [countComparisons]);
   const rSquaredData = useMemo(() => computeRSquared(countComparisons), [countComparisons]);
+  // Per-row tolerance widths (±100 veh/h / ±15% / ±400 veh/h) are
+  // category-invariant per Table 5-13 -- only the required aggregate pass
+  // rate shown alongside them varies by category. No pass/fail badge is
+  // rendered for these bands yet (see base-model page report gap note);
+  // this only threads the active category's TARGET number into the label
+  // that already exists.
   const flowBandPies = useMemo<Array<{ key: "low" | "mid" | "high"; title: string; criterion: string; data: BandStat[] }>>(
     () => [
       {
         key: "low",
         title: t("저유량 (< 700 veh/h)", "Low flow (< 700 veh/h)"),
-        criterion: t("기준: 차이 ±100 veh/h", "Criterion: diff ±100 veh/h"),
+        criterion: t(
+          `기준: 차이 ±${activeProfile.flowLowToleranceVph} veh/h (${activeProfile.nameKo} 목표 통과율 ≥${activeProfile.flowLowWithinPct}%)`,
+          `Criterion: diff ±${activeProfile.flowLowToleranceVph} veh/h (${activeProfile.nameEn} target pass rate ≥${activeProfile.flowLowWithinPct}%)`,
+        ),
         data: [
           { name: t("기준 충족", "Within"), value: flowBandStats.low.pass, color: "#74ac80" },
           { name: t("기준 초과", "Exceeds"), value: flowBandStats.low.fail, color: "#dc8373" },
@@ -367,7 +407,10 @@ export default function BaseModelPage() {
       {
         key: "mid",
         title: t("중유량 (700–2,700 veh/h)", "Mid flow (700–2,700 veh/h)"),
-        criterion: t("기준: 차이 ±15%", "Criterion: diff ±15%"),
+        criterion: t(
+          `기준: 차이 ±${activeProfile.flowMidTolerancePct}% (${activeProfile.nameKo} 목표 통과율 ≥${activeProfile.flowMidWithinPct}%)`,
+          `Criterion: diff ±${activeProfile.flowMidTolerancePct}% (${activeProfile.nameEn} target pass rate ≥${activeProfile.flowMidWithinPct}%)`,
+        ),
         data: [
           { name: t("기준 충족", "Within"), value: flowBandStats.mid.pass, color: "#74ac80" },
           { name: t("기준 초과", "Exceeds"), value: flowBandStats.mid.fail, color: "#dc8373" },
@@ -376,14 +419,17 @@ export default function BaseModelPage() {
       {
         key: "high",
         title: t("고유량 (> 2,700 veh/h)", "High flow (> 2,700 veh/h)"),
-        criterion: t("기준: 차이 ±400 veh/h", "Criterion: diff ±400 veh/h"),
+        criterion: t(
+          `기준: 차이 ±${activeProfile.flowHighToleranceVph} veh/h (${activeProfile.nameKo} 목표 통과율 ≥${activeProfile.flowHighWithinPct}%)`,
+          `Criterion: diff ±${activeProfile.flowHighToleranceVph} veh/h (${activeProfile.nameEn} target pass rate ≥${activeProfile.flowHighWithinPct}%)`,
+        ),
         data: [
           { name: t("기준 충족", "Within"), value: flowBandStats.high.pass, color: "#74ac80" },
           { name: t("기준 초과", "Exceeds"), value: flowBandStats.high.fail, color: "#dc8373" },
         ],
       },
     ],
-    [flowBandStats, t],
+    [flowBandStats, activeProfile, t],
   );
 
   const handleValidationNodeClick = useCallback((nodeId: string) => {
@@ -685,7 +731,10 @@ export default function BaseModelPage() {
       )}
 
       <section>
-        <SectionHeader title={t("1. 교통량 검증", "1. Traffic Count Validation")} />
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <SectionHeader title={t("1. 교통량 검증", "1. Traffic Count Validation")} />
+          <ValidationCategorySelector category={category} onChange={handleCategoryChange} t={t} />
+        </div>
         <CountComparisonOverview
           groups={countGroups}
           mapNodes={validationMapNodes}
@@ -700,7 +749,10 @@ export default function BaseModelPage() {
         <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <ValidationPieCard
             title={t("GEH 분포", "GEH Distribution")}
-            criterion={t("기준: GEH < 5 비율 ≥ 95%", "Target: GEH < 5 share ≥ 95%")}
+            criterion={t(
+              `기준(${activeProfile.nameKo}): GEH < 5 비율 ≥ ${activeProfile.gehUnder5Pct}%, GEH < 10 비율 ≥ ${activeProfile.gehUnder10Pct}%`,
+              `Target (${activeProfile.nameEn}): GEH < 5 share ≥ ${activeProfile.gehUnder5Pct}%, GEH < 10 share ≥ ${activeProfile.gehUnder10Pct}%`,
+            )}
             data={pieData}
             footer={
               countStats.hasData
@@ -747,6 +799,10 @@ export default function BaseModelPage() {
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-right font-mono text-[11px] text-slate-700">
                 <p>y = {rSquaredData.slope.toFixed(4)}x</p>
                 <p>R² = {rSquaredData.r2.toFixed(4)}</p>
+                {/* Target only -- no pass/fail evaluated against this yet, see report gap note. */}
+                <p className="text-slate-400">
+                  {t(`목표(${activeProfile.nameKo}): R² > ${activeProfile.rSquaredMin}`, `Target (${activeProfile.nameEn}): R² > ${activeProfile.rSquaredMin}`)}
+                </p>
               </div>
             )}
           </div>
@@ -805,7 +861,7 @@ export default function BaseModelPage() {
       <section>
         <SectionHeader
           title={t("2. 통행시간 분석", "2. Travel Time Validation")}
-          subtitle={t(`Excel TravelTimes 시트에 정의된 루트별 관측값, 예측값, ±${TRAVEL_TIME_TOLERANCE_PCT}% 허용 경계를 비교합니다.`, `Compare observed, predicted, and ±${TRAVEL_TIME_TOLERANCE_PCT}% tolerance lines for routes defined in the TravelTimes sheet.`, `Excel TravelTimes シートで定義されたルート別の観測値・予測値・±${TRAVEL_TIME_TOLERANCE_PCT}% 許容境界を比較します。`)}
+          subtitle={t(`Excel TravelTimes 시트에 정의된 루트별 관측값, 예측값, ±${activeProfile.travelTolerancePct}% 허용 경계를 비교합니다. (${activeProfile.nameKo} 기준: 통과율 ≥${activeProfile.travelWithinPct}%)`, `Compare observed, predicted, and ±${activeProfile.travelTolerancePct}% tolerance lines for routes defined in the TravelTimes sheet. (${activeProfile.nameEn} target: pass rate ≥${activeProfile.travelWithinPct}%)`, `Excel TravelTimes シートで定義されたルート別の観測値・予測値・±${activeProfile.travelTolerancePct}% 許容境界を比較します。`)}
         />
         <div className="mt-4 grid gap-4 xl:grid-cols-2">
           {travelRoutes.length === 0 && (
@@ -854,8 +910,8 @@ export default function BaseModelPage() {
                   <Legend wrapperStyle={{ fontSize: 12 }} />
                   <Line type="monotone" dataKey="observed" name={t("실측", "Observed")} stroke="#6da7ec" strokeWidth={2.4} dot={{ r: 3 }} connectNulls />
                   <Line type="monotone" dataKey="model" name={t("예측", "Predicted")} stroke="#e4574d" strokeWidth={2.4} dot={{ r: 3 }} connectNulls />
-                  <Line type="monotone" dataKey="upper" name={`+${TRAVEL_TIME_TOLERANCE_PCT}%`} stroke="#fafaf9" strokeDasharray="6 6" dot={false} connectNulls />
-                  <Line type="monotone" dataKey="lower" name={`-${TRAVEL_TIME_TOLERANCE_PCT}%`} stroke="#fafaf9" strokeDasharray="6 6" dot={false} connectNulls />
+                  <Line type="monotone" dataKey="upper" name={`+${activeProfile.travelTolerancePct}%`} stroke="#fafaf9" strokeDasharray="6 6" dot={false} connectNulls />
+                  <Line type="monotone" dataKey="lower" name={`-${activeProfile.travelTolerancePct}%`} stroke="#fafaf9" strokeDasharray="6 6" dot={false} connectNulls />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -870,7 +926,7 @@ export default function BaseModelPage() {
         />
         <div className={`mt-4 rounded-xl border px-5 py-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)] ${analysisPanelClass(countStats, travelStats)}`}>
           <p className="text-sm leading-relaxed">
-            {buildAnalysisText({ countStats, travelStats, t })}
+            {buildAnalysisText({ countStats, travelStats, profile: activeProfile, t })}
           </p>
         </div>
       </section>
@@ -892,6 +948,53 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }
     <div>
       <h2 className="text-[15px] font-semibold text-white">{title}</h2>
       {subtitle && <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>}
+    </div>
+  );
+}
+
+// Review-context control, not dataset state: switches which MRWA Category
+// 1/2/3 threshold set (lib/validationProfiles.ts) every pass/fail badge and
+// target label on this page reads from. Segmented-control idiom copied from
+// the view-mode switcher in components/NodeDirectionTable.tsx to match the
+// existing palette (globals.css inverts the slate ramp -- bg-slate-800 +
+// text-ink is that file's "selected" pairing).
+function ValidationCategorySelector({
+  category,
+  onChange,
+  t,
+}: {
+  category: ValidationCategory;
+  onChange: (next: ValidationCategory) => void;
+  t: (ko: string, en: string, ja?: string) => string;
+}) {
+  const activeProfile = getActiveProfile(category);
+  return (
+    <div className="flex flex-col items-start gap-1 sm:items-end">
+      <span className="text-[11px] font-semibold text-slate-500">
+        {t("검증 기준 (MRWA)", "Validation Category (MRWA)")}
+      </span>
+      <div
+        className="flex items-center rounded-lg border border-slate-200 bg-surface p-0.5 text-xs shadow-sm"
+        title={activeProfile.citation}
+      >
+        {VALIDATION_CATEGORY_ORDER.map((key) => {
+          const profile = getActiveProfile(key);
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => onChange(key)}
+              className={`rounded-md px-3 py-1 font-medium transition-colors ${
+                category === key
+                  ? "bg-slate-800 text-ink shadow-sm"
+                  : "text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              {t(profile.nameKo, profile.nameEn)}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1618,7 +1721,7 @@ function buildCountComparisons(rows: BaseWorkbookCountRow[], result: ScenarioRes
   });
 }
 
-function summarizeCountVisuals(rows: CountComparisonRow[]): CountVisualSummary {
+function summarizeCountVisuals(rows: CountComparisonRow[], profile: ValidationProfile): CountVisualSummary {
   const validRows = rows.filter((row) => row.observed != null && row.model != null);
   const pctRows = validRows.filter((row) => row.pctError != null);
   const gehRows = validRows.filter((row) => row.geh != null);
@@ -1637,8 +1740,8 @@ function summarizeCountVisuals(rows: CountComparisonRow[]): CountVisualSummary {
   const gehUnder10Pct = gehRows.length > 0 ? (under10 / gehRows.length) * 100 : null;
   const trafficPass =
     gehRows.length > 0 &&
-    (gehUnder5Pct ?? 0) >= CATEGORY_ONE.gehUnder5Pct &&
-    (gehUnder10Pct ?? 0) >= CATEGORY_ONE.gehUnder10Pct;
+    (gehUnder5Pct ?? 0) >= profile.gehUnder5Pct &&
+    (gehUnder10Pct ?? 0) >= profile.gehUnder10Pct;
   const topIssues = [...validRows]
     .sort((a, b) => countIssueScore(b) - countIssueScore(a))
     .slice(0, 5);
@@ -1814,15 +1917,27 @@ function formatMovementLabel(movement: string): string {
   return `${from} -> ${to}`;
 }
 
-function buildTravelTimePoints(rows: BaseWorkbookTravelTimeRow[], result: ScenarioResults | null, activePeriod?: string): TravelTimePoint[] {
+function buildTravelTimePoints(
+  rows: BaseWorkbookTravelTimeRow[],
+  result: ScenarioResults | null,
+  activePeriod?: string,
+  // Defaults to Category 1's tolerance (unchanged pre-existing behavior) so
+  // any caller that forgets to pass the active profile's value still gets a
+  // sane band instead of NaN.
+  travelTolerancePct: number = 15,
+): TravelTimePoint[] {
+  const travelTolerance = travelTolerancePct / 100;
   return rows.map((row, index) => {
     // Prefer the dedicated validation-chart columns ("TomTom avg" / explicit
-    // ±15% bands) when the analyst filled them in; otherwise derive from the
-    // raw Observed column.
+    // tolerance bands) when the analyst filled them in; otherwise derive
+    // from the raw Observed column using the active category's tolerance
+    // (lib/validationProfiles.ts -- category-invariant per Table 5-13, but
+    // still threaded through so a future guideline revision needs only a
+    // data change here).
     const observed = toNumber(row.tomtom_avg_sec) ?? toNumber(row.observed_travel_time_sec);
     const resolved = resolveTravelTimeModel(row, result, activePeriod);
-    const upper = toNumber(row.tomtom_high_sec) ?? (observed != null ? observed * (1 + TRAVEL_TIME_TOLERANCE) : null);
-    const lower = toNumber(row.tomtom_low_sec) ?? (observed != null ? observed * (1 - TRAVEL_TIME_TOLERANCE) : null);
+    const upper = toNumber(row.tomtom_high_sec) ?? (observed != null ? observed * (1 + travelTolerance) : null);
+    const lower = toNumber(row.tomtom_low_sec) ?? (observed != null ? observed * (1 - travelTolerance) : null);
     const inBand =
       observed != null && resolved.value != null && upper != null && lower != null
         ? resolved.value >= lower && resolved.value <= upper
@@ -1870,7 +1985,7 @@ function resolveTravelTimeModel(row: BaseWorkbookTravelTimeRow, result: Scenario
   return { value: averageValue, source: averageValue != null ? "scenario" : "missing" };
 }
 
-function summarizeCounts(rows: CountComparisonRow[]) {
+function summarizeCounts(rows: CountComparisonRow[], profile: ValidationProfile) {
   const validRows = rows.filter((row) => row.geh != null);
   const under5 = validRows.filter((row) => (row.geh as number) < 5).length;
   const between5And10 = validRows.filter((row) => (row.geh as number) >= 5 && (row.geh as number) < 10).length;
@@ -1891,7 +2006,7 @@ function summarizeCounts(rows: CountComparisonRow[]) {
     betweenPct: pct(between5And10, validCount),
     over10Pct: pct(over10, validCount),
     under10Pct,
-    trafficPass: validCount > 0 && under5Pct >= CATEGORY_ONE.gehUnder5Pct && under10Pct >= CATEGORY_ONE.gehUnder10Pct,
+    trafficPass: validCount > 0 && under5Pct >= profile.gehUnder5Pct && under10Pct >= profile.gehUnder10Pct,
   };
 }
 
@@ -1970,7 +2085,7 @@ function summarizeFlowBands(rows: CountComparisonRow[]) {
   return buckets;
 }
 
-function summarizeTravelTimes(points: TravelTimePoint[]) {
+function summarizeTravelTimes(points: TravelTimePoint[], profile: ValidationProfile) {
   const validPoints = points.filter((point) => point.inBand != null);
   const inBandCount = validPoints.filter((point) => point.inBand).length;
   const validCount = validPoints.length;
@@ -1981,7 +2096,7 @@ function summarizeTravelTimes(points: TravelTimePoint[]) {
     validCount,
     inBandCount,
     inBandPct,
-    travelPass: validCount > 0 && inBandPct >= CATEGORY_ONE.travelWithinPct,
+    travelPass: validCount > 0 && inBandPct >= profile.travelWithinPct,
   };
 }
 
@@ -2072,10 +2187,12 @@ function secondsToMinutes(value: number): number {
 function buildAnalysisText({
   countStats,
   travelStats,
+  profile,
   t,
 }: {
   countStats: ReturnType<typeof summarizeCounts>;
   travelStats: ReturnType<typeof summarizeTravelTimes>;
+  profile: ValidationProfile;
   t: (ko: string, en: string, ja?: string) => string;
 }) {
   if (!countStats.hasData || !travelStats.hasData) {
@@ -2096,8 +2213,8 @@ function buildAnalysisText({
     : t("따라서 이 기본 모델은 시나리오 테스트 전 추가 보정이 필요하다.", "Therefore, this base model requires additional calibration before scenario testing.");
 
   return t(
-    `교통량 비교분석 결과 GEH값 5 미만인 지점이 ${formatPct(countStats.under5Pct)}, 5~10 사이인 지점이 ${formatPct(countStats.betweenPct)}로 ${trafficResult}. 통행시간 분석결과 통행시간 축 ${formatPct(travelStats.inBandPct)} 관측 허용범위 내로 ${travelResult}. ${finalResult}`,
-    `Traffic volume comparison shows ${formatPct(countStats.under5Pct)} of points with GEH < 5 and ${formatPct(countStats.betweenPct)} between 5 and 10, which ${trafficResult}. Travel time validation shows ${formatPct(travelStats.inBandPct)} within the observed tolerance band, which ${travelResult}. ${finalResult}`,
+    `[${profile.nameKo} 기준] 교통량 비교분석 결과 GEH값 5 미만인 지점이 ${formatPct(countStats.under5Pct)}, 5~10 사이인 지점이 ${formatPct(countStats.betweenPct)}로 ${trafficResult}. 통행시간 분석결과 통행시간 축 ${formatPct(travelStats.inBandPct)} 관측 허용범위 내로 ${travelResult}. ${finalResult}`,
+    `[${profile.nameEn} criteria] Traffic volume comparison shows ${formatPct(countStats.under5Pct)} of points with GEH < 5 and ${formatPct(countStats.betweenPct)} between 5 and 10, which ${trafficResult}. Travel time validation shows ${formatPct(travelStats.inBandPct)} within the observed tolerance band, which ${travelResult}. ${finalResult}`,
     `交通量比較分析の結果、GEH 5未満の地点が ${formatPct(countStats.under5Pct)}、5〜10の地点が ${formatPct(countStats.betweenPct)} で、${trafficResult}。旅行時間分析の結果、旅行時間で ${formatPct(travelStats.inBandPct)} が観測許容範囲内であり、${travelResult}。${finalResult}`,
   );
 }
