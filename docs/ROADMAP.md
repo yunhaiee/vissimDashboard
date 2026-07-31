@@ -158,7 +158,16 @@ review.
   coordinates (reusing guardrails' identity tables) and the card renders an oriented
   thumbnail with the affected links highlighted — no more approving blind.
 
-## To-do (forward plan, updated 2026-07-28)
+## To-do (forward plan, updated 2026-07-31)
+
+> **2026-07-31 — TK requirements meeting.** TK's full product vision (AI network genesis from
+> map data, auto-calibration loop, scenario sweep with ranked conclusions, style-customizable
+> report engine, full phase-plan editing) is specced and sequenced in
+> **docs/product/tk-requirements-2026-07-31.md** — five EPICs, phased A (pre-paper: sweep MVP,
+> report styling v1, Daejeon/WA data-intake spike), B (post-paper: calibration loop, v2b
+> XML-build foundation, style-from-sample), C (network genesis + phase-plan redesign). The
+> paper-critical path below remains priority 1; Phase A items ride alongside it. MRWA
+> compliance mapping: docs/meeting-brief-tk-mrwa.md.
 
 ### 1. Paper-critical path (deadline ~09-05)
 
