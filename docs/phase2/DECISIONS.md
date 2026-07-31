@@ -2745,3 +2745,35 @@ Registry 89→90. Suite 1659/1/1.
 plus rollback + batch machinery and two pre-existing constraint defects fixed en route.
 Standing finding for follow-up: the real Murdoch .inpx fails COM `load_network` (writes
 preflight fine — shadow-based — but COM applies need a loadable model; task chip filed).
+
+## 2026-07-31 — get_priority_rules: `intLink` reference form resolved (real-model rule 143)
+
+Real Murdoch model, priority rule no=143 + its single conflict marker reference their link via
+`intLink="613"` — no `lane` attribute at all — the only `intLink` user among the model's 13
+rules / 20 markers; `get_priority_rules` showed blank link/lane for both. Adjudicated as a
+**parser gap, not incomplete model data**, on static evidence: the model is pure micro (all 6
+nodes `useForMeso="false"`, so no separate meso internal-link numbering space exists),
+`<link no="613">` is a unique, ordinary 2-lane ~355 m link (not a connector), both pos values
+(131.16 rule / 164.77 marker) fall inside its polyline length, and neighbouring rules 144/145
+reference the SAME link lane-wise (`lane="613 1"`/`"613 2"`) — so `intLink` numbers ARE the
+regular link numbering. Fix: `_parse_priority_rule_link_ref` (tools_network.py) resolves both
+forms; every rule/marker dict gains an additive `link_ref` field (`"lane"` | `"int_link"` |
+`""`) so a link-wide reference is never mistaken for missing data; `lane` stays `""` for the
+`intLink` form (genuinely lane-less in the XML, never guessed); the `link_no` filter now
+matches rule 143. Pinned by a synthetic fixture mirroring the real shape (the live client file
+stays read-only, not a test asset). Suite 1661/1/1.
+
+## 2026-07-31 — miss-path candidates enriched with names (closes the demo-run turn-kill defect)
+
+Live product trace: a typo query resolved successfully to `found: false` + six BARE id strings;
+the model, unable to tell which anonymous number matched its query, re-issued the identical
+call four times into the duplicate-call guard and the turn died at the iteration cap. **A
+successful-but-unhelpful observation is a turn killer** — and bare ids are the same-name trap
+one level down (this model has two trios sharing names). Both fallback paths
+(`_difflib_candidates`, `_check_object_not_found`) now emit `{id, name, object_type, +
+disambiguators}` dicts reusing the hit path's helper; ko/en/ja messages render capped
+`id(name)` text — `후보: 107(Jennalup ST_WB), 207(Jennalup ST_WB), …`. This reverses unit ①'s
+deliberate "not a schema change" conservatism with field evidence in hand. Cap arithmetic
+re-measured: worst case ≤12% of the observation budget, `_CANDIDATE_CAP` stays 10. Consumer
+audit found one bare-id pin in test_agent_guardrails.py (outside the agent's file set —
+controller applied the one-liner). Suite: only the pre-existing RAG failure remains.

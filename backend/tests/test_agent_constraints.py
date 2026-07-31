@@ -385,6 +385,17 @@ def _assert_well_formed_messages(finding: Finding, *, must_contain_ko: str) -> N
     assert must_contain_ko in finding.messages["ko"]
 
 
+def _candidate_ids(suggested_fix: Any) -> set[str]:
+    """``object_not_found``'s ``suggested_fix`` is a list of enriched
+    disambiguator dicts (``{id, name, ...}``, since 2026-07-31 -- see
+    ``_check_object_not_found``), not bare id strings. Most of the tests
+    below only care about WHICH ids came back; this reduces to that set so
+    those assertions read the same as they did pre-enrichment. Tests that
+    verify the enrichment itself (names, disambiguators) inspect the dicts
+    directly instead of going through this helper."""
+    return {c["id"] for c in suggested_fix}
+
+
 # ---------------------------------------------------------------------------
 # Catalog shape — exact ids/tiers/phases from the brief
 # ---------------------------------------------------------------------------
@@ -451,13 +462,13 @@ def test_object_not_found_fires_for_missing_vehicle_input():
     assert finding.phase == "preflight"
     _assert_well_formed_messages(finding, must_contain_ko="103")
     # difflib candidates over ids should surface the near-miss ids
-    assert set(finding.suggested_fix) & {"101", "102"}
+    assert _candidate_ids(finding.suggested_fix) & {"101", "102"}
 
 
 def test_object_not_found_suggested_fix_resolves_name_match_to_owning_id():
     # reviewer repro: a typo'd NAME as the target must yield the owning
     # object's id, not the raw name string (suggested_fix is machine-usable
-    # — a caller retries with suggested_fix[0] as input_no/sc_no).
+    # — a caller retries with suggested_fix[0]["id"] as input_no/sc_no).
     shadow = _shadow_model(
         vehicle_inputs=[
             {"no": "1", "name": "Main Street EB", "link": "101", "volume": 900.0},
@@ -472,8 +483,12 @@ def test_object_not_found_suggested_fix_resolves_name_match_to_owning_id():
     matches = [f for f in findings if f.constraint_id == "object_not_found"]
     assert len(matches) == 1
     finding = matches[0]
-    assert "1" in finding.suggested_fix
-    assert "Main Street EB" not in finding.suggested_fix
+    candidates = finding.suggested_fix
+    assert "1" in _candidate_ids(candidates)
+    # the resolved candidate carries the name as its OWN field, not as a
+    # bare string standing in for the id (2026-07-31 enrichment).
+    assert any(c["id"] == "1" and c["name"] == "Main Street EB" for c in candidates)
+    assert all(isinstance(c, dict) for c in candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +514,12 @@ def test_object_not_found_suggested_fix_resolves_shared_name_to_all_owners():
 
     matches = [f for f in findings if f.constraint_id == "object_not_found"]
     assert len(matches) == 1
-    assert set(matches[0].suggested_fix) == {"501", "502", "503"}
+    candidates = matches[0].suggested_fix
+    assert _candidate_ids(candidates) == {"501", "502", "503"}
+    # every owner's candidate also carries its (shared) name and link --
+    # 2026-07-31 enrichment, the same shape resolve_object's miss path uses.
+    assert {c["name"] for c in candidates} == {"Merricup Rd WB"}
+    assert all(c["link"] == "620" for c in candidates)
 
 
 def test_object_not_found_suggested_fix_unique_name_amid_shared_names_yields_one():
@@ -520,7 +540,53 @@ def test_object_not_found_suggested_fix_unique_name_amid_shared_names_yields_one
 
     matches = [f for f in findings if f.constraint_id == "object_not_found"]
     assert len(matches) == 1
-    assert matches[0].suggested_fix == ["999"]
+    assert matches[0].suggested_fix == [
+        {"id": "999", "name": "Q Street", "link": "621"}
+    ]
+
+
+def test_object_not_found_message_renders_id_name_pairs_for_shared_name_candidates():
+    """The human-facing message (not just the machine suggested_fix) must
+    also carry the enriched candidates -- 2026-07-31 fix -- rendered as
+    ``id(name)`` pairs via the same _capped_join helper every other
+    candidate-list message in this module already reuses."""
+    shadow = _shadow_model(
+        vehicle_inputs=[
+            {"no": "501", "name": "Merricup Rd WB", "link": "620", "volume": 100.0},
+            {"no": "502", "name": "Merricup Rd WB", "link": "620", "volume": 50.0},
+            {"no": "503", "name": "Merricup Rd WB", "link": "620", "volume": 20.0},
+        ]
+    )
+    action = _action("set_vehicle_input_volume", input_no="Merricup Rd W", volume=600)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    ko = matches[0].messages["ko"]
+    en = matches[0].messages["en"]
+    ja = matches[0].messages["ja"]
+    for label in ("501(Merricup Rd WB)", "502(Merricup Rd WB)", "503(Merricup Rd WB)"):
+        assert label in ko, ko
+        assert label in en, en
+        assert label in ja, ja
+
+
+def test_object_not_found_message_renders_dash_when_no_candidates_match():
+    """An empty candidate list (nothing in the pool fuzzy-matches at all)
+    must render the same "-" placeholder every sibling candidate-list
+    message already uses for the empty case, not a blank/absent phrase."""
+    shadow = _shadow_model(vehicle_inputs=[])
+    action = _action("set_vehicle_input_volume", input_no="anything", volume=600)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert matches[0].suggested_fix == []
+    assert "-" in matches[0].messages["ko"]
+    assert "-" in matches[0].messages["en"]
+    assert "-" in matches[0].messages["ja"]
 
 
 def test_object_not_found_suggested_fix_candidate_cap_bounds_multi_group_match():
@@ -553,7 +619,12 @@ def test_object_not_found_suggested_fix_candidate_cap_bounds_multi_group_match()
     assert len(matches) == 1
     candidates = matches[0].suggested_fix
     assert len(candidates) == 10  # capped, not the full 12
-    assert len(set(candidates)) == len(candidates)  # no duplicate ids emitted
+    cand_ids = [c["id"] for c in candidates]
+    assert len(set(cand_ids)) == len(cand_ids)  # no duplicate ids emitted
+    # every candidate's own name matches the group its id belongs to.
+    by_id_prefix = {"60": "Merricup Rd A", "61": "Merricup Rd B", "62": "Merricup Rd C", "63": "Merricup Rd D"}
+    for c in candidates:
+        assert c["name"] == by_id_prefix[c["id"][:2]], c
 
     groups = [
         {"601", "602", "603"},
@@ -561,7 +632,7 @@ def test_object_not_found_suggested_fix_candidate_cap_bounds_multi_group_match()
         {"621", "622", "623"},
         {"631", "632", "633"},
     ]
-    cand_set = set(candidates)
+    cand_set = set(cand_ids)
     full_groups = [g for g in groups if g <= cand_set]
     partial_groups = [g for g in groups if cand_set & g and not (g <= cand_set)]
     assert len(full_groups) == 3
@@ -634,7 +705,7 @@ def test_object_not_found_suggested_fix_resolves_near_miss_link_id():
 
     matches = [f for f in findings if f.constraint_id == "object_not_found"]
     assert len(matches) == 1
-    assert "101" in matches[0].suggested_fix
+    assert "101" in _candidate_ids(matches[0].suggested_fix)
 
 
 def test_object_not_found_silent_when_link_present_for_reduced_speed_area():
@@ -685,7 +756,7 @@ def test_object_not_found_suggested_fix_resolves_near_miss_conflict_area_no():
 
     matches = [f for f in findings if f.constraint_id == "object_not_found"]
     assert len(matches) == 1
-    assert "30" in matches[0].suggested_fix
+    assert "30" in _candidate_ids(matches[0].suggested_fix)
 
 
 def test_object_not_found_silent_when_conflict_area_present():
@@ -718,7 +789,7 @@ def test_object_not_found_suggested_fix_resolves_near_miss_decision_no():
 
     matches = [f for f in findings if f.constraint_id == "object_not_found"]
     assert len(matches) == 1
-    assert "10" in matches[0].suggested_fix
+    assert "10" in _candidate_ids(matches[0].suggested_fix)
 
 
 def test_object_not_found_silent_when_routing_decision_present():

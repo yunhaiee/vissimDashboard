@@ -239,9 +239,10 @@ class Finding:
 
     ``messages`` is rendered at check time (ko/en/ja, with the offending
     values interpolated). ``suggested_fix`` is machine-usable (e.g. a list of
-    difflib candidate ids for #1, a capacity number for #3). ``details``
-    holds arbitrary supporting evidence (readback vs written, capacity
-    numbers) for logging/debugging.
+    difflib candidate dicts -- ``{id, name, ...}``, never bare ids, since
+    2026-07-31 -- for #1, a capacity number for #3). ``details`` holds
+    arbitrary supporting evidence (readback vs written, capacity numbers)
+    for logging/debugging.
     """
 
     constraint_id: str
@@ -709,7 +710,68 @@ def _capped_join(
 #: fits that common single-group case with room for a couple more matches
 #: before truncating; a rarer multi-group match may get cut off mid-group,
 #: which is an acceptable trade-off for keeping the list bounded.
+#:
+#: v2 queue unit 2 (2026-07-31) re-measured this cap after enriching every
+#: candidate from a bare id string to a disambiguator dict (this unit's own
+#: fix, below) -- mirrors tools_network.py's identical re-measurement of its
+#: own ``_CANDIDATE_CAP`` verbatim. MEASURED (json.dumps, compact
+#: separators, 3-digit ids): 10 bare id strings is 61 bytes; 10 {id,name}
+#: pairs (every object class except vehicle inputs) is 331 bytes; 10 FULL
+#: vehicle-input dicts (id+name+link+composition_no+composition_name, using
+#: the REAL link-620 values -- "Jennalup ST_WB"/"Class2-5(SLK
+#: 1.47_7-8AM&3-4PM)") is ~1140 bytes. Against the 12000-char most-recent-
+#: observation budget (planner.py) that is under 10% even in the worst case.
+#: The cap stays 10 for the same reason tools_network.py's does: the
+#: absolute numbers are small relative to the budget that matters most (the
+#: refusal the model is reacting to right now), so shrinking it would trade
+#: away real disambiguation for headroom the budget does not need. Older
+#: history entries render under the tighter 300-char snippet budget where a
+#: full 10-entry enriched list WILL trigger the existing item-boundary/
+#: compact-summary truncation tiers -- by design, not a new failure mode.
 _CANDIDATE_CAP = 10
+
+
+def _candidate_disambiguators(object_class: str, obj: dict[str, Any]) -> dict[str, Any]:
+    """Extra, type-specific fields carried on an ``object_not_found``
+    candidate purely so the caller can tell same-named objects apart.
+
+    Deliberate mirror of ``tools_network.py``'s identically-named helper
+    (this module is intentionally stdlib-only and does not import
+    tools_network.py — see the module docstring), restricted to the one
+    object class known to share names across siblings on the real client
+    model: vehicle inputs (one name per approach, one input per vehicle
+    class sharing it -- e.g. 107/207/307 are ALL "Jennalup ST_WB"). Only
+    non-empty fields are attached, so every other object class's candidate
+    shape stays exactly ``{id, name}`` -- nothing is fabricated for object
+    classes that carry no such field."""
+    if object_class != "vehicle_inputs":
+        return {}
+    extra: dict[str, Any] = {}
+    link = str(obj.get("link", "") or "")
+    if link:
+        extra["link"] = link
+    composition_no = str(obj.get("composition_no", "") or "")
+    if composition_no:
+        extra["composition_no"] = composition_no
+    composition_name = str(obj.get("composition_name", "") or "")
+    if composition_name:
+        extra["composition_name"] = composition_name
+    if obj.get("composition_varies_by_interval"):
+        extra["composition_nos"] = list(obj.get("composition_nos") or [])
+    return extra
+
+
+def _format_candidate_label(candidate: dict[str, Any]) -> str:
+    """Render one enriched candidate dict as ``id(name)`` for the human-
+    facing message text -- e.g. ``"107(Jennalup ST_WB)"``. A nameless
+    candidate (or one whose name is literally its id) renders as just the
+    id, matching #1's pre-enrichment id-only display for object classes
+    that carry no meaningful name."""
+    cid = str(candidate.get("id", ""))
+    name = str(candidate.get("name", "") or "")
+    if not name or name == cid:
+        return cid
+    return f"{cid}({name})"
 
 
 def _check_object_not_found(
@@ -729,8 +791,9 @@ def _check_object_not_found(
 
     # Fuzzy-match target_id against both ids and names, but always resolve
     # back to the owning object's id(s): suggested_fix is machine-usable (a
-    # caller retries with suggested_fix[0] as input_no/sc_no), so a name
-    # string leaking through would break that retry.
+    # caller retries with suggested_fix[0]["id"] as input_no/sc_no -- see the
+    # 2026-07-31 enrichment note below), so a name string leaking through
+    # would break that retry.
     #
     # A name is not always unique -- see _CANDIDATE_CAP's comment above. id
     # strings stay 1:1 with themselves (ids are unique); only name strings
@@ -742,8 +805,11 @@ def _check_object_not_found(
     owner_ids_by_string: dict[str, list[str]] = {}
     id_claimed: set[str] = set()
     match_pool: list[str] = []
+    entry_by_id: dict[str, dict[str, Any]] = {}
     for obj in objects:
         obj_id = str(obj.get(spec["id_field"], ""))
+        if obj_id and obj_id not in entry_by_id:
+            entry_by_id[obj_id] = obj
         if obj_id and obj_id not in owner_ids_by_string:
             match_pool.append(obj_id)
             owner_ids_by_string[obj_id] = [obj_id]
@@ -757,18 +823,44 @@ def _check_object_not_found(
             elif name_str not in id_claimed and obj_id not in owner_ids_by_string[name_str]:
                 owner_ids_by_string[name_str].append(obj_id)
 
-    candidates: list[str] = []
+    # 2026-07-31 (live-demo defect, v2 queue unit 2): candidates used to be
+    # bare id strings -- the exact same anonymous-candidate trap resolve_
+    # object's miss path had (see tools_network.py's _difflib_candidates),
+    # one level down. A refusal whose suggested_fix carries six ids from two
+    # same-named vehicle-input trios gave the model no way to choose; it
+    # re-issued the identical write, and downstream callers (the LLM
+    # prompt, health-check handoffs) had the same blind spot. Every
+    # candidate is now {id, name} plus whatever _candidate_disambiguators
+    # adds for that object class, matching resolve_object's own candidate
+    # shape as closely as this module's stdlib-only boundary allows.
+    candidates: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for match in difflib.get_close_matches(target_id, match_pool, n=5):
         for owner_id in owner_ids_by_string[match]:
             if owner_id in seen_ids:
                 continue
             seen_ids.add(owner_id)
-            candidates.append(owner_id)
+            owner_obj = entry_by_id.get(owner_id, {})
+            owner_name = str(owner_obj.get(spec["name_field"], "") or "")
+            candidates.append(
+                {
+                    "id": owner_id,
+                    "name": owner_name,
+                    **_candidate_disambiguators(spec["object_class"], owner_obj),
+                }
+            )
             if len(candidates) >= _CANDIDATE_CAP:
                 break
         if len(candidates) >= _CANDIDATE_CAP:
             break
+
+    if candidates:
+        candidate_labels = [_format_candidate_label(c) for c in candidates]
+        candidates_ko, candidates_en, candidates_ja = _capped_join(
+            candidate_labels, "개", "candidates", "件"
+        )
+    else:
+        candidates_ko = candidates_en = candidates_ja = "-"
 
     labels = _OBJECT_CLASS_LABELS[spec["object_class"]]
     return Finding(
@@ -781,6 +873,9 @@ def _check_object_not_found(
             object_class_ko=labels["ko"],
             object_class_en=labels["en"],
             object_class_ja=labels["ja"],
+            candidates_ko=candidates_ko,
+            candidates_en=candidates_en,
+            candidates_ja=candidates_ja,
         ),
         suggested_fix=candidates,
         details={"tool": tool, "target_id": target_id, "object_class": spec["object_class"]},
@@ -819,11 +914,11 @@ register(
         tier="refuse",
         check=_check_object_not_found,
         message_ko="대상 ID '{target_id}'을(를) {object_class_ko} 목록에서 찾을 수 없습니다. "
-        "오타이거나 잘못된 ID일 수 있으니 아래 후보를 확인해 주세요.",
+        "오타이거나 잘못된 ID일 수 있습니다. 후보: {candidates_ko}.",
         message_en="Target id '{target_id}' was not found among {object_class_en} objects. "
-        "It may be a typo — check the suggested candidates.",
+        "It may be a typo. Candidates: {candidates_en}.",
         message_ja="対象ID '{target_id}' は {object_class_ja} の一覧に見つかりませんでした。"
-        "タイプミスの可能性があるため、候補をご確認ください。",
+        "タイプミスの可能性があります。候補: {candidates_ja}。",
     )
 )
 

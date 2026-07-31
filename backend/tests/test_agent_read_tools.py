@@ -316,14 +316,19 @@ def test_resolve_object_miss_returns_structured_object_not_found_with_candidates
     """A query that scores zero on every tier (exact/substring/token overlap)
     against the whole demo network must come back as a structured miss whose
     fallback candidates (difflib over ids+names, resolved to owning ids) still
-    surface the near match — node id '1' ('Central & Main')."""
+    surface the near match — node id '1' ('Central & Main'). Live-demo defect
+    fix (2026-07-31, v2 queue unit 2): candidates are disambiguator dicts, not
+    bare ids, so the match carries its name too."""
     envelope = _dispatch("resolve_object", query="Cntrall Man", object_type=None)
 
     assert envelope["status"] == "ok"  # a domain miss is still a successful tool call
     data = envelope["data"]
     assert data["found"] is False
     assert data["error_type"] == "object_not_found"
-    assert "1" in data["candidates"]
+    assert all(isinstance(c, dict) for c in data["candidates"])
+    match = next(c for c in data["candidates"] if c["id"] == "1")
+    assert match["name"] == "Central & Main"
+    assert match["object_type"] == "node"
 
 
 def _vehicle_inputs_inpx(tmp_path: Path, tag: str, groups: list[tuple[str, list[str]]]) -> Path:
@@ -358,7 +363,12 @@ def test_resolve_object_miss_fuzzy_match_on_shared_name_yields_every_owner(tmp_p
     """The real Murdoch model has 17 groups of 3 vehicle inputs sharing one
     name (e.g. 107/207/307 all 'Jennalup ST_WB', one per vehicle class). A
     fuzzy NAME match on the MISS path must resolve to every owner of that
-    name, not just the first-registered one (the pre-fix defect)."""
+    name, not just the first-registered one (the pre-fix defect).
+
+    Live-demo defect fix (2026-07-31, v2 queue unit 2): every owner's
+    candidate is now a disambiguator dict, not a bare id -- carrying its
+    name (and, since this fixture sets ``link``, that too) rather than
+    leaving the caller to guess."""
     inpx = _vehicle_inputs_inpx(tmp_path, "shared", [("Merricup", ["701", "702", "703"])])
     tools_network.set_active_inpx(inpx)
 
@@ -367,7 +377,11 @@ def test_resolve_object_miss_fuzzy_match_on_shared_name_yields_every_owner(tmp_p
     data = envelope["data"]
     assert data["found"] is False
     assert data["error_type"] == "object_not_found"
-    assert set(data["candidates"]) == {"701", "702", "703"}
+    candidates = data["candidates"]
+    assert {c["id"] for c in candidates} == {"701", "702", "703"}
+    assert {c["name"] for c in candidates} == {"Merricup"}
+    assert all(c["object_type"] == "vehicle_input" for c in candidates)
+    assert all(c["link"] == "620" for c in candidates)
 
 
 def test_resolve_object_miss_fuzzy_match_on_unique_name_still_yields_one(tmp_path: Path):
@@ -383,7 +397,9 @@ def test_resolve_object_miss_fuzzy_match_on_unique_name_still_yields_one(tmp_pat
 
     data = envelope["data"]
     assert data["found"] is False
-    assert data["candidates"] == ["999"]
+    assert data["candidates"] == [
+        {"id": "999", "name": "Qstreet", "object_type": "vehicle_input", "link": "620"}
+    ]
 
 
 def test_resolve_object_miss_fuzzy_match_candidate_cap_bounds_multi_group_match(tmp_path: Path):
@@ -410,7 +426,15 @@ def test_resolve_object_miss_fuzzy_match_candidate_cap_bounds_multi_group_match(
     assert data["found"] is False
     candidates = data["candidates"]
     assert len(candidates) == 10  # capped, not the full 12
-    assert len(set(candidates)) == len(candidates)  # no duplicate ids emitted
+    assert all(isinstance(c, dict) for c in candidates)
+    cand_ids = [c["id"] for c in candidates]
+    assert len(set(cand_ids)) == len(cand_ids)  # no duplicate ids emitted
+    # every candidate's own name matches the group its id belongs to -- the
+    # enrichment did not scramble id<->name pairing under the cap.
+    by_id_prefix = {"80": "Merricup", "81": "Berricup", "82": "Terricup", "83": "Kerricup"}
+    for c in candidates:
+        expected_name = by_id_prefix[c["id"][:2]]
+        assert c["name"] == expected_name, c
 
     groups = [
         {"801", "802", "803"},
@@ -418,13 +442,42 @@ def test_resolve_object_miss_fuzzy_match_candidate_cap_bounds_multi_group_match(
         {"821", "822", "823"},
         {"831", "832", "833"},
     ]
-    cand_set = set(candidates)
+    cand_set = set(cand_ids)
     full_groups = [g for g in groups if g <= cand_set]
     partial_groups = [g for g in groups if cand_set & g and not (g <= cand_set)]
     # every group is emitted whole until the cap is reached -- at most the
     # LAST one touched may be cut short.
     assert len(full_groups) == 3
     assert len(partial_groups) == 1
+
+
+@_requires_real_dataset
+def test_real_dataset_resolve_object_typo_miss_carries_names_for_both_shared_name_trios():
+    """The exact live-demo defect repro (v2 queue unit 2, 2026-07-31): a user
+    asked about vehicle input "Jenalup STWB" (typo'd). The miss's candidates
+    used to be six bare ids -- ["107","207","307","111","211","311"] -- drawn
+    from TWO different same-named trios on the real Murdoch model, giving the
+    planner no way to tell "Jennalup ST_WB" (107/207/307) from "Jennalup St"
+    (111/211/311) apart; it re-issued the identical call, hit the
+    duplicate_call anti-loop refusal, repeated it four more times, and the
+    turn died at the 6-iteration cap on an apology. Every candidate must now
+    carry its name so the two trios read distinguishably."""
+    tools_network.set_active_inpx(ACTIVE_REAL_INPX)
+    try:
+        envelope = _dispatch("resolve_object", query="Jenalup STWB", object_type="vehicle_input")
+
+        data = envelope["data"]
+        assert data["found"] is False
+        assert data["error_type"] == "object_not_found"
+        candidates = data["candidates"]
+        assert {c["id"] for c in candidates} == {"107", "207", "307", "111", "211", "311"}
+        names_by_id = {c["id"]: c["name"] for c in candidates}
+        assert names_by_id["107"] == names_by_id["207"] == names_by_id["307"] == "Jennalup ST_WB"
+        assert names_by_id["111"] == names_by_id["211"] == names_by_id["311"] == "Jennalup St"
+        assert all(c["object_type"] == "vehicle_input" for c in candidates)
+        assert all(c.get("link") for c in candidates)
+    finally:
+        tools_network.set_active_inpx(None)
 
 
 def test_resolve_object_rejects_unknown_object_type():
@@ -801,6 +854,7 @@ def test_get_priority_rules_on_real_priority_rule_elements(priority_rule_fixture
     rule = by_no["132"]
     assert rule["link"] == "11467"
     assert rule["lane"] == "1"
+    assert rule["link_ref"] == "lane"
     assert rule["sig_state"] == "GREEN"
     assert len(rule["conflict_markers"]) == 2
     marker1 = rule["conflict_markers"][0]
@@ -808,6 +862,7 @@ def test_get_priority_rules_on_real_priority_rule_elements(priority_rule_fixture
         "marker_index": 1,
         "link": "632",
         "lane": "1",
+        "link_ref": "lane",
         "pos": 9.0,
         "gap_time_s": 2.5,
         "headway_m": 20.0,
@@ -955,6 +1010,97 @@ def test_get_network_overview_includes_priority_rules_section(priority_rule_fixt
     assert data["priority_rules"]["count"] == 2
     ids = {item["id"] for item in data["priority_rules"]["items"]}
     assert ids == {"132", "134"}
+
+
+# Rule 143 on the real Murdoch model (runtime/uploads/current/current.inpx)
+# references its link via intLink="613" -- NO lane attribute at all -- on
+# BOTH the rule and its single conflict marker; it is the only intLink user
+# among that model's 13 rules / 20 markers. intLink numbers ARE the regular
+# <link no> numbering (see _parse_priority_rule_link_ref's docstring for the
+# static verification). Pinned here as a synthetic fixture mirroring the real
+# file's numbers/positions -- the live client file is read-only, not a test
+# asset.
+_INT_LINK_PRIORITY_RULE_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links>
+    <link no="613" name=""><lanes><lane width="3.5"/><lane width="3.5"/></lanes></link>
+    <link no="621" name=""><lanes><lane width="3.5"/><lane width="3.5"/><lane width="3.5"/></lanes></link>
+  </links>
+  <priorityRules>
+    <priorityRule no="143" name="" intLink="613" pos="131.15585089862415" sigState="GREEN"
+                   affectDrivDir="FORWARD" slowDownDist="3">
+      <conflictMarkers>
+        <conflictMarker intLink="613" pos="164.77089987910313" minGapTime="0" minClear="12"
+                         maxSpeed="12" effectDrivDir="FORWARD"/>
+      </conflictMarkers>
+    </priorityRule>
+    <priorityRule no="144" name="" lane="621 2" pos="79.53" sigState="GREEN"
+                   affectDrivDir="FORWARD" slowDownDist="3">
+      <conflictMarkers>
+        <conflictMarker lane="613 1" pos="9.11" minGapTime="0" minClear="15" maxSpeed="12"
+                         effectDrivDir="FORWARD"/>
+      </conflictMarkers>
+    </priorityRule>
+  </priorityRules>
+</network>
+"""
+
+
+@pytest.fixture()
+def int_link_priority_rule_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "int_link_priority_rules.inpx"
+    path.write_text(_INT_LINK_PRIORITY_RULE_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_priority_rules_resolves_int_link_reference_form(
+    int_link_priority_rule_fixture_inpx: Path,
+):
+    """An intLink-referenced rule must come back with its link RESOLVED
+    (link_ref="int_link", lane legitimately empty) -- not with blank
+    link/lane fields that read as missing data."""
+    tools_network.set_active_inpx(int_link_priority_rule_fixture_inpx)
+
+    envelope = _dispatch("get_priority_rules", priority_rule_no="143")
+
+    assert envelope["status"] == "ok"
+    rule = envelope["data"]["priority_rules"][0]
+    assert rule["link"] == "613"
+    assert rule["lane"] == ""
+    assert rule["link_ref"] == "int_link"
+    assert rule["pos"] == pytest.approx(131.156, abs=0.001)
+    assert rule["conflict_markers"] == [
+        {
+            "marker_index": 1,
+            "link": "613",
+            "lane": "",
+            "link_ref": "int_link",
+            "pos": pytest.approx(164.771, abs=0.001),
+            "gap_time_s": 0.0,
+            "headway_m": 12.0,
+            "max_speed": 12.0,
+            "effect_driv_dir": "FORWARD",
+        }
+    ]
+
+
+def test_get_priority_rules_link_no_filter_matches_int_link_referenced_rule(
+    int_link_priority_rule_fixture_inpx: Path,
+):
+    """link_no=613 must match rule 143 (its OWN link, via intLink) as well as
+    rule 144 (whose conflict marker sits on lane "613 1") -- before intLink
+    resolution, 143 was invisible to this filter."""
+    tools_network.set_active_inpx(int_link_priority_rule_fixture_inpx)
+
+    envelope = _dispatch("get_priority_rules", link_no="613")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 2
+    assert {pr["no"] for pr in data["priority_rules"]} == {"143", "144"}
+    by_no = {pr["no"]: pr for pr in data["priority_rules"]}
+    assert by_no["144"]["link_ref"] == "lane"
+    assert by_no["144"]["conflict_markers"][0]["link_ref"] == "lane"
 
 
 def test_resolve_object_finds_conflict_area_by_display_name(conflict_area_fixture_inpx: Path):

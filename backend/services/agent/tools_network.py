@@ -1868,10 +1868,42 @@ def _parse_des_speed_decisions(root: ET.Element) -> list[dict[str, Any]]:
     return result
 
 
+def _parse_priority_rule_link_ref(el: ET.Element) -> tuple[str, str, str]:
+    """(link_no, lane_no, link_ref) for a ``<priorityRule>`` /
+    ``<conflictMarker>`` element -- the ONE place both link-reference forms
+    those elements use are resolved:
+
+    - ``lane="<linkNo> <laneNo>"`` -- the usual lane-scoped form
+      (:func:`_parse_lane_token`) -> ``link_ref="lane"``;
+    - ``intLink="<linkNo>"`` -- a link-scoped reference with NO lane
+      qualifier at all -> ``link_ref="int_link"``, ``lane_no=""``. Observed
+      on the real Murdoch model, rule no=143 + its single marker (the only
+      ``intLink`` user among its 13 rules / 20 markers): ``intLink="613"``,
+      and the number IS the regular ``<link no>`` numbering -- verified
+      statically 2026-07-31: the model is pure micro (all 6 nodes
+      ``useForMeso="false"``, so no separate meso internal-link numbering
+      space exists), ``<link no="613">`` is unique (an ordinary 2-lane
+      ~355 m link, not a connector), both the rule's pos (131.16) and the
+      marker's (164.77) fall inside its polyline length, and the
+      neighbouring rules 144/145 reference the SAME link lane-wise
+      (``lane="613 1"``/``"613 2"``). The lane stays ``""`` -- genuinely
+      lane-less in the XML, never guessed;
+    - neither attribute -> all three ``""``.
+    """
+    lane_raw = el.get("lane")
+    if lane_raw:
+        link_no, lane_no = _parse_lane_token(lane_raw)
+        return link_no, lane_no, "lane"
+    int_link = (el.get("intLink") or "").strip()
+    if int_link:
+        return int_link, "", "int_link"
+    return "", "", ""
+
+
 def _parse_priority_rules(root: ET.Element) -> list[dict[str, Any]]:
-    """{no, name, link, lane, pos, sig_state, affect_driv_dir,
-    slow_down_dist, conflict_markers: [{marker_index, link, lane, pos,
-    gap_time_s, headway_m, max_speed, effect_driv_dir}]} per
+    """{no, name, link, lane, link_ref, pos, sig_state, affect_driv_dir,
+    slow_down_dist, conflict_markers: [{marker_index, link, lane, link_ref,
+    pos, gap_time_s, headway_m, max_speed, effect_driv_dir}]} per
     ``<priorityRule>``.
 
     QUEUE 3 unit 2 (2026-07-29). COM surface verified live
@@ -1891,11 +1923,14 @@ def _parse_priority_rules(root: ET.Element) -> list[dict[str, Any]]:
     (:func:`_parse_lane_token`); COM's own ``AttValue('Lane')`` returns a
     DIFFERENT hyphenated ``"10066-1"`` form (v2a unit ⑧'s Lane landmine,
     reconfirmed live here for priority rules too) -- not used, parsed
-    straight from XML like every other object this module builds. A rule can
-    carry NO ``lane`` at all (observed on the real Murdoch model, rule
-    no=143: an internally-generated stop-line rule at a node, ``intLink``
-    attribute instead) -- ``link``/``lane`` are both ``""`` in that case,
-    never guessed.
+    straight from XML like every other object this module builds. A rule (or
+    marker) can carry NO ``lane`` at all and reference its link through an
+    ``intLink`` attribute instead (real Murdoch model, rule no=143 + its
+    single marker) -- resolved by :func:`_parse_priority_rule_link_ref` into
+    a real ``link`` with ``lane=""`` and ``link_ref="int_link"``, so the
+    reference is never shown blank; see that helper's docstring for the
+    static verification that ``intLink`` numbers ARE the regular link
+    numbering.
 
     **``headway_m`` is a DISTANCE (metres), not a time**, despite the name
     -- see ``vissim_com.VissimController.set_priority_rule_gap_headway``'s
@@ -1912,15 +1947,16 @@ def _parse_priority_rules(root: ET.Element) -> list[dict[str, Any]]:
     """
     result: list[dict[str, Any]] = []
     for pr in root.findall(".//priorityRule"):
-        link_no, lane_no = _parse_lane_token(pr.get("lane"))
+        link_no, lane_no, link_ref = _parse_priority_rule_link_ref(pr)
         markers: list[dict[str, Any]] = []
         for idx, cm in enumerate(pr.findall(".//conflictMarker"), start=1):
-            cm_link, cm_lane = _parse_lane_token(cm.get("lane"))
+            cm_link, cm_lane, cm_link_ref = _parse_priority_rule_link_ref(cm)
             markers.append(
                 {
                     "marker_index": idx,
                     "link": cm_link,
                     "lane": cm_lane,
+                    "link_ref": cm_link_ref,
                     "pos": _coerce_float_or_none(cm.get("pos")),
                     "gap_time_s": _coerce_float_or_none(cm.get("minGapTime")),
                     "headway_m": _coerce_float_or_none(cm.get("minClear")),
@@ -1934,6 +1970,7 @@ def _parse_priority_rules(root: ET.Element) -> list[dict[str, Any]]:
                 "name": pr.get("name", ""),
                 "link": link_no,
                 "lane": lane_no,
+                "link_ref": link_ref,
                 "pos": _coerce_float_or_none(pr.get("pos")),
                 "sig_state": pr.get("sigState", ""),
                 "affect_driv_dir": pr.get("affectDrivDir", ""),
@@ -2320,12 +2357,44 @@ def _candidate_disambiguators(otype: str, obj: dict[str, Any]) -> dict[str, Any]
 #: couple more matches before truncating; a rarer multi-group match may get
 #: cut off mid-group, which is an acceptable trade-off for keeping the list
 #: bounded.
+#:
+#: v2 queue unit 2 (2026-07-31) re-measured this cap after enriching every
+#: candidate from a bare id string to a disambiguator dict (this unit's own
+#: fix, below) -- suggestion lists reaching an LLM prompt is exactly the
+#: "more data can subtract information" lesson the 2026-07-29 get_vehicle_
+#: inputs cap-down (DECISIONS.md) already established, so the growth had to
+#: be measured, not assumed safe. MEASURED (json.dumps, compact separators,
+#: matching planner._render_observation's own encoding, 3-digit ids): 10
+#: bare id strings is 61 bytes; 10 {id,name,object_type} dicts (no vehicle-
+#: input extras) is 561 bytes; 10 FULL vehicle-input dicts (id+name+
+#: object_type+link+composition_no+composition_name, using the REAL link-620
+#: values -- "Jennalup ST_WB"/"Class2-5(SLK 1.47_7-8AM&3-4PM)") is ~1440
+#: bytes. Against the 12000-char most-recent-observation budget
+#: (_DEFAULT_RECENT_OBS_BUDGET, planner.py) that is 12% even in the worst
+#: case -- nowhere near the 42KB-vs-12KB overage that forced
+#: get_vehicle_inputs' own cap down. The cap stays 10: the per-candidate
+#: growth is real (roughly 24x bare-id size at the worst case) but the
+#: absolute numbers are small relative to the budget
+#: that matters most (the observation the model is actively reasoning about
+#: when it just made the failing call), so shrinking it would trade away the
+#: disambiguation this unit exists to add for headroom the budget does not
+#: need. Older, non-most-recent history entries render under the much
+#: tighter 300-char snippet budget (_OBSERVATION_SNIPPET_CHARS) where a full
+#: 10-entry enriched list WILL trigger _render_observation's existing item-
+#: boundary truncation (fewer items + an explicit "N/M shown" marker) or its
+#: compact-summary tiers -- by design, the same graceful, bounded
+#: degradation every other oversized list in this codebase already goes
+#: through; not a new failure mode.
 _CANDIDATE_CAP = 10
 
 
-def _difflib_candidates(query: str, pool: list[tuple[str, str, str, dict[str, Any]]]) -> list[str]:
+def _difflib_candidates(
+    query: str, pool: list[tuple[str, str, str, dict[str, Any]]]
+) -> list[dict[str, Any]]:
     """Fuzzy-match ``query`` against every object's id and name, always
-    resolving a hit back to the owning object's id(s).
+    resolving a hit back to the owning object's id(s) -- returned as
+    disambiguator dicts (id/name/object_type + type-specific extras), never
+    bare id strings.
 
     Mirrors constraints.py's ``_check_object_not_found`` id-resolution
     behavior (that helper is private and tool-specific, so this is a
@@ -2342,11 +2411,32 @@ def _difflib_candidates(query: str, pool: list[tuple[str, str, str, dict[str, An
     first. id strings stay 1:1 with themselves (ids are unique); only name
     strings fan out to a list of every owner that shares them, built in pool
     order for a stable result.
+
+    v2 queue unit 2 (2026-07-31, live-demo defect): fanning out to every
+    owner id fixed WHICH ids came back, but they were still bare, anonymous
+    strings. A live turn asked to resolve the typo "Jenalup STWB" against
+    ``object_type="vehicle_input"``; the miss returned
+    ``["107","207","307","111","211","311"]`` -- six ids with no way to
+    tell the "Jennalup ST_WB" trio from the "Jennalup St" trio apart. The
+    model re-issued the identical ``resolve_object`` call, hit the
+    ``duplicate_call`` anti-loop refusal, repeated it four more times, and
+    the turn died at the 6-iteration cap on an apology -- a turn-killing UX
+    failure caused by an unhelpful-but-successful observation, not a
+    hypothetical. Every candidate is now a dict carrying the SAME shape the
+    HIT path already returns (id, name, object_type, plus whatever
+    :func:`_candidate_disambiguators` adds for that object type -- reused
+    here, not reimplemented), so a caller reading either path's candidates
+    sees one consistent shape and the two trios above render distinguishably
+    as ``{"id": "107", "name": "Jennalup ST_WB", ...}`` vs
+    ``{"id": "111", "name": "Jennalup St", ...}``.
     """
     owner_ids_by_string: dict[str, list[str]] = {}
     id_claimed: set[str] = set()
     match_pool: list[str] = []
-    for obj_id, name, _otype, _obj in pool:
+    entry_by_id: dict[str, tuple[str, str, dict[str, Any]]] = {}
+    for obj_id, name, otype, obj in pool:
+        if obj_id and obj_id not in entry_by_id:
+            entry_by_id[obj_id] = (name, otype, obj)
         if obj_id and obj_id not in owner_ids_by_string:
             match_pool.append(obj_id)
             owner_ids_by_string[obj_id] = [obj_id]
@@ -2358,14 +2448,22 @@ def _difflib_candidates(query: str, pool: list[tuple[str, str, str, dict[str, An
             elif name not in id_claimed and obj_id not in owner_ids_by_string[name]:
                 owner_ids_by_string[name].append(obj_id)
 
-    candidates: list[str] = []
+    candidates: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for match in difflib.get_close_matches(query, match_pool, n=_TOP_K):
         for owner_id in owner_ids_by_string[match]:
             if owner_id in seen_ids:
                 continue
             seen_ids.add(owner_id)
-            candidates.append(owner_id)
+            owner_name, owner_otype, owner_obj = entry_by_id.get(owner_id, ("", "", {}))
+            candidates.append(
+                {
+                    "id": owner_id,
+                    "name": owner_name,
+                    "object_type": owner_otype,
+                    **_candidate_disambiguators(owner_otype, owner_obj),
+                }
+            )
             if len(candidates) >= _CANDIDATE_CAP:
                 break
         if len(candidates) >= _CANDIDATE_CAP:
@@ -2382,7 +2480,12 @@ class ResolveObjectParams(BaseModel):
 
 @tool(name="resolve_object", tier="read", provider="inspect", params=ResolveObjectParams)
 def resolve_object(params: ResolveObjectParams) -> dict[str, Any]:
-    """Lexically resolve a name/id query to ranked candidate network objects (top-5)."""
+    """Lexically resolve a name/id query to ranked candidate network objects
+    (top-5). On a miss, ``candidates`` are disambiguator dicts (id, name,
+    object_type, plus type-specific fields like link/composition for
+    vehicle inputs) -- never bare ids -- so same-named siblings (e.g. the
+    real model's "Jennalup ST_WB"/"Jennalup St" vehicle-input trios) stay
+    tellable apart on BOTH the hit and miss paths."""
     shadow = _current_shadow_model()
     pool = _iter_candidate_objects(shadow, params.object_type)
 
@@ -3087,7 +3190,7 @@ def _priority_rule_matches_link(rule: dict[str, Any], link_no: str) -> bool:
 
 @tool(name="get_priority_rules", tier="read", provider="inspect", params=GetPriorityRulesParams)
 def get_priority_rules(params: GetPriorityRulesParams) -> dict[str, Any]:
-    """Return the network's priority rules (yield/stop points on a minor link) with each conflict marker's gap/headway parameters. gap_time_s is the critical gap (SECONDS) a yielding vehicle needs before crossing/merging. headway_m is Vissim's minimum-clearance parameter -- despite being called "headway" via Vissim's own MinHdwy COM alias, it is a spatial clearance in METRES (not seconds) kept from the conflicting vehicle; 0 is a common, legitimate value on both fields (no gap/clearance required at that point), not missing data. Use marker_index (1-based, per rule) with set_priority_rule_gap_headway to edit a specific marker. Optionally filter by priority_rule_no (exact match) or link_no (the rule's own link, or either side of any of its conflict markers) -- an unfiltered call on a large network returns only the first 40 (with an explicit truncated flag and a hint), so narrow with these filters rather than requesting the whole list."""
+    """Return the network's priority rules (yield/stop points on a minor link) with each conflict marker's gap/headway parameters. gap_time_s is the critical gap (SECONDS) a yielding vehicle needs before crossing/merging. headway_m is Vissim's minimum-clearance parameter -- despite being called "headway" via Vissim's own MinHdwy COM alias, it is a spatial clearance in METRES (not seconds) kept from the conflicting vehicle; 0 is a common, legitimate value on both fields (no gap/clearance required at that point), not missing data. Use marker_index (1-based, per rule) with set_priority_rule_gap_headway to edit a specific marker. link_ref says how the rule/marker references its link: "lane" (the usual lane-scoped placement) or "int_link" (a link-wide reference with no lane qualifier -- lane is legitimately empty then, not missing data). Optionally filter by priority_rule_no (exact match) or link_no (the rule's own link, or either side of any of its conflict markers) -- an unfiltered call on a large network returns only the first 40 (with an explicit truncated flag and a hint), so narrow with these filters rather than requesting the whole list."""
     priority_rules = _current_shadow_model()["priority_rules"]
 
     if params.priority_rule_no is not None:

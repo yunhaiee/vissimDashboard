@@ -308,7 +308,9 @@ def test_preflight_object_not_found_carries_suggested_fix_candidates():
     assert report.blocking is True
     finding = report.first_refusal()
     assert finding.constraint_id == "object_not_found"
-    assert "101" in finding.suggested_fix
+    # Candidates are {id, name, ...} dicts since the miss-path enrichment
+    # (2026-07-31) -- membership is checked against the ids.
+    assert "101" in [c["id"] for c in finding.suggested_fix]
 
 
 def test_preflight_none_shadow_model_does_not_crash():
