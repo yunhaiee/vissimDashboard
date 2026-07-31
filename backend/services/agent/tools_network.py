@@ -1485,6 +1485,184 @@ def _parse_time_distributions(root: ET.Element) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# get_pt_stops / add_pt_stop / remove_pt_stop / get_pt_lines / add_pt_line /
+# remove_pt_line / set_pt_line_stop_dwell -- Q4 unit (7): PT stop + PT line
+# placement (genesis), the natural home of the BusDwell finding (Q3 unit 5,
+# docs/phase2/DECISIONS.md 2026-07-31: Murdoch has 16 real ptStops / 12
+# ptLines / 19 ptLineStops, every LIVE dwell assignment shares ONE 10s+-2s
+# NORMAL distribution, and 5 staged BusDwell_0-4 empirical curves sit
+# unreferenced -- built but never wired in).
+#
+# Probed live (backend/tools/probe_pt_stops_lines.py, "BRT Priority
+# Texas.US" clone -- proven loadable, 32 real ptStops / 10 real ptLines / 62
+# real ptLineStops). Real shapes (disproving inpx_parser.py's own 2026-07-26
+# INFERRED ptStop shape's untested "no"/"name"/"anmid" guesses):
+#
+#   <ptStop no= name= lane="<link> <lane>" pos= length= anmid=/> (top-level
+#   <ptStops> section -- the SAME lane-TOKEN shape signalHead/detector/
+#   reducedSpeedArea/priorityRule/stopSign already use, :func:`_parse_lane_
+#   token`).
+#
+#   <ptLine no= name= vehType= desSpeedDistr= entryLink= destLink= destPos=
+#           entTmOffset= slackTmFrac= entryTmDistr?(OPTIONAL -- 22 corpus
+#           occurrences, absent on most real lines) ...>
+#     <depTimes><departureTime dep= occup= teleCour=/></depTimes>
+#     <lineStops><ptLineStop ptStop= dwellTmDistr= dwellTmDef= active= .../>
+#     </lineStops>
+#     <linkSeq><intObjectRef key=.../></linkSeq>  (the SAME route-linkSeq
+#     shape a static vehicleRoutingDecisionsStatic route already uses --
+#     services.inpx_structure.ID_REFERENCE_SITES["links"]'s own "route link
+#     sequence" entry, Q4 unit (3))
+#   </ptLine>
+#
+# See services.inpx_structure.ID_REFERENCE_SITES["pt_stops"]'s own comment
+# for the reference-integrity story (THREE real referrer sites -- ptLineStop,
+# a SEPARATE partialPTLineStop object family, and a PT-boarding detector;
+# Vissim's own RemovePTStop silently CASCADE-DELETES a still-referenced
+# ptLineStop, worse than the RemoveDataCollectionPoint precedent) and
+# vissim_com.VissimController's own PT-stop/PT-line module comment for the
+# full COM-surface writeup (native create/remove for both; AddPTLine's real
+# 4-arg ``(Key, EntryLink, DestLink, DestPos)`` signature, correcting the
+# task brief's own worry that line creation needs deep route-coding; the
+# UpdateLinkSequence/no-AddPTLineStop honest scope cuts).
+#
+# ``pt_line_stops`` (flat, one entry per (line, stop) pair -- mirrors
+# :func:`_flatten_priority_rule_markers`/:func:`_flatten_routes`'s
+# established precedent exactly) is scoped to a ptLine's OWN
+# ``lineStops/ptLineStop`` children only, never ``partialPTLineStop`` -- the
+# brief's own ``set_pt_line_stop_dwell(line, stop, ...)`` verb targets a real
+# PT LINE's stop, not the separate partial-route-decision feature.
+# ---------------------------------------------------------------------------
+
+#: capped route-link count shown per ptLine on an unfiltered/filtered
+#: get_pt_lines call -- mirrors _TIME_DISTRIBUTION_POINTS_CAP's own
+#: generous-headroom-not-tuned-to-the-edge reasoning; the richest real
+#: linkSeq probed (BRT Priority Texas.US line 52201) has 19 entries.
+_PT_LINE_LINK_SEQ_CAP = 60
+
+
+def _parse_pt_stops(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, link, lane_index, pos, length, referenced_by:
+    {pt_line_stops, partial_pt_line_stops, detectors}, reference_count}`` per
+    ``<ptStop>`` -- ``referenced_by`` mirrors ``_parse_data_collection_
+    points``'s own shape (a real, multi-site referrer, unlike stop signs/
+    queue counters/travel-time sections' leaf-object precedent -- see this
+    section's own module comment)."""
+    pt_line_stop_refs: dict[str, list[str]] = {}
+    for pt_line in root.findall(".//ptLines/ptLine"):
+        line_no = pt_line.get("no", "")
+        for stop in pt_line.findall("lineStops/ptLineStop"):
+            stop_no = (stop.get("ptStop") or "").strip()
+            if stop_no:
+                pt_line_stop_refs.setdefault(stop_no, []).append(f"{line_no}.{stop_no}")
+
+    partial_refs: dict[str, list[str]] = {}
+    for stop in root.findall(".//partLineStops/partialPTLineStop"):
+        stop_no = (stop.get("ptStop") or "").strip()
+        if stop_no:
+            partial_refs.setdefault(stop_no, []).append(stop_no)
+
+    detector_refs: dict[str, list[str]] = {}
+    for det in root.findall(".//detectors/detector"):
+        stop_no = (det.get("ptStop") or "").strip()
+        if stop_no:
+            detector_refs.setdefault(stop_no, []).append(det.get("no", ""))
+
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//ptStops/ptStop"):
+        no = el.get("no", "")
+        link_id, lane_no = _parse_lane_token(el.get("lane"))
+        line_stop_ids = pt_line_stop_refs.get(no, [])
+        partial_ids = partial_refs.get(no, [])
+        detector_ids = detector_refs.get(no, [])
+        result.append(
+            {
+                "no": no,
+                "name": el.get("name", "") or "",
+                "link": link_id,
+                "lane_index": int(lane_no) if lane_no.isdigit() else None,
+                "pos": _coerce_float_or_none(el.get("pos")),
+                "length": _coerce_float_or_none(el.get("length")),
+                "referenced_by": {
+                    "pt_line_stops": _bounded_reference_ids(line_stop_ids),
+                    "partial_pt_line_stops": _bounded_reference_ids(partial_ids),
+                    "detectors": _bounded_reference_ids(detector_ids),
+                },
+                "reference_count": len(line_stop_ids) + len(partial_ids) + len(detector_ids),
+            }
+        )
+    return result
+
+
+def _parse_pt_lines(root: ET.Element) -> list[dict[str, Any]]:
+    """{no, name, veh_type, des_speed_distr, entry_link, dest_link, dest_pos,
+    entry_tm_distr, departure_count, link_seq (capped), link_seq_count,
+    link_seq_truncated, stops: [{pt_stop_no, dwell_tm_distr, dwell_tm_def,
+    active}]} per ``<ptLine>``. ``entry_tm_distr`` is ``None`` (not "") when
+    absent -- an optional reference, present on a real minority of lines
+    (22 corpus occurrences)."""
+    result: list[dict[str, Any]] = []
+    for pl in root.findall(".//ptLines/ptLine"):
+        stops: list[dict[str, Any]] = []
+        for stop in pl.findall("lineStops/ptLineStop"):
+            stops.append(
+                {
+                    "pt_stop_no": stop.get("ptStop", "") or "",
+                    "dwell_tm_distr": stop.get("dwellTmDistr", "") or "",
+                    "dwell_tm_def": stop.get("dwellTmDef", "") or "",
+                    "active": (stop.get("active") or "").strip().lower() == "true",
+                }
+            )
+        link_seq_all = [r.get("key", "") for r in pl.findall("linkSeq/intObjectRef")]
+        link_seq_capped = link_seq_all[:_PT_LINE_LINK_SEQ_CAP]
+        entry_tm_distr = (pl.get("entryTmDistr") or "").strip()
+        result.append(
+            {
+                "no": pl.get("no", ""),
+                "name": pl.get("name", "") or "",
+                "veh_type": pl.get("vehType", "") or "",
+                "des_speed_distr": pl.get("desSpeedDistr", "") or "",
+                "entry_link": pl.get("entryLink", "") or "",
+                "dest_link": pl.get("destLink", "") or "",
+                "dest_pos": _coerce_float_or_none(pl.get("destPos")),
+                "entry_tm_distr": entry_tm_distr or None,
+                "departure_count": len(pl.findall("depTimes/departureTime")),
+                "link_seq": link_seq_capped,
+                "link_seq_count": len(link_seq_all),
+                "link_seq_truncated": len(link_seq_all) > len(link_seq_capped),
+                "stops": stops,
+            }
+        )
+    return result
+
+
+def _flatten_pt_line_stops(pt_lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A flat, one-entry-per-(line, stop) view of ``pt_lines``, keyed by a
+    synthesized ``"{line_no}.{stop_no}"`` ``id`` -- mirrors
+    :func:`_flatten_priority_rule_markers`/:func:`_flatten_routes`'s
+    established precedent: a ptLineStop has no single-token identity of its
+    own in Vissim (addressed by scanning a line's own ``LineStops``
+    collection for a matching ``PtStop`` -- see ``vissim_com.
+    VissimController._pt_line_stop_by_key``'s own docstring), so
+    ``guardrails.py``'s postwrite machinery needs a flat id the same way
+    routes/vehicle-composition-entries/priority-rule-markers already do."""
+    flat: list[dict[str, Any]] = []
+    for pl in pt_lines:
+        for stop in pl["stops"]:
+            flat.append(
+                {
+                    "id": f"{pl['no']}.{stop['pt_stop_no']}",
+                    "line_no": pl["no"],
+                    "stop_no": stop["pt_stop_no"],
+                    "dwell_tm_distr": stop["dwell_tm_distr"],
+                    "dwell_tm_def": stop["dwell_tm_def"],
+                    "active": stop["active"],
+                }
+            )
+    return flat
+
+
+# ---------------------------------------------------------------------------
 # get_driving_behaviors / duplicate_driving_behavior / set_driving_behavior_
 # parameter / set_link_behavior_type_driving_behavior -- QUEUE 3 unit 6.
 #
@@ -2411,6 +2589,11 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
     des_speed_decisions = _parse_des_speed_decisions(root)
     signal_programs = parse_signal_programs(inpx_path)
     priority_rules = _parse_priority_rules(root)
+    # Q4 unit (7): PT stop + PT line placement (genesis) -- parsed once here
+    # (reused nested for get_pt_lines AND flattened for guardrails.py, same
+    # "compute once, expose two shapes" precedent as priority_rules/
+    # routing_decisions/des_speed_decisions above).
+    pt_lines = _parse_pt_lines(root)
     vehicle_composition_entries = _flatten_vehicle_composition_entries(vehicle_compositions)
     # QUEUE (v2a) unit: vehicle type properties. Each of the 8 reference
     # target collections is parsed ONCE here (not re-parsed once per vehicle
@@ -2522,6 +2705,13 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         "link_behavior_types": link_behavior_types,
         "driving_behaviors": driving_behaviors,
         "link_behavior_type_assignments": link_behavior_type_assignments,
+        # Q4 unit (7): PT stop + PT line placement (genesis) -- see
+        # _parse_pt_stops/_parse_pt_lines' own docstrings for the live-
+        # verified findings (real ptStop/ptLine/ptLineStop shapes,
+        # correcting inpx_parser.py's own untested 2026-07-26 guess).
+        "pt_stops": _parse_pt_stops(root),
+        "pt_lines": pt_lines,
+        "pt_line_stops": _flatten_pt_line_stops(pt_lines),
     }
 
 
@@ -3525,6 +3715,91 @@ def get_priority_rules(params: GetPriorityRulesParams) -> dict[str, Any]:
         result["hint"] = (
             f"Showing {len(capped)} of {total} priority rules. Narrow with "
             "priority_rule_no or link_no to see a specific one instead of the whole list."
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# get_pt_stops / get_pt_lines -- Q4 unit (7): PT stop + PT line placement.
+# BOUNDED OUTPUT from day one, same shape as every other get_* tool in this
+# module -- an unfiltered call caps the list with an explicit truncated flag
+# + hint. Real networks probed carry far fewer PT stops/lines than priority
+# rules/conflict areas (max seen: 50 ptStops, 39 ptLines, both on LRT
+# Priority Luxembourg.LU), so these caps are generous headroom.
+# ---------------------------------------------------------------------------
+
+_PT_STOPS_DEFAULT_CAP = 60
+_PT_LINES_DEFAULT_CAP = 60
+
+
+class GetPtStopsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pt_stop_no: str | None = Field(
+        default=None,
+        description="Exact PT stop 'no' to return (narrows to at most one result).",
+    )
+    link_no: str | None = Field(
+        default=None,
+        description="Return only PT stops positioned on this link.",
+    )
+
+
+@tool(name="get_pt_stops", tier="read", provider="inspect", params=GetPtStopsParams)
+def get_pt_stops(params: GetPtStopsParams) -> dict[str, Any]:
+    """Return the network's PT stops (bus/rail platforms) -- id, name, link, lane_index, pos (metres from the link's start), length (platform length, metres), and referenced_by (how many real PT-line stops, partial-route PT-line stops, and PT-boarding detectors reference this stop by id -- each a {count, ids, truncated} bounded list, plus reference_count as the grand total). A stop with reference_count > 0 CANNOT be removed (remove_pt_stop refuses, naming every referrer) -- Vissim's own removal does not merely dangle the reference, it silently deletes the referencing PT-line stop entry outright. Use add_pt_stop(link_no, lane_index, pos_m, length_m?, name?) to create one, remove_pt_stop(no) to remove one. Optionally filter by pt_stop_no (exact match) or link_no -- an unfiltered call on a large network returns only the first 60 (with an explicit truncated flag and a hint)."""
+    pt_stops = _current_shadow_model()["pt_stops"]
+
+    if params.pt_stop_no is not None:
+        pt_stops = [s for s in pt_stops if str(s.get("no")) == str(params.pt_stop_no)]
+    if params.link_no is not None:
+        pt_stops = [s for s in pt_stops if str(s.get("link")) == str(params.link_no)]
+
+    total = len(pt_stops)
+    filtered = params.pt_stop_no is not None or params.link_no is not None
+    if filtered:
+        return {"count": total, "pt_stops": pt_stops}
+
+    capped = pt_stops[:_PT_STOPS_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {"count": total, "pt_stops": capped, "truncated": truncated}
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} PT stops. Narrow with pt_stop_no or link_no "
+            "to see a specific one instead of the whole list."
+        )
+    return result
+
+
+class GetPtLinesParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pt_line_no: str | None = Field(
+        default=None,
+        description="Exact PT line 'no' to return (narrows to at most one result).",
+    )
+
+
+@tool(name="get_pt_lines", tier="read", provider="inspect", params=GetPtLinesParams)
+def get_pt_lines(params: GetPtLinesParams) -> dict[str, Any]:
+    """Return the network's PT lines (bus/rail routes) -- id, name, veh_type, des_speed_distr, entry_link, dest_link, dest_pos, entry_tm_distr (a network-entry wait-time distribution reference, optional -- None when unset, not a missing-data marker), departure_count (how many scheduled departures this line has), link_seq (the route through the network, a link/connector id sequence, capped at 60 with a link_seq_truncated flag), and stops (each {pt_stop_no, dwell_tm_distr, dwell_tm_def, active} -- use set_pt_line_stop_dwell(line_no, stop_no, time_distribution_no) to wire a dwell-time distribution to one of these). Use add_pt_line(entry_link_no, dest_link_no, dest_pos_m, veh_type_no?, pt_stop_no?, name?) to create a genesis line -- it gets Vissim's own MINIMAL default route (the entry link only) and exactly ONE auto-created stop (pt_stop_no, if given, repoints that stop to your intent; omitted, Vissim picks whichever real PT stop sits on the entry link). A genesis line is capped at that ONE stop -- Vissim has no COM surface to add further stops to a line's own schedule; a multi-stop line requires editing an existing one, not this agent's genesis path. remove_pt_line(no) removes a line and its own stops atomically. Optionally filter by pt_line_no -- an unfiltered call on a large network returns only the first 60 (with an explicit truncated flag and a hint)."""
+    pt_lines = _current_shadow_model()["pt_lines"]
+
+    if params.pt_line_no is not None:
+        pt_lines = [pl for pl in pt_lines if str(pl.get("no")) == str(params.pt_line_no)]
+
+    total = len(pt_lines)
+    filtered = params.pt_line_no is not None
+    if filtered:
+        return {"count": total, "pt_lines": pt_lines}
+
+    capped = pt_lines[:_PT_LINES_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {"count": total, "pt_lines": capped, "truncated": truncated}
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} PT lines. Narrow with pt_line_no to see a "
+            "specific one instead of the whole list."
         )
     return result
 

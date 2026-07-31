@@ -2896,6 +2896,421 @@ class VissimController:
             raise RuntimeError(f"Could not remove priority rule {no}: {exc}") from exc
 
     # -----------------------------------------------------------------
+    # PT stop + PT line PLACEMENT (creation) -- Q4 unit (7), the natural home
+    # of the BusDwell finding (Q3 unit 5, docs/phase2/DECISIONS.md
+    # 2026-07-31: Murdoch has 16 real ptStops / 12 ptLines / 19 ptLineStops,
+    # every LIVE dwell assignment shares ONE 10s+-2s NORMAL distribution, and
+    # 5 staged BusDwell_0-4 empirical curves sit unreferenced).
+    #
+    # COM ids/behavior verified EMPIRICALLY live against Vissim 2026
+    # (backend/tools/probe_pt_stops_lines.py, "BRT Priority Texas.US" clone --
+    # 32 real ptStops, 10 real ptLines, 62 real ptLineStops).
+    #
+    # **PT stops are a genuine, clean native create/remove**, the same shape
+    # :meth:`add_stop_sign`/:meth:`add_signal_head` already use:
+    # ``Net.PTStops.AddPTStop(Key, Lane, Pos)`` creates and returns the new
+    # object directly -- no silent-no-op landmine like AddPriorityRule.
+    # ``AddPTStop``'s OWN signature has no ``Length`` parameter (unlike the
+    # XML's own ``length`` attribute) -- a fresh stop's out-of-the-box
+    # default is 15.0 m (live-verified); ``Length`` IS settable afterward via
+    # a plain follow-up ``SetAttValue`` (also live-verified), exactly like
+    # every other placement verb in this module that writes a scalar right
+    # after creation (e.g. :meth:`add_stop_sign`'s own ``Name``).
+    # ``RemovePTStop`` removes cleanly -- but see the reference-integrity
+    # finding below: Vissim's own remove does NOT protect a still-referenced
+    # stop, unlike its Add being trustworthy.
+    #
+    # **PT lines are a genuine, working native create too -- correcting the
+    # task brief's own worry that this would need deep route-coding.**
+    # ``Net.PTLines.AddPTLine(Key, EntryLink, DestLink, DestPos)`` (NOT
+    # ``(Key, VehType, EntryLink)`` as first guessed from the object's own
+    # scalar attribute names -- the real signature, confirmed via the
+    # type-library scan, needs entry AND destination links) genuinely
+    # creates a new line (``GetAll()`` diff proved a real addition, unlike
+    # AddPriorityRule's confirmed no-op) and, as a byproduct with real
+    # planner value:
+    #   - auto-computes a MINIMAL default route: the new line's own
+    #     ``LinkSeq`` child collection contains exactly ONE entry, the entry
+    #     link itself (live-verified) -- literally "a line on a start link
+    #     with default route", the task brief's own stated minimal-scope
+    #     escape hatch, met exactly rather than approximated.
+    #   - auto-creates exactly ONE line-stop on the new line's own
+    #     ``LineStops`` child collection, defaulting its ``PtStop`` to
+    #     whichever real PT stop happens to sit on the entry link (live-
+    #     verified: entry link 13270462 hosts stop 99569, and the new line's
+    #     auto line-stop's own ``PtStop`` read back exactly ``'99569'``) and
+    #     its ``DwellTmDistr`` to a Vissim-chosen default (observed: ``'1'``).
+    # ``VehType`` is NOT an ``AddPTLine`` argument at all (despite being a
+    # scalar attribute on the object) -- set via a follow-up ``SetAttValue``,
+    # confirmed writable both via a real ``VehicleType`` COM object.
+    # ``PtStop`` on an EXISTING line-stop entry is ALSO confirmed writable via
+    # plain ``SetAttValue`` (a real COM ``PTStop`` object, not a bare int) --
+    # this is how :meth:`add_pt_line`'s own optional ``pt_stop_no`` repoints
+    # the auto-created line-stop to the caller's actual intent instead of
+    # silently leaving Vissim's own entry-link-derived guess in place.
+    #
+    # **Two genuine, stated scope cuts (not silently worked around):**
+    #   1. ``IPTLine.UpdateLinkSequence(RouteSegments)`` exists (confirmed via
+    #      the type-library scan) but its real argument shape is UNRESOLVED --
+    #      both a plain Python list and a tuple of real ``Link`` COM objects
+    #      (the template line's own real, WORKING 19-link route) raised "The
+    #      array contains too few elements" from COM. :meth:`add_pt_line`
+    #      therefore ships with Vissim's own minimal (entry-link-only)
+    #      default route ONLY -- a caller wanting a real multi-link route
+    #      needs a follow-up unit that resolves this method's true argument
+    #      marshalling (a SAFEARRAY typing issue is suspected, not chased
+    #      further here per this unit's own honest-scope allowance).
+    #   2. There is NO create surface of any kind on a line's own
+    #      ``LineStops``/``PTLineStops`` child collection (confirmed via the
+    #      type-library scan of ``IPTLineStopContainer``/
+    #      ``IPTLineStopContainerBase`` -- generic collection methods only,
+    #      no ``AddPTLineStop``) -- a genesis line is therefore CAPPED at the
+    #      single auto-created line-stop AddPTLine itself provides; a
+    #      multi-stop PT line requires ``DuplicatePTLine`` (confirmed working,
+    #      copies a template's full line-stop pattern verbatim, the SAME
+    #      duplicate-then-edit shape :meth:`add_priority_rule`/
+    #      ``duplicate_driving_behavior`` already established) rather than
+    #      genesis creation -- out of THIS unit's scope, a real and stated
+    #      limitation.
+    # ``AddDepartureTime(Key, Dep)`` on a line's own ``DepTimes`` child
+    # collection IS confirmed to work (creates + returns a real object,
+    # readback-verified) -- a genuinely tractable follow-up, matching the
+    # task brief's own "departure times as follow-up" allowance; not wired
+    # into any verb this unit ships.
+    #
+    # **LIVE-CAUGHT route-reachability trap (backend/tools/
+    # pt_stops_lines_live_check.py's own [A.7]): an UNREACHABLE dest_link_no
+    # produces a line that ADDS successfully (no exception, correct readback)
+    # but FAILS Vissim's own RunSingleStep init later with "Public Transport
+    # Line "<no>" is not complete."** First reproduced with an
+    # entry/dest pair that shared no route at all; re-run with a REAL
+    # template line's own (entry_link, dest_link, dest_pos) triple (a
+    # guaranteed-reachable pair) passed the SAME load oracle cleanly, with
+    # zero departure times either time -- isolating the cause to route
+    # reachability, not the missing timetable. No preflight check validates
+    # dest_link_no is actually reachable from entry_link_no (this unit's own
+    # "constraints.py minimal" scope; mirrors add_travel_time_section's own
+    # documented to_link gap) -- a caller MUST pick a genuinely routable
+    # destination (matching a real transit line's own intent, not an
+    # arbitrary link) or risk this exact silent-until-run-time trap.
+    #
+    # **Reference integrity -- the flagship finding of this unit, worse than
+    # the RemoveDataCollectionPoint precedent (Q4 unit (2)).** Live-verified:
+    # ``RemovePTStop`` on a stop a REAL ptLineStop still references does NOT
+    # dangle the reference (leaving a readable-but-broken pointer, like
+    # RemoveDataCollectionPoint) -- it SILENTLY CASCADE-DELETES the
+    # referencing ``ptLineStop`` entry outright (confirmed via a fresh
+    # reparse: the line's own ``LineStops`` count dropped, with zero
+    # exception, zero warning, zero trace in the saved XML of what happened).
+    # For a real production PT model this would silently truncate a bus
+    # route's own stop pattern -- exactly the "Vissim almost never refuses a
+    # bad edit" thesis this codebase's validation layer exists to counter,
+    # one rung more dangerous than a mere dangling id. A static corpus-wide
+    # attribute-name scan (all 25 real Vissim 2026 example networks) found
+    # THREE real sites that reference a PT stop by its own ``no``:
+    # ``ptLineStop.ptStop`` (real, correctly nested inside ``<ptLine>``),
+    # ``partialPTLineStop.ptStop`` (a SEPARATE object family entirely --
+    # ``vehicleRoutingDecisionsPartialPT``, a partial-route PT decision, NOT
+    # nested inside a ``<ptLine>`` at all -- see the module comment in
+    # ``tools_network.py``'s own PT-stop reference registry for why this
+    # disproves half of Q3 unit 5's own reference-scan claim), and
+    # ``detector.ptStop`` (a newly-found site, e.g. a PT-boarding-gate
+    # detector with a ``tmBefDep`` "time before departure" attribute --
+    # genuinely references a PT stop, previously unregistered anywhere in
+    # this codebase). ``services.inpx_structure``'s reference-integrity
+    # registry is extended with all three so :func:`tools_edit.remove_pt_stop`
+    # refuses (naming every referrer) BEFORE ever calling this silently-
+    # cascading COM method -- see that spine module's own registry comment.
+    # PT lines themselves are a LEAF object for reference-integrity purposes
+    # (the SAME corpus-wide scan found no attribute anywhere that references
+    # a ptLine by its own ``no`` -- the only ``*PTLine*``-named attribute
+    # besides the real ones above, ``allPTLines`` on ``boardingVolume``/
+    # ``vehicleRoutingDecisionPartialPT``, is a boolean SCOPE FLAG ("applies
+    # to every PT line"), not an id reference) -- ``RemovePTLine`` needs no
+    # reference-integrity check of its own, mirroring
+    # ``remove_priority_rule``'s own "leaf object" precedent.
+    # -----------------------------------------------------------------
+
+    def available_pt_stop_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.PTStops)
+
+    def add_pt_stop(
+        self,
+        link_no: int,
+        lane_index: int,
+        pos_m: float,
+        length_m: float | None = None,
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Create a PT stop on lane ``lane_index`` of ``link_no`` at
+        ``pos_m`` metres (COM ``AddPTStop``). ``length_m`` is OPTIONAL --
+        ``AddPTStop`` itself has no Length argument (Vissim's own default is
+        15.0 m); given, it is applied via a follow-up ``SetAttValue``."""
+        try:
+            lane = self._lane_by_index(link_no, lane_index)
+            existing = self.available_pt_stop_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            unit = self._net_unit_length()
+            pos_com = self._length_m_to_com(float(pos_m), unit)
+            pt_stop = self.vissim.Net.PTStops.AddPTStop(new_no, lane, pos_com)
+            if length_m is not None:
+                pt_stop.SetAttValue("Length", self._length_m_to_com(float(length_m), unit))
+            if name:
+                pt_stop.SetAttValue("Name", name)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a PT stop on link {link_no} lane {lane_index} at pos {pos_m}: {exc}"
+            ) from exc
+        return self.get_pt_stop(new_no)
+
+    def remove_pt_stop(self, no: int) -> None:
+        """Removes the stop (COM ``RemovePTStop``). Reference-integrity is
+        NOT enforced by COM itself here (see this block's own module
+        comment -- a still-referenced stop's removal SILENTLY
+        CASCADE-DELETES the referencing ptLineStop entry); callers MUST
+        check ``services.inpx_structure.find_id_references`` against the
+        working copy's current XML BEFORE calling this method (see
+        ``tools_edit.remove_pt_stop``)."""
+        try:
+            pt_stop = self._item_by_key(
+                self.vissim.Net.PTStops, no, "PT stop", self.available_pt_stop_nos()
+            )
+            self.vissim.Net.PTStops.RemovePTStop(pt_stop)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove PT stop {no}: {exc}") from exc
+
+    def get_pt_stop(self, no: int) -> dict[str, Any]:
+        try:
+            pt_stop = self._item_by_key(
+                self.vissim.Net.PTStops, no, "PT stop", self.available_pt_stop_nos()
+            )
+            unit = self._net_unit_length()
+            lane_link, _, lane_idx = str(pt_stop.AttValue("Lane") or "").partition("-")
+            return {
+                "no": no,
+                "name": str(pt_stop.AttValue("Name") or ""),
+                "link": lane_link,
+                "lane_index": int(lane_idx) if lane_idx.isdigit() else None,
+                "pos": self._length_com_to_m(float(pt_stop.AttValue("Pos")), unit),
+                "length": self._length_com_to_m(float(pt_stop.AttValue("Length")), unit),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read PT stop {no}: {exc}") from exc
+
+    def available_pt_line_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.PTLines)
+
+    def add_pt_line(
+        self,
+        entry_link_no: int,
+        dest_link_no: int,
+        dest_pos_m: float,
+        veh_type_no: int | None = None,
+        pt_stop_no: int | None = None,
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Create a PT line from ``entry_link_no`` to (``dest_link_no``,
+        ``dest_pos_m``) (COM ``AddPTLine``) -- see this block's own module
+        comment for the full live-verified writeup: the new line gets a
+        MINIMAL auto default route (entry link only) and exactly ONE
+        auto-created line-stop (Vissim's own pick -- whichever real PT stop
+        sits on the entry link). ``veh_type_no`` OPTIONALLY assigns the
+        line's vehicle type (a follow-up ``SetAttValue`` -- not an
+        ``AddPTLine`` argument at all). ``pt_stop_no`` OPTIONALLY repoints
+        the auto-created line-stop's own ``PtStop`` reference to the
+        caller's actual intent, instead of silently leaving Vissim's own
+        entry-link-derived guess in place -- the BusDwell story's genesis
+        half: a caller can now create a line AND aim its one stop at a real
+        PT stop in the same approved action, ready for a follow-up
+        :meth:`set_pt_line_stop_dwell` to wire a dwell distribution."""
+        try:
+            entry_link = self._link_object_by_no(entry_link_no)
+            dest_link = self._link_object_by_no(dest_link_no)
+            existing = self.available_pt_line_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            unit = self._net_unit_length()
+            dest_pos_com = self._length_m_to_com(float(dest_pos_m), unit)
+            pt_line = self.vissim.Net.PTLines.AddPTLine(new_no, entry_link, dest_link, dest_pos_com)
+            if name:
+                pt_line.SetAttValue("Name", name)
+            if veh_type_no is not None:
+                veh_type = self._item_by_key(
+                    self.vissim.Net.VehicleTypes,
+                    veh_type_no,
+                    "Vehicle type",
+                    self._collection_nos(self.vissim.Net.VehicleTypes),
+                )
+                pt_line.SetAttValue("VehType", veh_type)
+            if pt_stop_no is not None:
+                # Re-fetch LineStops FRESH -- never hold a child-collection
+                # reference across calls (the ConflictMarkers stale-caching
+                # landmine, Q4 unit (6), applies to every per-item child
+                # collection in this codebase on principle, re-applied here
+                # defensively even though this unit did not itself reproduce
+                # staleness on LineStops specifically).
+                auto_stops = list(pt_line.LineStops.GetAll())
+                if not auto_stops:
+                    raise RuntimeError(
+                        "the newly-created line has no auto-created line-stop to repoint -- "
+                        "this should not happen (Vissim auto-creates exactly one on every "
+                        "AddPTLine call, live-verified)"
+                    )
+                target_stop = self._item_by_key(
+                    self.vissim.Net.PTStops, pt_stop_no, "PT stop", self.available_pt_stop_nos()
+                )
+                auto_stops[0].SetAttValue("PtStop", target_stop)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a PT line from link {entry_link_no} to link {dest_link_no} at pos "
+                f"{dest_pos_m}: {exc}"
+            ) from exc
+        return self.get_pt_line(new_no)
+
+    def remove_pt_line(self, no: int) -> None:
+        """Removes the line AND its own line-stops atomically (COM
+        ``RemovePTLine``) -- nothing else in the schema references a PT line
+        by its own ``no`` (verified via a corpus-wide static scan, this
+        unit's own probe; the only other ``*PTLine*``-named attribute,
+        ``allPTLines``, is a boolean scope flag, not an id reference), so no
+        reference-integrity check is needed here."""
+        try:
+            pt_line = self._item_by_key(
+                self.vissim.Net.PTLines, no, "PT line", self.available_pt_line_nos()
+            )
+            self.vissim.Net.PTLines.RemovePTLine(pt_line)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove PT line {no}: {exc}") from exc
+
+    def get_pt_line(self, no: int) -> dict[str, Any]:
+        try:
+            pt_line = self._item_by_key(
+                self.vissim.Net.PTLines, no, "PT line", self.available_pt_line_nos()
+            )
+            unit = self._net_unit_length()
+            veh_type_raw = pt_line.AttValue("VehType")
+            entry_tm_distr_raw = pt_line.AttValue("EntryTmDistr")
+            stops: list[dict[str, Any]] = []
+            for entry in pt_line.LineStops.GetAll():
+                stops.append(
+                    {
+                        "pt_stop_no": str(entry.AttValue("PtStop") or ""),
+                        "dwell_tm_distr": str(entry.AttValue("DwellTmDistr") or ""),
+                        "active": bool(entry.AttValue("Active")),
+                    }
+                )
+            # LinkSeq's own GetAll() items are REAL Link COM objects (live-
+            # caught: AttValue('Key') raises "LINK: Could not find attribute
+            # with ID KEY" -- the XML's own <intObjectRef key="..."/> naming
+            # does NOT carry through to this child collection's own COM item
+            # shape the way it does for a static routing decision's linkSeq;
+            # a genuine link/connector object exposes its own number via
+            # 'No', the same attribute id every other link lookup in this
+            # module already uses), so read 'No' -- with a defensive 'Key'
+            # fallback in case a future Vissim version's shape differs.
+            link_seq: list[str] = []
+            for el in pt_line.LinkSeq.GetAll():
+                try:
+                    link_seq.append(str(el.AttValue("No")))
+                except Exception:
+                    link_seq.append(str(el.AttValue("Key")))
+            return {
+                "no": no,
+                "name": str(pt_line.AttValue("Name") or ""),
+                "veh_type": str(veh_type_raw) if veh_type_raw not in (None, "") else None,
+                "entry_link": str(pt_line.AttValue("EntryLink")),
+                "dest_link": str(pt_line.AttValue("DestLink")),
+                "dest_pos": self._length_com_to_m(float(pt_line.AttValue("DestPos")), unit),
+                "entry_tm_distr": str(entry_tm_distr_raw) if entry_tm_distr_raw not in (None, "") else None,
+                "link_seq": link_seq,
+                "stops": stops,
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read PT line {no}: {exc}") from exc
+
+    def _pt_line_stop_by_key(self, pt_line: Any, stop_no: int) -> Any:
+        """Fresh-fetch (never hold) a ptLine's own ``LineStops`` collection
+        and return the ONE entry whose ``PtStop`` matches ``stop_no`` --
+        Vissim's own ``LineStops`` collection has no ``ItemByKey`` at all
+        (mirrors ``ConflictMarkers``' own ordinal-only addressing, Q4 unit
+        (6)), so a line-stop is found by scanning, never by key lookup.
+        Returns ``None`` (never raises) when this line has no line-stop for
+        that stop -- callers turn that into their own structured error."""
+        for entry in pt_line.LineStops.GetAll():
+            if str(entry.AttValue("PtStop")) == str(stop_no):
+                return entry
+        return None
+
+    def set_pt_line_stop_dwell(self, line_no: int, stop_no: int, time_distribution_no: int) -> dict[str, Any]:
+        """Wire ``time_distribution_no`` as PT line ``line_no``'s stop
+        ``stop_no`` own dwell-time distribution (``SetAttValue('DwellTmDistr',
+        <TimeDistribution COM object>)`` on the matching ``ptLineStop`` entry)
+        -- the BusDwell story's missing verb (Q3 unit 5, docs/phase2/
+        DECISIONS.md 2026-07-31): TK's 5 staged-but-unreferenced BusDwell_0-4
+        empirical curves can finally be connected to a real line-stop through
+        this codebase's agent, rather than only by hand in the Vissim GUI.
+        Live-verified: COM itself fails CLOSED on a bogus time-distribution
+        number ("Object N of type Time Distribution does not exist")."""
+        try:
+            pt_line = self._item_by_key(
+                self.vissim.Net.PTLines, line_no, "PT line", self.available_pt_line_nos()
+            )
+            entry = self._pt_line_stop_by_key(pt_line, stop_no)
+            if entry is None:
+                raise RuntimeError(
+                    f"PT line {line_no} has no line-stop referencing PT stop {stop_no} -- see "
+                    "get_pt_lines for this line's real stops."
+                )
+            distr = self._item_by_key(
+                self.vissim.Net.TimeDistributions,
+                time_distribution_no,
+                "Time distribution",
+                self._collection_nos(self.vissim.Net.TimeDistributions),
+            )
+            entry.SetAttValue("DwellTmDistr", distr)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set PT line {line_no} stop {stop_no}'s dwell distribution to "
+                f"{time_distribution_no}: {exc}"
+            ) from exc
+        return self.get_pt_line_stop_dwell(line_no, stop_no)
+
+    def get_pt_line_stop_dwell(self, line_no: int, stop_no: int) -> dict[str, Any]:
+        try:
+            pt_line = self._item_by_key(
+                self.vissim.Net.PTLines, line_no, "PT line", self.available_pt_line_nos()
+            )
+            entry = self._pt_line_stop_by_key(pt_line, stop_no)
+            if entry is None:
+                raise RuntimeError(
+                    f"PT line {line_no} has no line-stop referencing PT stop {stop_no}."
+                )
+            return {
+                "line_no": str(line_no),
+                "stop_no": str(stop_no),
+                "dwell_tm_distr": str(entry.AttValue("DwellTmDistr") or ""),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read PT line {line_no} stop {stop_no}'s dwell distribution: {exc}"
+            ) from exc
+
+    # -----------------------------------------------------------------
     # Vehicle-type reference-assignment verbs -- QUEUE (v2a) unit
     #
     # COM ids/behavior verified EMPIRICALLY live against Vissim 2026

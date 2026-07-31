@@ -55,6 +55,8 @@ def _shadow_model(
     signal_heads: list[dict[str, Any]] | None = None,
     detectors: list[dict[str, Any]] | None = None,
     stop_signs: list[dict[str, Any]] | None = None,
+    pt_stops: list[dict[str, Any]] | None = None,
+    pt_lines: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -165,6 +167,13 @@ def _shadow_model(
     # the object classes above.
     if stop_signs is not None:
         shadow["stop_signs"] = stop_signs
+    # pt_stops/pt_lines deliberately OMITTED by default too (Q4 unit (7)) --
+    # same "most tests have nothing to do with this object class" reasoning
+    # as the object classes above.
+    if pt_stops is not None:
+        shadow["pt_stops"] = pt_stops
+    if pt_lines is not None:
+        shadow["pt_lines"] = pt_lines
     return shadow
 
 
@@ -5107,9 +5116,22 @@ def test_registry_size_matches_m3_1_catalog_port():
     # check (new _SIGNAL_HEAD_DETECTOR_POS_FIELDS entries), not a new
     # constraint either; conflict areas get no verb/constraint at all --
     # confirmed non-creatable via COM, a documented finding, not a gap)
-    # == 95.
+    # == 95, + 1 (Q4 unit (7), PT stop + PT line placement: pt_line_stop_not_
+    # found -- NOT a #-numbered catalog entry, this unit's ONE new constraint
+    # per its own "constraints.py minimal" instruction: covers set_pt_line_
+    # stop_dwell's entire preflight-existence requirement in one pass (the
+    # (line_no, stop_no) pair AND time_distribution_no, since that tool has
+    # NO _TOOL_TARGET_SPEC entry at all -- a two-part id, mirroring set_
+    # route_relative_flow's/set_des_speed_decision's own split); object_not_
+    # found already existed and was EXTENDED in place (new _TOOL_TARGET_SPEC/
+    # _OBJECT_CLASS_LABELS entries) to gate add_pt_stop/remove_pt_stop/add_
+    # pt_line/remove_pt_line, not added; remove_pt_stop's own reference-
+    # integrity refusal is inline in tools_edit.py (services.inpx_structure.
+    # find_id_references), not a new constraint either, mirroring remove_
+    # data_collection_point's own precedent)
+    # == 96.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 95
+    assert len(get_registry()) == 96
 
 
 def test_registry_has_unique_ids():
@@ -7091,3 +7113,116 @@ def test_add_priority_rule_marker_invalid_does_not_apply_to_other_tools():
     findings = run_checks("preflight", action, shadow, {})
 
     assert not any(f.constraint_id == "add_priority_rule_marker_invalid" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# pt_line_stop_not_found (refuse, preflight) -- Q4 unit (7)'s one new
+# constraint. Covers all three failure modes in one function: the line
+# itself missing, the line existing but not naming that stop, and a bogus
+# time_distribution_no -- see constraints.py's own module comment for why
+# this tool has NO _TOOL_TARGET_SPEC entry at all (a two-part id, mirroring
+# set_route_relative_flow's/set_des_speed_decision's own split).
+# ---------------------------------------------------------------------------
+
+_PT_LINES_FIXTURE = [
+    {
+        "no": "52004",
+        "name": "WB",
+        "veh_type": "300",
+        "entry_link": "13270462",
+        "dest_link": "12270123",
+        "dest_pos": 189.13,
+        "entry_tm_distr": None,
+        "link_seq": ["10909"],
+        "stops": [
+            {"pt_stop_no": "99569", "dwell_tm_distr": "20", "dwell_tm_def": "DISTRIBUTION", "active": True}
+        ],
+    },
+    {
+        "no": "52201",
+        "name": "NB",
+        "veh_type": "300",
+        "entry_link": "10900",
+        "dest_link": "12270123",
+        "dest_pos": 189.13,
+        "entry_tm_distr": None,
+        "link_seq": ["10900"],
+        "stops": [
+            {"pt_stop_no": "99569", "dwell_tm_distr": "20", "dwell_tm_def": "DISTRIBUTION", "active": True},
+            {"pt_stop_no": "13", "dwell_tm_distr": "20", "dwell_tm_def": "DISTRIBUTION", "active": True},
+        ],
+    },
+]
+_PT_TIME_DISTRIBUTIONS_FIXTURE = [
+    {"no": "10", "name": "Standard dwell", "type": "NORMAL", "mean_std_dev": {"mean_s": 10.0, "std_dev_s": 2.0}},
+    {"no": "20", "name": "BusDwell_0", "type": "EMPIRICAL", "mean_std_dev": {"mean_s": 20.0, "std_dev_s": None}},
+]
+
+
+def test_pt_line_stop_not_found_fires_when_line_missing():
+    shadow = _shadow_model(pt_lines=_PT_LINES_FIXTURE, time_distributions=_PT_TIME_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_pt_line_stop_dwell", line_no="999", stop_no="99569", time_distribution_no="10"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "pt_line_stop_not_found"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details["line_no"] == "999"
+    # set_pt_line_stop_dwell has NO _TOOL_TARGET_SPEC entry -- this check is
+    # the ONLY refusal for a bogus line_no (never object_not_found).
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_pt_line_stop_not_found_fires_when_stop_not_on_that_line():
+    shadow = _shadow_model(pt_lines=_PT_LINES_FIXTURE, time_distributions=_PT_TIME_DISTRIBUTIONS_FIXTURE)
+    # stop "13" exists on line 52201 but NOT on line 52004.
+    action = _action(
+        "set_pt_line_stop_dwell", line_no="52004", stop_no="13", time_distribution_no="10"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "pt_line_stop_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["line_no"] == "52004"
+    assert matches[0].details["stop_no"] == "13"
+    assert matches[0].details["available_stops"] == ["99569"]
+
+
+def test_pt_line_stop_not_found_fires_for_bogus_time_distribution():
+    shadow = _shadow_model(pt_lines=_PT_LINES_FIXTURE, time_distributions=_PT_TIME_DISTRIBUTIONS_FIXTURE)
+    action = _action(
+        "set_pt_line_stop_dwell", line_no="52004", stop_no="99569", time_distribution_no="999"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "pt_line_stop_not_found"]
+    assert len(matches) == 1
+    assert matches[0].details["distr_no"] == "999"
+    assert matches[0].details["available_distributions"] == ["10", "20"]
+
+
+def test_pt_line_stop_not_found_silent_when_everything_resolves():
+    shadow = _shadow_model(pt_lines=_PT_LINES_FIXTURE, time_distributions=_PT_TIME_DISTRIBUTIONS_FIXTURE)
+    # Reconnecting an EMPIRICAL BusDwell curve to a real stop -- the BusDwell
+    # story this unit's own task brief cites.
+    action = _action(
+        "set_pt_line_stop_dwell", line_no="52004", stop_no="99569", time_distribution_no="20"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "pt_line_stop_not_found" for f in findings)
+
+
+def test_pt_line_stop_not_found_does_not_apply_to_unrelated_tool():
+    shadow = _shadow_model(pt_lines=_PT_LINES_FIXTURE, time_distributions=_PT_TIME_DISTRIBUTIONS_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "pt_line_stop_not_found" for f in findings)

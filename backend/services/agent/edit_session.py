@@ -470,6 +470,53 @@ class VissimEditSession:
     def remove_priority_rule(self, no: int) -> None:
         self._ensure_connected().remove_priority_rule(no)
 
+    # Q4 unit (7): PT stop + PT line PLACEMENT (creation) -- see
+    # vissim_com.VissimController's own module comment for the full
+    # live-verified writeup (AddPTStop/AddPTLine are genuine native
+    # creates; RemovePTStop's own silent cascade-delete finding; the
+    # UpdateLinkSequence/no-AddPTLineStop scope cuts).
+
+    def add_pt_stop(
+        self,
+        link_no: int,
+        lane_index: int,
+        pos_m: float,
+        length_m: float | None = None,
+        name: str = "",
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_pt_stop(link_no, lane_index, pos_m, length_m, name)
+
+    def remove_pt_stop(self, no: int) -> None:
+        self._ensure_connected().remove_pt_stop(no)
+
+    def get_pt_stop(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_pt_stop(no)
+
+    def add_pt_line(
+        self,
+        entry_link_no: int,
+        dest_link_no: int,
+        dest_pos_m: float,
+        veh_type_no: int | None = None,
+        pt_stop_no: int | None = None,
+        name: str = "",
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_pt_line(
+            entry_link_no, dest_link_no, dest_pos_m, veh_type_no, pt_stop_no, name
+        )
+
+    def remove_pt_line(self, no: int) -> None:
+        self._ensure_connected().remove_pt_line(no)
+
+    def get_pt_line(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_pt_line(no)
+
+    def set_pt_line_stop_dwell(self, line_no: int, stop_no: int, time_distribution_no: int) -> dict[str, Any]:
+        return self._ensure_connected().set_pt_line_stop_dwell(line_no, stop_no, time_distribution_no)
+
+    def get_pt_line_stop_dwell(self, line_no: int, stop_no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_pt_line_stop_dwell(line_no, stop_no)
+
     # QUEUE (v2a) unit: vehicle-type distribution/function reference
     # verbs. Each reference field is a flat, independent attribute on the
     # VehicleType object itself -- no shared-sum semantics, no paired

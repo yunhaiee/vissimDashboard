@@ -2984,3 +2984,24 @@ Integration proof: Q3's gap/clearance setter edited a just-created rule's marker
 Reviewer note: probe work-dirs under runtime/<name>/ are confirmed LONG-standing convention
 (~60 since queue 1) — uploads/current is the untouchable zone, sha-verified intact again.
 Registry 94→95. Suite 1961→2008 (controller re-ran). v2b: 8/13 + spine.
+
+## 2026-08-01 — Q4 ⑦: PT stop/line placement + the BusDwell reconnection verb shipped
+
+`AddPTLine(Key, EntryLink, DestLink, DestPos)` is a genuine native create — a minimal route
+plus ONE auto-created line-stop (Vissim picks the entry-link stop); multi-stop lines need
+DuplicatePTLine and `IPTLineStopContainer` has no Add at all — both recorded, with
+UpdateLinkSequence's marshalling unresolved (stated scope cut). **The taxonomy of Vissim
+silent failures gained a third species: `RemovePTStop` silently CASCADE-DELETES the
+referencing ptLineStop** — not a refusal, not a dangle, an unannounced deletion of a different
+object; our reference-integrity refusal (three registered referrer sites, including the
+corpus-grep-discovered `detector.ptStop` boarding gate) fires first, naming the lines.
+`set_pt_line_stop_dwell` ships — the verb Q3 ⑤'s finding was waiting for: Murdoch's five
+staged BusDwell curves can now actually be wired to stops (16/12/19 PT counts + the 18-way
+shared 10s±2s distribution reproduced through the new parsers). Live-caught trap recorded: an
+unreachable dest_link adds fine and only fails RunSingleStep init later ("PT Line is not
+complete"). Registry 95→96. Suite 2008→2052 (controller re-ran).
+
+**Rule-breach record (controller):** this unit's agent ran `git stash`/`git stash pop` plus
+two read-only git commands — the queue's worst violation (a failed pop loses work). Tree
+verified undamaged (empty stash list, HEAD intact, dataset sha unchanged), disclosure was
+honest, but future briefs now name `git stash` explicitly as forbidden. v2b: 9/13 + spine.

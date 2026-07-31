@@ -136,6 +136,15 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # entries/etc above exactly). Required by BOTH postwrite checks, same as
     # every flat entry above.
     "link_lanes": "id",
+    # Q4 unit (7): PT stops/lines have a genuine single-token identity, their
+    # own "no" -- no flattening needed (mirrors driving_behaviors/time_
+    # distributions/des_speed_distributions/vehicle_types above). The FLAT
+    # pt_line_stops list tools_network._flatten_pt_line_stops builds is the
+    # write-target one -- a ptLineStop's own identity is the (line_no,
+    # stop_no) pair, mirroring priority_rule_markers/routes/etc exactly.
+    "pt_stops": "no",
+    "pt_lines": "no",
+    "pt_line_stops": "id",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -450,6 +459,19 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "value_field": "blocked_vehicle_classes",
         "none_means": "not_persisted",
     },
+    # Q4 unit (7): set_pt_line_stop_dwell. TWO-part identity (line_no +
+    # stop_no -- a ptLineStop has no single-token identity in Vissim itself,
+    # mirroring priority_rule_markers'/routes'/vehicle_composition_entries'
+    # own precedent exactly). none_means "not_persisted": dwellTmDistr is a
+    # plain XML attribute the parser can always see whenever the ptLineStop
+    # element itself exists (verified live -- backend/tools/
+    # probe_pt_stops_lines.py -- no opaque-blob case like signal cycle_time).
+    "set_pt_line_stop_dwell": {
+        "object_class": "pt_line_stops",
+        "id_param_parts": ("line_no", "stop_no"),
+        "value_field": "dwell_tm_distr",
+        "none_means": "not_persisted",
+    },
 }
 
 # v2a unit ⑧: ``set_des_speed_decision`` is the first write tool whose action
@@ -580,6 +602,21 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
     # no entry at all -- a leaf object class not in _SHADOW_OBJECT_ID_FIELDS,
     # same as signal_heads/detectors/queue_counters above).
     "add_priority_rule": frozenset({"priority_rule_markers"}),
+    # Q4 unit (7): add_pt_stop's own sanctioned action creates a brand-new
+    # "pt_stops" entry -- opted in because THIS unit's own
+    # _SHADOW_OBJECT_ID_FIELDS addition newly makes "pt_stops" a
+    # target-persisted-tracked object class (unlike signal_heads/detectors/
+    # stop_signs, which stayed untracked, needing no such entry at all).
+    # add_pt_line's own sanctioned action creates a brand-new "pt_lines"
+    # entry AND, per vissim_com.VissimController.add_pt_line's own module
+    # comment, exactly ONE brand-new "pt_line_stops" entry too (AddPTLine
+    # auto-creates one line-stop as a byproduct) -- without this second
+    # class also opted in, every successful add_pt_line call would be
+    # refused+rolled-back by postwrite's own diff, the same class of live-
+    # caught defect Q4 unit (5)'s add_connector needed its own
+    # "conflict_areas" addition for.
+    "add_pt_stop": frozenset({"pt_stops"}),
+    "add_pt_line": frozenset({"pt_lines", "pt_line_stops"}),
 }
 
 # Q4 unit (3): the REMOVAL-side mirror of ``_ALLOWS_NEW_OBJECTS_IN`` above --
@@ -609,6 +646,13 @@ _ALLOWS_REMOVED_OBJECTS_IN: dict[str, frozenset[str]] = {
     # entry above ("stop_signs" needs no entry -- leaf object class, not in
     # _SHADOW_OBJECT_ID_FIELDS, same as remove_signal_head/remove_detector).
     "remove_priority_rule": frozenset({"priority_rule_markers"}),
+    # Q4 unit (7): remove_pt_stop's own sanctioned action removes a "pt_stops"
+    # entry; remove_pt_line's own sanctioned action removes a "pt_lines"
+    # entry AND every one of its own "pt_line_stops" entries atomically
+    # (COM RemovePTLine, verified live) -- the removal-side mirror of
+    # add_pt_stop/add_pt_line's own entries above.
+    "remove_pt_stop": frozenset({"pt_stops"}),
+    "remove_pt_line": frozenset({"pt_lines", "pt_line_stops"}),
 }
 
 # QUEUE 3 (v2a) unit 3's SECOND regression fix, found live-testing this same

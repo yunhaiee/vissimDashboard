@@ -59,6 +59,9 @@ EXPECTED_TOOL_NAMES = {
     "get_driving_behaviors",
     "get_run_kpis",
     "compare_scenarios",
+    # Q4 unit (7) adds get_pt_stops + get_pt_lines.
+    "get_pt_stops",
+    "get_pt_lines",
 }
 
 # M2.3's tools_edit.py registers these write-tier tools, and M2.4's
@@ -142,6 +145,15 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "remove_stop_sign",
     "add_priority_rule",
     "remove_priority_rule",
+    # Q4 unit (7) adds 5 PT stop + PT line placement verbs (COM CREATE/
+    # REMOVE, see tools_edit.py's own docstring) -- add_pt_stop/remove_pt_
+    # stop, add_pt_line/remove_pt_line, set_pt_line_stop_dwell (the BusDwell
+    # story's missing verb, Q3 unit 5).
+    "add_pt_stop",
+    "remove_pt_stop",
+    "add_pt_line",
+    "remove_pt_line",
+    "set_pt_line_stop_dwell",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -2627,6 +2639,10 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "detectors",
         # Q4 unit (6): stop-sign placement.
         "stop_signs",
+        # Q4 unit (7): PT stop + PT line placement.
+        "pt_stops",
+        "pt_lines",
+        "pt_line_stops",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -3515,3 +3531,242 @@ def test_get_time_distributions_unfiltered_call_on_large_network_is_capped_and_t
     assert len(data["time_distributions"]) == 60  # _TIME_DISTRIBUTIONS_DEFAULT_CAP
     assert data["truncated"] is True
     assert "time_distribution_no" in data["hint"]
+
+
+# ---------------------------------------------------------------------------
+# get_pt_stops / get_pt_lines -- Q4 unit (7): PT stop + PT line placement.
+# Fixture uses the REAL nesting live-verified by backend/tools/
+# probe_pt_stops_lines.py ("BRT Priority Texas.US") -- <ptStops>/<ptLines>
+# top-level sections, a ptLine's own <lineStops>/<depTimes>/<linkSeq>
+# children, and the real referrer shapes (a detector's own "ptStop"
+# attribute, and a SEPARATE partialPTLineStop object family under
+# vehicleRoutingDecisionsPartialPT) -- NOT the pre-existing
+# time_distribution_fixture_inpx's own synthetic (and, per this unit's own
+# probe, unrealistic) vehClassDwellTimeDistribution-inside-ptLineStop
+# nesting, which this unit does not touch or rely on.
+# ---------------------------------------------------------------------------
+
+
+def test_get_pt_stops_on_demo_data_is_empty_but_well_formed():
+    envelope = _dispatch("get_pt_stops")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "pt_stops": [], "truncated": False}
+    assert "hint" not in envelope["data"]
+
+
+def test_get_pt_lines_on_demo_data_is_empty_but_well_formed():
+    envelope = _dispatch("get_pt_lines")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"] == {"count": 0, "pt_lines": [], "truncated": False}
+    assert "hint" not in envelope["data"]
+
+
+_PT_STOPS_LINES_FIXTURE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <ptStops>
+    <ptStop no="99569" name="Main St Stop" lane="13270462 1" pos="41.75" length="15.24" anmid=""/>
+    <ptStop no="13" name="" lane="56 2" pos="49.76" length="15.24" anmid=""/>
+    <ptStop no="7" name="Unreferenced platform" lane="632 1" pos="10.0" length="15.24" anmid=""/>
+  </ptStops>
+  <ptLines>
+    <ptLine no="52004" name="WB" vehType="300" desSpeedDistr="12" entryLink="13270462"
+            destLink="12270123" destPos="189.13" entTmOffset="0" slackTmFrac="1">
+      <depTimes>
+        <departureTime dep="0" occup="40" teleCour="0"/>
+        <departureTime dep="900" occup="40" teleCour="0"/>
+      </depTimes>
+      <lineStops>
+        <ptLineStop ptStop="99569" dwellTmDistr="10" dwellTmDef="DISTRIBUTION" active="true"
+                    alightL="true" alightR="true" boardL="true" boardR="true"/>
+      </lineStops>
+      <linkSeq>
+        <intObjectRef key="13270462"/>
+      </linkSeq>
+    </ptLine>
+    <ptLine no="52201" name="NB" vehType="300" desSpeedDistr="1" entryLink="10900"
+            destLink="12270123" destPos="189.13" entTmOffset="0" slackTmFrac="1" entryTmDistr="15">
+      <depTimes>
+        <departureTime dep="840" occup="40" teleCour="0"/>
+      </depTimes>
+      <lineStops>
+        <ptLineStop ptStop="99569" dwellTmDistr="10" dwellTmDef="DISTRIBUTION" active="true"/>
+        <ptLineStop ptStop="13" dwellTmDistr="20" dwellTmDef="DISTRIBUTION" active="false"/>
+      </lineStops>
+      <linkSeq>
+        <intObjectRef key="10900"/>
+        <intObjectRef key="13270461"/>
+      </linkSeq>
+    </ptLine>
+  </ptLines>
+  <detectors>
+    <detector no="541" name="Open boarding gate" lane="13270462 1" pos="23.81" length="0.4"
+              ptStop="99569" sc="21" portNo="1" type="STANDARD"/>
+  </detectors>
+</network>
+"""
+
+
+@pytest.fixture()
+def pt_stops_lines_fixture_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "pt_stops_lines.inpx"
+    path.write_text(_PT_STOPS_LINES_FIXTURE_INPX, encoding="utf-8")
+    return path
+
+
+def test_get_pt_stops_on_real_elements(pt_stops_lines_fixture_inpx: Path):
+    tools_network.set_active_inpx(pt_stops_lines_fixture_inpx)
+
+    envelope = _dispatch("get_pt_stops")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 3
+    by_no = {s["no"]: s for s in data["pt_stops"]}
+
+    # no=99569: referenced by TWO real ptLineStops (lines 52004 and 52201)
+    # AND the PT-boarding detector.
+    stop = by_no["99569"]
+    assert stop["name"] == "Main St Stop"
+    assert stop["link"] == "13270462"
+    assert stop["lane_index"] == 1
+    assert stop["pos"] == 41.75
+    assert stop["length"] == 15.24
+    assert stop["referenced_by"]["pt_line_stops"] == {
+        "count": 2, "ids": ["52004.99569", "52201.99569"], "truncated": False,
+    }
+    assert stop["referenced_by"]["detectors"] == {"count": 1, "ids": ["541"], "truncated": False}
+    assert stop["reference_count"] == 3
+
+    # no=13: referenced by ONE ptLineStop only.
+    stop13 = by_no["13"]
+    assert stop13["referenced_by"]["pt_line_stops"] == {"count": 1, "ids": ["52201.13"], "truncated": False}
+    assert stop13["reference_count"] == 1
+
+    # no=7: genuinely unreferenced.
+    stop7 = by_no["7"]
+    assert stop7["reference_count"] == 0
+    assert stop7["referenced_by"]["pt_line_stops"] == {"count": 0, "ids": [], "truncated": False}
+
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_get_pt_stops_filters_by_pt_stop_no(pt_stops_lines_fixture_inpx: Path):
+    tools_network.set_active_inpx(pt_stops_lines_fixture_inpx)
+
+    envelope = _dispatch("get_pt_stops", pt_stop_no="13")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"]["count"] == 1
+    assert envelope["data"]["pt_stops"][0]["no"] == "13"
+
+
+def test_get_pt_stops_filters_by_link_no(pt_stops_lines_fixture_inpx: Path):
+    tools_network.set_active_inpx(pt_stops_lines_fixture_inpx)
+
+    envelope = _dispatch("get_pt_stops", link_no="632")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"]["count"] == 1
+    assert envelope["data"]["pt_stops"][0]["no"] == "7"
+
+
+def test_get_pt_stops_rejects_unexpected_params(pt_stops_lines_fixture_inpx: Path):
+    tools_network.set_active_inpx(pt_stops_lines_fixture_inpx)
+
+    envelope = _dispatch("get_pt_stops", bogus_param="nope")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+def test_get_pt_lines_on_real_elements(pt_stops_lines_fixture_inpx: Path):
+    tools_network.set_active_inpx(pt_stops_lines_fixture_inpx)
+
+    envelope = _dispatch("get_pt_lines")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 2
+    by_no = {pl["no"]: pl for pl in data["pt_lines"]}
+
+    line1 = by_no["52004"]
+    assert line1["name"] == "WB"
+    assert line1["veh_type"] == "300"
+    assert line1["entry_link"] == "13270462"
+    assert line1["dest_link"] == "12270123"
+    assert line1["dest_pos"] == 189.13
+    assert line1["entry_tm_distr"] is None  # absent on this line -- None, not ""
+    assert line1["departure_count"] == 2
+    assert line1["link_seq"] == ["13270462"]
+    assert line1["link_seq_count"] == 1
+    assert line1["link_seq_truncated"] is False
+    assert line1["stops"] == [
+        {"pt_stop_no": "99569", "dwell_tm_distr": "10", "dwell_tm_def": "DISTRIBUTION", "active": True}
+    ]
+
+    line2 = by_no["52201"]
+    assert line2["entry_tm_distr"] == "15"  # a real, present optional reference
+    assert line2["departure_count"] == 1
+    assert line2["link_seq"] == ["10900", "13270461"]
+    assert len(line2["stops"]) == 2
+    assert line2["stops"][1] == {
+        "pt_stop_no": "13", "dwell_tm_distr": "20", "dwell_tm_def": "DISTRIBUTION", "active": False
+    }
+
+    assert data["truncated"] is False
+    assert "hint" not in data
+
+
+def test_get_pt_lines_filters_by_pt_line_no(pt_stops_lines_fixture_inpx: Path):
+    tools_network.set_active_inpx(pt_stops_lines_fixture_inpx)
+
+    envelope = _dispatch("get_pt_lines", pt_line_no="52201")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"]["count"] == 1
+    assert envelope["data"]["pt_lines"][0]["no"] == "52201"
+
+
+def test_get_pt_lines_rejects_unexpected_params(pt_stops_lines_fixture_inpx: Path):
+    tools_network.set_active_inpx(pt_stops_lines_fixture_inpx)
+
+    envelope = _dispatch("get_pt_lines", bogus_param="nope")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+
+
+def test_build_shadow_model_parses_pt_stops_and_lines_from_real_xml(pt_stops_lines_fixture_inpx: Path):
+    shadow = tools_network.build_shadow_model(pt_stops_lines_fixture_inpx)
+
+    assert len(shadow["pt_stops"]) == 3
+    assert len(shadow["pt_lines"]) == 2
+    # the FLAT pt_line_stops list guardrails.py's postwrite machinery reads.
+    flat = shadow["pt_line_stops"]
+    ids = {entry["id"] for entry in flat}
+    assert ids == {"52004.99569", "52201.99569", "52201.13"}
+    by_id = {entry["id"]: entry for entry in flat}
+    assert by_id["52201.13"]["line_no"] == "52201"
+    assert by_id["52201.13"]["stop_no"] == "13"
+    assert by_id["52201.13"]["dwell_tm_distr"] == "20"
+
+
+def test_get_pt_stops_unfiltered_call_on_large_network_is_capped_and_truncated(tmp_path: Path):
+    entries = "".join(
+        f'<ptStop no="{n}" name="s{n}" lane="101 1" pos="{n}.0" length="15"/>' for n in range(1, 90)
+    )
+    path = tmp_path / "many_pt_stops.inpx"
+    path.write_text(f"<network><ptStops>{entries}</ptStops></network>", encoding="utf-8")
+    tools_network.set_active_inpx(path)
+
+    envelope = _dispatch("get_pt_stops")
+
+    assert envelope["status"] == "ok"
+    data = envelope["data"]
+    assert data["count"] == 89
+    assert len(data["pt_stops"]) == 60  # _PT_STOPS_DEFAULT_CAP
+    assert data["truncated"] is True
+    assert "pt_stop_no" in data["hint"]

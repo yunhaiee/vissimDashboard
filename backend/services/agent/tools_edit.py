@@ -1249,6 +1249,303 @@ def remove_priority_rule(params: RemovePriorityRuleParams) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# add_pt_stop(link_no, lane_index, pos_m, length_m=None, name="") /
+# remove_pt_stop(no)
+#
+# add_pt_line(entry_link_no, dest_link_no, dest_pos_m, veh_type_no=None,
+#             pt_stop_no=None, name="") / remove_pt_line(no)
+#
+# set_pt_line_stop_dwell(line_no, stop_no, time_distribution_no)
+#
+# Q4 unit (7) -- PT stop + PT line PLACEMENT (genesis), the natural home of
+# the BusDwell finding (Q3 unit 5, docs/phase2/DECISIONS.md 2026-07-31:
+# Murdoch has 16 real ptStops / 12 ptLines / 19 ptLineStops, every LIVE
+# dwell assignment shares ONE 10s+-2s NORMAL distribution, and 5 staged
+# BusDwell_0-4 empirical curves sit unreferenced -- built but never wired
+# in). Probed before shipping (backend/tools/probe_pt_stops_lines.py, "BRT
+# Priority Texas.US" clone).
+#
+# **PT stops are a genuine, clean native create/remove** -- the SAME shape
+# add_stop_sign/add_signal_head/add_queue_counter already use
+# (``Net.PTStops.AddPTStop(Key, Lane, Pos)``, no silent-no-op landmine).
+#
+# **PT lines are ALSO a genuine, working native create -- correcting this
+# unit's own task-brief worry that line creation would need deep route
+# coding.** ``Net.PTLines.AddPTLine(Key, EntryLink, DestLink, DestPos)``
+# genuinely creates a new line (confirmed via a real GetAll() diff, unlike
+# Q4 unit (6)'s AddPriorityRule) and comes with a MINIMAL default route (the
+# entry link only) AND exactly one auto-created stop for free -- literally
+# "a line on a start link with default route", this unit's own stated
+# minimal-scope escape hatch, met exactly. See
+# ``vissim_com.VissimController``'s own PT-stop/PT-line module comment for
+# the full live-verified writeup, including the TWO honest, stated scope
+# cuts this unit ships with rather than silently working around:
+#   1. ``UpdateLinkSequence``'s real argument shape is UNRESOLVED (two
+#      candidate shapes both failed "array contains too few elements") --
+#      a genesis line's route stays Vissim's own minimal default; a real
+#      follow-up, not pursued further here.
+#   2. There is NO COM create surface on a line's own LineStops collection
+#      AT ALL (confirmed via the type-library scan) -- a genesis line is
+#      capped at the ONE auto-created stop AddPTLine itself provides;
+#      ``pt_stop_no`` merely REPOINTS that one stop (a confirmed-writable
+#      ``SetAttValue`` on the auto-created entry), it does not add a second
+#      one. A multi-stop line needs an existing/duplicated line, not this
+#      genesis verb.
+#
+# **LIVE-CAUGHT (backend/tools/pt_stops_lines_live_check.py [A.7]):
+# dest_link_no must be genuinely REACHABLE from entry_link_no.** An
+# unreachable pair ADDS successfully (no exception) but the resulting line
+# fails Vissim's own RunSingleStep init later with "Public Transport Line is
+# not complete" -- confirmed by contrast: the SAME check against a real
+# template line's own (entry_link, dest_link, dest_pos) triple (a
+# guaranteed-reachable pair) passed cleanly, with zero departure times
+# either time (ruling out "needs a timetable" as the cause). No preflight
+# check validates reachability (this unit's own "constraints.py minimal"
+# scope) -- add_pt_line's own docstring states this explicitly.
+#
+# **remove_pt_stop is this unit's one real reference-integrity refusal --
+# and it exists for a WORSE reason than remove_data_collection_point's own
+# precedent (Q4 unit (2)).** Live-verified: Vissim's own RemovePTStop on a
+# stop a real ptLineStop still references does NOT merely dangle the
+# reference -- it SILENTLY CASCADE-DELETES the referencing ptLineStop entry
+# outright, with zero exception, zero warning (see
+# ``services.inpx_structure.ID_REFERENCE_SITES["pt_stops"]``'s own comment
+# for the three real referrer sites this unit's own corpus-wide scan found:
+# ptLineStop, a separate partialPTLineStop object family, and a
+# PT-boarding-gate detector). This check runs BEFORE ever calling COM.
+# remove_pt_line needs no such check -- a PT line is a leaf object for
+# reference-integrity purposes (nothing else in the schema references one
+# by its own ``no``, per the same corpus-wide scan).
+# ---------------------------------------------------------------------------
+
+
+class AddPtStopParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_no: str
+    lane_index: int = Field(ge=1)
+    pos_m: float
+    #: Platform length in metres. Optional -- AddPTStop's own COM signature
+    #: has no Length argument at all (Vissim's own out-of-the-box default is
+    #: 15.0 m); given, applied via a follow-up SetAttValue (live-verified
+    #: working).
+    length_m: float | None = None
+    name: str = ""
+
+
+@tool(name="add_pt_stop", tier="write", provider="edit", params=AddPtStopParams)
+def add_pt_stop(params: AddPtStopParams) -> dict[str, Any]:
+    """Add a PT stop (bus/rail platform) on one lane of link_no at pos_m metres (COM AddPTStop), optionally with an explicit platform length_m (Vissim's own default is 15.0 m if omitted) on the active edit session's working network -- PT infrastructure genesis. Wire it into a route with add_pt_line's own pt_stop_no, or by editing an existing line."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_no, "link_no")
+    result = session.add_pt_stop(link_no, params.lane_index, params.pos_m, params.length_m, params.name)
+    session.persist()
+
+    written_value: dict[str, Any] = {
+        "link": params.link_no,
+        "lane_index": params.lane_index,
+        "pos": _round_pos_m(params.pos_m),
+    }
+    readback_value: dict[str, Any] = {
+        "link": result["link"],
+        "lane_index": result["lane_index"],
+        "pos": _round_pos_m(result["pos"]),
+    }
+    # length is only ever PART OF THE CLAIM when the caller actually asked
+    # for it -- mirrors add_stop_sign's own sc_no/sg_no precedent: an
+    # omitted field (Vissim's own 15.0 m default silently applies) must
+    # never become an unverifiable "the caller asked for this exact value"
+    # claim.
+    if params.length_m is not None:
+        written_value["length"] = _round_pos_m(params.length_m)
+        readback_value["length"] = _round_pos_m(result["length"])
+    verification = {"written_value": written_value, "readback_value": readback_value}
+    message = (
+        f"PT stop {result['no']} added on link {params.link_no} lane {params.lane_index} at "
+        f"{params.pos_m} m (platform length {result['length']} m)."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "name": result["name"], "length": result["length"]},
+    }
+
+
+class RemovePtStopParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(name="remove_pt_stop", tier="write", provider="edit", params=RemovePtStopParams)
+def remove_pt_stop(params: RemovePtStopParams) -> dict[str, Any]:
+    """Remove a PT stop (COM RemovePTStop) on the active edit session's working network -- REFUSES (never touches the file) when a real PT-line stop, partial-route PT-line stop, or PT-boarding detector still references this stop: Vissim's own removal does NOT merely dangle the reference, it SILENTLY CASCADE-DELETES the referencing PT-line stop entry outright (live-verified) -- naming every referrer here is the only guard against that."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+
+    # COM itself does NOT refuse this -- it silently cascade-deletes the
+    # referencing ptLineStop entry (worse than remove_data_collection_
+    # point's own dangling-reference precedent). Check reference integrity
+    # ourselves, against the CURRENT working copy XML, via the spine's
+    # registry, BEFORE ever calling COM.
+    root = ET.parse(session.working_inpx).getroot()
+    referrers = find_id_references(root, "pt_stops", params.no)
+    if referrers:
+        raise ReferenceIntegrityError(f"Cannot remove PT stop {params.no}", referrers)
+
+    session.remove_pt_stop(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "pt_stops", params.no)
+    verification = _remove_verification(params.no, still_present)
+    return {
+        "message": f"PT stop {params.no} removed.",
+        "verification": verification,
+    }
+
+
+class AddPtLineParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entry_link_no: str
+    dest_link_no: str
+    dest_pos_m: float
+    #: Optional -- not an AddPTLine argument at all, assigned via a
+    #: follow-up SetAttValue.
+    veh_type_no: str | None = None
+    #: Optional -- repoints the ONE auto-created line-stop AddPTLine itself
+    #: provides to the caller's actual intent (Vissim's own default pick is
+    #: whichever real PT stop sits on entry_link_no). Does NOT add a second
+    #: stop -- there is no COM surface to do that at all (see this module's
+    #: own section comment).
+    pt_stop_no: str | None = None
+    name: str = ""
+
+
+@tool(name="add_pt_line", tier="write", provider="edit", params=AddPtLineParams)
+def add_pt_line(params: AddPtLineParams) -> dict[str, Any]:
+    """Create a PT line (bus/rail route) from entry_link_no to (dest_link_no, dest_pos_m) (COM AddPTLine) on the active edit session's working network -- genesis creation, with two HONEST, PROBE-CONFIRMED scope limits, stated not hidden: the new line's own route is Vissim's own MINIMAL default (the entry link only -- see get_pt_lines' link_seq field to inspect it; full multi-link route editing has no working COM path today), and the line is capped at exactly ONE stop, which Vissim itself auto-creates (defaulting to whichever real PT stop sits on entry_link_no) -- give pt_stop_no to repoint that one stop to your actual intent instead (there is no COM surface to add a SECOND stop to a genesis line at all; a multi-stop line requires editing an existing line, not this verb). dest_link_no MUST be genuinely reachable from entry_link_no (a real transit route's own intent, not an arbitrary link) -- live-caught: an unreachable pair ADDS successfully with no error, but Vissim's own RunSingleStep initialization later refuses with "Public Transport Line is not complete"; this only surfaces when the network is actually run, never at add time, so pick the destination carefully. veh_type_no optionally assigns the line's vehicle type. Follow up with set_pt_line_stop_dwell to wire a dwell-time distribution to the line's one stop."""
+    session = _require_session()
+    entry_link_no = _coerce_id(params.entry_link_no, "entry_link_no")
+    dest_link_no = _coerce_id(params.dest_link_no, "dest_link_no")
+    veh_type_no = (
+        _coerce_id(params.veh_type_no, "veh_type_no") if params.veh_type_no is not None else None
+    )
+    pt_stop_no = (
+        _coerce_id(params.pt_stop_no, "pt_stop_no") if params.pt_stop_no is not None else None
+    )
+
+    result = session.add_pt_line(
+        entry_link_no, dest_link_no, params.dest_pos_m, veh_type_no, pt_stop_no, params.name
+    )
+    session.persist()
+
+    written_value: dict[str, Any] = {
+        "entry_link": params.entry_link_no,
+        "dest_link": params.dest_link_no,
+        "dest_pos": _round_pos_m(params.dest_pos_m),
+    }
+    readback_value: dict[str, Any] = {
+        "entry_link": result["entry_link"],
+        "dest_link": result["dest_link"],
+        "dest_pos": _round_pos_m(result["dest_pos"]),
+    }
+    # veh_type/pt_stop_no are only ever PART OF THE CLAIM when the caller
+    # actually asked for them -- the same add_stop_sign sc_no/sg_no
+    # precedent this whole module follows: an omitted field (Vissim's own
+    # auto-pick applies) must never become an unverifiable claim.
+    if params.veh_type_no is not None:
+        written_value["veh_type"] = params.veh_type_no
+        readback_value["veh_type"] = result.get("veh_type") or ""
+    if params.pt_stop_no is not None:
+        written_value["pt_stop_no"] = params.pt_stop_no
+        readback_stop = result["stops"][0]["pt_stop_no"] if result.get("stops") else ""
+        readback_value["pt_stop_no"] = readback_stop
+    verification = {"written_value": written_value, "readback_value": readback_value}
+
+    stop_note = ""
+    if result.get("stops"):
+        auto_stop = result["stops"][0]
+        stop_note = (
+            f" Auto-created stop: PT stop {auto_stop['pt_stop_no']} "
+            f"(dwell distribution {auto_stop['dwell_tm_distr']})."
+        )
+    message = (
+        f"PT line {result['no']} added from link {params.entry_link_no} to link "
+        f"{params.dest_link_no}@{params.dest_pos_m}m (Vissim's minimal default route: entry "
+        f"link only).{stop_note}"
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {
+            "no": result["no"],
+            "name": result["name"],
+            "link_seq": result["link_seq"],
+            "stops": result["stops"],
+        },
+    }
+
+
+class RemovePtLineParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(name="remove_pt_line", tier="write", provider="edit", params=RemovePtLineParams)
+def remove_pt_line(params: RemovePtLineParams) -> dict[str, Any]:
+    """Remove a PT line AND its own stop(s) atomically (COM RemovePTLine) on the active edit session's working network -- nothing else in the schema references a PT line by its own no (verified via a corpus-wide static scan, this unit's own probe), so no reference-integrity check runs here."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+    session.remove_pt_line(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "pt_lines", params.no)
+    verification = _remove_verification(params.no, still_present)
+    return {
+        "message": f"PT line {params.no} removed.",
+        "verification": verification,
+    }
+
+
+class SetPtLineStopDwellParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    line_no: str
+    stop_no: str
+    time_distribution_no: str
+
+
+@tool(
+    name="set_pt_line_stop_dwell",
+    tier="write",
+    provider="edit",
+    params=SetPtLineStopDwellParams,
+)
+def set_pt_line_stop_dwell(params: SetPtLineStopDwellParams) -> dict[str, Any]:
+    """Wire time_distribution_no as PT line line_no's stop stop_no's own dwell-time distribution (COM SetAttValue('DwellTmDistr', ...) on the matching ptLineStop entry) on the active edit session's working network -- the BusDwell story's missing verb: connects an already-staged dwell-time distribution (e.g. an EMPIRICAL curve built in the GUI but never wired to any real stop -- see get_time_distributions' own referenced_by field) to a real line-stop. time_distribution_no can reference EITHER a NORMAL or an EMPIRICAL distribution (Vissim samples dwell time from either kind identically); use get_pt_lines first to find the real (line_no, stop_no) pairs this line actually has."""
+    session = _require_session()
+    line_no = _coerce_id(params.line_no, "line_no")
+    stop_no = _coerce_id(params.stop_no, "stop_no")
+    time_distribution_no = _coerce_id(params.time_distribution_no, "time_distribution_no")
+
+    session.set_pt_line_stop_dwell(line_no, stop_no, time_distribution_no)
+    readback = session.get_pt_line_stop_dwell(line_no, stop_no)
+    session.persist()
+
+    verification: dict[str, Any] = {
+        "written_value": params.time_distribution_no,
+        "readback_value": readback["dwell_tm_distr"],
+    }
+    message = (
+        f"PT line {params.line_no} stop {params.stop_no} dwell-time distribution set to "
+        f"{params.time_distribution_no}."
+    )
+    return {"message": message, "verification": verification}
+
+
+# ---------------------------------------------------------------------------
 # set_des_speed_distribution_points(distribution_no, points)
 #
 # QUEUE 3 (v2a) unit 3 -- the "legitimate CC1 route" showcase. ATOMIC

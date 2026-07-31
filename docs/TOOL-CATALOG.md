@@ -190,7 +190,12 @@ the PAIRS and distribution-assignment line items).**
   spine's reference-integrity guard — COM itself does NOT refuse dangling removals;
   nodes deferred)
 - ⬜ Parking lots / zones
-- ⬜ PT lines / stops / timetables
+- ✅ PT lines / stops (timetables deferred) — shipped (Q4 ⑦: add/remove PT stops and
+  lines — AddPTLine natively creates a minimal route + one auto line-stop; multi-stop
+  needs DuplicatePTLine, departure-time creation tractable but unwired, both recorded;
+  `set_pt_line_stop_dwell` wires dwell distributions — the BusDwell reconnection verb.
+  RemovePTStop natively CASCADE-DELETES referencing line-stops silently — we refuse
+  first, naming the lines)
 - ⬜ Pedestrian inputs & areas
 - ⬜ New intersection construction (composite of the above)
 

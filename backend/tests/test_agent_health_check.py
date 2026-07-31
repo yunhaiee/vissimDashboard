@@ -139,7 +139,13 @@ def test_health_check_runner_against_demo_dataset():
     # it needs a proposed action's own "markers" param, which a whole-network
     # dataset scan has no equivalent of, so it does not opt into the dataset
     # scan either, same shape as every addition above.
-    assert report["summary"]["edit_time_only_n"] == 81
+    # 82, not 81: Q4 unit (7) (PT stop + PT line placement) added one
+    # preflight-only constraint, pt_line_stop_not_found, for the new
+    # set_pt_line_stop_dwell tool -- it needs a proposed action's own
+    # line_no/stop_no/time_distribution_no params, which a whole-network
+    # dataset scan has no equivalent of, so it does not opt into the dataset
+    # scan either, same shape as every addition above.
+    assert report["summary"]["edit_time_only_n"] == 82
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

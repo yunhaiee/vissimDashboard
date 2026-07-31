@@ -36,6 +36,9 @@ def _shadow_model(
     driving_behaviors: list[dict[str, Any]] | None = None,
     link_behavior_type_assignments: list[dict[str, Any]] | None = None,
     link_lanes: list[dict[str, Any]] | None = None,
+    pt_stops: list[dict[str, Any]] | None = None,
+    pt_lines: list[dict[str, Any]] | None = None,
+    pt_line_stops: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -92,6 +95,14 @@ def _shadow_model(
         # -- see tools_network._parse_link_lanes for the real shape this
         # mirrors.
         "link_lanes": link_lanes if link_lanes is not None else [],
+        # Q4 unit (7): pt_stops/pt_lines have a single-token "no" identity
+        # (no flattening needed); pt_line_stops is the FLAT list (id =
+        # "{line_no}.{stop_no}") -- see tools_network._parse_pt_stops/
+        # _parse_pt_lines/_flatten_pt_line_stops for the real shapes these
+        # mirror.
+        "pt_stops": pt_stops if pt_stops is not None else [],
+        "pt_lines": pt_lines if pt_lines is not None else [],
+        "pt_line_stops": pt_line_stops if pt_line_stops is not None else [],
     }
 
 
@@ -142,6 +153,20 @@ def _priority_rule_marker_entry(
         "gap_headway": {"gap_time_s": gap_time_s, "headway_m": headway_m},
         "max_speed": 180.0,
         "effect_driv_dir": "FORWARD",
+    }
+
+
+def _pt_line_stop_entry(
+    line_no: str, stop_no: str, *, dwell_tm_distr: str = "10", dwell_tm_def: str = "DISTRIBUTION",
+    active: bool = True,
+) -> dict[str, Any]:
+    return {
+        "id": f"{line_no}.{stop_no}",
+        "line_no": line_no,
+        "stop_no": stop_no,
+        "dwell_tm_distr": dwell_tm_distr,
+        "dwell_tm_def": dwell_tm_def,
+        "active": active,
     }
 
 
@@ -2446,6 +2471,180 @@ def test_postwrite_diff_still_flags_an_unopted_tool_creating_a_priority_rule_mar
     assert report.blocking is True
     diff = report.first_refusal().details["nothing_else_moved_diff"]
     assert {"object_class": "priority_rule_markers", "object_id": "4.1", "change": "added"} in diff
+
+
+# ---------------------------------------------------------------------------
+# postwrite -- Q4 unit (7)'s own add_pt_stop/remove_pt_stop/add_pt_line/
+# remove_pt_line/set_pt_line_stop_dwell -- the SAME real-engine test class as
+# unit (6)'s own stop-sign/priority-rule tests above (a genuinely successful
+# remove must NOT refuse against constraint #6, a remove that leaves the
+# object still present MUST refuse, and each add's own auto-created objects
+# must be suppressed by _ALLOWS_NEW_OBJECTS_IN, never evidence).
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_add_pt_stop_diff_suppresses_its_own_new_stop():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model(
+        pt_stops=[
+            {
+                "no": "1", "name": "", "link": "101", "lane_index": 1, "pos": 5.0, "length": 15.0,
+                "referenced_by": {"pt_line_stops": {"count": 0, "ids": [], "truncated": False},
+                                   "partial_pt_line_stops": {"count": 0, "ids": [], "truncated": False},
+                                   "detectors": {"count": 0, "ids": [], "truncated": False}},
+                "reference_count": 0,
+            }
+        ]
+    )
+    action = _action("add_pt_stop", link_no="101", lane_index=1, pos_m=5.0)
+    verification = {
+        "written_value": {"link": "101", "lane_index": 1, "pos": 5.0},
+        "readback_value": {"link": "101", "lane_index": 1, "pos": 5.0},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_pt_stop_successful_removal_does_not_refuse():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_pt_stop", no="1")
+    verification = {
+        "written_value": {"removed_no": "1", "still_present": False},
+        "readback_value": {"removed_no": "1", "still_present": False},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_pt_stop_still_present_after_remove_refuses():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_pt_stop", no="1")
+    verification = {
+        "written_value": {"removed_no": "1", "still_present": False},
+        "readback_value": {"removed_no": "1", "still_present": True},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.blocking is True
+    assert [f.constraint_id for f in report.findings] == ["write_verification_failed"]
+
+
+def test_postwrite_add_pt_line_diff_suppresses_its_own_new_line_and_auto_stop():
+    # add_pt_line's own sanctioned action creates a brand-new "pt_lines"
+    # entry AND exactly one brand-new "pt_line_stops" entry (AddPTLine's own
+    # auto-created line-stop, live-verified) --
+    # _ALLOWS_NEW_OBJECTS_IN["add_pt_line"] covers BOTH object classes.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model(
+        pt_lines=[
+            {
+                "no": "65105", "name": "", "veh_type": "300", "des_speed_distr": "",
+                "entry_link": "13270462", "dest_link": "12270123", "dest_pos": 189.13,
+                "entry_tm_distr": None, "departure_count": 0,
+                "link_seq": ["13270462"], "link_seq_count": 1, "link_seq_truncated": False,
+                "stops": [{"pt_stop_no": "99569", "dwell_tm_distr": "1", "dwell_tm_def": "DISTRIBUTION", "active": True}],
+            }
+        ],
+        pt_line_stops=[_pt_line_stop_entry("65105", "99569", dwell_tm_distr="1")],
+    )
+    action = _action(
+        "add_pt_line", entry_link_no="13270462", dest_link_no="12270123", dest_pos_m=189.13
+    )
+    verification = {
+        "written_value": {"entry_link": "13270462", "dest_link": "12270123", "dest_pos": 189.13},
+        "readback_value": {"entry_link": "13270462", "dest_link": "12270123", "dest_pos": 189.13},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_pt_line_diff_suppresses_its_own_removed_line_and_stops():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        pt_lines=[
+            {
+                "no": "65105", "name": "", "veh_type": "300", "des_speed_distr": "",
+                "entry_link": "13270462", "dest_link": "12270123", "dest_pos": 189.13,
+                "entry_tm_distr": None, "departure_count": 0,
+                "link_seq": ["13270462"], "link_seq_count": 1, "link_seq_truncated": False,
+                "stops": [{"pt_stop_no": "99569", "dwell_tm_distr": "1", "dwell_tm_def": "DISTRIBUTION", "active": True}],
+            }
+        ],
+        pt_line_stops=[_pt_line_stop_entry("65105", "99569", dwell_tm_distr="1")],
+    )
+    after = _shadow_model()
+    action = _action("remove_pt_line", no="65105")
+    verification = {
+        "written_value": {"removed_no": "65105", "still_present": False},
+        "readback_value": {"removed_no": "65105", "still_present": False},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_pt_line_still_present_after_remove_refuses():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_pt_line", no="65105")
+    verification = {
+        "written_value": {"removed_no": "65105", "still_present": False},
+        "readback_value": {"removed_no": "65105", "still_present": True},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.blocking is True
+    assert [f.constraint_id for f in report.findings] == ["write_verification_failed"]
+
+
+def test_postwrite_set_pt_line_stop_dwell_target_field_exempted():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(pt_line_stops=[_pt_line_stop_entry("52004", "99569", dwell_tm_distr="20")])
+    after = _shadow_model(pt_line_stops=[_pt_line_stop_entry("52004", "99569", dwell_tm_distr="10")])
+    action = _action(
+        "set_pt_line_stop_dwell", line_no="52004", stop_no="99569", time_distribution_no="10"
+    )
+    verification = {"written_value": "10", "readback_value": "10"}
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_still_flags_an_unopted_tool_creating_a_pt_line_stop():
+    # The suppression is tool-SPECIFIC (_ALLOWS_NEW_OBJECTS_IN), not a
+    # blanket rule -- mirrors the priority-rule-marker equivalent above.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model(pt_line_stops=[_pt_line_stop_entry("52004", "99569")])
+    action = _action("set_vehicle_input_volume", input_no="1", volume=600)
+
+    report = engine.postwrite(action, before, after, {"written_value": 600, "readback_value": 600})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {"object_class": "pt_line_stops", "object_id": "52004.99569", "change": "added"} in diff
 
 
 # ---------------------------------------------------------------------------

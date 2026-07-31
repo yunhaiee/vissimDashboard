@@ -840,6 +840,54 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "no",
     },
+    # Q4 unit (7): PT stop + PT line placement (genesis). add_pt_stop's
+    # PRIMARY target is the link it places against (mirrors add_stop_sign/
+    # add_signal_head/add_queue_counter's own precedent exactly).
+    # remove_pt_stop's target is the object's own "no" in the new "pt_stops"
+    # shadow-model list this unit added (tools_network._parse_pt_stops) --
+    # WHETHER it is safe to remove (zero real referrers) is the separate,
+    # dedicated reference-integrity check inside tools_edit.remove_pt_stop
+    # itself (services.inpx_structure.find_id_references), not a
+    # constraints.py Finding -- mirrors remove_data_collection_point's own
+    # precedent (Q4 unit (2)).
+    "add_pt_stop": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_no",
+    },
+    "remove_pt_stop": {
+        "object_class": "pt_stops",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
+    # add_pt_line's PRIMARY target is entry_link_no (mirrors add_travel_
+    # time_section's/add_connector's own "primary here, deeper targets fail
+    # closed via COM instead" split exactly) -- dest_link_no/veh_type_no/
+    # pt_stop_no get NO dedicated preflight Finding here, same deliberate,
+    # documented scope cut as add_travel_time_section's to_link. remove_pt_
+    # line's target is the new "pt_lines" shadow-model list this unit added
+    # (tools_network._parse_pt_lines) -- no reference-integrity check needed
+    # (a PT line is a leaf object, see tools_edit.remove_pt_line's own
+    # docstring).
+    "add_pt_line": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "entry_link_no",
+    },
+    "remove_pt_line": {
+        "object_class": "pt_lines",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
+    # set_pt_line_stop_dwell has NO entry here -- its target is the TWO-part
+    # (line_no, stop_no) pair, which this generic single-id machinery cannot
+    # express (mirrors set_route_relative_flow's/set_des_speed_decision's own
+    # split exactly) -- see the dedicated pt_line_stop_not_found check below,
+    # which ALSO validates time_distribution_no in the same pass.
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -868,6 +916,9 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "detectors": {"ko": "검지기", "en": "detector", "ja": "検知器"},
     # Q4 unit (6): stop-sign + priority-rule/conflict-area placement.
     "stop_signs": {"ko": "정지 표지판", "en": "stop sign", "ja": "一時停止標識"},
+    # Q4 unit (7): PT stop + PT line placement.
+    "pt_stops": {"ko": "대중교통 정류장", "en": "PT stop", "ja": "公共交通停留所"},
+    "pt_lines": {"ko": "대중교통 노선", "en": "PT line", "ja": "公共交通路線"},
 }
 
 
@@ -8666,5 +8717,130 @@ register(
         "{threshold}). Confirm this is intentional.",
         message_ja="車線数{lane_count}本は1つのリンクとしては異例に多いです(基準{threshold}本超)。"
         "意図した値か確認してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# pt_line_stop_not_found (refuse, preflight) -- Q4 unit (7)'s ONE new
+# constraint (this unit's own "constraints.py minimal" instruction:
+# _TOOL_TARGET_SPEC entries above + at most one small constraint here;
+# everything else lives in services/vissim_com.py and
+# services/agent/tools_edit.py, per those modules' own comments).
+#
+# set_pt_line_stop_dwell has NO _TOOL_TARGET_SPEC entry -- its target is the
+# TWO-part (line_no, stop_no) pair, which that generic single-id machinery
+# cannot express (mirrors set_route_relative_flow's/set_des_speed_decision's
+# own split); so object_not_found (#1) never runs for this tool at all. This
+# check covers the WHOLE preflight-existence requirement in one pass: does
+# the (line_no, stop_no) pair genuinely name a real ptLineStop
+# (shadow_model["pt_lines"], tools_network._parse_pt_lines), AND does
+# time_distribution_no genuinely name a real time distribution
+# (shadow_model["time_distributions"] -- Q3 unit 5's own machinery,
+# explicitly reused per this unit's task brief, not re-derived) -- ANY of
+# the three failing refuses with a clear reason and a candidate list,
+# mirroring des_speed_decision_entry_not_found's/des_speed_distribution_not_
+# found's own two-check split, combined into ONE constraint id here per this
+# unit's own constraints.py budget.
+# ---------------------------------------------------------------------------
+
+
+def _check_pt_line_stop_not_found(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_pt_line_stop_dwell":
+        return None
+
+    params = action.get("params", {})
+    line_no = str(params.get("line_no", ""))
+    stop_no = str(params.get("stop_no", ""))
+
+    pt_lines = shadow_model.get("pt_lines", [])
+    line = _find_by_field(pt_lines, "no", line_no)
+    if line is None:
+        known_line_nos = [str(pl.get("no", "")) for pl in pt_lines]
+        candidates = difflib.get_close_matches(line_no, known_line_nos, n=5) or sorted(known_line_nos)[:20]
+        return Finding(
+            constraint_id="pt_line_stop_not_found",
+            tier="refuse",
+            phase="preflight",
+            messages=_render(
+                "pt_line_stop_not_found",
+                reason_ko=f"PT 노선 '{line_no}'가 이 네트워크에 존재하지 않습니다",
+                reason_en=f"PT line '{line_no}' does not exist in this network",
+                reason_ja=f"PT路線 '{line_no}' はこのネットワークに存在しません",
+                candidates=", ".join(candidates) if candidates else "-",
+            ),
+            suggested_fix={"candidates": candidates},
+            details={"line_no": line_no, "stop_no": stop_no, "available_lines": known_line_nos},
+        )
+
+    stop_nos = [str(s.get("pt_stop_no", "")) for s in line.get("stops", [])]
+    if stop_no not in stop_nos:
+        available_text = ", ".join(stop_nos) if stop_nos else "-"
+        return Finding(
+            constraint_id="pt_line_stop_not_found",
+            tier="refuse",
+            phase="preflight",
+            messages=_render(
+                "pt_line_stop_not_found",
+                reason_ko=(
+                    f"PT 노선 '{line_no}'에는 정류장 '{stop_no}'에 대한 배정이 없습니다 "
+                    f"(배정된 정류장: {available_text})"
+                ),
+                reason_en=(
+                    f"PT line '{line_no}' has no stop assignment for '{stop_no}' "
+                    f"(assigned stops: {available_text})"
+                ),
+                reason_ja=(
+                    f"PT路線 '{line_no}' には停留所 '{stop_no}' の割り当てがありません"
+                    f"(割り当て済み停留所: {available_text})"
+                ),
+                candidates=available_text,
+            ),
+            suggested_fix={"candidates": stop_nos},
+            details={"line_no": line_no, "stop_no": stop_no, "available_stops": stop_nos},
+        )
+
+    distributions = shadow_model.get("time_distributions", [])
+    distr_no = str(params.get("time_distribution_no", ""))
+    known_distr_nos = [str(d.get("no", "")) for d in distributions]
+    if distr_no not in known_distr_nos:
+        candidates = difflib.get_close_matches(distr_no, known_distr_nos, n=5) or sorted(known_distr_nos)[:20]
+        return Finding(
+            constraint_id="pt_line_stop_not_found",
+            tier="refuse",
+            phase="preflight",
+            messages=_render(
+                "pt_line_stop_not_found",
+                reason_ko=f"시간분포 번호 '{distr_no}'가 이 네트워크에 존재하지 않습니다",
+                reason_en=f"time distribution '{distr_no}' does not exist in this network",
+                reason_ja=f"時間分布番号 '{distr_no}' はこのネットワークに存在しません",
+                candidates=", ".join(candidates) if candidates else "-",
+            ),
+            suggested_fix={"candidates": candidates},
+            details={
+                "line_no": line_no,
+                "stop_no": stop_no,
+                "distr_no": distr_no,
+                "available_distributions": known_distr_nos,
+            },
+        )
+    return None
+
+
+register(
+    Constraint(
+        id="pt_line_stop_not_found",
+        applies_to=["set_pt_line_stop_dwell"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_pt_line_stop_not_found,
+        message_ko="PT 노선/정류장/시간분포 대상을 확인할 수 없습니다: {reason_ko}. 후보: {candidates}.",
+        message_en=(
+            "Could not resolve the PT line/stop/time-distribution target: {reason_en}. "
+            "Candidates: {candidates}."
+        ),
+        message_ja="PT路線/停留所/時間分布の対象を確認できません: {reason_ja}。候補: {candidates}。",
     )
 )

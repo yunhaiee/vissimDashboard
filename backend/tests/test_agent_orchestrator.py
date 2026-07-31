@@ -44,6 +44,9 @@ EXPECTED_READ_TOOLS = {
     "get_driving_behaviors",
     "get_run_kpis",
     "compare_scenarios",
+    # Q4 unit (7) adds get_pt_stops + get_pt_lines.
+    "get_pt_stops",
+    "get_pt_lines",
 }
 
 # M2.3: tools_edit.py's write tools are now offered to the planner too (see
@@ -125,6 +128,14 @@ EXPECTED_WRITE_TOOLS = {
     "remove_stop_sign",
     "add_priority_rule",
     "remove_priority_rule",
+    # Q4 unit (7): PT stop + PT line placement (COM CREATE/REMOVE verbs --
+    # see tools_edit.py's own docstring; set_pt_line_stop_dwell is the
+    # BusDwell story's missing verb, Q3 unit 5).
+    "add_pt_stop",
+    "remove_pt_stop",
+    "add_pt_line",
+    "remove_pt_line",
+    "set_pt_line_stop_dwell",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

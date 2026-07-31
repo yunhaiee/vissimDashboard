@@ -240,6 +240,11 @@ ID_BEARING_ELEMENTS: dict[str, tuple[str, str]] = {
     # object_not_found / _TOOL_TARGET_SPEC, wired against the shadow model's
     # own "queue_counters"/"travel_time_sections" lists, not this registry).
     "data_collection_points": (".//dataCollectionPoints/dataCollectionPoint", "no"),
+    # Q4 unit (7): PT stop + PT line placement (creation). A PT stop IS
+    # referenced by other elements (see ID_REFERENCE_SITES["pt_stops"]
+    # below) -- unlike queue counters/travel-time sections, this is a real
+    # target, not future-proofing.
+    "pt_stops": (".//ptStops/ptStop", "no"),
 }
 
 #: Plain single-id reference sites, keyed by the object_class being
@@ -321,6 +326,46 @@ ID_REFERENCE_SITES: dict[str, tuple[ReferenceSite, ...]] = {
             ".//dataCollectionMeasurements/dataCollectionMeasurement/dataCollectionPoints/intObjectRef",
             "key",
         ),
+    ),
+    # Q4 unit (7): PT stop + PT line placement. THREE real sites, found by a
+    # corpus-wide attribute-name scan across all 25 real Vissim 2026 example
+    # networks (backend/tools/probe_pt_stops_lines.py's own static pre-scan)
+    # -- live-verified that Vissim's own RemovePTStop does NOT protect a
+    # still-referenced stop: it does not merely dangle the reference (like
+    # RemoveDataCollectionPoint) but SILENTLY CASCADE-DELETES the referencing
+    # ptLineStop entry outright (vissim_com.VissimController.remove_pt_stop's
+    # own module comment has the full live-verified writeup) -- this
+    # registry, and remove_pt_stop's own preflight use of it in
+    # tools_edit.py, is what stands between a careless removal and that
+    # silent truncation of a real PT line's own stop pattern.
+    "pt_stops": (
+        # A ptLineStop's own "ptStop" attribute -- nested inside its OWNER
+        # ptLine's <lineStops>. This is the SAME real nesting Q3 unit 5's own
+        # _pt_line_stop_dwell_refs (tools_network.py) already scans for its
+        # dwellTmDistr reference counting; this entry independently confirms
+        # the correct nesting for THIS unit's own reference-integrity need.
+        ReferenceSite("PT-line stop", ".//ptLines/ptLine/lineStops/ptLineStop", "ptStop"),
+        # A partialPTLineStop's own "ptStop" attribute -- lives under a
+        # COMPLETELY SEPARATE top-level object family
+        # (vehicleRoutingDecisionsPartialPT, a "partial-route PT decision"),
+        # NEVER nested inside a <ptLine> at all -- live-verified via a static
+        # corpus scan of every real partialPTLineStop's ancestor chain
+        # (Cableways: partLineStops -> vehicleRoutePartialPT ->
+        # vehRoutPartPT -> vehicleRoutingDecisionPartialPT ->
+        # vehicleRoutingDecisionsPartialPT). This DISPROVES half of Q3 unit
+        # 5's own _pt_line_stop_dwell_refs claim (its "partialPTLineStop"
+        # half searches inside <ptLine> and can therefore never match on real
+        # data) -- a pre-existing bug in that unit's code, not fixed here
+        # (this unit's own "constraints.py minimal" scope), but NOT repeated
+        # in this registry entry, which uses the real nesting.
+        ReferenceSite("partial PT-line stop", ".//partLineStops/partialPTLineStop", "ptStop"),
+        # A detector's own "ptStop" attribute -- a PT-boarding-gate detector
+        # (e.g. a real "Open boarding gate" detector carrying a "tmBefDep"
+        # / time-before-departure attribute) genuinely references a PT stop
+        # -- a newly-found site, unregistered anywhere in this codebase
+        # before this unit (found by this unit's own corpus-wide
+        # attribute-name scan, not merely inferred from the schema).
+        ReferenceSite("PT-boarding detector", ".//detectors/detector", "ptStop"),
     ),
 }
 
