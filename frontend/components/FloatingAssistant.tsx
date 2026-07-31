@@ -1831,6 +1831,27 @@ function agentActionLabel(tool: string, t: Translate): string {
   return entry ? t(entry[0], entry[1], entry[2]) : tool;
 }
 
+// Defect 3 fix (docs/phase2/DECISIONS.md, 2026-07-31): the generic
+// key=value fallback below used bare `String(value)`, which on a non-scalar
+// param (e.g. apply_edit_plan's own `steps`, an array of {tool, params}
+// objects) stringifies as "[object Object],[object Object]" -- valid JS,
+// meaningless on an approval card. Generic fix, not an apply_edit_plan
+// special case, so any future write tool with an object/array param never
+// regresses the same way: an object/array renders as compact JSON, bounded
+// so one pathological param value can never blow out the card's layout.
+// Scalar values (string/number/boolean/null/undefined) are untouched --
+// `String()` on any of those already reads correctly and this must stay
+// byte-identical for the tools that rely on it today.
+const PARAM_VALUE_MAX_CHARS = 80;
+
+function formatParamValue(value: unknown): string {
+  if (value !== null && typeof value === "object") {
+    const json = JSON.stringify(value);
+    return json.length > PARAM_VALUE_MAX_CHARS ? `${json.slice(0, PARAM_VALUE_MAX_CHARS - 1)}…` : json;
+  }
+  return String(value);
+}
+
 // Readable "field -> new value" line per action, param names matching
 // backend/services/agent/tools_edit.py's pydantic params models exactly
 // (sc_no/cycle, sc_no/offset, seconds, seed). Falls back to a plain key=value
@@ -1878,7 +1899,7 @@ function agentActionDetail(action: AgentAction, t: Translate): string {
     }
     default:
       return Object.entries(params)
-        .map(([key, value]) => `${key}=${String(value)}`)
+        .map(([key, value]) => `${key}=${formatParamValue(value)}`)
         .join(", ");
   }
 }

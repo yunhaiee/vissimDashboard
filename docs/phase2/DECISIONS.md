@@ -2795,3 +2795,23 @@ Live-proven end to end on a real-dataset clone (`load_check` ok; controller re-r
 independently: 312 links / 28 vehicle types / 6 controllers, source sha unchanged). Boise's
 same-looking failure is unrelated (RBC controller licensing). Consequence: **every COM apply
 now works against the real client model — demo Part 2 no longer needs the example network.**
+
+## 2026-07-31 — write results always tell their story: message bounding + a renderer guarantee
+
+Second demo run's trace: rollback succeeded but its envelope was so large the model couldn't
+tell what had happened, retried, and burned approval_consumed refusals — the same
+"unhelpful observation breeds retries" family as the bare-id candidates. Root cause was
+`repr()`-ing full before/after values (curve point lists) into `message` itself; the same
+latent bug existed in `set_des_speed_distribution_points` and `set_time_distribution_points`.
+Fixed at BOTH ends: (a) tool messages never inline unbounded values — lists render as
+`[N item(s)]`, diffs cap at 2 entries + "+N more", batch messages are per-step one-liners
+capped at 3, full data stays in `verification`/`artifacts`; (b) `planner._render_observation`
+gained a message-preserving fallback tier — an oversized envelope keeps
+`status`/`error_type`/`message` (shrinking the text if needed) instead of collapsing to the
+too-large marker, protecting every future tool by construction. Also: the system prompt now
+instructs one-write-per-approval with explicit pending-step tracking (a demo run dropped a
+step after a tier refusal), the `tool_tier_forbidden` message no longer claims writes "arrive
+in a later milestone" (stale since M2) and instead says the step is still owed as the next
+approval (controller applied — outside the agent's file set), and approval cards render object
+params as bounded JSON instead of `[object Object]`. Controller re-verified the renderer
+guarantee with a 40KB envelope at both tiers.

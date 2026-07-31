@@ -255,6 +255,59 @@ _COMPACT_TRUNCATION_MARKER = {
 # tried largest-first so the summary is as informative as budget allows.
 _COMPACT_ITEM_MAX_CHARS: tuple[int, ...] = (60, 30, 12)
 
+# Defect 1 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-31): Tier 5, the
+# message-preserving fallback. Every tier above shrinks the ONE dominant LIST
+# found anywhere in the envelope; none of them can help when the envelope's
+# OWN NON-LIST fields already exceed budget on their own (e.g. two
+# independently sizable lists at different paths, so truncating just one
+# still doesn't fit; or a bulky non-list dict field). The old code's only
+# answer at that point was _OBSERVATION_TOO_LARGE_MARKER, which discards the
+# WHOLE envelope -- including a `message` field that a write tool
+# (rollback_last_edit, apply_edit_plan -- see tools_edit.py's own write-up)
+# builds specifically to be "the compact, self-sufficient outcome summary...
+# the field that renders first and survives truncation". The live-demo trace
+# this closes: rollback_last_edit executed successfully and its own message
+# DID say what happened, but the envelope's other fields pushed the whole
+# thing past budget anyway, and the marker discarded that message along with
+# everything else -- the model then genuinely could not tell what had
+# happened and re-requested the write it had just successfully undone. This
+# tier keeps ONLY `status`/`error_type`/`message` (dropping every bulky
+# evidence field: artifacts/verification/suggested_fix/data -- those still
+# live in the full, on-disk envelope/trace, just not in THIS rendered
+# snippet), shrinking the message TEXT itself, never dropping it, if even
+# that minimal shape doesn't fit.
+_MESSAGE_TIER_KEYS: tuple[str, ...] = ("status", "error_type", "message")
+
+
+def _message_preserving_fallback(observation: Any, budget: int, language: str) -> str:
+    """The renderer's last line of defense before
+    :data:`_OBSERVATION_TOO_LARGE_MARKER`: if ``observation`` is envelope-
+    shaped (a dict with a non-empty string ``message``), keep that message
+    (plus the cheap ``status``/``error_type`` fields) even when every list-
+    truncation tier above has failed to fit ``budget``. Falls through to the
+    unconditional "too large" marker only when there is no message to
+    preserve at all, or budget is too tight to hold even a single truncated
+    character of one.
+    """
+    if isinstance(observation, dict):
+        message = observation.get("message")
+        if isinstance(message, str) and message:
+            minimal = {key: observation[key] for key in _MESSAGE_TIER_KEYS if key in observation}
+            candidate = json.dumps(minimal, ensure_ascii=False, separators=(",", ":"))
+            if len(candidate) <= budget:
+                return candidate
+            # Even the minimal {status, error_type, message} shape doesn't
+            # fit -- shrink the message TEXT itself (never the surrounding
+            # keys) until it does.
+            overhead = len(
+                json.dumps({**minimal, "message": ""}, ensure_ascii=False, separators=(",", ":"))
+            )
+            available = budget - overhead
+            if available > 1:
+                minimal["message"] = message[: available - 1] + "…"
+                return json.dumps(minimal, ensure_ascii=False, separators=(",", ":"))
+    return pick_language_text(_OBSERVATION_TOO_LARGE_MARKER, language)
+
 
 def _compact_item_text(item: Any, max_chars: int) -> str:
     """A short, generic one-line summary of a single list item -- D2's
@@ -603,7 +656,12 @@ def _render_observation(observation: Any, budget: int, language: str) -> str:
        the whole observation.
 
     Only when even a genuinely empty list still doesn't fit (the envelope's
-    OTHER fields alone already exceed budget) does this fall back to
+    OTHER fields alone already exceed budget) does this fall to Tier 5 (the
+    Defect 1 live-demo fix, docs/phase2/DECISIONS.md, 2026-07-31): preserve
+    ``message`` alone, shrunk if necessary, via :func:`_message_preserving_fallback`
+    -- so a write tool's own guaranteed-visible outcome summary survives even
+    when every list-truncation tier above has failed. Only when there is no
+    ``message`` to preserve at all does this fall back to
     :data:`_OBSERVATION_TOO_LARGE_MARKER` -- never a raw slice of the JSON
     text itself.
     """
@@ -620,9 +678,10 @@ def _render_observation(observation: Any, budget: int, language: str) -> str:
     path = _find_largest_list_path(observation)
     if path is None:
         # No list anywhere to truncate (e.g. one pathologically long scalar
-        # field) -- never chop the JSON text itself; state the omission
-        # plainly instead.
-        return pick_language_text(_OBSERVATION_TOO_LARGE_MARKER, language)
+        # field) -- never chop the JSON text itself. Tier 5: preserve
+        # `message` if there is one before falling back to the generic
+        # omission notice.
+        return _message_preserving_fallback(observation, budget, language)
 
     original_list = _get_at_path(observation, path)
     total = len(original_list)
@@ -683,10 +742,11 @@ def _render_observation(observation: Any, budget: int, language: str) -> str:
     if empty is not None:
         return empty
 
-    # Last resort: the bare envelope overhead alone already exceeds budget
-    # (e.g. one pathologically long scalar field elsewhere) -- never chop
-    # JSON text itself; state the omission plainly instead.
-    return pick_language_text(_OBSERVATION_TOO_LARGE_MARKER, language)
+    # Tier 5: the bare envelope overhead alone already exceeds budget (e.g.
+    # two independently large lists at different paths) -- preserve
+    # `message` if there is one rather than discarding it along with
+    # everything else.
+    return _message_preserving_fallback(observation, budget, language)
 
 
 class Planner:

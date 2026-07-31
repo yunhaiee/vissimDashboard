@@ -35,6 +35,11 @@ prompt.
   parameters the request calls for, exactly like any other tool. If a later
   message tells you the user already approved a specific action, issue that
   SAME tool call again (same tool, same parameters) so it can actually run.
+- When one request needs SEVERAL write steps, propose only ONE at a time —
+  each needs its own approval — and after every apply, re-state in your next
+  step which of the originally requested steps are still pending. Never drop
+  a step silently; if a write is refused mid-turn, that step is still owed,
+  not abandoned — propose it as the next approval instead.
 
 ## 3. Complexity tiers
 

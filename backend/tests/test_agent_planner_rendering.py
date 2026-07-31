@@ -416,6 +416,88 @@ def test_render_observation_hard_floor_preserves_overhead_fields_when_no_item_fi
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Defect 1 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-31): Tier 5, the
+# message-preserving fallback. rollback_last_edit executed successfully and
+# its OWN `message` already said what happened, but the envelope's OTHER
+# fields (nothing to do with the message) pushed the whole thing past budget
+# anyway -- and every list-truncation tier existing before this fix is
+# powerless against a bulky NON-list field (or two independently large lists
+# at different paths), so rendering fell all the way through to the generic
+# "too large to display" marker, discarding the message along with
+# everything else. The model then genuinely could not tell what had
+# happened and re-requested the write it had just successfully rolled back.
+# ---------------------------------------------------------------------------
+
+
+def test_render_observation_preserves_message_when_no_list_truncation_can_help():
+    """A bulky NON-list `artifacts` field (not a curve/list -- nothing any
+    prior tier's list-shrinking logic can touch) dwarfs a short, informative
+    `message` shaped exactly like rollback_last_edit's own D3-fixed,
+    bounded message. Proven at BOTH of planner.py's real budget tiers: the
+    generous most-recent-entry budget and the tight older-entry compact
+    snippet budget."""
+    message = (
+        "Rolled back to version 3 (undid version 4: set_des_speed_distribution_points "
+        "(des_speed_distributions#5.points: [30 item(s)] → [10 item(s)])). Restore "
+        "verified byte-for-byte identical."
+    )
+    observation = {
+        "status": "ok",
+        "error_type": None,
+        "message": message,
+        # A big DICT, not a list -- _find_largest_list_path has nothing here
+        # to shrink; the only list anywhere (verification.reverted_targets)
+        # is already empty, so emptying it again changes nothing.
+        "artifacts": {f"undone_params_field_{i}": "x" * 60 for i in range(400)},
+        "suggested_fix": None,
+        "verification": {"written_value": "abc123", "readback_value": "abc123", "reverted_targets": []},
+        "data": None,
+    }
+    full_len = len(json.dumps(observation, ensure_ascii=False, separators=(",", ":")))
+    # Sanity: this observation is oversized at BOTH real budget tiers, so
+    # Tier 5 is genuinely exercised at each, not trivially skipped because
+    # the whole thing already fit.
+    assert full_len > planner_module._DEFAULT_RECENT_OBS_BUDGET
+    assert full_len > planner_module._OBSERVATION_SNIPPET_CHARS
+
+    for budget in (planner_module._OBSERVATION_SNIPPET_CHARS, planner_module._DEFAULT_RECENT_OBS_BUDGET):
+        rendered = planner_module._render_observation(observation, budget, "ko")
+        assert len(rendered) <= budget
+        parsed = json.loads(rendered)  # still valid, parseable JSON
+        assert "artifacts" not in parsed  # the bulky, unrelated field is dropped
+        assert parsed["status"] == "ok"
+        # The message survives whole (it comfortably fits both real budgets
+        # once artifacts/verification/suggested_fix/data are dropped).
+        assert parsed["message"] == message
+
+
+def test_render_observation_shrinks_the_message_itself_when_even_the_minimal_shape_does_not_fit():
+    """A budget so tight that even ``{status, error_type, message}`` alone
+    does not fit -- the message TEXT itself is shrunk (never silently
+    dropped), ellipsis-marked, so SOME of the outcome story always survives
+    rather than none of it."""
+    message = "Rolled back to version 3 (undid version 4: set_signal_cycle (signal_controllers#7.cycle_time: 60.0 → 90.0)). Restore verified byte-for-byte identical."
+    observation = {
+        "status": "ok",
+        "error_type": None,
+        "message": message,
+        "artifacts": {"x": "y" * 500},
+        "suggested_fix": None,
+        "verification": None,
+        "data": None,
+    }
+    budget = 60  # smaller than the minimal {status,error_type,message} shape's own overhead + full message
+
+    rendered = planner_module._render_observation(observation, budget, "ko")
+
+    assert len(rendered) <= budget
+    parsed = json.loads(rendered)
+    assert parsed["message"]  # never empty -- SOME of the story survives
+    assert message.startswith(parsed["message"][:-1])  # a genuine prefix, ellipsis-marked
+    assert parsed["message"].endswith("…")
+
+
 def test_recent_observation_budget_env_override_and_safe_fallback(monkeypatch):
     monkeypatch.delenv(planner_module._RECENT_OBS_BUDGET_ENV, raising=False)
     assert planner_module._recent_observation_budget() == planner_module._DEFAULT_RECENT_OBS_BUDGET

@@ -396,8 +396,9 @@ def _tier_refusal_envelope(tool_name: str, tier: str) -> dict[str, Any]:
         "error_type": "tool_tier_forbidden",
         "message": (
             f"Tool {tool_name!r} is tier {tier!r}; only 'read' tools may execute in "
-            "this stage. Edits and runs arrive with the approval flow in a later "
-            "milestone — tell the user instead of retrying."
+            "this stage. Writes and runs each need their own user approval — this "
+            "step is still owed, not abandoned: propose it as the NEXT approval "
+            "once the current one resolves, and do not retry it in this stage."
         ),
         "artifacts": None,
         "suggested_fix": None,

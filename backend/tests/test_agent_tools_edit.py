@@ -1614,6 +1614,11 @@ def test_set_des_speed_distribution_points_happy_path():
     # distribution_no was coerced str -> int at the COM boundary.
     assert isinstance(session.calls[0]["distribution_no"], int)
     assert "3 point(s)" in envelope["message"]
+    # D3 live-demo fix: the message states the point COUNT but never inlines
+    # the full readback list itself (unbounded in curve length) -- the full
+    # curve lives in verification.readback_value, asserted above.
+    assert "speed_kmh" not in envelope["message"]
+    assert "cum_fraction" not in envelope["message"]
 
 
 def test_set_des_speed_distribution_points_readback_mismatch_still_reports_ok_envelope():
@@ -1966,6 +1971,11 @@ def test_set_time_distribution_points_happy_path():
         {"op": "get_time_distribution_points", "time_distribution_no": 200},
     ]
     assert isinstance(session.calls[0]["time_distribution_no"], int)
+    # D3 live-demo fix: bounded message (point count only), same as
+    # set_des_speed_distribution_points -- never the full readback list.
+    assert "2 point(s)" in envelope["message"]
+    assert "duration_s" not in envelope["message"]
+    assert "cum_fraction" not in envelope["message"]
 
 
 def test_set_time_distribution_points_readback_mismatch_still_reports_ok_envelope():
@@ -2423,3 +2433,89 @@ def test_set_reduced_speed_area_malformed_params_rejected(
     # never reached the tool function -- nothing written
     root = ET.parse(synthetic_working_inpx).getroot()
     assert root.findall(".//reducedSpeedAreas/reducedSpeedArea") == []
+
+
+# ---------------------------------------------------------------------------
+# Defect 1 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-31): the message-
+# bounding helpers rollback_last_edit and apply_edit_plan now use to keep
+# `message` -- the one field planner.py's history-rendering truncation
+# guarantees survives -- genuinely bounded regardless of how much a single
+# undone edit (or an applied batch) actually touched.
+# ---------------------------------------------------------------------------
+
+
+def test_compact_diff_value_never_inlines_a_full_list_or_dict():
+    big_points = [{"speed_kmh": float(i), "cum_fraction": i / 100} for i in range(50)]
+    rendered = tools_edit._compact_diff_value(big_points)
+    assert rendered == "[50 item(s)]"
+    assert "speed_kmh" not in rendered  # never the raw repr of the list's own contents
+
+    big_dict = {f"field_{i}": i for i in range(20)}
+    rendered_dict = tools_edit._compact_diff_value(big_dict)
+    assert rendered_dict == "{20 field(s)}"
+
+    # A long scalar (e.g. a pathological name) is still capped, defensively.
+    long_text = "x" * 500
+    rendered_scalar = tools_edit._compact_diff_value(long_text)
+    assert len(rendered_scalar) <= tools_edit._DIFF_VALUE_REPR_MAX_CHARS
+    assert rendered_scalar.endswith("…")
+
+    # An ordinary scalar renders exactly as repr() would, unbounded reason to
+    # differ from the old behavior for the common case.
+    assert tools_edit._compact_diff_value(500.0) == "500.0"
+
+
+def test_describe_diff_entry_field_changed_summarizes_list_valued_fields():
+    entry = {
+        "object_class": "des_speed_distributions",
+        "object_id": "5",
+        "change": "field_changed",
+        "field": "points",
+        "before": [{"speed_kmh": 0.0, "cum_fraction": 0.0}] * 30,
+        "after": [{"speed_kmh": 10.0, "cum_fraction": 0.0}] * 10,
+    }
+    described = tools_edit._describe_diff_entry(entry)
+    assert described == "des_speed_distributions#5.points: [30 item(s)] → [10 item(s)]"
+    assert len(described) < 100  # bounded regardless of how many points either side had
+
+
+def test_describe_diff_entry_removed_and_added_are_unchanged():
+    removed = {"object_class": "des_speed_distributions", "object_id": "9", "change": "removed"}
+    added = {"object_class": "des_speed_distributions", "object_id": "9", "change": "added"}
+    assert "removed" in tools_edit._describe_diff_entry(removed)
+    assert "re-added" in tools_edit._describe_diff_entry(added)
+
+
+def test_cap_message_leaves_short_text_untouched_and_truncates_long_text():
+    short = "short and sweet"
+    assert tools_edit._cap_message(short) == short
+
+    long_text = "y" * 1000
+    capped = tools_edit._cap_message(long_text)
+    assert len(capped) == tools_edit._MESSAGE_MAX_CHARS
+    assert capped.endswith("…")
+
+
+def test_build_apply_edit_plan_message_bounds_step_lines_and_names_a_saved_version():
+    applied = [
+        {"index": i, "tool": f"set_signal_offset_{i}" if i > 1 else "set_signal_offset"}
+        for i in range(1, 11)
+    ]  # a full 10-step batch (batch.MAX_STEPS)
+    message = tools_edit._build_apply_edit_plan_message(applied, total_steps=10)
+
+    assert len(message) <= tools_edit._MESSAGE_MAX_CHARS
+    assert "readback ok" in message
+    assert "+7 more" in message  # 10 steps, only the first 3 inlined
+    assert "version" in message.lower()
+
+
+def test_build_apply_edit_plan_message_small_plan_names_every_step():
+    applied = [
+        {"index": 1, "tool": "set_signal_cycle"},
+        {"index": 2, "tool": "set_signal_offset"},
+    ]
+    message = tools_edit._build_apply_edit_plan_message(applied, total_steps=2)
+
+    assert "1. set_signal_cycle: applied, readback ok" in message
+    assert "2. set_signal_offset: applied, readback ok" in message
+    assert "more" not in message  # both steps fit -- no truncation needed

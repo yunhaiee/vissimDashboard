@@ -954,10 +954,16 @@ def set_des_speed_distribution_points(params: SetDesSpeedDistributionPointsParam
     session.persist()
 
     verification: dict[str, Any] = {"written_value": points, "readback_value": readback}
+    # D3 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-31): the message
+    # used to inline the FULL readback point list -- unbounded in curve
+    # length, same class of bug as rollback_last_edit's own (see that tool's
+    # module comment). The full curve already lives in
+    # verification.readback_value; the message states only the bounded fact
+    # (how many points) plus a pointer to where the rest is.
     return {
         "message": (
             f"Desired-speed distribution {params.distribution_no}'s curve replaced with "
-            f"{len(points)} point(s): {readback}."
+            f"{len(points)} point(s) (full curve in verification.readback_value)."
         ),
         "verification": verification,
     }
@@ -1155,10 +1161,13 @@ def set_time_distribution_points(params: SetTimeDistributionPointsParams) -> dic
     session.persist()
 
     verification: dict[str, Any] = {"written_value": points, "readback_value": readback}
+    # D3 live-demo fix -- see the identical comment in
+    # set_des_speed_distribution_points above: never inline the full,
+    # unbounded readback point list in `message`.
     return {
         "message": (
             f"Time distribution {params.time_distribution_no}'s curve replaced with "
-            f"{len(points)} point(s): {readback}."
+            f"{len(points)} point(s) (full curve in verification.readback_value)."
         ),
         "verification": verification,
     }
@@ -1414,6 +1423,44 @@ class RollbackLastEditParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# D3 live-demo fix (docs/phase2/DECISIONS.md, 2026-07-31): rollback_last_edit's
+# own `message` is the ONE field guaranteed to survive planner.py's
+# history-rendering truncation (see that module's `_render_observation` and
+# its message-preserving fallback tier) -- but only if the tool actually
+# keeps it bounded. The trace-proven bug: `message` used to inline EVERY diff
+# entry's FULL description, and a field_changed entry on a list/dict-valued
+# field (e.g. a desired-speed distribution's `points` curve) embedded the
+# RAW repr() of both the before AND after value -- unbounded in the number of
+# points. Rolling back a large-enough edit therefore produced a `message`
+# itself too big to fit even the generous per-iteration budget, so rendering
+# fell through to the generic "too large to display" marker and the model
+# genuinely could not tell what had happened (it re-requested the very write
+# it had just successfully undone). Two independent, cheap caps fix this:
+# `_compact_diff_value` never inlines a full list/dict, only its shape, and
+# `_MAX_DIFF_ENTRIES_IN_MESSAGE`/`_cap_message` below bound how much of the
+# diff the message inlines at all. The FULL, uncapped diff always still lives
+# in `verification.reverted_targets` (what postwrite's dynamic exemption
+# actually reads) -- nothing here changes what is RECORDED, only what the
+# human/model-readable summary string inlines.
+_DIFF_VALUE_REPR_MAX_CHARS = 60
+
+
+def _compact_diff_value(value: Any) -> str:
+    """A bounded text rendering of one diff entry's before/after value --
+    never the raw, unbounded ``repr()`` of a list/dict. A list/dict is
+    summarized by its item/key count only; scalars are ``repr()``'d but
+    still capped, as defense in depth against a pathologically long string
+    value."""
+    if isinstance(value, list):
+        return f"[{len(value)} item(s)]"
+    if isinstance(value, dict):
+        return f"{{{len(value)} field(s)}}"
+    text = repr(value)
+    if len(text) > _DIFF_VALUE_REPR_MAX_CHARS:
+        text = text[: _DIFF_VALUE_REPR_MAX_CHARS - 1] + "…"
+    return text
+
+
 def _describe_diff_entry(entry: dict[str, Any]) -> str:
     label = f"{entry['object_class']}#{entry['object_id']}"
     if entry["change"] == "field_changed":
@@ -1421,10 +1468,38 @@ def _describe_diff_entry(entry: dict[str, Any]) -> str:
         # value; entry["after"] is the RESTORED (post-rollback, target) value
         # -- diff_shadow_models(current_model, restored_model) puts current
         # in the "before" slot, so this reads naturally as new -> old.
-        return f"{label}.{entry['field']}: {entry['before']!r} → {entry['after']!r}"
+        return (
+            f"{label}.{entry['field']}: {_compact_diff_value(entry['before'])} → "
+            f"{_compact_diff_value(entry['after'])}"
+        )
     if entry["change"] == "removed":
         return f"{label} (removed -- undoes an object the edit had added)"
     return f"{label} (re-added -- restores an object the edit had removed)"  # change == "added"
+
+
+#: How many diff-entry descriptions ``rollback_last_edit``'s own message
+#: inlines directly, largest-first-by-diff-order -- everything beyond this is
+#: summarized as a bare count with a pointer to the structured field that
+#: still carries it all. Keeps the message's own length independent of how
+#: many objects/fields a single undone edit happened to touch (a batch's
+#: rollback, in particular, can touch many).
+_MAX_DIFF_ENTRIES_IN_MESSAGE = 2
+
+#: Hard backstop on the WHOLE message string, regardless of how it was built
+#: -- keeps it comfortably inside planner.py's OLDER-entry compact-history
+#: budget (``_OBSERVATION_SNIPPET_CHARS`` = 300) alongside the envelope's
+#: other fixed keys, even in a shape neither cap above anticipated. Shared by
+#: ``rollback_last_edit`` and ``apply_edit_plan`` below -- both tools' own
+#: "what happened" story needs the same guarantee.
+_MESSAGE_MAX_CHARS = 240
+
+
+def _cap_message(text: str, max_chars: int = _MESSAGE_MAX_CHARS) -> str:
+    """Truncate ``text`` to ``max_chars``, ellipsis-marked -- the final,
+    unconditional backstop under the smarter per-field caps above."""
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
 
 
 @tool(name="rollback_last_edit", tier="write", provider="edit", params=RollbackLastEditParams)
@@ -1491,20 +1566,31 @@ def rollback_last_edit(params: RollbackLastEditParams) -> dict[str, Any]:
     if plan.undone_tool:
         undo_summary = plan.undone_tool
         if target_descriptions:
-            undo_summary += f" ({'; '.join(target_descriptions)})"
+            # D3 fix: inline at most _MAX_DIFF_ENTRIES_IN_MESSAGE entries --
+            # the rest is a bare count pointing at the field that still
+            # carries all of them (see the module comment above
+            # _describe_diff_entry).
+            shown = target_descriptions[:_MAX_DIFF_ENTRIES_IN_MESSAGE]
+            extra = len(target_descriptions) - len(shown)
+            summary_text = "; ".join(shown)
+            if extra > 0:
+                summary_text += f"; +{extra} more (see verification.reverted_targets)"
+            undo_summary += f" ({summary_text})"
     else:
         undo_summary = "the most recently applied edit (its own history record is unavailable)"
 
     message = (
         f"Rolled back to version {plan.target_version} (undid version {plan.reverted_from_version}: "
-        f"{undo_summary}). Restored working copy verified byte-for-byte identical to the archived "
-        "pre-edit snapshot."
+        f"{undo_summary}). Restore verified byte-for-byte identical."
     )
     if plan.run_since_edit:
         message += (
             " NOTE: a simulation was run after that edit -- its results no longer correspond to "
             "the model now that it has been undone."
         )
+    # D3 fix: the hard backstop applies LAST, after every optional note has
+    # been appended -- see _cap_message's own comment.
+    message = _cap_message(message)
 
     return {
         "message": message,
@@ -1627,6 +1713,35 @@ class ApplyEditPlanParams(BaseModel):
 #: version. Deleted in a `finally` block regardless of outcome.
 _BATCH_SNAPSHOT_FILENAME = "_apply_edit_plan_pre_batch.inpx"
 
+#: D3 live-demo fix companion (see the comment above rollback_last_edit's
+#: _MAX_DIFF_ENTRIES_IN_MESSAGE): how many per-step "applied, readback ok"
+#: one-liners apply_edit_plan's own message inlines directly -- a plan can
+#: have up to batch.MAX_STEPS (10) steps, so without a cap the message's own
+#: length would scale with plan size instead of staying the compact,
+#: guaranteed-visible outcome summary planner.py's history-rendering
+#: truncation is built to preserve. The FULL per-step ledger always lives in
+#: `artifacts.steps` regardless of what the message inlines.
+_MAX_STEP_LINES_IN_MESSAGE = 3
+
+
+def _build_apply_edit_plan_message(applied: list[dict[str, Any]], total_steps: int) -> str:
+    """The compact, self-sufficient outcome summary for apply_edit_plan's
+    `message` -- one line per applied step (tool + "readback ok"), capped,
+    plus which version this batch was saved as (the orchestrator's generic
+    post-dispatch save_version() call, unconditional for any "ok" write
+    envelope -- see this tool's own module comment -- fires immediately
+    after this function returns, so stating it here is accurate by the time
+    any caller ever reads this message)."""
+    lines = [f"{a['index']}. {a['tool']}: applied, readback ok" for a in applied]
+    shown = lines[:_MAX_STEP_LINES_IN_MESSAGE]
+    text = "; ".join(shown)
+    extra = len(lines) - len(shown)
+    if extra > 0:
+        text += f"; +{extra} more (see artifacts.steps)"
+    return _cap_message(
+        f"Applied all {total_steps} step(s) of the edit plan ({text}). Saved as one new version."
+    )
+
 
 @tool(name="apply_edit_plan", tier="write", provider="edit", params=ApplyEditPlanParams)
 def apply_edit_plan(params: ApplyEditPlanParams) -> dict[str, Any]:
@@ -1735,11 +1850,7 @@ def apply_edit_plan(params: ApplyEditPlanParams) -> dict[str, Any]:
     reverted_targets = batch.reverted_targets_from_diff(diff)
 
     step_summary = [{"index": a["index"], "tool": a["tool"]} for a in applied]
-    message = (
-        f"Applied all {total_steps} step(s) of the edit plan: "
-        + "; ".join(f"{a['index']}. {a['tool']}" for a in applied)
-        + "."
-    )
+    message = _build_apply_edit_plan_message(applied, total_steps)
     return {
         "message": message,
         "verification": {
