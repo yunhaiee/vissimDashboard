@@ -181,12 +181,13 @@ def _copy_sibling_assets(source_inpx: Path, work_dir: Path) -> list[str]:
 # (39 live vs the file's own 28) that do not belong to the source network
 # at all -- exactly the kind of silent-wrong-numbers pollution
 # 00-EXECUTION-GUIDE.md SS4 warns about, and it would have had to run on
-# whatever raw path a caller passes ``VissimController.load_network``,
-# including the one call site (``services/vissim_tool.py``'s
-# ``get_vissim_status``) that loads the ACTIVE SOURCE DIRECTLY, not a
-# clone -- writing anywhere near that path is exactly what rule 4 forbids.
-# Normalizing the WORKING COPY here, where this module already guarantees
-# it owns a throwaway file, avoids both problems at once.
+# whatever raw path a caller passes ``VissimController.load_network`` --
+# including, at the time this was written, ``services/vissim_tool.py``'s
+# ``get_vissim_status``, which loaded the ACTIVE SOURCE DIRECTLY (it now
+# probes via its own normalized temp copy, reusing these helpers) --
+# and writing anywhere near a live source path is exactly what rule 4
+# forbids. Normalizing the WORKING COPY here, where this module already
+# guarantees it owns a throwaway file, avoids both problems at once.
 # ---------------------------------------------------------------------------
 
 _UNDER_SCEN_MNGM_TRUE_RE = re.compile(r'\bunderScenMngm="true"')
