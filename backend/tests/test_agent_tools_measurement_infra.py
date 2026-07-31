@@ -216,9 +216,16 @@ def test_remove_queue_counter_happy_path(tmp_path: Path):
     envelope = _dispatch("remove_queue_counter", no="3")
 
     assert envelope["status"] == "ok"
+    # Bug fix (Q4 unit (3)): written/readback both describe the SAME claim
+    # ("removed_no 3 should no longer be present") so they AGREE on a
+    # genuinely successful removal -- guardrails.py's constraint #6
+    # (write_verification_failed) does a bare written != readback compare
+    # with no tool-specific exemption, so the ORIGINAL shape (readback's
+    # own removed_no going to None on success) refused every successful
+    # remove -- see tools_edit._remove_verification's own comment.
     assert envelope["verification"] == {
-        "written_value": {"removed_no": "3"},
-        "readback_value": {"removed_no": None},
+        "written_value": {"removed_no": "3", "still_present": False},
+        "readback_value": {"removed_no": "3", "still_present": False},
     }
     assert "Queue counter 3 removed" in envelope["message"]
     assert session.persist_calls == 1
@@ -295,7 +302,7 @@ def test_remove_data_collection_point_happy_path_when_unreferenced(tmp_path: Pat
     envelope = _dispatch("remove_data_collection_point", no="7")
 
     assert envelope["status"] == "ok"
-    assert envelope["verification"]["readback_value"] == {"removed_no": None}
+    assert envelope["verification"]["readback_value"] == {"removed_no": "7", "still_present": False}
     assert session.calls == [{"op": "remove_data_collection_point", "no": 7}]
     root = ET.parse(working).getroot()
     assert root.findall(".//dataCollectionPoints/dataCollectionPoint") == []
@@ -434,7 +441,7 @@ def test_remove_data_collection_measurement_happy_path(tmp_path: Path):
     envelope = _dispatch("remove_data_collection_measurement", no="1")
 
     assert envelope["status"] == "ok"
-    assert envelope["verification"]["readback_value"] == {"removed_no": None}
+    assert envelope["verification"]["readback_value"] == {"removed_no": "1", "still_present": False}
     root = ET.parse(working).getroot()
     assert root.findall(".//dataCollectionMeasurements/dataCollectionMeasurement") == []
 
@@ -525,7 +532,7 @@ def test_remove_travel_time_section_happy_path(tmp_path: Path):
     envelope = _dispatch("remove_travel_time_section", no="3")
 
     assert envelope["status"] == "ok"
-    assert envelope["verification"]["readback_value"] == {"removed_no": None}
+    assert envelope["verification"]["readback_value"] == {"removed_no": "3", "still_present": False}
     root = ET.parse(working).getroot()
     assert root.findall(".//vehicleTravelTimeMeasurements/vehicleTravelTimeMeasurement") == []
 

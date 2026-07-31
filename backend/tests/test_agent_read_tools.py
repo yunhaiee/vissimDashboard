@@ -119,6 +119,10 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "remove_data_collection_measurement",
     "add_travel_time_section",
     "remove_travel_time_section",
+    # Q4 unit (3): full link closure + turn bans (movement removal).
+    "set_link_closure",
+    "set_turn_ban",
+    "remove_connector",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md

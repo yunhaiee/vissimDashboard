@@ -149,6 +149,54 @@ def test_find_id_references_empty_for_unreferenced_link():
 
 
 # ---------------------------------------------------------------------------
+# Component 3a continued -- Q4 unit (3)'s new "links" reference sites:
+# route link sequence, priority rule / conflict marker intLink form,
+# conflict area linkA/linkB. Each live-verified relevant by
+# backend/tools/probe_link_closure_turn_bans.py before being added (see
+# ID_REFERENCE_SITES["links"]'s own comment).
+# ---------------------------------------------------------------------------
+
+
+def test_find_id_references_finds_route_link_sequence_reference():
+    root = ET.fromstring(
+        '<network><links><link no="1"/><link no="9001"/><link no="2"/></links>'
+        '<vehicleRoutingDecisionStatic no="1" link="1" name="">'
+        '<vehicleRouteStatic no="1" destLink="2" destPos="10">'
+        '<linkSeq><intObjectRef key="1"/><intObjectRef key="9001"/><intObjectRef key="2"/></linkSeq>'
+        '</vehicleRouteStatic></vehicleRoutingDecisionStatic></network>'
+    )
+    referrers = struct.find_id_references(root, "links", "9001")
+    assert len(referrers) == 1
+    assert referrers[0]["site"] == "route link sequence"
+    assert referrers[0]["tag"] == "intObjectRef"
+    # A link NOT named in the sequence is genuinely unreferenced.
+    assert struct.find_id_references(root, "links", "999") == []
+
+
+def test_find_id_references_finds_priority_rule_intlink_reference():
+    root = ET.fromstring(
+        '<network><links><link no="613"/></links>'
+        '<priorityRule no="143" intLink="613"><conflictMarker intLink="613"/></priorityRule>'
+        '</network>'
+    )
+    referrers = struct.find_id_references(root, "links", "613")
+    sites = sorted(r["site"] for r in referrers)
+    assert sites == ["priority rule (intLink)", "priority rule conflict marker (intLink)"]
+
+
+def test_find_id_references_finds_conflict_area_link_a_and_b():
+    root = ET.fromstring(
+        '<network><links><link no="4"/><link no="10002"/></links>'
+        '<conflictAreas><conflictArea no="17" linkA="4" linkB="10002" status="PASSIVE"/></conflictAreas>'
+        '</network>'
+    )
+    referrers_a = struct.find_id_references(root, "links", "4")
+    referrers_b = struct.find_id_references(root, "links", "10002")
+    assert len(referrers_a) == 1 and referrers_a[0]["site"] == "conflict area link A"
+    assert len(referrers_b) == 1 and referrers_b[0]["site"] == "conflict area link B"
+
+
+# ---------------------------------------------------------------------------
 # Component 3b: reference integrity -- lane tokens
 # ---------------------------------------------------------------------------
 
@@ -435,3 +483,172 @@ def test_apply_structural_edit_keeps_edit_when_load_oracle_passes(tmp_path: Path
     fresh = struct.verify_reparse(path)
     target = next(l for l in fresh["links"] if l["id"] == "1")
     assert target["lane_widths"][-1] == pytest.approx(9.0)
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (3): remove_connector -- the true structural "movement removal"
+# verb. No live COM anywhere in this section (run_load_check=False); the
+# load oracle itself is proven live separately
+# (backend/tools/probe_link_closure_turn_bans.py [1c] + the unit's own live
+# transcript).
+# ---------------------------------------------------------------------------
+
+
+def test_remove_connector_happy_path_against_real_practice_inpx(tmp_path: Path):
+    """Static XML test against the REAL data/practice.inpx (a copy, never
+    the original -- see _copy_practice) rather than a synthetic fixture:
+    connectors 301/302 are both genuinely unreferenced in the bundled demo
+    network (verified by find_id_references/find_lane_token_references
+    returning empty for both, every lane)."""
+    path = _copy_practice(tmp_path)
+    before = struct.verify_reparse(path)
+    before_link_ids = {l["id"] for l in before["links"]}
+    assert "301" in before_link_ids
+
+    result = struct.remove_connector(path, "301", run_load_check=False)
+
+    assert result["metadata"]["connector_no"] == "301"
+    after_link_ids = {l["id"] for l in result["shadow_model"]["links"]}
+    assert "301" not in after_link_ids
+    assert "302" in after_link_ids  # the OTHER connector is untouched
+
+    fresh = struct.verify_reparse(path)
+    assert "301" not in {l["id"] for l in fresh["links"]}
+
+
+_CONNECTOR_NETWORK_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+<links>{links}</links>
+{extra}
+</network>
+"""
+
+#: link 1 -- connector 9001 -- link 2, a plain 2-link/1-connector chain.
+#: Connector 9001 itself is UNREFERENCED by anything in this base set.
+_BASE_CONNECTOR_LINKS = (
+    '<link no="1" name="A"><geometry><linkPolyPts>'
+    '<linkPolyPoint x="0" y="0" zOffset="0"/><linkPolyPoint x="100" y="0" zOffset="0"/>'
+    '</linkPolyPts></geometry><lanes><lane width="3.5"/></lanes></link>'
+    '<link no="9001" name="connector"><fromLinkEndPt link="1" pos="100"/>'
+    '<toLinkEndPt link="2" pos="0"/>'
+    '<geometry><linkPolyPts><linkPolyPoint x="100" y="0" zOffset="0"/>'
+    '<linkPolyPoint x="120" y="0" zOffset="0"/></linkPolyPts></geometry>'
+    '<lanes><lane width="3.5"/></lanes></link>'
+    '<link no="2" name="B"><geometry><linkPolyPts>'
+    '<linkPolyPoint x="120" y="0" zOffset="0"/><linkPolyPoint x="220" y="0" zOffset="0"/>'
+    '</linkPolyPts></geometry><lanes><lane width="3.5"/></lanes></link>'
+)
+
+
+def _write_connector_network(
+    tmp_path: Path, links_inner_xml: str = _BASE_CONNECTOR_LINKS, extra: str = "", name: str = "fixture.inpx"
+) -> Path:
+    path = tmp_path / name
+    path.write_text(
+        _CONNECTOR_NETWORK_TEMPLATE.format(links=links_inner_xml, extra=extra), encoding="utf-8"
+    )
+    return path
+
+
+def test_remove_connector_happy_path(tmp_path: Path):
+    path = _write_connector_network(tmp_path)
+    result = struct.remove_connector(path, "9001", run_load_check=False)
+
+    assert result["metadata"] == {"connector_no": "9001", "removed_lane_count": 1}
+    assert result["load_check_result"] is None
+    assert not any(l["id"] == "9001" for l in result["shadow_model"]["links"])
+
+    # Byte-level: reparsing straight from disk (not the in-memory tree)
+    # confirms the removal genuinely reached the file, and the OTHER two
+    # links survived untouched.
+    fresh = struct.verify_reparse(path)
+    ids = {l["id"] for l in fresh["links"]}
+    assert ids == {"1", "2"}
+
+
+def test_remove_connector_raises_for_unknown_connector(tmp_path: Path):
+    path = _write_connector_network(tmp_path)
+    with pytest.raises(ValueError, match="not found"):
+        struct.remove_connector(path, "99999", run_load_check=False)
+
+
+def test_remove_connector_raises_for_a_plain_link(tmp_path: Path):
+    path = _write_connector_network(tmp_path)
+    with pytest.raises(ValueError, match="not a connector"):
+        struct.remove_connector(path, "1", run_load_check=False)
+
+
+def test_remove_connector_refuses_when_referenced_by_a_route(tmp_path: Path):
+    path = _write_connector_network(
+        tmp_path,
+        extra=(
+            '<vehicleRoutingDecisionStatic no="1" link="1" name="">'
+            '<vehicleRouteStatic no="1" destLink="2" destPos="10">'
+            '<linkSeq><intObjectRef key="1"/><intObjectRef key="9001"/>'
+            '<intObjectRef key="2"/></linkSeq>'
+            '</vehicleRouteStatic></vehicleRoutingDecisionStatic>'
+        ),
+    )
+    original_bytes = path.read_bytes()
+
+    with pytest.raises(struct.ReferenceIntegrityError) as excinfo:
+        struct.remove_connector(path, "9001", run_load_check=False)
+
+    assert excinfo.value.referrers[0]["site"] == "route link sequence"
+    # Refused BEFORE any write -- the file is untouched.
+    assert path.read_bytes() == original_bytes
+
+
+def test_remove_connector_refuses_when_referenced_by_a_conflict_area(tmp_path: Path):
+    path = _write_connector_network(
+        tmp_path,
+        extra='<conflictAreas><conflictArea no="17" linkA="1" linkB="9001" status="PASSIVE"/></conflictAreas>',
+    )
+    with pytest.raises(struct.ReferenceIntegrityError) as excinfo:
+        struct.remove_connector(path, "9001", run_load_check=False)
+    assert excinfo.value.referrers[0]["site"] == "conflict area link B"
+
+
+def test_remove_connector_refuses_when_referenced_by_a_priority_rule(tmp_path: Path):
+    path = _write_connector_network(
+        tmp_path, extra='<priorityRule no="1" intLink="9001"/>'
+    )
+    with pytest.raises(struct.ReferenceIntegrityError) as excinfo:
+        struct.remove_connector(path, "9001", run_load_check=False)
+    assert excinfo.value.referrers[0]["site"] == "priority rule (intLink)"
+
+
+def test_remove_connector_refuses_when_chained_from_another_connector(tmp_path: Path):
+    # Connector 9002 attaches its OWN fromLinkEndPt to connector 9001 --
+    # removing 9001 would dangle 9002's endpoint.
+    links = _BASE_CONNECTOR_LINKS + (
+        '<link no="9002" name="chain"><fromLinkEndPt link="9001" pos="5"/>'
+        '<toLinkEndPt link="2" pos="0"/>'
+        '<geometry><linkPolyPts><linkPolyPoint x="105" y="0" zOffset="0"/>'
+        '<linkPolyPoint x="120" y="5" zOffset="0"/></linkPolyPts></geometry>'
+        '<lanes><lane width="3.5"/></lanes></link>'
+    )
+    path = _write_connector_network(tmp_path, links_inner_xml=links)
+    with pytest.raises(struct.ReferenceIntegrityError) as excinfo:
+        struct.remove_connector(path, "9001", run_load_check=False)
+    assert excinfo.value.referrers[0]["tag"] == "fromLinkEndPt"
+
+
+def test_remove_connector_refuses_when_a_lane_is_referenced_by_fromlanes(tmp_path: Path):
+    # A DIFFERENT connector's own <lane><fromLanes><objectRef key="9001 1"/>
+    # references connector 9001's lane 1 directly (the real-Vissim-export
+    # shape, not the fromLinkEndPt lane-attribute form) -- attached from link
+    # 2 (not 9001 itself) so this test isolates the LANE-token check from the
+    # id-level fromLinkEndPt check already covered by the chain test above.
+    links = _BASE_CONNECTOR_LINKS + (
+        '<link no="9003" name="lane-ref"><fromLinkEndPt link="2" pos="0"/>'
+        '<toLinkEndPt link="1" pos="0"/>'
+        '<geometry><linkPolyPts><linkPolyPoint x="105" y="0" zOffset="0"/>'
+        '<linkPolyPoint x="120" y="5" zOffset="0"/></linkPolyPts></geometry>'
+        '<lanes><lane><fromLanes><objectRef key="9001 1"/></fromLanes></lane></lanes></link>'
+    )
+    path = _write_connector_network(tmp_path, links_inner_xml=links)
+    with pytest.raises(struct.ReferenceIntegrityError) as excinfo:
+        struct.remove_connector(path, "9001", run_load_check=False)
+    sites = [r["site"] for r in excinfo.value.referrers]
+    assert "connector fromLanes" in sites

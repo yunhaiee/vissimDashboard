@@ -712,6 +712,35 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "no",
     },
+    # Q4 unit (3): full link closure + turn bans (movement removal). All
+    # three verbs target the "links" object class (a connector IS a
+    # "links" entry, distinguished only by its own is_connector field --
+    # tools_network.py's shadow model already carries it, no parser change
+    # needed this unit). Whether lane_index exists / whether connector_no
+    # is genuinely a connector has no single flat id the generic
+    # object_not_found machinery can check (mirrors set_lane_closure's own
+    # documented gap, one entry above) -- enforced inline in
+    # tools_edit.py's set_turn_ban (fails closed with a clear ValueError)
+    # rather than a second dedicated constraint, per this unit's own
+    # "constraints.py minimal" instruction.
+    "set_link_closure": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_id",
+    },
+    "set_turn_ban": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "connector_no",
+    },
+    "remove_connector": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "connector_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -8176,5 +8205,102 @@ register(
         message_ko="위치 {pos}m가 링크 {link_id}의 길이(0~{length}m) 범위를 벗어났습니다.",
         message_en="Position {pos} m falls outside link {link_id}'s own length (0-{length} m).",
         message_ja="位置 {pos}m がリンク {link_id} の長さ(0〜{length}m)の範囲外です。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# link_closure_route_consequence (warn, preflight) -- Q4 unit (3)'s ONE new
+# constraint (this unit's own "constraints.py minimal" instruction:
+# _TOOL_TARGET_SPEC entries above + at most one small constraint here;
+# everything else lives in services/inpx_structure.py and
+# services/agent/tools_edit.py, per those modules' own comments).
+#
+# Task brief: closing/banning a link/connector that a route still traverses
+# is not something Vissim reroutes for you -- the shadow model already has
+# "routes" (v2 unit ⑥, tools_network._flatten_routes) with each route's own
+# link_seq, so this is a straight membership check, no CATALOG-GAP. Fires
+# in PREFLIGHT (not postwrite, unlike route_integrity_unverifiable/#31 --
+# closing a link never changes its own existence or any route's link_seq,
+# so the "before" shadow model already has every answer this check will
+# ever need; showing it BEFORE approval, on the SAME action a user is about
+# to confirm, is strictly more useful than after the fact). Only fires on
+# the CLOSING/BANNING direction (closed=True / banned=True) -- reopening/
+# un-banning never worsens route reachability, so there is nothing to warn
+# about there.
+#
+# Deliberately does NOT cover remove_connector: that verb's own route
+# consequence is a REFUSAL (a route's link_seq left dangling is a genuine
+# reference-integrity violation, not merely an operational caveat) --
+# enforced by services.inpx_structure.remove_connector itself via the
+# spine's find_id_references (see that function's own module comment,
+# extended ID_REFERENCE_SITES["links"] with a "route link sequence" site
+# this same unit), never by this constraint.
+# ---------------------------------------------------------------------------
+
+_LINK_CLOSURE_ROUTE_CONSEQUENCE_FIELDS: dict[str, tuple[str, str]] = {
+    # tool -> (target_id_param, "close"-direction param name)
+    "set_link_closure": ("link_id", "closed"),
+    "set_turn_ban": ("connector_no", "banned"),
+}
+
+
+def _check_link_closure_route_consequence(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    tool = action.get("tool", "")
+    fields = _LINK_CLOSURE_ROUTE_CONSEQUENCE_FIELDS.get(tool)
+    if fields is None:
+        return None
+    id_param, direction_param = fields
+    params = action.get("params", {})
+    if not params.get(direction_param, True):
+        return None  # reopening/un-banning -- nothing to warn about
+
+    target_id = str(params.get(id_param, ""))
+    if not target_id:
+        return None
+
+    routes = shadow_model.get("routes") or []
+    affected = [
+        str(r.get("id", "?")) for r in routes if target_id in (r.get("link_seq") or [])
+    ]
+    if not affected:
+        return None
+
+    routes_ko, routes_en, routes_ja = _capped_join(affected, "개", "routes", "件")
+    return Finding(
+        constraint_id="link_closure_route_consequence",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "link_closure_route_consequence",
+            target_id=target_id,
+            routes_ko=routes_ko,
+            routes_en=routes_en,
+            routes_ja=routes_ja,
+        ),
+        details={"target_id": target_id, "affected_routes": affected},
+    )
+
+
+register(
+    Constraint(
+        id="link_closure_route_consequence",
+        applies_to=list(_LINK_CLOSURE_ROUTE_CONSEQUENCE_FIELDS.keys()),
+        phase="preflight",
+        tier="warn",
+        check=_check_link_closure_route_consequence,
+        message_ko="링크/커넥터 {target_id}를 지나는 경로 {routes_ko}이(가) 있습니다. Vissim은 폐쇄되거나 "
+        "금지된 링크/회전을 지나는 경로를 자동으로 우회시키지 않으며, 그 경로에 배정된 수요는 잠재 "
+        "수요로 소실되거나 폐쇄 지점 앞에서 정체될 수 있습니다 — 해당 경로들도 함께 조정할지 확인하세요.",
+        message_en="Route(s) {routes_en} run through link/connector {target_id}. Vissim does not "
+        "automatically reroute traffic assigned to a closed or banned link/turn -- demand on "
+        "those routes may vanish as latent demand or queue behind the closure. Confirm whether "
+        "those routes should be adjusted too.",
+        message_ja="リンク/コネクタ {target_id} を通る経路 {routes_ja} があります。Vissimは閉鎖・禁止"
+        "されたリンク/右左折を通る経路を自動的に迂回させないため、その経路に割り当てられた需要は"
+        "潜在需要として消失するか、閉鎖箇所の手前で滞留する可能性があります — それらの経路も併せて"
+        "調整するか確認してください。",
     )
 )

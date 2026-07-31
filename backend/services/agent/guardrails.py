@@ -482,6 +482,33 @@ _PAIRED_EXTRA_TARGET_SPEC: dict[str, dict[str, Any]] = {
     },
 }
 
+# Q4 unit (3): ``set_link_closure``/``set_turn_ban`` compose unit (1)'s own
+# ``set_lane_closure`` across EVERY lane of the target link/connector, not
+# just one -- ``_WRITE_TARGET_FIELD_SPEC``/``_PAIRED_EXTRA_TARGET_SPEC``
+# above only ever exempt ONE or TWO fixed (object_id, fields) pairs per
+# tool, which cannot express "every lane THIS link currently has,
+# whatever that count turns out to be" (a link's lane count is itself
+# per-network data, not something a static table entry could enumerate).
+# This is a THIRD, small, additive lookup: {tool: {object_class,
+# link_id_param, value_field}} -- consulted only for tools present here,
+# resolving to one exemption PER LANE the target link/connector has in the
+# BEFORE model (composing/reopening never adds or removes a lane itself,
+# so "every link_lanes id whose link_id matches, as of the before model"
+# is exactly the set this write is expected to touch). Every OTHER tool's
+# behavior is byte-unchanged: this dict is empty for them.
+_LINK_WIDE_TARGET_SPEC: dict[str, dict[str, str]] = {
+    "set_link_closure": {
+        "object_class": "link_lanes",
+        "link_id_param": "link_id",
+        "value_field": "blocked_vehicle_classes",
+    },
+    "set_turn_ban": {
+        "object_class": "link_lanes",
+        "link_id_param": "connector_no",
+        "value_field": "blocked_vehicle_classes",
+    },
+}
+
 # QUEUE 3 (v2a) unit 3's own regression fix: adding "des_speed_distributions"
 # to _SHADOW_OBJECT_ID_FIELDS (needed for THIS unit's own
 # set_des_speed_distribution_points postwrite verification) newly exposed a
@@ -510,6 +537,22 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
     # DuplicateDrivingBehavior COM method) -- see vissim_com.VissimController's
     # own module comment.
     "duplicate_driving_behavior": frozenset({"driving_behaviors"}),
+}
+
+# Q4 unit (3): the REMOVAL-side mirror of ``_ALLOWS_NEW_OBJECTS_IN`` above --
+# ``remove_connector``'s own sanctioned action IS making a "links" entry
+# (and every one of its own "link_lanes" entries) disappear (structural XML
+# removal, services.inpx_structure.remove_connector). Blanket, per-object-
+# CLASS opt-in exactly like ``_ALLOWS_NEW_OBJECTS_IN`` (not id-specific --
+# same precedent that table already established for
+# ``duplicate_driving_behavior``'s added id): every id REMOVED from an
+# opted-in class during THIS tool's write is treated as expected, never
+# evidence. Every OTHER tool's behavior is byte-unchanged: this dict is
+# empty for them, so "removed" stays unconditional evidence exactly as
+# before (an unexpectedly vanished object must still refuse-and-rollback
+# for every tool not listed here).
+_ALLOWS_REMOVED_OBJECTS_IN: dict[str, frozenset[str]] = {
+    "remove_connector": frozenset({"links", "link_lanes"}),
 }
 
 # QUEUE 3 (v2a) unit 3's SECOND regression fix, found live-testing this same
@@ -566,6 +609,21 @@ _ALWAYS_EXEMPT_FIELDS: dict[str, frozenset[str]] = {
     # class situation set_des_speed_decision's own reassignment created for
     # des_speed_distributions.
     "driving_behaviors": frozenset({"referenced_by", "reference_count"}),
+    # Q4 unit (3), LIVE-CAUGHT: link_behavior_type_assignments' own
+    # "link_count" (tools_network._link_behavior_type_link_counts) is
+    # PURELY DERIVED by counting real ``<link linkBehavType="...">``
+    # elements -- no tool ever writes it directly, matching every precedent
+    # above exactly. remove_connector deleting a connector's own ``<link>``
+    # legitimately decrements whichever link-behavior-type that connector
+    # used, even though remove_connector's own write target object_class is
+    # "links"/"link_lanes", not "link_behavior_type_assignments" at all --
+    # the SAME cross-object-class situation every entry above documents.
+    # Reproduced live (backend/tools/link_closure_turn_ban_live_check.py,
+    # Phase C, Roundabout Buehl.DE): a genuine, correct remove_connector
+    # false-positived as "something else moved" on
+    # link_behavior_type_assignments#1.default and was refused+rolled-back
+    # by the real orchestrator before this fix.
+    "link_behavior_type_assignments": frozenset({"link_count"}),
 }
 
 
@@ -816,6 +874,7 @@ def _diff_object_list(
     exempt_targets: list[tuple[str, frozenset[str]]] | None,
     *,
     suppress_added: bool = False,
+    suppress_removed: bool = False,
     always_exempt_fields: frozenset[str] = frozenset(),
     exempt_removed_ids: frozenset[str] = frozenset(),
     exempt_added_ids: frozenset[str] = frozenset(),
@@ -839,8 +898,14 @@ def _diff_object_list(
     ``suppress_added`` (QUEUE 3 (v2a) unit 3, see ``_ALLOWS_NEW_OBJECTS_IN``)
     — when true, a brand-new id present only in ``after`` is expected
     (the calling tool's own sanctioned action legitimately creates one),
-    not evidence. Removals are NEVER suppressed by this flag — an
-    unexpectedly vanished object stays evidence regardless.
+    not evidence. Removals are NEVER suppressed by this flag.
+
+    ``suppress_removed`` (Q4 unit (3), see ``_ALLOWS_REMOVED_OBJECTS_IN``) —
+    the removal-side mirror of ``suppress_added``: when true, an id present
+    only in ``before`` is expected (the calling tool's own sanctioned
+    action legitimately deletes objects in this class, e.g.
+    ``remove_connector`` deleting a "links" entry and its own "link_lanes"
+    rows), not evidence. Additions are NEVER suppressed by this flag.
 
     ``always_exempt_fields`` (QUEUE 3 (v2a) unit 3's SECOND regression fix,
     see ``_ALWAYS_EXEMPT_FIELDS``) — field names that never become evidence
@@ -870,10 +935,11 @@ def _diff_object_list(
     after_by_id = _index_by_id(after, id_field)
     evidence: list[dict[str, Any]] = []
 
-    for obj_id in sorted(set(before_by_id) - set(after_by_id)):
-        if obj_id in exempt_removed_ids:
-            continue
-        evidence.append({"object_class": object_class, "object_id": obj_id, "change": "removed"})
+    if not suppress_removed:
+        for obj_id in sorted(set(before_by_id) - set(after_by_id)):
+            if obj_id in exempt_removed_ids:
+                continue
+            evidence.append({"object_class": object_class, "object_id": obj_id, "change": "removed"})
     if not suppress_added:
         for obj_id in sorted(set(after_by_id) - set(before_by_id)):
             if obj_id in exempt_added_ids:
@@ -998,6 +1064,26 @@ def _paired_extra_target_id(extra_spec: dict[str, Any], action: dict[str, Any]) 
     return _target_id_for_spec(extra_spec, action)
 
 
+def _link_wide_exemptions(
+    link_wide_spec: dict[str, str], action: dict[str, Any], before_model: dict[str, Any]
+) -> list[tuple[str, frozenset[str]]]:
+    """Q4 unit (3): one ``(link_lanes_id, {value_field})`` exemption per lane
+    the target link/connector has in ``before_model`` — see
+    ``_LINK_WIDE_TARGET_SPEC``'s own comment for why a fixed-count table
+    entry cannot express this (a link's lane count is per-network data).
+    """
+    link_id = str(action.get("params", {}).get(link_wide_spec["link_id_param"], ""))
+    if not link_id:
+        return []
+    fields = frozenset({link_wide_spec["value_field"], *link_wide_spec.get("coupled_fields", ())})
+    object_class = link_wide_spec["object_class"]
+    return [
+        (str(lane.get("id", "")), fields)
+        for lane in before_model.get(object_class, [])
+        if str(lane.get("link_id", "")) == link_id
+    ]
+
+
 def _nothing_else_moved_diff(
     action: dict[str, Any],
     before_model: dict[str, Any],
@@ -1033,6 +1119,12 @@ def _nothing_else_moved_diff(
                 (extra_target_id, frozenset({extra_spec["value_field"], *extra_spec.get("coupled_fields", ())}))
             )
 
+    link_wide_spec = _LINK_WIDE_TARGET_SPEC.get(tool)
+    if link_wide_spec is not None:
+        exemptions.setdefault(link_wide_spec["object_class"], []).extend(
+            _link_wide_exemptions(link_wide_spec, action, before_model)
+        )
+
     removed_ok: dict[str, set[str]] = {}
     added_ok: dict[str, set[str]] = {}
     for entry in extra_exemptions or ():
@@ -1047,6 +1139,7 @@ def _nothing_else_moved_diff(
             added_ok.setdefault(object_class, set()).add(object_id)
 
     allow_new = _ALLOWS_NEW_OBJECTS_IN.get(tool, frozenset())
+    allow_removed = _ALLOWS_REMOVED_OBJECTS_IN.get(tool, frozenset())
 
     evidence: list[dict[str, Any]] = []
     for object_class, id_field in _SHADOW_OBJECT_ID_FIELDS.items():
@@ -1058,6 +1151,7 @@ def _nothing_else_moved_diff(
                 after_model.get(object_class, []),
                 exemptions.get(object_class),
                 suppress_added=object_class in allow_new,
+                suppress_removed=object_class in allow_removed,
                 always_exempt_fields=_ALWAYS_EXEMPT_FIELDS.get(object_class, frozenset()),
                 exempt_removed_ids=frozenset(removed_ok.get(object_class, ())),
                 exempt_added_ids=frozenset(added_ok.get(object_class, ())),

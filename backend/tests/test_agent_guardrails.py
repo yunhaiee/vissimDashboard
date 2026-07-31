@@ -2033,6 +2033,217 @@ def test_postwrite_lane_closure_diff_flags_an_unrelated_sibling_lane_change():
     )
 
 
+# ---------------------------------------------------------------------------
+# postwrite -- set_link_closure/set_turn_ban compose set_lane_closure across
+# EVERY lane of the target link/connector -- the nothing-else-moved diff
+# must exempt every one of them, not just a single (link_id, lane_index)
+# pair -- Q4 unit (3), _LINK_WIDE_TARGET_SPEC
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_link_closure_diff_exempts_every_lane_of_the_target_link():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        link_lanes=[_link_lane_entry("101", 1), _link_lane_entry("101", 2)]
+    )
+    after = _shadow_model(
+        link_lanes=[
+            _link_lane_entry("101", 1, blocked_vehicle_classes=["30"]),
+            _link_lane_entry("101", 2, blocked_vehicle_classes=["30"]),
+        ]
+    )
+    action = _action("set_link_closure", link_id="101", vehicle_classes=["30"], closed=True)
+    verification = {
+        "written_value": {"vehicle_classes": ["30"], "lanes_matched": 2},
+        "readback_value": {"vehicle_classes": ["30"], "lanes_matched": 2},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_turn_ban_diff_exempts_every_lane_of_the_target_connector():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(link_lanes=[_link_lane_entry("9001", 1)])
+    after = _shadow_model(link_lanes=[_link_lane_entry("9001", 1, blocked_vehicle_classes=["10"])])
+    action = _action("set_turn_ban", connector_no="9001", vehicle_classes=["10"], banned=True)
+    verification = {
+        "written_value": {"vehicle_classes": ["10"], "lanes_matched": 1},
+        "readback_value": {"vehicle_classes": ["10"], "lanes_matched": 1},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_link_closure_diff_still_flags_a_lane_on_a_different_link():
+    # The link-wide exemption is scoped to the TARGET link_id only -- a lane
+    # belonging to an UNRELATED link that also changed must still be
+    # flagged, exactly like every other exemption in this table.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        link_lanes=[_link_lane_entry("101", 1), _link_lane_entry("102", 1)]
+    )
+    after = _shadow_model(
+        link_lanes=[
+            _link_lane_entry("101", 1, blocked_vehicle_classes=["30"]),
+            _link_lane_entry("102", 1, blocked_vehicle_classes=["99"]),  # unrelated drift
+        ]
+    )
+    action = _action("set_link_closure", link_id="101", vehicle_classes=["30"], closed=True)
+    verification = {
+        "written_value": {"vehicle_classes": ["30"], "lanes_matched": 1},
+        "readback_value": {"vehicle_classes": ["30"], "lanes_matched": 1},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.blocking is True
+    evidence = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        item["object_class"] == "link_lanes" and item["object_id"] == "102.1" for item in evidence
+    )
+
+
+# ---------------------------------------------------------------------------
+# postwrite -- Q4 unit (3) bug fix: a genuinely successful remove_* tool
+# call must NOT refuse against constraint #6 (write_verification_failed).
+# Found while writing this unit's own remove_connector tests: every one of
+# Q4 unit (2)'s FOUR pre-existing remove tools (remove_queue_counter et al.)
+# originally reported written_value={"removed_no": X} / readback_value=
+# {"removed_no": None} on SUCCESS -- genuinely different dicts, which #6's
+# bare written != readback compare (no tool-specific exemption of its own,
+# unlike the separate nothing-else-moved diff) refused unconditionally.
+# tools_edit._remove_verification now makes written/readback agree on
+# success (and correctly disagree -- refuse -- when the object is still
+# there). This is a real, previously-undetected defect: NO pre-existing
+# test called GuardrailEngine.postwrite directly with a real remove tool's
+# own verification payload (test_agent_tools_measurement_infra.py dispatches
+# in isolation; test_agent_rollback_measurement_infra.py exercises
+# rollback's own, unrelated hash-based verification).
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_remove_queue_counter_successful_removal_does_not_refuse():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_queue_counter", no="3")
+    verification = {
+        "written_value": {"removed_no": "3", "still_present": False},
+        "readback_value": {"removed_no": "3", "still_present": False},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_queue_counter_still_present_after_remove_refuses():
+    # The genuinely informative refusal this check exists to catch: Vissim
+    # claimed the remove succeeded but the object is STILL there afterward.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_queue_counter", no="3")
+    verification = {
+        "written_value": {"removed_no": "3", "still_present": False},
+        "readback_value": {"removed_no": "3", "still_present": True},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.blocking is True
+    assert [f.constraint_id for f in report.findings] == ["write_verification_failed"]
+
+
+# ---------------------------------------------------------------------------
+# postwrite -- remove_connector's own removed "links"/"link_lanes" entries
+# are expected, never evidence -- Q4 unit (3), _ALLOWS_REMOVED_OBJECTS_IN
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_remove_connector_diff_suppresses_its_own_removed_link_and_lanes():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        links=[
+            {"id": "101", "name": "A", "lanes": 1, "length": 100.0},
+            {"id": "9001", "name": "turn", "lanes": 1, "length": 20.0, "is_connector": True},
+        ],
+        link_lanes=[_link_lane_entry("101", 1), _link_lane_entry("9001", 1)],
+    )
+    after = _shadow_model(
+        links=[{"id": "101", "name": "A", "lanes": 1, "length": 100.0}],
+        link_lanes=[_link_lane_entry("101", 1)],
+    )
+    action = _action("remove_connector", connector_no="9001")
+    verification = {
+        "written_value": {"removed_connector_no": "9001", "still_present": False},
+        "readback_value": {"removed_connector_no": "9001", "still_present": False},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_connector_diff_exempts_the_unrelated_link_behavior_type_count_shift():
+    # LIVE-CAUGHT (link_closure_turn_ban_live_check.py, Phase C, Roundabout
+    # Buehl.DE): removing a connector's own <link> element legitimately
+    # decrements whichever link_behavior_type that connector used --
+    # link_count is PURELY DERIVED (tools_network._link_behavior_type_link_
+    # counts, a plain count of real <link linkBehavType="..."> elements), so
+    # this must NEVER be evidence for ANY tool, matching the des_speed_
+    # distributions/vehicle_types/time_distributions/driving_behaviors
+    # precedents in _ALWAYS_EXEMPT_FIELDS exactly.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        links=[
+            {"id": "101", "name": "A", "lanes": 1, "length": 100.0},
+            {"id": "9001", "name": "turn", "lanes": 1, "length": 20.0, "is_connector": True},
+        ],
+        link_lanes=[_link_lane_entry("101", 1), _link_lane_entry("9001", 1)],
+        link_behavior_type_assignments=[{**_lbt_assignment("1"), "link_count": 293}],
+    )
+    after = _shadow_model(
+        links=[{"id": "101", "name": "A", "lanes": 1, "length": 100.0}],
+        link_lanes=[_link_lane_entry("101", 1)],
+        link_behavior_type_assignments=[{**_lbt_assignment("1"), "link_count": 292}],
+    )
+    action = _action("remove_connector", connector_no="9001")
+    verification = {
+        "written_value": {"removed_connector_no": "9001", "still_present": False},
+        "readback_value": {"removed_connector_no": "9001", "still_present": False},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_still_flags_a_removed_link_for_a_tool_not_opted_in():
+    # The suppression is tool-SPECIFIC (_ALLOWS_REMOVED_OBJECTS_IN), not a
+    # blanket "never flag a missing link" rule -- an unrelated tool must
+    # still see an unexpectedly vanished link as evidence.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()  # default links=[{"id": "101", ...}]
+    after = _shadow_model(links=[])
+    action = _action("set_vehicle_input_volume", input_no="1", volume=600)
+
+    report = engine.postwrite(action, before, after, {"written_value": 600, "readback_value": 600})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {"object_class": "links", "object_id": "101", "change": "removed"} in diff
+
+
 def test_diff_shadow_models_reports_a_structurally_removed_lane():
     # The general oracle rollback_last_edit itself calls (guardrails.
     # diff_shadow_models, no tool-specific exemption at all) must see a

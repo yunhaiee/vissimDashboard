@@ -115,7 +115,13 @@ def test_health_check_runner_against_demo_dataset():
     # link/pos params, which a whole-network dataset scan has no equivalent
     # of, so it does not opt into the dataset scan either, same shape as
     # every addition above.
-    assert report["summary"]["edit_time_only_n"] == 77
+    # 78, not 77: Q4 unit (3) (full link closure + turn bans) added one
+    # preflight-only constraint, link_closure_route_consequence, for the new
+    # set_link_closure/set_turn_ban tools -- it needs a proposed action's own
+    # link_id/connector_no + closed/banned params, which a whole-network
+    # dataset scan has no equivalent of, so it does not opt into the dataset
+    # scan either, same shape as every addition above.
+    assert report["summary"]["edit_time_only_n"] == 78
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

@@ -3058,6 +3058,94 @@ def test_route_integrity_unverifiable_message_caps_enumerated_routes():
         )
 
 
+def test_link_closure_route_consequence_fires_on_link_closure_through_a_route():
+    shadow = _shadow_model()
+    shadow["routes"] = [{"id": "2.1", "link_seq": ["101", "9001", "102"], "disconnected": False}]
+    action = _action("set_link_closure", link_id="101", vehicle_classes=["10"], closed=True)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "link_closure_route_consequence"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    _assert_well_formed_messages(matches[0], must_contain_ko="2.1")
+    assert matches[0].details == {"target_id": "101", "affected_routes": ["2.1"]}
+
+
+def test_link_closure_route_consequence_fires_on_turn_ban_through_a_route():
+    shadow = _shadow_model()
+    shadow["routes"] = [{"id": "2.1", "link_seq": ["101", "9001", "102"], "disconnected": False}]
+    action = _action("set_turn_ban", connector_no="9001", vehicle_classes=["10"], banned=True)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "link_closure_route_consequence"]
+    assert len(matches) == 1
+    assert matches[0].details["affected_routes"] == ["2.1"]
+
+
+def test_link_closure_route_consequence_silent_when_no_route_traverses_target():
+    shadow = _shadow_model()
+    shadow["routes"] = [{"id": "2.1", "link_seq": ["101", "9002", "102"], "disconnected": False}]
+    action = _action("set_turn_ban", connector_no="9001", vehicle_classes=["10"], banned=True)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "link_closure_route_consequence" for f in findings)
+
+
+def test_link_closure_route_consequence_silent_when_routes_absent():
+    shadow = _shadow_model()
+    action = _action("set_link_closure", link_id="101", vehicle_classes=["10"], closed=True)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "link_closure_route_consequence" for f in findings)
+
+
+def test_link_closure_route_consequence_silent_on_reopen_direction():
+    # closed=False (reopen) / banned=False (un-ban) never worsens route
+    # reachability -- nothing to warn about there.
+    shadow = _shadow_model()
+    shadow["routes"] = [{"id": "2.1", "link_seq": ["101", "9001", "102"], "disconnected": False}]
+    action = _action("set_link_closure", link_id="101", vehicle_classes=[], closed=False)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "link_closure_route_consequence" for f in findings)
+
+
+def test_link_closure_route_consequence_does_not_apply_to_remove_connector():
+    # remove_connector's own route consequence is a REFUSAL enforced by
+    # services.inpx_structure's spine (dangling linkSeq reference), not this
+    # warn-tier constraint -- see that module's own ID_REFERENCE_SITES
+    # comment.
+    shadow = _shadow_model()
+    shadow["routes"] = [{"id": "2.1", "link_seq": ["101", "9001", "102"], "disconnected": False}]
+    action = _action("remove_connector", connector_no="9001")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "link_closure_route_consequence" for f in findings)
+
+
+def test_link_closure_route_consequence_message_caps_enumerated_routes():
+    shadow = _shadow_model()
+    shadow["routes"] = [
+        {"id": f"{i}.1", "link_seq": ["101"], "disconnected": False} for i in range(10)
+    ]
+    action = _action("set_link_closure", link_id="101", vehicle_classes=["10"], closed=True)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "link_closure_route_consequence"]
+    assert len(matches) == 1
+    assert matches[0].details["affected_routes"] == [f"{i}.1" for i in range(10)]
+    for lang, remainder_fragment in (("ko", "외 2"), ("en", "2 more"), ("ja", "他2")):
+        message = matches[0].messages[lang]
+        assert remainder_fragment in message, f"{lang} message missing remainder note: {message!r}"
+
+
 def test_stale_route_files_after_edit_fires_when_enabled_and_stale():
     shadow = _shadow_model()
     shadow["dynamic_assignment"] = {"enabled": True, "paths_stale": True}
@@ -4907,9 +4995,22 @@ def test_registry_size_matches_m3_1_catalog_port():
     # place (new _TOOL_TARGET_SPEC/_OBJECT_CLASS_LABELS entries) to gate 7 of
     # the unit's 8 new add/remove tools, not added -- see that check's own
     # comment for the one deliberate scope cut, add_data_collection_measurement)
-    # == 91.
+    # == 91, + 1 (Q4 unit (3), full link closure + turn bans (movement
+    # removal): link_closure_route_consequence -- NOT a §-numbered catalog
+    # entry, this unit's ONE new constraint per its own "constraints.py
+    # minimal" instruction: warns (never refuses) when set_link_closure/
+    # set_turn_ban's own target is still traversed by a route's link_seq --
+    # object_not_found already existed and was EXTENDED in place (new
+    # _TOOL_TARGET_SPEC entries for set_link_closure/set_turn_ban/
+    # remove_connector) to gate all three new tools, not added; the "is this
+    # actually a connector"/"does a lane index exist" checks are inline
+    # ValueErrors in tools_edit.py, not new constraints, mirroring #2's own
+    # documented gap; remove_connector's OWN route/priority-rule/conflict-area
+    # consequence is a REFUSAL enforced by services.inpx_structure's spine
+    # (extended ID_REFERENCE_SITES, not a new constraints.py entry either)
+    # == 92.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 91
+    assert len(get_registry()) == 92
 
 
 def test_registry_has_unique_ids():

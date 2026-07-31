@@ -165,10 +165,13 @@ the PAIRS and distribution-assignment line items).**
   inpx_structure.py — construction/removal, reparse verification, bidirectional
   reference integrity, COM-load-oracle postwrite; structural proof pair
   remove_last_lane/add_lane, not yet planner-registered)
-- ⬜ Full link closure
+- ✅ Full link closure — shipped (Q4 ③, `set_link_closure`: composes per-lane
+  BlockedVehClasses across every lane; route-consequence warn names affected routes)
 - ⬜ Add / remove / reroute links & connectors
 - ⬜ Link geometry edits (lanes / length / curvature)
-- ⬜ Turn bans / movement removal
+- ✅ Turn bans / movement removal — shipped (Q4 ③, `set_turn_ban` reversible on the
+  connector's lanes + `remove_connector` structural, refuses-when-referenced naming
+  referrers — Vissim itself silently DROPS dangling conflict areas on recompute)
 - ⬜ Signal heads (placement)
 - ⬜ Detectors (placement / length)
 - ⬜ Stop signs & priority rules (placement)

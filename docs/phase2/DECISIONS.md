@@ -2902,3 +2902,29 @@ probe also settled `inpx_parser`'s three guessed endpoint shapes: only `<start l
 1780→1839 (controller re-ran). Real-model facts: Murdoch has 13 travel-time sections but
 **zero queue counters** — MRWA queue validation cannot run on it today; genesis auto-placement
 (V9) is what closes that. v2b: 2/13 + spine.
+
+## 2026-07-31 — Q4 ③: link closure + turn bans shipped; Vissim's silent conflict-area cascade is the case this layer exists for
+
+Probed: no link-level closure attribute and no turn-ban COM collection exist anywhere in the
+2026 type library — `set_link_closure` and `set_turn_ban` COMPOSE unit ①'s per-lane
+BlockedVehClasses mechanism (a connector resolves through the identical Net.Links surface a
+link does; composition, not new machinery, stated plainly). `remove_connector` is the true
+structural verb on the spine, and its load-bearing probe finding: **a dangling conflict-area
+reference does NOT fail LoadNet — Vissim silently drops the conflict area on its next
+recompute** (74% of all conflict areas across 25 example networks name a connector). The load
+oracle therefore CANNOT catch this cascade; the spine's reference-integrity refusal — with
+referrers named — is the only guard, and it fired live in Phase D. One new constraint,
+`link_closure_route_consequence` (warn, close/ban direction only, bounded route list).
+
+**Two pre-existing defects found and fixed because this unit exercised the real postwrite
+engine:** (1) EVERY unit-② remove verb was silently broken in production — written_value vs
+readback_value asserted different shapes ({removed_no: X} vs {removed_no: None}), so
+constraint #6 would refuse+rollback every SUCCESSFUL removal; no prior test drove
+GuardrailEngine.postwrite with a real remove payload (controller note: unit ②'s review —
+mine — also missed it; the lesson is that verb units must include one real-engine postwrite
+test, now the recorded pattern via `_remove_verification()`). (2)
+`link_behavior_type_assignments.link_count` lacked the derived-field blanket exemption,
+live-caught when a correct remove_connector was refused for shifting an unrelated count; an
+audit chip for the remaining derived-field class was spawned. Registry 91→92. Suite
+1839→1882 (controller re-ran; 215 tests across the four touched files green). v2b: 4/13
+bullets + spine.

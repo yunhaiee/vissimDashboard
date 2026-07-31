@@ -137,6 +137,7 @@ from services.agent.toolkit import default_registry, dispatch, tool
 from services.agent.tools_network import build_shadow_model
 from services.datasets import get_active_inpx_path
 from services.inpx_structure import ReferenceIntegrityError, find_id_references
+from services.inpx_structure import remove_connector as _remove_connector_structural
 from services.simulation_network_builder import (
     inject_reduced_speed_area,
     reparse_reduced_speed_area,
@@ -1493,6 +1494,39 @@ def _still_present_after_remove(
     return any(str(obj.get("no", "")) == str(removed_no) for obj in shadow_model.get(object_class, []))
 
 
+# Bug fix (Q4 unit (3), found while writing THIS unit's own remove_connector
+# tests): every remove tool above originally reported
+# written_value={"removed_no": X} / readback_value={"removed_no": X if still
+# present else None} -- for a GENUINELY SUCCESSFUL removal those two dicts
+# are, BY DESIGN, different ({"removed_no": "3"} vs {"removed_no": None}).
+# constraints.py's constraint #6 (write_verification_failed, applies_to
+# ["*"], postwrite) does a bare written != readback compare with NO
+# tool-specific exemption mechanism of its own (unlike the separate
+# nothing-else-moved diff) -- so EVERY successful remove_queue_counter/
+# remove_data_collection_point/remove_data_collection_measurement/
+# remove_travel_time_section call was refused+rolled-back by
+# GuardrailEngine.postwrite in the real orchestrator pipeline (reproduced:
+# ``GuardrailEngine(disabled=False).postwrite(...)`` against the exact
+# verification shape these four tools returned -- `blocking=True`,
+# `write_verification_failed`). None of Q4 unit (2)'s own tests caught this
+# because none of them called GuardrailEngine.postwrite directly with a real
+# remove tool's own verification payload (test_agent_tools_measurement_infra.py
+# dispatches the tool in isolation; test_agent_rollback_measurement_infra.py
+# exercises rollback's OWN hash-based verification, a different code path).
+# Fixed here, for all five remove tools (the four pre-existing ones plus
+# this unit's own remove_connector) via one shared helper: written_value and
+# readback_value both describe the SAME semantic claim ("this id should no
+# longer be present") so they AGREE when the removal genuinely succeeded and
+# genuinely DISAGREE (refuse -- correctly) when it did not.
+def _remove_verification(
+    removed_no: str, still_present: bool, *, id_field: str = "removed_no"
+) -> dict[str, Any]:
+    return {
+        "written_value": {id_field: removed_no, "still_present": False},
+        "readback_value": {id_field: removed_no, "still_present": still_present},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Live-check-caught fix (Q4 unit (2)): the meter<->display-unit round trip
 # (vissim_com.VissimController._length_m_to_com/_length_com_to_m) introduces
@@ -1567,10 +1601,7 @@ def remove_queue_counter(params: RemoveQueueCounterParams) -> dict[str, Any]:
     session.persist()
 
     still_present = _still_present_after_remove(session.working_inpx, "queue_counters", params.no)
-    verification = {
-        "written_value": {"removed_no": params.no},
-        "readback_value": {"removed_no": params.no if still_present else None},
-    }
+    verification = _remove_verification(params.no, still_present)
     return {
         "message": f"Queue counter {params.no} removed.",
         "verification": verification,
@@ -1654,10 +1685,7 @@ def remove_data_collection_point(params: RemoveDataCollectionPointParams) -> dic
     session.persist()
 
     still_present = _still_present_after_remove(session.working_inpx, "data_collection_points", params.no)
-    verification = {
-        "written_value": {"removed_no": params.no},
-        "readback_value": {"removed_no": params.no if still_present else None},
-    }
+    verification = _remove_verification(params.no, still_present)
     return {
         "message": f"Data collection point {params.no} removed.",
         "verification": verification,
@@ -1727,10 +1755,7 @@ def remove_data_collection_measurement(params: RemoveDataCollectionMeasurementPa
     still_present = _still_present_after_remove(
         session.working_inpx, "data_collection_measurements", params.no
     )
-    verification = {
-        "written_value": {"removed_no": params.no},
-        "readback_value": {"removed_no": params.no if still_present else None},
-    }
+    verification = _remove_verification(params.no, still_present)
     return {
         "message": f"Data collection measurement {params.no} removed.",
         "verification": verification,
@@ -1814,13 +1839,269 @@ def remove_travel_time_section(params: RemoveTravelTimeSectionParams) -> dict[st
     session.persist()
 
     still_present = _still_present_after_remove(session.working_inpx, "travel_time_sections", params.no)
-    verification = {
-        "written_value": {"removed_no": params.no},
-        "readback_value": {"removed_no": params.no if still_present else None},
-    }
+    verification = _remove_verification(params.no, still_present)
     return {
         "message": f"Travel time section {params.no} removed.",
         "verification": verification,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (3): full link closure + turn bans (movement removal). Three
+# verbs, probed before shipping (backend/tools/probe_link_closure_turn_bans.py):
+#
+# **set_link_closure / set_turn_ban share ONE mechanism.** No dedicated
+# link-level "Blocked"/"Closed" attribute exists (candidate 2 in the task
+# brief -- a full LINK-attribute AttValue() candidate sweep on a live
+# connector object came back empty, control-checked against a bogus
+# attribute id failing closed the same way), and no Net-level
+# TurnBans/MovementRestrictions/BannedTurns collection exists either (the
+# ONLY "turn"/"movement"-named interfaces in the whole type library are
+# IMesoTurn*/IMovement* -- MESO simulation resolution only, unrelated to
+# this micro-network verb set). The real mechanism, confirmed live, is v2b
+# unit (1)'s OWN per-lane ``BlockedVehClasses`` (candidate 1), composed
+# across every lane of the target link/connector -- a connector resolves
+# through the IDENTICAL ``Net.Links.ItemByKey(...).Lanes`` surface a plain
+# link does (Vissim's own convention: a connector IS a ``<link>`` element,
+# distinguished only by carrying ``fromLinkEndPt``/``toLinkEndPt``
+# children), so ``set_lane_closure``'s own COM call needs zero changes to
+# work against a turn -- this is legitimate reuse/composition over unit
+# (1)'s machinery, not a new mechanism. ``_set_all_lanes_blocked`` below is
+# the ONE shared composition helper both verbs call.
+#
+# **Both verbs are ONE setter expressing both directions**, mirroring
+# ``set_lane_closure``/``set_conflict_area_status``'s own "one setter,
+# several states including the safe default" shape:
+# ``closed``/``banned`` selects the direction, and the params model's own
+# validator refuses an inconsistent combination (classes given while
+# reopening/un-banning, or none given while closing/banning -- Vissim has
+# no "block every class" wildcard, so a full closure/ban means enumerating
+# every class number, exactly like unit (1)'s own single-lane verb) rather
+# than silently guessing what the caller meant.
+#
+# **remove_connector is the third, STRUCTURAL verb** -- the true "movement
+# removal": deleting the connector's own ``<link>`` element outright (as
+# opposed to the reversible ``BlockedVehClasses`` closure above). Its own
+# reference-integrity story, the live-verified finding that Vissim's LoadNet
+# SILENTLY drops a conflict area that still names a removed connector (never
+# refuses), and why NO un-remove exists for it are documented in
+# ``services.inpx_structure``'s own module comment right above
+# :func:`~services.inpx_structure.remove_connector` -- this wrapper is a
+# thin dispatch/verification shim around that spine function, the same
+# relationship ``set_reduced_speed_area`` has with
+# ``inject_reduced_speed_area``: it only ever reads ``session.working_inpx``
+# as a PATH, never calls ``_ensure_connected()``, so this tool alone never
+# launches a Vissim instance for the removal write itself (the spine's own
+# ``apply_structural_edit`` launches a SEPARATE, dedicated instance for the
+# post-write COM load oracle -- costs a real licence seat, same as every
+# other structural edit built on that spine).
+#
+# **route consequence is a WARN, not a refusal, for the two closure verbs**
+# (constraints.py's new ``link_closure_route_consequence``, preflight) --
+# closing/banning leaves the link/connector syntactically intact (a route
+# still names a real object, just one that currently refuses certain
+# classes), so Vissim will not error, but demand assigned to a route through
+# it also will not reroute itself; the warning names the affected route ids
+# so the caller can decide whether to adjust them too. ``remove_connector``
+# gets the OPPOSITE treatment -- a REFUSAL, not a warn -- because removing
+# the connector leaves a route's own ``linkSeq`` dangling (a genuine
+# reference-integrity violation, not merely an operational caveat); see
+# ``services.inpx_structure.ID_REFERENCE_SITES["links"]``'s own new route/
+# priority-rule/conflict-area entries.
+# ---------------------------------------------------------------------------
+
+
+def _set_all_lanes_blocked(
+    session: Any, target_id: int, lane_count: int, vehicle_classes: list[int]
+) -> dict[str, list[str]]:
+    """Compose unit (1)'s ``set_lane_closure``/``get_lane_closure`` pair
+    across every lane of ``target_id`` (a plain link OR a connector -- COM
+    addresses both identically, live-verified
+    backend/tools/probe_link_closure_turn_bans.py [1b.4]/[1b.7]/[1b.8]).
+    Returns ``{"<lane_index>": [readback vehicle class strings]}`` -- the
+    per-lane evidence both ``set_link_closure``/``set_turn_ban`` fold into
+    their own aggregate ``verification``/``artifacts``."""
+    per_lane: dict[str, list[str]] = {}
+    for lane_index in range(1, lane_count + 1):
+        session.set_lane_closure(target_id, lane_index, vehicle_classes)
+        readback = session.get_lane_closure(target_id, lane_index)
+        per_lane[str(lane_index)] = [str(vc) for vc in readback]
+    return per_lane
+
+
+class SetLinkClosureParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_id: str
+    #: Vehicle-class numbers to block on EVERY lane. Required (non-empty)
+    #: when closed=True (no "close to every class" wildcard exists on live
+    #: COM -- see unit (1)'s own set_lane_closure); must be empty when
+    #: closed=False (reopen always clears every blocked class).
+    vehicle_classes: list[str] = Field(default_factory=list)
+    closed: bool = True
+
+    @model_validator(mode="after")
+    def _classes_match_closed_state(self) -> "SetLinkClosureParams":
+        if self.closed and not self.vehicle_classes:
+            raise ValueError(
+                "set_link_closure: closed=True requires at least one vehicle_classes entry -- "
+                "Vissim has no 'close to every class' wildcard (verified live, "
+                "backend/tools/probe_lane_closure.py), so a full closure means enumerating "
+                "every class number to block."
+            )
+        if not self.closed and self.vehicle_classes:
+            raise ValueError(
+                "set_link_closure: closed=False (reopen) does not take vehicle_classes -- "
+                "reopening always clears every blocked class on every lane."
+            )
+        return self
+
+
+@tool(name="set_link_closure", tier="write", provider="edit", params=SetLinkClosureParams)
+def set_link_closure(params: SetLinkClosureParams) -> dict[str, Any]:
+    """Close every lane of link_id to vehicle_classes (closed=True, the catalog's "full link closure"), or reopen every lane (closed=False) -- a composition of set_lane_closure's own per-lane BlockedVehClasses across the WHOLE link; there is no dedicated link-level closure object or attribute in Vissim (probed live). Routes still routed through a closed link are NOT automatically rerouted by Vissim -- check the accompanying warning for the affected route ids."""
+    session = _require_session()
+    link_id = _coerce_id(params.link_id, "link_id")
+    try:
+        vehicle_classes = sorted({int(vc) for vc in params.vehicle_classes})
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"vehicle_classes={params.vehicle_classes!r} must be integer class numbers") from exc
+
+    shadow = build_shadow_model(session.working_inpx)
+    link = next((l for l in shadow["links"] if str(l.get("id", "")) == params.link_id), None)
+    if link is None:
+        raise ValueError(f"set_link_closure: link {params.link_id} not found")
+    lane_count = int(link.get("lanes") or 0)
+    if lane_count < 1:
+        raise ValueError(f"set_link_closure: link {params.link_id} has no lanes to close")
+
+    to_write = vehicle_classes if params.closed else []
+    per_lane = _set_all_lanes_blocked(session, link_id, lane_count, to_write)
+    session.persist()
+
+    written_str = [str(vc) for vc in to_write]
+    matching_lanes = sum(1 for v in per_lane.values() if v == written_str)
+    verification = {
+        "written_value": {"vehicle_classes": written_str, "lanes_matched": lane_count},
+        "readback_value": {
+            "vehicle_classes": written_str if matching_lanes == lane_count else None,
+            "lanes_matched": matching_lanes,
+        },
+    }
+    if params.closed:
+        message = (
+            f"Link {params.link_id} closed to vehicle class(es) {', '.join(written_str)} on all "
+            f"{lane_count} lane(s)."
+        )
+    else:
+        message = f"Link {params.link_id} reopened to all vehicle classes on all {lane_count} lane(s)."
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"per_lane": per_lane},
+    }
+
+
+class SetTurnBanParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    connector_no: str
+    #: Same required/forbidden shape as set_link_closure's vehicle_classes
+    #: -- see that params model's own validator comment.
+    vehicle_classes: list[str] = Field(default_factory=list)
+    banned: bool = True
+
+    @model_validator(mode="after")
+    def _classes_match_banned_state(self) -> "SetTurnBanParams":
+        if self.banned and not self.vehicle_classes:
+            raise ValueError(
+                "set_turn_ban: banned=True requires at least one vehicle_classes entry -- "
+                "Vissim has no 'ban for every class' wildcard, so a full ban means enumerating "
+                "every class number to block."
+            )
+        if not self.banned and self.vehicle_classes:
+            raise ValueError(
+                "set_turn_ban: banned=False (un-ban) does not take vehicle_classes -- "
+                "un-banning always clears every blocked class on every lane of the connector."
+            )
+        return self
+
+
+@tool(name="set_turn_ban", tier="write", provider="edit", params=SetTurnBanParams)
+def set_turn_ban(params: SetTurnBanParams) -> dict[str, Any]:
+    """Ban a turn (connector_no) for vehicle_classes (banned=True), or lift the ban (banned=False) -- a turn IS a connector link in Vissim (probed live); banning composes set_lane_closure's own per-lane BlockedVehClasses across every lane of the connector, the SAME mechanism set_link_closure uses for a plain link. Reversible (unlike remove_connector's structural removal) -- routes still routed through a banned turn are NOT automatically rerouted by Vissim; check the accompanying warning for the affected route ids."""
+    session = _require_session()
+    connector_id = _coerce_id(params.connector_no, "connector_no")
+    try:
+        vehicle_classes = sorted({int(vc) for vc in params.vehicle_classes})
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"vehicle_classes={params.vehicle_classes!r} must be integer class numbers") from exc
+
+    shadow = build_shadow_model(session.working_inpx)
+    link = next((l for l in shadow["links"] if str(l.get("id", "")) == params.connector_no), None)
+    if link is None:
+        raise ValueError(f"set_turn_ban: connector {params.connector_no} not found")
+    if not link.get("is_connector"):
+        raise ValueError(
+            f"set_turn_ban: link {params.connector_no} is not a connector (turn) -- use "
+            "set_link_closure for a plain link."
+        )
+    lane_count = int(link.get("lanes") or 0)
+    if lane_count < 1:
+        raise ValueError(f"set_turn_ban: connector {params.connector_no} has no lanes to ban")
+
+    to_write = vehicle_classes if params.banned else []
+    per_lane = _set_all_lanes_blocked(session, connector_id, lane_count, to_write)
+    session.persist()
+
+    written_str = [str(vc) for vc in to_write]
+    matching_lanes = sum(1 for v in per_lane.values() if v == written_str)
+    verification = {
+        "written_value": {"vehicle_classes": written_str, "lanes_matched": lane_count},
+        "readback_value": {
+            "vehicle_classes": written_str if matching_lanes == lane_count else None,
+            "lanes_matched": matching_lanes,
+        },
+    }
+    if params.banned:
+        message = (
+            f"Turn (connector {params.connector_no}) banned for vehicle class(es) "
+            f"{', '.join(written_str)} on all {lane_count} lane(s)."
+        )
+    else:
+        message = f"Turn (connector {params.connector_no}) un-banned on all {lane_count} lane(s)."
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"per_lane": per_lane},
+    }
+
+
+class RemoveConnectorParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    connector_no: str
+
+
+@tool(name="remove_connector", tier="write", provider="edit", params=RemoveConnectorParams)
+def remove_connector(params: RemoveConnectorParams) -> dict[str, Any]:
+    """Structurally remove a connector -- Vissim's real representation of a turn -- via XML injection (services.inpx_structure.remove_connector), never COM (there is no COM Add/Remove for a plain link or connector). REFUSES, naming every referrer, when a route/priority-rule/conflict-area/other-connector still references it or one of its own lanes. NO un-remove exists for this tool: rollback_last_edit is the only undo path -- there is no add_connector counterpart."""
+    session = _require_session()
+    result = _remove_connector_structural(session.working_inpx, params.connector_no)
+
+    shadow_after = result["shadow_model"]
+    still_present = any(str(l.get("id", "")) == params.connector_no for l in shadow_after["links"])
+    verification = _remove_verification(
+        params.connector_no, still_present, id_field="removed_connector_no"
+    )
+    lane_count = result["metadata"]["removed_lane_count"]
+    return {
+        "message": (
+            f"Connector {params.connector_no} structurally removed ({lane_count} lane(s)). "
+            "No un-remove exists for this edit -- use rollback_last_edit to undo."
+        ),
+        "verification": verification,
+        "artifacts": {"load_check_result": result.get("load_check_result")},
     }
 
 

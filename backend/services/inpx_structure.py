@@ -264,6 +264,41 @@ ID_REFERENCE_SITES: dict[str, tuple[ReferenceSite, ...]] = {
         ReferenceSite(
             "connector toLinkEndPt (lane form)", ".//links/link/toLinkEndPt", "lane", token_position=0
         ),
+        # Q4 unit (3): full link closure + turn bans (movement removal).
+        # remove_connector's own referrer catalog -- every site below was
+        # live-verified relevant by backend/tools/probe_link_closure_turn_bans.py
+        # before being added, not guessed:
+        #
+        # A route's own <linkSeq><intObjectRef key="..."/></linkSeq> names
+        # every link/connector it traverses (v2 unit ⑥'s own finding,
+        # tools_network._parse_routing_decisions) -- a route still naming a
+        # connector about to be STRUCTURALLY removed is a genuine dangling
+        # reference (unlike set_turn_ban's reversible BlockedVehClasses
+        # closure, which leaves the route syntactically intact -- see that
+        # tool's own route-consequence WARN in constraints.py instead of a
+        # refusal).
+        ReferenceSite("route link sequence", ".//linkSeq/intObjectRef", "key"),
+        # A priority rule / conflict marker's "intLink" whole-link reference
+        # form (2026-07-31 DECISIONS entry: real Murdoch rule 143 uses
+        # intLink="613" with NO lane attribute at all) -- distinct from the
+        # lane-token "lane" form LANE_TOKEN_REFERENCE_SITES already covers
+        # below.
+        ReferenceSite("priority rule (intLink)", ".//priorityRule", "intLink"),
+        ReferenceSite(
+            "priority rule conflict marker (intLink)", ".//priorityRule/conflictMarker", "intLink"
+        ),
+        # A conflict area's linkA/linkB. Live-verified
+        # (probe_link_closure_turn_bans.py [1b.9]) that Vissim's own LoadNet
+        # does NOT refuse a dangling conflictArea reference -- it SILENTLY
+        # drops the stale conflict area on the next load/save instead (the
+        # exact "Vissim almost never refuses a bad edit" thesis this
+        # codebase's validation layer exists to counter), and 6317/8494
+        # (74%) of every conflict area across all 25 real example networks
+        # names a CONNECTOR as linkA/linkB -- the COMMON case, not an edge
+        # case. remove_connector refuses and names these rather than
+        # silently letting Vissim's own recompute erase them unannounced.
+        ReferenceSite("conflict area link A", ".//conflictArea", "linkA"),
+        ReferenceSite("conflict area link B", ".//conflictArea", "linkB"),
     ),
     # Q4 unit (2): a dataCollectionMeasurement groups 1..N data-collection
     # points by id via one <intObjectRef key="<point_no>"/> per point --
@@ -534,7 +569,7 @@ def _find_link(root: ET.Element, link_no: str) -> ET.Element:
     for link in root.findall(".//links/link"):
         if link.get("no") == str(link_no):
             return link
-    raise ValueError(f"remove_last_lane/add_lane: link {link_no!r} not found")
+    raise ValueError(f"link {link_no!r} not found")
 
 
 def remove_last_lane(
@@ -630,5 +665,112 @@ def add_lane(
         _mutate,
         reparse_expect=_expect,
         reparse_expect_description=f"link {link_no} should have {lane_count_before + 1} lane(s)",
+        run_load_check=run_load_check,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (3): remove_connector -- the true structural "movement removal"
+# verb (as opposed to set_turn_ban's reversible, per-class BlockedVehClasses
+# closure -- see services.agent.tools_edit's own module comment for that
+# pair). A connector IS a plain ``<link>`` element (Vissim's own convention,
+# re-verified live by backend/tools/probe_link_closure_turn_bans.py [1b.4]:
+# ``Net.Links.ItemByKey`` resolves a connector identically to a plain link,
+# same ``.Lanes`` child collection) distinguished only by carrying a
+# ``fromLinkEndPt``/``toLinkEndPt`` child -- so removal is exactly
+# :func:`remove_last_lane`'s own "find the element, refuse if referenced,
+# remove it, verify via apply_structural_edit" shape, generalized from ONE
+# lane to the WHOLE link (every one of the connector's own lanes disappears
+# at once, which is fine -- unlike a lane's ordinal identity inside a link
+# that survives, a REMOVED connector's own lane indices reference nothing
+# once the connector itself is gone, so there is no "shift meaning" hazard
+# the last-lane-only restriction on :func:`remove_last_lane` was guarding
+# against).
+#
+# **Reference-integrity is the whole point of this function.** Live-verified
+# (probe_link_closure_turn_bans.py [1b.9]): Vissim's own LoadNet does NOT
+# refuse when a conflict area's ``linkA``/``linkB`` still names a connector
+# that no longer exists in the XML -- LoadNet succeeds, RunSingleStep
+# succeeds, and Vissim SILENTLY drops the stale conflict area on its own
+# next load/recompute (23 conflict areas survived where 24 existed before,
+# with zero error/warning of any kind) -- exactly the "Vissim almost never
+# refuses a bad edit" thesis this codebase's validation layer exists to
+# counter. :data:`ID_REFERENCE_SITES`'s own ``"links"`` entry was extended
+# this unit with route ``linkSeq``, priority-rule/conflict-marker
+# ``intLink``, and conflict-area ``linkA``/``linkB`` sites specifically so
+# :func:`find_id_references` catches every one of these BEFORE any write --
+# a genuine refusal, never a silent cascade, mirroring
+# ``tools_edit.remove_data_collection_point``'s identical "COM itself does
+# not enforce this, so this codebase's own spine does" precedent. Every one
+# of the connector's own lanes is also checked via
+# :func:`find_lane_token_references` (fromLanes/toLanes on ANOTHER
+# connector, a reduced-speed area, or a priority rule's lane-token form) --
+# generalized from :func:`remove_last_lane`'s single-lane check to every
+# lane this connector carries.
+#
+# **NO un-remove exists for this verb.** There is no "add a connector back"
+# counterpart in this module (reconstructing one would require re-deriving
+# geometry -- ``fromLinkEndPt``/``toLinkEndPt`` positions, a ``<geometry>``
+# polyline -- this module never captured on removal) --
+# ``services.agent.rollback.rollback_last_edit`` is the ONLY undo path for
+# this specific edit; state that fact in any planner-facing wrapper's own
+# docstring too (see ``tools_edit.remove_connector``).
+# ---------------------------------------------------------------------------
+
+
+def _find_connector(root: ET.Element, connector_no: str) -> ET.Element:
+    link = _find_link(root, connector_no)
+    if link.find("fromLinkEndPt") is None and link.find("toLinkEndPt") is None:
+        raise ValueError(
+            f"remove_connector: link {connector_no!r} is not a connector (no fromLinkEndPt/"
+            "toLinkEndPt child) -- structural connector removal only; a plain link has no "
+            "COM/XML remove path in this codebase (see the module docstring: conflict areas "
+            "are geometry-derived, lane closure is attribute-only, and neither a plain link "
+            "nor a connector has a native COM Add/Remove)."
+        )
+    return link
+
+
+def remove_connector(
+    inpx_path: Path | str, connector_no: str, *, run_load_check: bool = True
+) -> dict[str, Any]:
+    """Structurally remove connector ``connector_no`` -- the true "movement
+    removal" verb (see this section's own module comment for the full
+    reference-integrity story and why NO un-remove exists for this edit;
+    ``rollback_last_edit`` is the only undo path).
+
+    Raises :class:`ValueError` when ``connector_no`` does not exist, or
+    exists but is not genuinely a connector (a plain link is refused here,
+    not silently "removed" some other way -- there is no COM/XML remove
+    path for a plain link in this codebase at all). Raises
+    :class:`ReferenceIntegrityError` (never touches the file) naming every
+    route / priority-rule / conflict-marker / conflict-area / other-connector
+    still referencing this connector or one of its own lanes.
+    """
+    root = ET.parse(inpx_path).getroot()
+    connector = _find_connector(root, connector_no)
+
+    referrers = find_id_references(root, "links", str(connector_no))
+    lanes_el = connector.find("lanes")
+    lane_count = len(lanes_el.findall("lane")) if lanes_el is not None else 0
+    for lane_index in range(1, lane_count + 1):
+        referrers.extend(find_lane_token_references(root, str(connector_no), lane_index))
+    if referrers:
+        raise ReferenceIntegrityError(f"Cannot remove connector {connector_no}", referrers)
+
+    def _mutate(root: ET.Element) -> dict[str, Any]:
+        links_el = root.find(".//links")
+        target = _find_connector(root, connector_no)
+        links_el.remove(target)
+        return {"connector_no": str(connector_no), "removed_lane_count": lane_count}
+
+    def _expect(shadow: dict[str, Any]) -> bool:
+        return not any(str(l.get("id", "")) == str(connector_no) for l in shadow["links"])
+
+    return apply_structural_edit(
+        inpx_path,
+        _mutate,
+        reparse_expect=_expect,
+        reparse_expect_description=f"connector {connector_no} should no longer exist",
         run_load_check=run_load_check,
     )

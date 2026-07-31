@@ -102,6 +102,10 @@ EXPECTED_WRITE_TOOLS = {
     "remove_data_collection_measurement",
     "add_travel_time_section",
     "remove_travel_time_section",
+    # Q4 unit (3): full link closure + turn bans (movement removal).
+    "set_link_closure",
+    "set_turn_ban",
+    "remove_connector",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools
