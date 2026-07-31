@@ -2885,3 +2885,20 @@ real model read 530 lanes including genuine pre-existing blocks (lane 505.1 bloc
 1030/1635 — the client's own bus-lane coding). Net zero new constraints (#37 was
 forward-declared for this verb in 2026-07-29; a lane-index preflight is a recorded follow-up).
 Registry 90→91. Suite 1780/1/1 (controller re-ran). v2b: 1/13 + spine.
+
+## 2026-07-31 — Q4 ②: measurement-infrastructure verbs shipped — first COM-create structural unit, first planner-facing removes
+
+All four object types (queue counters, data-collection points + measurements, travel-time
+sections) have native COM Add/Remove — chosen over XML injection with evidence (clean readback,
+lower schema risk). Landmines recorded: pywin32 Add* params need real COM objects, not
+scalars; the display-unit landmine holds on CREATE paths too (positions in UnitLenShort both
+directions, ratio 3.280840 proven on a FEET network); and the flagship: **COM's own
+RemoveDataCollectionPoint silently leaves a dangling measurement reference — Vissim does not
+enforce its own referential integrity; our spine check is the only refusal**, proven live with
+the referrer named. A live-caught float-noise bug (m↔ft round-trip vs exact dict compare in
+write verification) fixed by 6dp rounding at the envelope boundary only. The travel-time
+probe also settled `inpx_parser`'s three guessed endpoint shapes: only `<start link pos/>
+<end link pos/>` is real. Registry 90→91 (`measurement_infra_pos_out_of_range`). Suite
+1780→1839 (controller re-ran). Real-model facts: Murdoch has 13 travel-time sections but
+**zero queue counters** — MRWA queue validation cannot run on it today; genesis auto-placement
+(V9) is what closes that. v2b: 2/13 + spine.

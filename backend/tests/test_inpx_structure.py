@@ -208,6 +208,71 @@ def test_check_new_object_references_detects_dangling_reference():
     assert dangling == [{"tag": "fromLinkEndPt", "attribute": "link", "value": "999"}]
 
 
+def test_data_collection_points_is_id_bearing():
+    """Q4 unit (2): the registry entry ADDs get validated against
+    (check_new_object_references' target side)."""
+    root = ET.fromstring(
+        '<network><dataCollectionPoints>'
+        '<dataCollectionPoint no="1" lane="10005 1" pos="3.836" />'
+        '<dataCollectionPoint no="2" lane="10005 2" pos="3.836" />'
+        '</dataCollectionPoints></network>'
+    )
+    xpath, id_attr = struct.ID_BEARING_ELEMENTS["data_collection_points"]
+    ids = {el.get(id_attr) for el in root.findall(xpath)}
+    assert ids == {"1", "2"}
+
+
+def test_find_id_references_finds_measurement_referencing_data_collection_point():
+    """Q4 unit (2): a dataCollectionMeasurement groups points via
+    <dataCollectionPoints><intObjectRef key="<point_no>"/></dataCollectionPoints>
+    -- the same convention _parse_link_lanes already found for
+    blockedVehClasses (live-verified, backend/tools/probe_measurement_infra.py,
+    Toll Plaza Camden.US measurement no=1 groups points 1/2/3)."""
+    root = ET.fromstring(
+        '<network><dataCollectionMeasurements>'
+        '<dataCollectionMeasurement no="1" name="">'
+        '<dataCollectionPoints><intObjectRef key="1"/><intObjectRef key="2"/></dataCollectionPoints>'
+        '</dataCollectionMeasurement>'
+        '</dataCollectionMeasurements></network>'
+    )
+    referrers = struct.find_id_references(root, "data_collection_points", "1")
+    assert len(referrers) == 1
+    assert referrers[0]["site"] == "data-collection measurement point ref"
+    assert referrers[0]["tag"] == "intObjectRef"
+    assert referrers[0]["value"] == "1"
+
+    referrers_2 = struct.find_id_references(root, "data_collection_points", "2")
+    assert len(referrers_2) == 1
+
+
+def test_find_id_references_empty_for_unreferenced_data_collection_point():
+    root = ET.fromstring(
+        '<network><dataCollectionMeasurements>'
+        '<dataCollectionMeasurement no="1" name="">'
+        '<dataCollectionPoints><intObjectRef key="1"/></dataCollectionPoints>'
+        '</dataCollectionMeasurement>'
+        '</dataCollectionMeasurements></network>'
+    )
+    assert struct.find_id_references(root, "data_collection_points", "999") == []
+
+
+def test_find_id_references_data_collection_point_referenced_by_two_measurements():
+    """A point can legitimately belong to more than one measurement group --
+    removal must name EVERY referrer, not just the first."""
+    root = ET.fromstring(
+        '<network><dataCollectionMeasurements>'
+        '<dataCollectionMeasurement no="1" name="">'
+        '<dataCollectionPoints><intObjectRef key="5"/></dataCollectionPoints>'
+        '</dataCollectionMeasurement>'
+        '<dataCollectionMeasurement no="2" name="">'
+        '<dataCollectionPoints><intObjectRef key="5"/></dataCollectionPoints>'
+        '</dataCollectionMeasurement>'
+        '</dataCollectionMeasurements></network>'
+    )
+    referrers = struct.find_id_references(root, "data_collection_points", "5")
+    assert len(referrers) == 2
+
+
 def test_check_new_object_references_clean_when_target_exists():
     root = ET.fromstring(
         '<network><links>'

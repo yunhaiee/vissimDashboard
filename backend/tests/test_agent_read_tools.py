@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +108,17 @@ EXPECTED_WRITE_TOOL_NAMES = {
     # v2b unit (1) adds set_lane_closure (one setter, both closure/reopen
     # directions -- see tools_edit.py's own docstring).
     "set_lane_closure",
+    # Q4 unit (2) adds 8 measurement-infrastructure placement verbs (queue
+    # counters, data-collection points/measurements, travel-time sections --
+    # COM CREATE/REMOVE, see tools_edit.py's own docstring).
+    "add_queue_counter",
+    "remove_queue_counter",
+    "add_data_collection_point",
+    "remove_data_collection_point",
+    "add_data_collection_measurement",
+    "remove_data_collection_measurement",
+    "add_travel_time_section",
+    "remove_travel_time_section",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -2582,6 +2594,11 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "link_behavior_type_assignments",
         # v2b unit (1): flat per-lane closure state.
         "link_lanes",
+        # Q4 unit (2): measurement-infrastructure placement.
+        "queue_counters",
+        "data_collection_points",
+        "data_collection_measurements",
+        "travel_time_sections",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -2634,6 +2651,25 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
     assert {entry["id"] for entry in shadow["link_lanes"] if entry["link_id"] == "101"} == {
         "101.1", "101.2", "101.3",
     }
+    # Q4 unit (2): the demo .inpx carries no <queueCounters>/
+    # <dataCollectionPoints>/<dataCollectionMeasurements> elements at all --
+    # all three shadow keys must still be present and well-formed (empty
+    # list, not absent/None), same shape as signals/conflict_areas/
+    # vehicle_compositions. It DOES carry two <vehicleTravelTimeMeasurement>
+    # placeholders (no="1"/"2", "Main St EB"/"Main St WB") -- pre-existing
+    # fixture content, verified directly against data/practice.inpx before
+    # pinning -- but each is a bare, childless element with no <start>/<end>
+    # at all (unlike a real Vissim export), so every from_link/to_link/
+    # from_pos/to_pos degrades to the empty/None "unresolvable" shape rather
+    # than being fabricated.
+    assert shadow["queue_counters"] == []
+    assert shadow["data_collection_points"] == []
+    assert shadow["data_collection_measurements"] == []
+    assert [s["no"] for s in shadow["travel_time_sections"]] == ["1", "2"]
+    assert all(
+        s["from_link"] == "" and s["from_pos"] is None and s["to_link"] == "" and s["to_pos"] is None
+        for s in shadow["travel_time_sections"]
+    )
 
 
 def test_build_shadow_model_is_mtime_cached_across_repeat_calls():
@@ -2641,6 +2677,125 @@ def test_build_shadow_model_is_mtime_cached_across_repeat_calls():
     first = tools_network.build_shadow_model(path)
     second = tools_network.build_shadow_model(path)
     assert first is second  # same lru_cache hit, not just equal
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (2): measurement-infrastructure placement parsers, direct-tested
+# against synthetic XML fixtures matching the REAL shapes confirmed live/
+# statically across every real Vissim 2026 example network that uses one
+# (backend/tools/probe_measurement_infra.py, Toll Plaza Camden.US -- e.g.
+# ``<queueCounter link="10043" name="" no="1" pos="10.31" />``) -- the demo
+# .inpx carries none of these (or, for travel-time sections, only degenerate
+# placeholders -- see the pin test above), so a hand-built fixture is the
+# only way to exercise the populated-list code paths at all.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_queue_counters_reads_link_and_pos():
+    root = ET.fromstring(
+        '<network><queueCounters>'
+        '<queueCounter link="10043" name="" no="1" pos="10.31" />'
+        '<queueCounter link="6" name="Harbor Rd" no="2" pos="41.057" />'
+        '</queueCounters></network>'
+    )
+    result = tools_network._parse_queue_counters(root)
+    assert result == [
+        {"no": "1", "name": "", "link_id": "10043", "pos": 10.31},
+        {"no": "2", "name": "Harbor Rd", "link_id": "6", "pos": 41.057},
+    ]
+
+
+def test_parse_queue_counters_empty_when_section_absent():
+    root = ET.fromstring("<network/>")
+    assert tools_network._parse_queue_counters(root) == []
+
+
+def test_parse_data_collection_points_reads_lane_token_and_pos():
+    root = ET.fromstring(
+        '<network><dataCollectionPoints>'
+        '<dataCollectionPoint lane="10005 1" name="" no="1" pos="3.836" />'
+        '<dataCollectionPoint lane="10005 2" name="Lane 2" no="2" pos="3.836" />'
+        '</dataCollectionPoints></network>'
+    )
+    result = tools_network._parse_data_collection_points(root)
+    assert result == [
+        {"no": "1", "name": "", "link_id": "10005", "lane_index": 1, "pos": 3.836},
+        {"no": "2", "name": "Lane 2", "link_id": "10005", "lane_index": 2, "pos": 3.836},
+    ]
+
+
+def test_parse_data_collection_points_lane_index_none_when_malformed():
+    root = ET.fromstring(
+        '<network><dataCollectionPoints>'
+        '<dataCollectionPoint lane="10005" name="" no="1" pos="3.836" />'
+        '</dataCollectionPoints></network>'
+    )
+    result = tools_network._parse_data_collection_points(root)
+    assert result[0]["link_id"] == "10005"
+    assert result[0]["lane_index"] is None
+
+
+def test_parse_data_collection_measurements_reads_grouped_point_nos():
+    # Camden's own real shape: one measurement groups 3 points.
+    root = ET.fromstring(
+        '<network><dataCollectionMeasurements>'
+        '<dataCollectionMeasurement name="" no="1">'
+        '<dataCollectionPoints>'
+        '<intObjectRef key="1" /><intObjectRef key="2" /><intObjectRef key="3" />'
+        '</dataCollectionPoints>'
+        '</dataCollectionMeasurement>'
+        '<dataCollectionMeasurement name="Solo" no="2">'
+        '<dataCollectionPoints><intObjectRef key="120" /></dataCollectionPoints>'
+        '</dataCollectionMeasurement>'
+        '</dataCollectionMeasurements></network>'
+    )
+    result = tools_network._parse_data_collection_measurements(root)
+    assert result == [
+        {"no": "1", "name": "", "point_nos": ["1", "2", "3"]},
+        {"no": "2", "name": "Solo", "point_nos": ["120"]},
+    ]
+
+
+def test_parse_data_collection_measurements_empty_point_nos_when_unwired():
+    # COM's own AddDataCollectionMeasurement(Key) creates exactly this shape
+    # before add_data_collection_measurement ever wires membership.
+    root = ET.fromstring(
+        '<network><dataCollectionMeasurements>'
+        '<dataCollectionMeasurement name="" no="1"><dataCollectionPoints/></dataCollectionMeasurement>'
+        '</dataCollectionMeasurements></network>'
+    )
+    assert tools_network._parse_data_collection_measurements(root) == [
+        {"no": "1", "name": "", "point_nos": []}
+    ]
+
+
+def test_parse_travel_time_sections_reads_start_and_end():
+    # Camden's own real shape (the ONLY child-element shape any real Vissim
+    # export ever uses -- confirmed live, disproving inpx_parser.py's other
+    # two guessed flat-attribute/combined-string shapes).
+    root = ET.fromstring(
+        '<network><vehicleTravelTimeMeasurements>'
+        '<vehicleTravelTimeMeasurement name="" no="4">'
+        '<end link="29" pos="66.753" /><start link="11" pos="8.748" />'
+        '</vehicleTravelTimeMeasurement>'
+        '</vehicleTravelTimeMeasurements></network>'
+    )
+    result = tools_network._parse_travel_time_sections(root)
+    assert result == [
+        {"no": "4", "name": "", "from_link": "11", "from_pos": 8.748, "to_link": "29", "to_pos": 66.753}
+    ]
+
+
+def test_parse_travel_time_sections_degrades_gracefully_when_childless():
+    root = ET.fromstring(
+        '<network><vehicleTravelTimeMeasurements>'
+        '<vehicleTravelTimeMeasurement no="1" name="Main St EB" />'
+        '</vehicleTravelTimeMeasurements></network>'
+    )
+    result = tools_network._parse_travel_time_sections(root)
+    assert result == [
+        {"no": "1", "name": "Main St EB", "from_link": "", "from_pos": None, "to_link": "", "to_pos": None}
+    ]
 
 
 def test_signal_to_contract_shape_carries_controller_type_but_omits_min_green_sum():

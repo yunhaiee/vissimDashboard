@@ -651,6 +651,67 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "link_id",
     },
+    # Q4 unit (2): measurement-infrastructure placement -- queue counters,
+    # data-collection points/measurements, travel-time sections. Each ADD
+    # tool's PRIMARY target is the link it places against; each REMOVE
+    # tool's target is the object's own "no" in the new shadow-model list
+    # the parser added this unit (tools_network._parse_queue_counters/
+    # _parse_data_collection_points/_parse_data_collection_measurements/
+    # _parse_travel_time_sections). add_travel_time_section carries a
+    # SECOND link target (to_link) with no single-param home in this
+    # table -- mirrors set_route_relative_flow's/set_des_speed_decision's
+    # own "primary here, deeper check elsewhere" split, except the deeper
+    # check here is NOT a new constraints.py entry (this unit's own
+    # "minimal constraints.py footprint" instruction) -- it is
+    # vissim_com.VissimController._link_object_by_no's own fail-closed
+    # COM raise, surfacing as tool_execution_error rather than a
+    # preflight refusal. Same deliberate scope cut for
+    # add_data_collection_measurement's point_nos (a LIST, no single-param
+    # home at all) -- validated by vissim_com.py's own per-point existence
+    # check before creation. Follow-up: promote both to dedicated preflight
+    # checks (richer, difflib-suggested refusals) in a later unit.
+    "add_queue_counter": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_no",
+    },
+    "remove_queue_counter": {
+        "object_class": "queue_counters",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
+    "add_data_collection_point": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_no",
+    },
+    "remove_data_collection_point": {
+        "object_class": "data_collection_points",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
+    "remove_data_collection_measurement": {
+        "object_class": "data_collection_measurements",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
+    "add_travel_time_section": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "from_link",
+    },
+    "remove_travel_time_section": {
+        "object_class": "travel_time_sections",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -667,6 +728,13 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "time_distributions": {"ko": "시간분포", "en": "time distribution", "ja": "時間分布"},
     "driving_behaviors": {"ko": "행동유형", "en": "driving behavior", "ja": "行動タイプ"},
     "link_behavior_types": {"ko": "링크 행동유형", "en": "link behavior type", "ja": "リンク行動タイプ"},
+    # Q4 unit (2): measurement-infrastructure placement.
+    "queue_counters": {"ko": "대기행렬 카운터", "en": "queue counter", "ja": "キューカウンター"},
+    "data_collection_points": {"ko": "데이터 수집 지점", "en": "data collection point", "ja": "データ収集ポイント"},
+    "data_collection_measurements": {
+        "ko": "데이터 수집 측정", "en": "data collection measurement", "ja": "データ収集測定",
+    },
+    "travel_time_sections": {"ko": "통행시간 구간", "en": "travel time section", "ja": "旅行時間区間"},
 }
 
 
@@ -928,6 +996,17 @@ register(
             "duplicate_driving_behavior",
             "set_driving_behavior_parameter",
             "set_link_behavior_type_driving_behavior",
+            # Q4 unit (2): measurement-infrastructure placement -- every
+            # add/remove verb whose PRIMARY target has a single-param home
+            # in _TOOL_TARGET_SPEC (add_data_collection_measurement is
+            # deliberately absent -- see that table's own comment).
+            "add_queue_counter",
+            "remove_queue_counter",
+            "add_data_collection_point",
+            "remove_data_collection_point",
+            "remove_data_collection_measurement",
+            "add_travel_time_section",
+            "remove_travel_time_section",
         ],
         phase="preflight",
         tier="refuse",
@@ -8002,5 +8081,100 @@ register(
         message_ko="배치 편집 계획 검증 (services.agent.batch.validate_plan 위임).",
         message_en="Batch edit plan validation (delegates to services.agent.batch.validate_plan).",
         message_ja="バッチ編集計画の検証(services.agent.batch.validate_planに委任)。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# measurement_infra_pos_out_of_range (refuse, preflight) -- Q4 unit (2)'s
+# ONE new constraint (this unit's own "constraints.py minimal" instruction:
+# _TOOL_TARGET_SPEC entries above + at most one small constraint here;
+# everything else lives in services/vissim_com.py and
+# services/agent/tools_edit.py, per those modules' own comments).
+#
+# Task brief: "refuse pos < 0 or > link length" for every queue-counter/
+# data-collection-point/travel-time-section placement -- a pos measured
+# from the wrong end (or against the wrong link) silently places the
+# object off the physical road, and Vissim itself does not refuse an
+# out-of-range Pos on any of these Add methods (untested live by this
+# unit's own probe -- a defensive check per the guardrail doctrine's
+# "Vissim almost never refuses a bad edit" thesis, not a claimed silent-
+# failure reproduction). A queue counter's proximity to the nearest stop
+# line (the task brief's optional WARN tier) is deliberately NOT checked
+# here: signal-head positions are not in the agent's own shadow model
+# (tools_network.build_shadow_model) at all -- only inpx_parser.py's
+# separate, frontend-only geometry resolver parses them -- so the check is
+# not cheaply determinable today; the task brief's own escape hatch
+# ("if not cheap, skip and note") applies.
+# ---------------------------------------------------------------------------
+
+# {tool: [(link_param, pos_param), ...]} -- add_travel_time_section carries
+# TWO independent (link, pos) pairs; every other add tool here carries
+# exactly one. Kept local to this one check (not merged into the shared,
+# single-param-only _TOOL_TARGET_SPEC table above).
+_MEASUREMENT_INFRA_POS_FIELDS: dict[str, list[tuple[str, str]]] = {
+    "add_queue_counter": [("link_no", "pos_m")],
+    "add_data_collection_point": [("link_no", "pos_m")],
+    "add_travel_time_section": [("from_link", "from_pos_m"), ("to_link", "to_pos_m")],
+}
+
+
+def _check_measurement_infra_pos_out_of_range(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> list[Finding]:
+    tool = action.get("tool", "")
+    fields = _MEASUREMENT_INFRA_POS_FIELDS.get(tool)
+    if fields is None:
+        return []
+
+    params = action.get("params", {})
+    links = shadow_model.get("links", [])
+    findings: list[Finding] = []
+    for link_param, pos_param in fields:
+        link_id = str(params.get(link_param, ""))
+        pos = _coerce_number(params.get(pos_param))
+        if pos is None:
+            continue  # malformed param -- pydantic/param validation's job, not this check's
+        link = _find_by_field(links, "id", link_id)
+        if link is None:
+            continue  # unknown link -- object_not_found's job (#1)
+        length = _coerce_number(link.get("length"))
+        if length is None:
+            continue  # CATALOG-GAP: link carries no resolvable length -- no claim possible
+        if 0 <= pos <= length:
+            continue
+        findings.append(
+            Finding(
+                constraint_id="measurement_infra_pos_out_of_range",
+                tier="refuse",
+                phase="preflight",
+                messages=_render(
+                    "measurement_infra_pos_out_of_range",
+                    pos=pos,
+                    link_id=link_id,
+                    length=length,
+                ),
+                details={
+                    "tool": tool,
+                    "field": pos_param,
+                    "link_id": link_id,
+                    "pos": pos,
+                    "link_length": length,
+                },
+            )
+        )
+    return findings
+
+
+register(
+    Constraint(
+        id="measurement_infra_pos_out_of_range",
+        applies_to=list(_MEASUREMENT_INFRA_POS_FIELDS.keys()),
+        phase="preflight",
+        tier="refuse",
+        check=_check_measurement_infra_pos_out_of_range,
+        message_ko="위치 {pos}m가 링크 {link_id}의 길이(0~{length}m) 범위를 벗어났습니다.",
+        message_en="Position {pos} m falls outside link {link_id}'s own length (0-{length} m).",
+        message_ja="位置 {pos}m がリンク {link_id} の長さ(0〜{length}m)の範囲外です。",
     )
 )

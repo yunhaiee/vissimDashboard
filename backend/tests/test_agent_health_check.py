@@ -108,7 +108,14 @@ def test_health_check_runner_against_demo_dataset():
     # "steps" param (services.agent.batch.validate_plan), which a whole-
     # network dataset scan has no equivalent of, so it does not opt into the
     # dataset scan either, same shape as every addition above.
-    assert report["summary"]["edit_time_only_n"] == 76
+    # 77, not 76: Q4 unit (2) (measurement-infrastructure placement) added one
+    # preflight-only constraint, measurement_infra_pos_out_of_range, for the
+    # unit's new add_queue_counter/add_data_collection_point/
+    # add_travel_time_section tools -- it needs a proposed action's own
+    # link/pos params, which a whole-network dataset scan has no equivalent
+    # of, so it does not opt into the dataset scan either, same shape as
+    # every addition above.
+    assert report["summary"]["edit_time_only_n"] == 77
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

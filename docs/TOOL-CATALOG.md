@@ -172,8 +172,10 @@ the PAIRS and distribution-assignment line items).**
 - ⬜ Signal heads (placement)
 - ⬜ Detectors (placement / length)
 - ⬜ Stop signs & priority rules (placement)
-- ⬜ Measurement infrastructure — travel-time sections, queue counters,
-  data-collection points, nodes
+- ✅ Measurement infrastructure — shipped (Q4 ②, 8 verbs: add/remove queue counters,
+  travel-time sections, data-collection points + measurements; COM-create with the
+  spine's reference-integrity guard — COM itself does NOT refuse dangling removals;
+  nodes deferred)
 - ⬜ Parking lots / zones
 - ⬜ PT lines / stops / timetables
 - ⬜ Pedestrian inputs & areas

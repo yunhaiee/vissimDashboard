@@ -214,6 +214,56 @@ class VissimEditSession:
     def get_lane_closure(self, link_no: int, lane_index: int) -> list[int]:
         return self._ensure_connected().get_lane_blocked_vehicle_classes(link_no, lane_index)
 
+    # Q4 unit (2): measurement-infrastructure placement -- queue counters,
+    # data-collection points/measurements, travel-time sections. All four
+    # are genuine COM CREATE/REMOVE verbs (native Add*/Remove* methods
+    # exist -- see vissim_com.VissimController's own module comment for the
+    # full live-verified writeup, including the pywin32 object-reference
+    # landmine, the display-unit landmine, and COM's own failure to enforce
+    # reference integrity on data-collection-point removal).
+
+    def add_queue_counter(self, link_no: int, pos_m: float, name: str = "") -> dict[str, Any]:
+        return self._ensure_connected().add_queue_counter(link_no, pos_m, name)
+
+    def remove_queue_counter(self, no: int) -> None:
+        self._ensure_connected().remove_queue_counter(no)
+
+    def get_queue_counter(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_queue_counter(no)
+
+    def add_data_collection_point(
+        self, link_no: int, lane_index: int, pos_m: float, name: str = ""
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_data_collection_point(link_no, lane_index, pos_m, name)
+
+    def remove_data_collection_point(self, no: int) -> None:
+        self._ensure_connected().remove_data_collection_point(no)
+
+    def get_data_collection_point(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_data_collection_point(no)
+
+    def add_data_collection_measurement(self, point_nos: list[int], name: str = "") -> dict[str, Any]:
+        return self._ensure_connected().add_data_collection_measurement(point_nos, name)
+
+    def remove_data_collection_measurement(self, no: int) -> None:
+        self._ensure_connected().remove_data_collection_measurement(no)
+
+    def get_data_collection_measurement(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_data_collection_measurement(no)
+
+    def add_travel_time_section(
+        self, name: str, from_link: int, from_pos_m: float, to_link: int, to_pos_m: float
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_travel_time_section(
+            name, from_link, from_pos_m, to_link, to_pos_m
+        )
+
+    def remove_travel_time_section(self, no: int) -> None:
+        self._ensure_connected().remove_travel_time_section(no)
+
+    def get_travel_time_section(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_travel_time_section(no)
+
     # v2 unit ⑥: static routing decision route relative-flow verbs.
 
     def set_route_relative_flow(

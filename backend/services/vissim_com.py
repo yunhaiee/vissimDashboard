@@ -984,6 +984,356 @@ class VissimController:
                 f"Could not read lane {lane_index} of link {link_no} BlockedVehClasses: {exc}"
             ) from exc
 
+    # ---------------------------------------------------------------------
+    # Q4 unit (2): measurement-infrastructure placement -- queue counters,
+    # data-collection points/measurements, travel-time sections. Unlike
+    # lane closure (attribute-only) and reduced-speed areas (XML injection,
+    # no COM at all), these four object types have genuine, purpose-built
+    # native COM CREATE/REMOVE methods (verified live,
+    # backend/tools/probe_measurement_infra.py + its _followup script,
+    # against Toll Plaza Camden.US -- a FEET-display network chosen because
+    # it is the only 2026 example carrying real instances of all four
+    # types): ``Net.QueueCounters.AddQueueCounter(Key, Link, Pos)`` /
+    # ``RemoveQueueCounter(obj)``, ``Net.DataCollectionPoints.
+    # AddDataCollectionPoint(Key, Lane, Pos)`` / ``RemoveDataCollectionPoint(obj)``,
+    # ``Net.DataCollectionMeasurements.AddDataCollectionMeasurement(Key)`` /
+    # ``RemoveDataCollectionMeasurement(obj)`` (no points param -- membership
+    # is wired separately, see :meth:`add_data_collection_measurement`), and
+    # ``Net.VehicleTravelTimeMeasurements.AddVehicleTravelTimeMeasurement(
+    # Key, StartLink, StartPos, EndLink, EndPos)`` / ``RemoveVehicleTravelTimeMeasurement(obj)``.
+    # This is the FIRST measurement-infra-adjacent unit where COM creation
+    # is the right call (preferred per the task's own decision framework:
+    # native methods exist, readback is clean, less schema risk than
+    # reinventing the XML shape by hand) -- contrast v2b unit (1)'s lane
+    # closure (COM-write but XML-structural) and unit (2)'s reduced-speed
+    # areas (pure XML injection, no COM Add exists at all).
+    #
+    # **Landmine 1 (pywin32 marshalling):** every ``Add*`` method's
+    # Link/Lane param REQUIRES an actual COM object (``Net.Links.ItemByKey(...)``
+    # / ``link.Lanes.ItemByKey(...)``), not a plain int/string token --
+    # passing a raw int/str raises ``TypeError: The Python instance can not
+    # be converted to a COM object`` (live-verified both ways: the SAME call
+    # succeeds the instant a real object replaces the scalar).
+    #
+    # **Landmine 2 (the THIRD display-unit confirmation):** every ``Pos``/
+    # ``StartPos``/``EndPos`` param, on BOTH the Add call and the readback
+    # ``AttValue``, is in the network's OWN ``NetPara.UnitLenShort`` display
+    # unit -- NOT always metres (live-verified round trip on Camden, a FEET
+    # network: passing ``Pos=20.0`` to ``AddDataCollectionPoint`` saved as
+    # ``pos="6.096"`` in the .inpx, i.e. exactly 20 ft; reading an existing
+    # object's ``AttValue('Pos')`` back against its own known-metres XML
+    # value gave a 3.280840 ratio, exactly ``1/0.3048``). The SAVED .inpx
+    # attribute is always metres, matching every other length-typed COM
+    # surface this codebase has already found (des-speed-decision Pos,
+    # driving-behavior ax/latDist) -- :meth:`_net_unit_length`/
+    # :meth:`_length_m_to_com`/:meth:`_length_com_to_m` (already used by the
+    # driving-behavior block above) are reused verbatim here, never
+    # reimplemented.
+    #
+    # **Landmine 3 (COM does NOT enforce reference integrity):** live-
+    # verified (probe_measurement_infra_followup.py) that
+    # ``RemoveDataCollectionPoint`` SUCCEEDS on a point a
+    # ``DataCollectionMeasurement`` still references -- Vissim silently
+    # leaves the measurement's own membership pointing at a now-nonexistent
+    # point. This module does NOT add its own guard for that (it would be a
+    # second, competing source of truth against the XML-based one) --
+    # ``tools_edit.remove_data_collection_point`` checks reference
+    # integrity itself, against the CURRENT working copy, via
+    # ``services.inpx_structure.find_id_references`` (the SAME spine
+    # every other structural removal in this codebase already uses) BEFORE
+    # ever calling this module's own :meth:`remove_data_collection_point`.
+    #
+    # Object numbering: every ``Add*`` call here uses an EXPLICIT
+    # ``max(existing) + 1`` key (mirrors :meth:`duplicate_driving_behavior`'s
+    # own convention, and ``services.inpx_structure.next_id``'s identical
+    # rule for XML-level structural adds) rather than relying on Vissim's
+    # own auto-numbering (``Key=None`` also works, live-verified, but an
+    # explicit key keeps this module's numbering behavior consistent and
+    # predictable across both creation paths in this codebase).
+    # ---------------------------------------------------------------------
+
+    def available_queue_counter_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.QueueCounters)
+
+    def available_data_collection_point_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.DataCollectionPoints)
+
+    def available_data_collection_measurement_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.DataCollectionMeasurements)
+
+    def available_travel_time_section_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.VehicleTravelTimeMeasurements)
+
+    def _link_object_by_no(self, link_no: int) -> Any:
+        """Resolve a real ``Link`` COM object (not just a validated number) --
+        every measurement-infra ``Add*`` method's Link-shaped param needs the
+        OBJECT (landmine 1 above), not the plain int every other verb in
+        this module addresses links by."""
+        return self._item_by_key(
+            self.vissim.Net.Links, link_no, "Link", self._collection_nos(self.vissim.Net.Links)
+        )
+
+    def add_queue_counter(self, link_no: int, pos_m: float, name: str = "") -> dict[str, Any]:
+        """Create a queue counter on ``link_no`` at ``pos_m`` metres from the
+        link's start. Returns :meth:`get_queue_counter`'s shape for the new
+        object (readback-verified: the new object's own ``No``/``Link``/
+        ``Pos`` are read straight back from COM, not merely echoed)."""
+        try:
+            link = self._link_object_by_no(link_no)
+            existing = self.available_queue_counter_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            pos_com = self._length_m_to_com(float(pos_m), self._net_unit_length())
+            counter = self.vissim.Net.QueueCounters.AddQueueCounter(new_no, link, pos_com)
+            if name:
+                counter.SetAttValue("Name", name)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a queue counter on link {link_no} at pos {pos_m}: {exc}"
+            ) from exc
+        return self.get_queue_counter(new_no)
+
+    def remove_queue_counter(self, no: int) -> None:
+        try:
+            counter = self._item_by_key(
+                self.vissim.Net.QueueCounters, no, "Queue counter", self.available_queue_counter_nos()
+            )
+            self.vissim.Net.QueueCounters.RemoveQueueCounter(counter)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove queue counter {no}: {exc}") from exc
+
+    def get_queue_counter(self, no: int) -> dict[str, Any]:
+        try:
+            counter = self._item_by_key(
+                self.vissim.Net.QueueCounters, no, "Queue counter", self.available_queue_counter_nos()
+            )
+            unit = self._net_unit_length()
+            return {
+                "no": no,
+                "name": str(counter.AttValue("Name") or ""),
+                "link": str(counter.AttValue("Link")),
+                "pos": self._length_com_to_m(float(counter.AttValue("Pos")), unit),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read queue counter {no}: {exc}") from exc
+
+    def add_data_collection_point(
+        self, link_no: int, lane_index: int, pos_m: float, name: str = ""
+    ) -> dict[str, Any]:
+        """Create a data-collection point on lane ``lane_index`` of
+        ``link_no`` at ``pos_m`` metres. The ``Lane`` param needs the SAME
+        Lane object :meth:`_lane_by_index` already resolves for
+        :meth:`set_lane_blocked_vehicle_classes` -- reused verbatim, so a
+        bogus lane index fails with the identical structured error either
+        verb would give."""
+        try:
+            lane = self._lane_by_index(link_no, lane_index)
+            existing = self.available_data_collection_point_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            pos_com = self._length_m_to_com(float(pos_m), self._net_unit_length())
+            point = self.vissim.Net.DataCollectionPoints.AddDataCollectionPoint(new_no, lane, pos_com)
+            if name:
+                point.SetAttValue("Name", name)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a data collection point on link {link_no} lane {lane_index} at "
+                f"pos {pos_m}: {exc}"
+            ) from exc
+        return self.get_data_collection_point(new_no)
+
+    def remove_data_collection_point(self, no: int) -> None:
+        """Removes the point unconditionally -- Vissim's own COM raises no
+        objection even when a measurement still references it (landmine 3
+        above). Callers MUST check reference integrity themselves before
+        calling this (``tools_edit.remove_data_collection_point`` does, via
+        ``services.inpx_structure.find_id_references``)."""
+        try:
+            point = self._item_by_key(
+                self.vissim.Net.DataCollectionPoints,
+                no,
+                "Data collection point",
+                self.available_data_collection_point_nos(),
+            )
+            self.vissim.Net.DataCollectionPoints.RemoveDataCollectionPoint(point)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove data collection point {no}: {exc}") from exc
+
+    def get_data_collection_point(self, no: int) -> dict[str, Any]:
+        try:
+            point = self._item_by_key(
+                self.vissim.Net.DataCollectionPoints,
+                no,
+                "Data collection point",
+                self.available_data_collection_point_nos(),
+            )
+            unit = self._net_unit_length()
+            # AttValue('Lane') returns the hyphenated "<link>-<lane>" COM form
+            # (the SAME landmine des-speed-decision/priority-rule Lane reads
+            # already documented) -- split defensively rather than trusting
+            # a fixed separator count.
+            lane_raw = str(point.AttValue("Lane") or "")
+            link_part, _, lane_part = lane_raw.partition("-")
+            return {
+                "no": no,
+                "name": str(point.AttValue("Name") or ""),
+                "link": link_part,
+                "lane_index": int(lane_part) if lane_part.isdigit() else None,
+                "pos": self._length_com_to_m(float(point.AttValue("Pos")), unit),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read data collection point {no}: {exc}") from exc
+
+    def add_data_collection_measurement(self, point_nos: list[int], name: str = "") -> dict[str, Any]:
+        """Create a data-collection measurement grouping ``point_nos`` --
+        the object that actually produces countable results (a lone point
+        is a placement marker only, live-verified: Vissim's evaluation UI
+        has nothing to report against an unmeasured point). ``AddDataCollectionMeasurement``
+        takes no points param; membership is wired via a SECOND call,
+        ``SetAttValue('DataCollectionPoints', "<no>,<no>,...")`` -- a
+        comma-separated key list, live-verified against a real 2-point
+        group (probe_measurement_infra_followup.py) and matching the exact
+        ``<intObjectRef>`` shape every real Vissim export already uses for
+        this element.
+
+        Every entry of ``point_nos`` is existence-checked (via
+        ``_item_by_key``) BEFORE the measurement is created, so a bogus
+        point number fails with a structured error naming it rather than a
+        raw COM "not a valid key list" string blaming the whole list.
+        """
+        try:
+            if not point_nos:
+                raise ValueError("add_data_collection_measurement: point_nos must be non-empty")
+            available_points = self.available_data_collection_point_nos()
+            for point_no in point_nos:
+                self._item_by_key(
+                    self.vissim.Net.DataCollectionPoints, point_no, "Data collection point", available_points
+                )
+            existing = self.available_data_collection_measurement_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            measurement = self.vissim.Net.DataCollectionMeasurements.AddDataCollectionMeasurement(new_no)
+            measurement.SetAttValue(
+                "DataCollectionPoints", ",".join(str(int(p)) for p in point_nos)
+            )
+            if name:
+                measurement.SetAttValue("Name", name)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a data collection measurement grouping points {point_nos!r}: {exc}"
+            ) from exc
+        return self.get_data_collection_measurement(new_no)
+
+    def remove_data_collection_measurement(self, no: int) -> None:
+        try:
+            measurement = self._item_by_key(
+                self.vissim.Net.DataCollectionMeasurements,
+                no,
+                "Data collection measurement",
+                self.available_data_collection_measurement_nos(),
+            )
+            self.vissim.Net.DataCollectionMeasurements.RemoveDataCollectionMeasurement(measurement)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove data collection measurement {no}: {exc}") from exc
+
+    def get_data_collection_measurement(self, no: int) -> dict[str, Any]:
+        try:
+            measurement = self._item_by_key(
+                self.vissim.Net.DataCollectionMeasurements,
+                no,
+                "Data collection measurement",
+                self.available_data_collection_measurement_nos(),
+            )
+            point_nos = sorted(int(p.AttValue("No")) for p in measurement.DataCollectionPoints.GetAll())
+            return {
+                "no": no,
+                "name": str(measurement.AttValue("Name") or ""),
+                "point_nos": point_nos,
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read data collection measurement {no}: {exc}") from exc
+
+    def add_travel_time_section(
+        self, name: str, from_link: int, from_pos_m: float, to_link: int, to_pos_m: float
+    ) -> dict[str, Any]:
+        """Create a travel-time measurement section from ``(from_link,
+        from_pos_m)`` to ``(to_link, to_pos_m)`` -- ``AddVehicleTravelTimeMeasurement``
+        takes flat ``StartLink``/``StartPos``/``EndLink``/``EndPos`` params
+        even though the SAVED .inpx nests them as ``<start link="" pos=""/>``/
+        ``<end .../>`` children; Vissim itself handles the (de)nesting."""
+        try:
+            start_link = self._link_object_by_no(from_link)
+            end_link = self._link_object_by_no(to_link)
+            existing = self.available_travel_time_section_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            unit = self._net_unit_length()
+            start_pos_com = self._length_m_to_com(float(from_pos_m), unit)
+            end_pos_com = self._length_m_to_com(float(to_pos_m), unit)
+            section = self.vissim.Net.VehicleTravelTimeMeasurements.AddVehicleTravelTimeMeasurement(
+                new_no, start_link, start_pos_com, end_link, end_pos_com
+            )
+            if name:
+                section.SetAttValue("Name", name)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a travel time section from link {from_link}@{from_pos_m} to link "
+                f"{to_link}@{to_pos_m}: {exc}"
+            ) from exc
+        return self.get_travel_time_section(new_no)
+
+    def remove_travel_time_section(self, no: int) -> None:
+        try:
+            section = self._item_by_key(
+                self.vissim.Net.VehicleTravelTimeMeasurements,
+                no,
+                "Travel time section",
+                self.available_travel_time_section_nos(),
+            )
+            self.vissim.Net.VehicleTravelTimeMeasurements.RemoveVehicleTravelTimeMeasurement(section)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove travel time section {no}: {exc}") from exc
+
+    def get_travel_time_section(self, no: int) -> dict[str, Any]:
+        try:
+            section = self._item_by_key(
+                self.vissim.Net.VehicleTravelTimeMeasurements,
+                no,
+                "Travel time section",
+                self.available_travel_time_section_nos(),
+            )
+            unit = self._net_unit_length()
+            return {
+                "no": no,
+                "name": str(section.AttValue("Name") or ""),
+                "from_link": str(section.AttValue("StartLink")),
+                "from_pos": self._length_com_to_m(float(section.AttValue("StartPos")), unit),
+                "to_link": str(section.AttValue("EndLink")),
+                "to_pos": self._length_com_to_m(float(section.AttValue("EndPos")), unit),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read travel time section {no}: {exc}") from exc
+
     def set_route_relative_flow(
         self, decision_no: int, route_no: int, rel_flow: float, interval_no: int = 1
     ) -> None:

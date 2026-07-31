@@ -91,6 +91,17 @@ EXPECTED_WRITE_TOOLS = {
     # v2b unit (1): lane closure/reopen (one setter, both directions -- see
     # tools_edit.py's own docstring).
     "set_lane_closure",
+    # Q4 unit (2): measurement-infrastructure placement -- queue counters,
+    # data-collection points/measurements, travel-time sections (COM
+    # CREATE/REMOVE verbs -- see tools_edit.py's own docstring).
+    "add_queue_counter",
+    "remove_queue_counter",
+    "add_data_collection_point",
+    "remove_data_collection_point",
+    "add_data_collection_measurement",
+    "remove_data_collection_measurement",
+    "add_travel_time_section",
+    "remove_travel_time_section",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

@@ -441,6 +441,123 @@ def _parse_link_lanes(root: ET.Element) -> list[dict[str, Any]]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Q4 unit (2): measurement-infrastructure placement -- queue counters,
+# data-collection points/measurements, travel-time sections. Shapes verified
+# live/statically across every real Vissim 2026 example network that carries
+# one (backend/tools/probe_measurement_infra.py, Toll Plaza Camden.US --
+# FEET display -- primary; cross-checked against Beijing/Rome/Boise, both
+# METERS-display): a queue counter is link+pos (no lane, mirrors the
+# pre-existing ``_parse_link_pos_elements`` convention in inpx_parser.py); a
+# data-collection point is the SAME lane-TOKEN+pos shape reducedSpeedArea/
+# priorityRule already use (:func:`_parse_lane_token`); a data-collection
+# MEASUREMENT is a separate, referencing object grouping 1..N points by id
+# via ``<dataCollectionPoints><intObjectRef key="..."/></dataCollectionPoints>``
+# (the SAME ``intObjectRef`` convention ``_parse_link_lanes`` already found
+# for ``blockedVehClasses``); a travel-time section has two ``<start
+# link="" pos=""/>``/``<end .../>`` child elements -- the FIRST of
+# ``inpx_parser._resolve_tt_endpoint``'s three guessed shapes, now confirmed
+# as the only one any real Vissim export actually uses.
+#
+# **pos is always METRES in the raw XML**, regardless of the network's own
+# display unit -- the THIRD confirmation of the twice-documented display-unit
+# landmine (docs/phase2/DECISIONS.md 2026-07-27/2026-07-31): COM
+# ``AttValue('Pos')`` on these objects AND the native ``Add*`` methods' own
+# ``Pos``/``StartPos``/``EndPos`` params both read/accept the network's
+# ``NetPara.UnitLenShort`` display unit (measured ratio 3.280840 == 1/0.3048
+# on a FEET network, both directions), but the SAVED .inpx attribute is
+# always metres -- see ``vissim_com.VissimController._net_unit_length`` for
+# the conversion helpers ``add_queue_counter``/etc. reuse. Parsing straight
+# from XML here needs no conversion at all.
+# ---------------------------------------------------------------------------
+
+
+def _parse_queue_counters(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, link_id, pos}`` per ``<queueCounter>``."""
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//queueCounters/queueCounter"):
+        result.append(
+            {
+                "no": el.get("no", ""),
+                "name": el.get("name", "") or "",
+                "link_id": el.get("link", "") or "",
+                "pos": _coerce_float_or_none(el.get("pos")),
+            }
+        )
+    return result
+
+
+def _parse_data_collection_points(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, link_id, lane_index, pos}`` per
+    ``<dataCollectionPoint>`` -- lane is the two-token ``"<linkNo> <laneNo>"``
+    XML form (:func:`_parse_lane_token`), matching COM's own ``AddDataCollectionPoint``
+    ``Lane`` param semantics (resolved through ``VissimController._lane_by_index``,
+    itself indexed the SAME 1-based ordinal ``_parse_link_lanes`` already uses)."""
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//dataCollectionPoints/dataCollectionPoint"):
+        link_id, lane_no = _parse_lane_token(el.get("lane"))
+        result.append(
+            {
+                "no": el.get("no", ""),
+                "name": el.get("name", "") or "",
+                "link_id": link_id,
+                "lane_index": int(lane_no) if lane_no.isdigit() else None,
+                "pos": _coerce_float_or_none(el.get("pos")),
+            }
+        )
+    return result
+
+
+def _parse_data_collection_measurements(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, point_nos}`` per ``<dataCollectionMeasurement>`` --
+    ``point_nos`` is every referenced ``<dataCollectionPoint>`` id, in
+    document order (empty list = a measurement wired to zero points, a legal
+    but useless-for-results state -- Vissim's own COM ``AddDataCollectionMeasurement``
+    creates exactly this before ``add_data_collection_measurement`` wires
+    membership via ``SetAttValue``)."""
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//dataCollectionMeasurements/dataCollectionMeasurement"):
+        point_nos = [
+            ref.get("key", "")
+            for ref in el.findall("dataCollectionPoints/intObjectRef")
+            if ref.get("key")
+        ]
+        result.append(
+            {
+                "no": el.get("no", ""),
+                "name": el.get("name", "") or "",
+                "point_nos": point_nos,
+            }
+        )
+    return result
+
+
+def _parse_travel_time_sections(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, from_link, from_pos, to_link, to_pos}`` per
+    ``<vehicleTravelTimeMeasurement>``. Distinct from ``inpx_parser.py``'s
+    identically-purposed ``traveltime_sections``/``traveltime_sections_geo``
+    lists (a different module, geometry-resolved for the frontend map, not
+    the agent's own preflight shadow model) -- deliberately NOT reused here
+    to keep this module's own id-bearing/reference-integrity registry keys
+    (``services.inpx_structure``) independent of the map-rendering module's
+    schema evolution."""
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//vehicleTravelTimeMeasurements/vehicleTravelTimeMeasurement"):
+        start = el.find("start")
+        end = el.find("end")
+        result.append(
+            {
+                "no": el.get("no", ""),
+                "name": el.get("name", "") or "",
+                "from_link": (start.get("link") or "") if start is not None else "",
+                "from_pos": _coerce_float_or_none(start.get("pos")) if start is not None else None,
+                "to_link": (end.get("link") or "") if end is not None else "",
+                "to_pos": _coerce_float_or_none(end.get("pos")) if end is not None else None,
+            }
+        )
+    return result
+
+
 def _parse_evaluation_config(root: ET.Element) -> dict[str, Any]:
     """{present, net_perf_eval_act, link_eval_act, queue_eval_act,
     ln_chg_eval_act, eval_interval_s} from the .inpx's top-level
@@ -2199,6 +2316,13 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         # v2b unit (1): flat per-lane closure state, see _parse_link_lanes's
         # own docstring.
         "link_lanes": _parse_link_lanes(root),
+        # Q4 unit (2): measurement-infrastructure placement -- queue
+        # counters, data-collection points/measurements, travel-time
+        # sections. See each parser's own docstring.
+        "queue_counters": _parse_queue_counters(root),
+        "data_collection_points": _parse_data_collection_points(root),
+        "data_collection_measurements": _parse_data_collection_measurements(root),
+        "travel_time_sections": _parse_travel_time_sections(root),
         "routing_decisions": routing_decisions,
         "routes": _flatten_routes(routing_decisions),
         "vehicle_compositions": vehicle_compositions,

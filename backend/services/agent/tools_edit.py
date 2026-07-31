@@ -126,6 +126,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import xml.etree.ElementTree as ET
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -135,6 +136,7 @@ from services.agent.edit_session import get_active_edit_session
 from services.agent.toolkit import default_registry, dispatch, tool
 from services.agent.tools_network import build_shadow_model
 from services.datasets import get_active_inpx_path
+from services.inpx_structure import ReferenceIntegrityError, find_id_references
 from services.simulation_network_builder import (
     inject_reduced_speed_area,
     reparse_reduced_speed_area,
@@ -1420,6 +1422,406 @@ def set_link_behavior_type_driving_behavior(
         f"behavior {params.driving_behavior_no}."
     )
     return {"message": message, "verification": verification}
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (2): measurement-infrastructure placement -- queue counters,
+# data-collection points/measurements, travel-time sections. Genuine COM
+# CREATE/REMOVE verbs (see vissim_com.VissimController's own module comment
+# for the full live-verified writeup: native Add*/Remove* methods exist for
+# all four object types -- unlike lane closure's attribute-only write or
+# reduced-speed-area's pure-XML injection, this is the first unit where COM
+# creation is the right call). Every ADD tool's own COM readback (via
+# session.add_*'s paired get_*) IS the verification -- the same set-then-get
+# pattern every other COM verb in this module already uses; no reparse
+# needed, unlike set_reduced_speed_area.
+#
+# **These are also this codebase's FIRST planner-facing REMOVE verbs.**
+# (services.inpx_structure's own remove_last_lane/add_lane proof pair is
+# deliberately NOT @tool-registered -- see that module's docstring.) A
+# remove's "verification" is necessarily different in kind from a set's:
+# there is no new value to read back, so each remove tool here reparses the
+# saved working copy AFTER persist() and reports whether the removed
+# object's own id genuinely no longer appears -- the guardrail doctrine's
+# "every setter must have a paired reader" applied to a remove instead of a
+# set (absence, not a value, is what gets verified).
+#
+# **remove_data_collection_point is the one tool in this unit with a real
+# reference-integrity refusal.** Live-verified (backend/tools/
+# probe_measurement_infra_followup.py): COM's own RemoveDataCollectionPoint
+# does NOT refuse removing a point a dataCollectionMeasurement still
+# references -- it succeeds silently, leaving the measurement's own
+# DataCollectionPoints membership pointing at a now-nonexistent point (a
+# genuinely inconsistent saved network Vissim itself will not catch, per
+# the guardrail doctrine's "Vissim almost never refuses a bad edit"
+# thesis). This tool checks reference integrity ITSELF, against the CURRENT
+# working copy XML, via services.inpx_structure.find_id_references (the
+# SAME spine every other structural removal in this codebase already
+# uses -- extended this unit with a "data_collection_points" registry
+# entry) BEFORE ever calling COM at all -- a genuine refusal (raises
+# ReferenceIntegrityError, naming every referencing measurement), not
+# merely a warning. Queue counters and travel-time sections are leaf
+# objects (nothing else in the schema ever references either by id,
+# verified against every real Vissim 2026 example network that uses one --
+# see services.inpx_structure.ID_BEARING_ELEMENTS's own comment), so their
+# own remove tools carry no such check.
+#
+# **Deliberate, documented scope cuts** (this unit's own "constraints.py
+# minimal" instruction: _TOOL_TARGET_SPEC entries + at most one small
+# constraint; richer logic lives here and in vissim_com.py instead):
+# add_travel_time_section's SECOND link target (to_link) and
+# add_data_collection_measurement's point_nos (a LIST, no single-param home
+# in the shared table at all) get NO dedicated preflight Finding -- a bogus
+# to_link/point_no instead surfaces as a plain tool_execution_error from
+# vissim_com.VissimController._link_object_by_no's/add_data_collection_
+# measurement's own fail-closed COM-backed existence check (still a genuine
+# refusal, just without difflib-suggested candidates). A future unit can
+# promote both to dedicated checks mirroring route_not_found_in_decision's
+# own precedent.
+# ---------------------------------------------------------------------------
+
+
+def _still_present_after_remove(
+    working_inpx, object_class: str, removed_no: str
+) -> bool:
+    """Fresh reparse of the JUST-PERSISTED working copy (never the stale
+    in-memory shadow model from before this call) -- ``True`` if
+    ``removed_no`` genuinely still appears in ``shadow_model[object_class]``
+    after a remove tool's own ``session.persist()``. The paired-reader half
+    of a remove's own verification (see this section's own module comment)."""
+    shadow_model = build_shadow_model(working_inpx)
+    return any(str(obj.get("no", "")) == str(removed_no) for obj in shadow_model.get(object_class, []))
+
+
+# ---------------------------------------------------------------------------
+# Live-check-caught fix (Q4 unit (2)): the meter<->display-unit round trip
+# (vissim_com.VissimController._length_m_to_com/_length_com_to_m) introduces
+# genuine floating-point noise at the ~1e-15 level on any FEET-display
+# network (measured live: pos_m=20.0 in, 19.999999999999996 back) -- far
+# under constraints.py's own 1e-9 float tolerance, EXCEPT that tolerance
+# (``_values_differ``) only special-cases a BARE top-level int/float pair;
+# written_value/readback_value here are DICTS (``{"link", "pos"}``), so an
+# untouched nested float difference makes the whole-dict ``!=`` compare
+# unequal and constraint #6 (write_verification_failed) genuinely refuses a
+# CORRECT write (live-reproduced: backend/tools/measurement_infra_live_check.py
+# Phase B, before this fix, on Roundabout Billings.US -- a FEET network).
+# Rounding both sides of any pos-shaped field to millimetre precision here
+# (never in vissim_com.py, which stays full-precision for any other caller)
+# makes ``written == readback`` bit-for-bit whenever the true positions
+# agree, without touching constraints.py's shared, foundational compare --
+# same "round at the presentation boundary" move
+# ``simulation_network_builder._INJECTED_PRECISION`` already established for
+# RSA's OWN (unrelated, disk-only) float-noise source.
+_POS_VERIFICATION_PRECISION = 6
+
+
+def _round_pos_m(value: float) -> float:
+    return round(float(value), _POS_VERIFICATION_PRECISION)
+
+
+# ---------------------------------------------------------------------------
+# add_queue_counter(link_no, pos_m, name="") / remove_queue_counter(no)
+# ---------------------------------------------------------------------------
+
+
+class AddQueueCounterParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_no: str
+    pos_m: float
+    name: str = ""
+
+
+@tool(name="add_queue_counter", tier="write", provider="edit", params=AddQueueCounterParams)
+def add_queue_counter(params: AddQueueCounterParams) -> dict[str, Any]:
+    """Add a queue counter on link_no at pos_m metres from the link's start (COM AddQueueCounter) on the active edit session's working network -- measures queue length back to this point every simulation second (Genesis V9/MRWA Table 5-15's queue-length output)."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_no, "link_no")
+    result = session.add_queue_counter(link_no, params.pos_m, params.name)
+    session.persist()
+
+    verification = {
+        "written_value": {"link": params.link_no, "pos": _round_pos_m(params.pos_m)},
+        "readback_value": {"link": result["link"], "pos": _round_pos_m(result["pos"])},
+    }
+    message = f"Queue counter {result['no']} added on link {params.link_no} at {params.pos_m} m."
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "name": result["name"]},
+    }
+
+
+class RemoveQueueCounterParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(name="remove_queue_counter", tier="write", provider="edit", params=RemoveQueueCounterParams)
+def remove_queue_counter(params: RemoveQueueCounterParams) -> dict[str, Any]:
+    """Remove a queue counter (COM RemoveQueueCounter) on the active edit session's working network -- queue counters are never referenced by another object (see services.inpx_structure.ID_BEARING_ELEMENTS), so no reference-integrity check runs here."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+    session.remove_queue_counter(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "queue_counters", params.no)
+    verification = {
+        "written_value": {"removed_no": params.no},
+        "readback_value": {"removed_no": params.no if still_present else None},
+    }
+    return {
+        "message": f"Queue counter {params.no} removed.",
+        "verification": verification,
+    }
+
+
+# ---------------------------------------------------------------------------
+# add_data_collection_point(link_no, lane_index, pos_m, name="") /
+# remove_data_collection_point(no)
+# ---------------------------------------------------------------------------
+
+
+class AddDataCollectionPointParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_no: str
+    lane_index: int = Field(ge=1)
+    pos_m: float
+    name: str = ""
+
+
+@tool(
+    name="add_data_collection_point",
+    tier="write",
+    provider="edit",
+    params=AddDataCollectionPointParams,
+)
+def add_data_collection_point(params: AddDataCollectionPointParams) -> dict[str, Any]:
+    """Add a data-collection point on one lane of link_no at pos_m metres (COM AddDataCollectionPoint) on the active edit session's working network -- a placement marker only; group it into a measurement via add_data_collection_measurement to actually produce countable results (Genesis V9/MRWA Table 5-15's critical-section volumes)."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_no, "link_no")
+    result = session.add_data_collection_point(link_no, params.lane_index, params.pos_m, params.name)
+    session.persist()
+
+    verification = {
+        "written_value": {
+            "link": params.link_no, "lane_index": params.lane_index, "pos": _round_pos_m(params.pos_m)
+        },
+        "readback_value": {
+            "link": result["link"], "lane_index": result["lane_index"], "pos": _round_pos_m(result["pos"])
+        },
+    }
+    message = (
+        f"Data collection point {result['no']} added on link {params.link_no} lane {params.lane_index} "
+        f"at {params.pos_m} m."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "name": result["name"]},
+    }
+
+
+class RemoveDataCollectionPointParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(
+    name="remove_data_collection_point",
+    tier="write",
+    provider="edit",
+    params=RemoveDataCollectionPointParams,
+)
+def remove_data_collection_point(params: RemoveDataCollectionPointParams) -> dict[str, Any]:
+    """Remove a data-collection point (COM RemoveDataCollectionPoint) on the active edit session's working network -- REFUSES (never cascades) when a data-collection measurement still groups this point; remove that measurement first (remove_data_collection_measurement)."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+
+    # COM itself does NOT refuse this (live-verified, vissim_com.py's own
+    # module comment) -- check reference integrity ourselves, against the
+    # CURRENT working copy XML, via the spine's registry, BEFORE ever
+    # calling COM.
+    root = ET.parse(session.working_inpx).getroot()
+    referrers = find_id_references(root, "data_collection_points", params.no)
+    if referrers:
+        raise ReferenceIntegrityError(f"Cannot remove data collection point {params.no}", referrers)
+
+    session.remove_data_collection_point(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "data_collection_points", params.no)
+    verification = {
+        "written_value": {"removed_no": params.no},
+        "readback_value": {"removed_no": params.no if still_present else None},
+    }
+    return {
+        "message": f"Data collection point {params.no} removed.",
+        "verification": verification,
+    }
+
+
+# ---------------------------------------------------------------------------
+# add_data_collection_measurement(point_nos, name="") /
+# remove_data_collection_measurement(no)
+# ---------------------------------------------------------------------------
+
+
+class AddDataCollectionMeasurementParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    point_nos: list[str] = Field(min_length=1)
+    name: str = ""
+
+
+@tool(
+    name="add_data_collection_measurement",
+    tier="write",
+    provider="edit",
+    params=AddDataCollectionMeasurementParams,
+)
+def add_data_collection_measurement(params: AddDataCollectionMeasurementParams) -> dict[str, Any]:
+    """Group 1+ existing data-collection points into a measurement (COM AddDataCollectionMeasurement + wiring DataCollectionPoints membership) on the active edit session's working network -- the object that actually accumulates countable results; a lone, ungrouped point reports nothing in Vissim's own evaluation. A bogus point number fails closed (COM's own existence check), named in the resulting error."""
+    session = _require_session()
+    point_nos = [_coerce_id(p, "point_nos") for p in params.point_nos]
+    result = session.add_data_collection_measurement(point_nos, params.name)
+    session.persist()
+
+    verification = {
+        "written_value": {"point_nos": params.point_nos},
+        "readback_value": {"point_nos": [str(p) for p in result["point_nos"]]},
+    }
+    message = (
+        f"Data collection measurement {result['no']} added, grouping point(s) "
+        f"{', '.join(params.point_nos)}."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "name": result["name"]},
+    }
+
+
+class RemoveDataCollectionMeasurementParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(
+    name="remove_data_collection_measurement",
+    tier="write",
+    provider="edit",
+    params=RemoveDataCollectionMeasurementParams,
+)
+def remove_data_collection_measurement(params: RemoveDataCollectionMeasurementParams) -> dict[str, Any]:
+    """Remove a data-collection measurement (COM RemoveDataCollectionMeasurement) on the active edit session's working network -- frees its member points for individual removal (nothing else references a measurement by id, so this tool carries no reference-integrity check of its own)."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+    session.remove_data_collection_measurement(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(
+        session.working_inpx, "data_collection_measurements", params.no
+    )
+    verification = {
+        "written_value": {"removed_no": params.no},
+        "readback_value": {"removed_no": params.no if still_present else None},
+    }
+    return {
+        "message": f"Data collection measurement {params.no} removed.",
+        "verification": verification,
+    }
+
+
+# ---------------------------------------------------------------------------
+# add_travel_time_section(name, from_link, from_pos_m, to_link, to_pos_m) /
+# remove_travel_time_section(no)
+# ---------------------------------------------------------------------------
+
+
+class AddTravelTimeSectionParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = ""
+    from_link: str
+    from_pos_m: float
+    to_link: str
+    to_pos_m: float
+
+
+@tool(
+    name="add_travel_time_section",
+    tier="write",
+    provider="edit",
+    params=AddTravelTimeSectionParams,
+)
+def add_travel_time_section(params: AddTravelTimeSectionParams) -> dict[str, Any]:
+    """Add a travel-time measurement section from (from_link, from_pos_m) to (to_link, to_pos_m) (COM AddVehicleTravelTimeMeasurement) on the active edit session's working network -- Genesis V9/MRWA Table 5-15's travel-time output. to_link is NOT covered by the object_not_found preflight (see this module's own comment) -- a bogus to_link fails closed as a tool_execution_error instead."""
+    session = _require_session()
+    from_link = _coerce_id(params.from_link, "from_link")
+    to_link = _coerce_id(params.to_link, "to_link")
+    result = session.add_travel_time_section(
+        params.name, from_link, params.from_pos_m, to_link, params.to_pos_m
+    )
+    session.persist()
+
+    verification = {
+        "written_value": {
+            "from_link": params.from_link,
+            "from_pos": _round_pos_m(params.from_pos_m),
+            "to_link": params.to_link,
+            "to_pos": _round_pos_m(params.to_pos_m),
+        },
+        "readback_value": {
+            "from_link": result["from_link"],
+            "from_pos": _round_pos_m(result["from_pos"]),
+            "to_link": result["to_link"],
+            "to_pos": _round_pos_m(result["to_pos"]),
+        },
+    }
+    message = (
+        f"Travel time section {result['no']} added from link {params.from_link}@{params.from_pos_m}m "
+        f"to link {params.to_link}@{params.to_pos_m}m."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "name": result["name"]},
+    }
+
+
+class RemoveTravelTimeSectionParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(
+    name="remove_travel_time_section",
+    tier="write",
+    provider="edit",
+    params=RemoveTravelTimeSectionParams,
+)
+def remove_travel_time_section(params: RemoveTravelTimeSectionParams) -> dict[str, Any]:
+    """Remove a travel-time measurement section (COM RemoveVehicleTravelTimeMeasurement) on the active edit session's working network -- travel-time sections are never referenced by another object (see services.inpx_structure.ID_BEARING_ELEMENTS), so no reference-integrity check runs here."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+    session.remove_travel_time_section(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "travel_time_sections", params.no)
+    verification = {
+        "written_value": {"removed_no": params.no},
+        "readback_value": {"removed_no": params.no if still_present else None},
+    }
+    return {
+        "message": f"Travel time section {params.no} removed.",
+        "verification": verification,
+    }
 
 
 # ---------------------------------------------------------------------------

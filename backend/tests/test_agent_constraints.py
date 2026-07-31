@@ -48,6 +48,10 @@ def _shadow_model(
     max_decel_functions: list[dict[str, Any]] | None = None,
     curve_speed_functions: list[dict[str, Any]] | None = None,
     time_distributions: list[dict[str, Any]] | None = None,
+    queue_counters: list[dict[str, Any]] | None = None,
+    data_collection_points: list[dict[str, Any]] | None = None,
+    data_collection_measurements: list[dict[str, Any]] | None = None,
+    travel_time_sections: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -134,6 +138,18 @@ def _shadow_model(
     # v2a) unit 5) -- same reasoning as the object classes above.
     if time_distributions is not None:
         shadow["time_distributions"] = time_distributions
+    # queue_counters/data_collection_points/data_collection_measurements/
+    # travel_time_sections deliberately OMITTED by default too (Q4 unit
+    # (2)) -- same "most tests have nothing to do with this object class"
+    # reasoning as the object classes above.
+    if queue_counters is not None:
+        shadow["queue_counters"] = queue_counters
+    if data_collection_points is not None:
+        shadow["data_collection_points"] = data_collection_points
+    if data_collection_measurements is not None:
+        shadow["data_collection_measurements"] = data_collection_measurements
+    if travel_time_sections is not None:
+        shadow["travel_time_sections"] = travel_time_sections
     return shadow
 
 
@@ -4882,9 +4898,18 @@ def test_registry_size_matches_m3_1_catalog_port():
     # delegates to services.agent.batch.validate_plan and can return MANY
     # findings in one preflight pass -- see that check's own comment and
     # run_checks' updated docstring for the list-returning CheckFn shape this
-    # introduced) == 90.
+    # introduced) == 90, + 1 (Q4 unit (2), measurement-infrastructure
+    # placement: measurement_infra_pos_out_of_range -- NOT a §-numbered
+    # catalog entry, this unit's ONE new constraint per its own "constraints.py
+    # minimal" instruction: refuses a queue-counter/data-collection-point/
+    # travel-time-section placement whose pos_m falls outside [0, the target
+    # link's own length]; object_not_found already existed and was EXTENDED in
+    # place (new _TOOL_TARGET_SPEC/_OBJECT_CLASS_LABELS entries) to gate 7 of
+    # the unit's 8 new add/remove tools, not added -- see that check's own
+    # comment for the one deliberate scope cut, add_data_collection_measurement)
+    # == 91.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 90
+    assert len(get_registry()) == 91
 
 
 def test_registry_has_unique_ids():
@@ -6166,3 +6191,243 @@ def test_time_distribution_shared_target_does_not_apply_to_other_tools():
     findings = run_checks("preflight", action, shadow, {})
 
     assert not any(f.constraint_id == "time_distribution_shared_target" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (2): measurement-infrastructure placement -- object_not_found
+# lockstep wiring (7 of the unit's 8 tools; add_data_collection_measurement
+# is a deliberate scope cut, see _TOOL_TARGET_SPEC's own comment) +
+# measurement_infra_pos_out_of_range (the unit's ONE new constraint).
+# ---------------------------------------------------------------------------
+
+
+def test_object_not_found_fires_for_missing_link_on_add_queue_counter():
+    shadow = _shadow_model()  # default fixture link id "101", length 280.0
+    action = _action("add_queue_counter", link_no="999", pos_m=10.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    _assert_well_formed_messages(matches[0], must_contain_ko="999")
+
+
+def test_object_not_found_silent_when_link_present_for_add_queue_counter():
+    shadow = _shadow_model()
+    action = _action("add_queue_counter", link_no="101", pos_m=10.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_fires_for_missing_link_on_add_data_collection_point():
+    shadow = _shadow_model()
+    action = _action("add_data_collection_point", link_no="999", lane_index=1, pos_m=10.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+
+
+def test_object_not_found_fires_for_missing_link_on_add_travel_time_section_from_link():
+    shadow = _shadow_model()
+    action = _action(
+        "add_travel_time_section", from_link="999", from_pos_m=0.0, to_link="101", to_pos_m=10.0
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+
+
+def test_object_not_found_fires_for_missing_queue_counter_on_remove():
+    shadow = _shadow_model(queue_counters=[{"no": "1", "name": "", "link_id": "101", "pos": 10.0}])
+    action = _action("remove_queue_counter", no="999")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+
+
+def test_object_not_found_silent_when_queue_counter_present_for_remove():
+    shadow = _shadow_model(queue_counters=[{"no": "1", "name": "", "link_id": "101", "pos": 10.0}])
+    action = _action("remove_queue_counter", no="1")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_fires_for_missing_data_collection_point_on_remove():
+    shadow = _shadow_model(
+        data_collection_points=[
+            {"no": "1", "name": "", "link_id": "101", "lane_index": 1, "pos": 10.0}
+        ]
+    )
+    action = _action("remove_data_collection_point", no="999")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "object_not_found"]) == 1
+
+
+def test_object_not_found_fires_for_missing_data_collection_measurement_on_remove():
+    shadow = _shadow_model(
+        data_collection_measurements=[{"no": "1", "name": "", "point_nos": ["1"]}]
+    )
+    action = _action("remove_data_collection_measurement", no="999")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "object_not_found"]) == 1
+
+
+def test_object_not_found_fires_for_missing_travel_time_section_on_remove():
+    shadow = _shadow_model(
+        travel_time_sections=[
+            {"no": "1", "name": "", "from_link": "101", "from_pos": 0.0, "to_link": "101", "to_pos": 10.0}
+        ]
+    )
+    action = _action("remove_travel_time_section", no="999")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "object_not_found"]) == 1
+
+
+def test_object_not_found_does_not_apply_to_add_data_collection_measurement():
+    """Deliberate scope cut (this unit's own "constraints.py minimal"
+    instruction): point_nos is a LIST with no single-param home in
+    _TOOL_TARGET_SPEC, so this tool gets NO object_not_found coverage at
+    all -- a bogus point number instead surfaces from vissim_com.py's own
+    fail-closed existence check as a plain tool_execution_error."""
+    shadow = _shadow_model()
+    action = _action("add_data_collection_measurement", point_nos=["999"])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+# --- measurement_infra_pos_out_of_range ------------------------------------
+
+
+def test_measurement_infra_pos_out_of_range_fires_for_negative_pos_on_queue_counter():
+    shadow = _shadow_model()  # link "101", length 280.0
+    action = _action("add_queue_counter", link_no="101", pos_m=-5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "measurement_infra_pos_out_of_range"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].phase == "preflight"
+    _assert_well_formed_messages(matches[0], must_contain_ko="101")
+
+
+def test_measurement_infra_pos_out_of_range_fires_for_pos_beyond_link_length():
+    shadow = _shadow_model()  # link "101", length 280.0
+    action = _action("add_queue_counter", link_no="101", pos_m=280.1)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "measurement_infra_pos_out_of_range"]) == 1
+
+
+def test_measurement_infra_pos_out_of_range_silent_within_bounds():
+    shadow = _shadow_model()  # link "101", length 280.0
+    action = _action("add_queue_counter", link_no="101", pos_m=140.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "measurement_infra_pos_out_of_range" for f in findings)
+
+
+def test_measurement_infra_pos_out_of_range_accepts_the_boundary_values():
+    shadow = _shadow_model()  # link "101", length 280.0
+    for pos in (0.0, 280.0):
+        action = _action("add_queue_counter", link_no="101", pos_m=pos)
+        findings = run_checks("preflight", action, shadow, {})
+        assert not any(f.constraint_id == "measurement_infra_pos_out_of_range" for f in findings)
+
+
+def test_measurement_infra_pos_out_of_range_fires_for_data_collection_point():
+    shadow = _shadow_model()
+    action = _action("add_data_collection_point", link_no="101", lane_index=1, pos_m=-1.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "measurement_infra_pos_out_of_range"]) == 1
+
+
+def test_measurement_infra_pos_out_of_range_checks_both_endpoints_of_travel_time_section():
+    shadow = _shadow_model(
+        links=[
+            {"id": "101", "name": "A", "lanes": 3, "length": 280.0},
+            {"id": "102", "name": "B", "lanes": 2, "length": 100.0},
+        ]
+    )
+    # from_pos_m valid, to_pos_m out of range on link 102 (length 100).
+    action = _action(
+        "add_travel_time_section", from_link="101", from_pos_m=10.0, to_link="102", to_pos_m=150.0
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "measurement_infra_pos_out_of_range"]
+    assert len(matches) == 1
+    assert matches[0].details["field"] == "to_pos_m"
+    assert matches[0].details["link_id"] == "102"
+
+
+def test_measurement_infra_pos_out_of_range_both_endpoints_out_of_range_yields_two_findings():
+    shadow = _shadow_model(
+        links=[
+            {"id": "101", "name": "A", "lanes": 3, "length": 280.0},
+            {"id": "102", "name": "B", "lanes": 2, "length": 100.0},
+        ]
+    )
+    action = _action(
+        "add_travel_time_section", from_link="101", from_pos_m=-1.0, to_link="102", to_pos_m=150.0
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "measurement_infra_pos_out_of_range"]
+    assert len(matches) == 2
+
+
+def test_measurement_infra_pos_out_of_range_silent_when_link_unknown():
+    """Deliberately silent -- object_not_found (#1) is the one that fires
+    for an unknown link; this check would have no length to compare
+    against anyway."""
+    shadow = _shadow_model()
+    action = _action("add_queue_counter", link_no="999", pos_m=-5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "measurement_infra_pos_out_of_range" for f in findings)
+    assert any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_measurement_infra_pos_out_of_range_does_not_apply_to_remove_tools():
+    shadow = _shadow_model(queue_counters=[{"no": "1", "name": "", "link_id": "101", "pos": 10.0}])
+    action = _action("remove_queue_counter", no="1")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "measurement_infra_pos_out_of_range" for f in findings)
+
+
+def test_measurement_infra_pos_out_of_range_does_not_apply_to_unrelated_tool():
+    shadow = _shadow_model()
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "measurement_infra_pos_out_of_range" for f in findings)

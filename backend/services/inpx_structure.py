@@ -227,6 +227,19 @@ class ReferenceSite:
 #: changing any traversal code below.
 ID_BEARING_ELEMENTS: dict[str, tuple[str, str]] = {
     "links": (".//links/link", "no"),
+    # Q4 unit (2): measurement-infrastructure placement. Only data-collection
+    # points are ever REFERENCED by another element type (a
+    # dataCollectionMeasurement's own <dataCollectionPoints><intObjectRef
+    # key="..."/></dataCollectionPoints> children -- see the module-level
+    # ID_REFERENCE_SITES entry below); queue counters and travel-time
+    # sections are leaf objects (verified against every real Vissim 2026
+    # example network that uses one, backend/tools/probe_measurement_infra.py
+    # -- nothing else in the schema ever points at either by id), so they are
+    # not registered here at all -- removal needs no reference-integrity
+    # check, only the object's own existence (constraints.py's
+    # object_not_found / _TOOL_TARGET_SPEC, wired against the shadow model's
+    # own "queue_counters"/"travel_time_sections" lists, not this registry).
+    "data_collection_points": (".//dataCollectionPoints/dataCollectionPoint", "no"),
 }
 
 #: Plain single-id reference sites, keyed by the object_class being
@@ -250,6 +263,28 @@ ID_REFERENCE_SITES: dict[str, tuple[ReferenceSite, ...]] = {
         ),
         ReferenceSite(
             "connector toLinkEndPt (lane form)", ".//links/link/toLinkEndPt", "lane", token_position=0
+        ),
+    ),
+    # Q4 unit (2): a dataCollectionMeasurement groups 1..N data-collection
+    # points by id via one <intObjectRef key="<point_no>"/> per point --
+    # verified live/statically across every real Vissim 2026 example network
+    # that uses one (backend/tools/probe_measurement_infra.py, Toll Plaza
+    # Camden.US measurement no=1 groups points 1/2/3): the SAME
+    # <intObjectRef> convention _parse_link_lanes already found for a lane's
+    # blockedVehClasses. COM itself does NOT refuse removing a still-
+    # referenced point (live-verified, same probe, [followup] step -- a
+    # RemoveDataCollectionPoint call on a point two measurements still
+    # reference SUCCEEDS silently, leaving the measurement's own
+    # DataCollectionPoints membership pointing at a now-nonexistent point),
+    # so this registry entry -- and remove_data_collection_point's own
+    # preflight use of find_id_references against it, in tools_edit.py -- is
+    # the ONLY thing standing between a careless removal and exactly the
+    # kind of dangling reference Vissim itself will not catch.
+    "data_collection_points": (
+        ReferenceSite(
+            "data-collection measurement point ref",
+            ".//dataCollectionMeasurements/dataCollectionMeasurement/dataCollectionPoints/intObjectRef",
+            "key",
         ),
     ),
 }
