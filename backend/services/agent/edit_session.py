@@ -303,6 +303,43 @@ class VissimEditSession:
     def get_detector(self, no: int) -> dict[str, Any]:
         return self._ensure_connected().get_detector(no)
 
+    # Q4 unit (5): add/remove links & connectors -- genuine COM CREATE/REMOVE
+    # (native AddLink/AddConnector/RemoveLink methods exist on ILinkContainer
+    # -- see vissim_com.VissimController's own module comment for the full
+    # live-verified writeup, including the coordinate-space landmine, the
+    # display-unit landmine, and COM's own failure to enforce reference
+    # integrity on RemoveLink).
+
+    def add_link(
+        self,
+        points_xy: list[tuple[float, float]],
+        lane_count: int,
+        behavior_type: int | None = None,
+        display_type: int | None = None,
+        name: str = "",
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_link(points_xy, lane_count, behavior_type, display_type, name)
+
+    def remove_link(self, no: int) -> None:
+        self._ensure_connected().remove_link(no)
+
+    def get_link(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_link(no)
+
+    def add_connector(
+        self,
+        from_link_no: int,
+        from_lane_indices: list[int],
+        from_pos_m: float,
+        to_link_no: int,
+        to_lane_indices: list[int],
+        to_pos_m: float,
+        name: str = "",
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_connector(
+            from_link_no, from_lane_indices, from_pos_m, to_link_no, to_lane_indices, to_pos_m, name
+        )
+
     # v2 unit ⑥: static routing decision route relative-flow verbs.
 
     def set_route_relative_flow(

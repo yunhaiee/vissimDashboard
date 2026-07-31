@@ -3160,6 +3160,133 @@ def test_postwrite_diff_still_flags_an_added_driving_behavior_for_a_tool_not_opt
 
 
 # ---------------------------------------------------------------------------
+# Q4 unit (5): add_link/add_connector/remove_link -- "links"/"link_lanes"
+# ARE tracked by _SHADOW_OBJECT_ID_FIELDS (unlike Q4 unit (2)'s measurement-
+# infra classes, which are not tracked at all), so these three tools need
+# the SAME _ALLOWS_NEW_OBJECTS_IN/_ALLOWS_REMOVED_OBJECTS_IN opt-in
+# remove_connector's own entry already established -- WITHOUT it, every
+# genuinely successful add_link/add_connector/remove_link call would be
+# refused+rolled-back by this exact diff, reproducing Q4 unit (3)'s own
+# live-caught "every unit-2 remove verb was silently broken" defect class
+# for THIS unit instead. These three tests are that unit's own recorded
+# "one real-engine GuardrailEngine.postwrite test per verb" precedent,
+# applied with a synthetic before/after pair (the live E2E, see
+# backend/tools/add_links_connectors_live_check.py, proves the SAME
+# non-regression against a real COM write).
+# ---------------------------------------------------------------------------
+
+
+def _link(link_id: str, *, lanes: int = 2, length: float = 100.0, is_connector: bool = False) -> dict[str, Any]:
+    return {"id": link_id, "name": "", "lanes": lanes, "length": length, "is_connector": is_connector}
+
+
+def _link_lane(link_id: str, lane_index: int) -> dict[str, Any]:
+    return {"id": f"{link_id}.{lane_index}", "link_id": link_id, "lane_index": lane_index, "blocked_vehicle_classes": []}
+
+
+def test_postwrite_diff_suppresses_add_link_own_new_link_and_lanes():
+    action = _action(
+        "add_link", points_xy=[[0.0, 0.0], [100.0, 0.0]], lane_count=2
+    )
+    before = _shadow_model(links=[_link("101")], link_lanes=[_link_lane("101", 1), _link_lane("101", 2)])
+    after = _shadow_model(
+        links=[_link("101"), _link("103")],
+        link_lanes=[
+            _link_lane("101", 1), _link_lane("101", 2), _link_lane("103", 1), _link_lane("103", 2),
+        ],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {"written_value": {"points": [[0.0, 0.0], [100.0, 0.0]], "lanes": 2},
+         "readback_value": {"points": [[0.0, 0.0], [100.0, 0.0]], "lanes": 2}},
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_suppresses_add_connector_own_new_link_and_lanes():
+    action = _action(
+        "add_connector", from_link="101", from_lanes=[1], from_pos_m=100.0,
+        to_link="102", to_lanes=[1], to_pos_m=0.0,
+    )
+    before = _shadow_model(
+        links=[_link("101"), _link("102", lanes=1)],
+        link_lanes=[_link_lane("101", 1), _link_lane("101", 2), _link_lane("102", 1)],
+    )
+    after = _shadow_model(
+        links=[_link("101"), _link("102", lanes=1), _link("301", lanes=1, is_connector=True)],
+        link_lanes=[
+            _link_lane("101", 1), _link_lane("101", 2), _link_lane("102", 1), _link_lane("301", 1),
+        ],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {
+            "written_value": {
+                "from_link": "101", "from_lanes": [1], "from_pos": 100.0,
+                "to_link": "102", "to_lanes": [1], "to_pos": 0.0,
+            },
+            "readback_value": {
+                "from_link": "101", "from_lanes": [1], "from_pos": 100.0,
+                "to_link": "102", "to_lanes": [1], "to_pos": 0.0,
+            },
+        },
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_suppresses_remove_link_own_removed_link_and_lanes():
+    action = _action("remove_link", no="103")
+    before = _shadow_model(
+        links=[_link("101"), _link("103")],
+        link_lanes=[
+            _link_lane("101", 1), _link_lane("101", 2), _link_lane("103", 1), _link_lane("103", 2),
+        ],
+    )
+    after = _shadow_model(links=[_link("101")], link_lanes=[_link_lane("101", 1), _link_lane("101", 2)])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {
+            "written_value": {"removed_no": "103", "still_present": False},
+            "readback_value": {"removed_no": "103", "still_present": False},
+        },
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_still_flags_an_added_link_for_a_tool_not_opted_in():
+    # Same "tool-specific, not blanket" proof the driving-behavior test
+    # above establishes, applied to this unit's own opt-in.
+    action = _action("set_lane_closure", link_id="101", lane_index=1, vehicle_classes=["10"])
+    before = _shadow_model(links=[_link("101")], link_lanes=[_link_lane("101", 1)])
+    after = _shadow_model(links=[_link("101"), _link("999")], link_lanes=[_link_lane("101", 1)])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {"written_value": ["10"], "readback_value": ["10"]},
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        entry["object_class"] == "links" and entry["object_id"] == "999" and entry["change"] == "added"
+        for entry in diff
+    )
+
+
+# ---------------------------------------------------------------------------
 # diff_shadow_models / rollback_last_edit's dynamic diff exemption --
 # QUEUE 3 unit 7
 # ---------------------------------------------------------------------------

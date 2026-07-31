@@ -129,6 +129,12 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "remove_signal_head",
     "add_detector",
     "remove_detector",
+    # Q4 unit (5) adds 3 add/remove links & connectors verbs (COM
+    # CREATE/REMOVE, see tools_edit.py's own docstring) -- remove_connector
+    # already existed (Q4 unit (3)), not duplicated.
+    "add_link",
+    "remove_link",
+    "add_connector",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md

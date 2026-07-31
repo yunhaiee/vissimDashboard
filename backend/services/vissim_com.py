@@ -1588,6 +1588,285 @@ class VissimController:
         except Exception as exc:
             raise RuntimeError(f"Could not read detector {no}: {exc}") from exc
 
+    # ---------------------------------------------------------------------
+    # Q4 unit (5): add/remove links & connectors -- the primitive verbs
+    # genesis geometry-synthesis (milestone 2.3) stands on. Genuine COM
+    # CREATE/REMOVE, discovered by static type-lib scan
+    # (backend/tools/probe_add_links_connectors.py [1a]) then live-verified
+    # (same probe [1b] + backend/tools/probe_add_connector_pos_units.py) --
+    # CONTRARY to Q4 unit (3)'s own "no native COM Add/Remove for a plain
+    # link or connector" note (that unit's own probe never scanned
+    # ILinkContainer itself, only the Lane-container/closure-shaped surface
+    # its own task needed): ``ILinkContainer`` genuinely exposes
+    # ``AddLink(Key, WktLinestring, LaneWidths)``, ``AddConnector(Key,
+    # FromLane, FromPos, ToLane, ToPos, NumberOfLanes, WktLinestring)``, and
+    # ``RemoveLink(Link)`` (no separate ``RemoveConnector`` -- a connector IS
+    # a ``Links`` entry, removed the same way, matching unit (3)'s own "a
+    # connector is a link" finding).
+    #
+    # **Landmine 1 (coordinate space):** a link's ``WktLinestring`` x/y
+    # (``"LINESTRING (x1 y1, x2 y2, ...)"``) are ALWAYS in the network's own
+    # base metric coordinate space -- live-verified round-tripped IDENTICAL
+    # on both a METERS-display network (Urban Intersection Beijing.CN) and a
+    # FEET-display network (Toll Plaza Camden.US): requesting ``x=1000``
+    # saved as ``x="1000"`` in both, never scaled by ``UnitLenShort``. This
+    # is the ONE length-shaped COM param in this whole codebase that is
+    # NEVER display-unit-converted -- every other Pos/Length param IS (see
+    # landmine 2). Readback (``link.LinkPolyPts.GetAll()``, each point's
+    # ``AttValue('X')``/``('Y')``) mirrors the input space (verified on the
+    # METERS network; inferred, not independently re-verified on a FEET
+    # network's COM readback specifically, on the strength of the SAVED FILE
+    # already being confirmed raw metres on both).
+    #
+    # **Landmine 2 (display-unit scaling, the FIFTH confirmation in this
+    # codebase):** ``AddLink``'s ``LaneWidths`` and ``AddConnector``'s
+    # ``FromPos``/``ToPos`` ARE display-unit-scaled, like every other
+    # Pos/Length COM param already found (queue counter/DCP/travel-time
+    # Pos, signal head Pos, detector Pos/Length) -- live-verified on Camden
+    # (FEET): a caller-requested ``LaneWidths=[3.5]`` (meant as 3.5 m) saved
+    # as ``width="1.0668"`` (exactly 3.5 FEET) when passed RAW, and an
+    # ``AddConnector`` ``FromPos=100.0`` passed RAW against a link of known
+    # 100 m length saved as ``pos="30.48"`` (exactly 100 FEET converted to
+    # metres) -- both confirm the SAME ``_length_m_to_com``/
+    # ``_length_com_to_m`` conversion this module already uses everywhere
+    # else is required here too, and is NOT needed for the WKT x/y
+    # themselves (landmine 1).
+    #
+    # **Landmine 3 (does AddLink create lanes atomically?):** YES -- unit
+    # (1)'s own ``AddLane``/``RemoveLane`` proof pair (XML-level) has a live
+    # COM twin (``ILaneContainer.AddLane(Key, Width)``/``RemoveLane(Lane)``,
+    # confirmed in the type-lib scan and live), but ``AddLink``'s own
+    # ``LaneWidths`` array creates every lane in the SAME call -- live-
+    # verified: ``AddLink(No, wkt, [3.5, 3.5])`` returns a link whose
+    # ``Lanes.GetAll()`` already has 2 entries, no follow-up ``AddLane``
+    # needed. This module always uses the atomic path (never AddLink-then-
+    # AddLane) -- calling ``Lanes.AddLane`` AFTER creation was live-verified
+    # to RECOMPUTE the link's own visual centerline (the saved geometry's own
+    # y-coordinate shifted by exactly half the new lane's width), a
+    # surprising side effect this module avoids entirely by asking for the
+    # right lane count up front.
+    #
+    # **Landmine 4 (AddConnector's lane mapping):** ``FromLane``/``ToLane``
+    # are single anchor Lane COM objects (the SAME ``_lane_by_index``-shaped
+    # resolution every other Add* method in this codebase already needs, not
+    # a bare int/link object -- live-verified: passing a Link object or a
+    # bare int both fail), and ``NumberOfLanes`` maps that many lanes
+    # CONSECUTIVELY upward from each anchor independently -- live-verified
+    # with a genuine lane-SHIFT case (from_link lanes [2,3] -> to_link lanes
+    # [1,2], anchors ``Lanes.ItemByKey(2)``/``ItemByKey(1)``,
+    # ``NumberOfLanes=2``): the saved connector's own per-lane
+    # ``fromLanes``/``toLanes`` mapping matched exactly. ``WktLinestring`` is
+    # NOT optional despite the type lib's ``defaultNamedNotOptArg`` label
+    # (omitting it raises "Parameter not optional"; passing ``None`` raises
+    # "is not a valid wkt linestring definition") -- this module always
+    # supplies a real, if approximate, guide line (:meth:`_connector_guide_
+    # wkt`); Vissim itself SNAPS/EXTENDS the saved geometry to the real
+    # resolved from/to positions regardless of what guide line is supplied
+    # (live-verified: an intentionally wrong guide line still produced a
+    # connector whose saved ``fromLinkEndPt``/``toLinkEndPt`` matched the
+    # REQUESTED ``FromPos``/``ToPos``, with Vissim's own extra interpolated
+    # points in between) -- so the guide line's own precision only affects
+    # curvature/intermediate-point placement, never the connector's real
+    # endpoints. This is this unit's own straight-line-fidelity scope cut in
+    # action: the guide is deliberately the simplest possible 2-point line
+    # (this module's own last point of ``from_link`` to the first point of
+    # ``to_link``), not an attempt at spline/curvature fidelity.
+    #
+    # **Landmine 5 (Vissim does not refuse a degenerate zero-length link, or
+    # enforce reference integrity on RemoveLink):** live-verified twice, the
+    # SAME "Vissim almost never refuses a bad edit" thesis this whole
+    # validation layer exists to counter -- (a) ``AddLink(No, "LINESTRING (x
+    # y, x y)", [3.5])`` (duplicate points) SUCCEEDS silently, creating a
+    # ``Length2D=0.0`` link (a single-point WKT IS refused natively, with a
+    # clear "must be at least 2" error -- only the duplicate-point,
+    # zero-LENGTH case is silent); ``services.agent.tools_edit.AddLinkParams``
+    # refuses both client-side before this method is ever called. (b)
+    # ``RemoveLink`` on a link whose lane still carries another object (a
+    # data-collection point, in the live test) SUCCEEDS silently, leaving a
+    # dangling reference -- this module does NOT guard against that itself
+    # (it would be a second, competing source of truth against the XML-based
+    # one); ``tools_edit.remove_link`` checks reference integrity itself,
+    # against the CURRENT working copy, via ``services.inpx_structure.
+    # find_id_references``/``find_lane_token_references`` (the SAME spine
+    # ``remove_connector``/``remove_data_collection_point`` already use)
+    # BEFORE ever calling this module's own :meth:`remove_link`.
+    #
+    # Object numbering: ``max(existing) + 1`` against ``Net.Links`` (shared
+    # between plain links AND connectors -- ONE numbering space, matching
+    # unit (3)'s own "a connector is a links entry" finding), the same
+    # explicit-key convention every other ``Add*`` method in this module
+    # already follows.
+    # ---------------------------------------------------------------------
+
+    def available_link_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.Links)
+
+    @staticmethod
+    def _wkt_linestring(points_xy: list[tuple[float, float]]) -> str:
+        coords = ", ".join(f"{x} {y}" for x, y in points_xy)
+        return f"LINESTRING ({coords})"
+
+    def add_link(
+        self,
+        points_xy: list[tuple[float, float]],
+        lane_count: int,
+        behavior_type: int | None = None,
+        display_type: int | None = None,
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Create a straight-line-fidelity link through ``points_xy`` (raw
+        metres -- landmine 1 above) with ``lane_count`` lanes of the default
+        3.5 m width (created atomically via ``LaneWidths`` -- landmine 3;
+        NOT display-unit-scaled at this call site, since ``_length_m_to_com``
+        is applied per-width below). Returns :meth:`get_link`'s shape for the
+        new object (readback-verified: the new object's own points/lane
+        count/length are read straight back from COM, not merely echoed)."""
+        try:
+            wkt = self._wkt_linestring(points_xy)
+            unit = self._net_unit_length()
+            lane_widths_com = [self._length_m_to_com(3.5, unit) for _ in range(lane_count)]
+            existing = self.available_link_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            link = self.vissim.Net.Links.AddLink(new_no, wkt, lane_widths_com)
+            if behavior_type is not None:
+                link.SetAttValue("LinkBehavType", behavior_type)
+            if display_type is not None:
+                link.SetAttValue("DisplayType", display_type)
+            if name:
+                link.SetAttValue("Name", name)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not add a link with points {points_xy!r}: {exc}") from exc
+        return self.get_link(new_no)
+
+    def remove_link(self, no: int) -> None:
+        """Removes the link/connector unconditionally -- Vissim's own COM
+        raises no objection even when one of its lanes is still referenced
+        by another object (landmine 5b above). Callers MUST check reference
+        integrity themselves before calling this
+        (``tools_edit.remove_link`` does, via ``services.inpx_structure.
+        find_id_references``/``find_lane_token_references``)."""
+        try:
+            link = self._item_by_key(self.vissim.Net.Links, no, "Link", self.available_link_nos())
+            self.vissim.Net.Links.RemoveLink(link)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove link {no}: {exc}") from exc
+
+    def get_link(self, no: int) -> dict[str, Any]:
+        """{"no", "name", "points" (list of raw-metre (x, y) tuples),
+        "lanes", "length" (metres), "is_connector", "behavior_type",
+        "display_type"} for any link, PLUS (when ``is_connector``)
+        "from_link"/"to_link"/"from_pos"/"to_pos" (metres) and "from_lanes"/
+        "to_lanes" (sorted lane-index lists, read from each of the
+        connector's own lanes' ``FromLanes``/``ToLanes`` nested collection --
+        landmine 4 above)."""
+        try:
+            link = self._item_by_key(self.vissim.Net.Links, no, "Link", self.available_link_nos())
+            unit = self._net_unit_length()
+            points = [
+                (float(p.AttValue("X")), float(p.AttValue("Y"))) for p in link.LinkPolyPts.GetAll()
+            ]
+            is_connector = bool(int(link.AttValue("IsConn") or 0))
+            behavior_raw = link.AttValue("LinkBehavType")
+            display_raw = link.AttValue("DisplayType")
+            result: dict[str, Any] = {
+                "no": no,
+                "name": str(link.AttValue("Name") or ""),
+                "points": points,
+                "lanes": int(link.AttValue("NumLanes")),
+                "length": self._length_com_to_m(float(link.AttValue("Length2D")), unit),
+                "is_connector": is_connector,
+                "behavior_type": str(behavior_raw) if behavior_raw not in (None, "") else None,
+                "display_type": str(display_raw) if display_raw not in (None, "") else None,
+            }
+            if is_connector:
+                result["from_link"] = str(link.AttValue("FromLink"))
+                result["to_link"] = str(link.AttValue("ToLink"))
+                result["from_pos"] = self._length_com_to_m(float(link.AttValue("FromPos")), unit)
+                result["to_pos"] = self._length_com_to_m(float(link.AttValue("ToPos")), unit)
+                from_lanes: list[int] = []
+                to_lanes: list[int] = []
+                for lane in link.Lanes.GetAll():
+                    fl = list(lane.FromLanes.GetAll())
+                    tl = list(lane.ToLanes.GetAll())
+                    if fl:
+                        from_lanes.append(int(fl[0].AttValue("Index")))
+                    if tl:
+                        to_lanes.append(int(tl[0].AttValue("Index")))
+                result["from_lanes"] = sorted(from_lanes)
+                result["to_lanes"] = sorted(to_lanes)
+            return result
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read link {no}: {exc}") from exc
+
+    def _connector_guide_wkt(self, from_link_no: int, to_link_no: int) -> str:
+        """Best-effort straight-line WKT guide (landmine 4 above: Vissim
+        snaps/extends the real saved geometry to the resolved FromPos/ToPos
+        regardless) from ``from_link``'s LAST polyline point to
+        ``to_link``'s FIRST -- the common "connect the end of A to the start
+        of B" case; a caller connecting mid-link needs no more precision
+        than this per this unit's own straight-line-fidelity scope. A
+        degenerate (identical start/end) guide is nudged by a tiny epsilon,
+        since ``AddLink`` itself was live-verified to silently accept (never
+        refuse) a duplicate-point WKT elsewhere (landmine 5a) -- this avoids
+        relying on that being equally safe for ``AddConnector``, untested."""
+        from_link_obj = self._link_object_by_no(from_link_no)
+        to_link_obj = self._link_object_by_no(to_link_no)
+        from_pts = list(from_link_obj.LinkPolyPts.GetAll())
+        to_pts = list(to_link_obj.LinkPolyPts.GetAll())
+        start = (float(from_pts[-1].AttValue("X")), float(from_pts[-1].AttValue("Y"))) if from_pts else (0.0, 0.0)
+        end = (float(to_pts[0].AttValue("X")), float(to_pts[0].AttValue("Y"))) if to_pts else (0.0, 0.0)
+        if start == end:
+            end = (end[0] + 0.01, end[1])
+        return self._wkt_linestring([start, end])
+
+    def add_connector(
+        self,
+        from_link_no: int,
+        from_lane_indices: list[int],
+        from_pos_m: float,
+        to_link_no: int,
+        to_lane_indices: list[int],
+        to_pos_m: float,
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Create a simple connector from ``from_link_no``'s
+        ``from_lane_indices`` at ``from_pos_m`` metres to ``to_link_no``'s
+        ``to_lane_indices`` at ``to_pos_m`` metres (COM ``AddConnector``,
+        anchored at each list's own FIRST index -- landmine 4 above;
+        ``tools_edit.AddConnectorParams`` validates both lists are
+        contiguous ascending runs of equal length BEFORE this is ever
+        called, matching the primitive's own "one anchor + a lane count"
+        shape). Returns :meth:`get_link`'s shape for the new object."""
+        try:
+            from_lane = self._lane_by_index(from_link_no, from_lane_indices[0])
+            to_lane = self._lane_by_index(to_link_no, to_lane_indices[0])
+            lane_count = len(from_lane_indices)
+            unit = self._net_unit_length()
+            from_pos_com = self._length_m_to_com(float(from_pos_m), unit)
+            to_pos_com = self._length_m_to_com(float(to_pos_m), unit)
+            wkt = self._connector_guide_wkt(from_link_no, to_link_no)
+            existing = self.available_link_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            connector = self.vissim.Net.Links.AddConnector(
+                new_no, from_lane, from_pos_com, to_lane, to_pos_com, lane_count, wkt
+            )
+            if name:
+                connector.SetAttValue("Name", name)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a connector from link {from_link_no} lanes {from_lane_indices}@"
+                f"{from_pos_m} to link {to_link_no} lanes {to_lane_indices}@{to_pos_m}: {exc}"
+            ) from exc
+        return self.get_link(new_no)
+
     def set_route_relative_flow(
         self, decision_no: int, route_no: int, rel_flow: float, interval_no: int = 1
     ) -> None:

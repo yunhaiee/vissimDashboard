@@ -125,6 +125,7 @@ exists for an XML-injected object).
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import xml.etree.ElementTree as ET
 from typing import Any, Literal
@@ -136,7 +137,11 @@ from services.agent.edit_session import get_active_edit_session
 from services.agent.toolkit import default_registry, dispatch, tool
 from services.agent.tools_network import build_shadow_model
 from services.datasets import get_active_inpx_path
-from services.inpx_structure import ReferenceIntegrityError, find_id_references
+from services.inpx_structure import (
+    ReferenceIntegrityError,
+    find_id_references,
+    find_lane_token_references,
+)
 from services.inpx_structure import remove_connector as _remove_connector_structural
 from services.simulation_network_builder import (
     inject_reduced_speed_area,
@@ -2354,6 +2359,297 @@ def remove_detector(params: RemoveDetectorParams) -> dict[str, Any]:
     return {
         "message": f"Detector {params.no} removed.",
         "verification": verification,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (5): add/remove links & connectors -- the primitive structural
+# verbs genesis geometry-synthesis (milestone 2.3) stands on directly.
+# Genuine COM CREATE/REMOVE (see vissim_com.VissimController's own module
+# comment for the full live-verified writeup: ``ILinkContainer.AddLink``/
+# ``AddConnector``/``RemoveLink`` all exist, CONTRARY to unit (3)'s own "no
+# native COM Add/Remove for a plain link or connector" note -- that unit's
+# probe never scanned ``ILinkContainer`` itself). Same "COM-create preferred
+# over XML injection" shape units (2)/(4) already established.
+#
+# **Geometry fidelity shipped vs deferred (this unit's own honesty
+# contract).** Shipped: a straight-line link through 2+ caller-supplied
+# points (point A -> B -> ... -> N, no curvature/spline synthesis of its
+# own), N lanes of the default 3.5 m width, an optional behavior/display
+# type, created/verified/removable/rollback-able. Deferred, RECORDED
+# FOLLOW-UPS, not silent gaps: curvature/spline fidelity beyond what Vissim
+# itself auto-computes for a connector's own snapped geometry (landmine 4,
+# vissim_com.py), per-lane width control (every lane gets the SAME 3.5 m --
+# no ``lane_widths`` param), z-coordinates (every point's own zOffset is
+# whatever Vissim itself defaults to; this unit never sets one), and
+# non-contiguous/crossing lane-to-lane connector mappings (``AddConnectorEx``
+# was found in the type-lib scan but not probed or used -- ``AddConnector``'s
+# own "one anchor + a consecutive count" shape is what shipped).
+#
+# **add_link's degenerate-geometry refusals are ALL client-side, before COM
+# is ever called** (live-verified, vissim_com.py's own landmine 5a: Vissim's
+# OWN ``AddLink`` does NOT refuse a duplicate-point/zero-length WKT -- it
+# silently creates a ``Length2D=0.0`` link; only a <2-point WKT is natively
+# refused). ``AddLinkParams`` itself refuses: <2 points (``Field(min_length=
+# 2)``), duplicate CONSECUTIVE points, and a total polyline length of zero.
+# lane_count<1 is a hard pydantic refusal (``Field(ge=1)``); lane_count>10 is
+# this unit's ONE new constraints.py entry (``add_link_lane_count_high``,
+# WARN, not refuse -- a caller may genuinely want a wide facility, but 10+
+# lanes on ONE link is unusual enough to flag).
+#
+# **remove_link's reference-integrity refusal is THE flagship finding of
+# this unit** (vissim_com.py's own landmine 5b, live-verified: ``RemoveLink``
+# on a link whose lane still carried a data-collection point SUCCEEDED
+# SILENTLY, leaving a dangling reference -- Vissim does not enforce its own
+# referential integrity here either). This tool checks BOTH directions
+# itself, against the CURRENT working copy XML, via the SAME spine
+# ``remove_connector``/``remove_last_lane`` already use:
+# ``find_id_references`` (whole-link references -- connector endpoints,
+# route linkSeq, priority-rule intLink, conflict-area linkA/linkB) PLUS
+# ``find_lane_token_references`` for EVERY lane the link currently has
+# (RSAs, priority-rule lane form, signal heads, detectors, another
+# connector's fromLanes/toLanes) -- generalizing remove_connector's own
+# per-lane loop from "every lane a CONNECTOR has" to "every lane ANY link
+# has". Per the task brief: "remove_link will refuse on almost any real
+# link -- that's CORRECT behavior"; the live E2E below exercises a
+# freshly-created (therefore unreferenced) link specifically so the happy
+# path is provable, then separately attempts a real, referenced link to
+# prove the refusal fires. A CONNECTOR target is refused with a pointer to
+# ``remove_connector`` instead (that verb's own reference-integrity story --
+# including the silent conflict-area cascade its own module comment
+# documents -- is more complete than duplicating a second, competing check
+# here would be).
+#
+# **add_connector does not duplicate remove_connector** (already shipped,
+# unit (3)) -- this is the missing CREATE half. Its own lane-mapping params
+# (``from_lanes``/``to_lanes``) are validated as contiguous ascending runs
+# of equal length BEFORE COM is ever called (vissim_com.py's own landmine 4:
+# ``AddConnector``'s real primitive is "one anchor lane + a consecutive
+# lane count" on each side independently, live-verified with a genuine
+# lane-SHIFT case) -- a caller wanting a non-contiguous/crossing mapping is
+# refused with a clear reason naming the "contiguous ascending run"
+# requirement, not silently reinterpreted.
+#
+# **Reuse notes for unit ⑥ (stop signs + priority-rule placement).** Every
+# helper this unit needed already existed: ``_lane_by_index``/``_item_by_
+# key``/``_link_object_by_no`` (COM object resolution), ``_net_unit_length``/
+# ``_length_m_to_com``/``_length_com_to_m`` (display-unit conversion --
+# EVERY new Pos-shaped param needs this; the ONE exception in this whole
+# codebase is WKT x/y, landmine 1), ``_remove_verification`` (the
+# same-claim written/readback shape every remove tool in this module uses),
+# and the spine's ``find_id_references``/``find_lane_token_references`` for
+# preflight reference-integrity. A stop sign / priority-rule placement verb
+# will almost certainly need the SAME lane resolution + display-unit
+# conversion pattern; the spine's registries already cover priority-rule
+# lane/intLink forms (extended Q4 unit (3)), so a new placement verb mainly
+# needs its own COM Add*/Remove* pair in vissim_com.py plus a thin
+# tools_edit.py wrapper, mirroring this unit's own shape exactly.
+# ---------------------------------------------------------------------------
+
+
+class AddLinkParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: >=2 (x, y) pairs, RAW METRES (vissim_com.py's own landmine 1 -- the
+    #: network's base coordinate space, NOT display-unit-scaled) -- the
+    #: SAME space genesis will feed real map-matched coordinates into later.
+    #: Straight-line fidelity only: Vissim draws a straight segment between
+    #: each consecutive pair, no curve synthesis.
+    points_xy: list[tuple[float, float]] = Field(min_length=2)
+    lane_count: int = Field(ge=1)
+    #: COM attribute LinkBehavType (a link-behavior-type object's own "no").
+    #: Omitted -> Vissim's own default (observed live: "1", the network's
+    #: first behavior type) -- NOT claimed in verification unless supplied
+    #: (same "COM silently fills defaults for unset optional fields"
+    #: discipline Q4 unit (4)'s add_detector already established).
+    behavior_type: int | None = None
+    #: COM attribute DisplayType. Same silent-default caveat as behavior_type.
+    display_type: int | None = None
+    name: str = ""
+
+    @model_validator(mode="after")
+    def _no_degenerate_geometry(self) -> "AddLinkParams":
+        pts = self.points_xy
+        for i in range(1, len(pts)):
+            if pts[i] == pts[i - 1]:
+                raise ValueError(
+                    f"add_link: points_xy has duplicate consecutive points ({pts[i - 1]!r} "
+                    f"repeated at index {i}) -- a degenerate zero-length segment. Vissim itself "
+                    "does NOT refuse this (live-verified: a duplicate-point WKT silently creates "
+                    "a Length2D=0.0 link), so this is refused here before COM is ever called."
+                )
+        total_length = sum(
+            math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) for i in range(1, len(pts))
+        )
+        if total_length <= 0:
+            raise ValueError("add_link: points_xy describes a zero-length link -- refused.")
+        return self
+
+
+@tool(name="add_link", tier="write", provider="edit", params=AddLinkParams)
+def add_link(params: AddLinkParams) -> dict[str, Any]:
+    """Add a straight-line-fidelity link through points_xy (>=2 (x, y) pairs, raw metres -- Vissim draws a straight segment between each consecutive pair, no curve synthesis) with lane_count lanes of the default 3.5 m width, created atomically (COM AddLink) on the active edit session's working network -- the genesis (2.3) geometry-synthesis primitive: point A -> B [-> ... -> N], N lanes, behavior type, display type."""
+    session = _require_session()
+    points_xy = [(float(x), float(y)) for x, y in params.points_xy]
+    result = session.add_link(points_xy, params.lane_count, params.behavior_type, params.display_type, params.name)
+    session.persist()
+
+    def _round_points(points: list[tuple[float, float]]) -> list[list[float]]:
+        return [[_round_pos_m(x), _round_pos_m(y)] for x, y in points]
+
+    written_value: dict[str, Any] = {"points": _round_points(points_xy), "lanes": params.lane_count}
+    readback_value: dict[str, Any] = {"points": _round_points(result["points"]), "lanes": result["lanes"]}
+    if params.behavior_type is not None:
+        written_value["behavior_type"] = str(params.behavior_type)
+        readback_value["behavior_type"] = result.get("behavior_type")
+    if params.display_type is not None:
+        written_value["display_type"] = str(params.display_type)
+        readback_value["display_type"] = result.get("display_type")
+
+    verification = {"written_value": written_value, "readback_value": readback_value}
+    message = (
+        f"Link {result['no']} added: {len(points_xy)} point(s), {params.lane_count} lane(s), "
+        f"length {result['length']:.3f} m (straight-line fidelity only)."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "name": result["name"]},
+    }
+
+
+class RemoveLinkParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(name="remove_link", tier="write", provider="edit", params=RemoveLinkParams)
+def remove_link(params: RemoveLinkParams) -> dict[str, Any]:
+    """Remove a plain link (COM RemoveLink) on the active edit session's working network -- REFUSES, naming every referrer, when a route/priority-rule/conflict-area/connector still references the link itself OR any of its own lanes (COM's own RemoveLink does NOT enforce this -- live-verified: it silently removed a link whose lane still carried a data-collection point). Refuses a CONNECTOR target outright, pointing at remove_connector instead (that verb's own reference-integrity story is more complete). Will refuse on almost any real, in-use link -- that is correct behavior, not a bug."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+
+    root = ET.parse(session.working_inpx).getroot()
+    link_el = next((el for el in root.findall(".//links/link") if el.get("no") == params.no), None)
+    if link_el is None:
+        raise ValueError(f"remove_link: link {params.no} not found")
+    if link_el.find("fromLinkEndPt") is not None or link_el.find("toLinkEndPt") is not None:
+        raise ValueError(
+            f"remove_link: {params.no} is a CONNECTOR, not a plain link -- use remove_connector "
+            "instead (Q4 unit (3); it has its own, more complete reference-integrity story, "
+            "including the silent conflict-area cascade that tool's own module comment documents)."
+        )
+    lanes_el = link_el.find("lanes")
+    lane_count = len(lanes_el.findall("lane")) if lanes_el is not None else 0
+
+    referrers = find_id_references(root, "links", params.no)
+    for lane_index in range(1, lane_count + 1):
+        referrers.extend(find_lane_token_references(root, params.no, lane_index))
+    if referrers:
+        raise ReferenceIntegrityError(f"Cannot remove link {params.no}", referrers)
+
+    session.remove_link(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "links", params.no)
+    verification = _remove_verification(params.no, still_present)
+    return {
+        "message": f"Link {params.no} removed ({lane_count} lane(s)).",
+        "verification": verification,
+    }
+
+
+class AddConnectorParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    from_link: str
+    #: Lane indices on from_link this connector draws FROM -- MUST be a
+    #: contiguous ascending run (e.g. [1, 2], not [1, 3]): Vissim's own
+    #: AddConnector primitive anchors at the FIRST lane and maps a
+    #: consecutive count upward (vissim_com.py's own landmine 4), so a
+    #: non-contiguous/crossing mapping has no primitive to express it with.
+    from_lanes: list[int] = Field(min_length=1)
+    from_pos_m: float
+    to_link: str
+    #: Same contiguous-ascending-run requirement as from_lanes; length must
+    #: match from_lanes (Vissim connects lane-for-lane, one to one).
+    to_lanes: list[int] = Field(min_length=1)
+    to_pos_m: float
+    name: str = ""
+    #: Optional redundant cross-check against len(from_lanes) -- when given,
+    #: must agree (defensive: an explicit mismatch is refused rather than
+    #: silently trusting whichever of the two the caller meant).
+    lane_count: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_lane_mapping(self) -> "AddConnectorParams":
+        if self.from_link == self.to_link:
+            raise ValueError(
+                "add_connector: from_link and to_link must differ -- a connector cannot join a "
+                "link to itself."
+            )
+        for field_name, lanes in (("from_lanes", self.from_lanes), ("to_lanes", self.to_lanes)):
+            ordered = sorted(lanes)
+            if ordered != list(range(ordered[0], ordered[0] + len(ordered))):
+                raise ValueError(
+                    f"add_connector: {field_name}={lanes!r} must be a contiguous ascending run of "
+                    "lane indices (e.g. [2, 3], not [2, 4]) -- Vissim's own AddConnector primitive "
+                    "anchors at the first lane and maps a consecutive count upward; a non-"
+                    "contiguous/crossing mapping is not expressible with it."
+                )
+        if len(self.from_lanes) != len(self.to_lanes):
+            raise ValueError(
+                "add_connector: from_lanes and to_lanes must have the same length -- Vissim "
+                "connects lane-for-lane, one to one."
+            )
+        if self.lane_count is not None and self.lane_count != len(self.from_lanes):
+            raise ValueError(
+                f"add_connector: lane_count={self.lane_count} does not match "
+                f"len(from_lanes)={len(self.from_lanes)}."
+            )
+        return self
+
+
+@tool(name="add_connector", tier="write", provider="edit", params=AddConnectorParams)
+def add_connector(params: AddConnectorParams) -> dict[str, Any]:
+    """Add a simple connector from from_link's from_lanes at from_pos_m to to_link's to_lanes at to_pos_m (COM AddConnector; each lane list anchored at its own first index, mapped consecutively -- see this tool's own params model for the contiguous-ascending-run requirement) on the active edit session's working network. Straight-line guide geometry only -- Vissim snaps/extends the real saved shape to the resolved from/to positions regardless."""
+    session = _require_session()
+    from_link_no = _coerce_id(params.from_link, "from_link")
+    to_link_no = _coerce_id(params.to_link, "to_link")
+    from_lanes_sorted = sorted(params.from_lanes)
+    to_lanes_sorted = sorted(params.to_lanes)
+    result = session.add_connector(
+        from_link_no, from_lanes_sorted, params.from_pos_m, to_link_no, to_lanes_sorted, params.to_pos_m,
+        params.name,
+    )
+    session.persist()
+
+    written_value = {
+        "from_link": params.from_link,
+        "from_lanes": from_lanes_sorted,
+        "from_pos": _round_pos_m(params.from_pos_m),
+        "to_link": params.to_link,
+        "to_lanes": to_lanes_sorted,
+        "to_pos": _round_pos_m(params.to_pos_m),
+    }
+    readback_value = {
+        "from_link": result.get("from_link"),
+        "from_lanes": result.get("from_lanes"),
+        "from_pos": _round_pos_m(result["from_pos"]),
+        "to_link": result.get("to_link"),
+        "to_lanes": result.get("to_lanes"),
+        "to_pos": _round_pos_m(result["to_pos"]),
+    }
+    verification = {"written_value": written_value, "readback_value": readback_value}
+    message = (
+        f"Connector {result['no']} added from link {params.from_link} lane(s) {from_lanes_sorted}@"
+        f"{params.from_pos_m}m to link {params.to_link} lane(s) {to_lanes_sorted}@{params.to_pos_m}m."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "name": result["name"]},
     }
 
 

@@ -112,6 +112,12 @@ EXPECTED_WRITE_TOOLS = {
     "remove_signal_head",
     "add_detector",
     "remove_detector",
+    # Q4 unit (5): add/remove links & connectors (COM CREATE/REMOVE verbs --
+    # see tools_edit.py's own docstring; remove_connector already existed,
+    # not duplicated).
+    "add_link",
+    "remove_link",
+    "add_connector",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

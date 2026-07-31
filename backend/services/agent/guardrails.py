@@ -537,6 +537,37 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
     # DuplicateDrivingBehavior COM method) -- see vissim_com.VissimController's
     # own module comment.
     "duplicate_driving_behavior": frozenset({"driving_behaviors"}),
+    # Q4 unit (5): add_link/add_connector both create a brand-new "links"
+    # entry AND, unlike Q4 unit (2)'s measurement-infra add_* tools
+    # (queue_counters/data_collection_points/.../detectors are NOT in
+    # _SHADOW_OBJECT_ID_FIELDS at all, so the diff never watches them),
+    # "links" AND "link_lanes" genuinely ARE tracked -- a link/connector's
+    # own lanes populate "link_lanes" too (tools_network._parse_link_lanes).
+    # Without this entry, EVERY successful add_link/add_connector call would
+    # be refused+rolled-back by postwrite's own diff for the exact same
+    # reason Q4 unit (3)'s remove_connector needed the mirror-image
+    # _ALLOWS_REMOVED_OBJECTS_IN entry below (that unit's own live-caught
+    # defect, DECISIONS.md 2026-07-31) -- caught HERE, before shipping,
+    # by this unit's own real-orchestrator postwrite test per verb.
+    #
+    # **"conflict_areas" is a SECOND, LIVE-CAUGHT addition this unit's own
+    # real-engine test found (backend/tools/add_links_connectors_live_check.py
+    # [A.9]), not a guessed one.** Conflict areas are geometry-derived
+    # (00-EXECUTION-GUIDE.md SS3.2, no COM Add/Remove exists at all) --
+    # add_connector genuinely, correctly triggered Vissim's own recompute to
+    # add 6 brand-new conflict area entries where the new connector crosses
+    # other links/connectors at the junction (e.g. "1-10063"), live-verified
+    # on Urban Intersection Beijing.CN. Without this second class also
+    # opted in, a CORRECT add_connector at any real junction is refused as
+    # "something else moved" (reproduced live before this fix). Extended to
+    # add_link too (not yet live-reproduced for a plain link, but the SAME
+    # geometry-derived-recompute mechanism applies identically whenever a
+    # caller's straight link happens to cross existing geometry) --
+    # defensive, matching this table's own "opt in the whole class, not a
+    # per-call guess" precedent rather than waiting for a second live
+    # failure to prove the obvious.
+    "add_link": frozenset({"links", "link_lanes", "conflict_areas"}),
+    "add_connector": frozenset({"links", "link_lanes", "conflict_areas"}),
 }
 
 # Q4 unit (3): the REMOVAL-side mirror of ``_ALLOWS_NEW_OBJECTS_IN`` above --
@@ -553,6 +584,12 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
 # for every tool not listed here).
 _ALLOWS_REMOVED_OBJECTS_IN: dict[str, frozenset[str]] = {
     "remove_connector": frozenset({"links", "link_lanes"}),
+    # Q4 unit (5): remove_link's own sanctioned action IS making a "links"
+    # entry (and every one of its own "link_lanes" entries) disappear --
+    # the exact mirror-image of remove_connector's own entry above, for the
+    # identical reason (a plain link's removal is just as "links"/
+    # "link_lanes"-tracked as a connector's).
+    "remove_link": frozenset({"links", "link_lanes"}),
 }
 
 # QUEUE 3 (v2a) unit 3's SECOND regression fix, found live-testing this same

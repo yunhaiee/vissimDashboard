@@ -167,7 +167,10 @@ the PAIRS and distribution-assignment line items).**
   remove_last_lane/add_lane, not yet planner-registered)
 - ✅ Full link closure — shipped (Q4 ③, `set_link_closure`: composes per-lane
   BlockedVehClasses across every lane; route-consequence warn names affected routes)
-- ⬜ Add / remove / reroute links & connectors
+- ✅ Add / remove links & connectors — shipped (Q4 ⑤: native COM AddLink/AddConnector —
+  WKT is always raw metres while LaneWidths/Pos are display-units; straight-line
+  fidelity, curvature/z/non-contiguous mappings recorded follow-ups; removes refuse
+  naming referrers; reroute = route tools' territory)
 - ⬜ Link geometry edits (lanes / length / curvature)
 - ✅ Turn bans / movement removal — shipped (Q4 ③, `set_turn_ban` reversible on the
   connector's lanes + `remove_connector` structural, refuses-when-referenced naming

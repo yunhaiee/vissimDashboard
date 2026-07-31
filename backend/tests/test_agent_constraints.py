@@ -2223,6 +2223,47 @@ def test_lane_count_edit_unsupported_silent_without_lane_param():
     assert not any(f.constraint_id == "lane_count_edit_unsupported" for f in findings)
 
 
+def test_lane_count_edit_unsupported_exempts_add_link():
+    # Q4 unit (5), LIVE-CAUGHT regression: add_link's own lane_count param IS
+    # the sanctioned mechanism this constraint's message itself describes
+    # ("Vissim fixes lane count at link construction -- the lane-width
+    # array") -- reproduced live via a real run_agent_turn (0.1s runtime,
+    # refused before COM was ever touched) before the exemption was added.
+    shadow = _shadow_model()
+    action = _action("add_link", points_xy=[[0, 0], [100, 0]], lane_count=2)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "lane_count_edit_unsupported" for f in findings)
+
+
+def test_lane_count_edit_unsupported_exempts_add_connector():
+    shadow = _shadow_model()
+    action = _action(
+        "add_connector", from_link="101", from_lanes=[1], from_pos_m=0.0,
+        to_link="102", to_lanes=[1], to_pos_m=0.0, lane_count=1,
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "lane_count_edit_unsupported" for f in findings)
+
+
+def test_lane_count_edit_unsupported_still_fires_for_every_other_tool():
+    # The exemption is tool-SPECIFIC (add_link/add_connector only), not a
+    # blanket "lane_count is fine everywhere now" loosening -- a
+    # hallucinated lane_count-shaped param on any OTHER tool is still refused
+    # exactly as before this unit's own fix.
+    shadow = _shadow_model()
+    action = _action("set_vehicle_input_volume", input_no="1", volume=600, lane_count=4)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "lane_count_edit_unsupported"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+
+
 def test_speed_limit_edit_ambiguous_fires_on_speed_limit_param():
     shadow = _shadow_model()
     action = _action("set_link_speed", link_id="101", speed_limit=60)
@@ -5030,9 +5071,25 @@ def test_registry_size_matches_m3_1_catalog_port():
     # SAME deliberate scope cut add_travel_time_section's to_link already
     # established; a detector's own length_m and zone-past-link-end are
     # documented, deliberate scope cuts too, not new constraints)
-    # == 93.
+    # == 93, + 1 (Q4 unit (5), add/remove links & connectors:
+    # add_link_lane_count_high -- NOT a §-numbered catalog entry, this
+    # unit's ONE new constraint per its own "constraints.py minimal"
+    # instruction: WARNS (never refuses) when add_link's own lane_count
+    # exceeds 10 -- lane_count<1 is a hard pydantic refusal
+    # (AddLinkParams.Field(ge=1)), never reaching this check at all;
+    # object_not_found already existed and was EXTENDED in place (new
+    # _TOOL_TARGET_SPEC entries for remove_link/add_connector) to gate two
+    # of the unit's three new tools, not added -- add_link itself gets NO
+    # object_not_found entry (it creates, targets nothing pre-existing);
+    # degenerate-geometry refusals (<2 points, duplicate consecutive
+    # points, zero total length) and the connector from==to/lane-mapping
+    # refusals are inline pydantic model_validators in tools_edit.py, not
+    # new constraints, mirroring #2's own documented gap and set_link_
+    # closure/set_turn_ban's own "is this actually a connector" inline
+    # checks)
+    # == 94.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 93
+    assert len(get_registry()) == 94
 
 
 def test_registry_has_unique_ids():

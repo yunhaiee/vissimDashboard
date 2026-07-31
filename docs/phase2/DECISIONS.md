@@ -2944,3 +2944,23 @@ pos − 2.0 m) stated in the result, never silent. One derived-field exemption b
 (head counts on signals/splits) — same class as ③'s, audit chip already open. Registry 92→93.
 Suite 1882→1928 (controller re-ran). Real-model facts: 39 signal heads, **zero detectors** on
 Murdoch — genesis milestone (b) is genuinely needed there. v2b: 6/13 + spine.
+
+## 2026-08-01 — Q4 ⑤: add/remove links & connectors shipped — genesis geometry's primitive verbs
+
+Native COM creation EXISTS: `AddLink(Key, WKT, LaneWidths)` (atomic lanes) and
+`AddConnector(Key, FromLane, FromPos, ToLane, ToPos, N, WKT)` — correcting unit ③'s
+"no native surface" (it had scanned the closure/lane surfaces, never ILinkContainer; recorded
+so future probes scan the CONTAINER first). The coordinate finding that genesis stands on:
+**WKT x/y are always raw metres on every network, while LaneWidths/FromPos/ToPos are
+display-unit-scaled** — 5th confirmation of the landmine, proven by a silent 3.5-"metre" lane
+arriving as 1.0668 m on a FEET network. Real geometry XML is `linkPolyPts/linkPolyPoint`
+(the brief's points3D guess was wrong). Vissim silently accepts zero-length WKT and silently
+dangles references on RemoveLink — both now refused by us. Two live-caught fixes: connector
+creation at a junction triggers Vissim's own conflict-area recompute (new-objects exemption
+extended, ③'s precedent); and pre-existing M0.3 blanket constraint `lane_count_edit_unsupported`
+(applies_to "*") silently refused ANY tool carrying a lane_count param — it would have blocked
+every add_link/add_connector turn forever; now exempted by tool list. Shipped fidelity:
+straight links + contiguous-range connectors; curvature/z/AddConnectorEx recorded follow-ups.
+Drivability spot-check honestly untested (an unrelated AddVehicleAtLinkPosition COM error,
+stated not hidden). Registry 93→94. Suite 1928→1961 (controller re-ran; runtime/ dataset
+sha256-verified untouched). v2b: 7/13 + spine.

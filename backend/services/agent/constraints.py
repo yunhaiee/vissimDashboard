@@ -775,6 +775,30 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "no",
     },
+    # Q4 unit (5): add/remove links & connectors. add_link has NO entry here
+    # -- it creates a brand-new object, nothing pre-existing to check (same
+    # "creates, does not target" shape every prior add_* tool with no
+    # existing-object dependency would have, e.g. duplicate_driving_
+    # behavior's own source_no IS checked because IT references an existing
+    # object, unlike a from-scratch create). remove_link's target is the
+    # link's own "no" in the "links" shadow-model list (unchanged shape,
+    # inpx_parser.parse_network's own pre-existing field). add_connector's
+    # PRIMARY target is from_link (mirrors add_travel_time_section's own
+    # "primary here, to_link's existence fails closed via COM instead" split
+    # exactly) -- to_link/from_lanes/to_lanes get no dedicated preflight
+    # Finding here, same deliberate, documented scope cut.
+    "remove_link": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "no",
+    },
+    "add_connector": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "from_link",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -2264,17 +2288,37 @@ register(
 #
 # Catalog §2 "There is no lane-count property": lane count is fixed at link
 # construction (AddLink's lane-width array); there is no per-lane
-# add/remove attribute. Defensive, tool-agnostic: no current M2 write tool
-# carries a lane-count-shaped param, so this guards against a hallucinated
-# or future naive tool call before it ever reaches COM.
+# add/remove attribute on an EXISTING link. Defensive, tool-agnostic at the
+# time this constraint was written (M0.3): no M2 write tool yet carried a
+# lane-count-shaped param, so this guarded against a hallucinated or future
+# naive tool call before it ever reached COM.
+#
+# **Q4 unit (5), LIVE-CAUGHT regression fix:** add_link's own ``lane_count``
+# param is EXACTLY the sanctioned mechanism this constraint's own message
+# describes ("Vissim fixes lane count at link construction — the lane-width
+# array") -- it is not a naive "edit an existing link's lane count" attempt
+# at all, it's a brand-new link's INITIAL lane count, the one place Vissim
+# genuinely does let a caller set it. Without this exemption, EVERY
+# add_link/add_connector call through the real orchestrator (which runs
+# preflight; raw ``toolkit.dispatch`` calls, used by every unit test file in
+# this codebase including this unit's own, do NOT) was unconditionally
+# refused — reproduced live (backend/tools/add_links_connectors_live_check.py
+# Phase B: a real run_agent_turn add_link call refused with THIS exact
+# constraint id, 0.1s runtime, before this fix). ``_LANE_COUNT_PARAM_EXEMPT_
+# TOOLS`` keeps the guard's original "no current M2 write tool" reasoning
+# intact for every OTHER tool -- a hallucinated lane_count-shaped param on
+# any pre-existing setter is still refused exactly as before.
 # ---------------------------------------------------------------------------
 
 _LANE_COUNT_PARAM_NAMES = {"lane_count", "num_lanes", "lanes"}
+_LANE_COUNT_PARAM_EXEMPT_TOOLS = frozenset({"add_link", "add_connector"})
 
 
 def _check_lane_count_edit_unsupported(
     action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
 ) -> Finding | None:
+    if action.get("tool") in _LANE_COUNT_PARAM_EXEMPT_TOOLS:
+        return None
     params = action.get("params", {})
     for key in params:
         if str(key).lower() in _LANE_COUNT_PARAM_NAMES:
@@ -8429,5 +8473,62 @@ register(
         "されたリンク/右左折を通る経路を自動的に迂回させないため、その経路に割り当てられた需要は"
         "潜在需要として消失するか、閉鎖箇所の手前で滞留する可能性があります — それらの経路も併せて"
         "調整するか確認してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# add_link_lane_count_high (warn, preflight) -- Q4 unit (5)'s ONE new
+# constraint (this unit's own "constraints.py minimal" instruction:
+# _TOOL_TARGET_SPEC entries above + at most one small constraint here;
+# everything else lives in services/vissim_com.py and
+# services/agent/tools_edit.py, per those modules' own comments).
+#
+# Task brief: "lane_count <1 or >10 warn" -- <1 is a hard pydantic refusal
+# (AddLinkParams' own Field(ge=1), never reaches here); >10 is legal (Vissim
+# itself places no upper bound on a link's own lane count -- untested live
+# by this unit, no evidence either way, so this is a POLICY caution, not a
+# reproduced silent failure) but unusual enough on a SINGLE link to flag
+# rather than execute silently, matching the guardrail doctrine's
+# "allowed-with-warning" tier (00-EXECUTION-GUIDE.md SS4): the write still
+# lands, the caller just gets the specific number named.
+# ---------------------------------------------------------------------------
+
+_ADD_LINK_LANE_COUNT_WARN_THRESHOLD = 10
+
+
+def _check_add_link_lane_count_high(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "add_link":
+        return None
+    params = action.get("params", {})
+    lane_count = _coerce_number(params.get("lane_count"), cast=int)
+    if lane_count is None or lane_count <= _ADD_LINK_LANE_COUNT_WARN_THRESHOLD:
+        return None
+    return Finding(
+        constraint_id="add_link_lane_count_high",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "add_link_lane_count_high", lane_count=lane_count, threshold=_ADD_LINK_LANE_COUNT_WARN_THRESHOLD
+        ),
+        details={"lane_count": lane_count, "threshold": _ADD_LINK_LANE_COUNT_WARN_THRESHOLD},
+    )
+
+
+register(
+    Constraint(
+        id="add_link_lane_count_high",
+        applies_to=["add_link"],
+        phase="preflight",
+        tier="warn",
+        check=_check_add_link_lane_count_high,
+        message_ko="차로 수 {lane_count}개는 링크 하나치고 이례적으로 많습니다(기준 {threshold}개 초과). "
+        "의도한 값인지 확인하세요.",
+        message_en="{lane_count} lanes is unusually high for a single link (threshold: "
+        "{threshold}). Confirm this is intentional.",
+        message_ja="車線数{lane_count}本は1つのリンクとしては異例に多いです(基準{threshold}本超)。"
+        "意図した値か確認してください。",
     )
 )
