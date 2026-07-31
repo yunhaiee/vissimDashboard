@@ -2721,3 +2721,27 @@ The ledger records the rollback AND which edit it undid — the audit trail neve
 information by undoing. Registry 88→89. Suite 1632/1/1 (controller re-ran; independently
 verified byte-identical restore by sha256 on a throwaway clone — and found in passing that
 `save_version` refuses to snapshot a corrupt working copy, which is correct).
+
+## 2026-07-31 — Q3 unit ⑧: apply_edit_plan shipped — one approval, all-or-nothing batches. QUEUE 3 COMPLETE (8/8)
+
+A batch never calls `save_version()` itself — only the orchestrator's existing generic
+post-dispatch call fires, once, so a successful batch is exactly ONE saved version and
+`rollback_last_edit`'s one-level undo reverts the WHOLE batch with zero changes to
+`rollback.py`; the mid-batch abort path is a plain file snapshot outside the version chain.
+Batch postwrite uses a REAL before/after `diff_shadow_models` instead of a static per-step
+target prediction — the static approach broke live (a step tool's own `_ALLOWS_NEW_OBJECTS_IN`
+exemption doesn't propagate through the wrapper), the diff approach verifies what actually
+changed. **Cross-step combined effects escalate to refuse-tier regardless of the underlying
+constraint's own tier**: later steps' preflights run against a shadow model patched with
+earlier steps' intended values, and any finding present only in the patched pass is by
+construction invisible to per-step review — a warn on a 10-step card is a click-through
+waiting to happen. Controller verified the flagship case on the REAL model: 107→1000 and
+207→1000 each pass alone; the two-step plan refuses with the exact arithmetic (1000.0 +
+1000.95 > 1900 on link 620) — the very objects from the user's original bug report now
+demonstrate the system's deepest check. `run_checks` accepts `list[Finding]` (additive).
+Registry 89→90. Suite 1659/1/1.
+
+**Queue 3 final tally:** 8/8 units, suite 1367→1659, registry 62→90, v2a 7/12→12/12 COMPLETE,
+plus rollback + batch machinery and two pre-existing constraint defects fixed en route.
+Standing finding for follow-up: the real Murdoch .inpx fails COM `load_network` (writes
+preflight fine — shadow-based — but COM applies need a loadable model; task chip filed).

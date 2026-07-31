@@ -220,6 +220,32 @@ class _FocusAccumulator:
         self.add_element("link", link.get("id", ""), link.get("name") or str(link.get("id", "")))
         self.add_points(link.get("points"))
 
+    def merge(self, other: "_FocusAccumulator") -> None:
+        """QUEUE 3 unit 8 (``apply_edit_plan``): fold another accumulator's
+        elements + extent + anchor state into this one. ``apply_edit_plan``'s
+        own resolver (:func:`_resolve_apply_edit_plan`) builds ONE
+        accumulator per step by calling that step's own EXISTING single-tool
+        resolver, unmodified, and merges every one of them into a single
+        combined map via this method -- reusing the exact dedup/anchor/span
+        logic every other resolver already gets for free, rather than a
+        second, parallel merging implementation.
+
+        Re-adds ``other``'s two extreme corners (min and max) rather than
+        every individual point it originally accumulated -- sufficient
+        because :meth:`add_point`/:meth:`add_anchor` only ever track a
+        running min/max in the first place, so replaying the extremes
+        reproduces the identical bbox contribution.
+        """
+        for element in other.elements:
+            extra = {key: value for key, value in element.items() if key not in ("type", "id", "label")}
+            self.add_element(element["type"], element["id"], element.get("label"), extra=extra)
+        if other._ax_min is not None:
+            self.add_anchor(other._ax_min, other._ay_min)
+            self.add_anchor(other._ax_max, other._ay_max)
+        elif other._x_min is not None:
+            self.add_point(other._x_min, other._y_min)
+            self.add_point(other._x_max, other._y_max)
+
     @staticmethod
     def _anchored_axis(lo: float, hi: float) -> tuple[float, float]:
         """One axis of an anchored bbox: the anchors' own span, plus
@@ -716,6 +742,36 @@ def _resolve_des_speed_decision(
     return acc
 
 
+def _resolve_apply_edit_plan(
+    params: dict[str, Any], shadow_model: dict[str, Any], elements: dict[str, Any]
+) -> _FocusAccumulator:
+    """QUEUE 3 unit 8: ``apply_edit_plan``'s own focus is the UNION of every
+    step's own EXISTING resolver output -- no new per-object-type logic here
+    at all. Each step whose OWN tool already has a resolver above contributes
+    its normal single-tool map (including any per-type disambiguation --
+    composition/siblings for a vehicle input, the crossing anchor for a
+    conflict area, ...); a step whose tool has none (``set_sim_duration``,
+    ``set_random_seed``, or a step that itself turned out invalid -- this
+    runs against whatever the planner proposed, not the validated plan)
+    simply contributes nothing, exactly like it would standalone. This is
+    "the same focus/disambiguation payload single edits get where available"
+    literally: every element on a batch's mini-map came from the identical
+    per-tool resolver a single-step approval for that same tool would use.
+    """
+    acc = _FocusAccumulator()
+    for raw_step in params.get("steps") or []:
+        if not isinstance(raw_step, dict):
+            continue
+        step_tool, step_params = raw_step.get("tool"), raw_step.get("params")
+        if not isinstance(step_tool, str) or not isinstance(step_params, dict):
+            continue
+        resolver = _RESOLVERS.get(step_tool)
+        if resolver is None:
+            continue
+        acc.merge(resolver(step_params, shadow_model, elements))
+    return acc
+
+
 _RESOLVERS: dict[str, Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], _FocusAccumulator]] = {
     "set_vehicle_input_volume": _resolve_vehicle_input_volume,
     "set_signal_cycle": _resolve_signal_heads,
@@ -733,6 +789,13 @@ _RESOLVERS: dict[str, Callable[[dict[str, Any], dict[str, Any], dict[str, Any]],
     # "no single object-list target" reason). Falls through to
     # "unsupported_tool" below, exactly the graceful-omission path the task
     # brief calls for -- never a special case here.
+    # QUEUE 3 unit 8: apply_edit_plan is keyed here too, LAST, because
+    # _resolve_apply_edit_plan itself reads this SAME dict to resolve each of
+    # its own steps -- Python resolves the dict literal's values before
+    # assigning the name, but the closure inside _resolve_apply_edit_plan
+    # reads _RESOLVERS (the module-level name) at CALL time, well after this
+    # assignment completes, so the self-reference is safe.
+    "apply_edit_plan": _resolve_apply_edit_plan,
 }
 
 

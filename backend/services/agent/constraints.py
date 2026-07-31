@@ -252,7 +252,7 @@ class Finding:
     details: dict[str, Any] = field(default_factory=dict)
 
 
-CheckFn = Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], "Finding | None"]
+CheckFn = Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], "Finding | list[Finding] | None"]
 
 
 @dataclass
@@ -384,6 +384,24 @@ def run_checks(
     Returns the non-``None`` :class:`Finding` results, in registration order
     (deterministic — constraints are evaluated in the order they were
     :func:`register`-ed).
+
+    QUEUE 3 unit 8 (``apply_edit_plan``): a check's ``CheckFn`` may return a
+    ``list[Finding]`` instead of a single ``Finding | None`` — every check
+    that predates this stays exactly ``Finding | None`` (unaffected; a bare
+    ``Finding`` is still appended as one item, ``None`` still skipped). The
+    ONLY constraint that returns a list today is ``apply_edit_plan_validation``
+    (``services.agent.batch.validate_plan``): a single batch action can
+    legitimately surface MANY distinct findings in one preflight pass (one
+    per offending step, one per cross-step collision, one per combined-effect
+    interaction, plus an always-present plan-overview finding) — the
+    single-``Finding``-per-check shape every other constraint uses has no way
+    to express "this one call found N independent problems," and minting N
+    separate constraint ids/registrations for what is really one cohesive
+    batch-validation pass would fragment ownership of a single, shared
+    computation (``validate_plan`` runs the patched-shadow preflight loop
+    exactly once). ``GuardrailEngine``/``GuardrailReport`` never needed to
+    change: both already operate on a flat ``list[Finding]`` and read each
+    finding's OWN ``.tier``, never the registering ``Constraint.tier``.
     """
     extra = extra if extra is not None else {}
     tool = action.get("tool", "")
@@ -394,9 +412,13 @@ def run_checks(
             continue
         if not _applies(constraint, tool):
             continue
-        finding = constraint.check(action, shadow_model, extra)
-        if finding is not None:
-            findings.append(finding)
+        result = constraint.check(action, shadow_model, extra)
+        if result is None:
+            continue
+        if isinstance(result, list):
+            findings.extend(result)
+        else:
+            findings.append(result)
     return findings
 
 
@@ -7821,5 +7843,50 @@ register(
         "（KPI）は、たった今取り消した編集が反映されたモデルを基準に計算されたものであり、"
         "現在のモデル状態とはもはや一致しません -- その結果は信頼せず、必要であれば再度実行して"
         "ください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# #90 apply_edit_plan_validation (refuse+warn, preflight) — QUEUE 3 unit 8
+#
+# Not a §-numbered catalog entry -- a defensive addition specific to the new
+# apply_edit_plan (batch/compound edits) tool. All of the real logic lives in
+# services.agent.batch.validate_plan (plan structure, per-step preflight,
+# same-target collisions, patched-shadow combined-effect detection, the
+# always-present plan-overview finding) -- this check is a thin adapter,
+# lazily importing that module (services.agent.batch imports THIS module at
+# its own top level, so a top-level import here would be circular; the lazy
+# import is the standard way this codebase breaks that class of cycle, e.g.
+# claude_provider.py's lazy `import anthropic`).
+#
+# Returns a LIST of Finding (see run_checks' own updated docstring for why
+# that is now a supported CheckFn shape) -- a single apply_edit_plan action
+# can legitimately surface many independent findings in one pass (one per
+# offending step, one per collision, one per combined-effect interaction,
+# plus the overview), which no single-Finding-per-check shape could express.
+# ---------------------------------------------------------------------------
+
+
+def _check_apply_edit_plan_validation(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> list[Finding]:
+    if action.get("tool") != "apply_edit_plan":
+        return []
+    from services.agent import batch  # lazy: breaks the constraints<->batch cycle
+
+    return batch.validate_plan(action, shadow_model)
+
+
+register(
+    Constraint(
+        id="apply_edit_plan_validation",
+        applies_to=["apply_edit_plan"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_apply_edit_plan_validation,
+        message_ko="배치 편집 계획 검증 (services.agent.batch.validate_plan 위임).",
+        message_en="Batch edit plan validation (delegates to services.agent.batch.validate_plan).",
+        message_ja="バッチ編集計画の検証(services.agent.batch.validate_planに委任)。",
     )
 )

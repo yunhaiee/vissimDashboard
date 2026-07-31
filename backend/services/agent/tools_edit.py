@@ -130,9 +130,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from services.agent import guardrails, rollback
+from services.agent import batch, guardrails, rollback
 from services.agent.edit_session import get_active_edit_session
-from services.agent.toolkit import tool
+from services.agent.toolkit import default_registry, dispatch, tool
 from services.agent.tools_network import build_shadow_model
 from services.datasets import get_active_inpx_path
 from services.simulation_network_builder import (
@@ -1521,4 +1521,240 @@ def rollback_last_edit(params: RollbackLastEditParams) -> dict[str, Any]:
             "undone_params": plan.undone_params,
             "history_available": plan.history_available,
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# apply_edit_plan(steps)
+#
+# QUEUE 3 unit 8, the FINAL unit of the queue -- batch/compound edits: one
+# approval for a validated multi-edit plan. All-or-nothing (user-approved
+# design): one approval card lists every step's diff -- services.agent.
+# batch.validate_plan (run via constraints.py's apply_edit_plan_validation)
+# builds every finding the card needs (per-step preflight, same-target
+# collisions, patched-shadow combined-effect detection, an always-present
+# plan-overview finding), and approval_focus.py's own apply_edit_plan
+# resolver builds the card's combined mini-map by reusing every step's own
+# EXISTING single-tool resolver -- see both modules' own docstrings for the
+# full design. Steps then apply SERIALLY with per-step readback below; the
+# first failed step of ANY kind aborts the WHOLE batch and rolls back every
+# already-applied step -- no partial-success end state, ever.
+#
+# Tier="write" like every other tool in this module, so it goes through the
+# EXACT SAME approval card / preflight / postwrite sandwich as any single
+# write (rollback_last_edit's own precedent) -- nothing in orchestrator.py
+# needed to change for that; the gate/preflight/postwrite sandwich is
+# generic over tier, not over tool name.
+#
+# **Version-chain design decision (why this function never calls
+# ArtifactManager.save_version()/rollback_to() itself, and rollback_last_edit
+# needed NO changes at all to undo a whole batch in one call):** a successful
+# batch must advance the on-disk version chain by exactly ONE saved version,
+# so that rollback_last_edit's existing one-level "latest - 1" undo mechanism
+# undoes the WHOLE batch (the task's own explicit ask). The orchestrator's
+# own generic post-dispatch save_version() call -- run unconditionally for
+# any successful write-tier tool, completely unmodified by this unit -- IS
+# that one version: it fires exactly once, right after THIS function returns
+# an "ok" envelope for the WHOLE plan. This function therefore must NOT save
+# a version per step (that would fragment the batch into N separately
+# undoable versions, defeating the one-call-undoes-everything guarantee --
+# and a second rollback_last_edit call to walk further back would refuse
+# outright anyway, per unit 7's own one-level-undo boundary). Each step's
+# OWN in-loop dispatch call DOES call session.persist() for real (every
+# step's own tool function does this unmodified, exactly as it would
+# standalone), so the working copy on disk genuinely reflects every applied
+# step; only the DURABLE, numbered snapshot is deferred to the orchestrator's
+# single post-dispatch call. The pre-batch CHECKPOINT this function needs for
+# its OWN mid-batch abort path is therefore a plain file-level snapshot
+# (services.agent.rollback.snapshot_working_copy/restore_working_copy -- the
+# SAME byte-copy+SHA-256 machinery unit 7's rollback_last_edit uses, reused
+# here in the opposite direction), never a real saved version. Consequence,
+# stated plainly: a rolled-back batch reads as ONE undone thing in the
+# ledger (its own single StepRecord, action="apply_edit_plan"), and
+# rollback_last_edit after a SUCCESSFUL batch undoes the WHOLE batch in one
+# call, exactly matching a single-step edit's own undo semantics -- there is
+# no way to partially undo just the last N steps of an applied batch.
+#
+# **Serial apply with per-step readback.** Each step is applied via
+# toolkit.dispatch(step["tool"], step["params"]) -- that tool's OWN
+# registered function, called EXACTLY as it would be for a standalone
+# single-step write (set -> COM readback -> session.persist()), never forked
+# or re-implemented here. This loop adds ONE more check on top:
+# batch.values_differ(written_value, readback_value) on the step's own
+# returned verification -- an inner step's own postwrite protection
+# (guardrails.GuardrailEngine.postwrite's constraint #6) never runs for it
+# (only the OUTER apply_edit_plan action gets a postwrite check, once, for
+# the whole batch), so this loop is this batch's own per-step stand-in for
+# that same protection.
+#
+# **On ANY failure**: the working copy is restored to the pre-batch snapshot
+# (rollback.restore_working_copy), the restore is verified byte-identical
+# (SHA-256 compare against the snapshot's own hash), and a
+# batch.BatchAbortedError is raised -- never returned as a dict (this
+# module's own "Failure shape" convention: toolkit.dispatch only ever
+# produces a genuine status: "error" envelope when the tool FUNCTION
+# RAISES). Its .details dict is surfaced verbatim as the error envelope's
+# `artifacts` (toolkit.dispatch's own additive convention -- see that
+# function's own comment) -- naming which step failed, why, and the full
+# per-step ledger (applied/rolled_back/failed/never_reached): the
+# "structured result" the task brief asks for, independent of the
+# human-readable message's own 300-char length cap.
+# ---------------------------------------------------------------------------
+
+
+class EditPlanStepParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApplyEditPlanParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Deliberately NOT bounded here (no min_length=2/max_length=10) -- the
+    # 2..10 step-count bound is a constraints.py preflight refuse-tier check
+    # instead (services.agent.batch.MIN_STEPS/MAX_STEPS), per the guardrail
+    # doctrine every other semantic bound in this module already follows
+    # (SetDesSpeedDistributionPointsParams' own docstring: "a bare pydantic
+    # ValidationError has no ko/en/ja rendering ... every semantic bound
+    # belongs in the constraint catalog, not the params model").
+    steps: list[EditPlanStepParams]
+
+
+#: Scratch file for the pre-batch snapshot -- never matches rollback.py's
+#: `_VERSION_RE`, so it is never mistaken for a real saved edit_NNN.inpx
+#: version. Deleted in a `finally` block regardless of outcome.
+_BATCH_SNAPSHOT_FILENAME = "_apply_edit_plan_pre_batch.inpx"
+
+
+@tool(name="apply_edit_plan", tier="write", provider="edit", params=ApplyEditPlanParams)
+def apply_edit_plan(params: ApplyEditPlanParams) -> dict[str, Any]:
+    """Apply a validated multi-step edit plan (2-10 steps) as ONE all-or-nothing action on the active edit session's working network -- every step is preflighted individually and shown on ONE approval card before anything runs (including cross-step checks: two steps that would silently overwrite the same target, and steps whose COMBINED effect trips a constraint no single step trips on its own). Steps then apply serially, each with its own read-back verification; the FIRST step to fail of any kind aborts the whole plan and rolls back every step already applied, so the network ends up either fully updated or completely unchanged -- never partially edited. Each step is {tool, params} for any OTHER registered write-tier tool -- run_simulation, every read tool, rollback_last_edit, and apply_edit_plan itself may never appear as a step (no recursion)."""
+    session = _require_session()
+    steps = [{"tool": step.tool, "params": step.params} for step in params.steps]
+    total_steps = len(steps)
+
+    work_dir = session.working_inpx.parent
+    snapshot_path = work_dir / _BATCH_SNAPSHOT_FILENAME
+    pre_batch_hash = rollback.snapshot_working_copy(session.working_inpx, snapshot_path)
+    # Captured BEFORE any step dispatches -- the "before" half of this
+    # batch's own postwrite diff (see the reverted_targets comment below).
+    before_mtime = session.working_inpx.stat().st_mtime
+    before_model = build_shadow_model(session.working_inpx)
+
+    applied: list[dict[str, Any]] = []
+    current_index = 0
+    current_tool = ""
+    try:
+        for index, step in enumerate(steps, start=1):
+            current_index, current_tool = index, step["tool"]
+
+            # Second line of defense: preflight (constraints.apply_edit_plan_
+            # validation) should already have refused an ineligible step
+            # before this action was ever approved, but re-checking here
+            # costs nothing and matches the guardrail doctrine's bias toward
+            # a refused edit over a completed one with wrong numbers.
+            spec = default_registry.get(step["tool"])
+            if spec is None or spec.tier != "write" or step["tool"] in batch.BATCH_STEP_BLOCKLIST:
+                raise RuntimeError(
+                    f"{step['tool']!r} is not an eligible batch-step tool (must be a registered "
+                    f"write-tier tool, never one of {sorted(batch.BATCH_STEP_BLOCKLIST)}) -- "
+                    "preflight should already have refused this plan; refusing at apply time as a "
+                    "second line of defense."
+                )
+
+            envelope = dispatch(step["tool"], step["params"], registry=default_registry)
+            if envelope["status"] != "ok":
+                raise RuntimeError(
+                    envelope.get("message")
+                    or f"{step['tool']} dispatch failed ({envelope.get('error_type')})"
+                )
+
+            verification = envelope.get("verification") or {}
+            if "written_value" in verification and "readback_value" in verification:
+                if batch.values_differ(verification["written_value"], verification["readback_value"]):
+                    raise RuntimeError(
+                        f"read-back mismatch after apply (wrote {verification['written_value']!r}, "
+                        f"read back {verification['readback_value']!r})"
+                    )
+
+            target = batch.resolve_write_target({"tool": step["tool"], "params": step["params"]})
+            applied.append(
+                {
+                    "index": index,
+                    "tool": step["tool"],
+                    "params": step["params"],
+                    "status": "applied",
+                    "message": envelope.get("message", ""),
+                    "verification": verification,
+                    "target": target,
+                }
+            )
+    except Exception as exc:  # noqa: BLE001 - any failure aborts and rolls back the whole batch
+        restored_hash = rollback.restore_working_copy(session.working_inpx, snapshot_path)
+        restore_verified = restored_hash == pre_batch_hash
+        never_reached = [
+            {"index": i, "tool": s["tool"]} for i, s in enumerate(steps, start=1) if i > current_index
+        ]
+        raise batch.BatchAbortedError(
+            step_index=current_index,
+            total_steps=total_steps,
+            tool=current_tool,
+            reason=str(exc),
+            rolled_back=[{"index": a["index"], "tool": a["tool"]} for a in applied],
+            never_reached=never_reached,
+            restore_verified=restore_verified,
+        ) from exc
+    finally:
+        snapshot_path.unlink(missing_ok=True)
+
+    # Every step landed. `reverted_targets` reuses rollback_last_edit's own
+    # dynamic diff-exemption channel (guardrails.GuardrailEngine.postwrite
+    # already reads this key generically, tool-agnostic -- see that method's
+    # own comment) -- but, UNLIKE the first draft of this tool, built from a
+    # REAL structural diff (guardrails.diff_shadow_models) of the shadow
+    # model immediately before this batch's first step vs. immediately after
+    # its last, mirroring rollback_last_edit's own "verification-first"
+    # mechanism exactly (see that tool's own comment for why: this is its
+    # own oracle, not a prediction). This is deliberately NOT built from each
+    # step's own resolve_write_target -- a step like set_reduced_speed_area
+    # has no resolvable static target AND creates a brand-new side-effect
+    # object (a des_speed_distributions entry) that no per-tool table
+    # predicts; that tool's own guardrails._ALLOWS_NEW_OBJECTS_IN entry is
+    # keyed to ITS OWN name, not "apply_edit_plan", so it would never apply
+    # to a batched call -- a real diff sidesteps that gap entirely: the
+    # exemption is exactly "whatever changed while this batch ran," verified
+    # mechanically. See batch.reverted_targets_from_diff's own docstring.
+    after_mtime = session.working_inpx.stat().st_mtime
+    if after_mtime <= before_mtime:
+        after_mtime = before_mtime + 0.001
+        os.utime(session.working_inpx, (after_mtime, after_mtime))
+    after_model = build_shadow_model(session.working_inpx)
+    diff = guardrails.diff_shadow_models(before_model, after_model)
+    reverted_targets = batch.reverted_targets_from_diff(diff)
+
+    step_summary = [{"index": a["index"], "tool": a["tool"]} for a in applied]
+    message = (
+        f"Applied all {total_steps} step(s) of the edit plan: "
+        + "; ".join(f"{a['index']}. {a['tool']}" for a in applied)
+        + "."
+    )
+    return {
+        "message": message,
+        "verification": {
+            # No single scalar written/read-back pair exists at the BATCH
+            # level -- each step already did its own set -> get compare
+            # inside the loop above. written_value/readback_value are
+            # therefore an identical structural summary on both sides (a
+            # trivial match by construction, since this line is only reached
+            # once every step's OWN readback already verified) -- constraint
+            # #6 (write_verification_failed, applies_to ["*"]) still runs
+            # against this pair for every tool uniformly, it just is not the
+            # primary safety net for THIS tool; `reverted_targets` above is.
+            "written_value": step_summary,
+            "readback_value": step_summary,
+            "reverted_targets": reverted_targets,
+        },
+        "artifacts": {"steps": applied, "step_count": total_steps},
     }

@@ -4805,9 +4805,15 @@ def test_registry_size_matches_m3_1_catalog_port():
     # the new rollback_last_edit tool: warns when a simulation was run after
     # the edit being undone, since that run's KPIs no longer correspond to
     # the model once the rollback lands -- see that constraint's own comment)
-    # == 89.
+    # == 89, + 1 (QUEUE 3 unit 8, 2026-07-31: apply_edit_plan_validation --
+    # NOT a §-numbered catalog entry, a defensive addition for the new
+    # apply_edit_plan (batch/compound edits) tool: a single registration that
+    # delegates to services.agent.batch.validate_plan and can return MANY
+    # findings in one preflight pass -- see that check's own comment and
+    # run_checks' updated docstring for the list-returning CheckFn shape this
+    # introduced) == 90.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 89
+    assert len(get_registry()) == 90
 
 
 def test_registry_has_unique_ids():

@@ -102,7 +102,13 @@ def test_health_check_runner_against_demo_dataset():
     # session's history), which a whole-network dataset scan has no
     # equivalent of, so it does not opt into the dataset scan either, same
     # shape as every addition above.
-    assert report["summary"]["edit_time_only_n"] == 75
+    # 76, not 75: QUEUE 3 unit 8 (2026-07-31) added one preflight-only
+    # constraint for the new apply_edit_plan (batch/compound edits) tool
+    # (apply_edit_plan_validation) -- it needs a proposed batch action's own
+    # "steps" param (services.agent.batch.validate_plan), which a whole-
+    # network dataset scan has no equivalent of, so it does not opt into the
+    # dataset scan either, same shape as every addition above.
+    assert report["summary"]["edit_time_only_n"] == 76
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

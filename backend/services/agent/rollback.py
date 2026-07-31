@@ -271,26 +271,60 @@ def compute_rollback_plan(work_dir: Path) -> RollbackPlan:
     )
 
 
-def restore_working_copy(working_inpx: Path, target_path: Path) -> str:
-    """Copy ``target_path``'s bytes onto ``working_inpx``, byte-for-byte.
-
-    Atomic (same-directory temp file + ``os.replace``, mirroring
-    ``VissimEditSession.persist``'s own two-step pattern) so a mid-copy
-    failure can never leave a half-written working copy on disk. Returns the
-    SHA-256 hex digest of the copied bytes — the caller's own reference
-    value for the postwrite verification's ``written_value``/
-    ``readback_value`` compare (see ``tools_edit.rollback_last_edit``).
+def _copy_with_hash(source_path: Path, dest_path: Path) -> str:
+    """Atomic copy (same-directory temp file + ``os.replace``, mirroring
+    ``VissimEditSession.persist``'s own two-step pattern) of ``source_path``'s
+    bytes onto ``dest_path``, so a mid-copy failure can never leave a
+    half-written ``dest_path`` on disk. Returns the SHA-256 hex digest of the
+    copied bytes. Shared by :func:`restore_working_copy` (target -> working
+    copy, unit 7) and :func:`snapshot_working_copy` (working copy -> a
+    scratch snapshot, unit 8) — same operation, opposite direction, one
+    implementation.
     """
     import hashlib
     import os
     import shutil
 
-    working_inpx = Path(working_inpx)
-    tmp_path = working_inpx.with_name(working_inpx.stem + "_rollback_tmp" + working_inpx.suffix)
-    shutil.copyfile(target_path, tmp_path)
+    dest_path = Path(dest_path)
+    tmp_path = dest_path.with_name(dest_path.stem + "_copy_tmp" + dest_path.suffix)
+    shutil.copyfile(source_path, tmp_path)
     digest = hashlib.sha256(tmp_path.read_bytes()).hexdigest()
-    os.replace(tmp_path, working_inpx)
+    os.replace(tmp_path, dest_path)
     return digest
+
+
+def restore_working_copy(working_inpx: Path, target_path: Path) -> str:
+    """Copy ``target_path``'s bytes onto ``working_inpx``, byte-for-byte.
+
+    Returns the SHA-256 hex digest of the copied bytes — the caller's own
+    reference value for the postwrite verification's ``written_value``/
+    ``readback_value`` compare (see ``tools_edit.rollback_last_edit``).
+    """
+    return _copy_with_hash(target_path, Path(working_inpx))
+
+
+def snapshot_working_copy(working_inpx: Path, snapshot_path: Path) -> str:
+    """QUEUE 3 unit 8 (``apply_edit_plan``): copy ``working_inpx``'s CURRENT
+    bytes to ``snapshot_path`` (a scratch file, never matching
+    :data:`_VERSION_RE` — never mistaken for a real saved ``edit_NNN.inpx``
+    version by :func:`list_saved_versions` or ``ArtifactManager`` — the
+    caller is responsible for choosing such a name and deleting it once the
+    batch this snapshot exists for has finished, success or failure).
+
+    This is the pre-batch checkpoint ``apply_edit_plan``'s own serial-apply
+    loop restores from on a mid-batch failure (via :func:`restore_working_copy`
+    in the opposite direction) — deliberately a plain file-level snapshot,
+    NOT a new ``ArtifactManager.save_version()`` entry: a batch that succeeds
+    must advance the version chain by exactly ONE saved version (the
+    orchestrator's own generic post-dispatch ``save_version()`` call already
+    does this for any successful write-tier tool), so that
+    ``rollback_last_edit``'s existing one-level "latest - 1" mechanism undoes
+    the WHOLE batch in a single call — see the QUEUE 3 unit 8 report's
+    documented design decision. Returns the SHA-256 hex digest of the
+    snapshotted bytes, the reference value ``apply_edit_plan`` compares the
+    eventual restore against.
+    """
+    return _copy_with_hash(Path(working_inpx), Path(snapshot_path))
 
 
 __all__ = [
@@ -301,5 +335,6 @@ __all__ = [
     "compute_rollback_plan",
     "list_saved_versions",
     "restore_working_copy",
+    "snapshot_working_copy",
     "version_path",
 ]

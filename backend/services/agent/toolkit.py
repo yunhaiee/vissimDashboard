@@ -282,10 +282,21 @@ def dispatch(
     except Exception as exc:  # noqa: BLE001 - a tool's failure must not crash dispatch
         logger.exception("Tool %r raised during execution", name)
         summary = _sanitize_exception_text(str(exc))
+        # QUEUE 3 unit 8 (apply_edit_plan): an exception MAY carry an
+        # optional `details` dict attribute -- purely additive, opt-in
+        # structured data the 300-char sanitized `message` string alone
+        # cannot hold (e.g. services.agent.batch.BatchAbortedError uses this
+        # to report which batch step failed, why, and which steps were
+        # rolled back/never reached). Every pre-existing raised exception has
+        # no such attribute, so `getattr(..., None)` degrades to the
+        # unchanged `artifacts=None` for all of them -- this is inert unless
+        # a tool's own exception class explicitly opts in.
+        extra_details = getattr(exc, "details", None)
         return _envelope(
             status="error",
             error_type="tool_execution_error",
             message=f"Tool {name!r} raised {type(exc).__name__}: {summary}",
+            artifacts=extra_details if isinstance(extra_details, dict) else None,
         )
 
     if not isinstance(result, dict):

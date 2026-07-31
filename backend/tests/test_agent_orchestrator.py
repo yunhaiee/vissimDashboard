@@ -84,6 +84,10 @@ EXPECTED_WRITE_TOOLS = {
     # docstring; write-tier like every other tool in this set, gated exactly
     # the same way).
     "rollback_last_edit",
+    # QUEUE 3 unit 8: apply_edit_plan (batch/compound edits -- write-tier
+    # like every other tool in this set, gated exactly the same way; each
+    # step it applies dispatches through its own already-registered tool).
+    "apply_edit_plan",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

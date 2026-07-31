@@ -99,6 +99,10 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_link_behavior_type_driving_behavior",
     # QUEUE 3 unit 7 adds rollback_last_edit (no COM).
     "rollback_last_edit",
+    # QUEUE 3 unit 8 adds apply_edit_plan (batch/compound edits, no COM of
+    # its own -- each step dispatches through its own already-registered
+    # tool).
+    "apply_edit_plan",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
