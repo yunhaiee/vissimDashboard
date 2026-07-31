@@ -1,8 +1,25 @@
-# TK 요구사항 명세 — 2026-07-31 미팅 (v2, 2026-07-31 재편)
+# TK 요구사항 명세 — 2026-07-31 미팅 (v2.1)
 
 **v2 변경점 (사용자 결정):** ① 논문은 뒤로 — 미국행 이후에도 쓸 수 있음. **제품 구축이
 우선순위 1.** ② 비용 모델 삭제 — TK의 "다리 차선" 비용 언급은 시뮬레이션을 *왜* 쓰는지에
 대한 설명이었지 기능 요구가 아님. 예시는 동기 서사로만 유지.
+
+**v2.1 결정 반영 (사용자, 2026-07-31 저녁):**
+- **타깃: 한국/대전 먼저.** 단, 최종 목표는 **어느 사이트·어느 포맷에서든** 동작 — 지역/국가마다
+  데이터 포맷이 전부 다르므로, 데이터 임포트는 처음부터 **어댑터(플러그인) 아키텍처**로: 코어는
+  포맷 중립 내부 모델, 대전/SCATS는 각각 첫 번째·두 번째 어댑터일 뿐.
+- **Genesis 스케일: microsimulation 먼저.** meso는 당분간 보류 (질문 3 답변됨).
+- **보고서: 다중 포맷 지원.** HWP 등 어려운 포맷은 **기존 도구/라이브러리 우선 활용**; 기존
+  도구가 없거나 포맷 하나 추가에 과도한 시간이 들면 **중단하고 사용자에게 보고 → 사용자가 결정**
+  (에스컬레이션 규칙, 질문 5 답변됨).
+- **AI 검증 합격선: 우리(Claude)가 초안 설정** — R1.5에 구체화함 (질문 4 답변됨).
+- **부록 A/B: 사용자가 TK에게 요청해 수령 예정.** §5 Vissim은 착오였음 — **전체 PDF(289쪽)에
+  이미 포함**되어 있고(197–239쪽) 정독 완료/진행.
+- **Region selection UX: 우리가 목업 먼저 제시** (디자인 주도권 우리 쪽).
+- **Genesis 사용자: 외부 컨설턴트 판매 제품** (질문 8 답변됨).
+- **Nexus 경계: 최종적으로는 모든 제품 통합이 궁극 목표.** 당분간은 **Vissim 중심으로 적절한
+  경계** — genesis 산출물은 Prism의 Vissim 워크플로 안에 속하고, 제품 간 통합은 뒤로 (질문 9
+  답변됨).
 
 Source: 미팅 직후 사용자 메모. **The big reveal: TK wants the pipeline to start one stage
 earlier than our product does** — today Prism *edits and validates an existing network*; TK
@@ -25,8 +42,11 @@ toggle) — 명시적으로 "사각형 아님". Output: bounded set of ways/inte
 **R1.2 Geometry synthesis.** From map data (OSM baseline; aerial/RIMS-assisted correction),
 generate Vissim links, connectors, lane counts, turn pockets, node footprints as .inpx XML —
 the v2b "XML-build + reparse + reference-integrity" tier (currently 0/13 shipped).
-**R1.3 Signal import.** Controllers + phasing from real signal data: **대전 스마트교차로** and
-**WA SCATS** (TK will supply both).
+**R1.3 Signal import — 어댑터 아키텍처 (v2.1).** Controllers + phasing from real signal data.
+**한국/대전 어댑터가 1번**, WA SCATS가 2번 — 그러나 코어는 포맷 중립 내부 모델(controller/
+program/phase/detector 스키마)이고 각 지역 포맷은 플러그인 어댑터. "어느 사이트, 어느
+포맷이든"이라는 최종 목표는 어댑터 계약(contract)의 품질에 달려 있으므로, 첫 두 어댑터를
+만들며 계약을 다듬는 것이 곧 세계화 작업.
 **R1.3b SCATS→fixed-time conversion module.** ★MRWA 가이드라인 발견: 적응식(SCATS) 이력을
 모델용 고정시간 계획으로 바꾸는 알고리즘이 **이미 받은 PDF의 LinSig 장에 명세되어 있음**
 (가중평균 phase 시간, demand frequency, bonus green — Tables 3-3/3-4 + 부록 A). "파일 파싱"이
@@ -34,11 +54,25 @@ the v2b "XML-build + reparse + reference-integrity" tier (currently 0/13 shipped
 시간대 SCATS 평균 사용).
 **R1.4 Demand seeding.** Vehicle inputs + compositions from detector/count data; routing from
 turning counts. 15-min interval profiling (guideline-required, our multi-interval verbs ready).
-**R1.5 AI network validation gate.** Build isn't done until machine checks pass: connectivity,
-lane continuity, signal-geometry consistency, orphan objects, capacity sanity, **plus
-measurement infrastructure auto-placement** (queue counters, travel-time sections — validation
-later needs them; a v2b bullet). ★가이드라인이 이 게이트의 체크리스트를 사실상 제공함(op §2.12
-검증 항목). **The validation gate is what makes AI construction sellable.**
+**R1.5 AI network validation gate — 합격선 초안 (v2.1: 사용자 위임으로 우리가 설정).**
+Build isn't done until every REFUSE-tier check passes; WARN-tier findings ride on the result.
+Same refuse-with-reason doctrine as the 90-constraint registry, applied to construction:
+
+| # | check | tier |
+|---|---|---|
+| V1 | **Load oracle**: 생성된 .inpx가 COM load + init 통과, Vissim critical error 0건, .err 무결 또는 전건 설명됨 | refuse |
+| V2 | **Reference integrity**: XML 수준 dangling 참조 0건 (없는 링크/차로/분포/컨트롤러 참조 금지) | refuse |
+| V3 | **Connectivity**: 모든 vehicle input에서 ≥1 네트워크 출구까지 도달 가능; 고아 링크/도달 불능 구역 0건 | refuse |
+| V4 | **Lane continuity**: 커넥터 차로 매핑 유효(존재하는 차로만), 차로 수 불연속엔 차로변경 거리 확보 | refuse |
+| V5 | **Signal-geometry consistency**: 임포트된 phasing의 모든 신호화 접근로에 signal head ≥1, 모든 signal group이 head에 매핑, 컨트롤러 없는 head 0건 | refuse |
+| V6 | **Demand coverage**: 모든 input에 routing decision 커버리지; composition relFlow 합 정상; input 볼륨 vs 링크 용량(기존 latent_demand 제약 재사용) | refuse(구조)/warn(용량) |
+| V7 | **Geometry sanity**: 링크 길이 vs 지도 거리 오차 허용치 내, 0-길이/중첩 링크 0건, 도로 등급별 희망속도분포 배정 | warn |
+| V8 | **Conflict coverage**: 비신호 상충점에 conflict area 또는 priority rule 존재; Passive 개수 명시 보고 (기존 111-Passive 경고의 일반화) | warn |
+| V9 | **Measurement readiness**: 정지선마다 queue counter, 주요 corridor에 travel-time section 자동 배치 완료 | warn |
+
+★가이드라인이 이 게이트의 상위 체크리스트를 제공(op §2.12). 임계값 세부(오차 허용치 등)는
+구현 시 측정으로 확정하되 표의 tier 구조는 확정안. **The validation gate is what makes AI
+construction sellable.**
 **R1.6 Genesis benchmark (acceptance test).** ★핵심 아이디어: **Murdoch 모델을 벤치마크로** —
 같은 지역을 지도+신호+카운트 데이터에서 AI로 재구축하고 TK의 수작업 모델과 구조적으로
 diff. 정답지가 이미 손에 있는 유일한 지역. 재현율/오류 유형이 곧 genesis의 품질 지표.
@@ -128,34 +162,54 @@ bullet). Rides on R1.3/R1.3b's signal data structures. TK's second example lives
 **논문:** Phase 4 eval harness(#9)는 보류. 단, EPIC 2/3의 계측(액션 로그, 스윕 텔레메트리)은
 설계상 논문 데이터를 자연 축적하도록 유지 — 나중에 논문 쓸 때 공짜 데이터가 되게.
 
-## Open questions — planning phase에서 답할 것
+## Open questions — v2.1 이후 남은 것
 
-**TK에게:**
-1. 대전 + WA 신호/카운트 샘플 파일과 포맷 명세 — 언제, 어떤 형태, 라이선스/반출 제약?
-2. **가이드라인 §5(Vissim)·§4(SIDRA)·부록 A(신호 데이터)·B(포화류)** — 보내준 PDF에 없음.
-3. **Genesis의 첫 스케일**: 교차로/corridor(micro)인가 sub-regional 20-25km²(meso)인가?
-   meso 문서를 보낸 의도 확인 — 두 스케일은 사실상 다른 제품.
-4. "AI validates the network"의 합격선 — R1.5 체크리스트 초안에 합의.
-5. 보고서 첫 타깃: MRWA 스타일(영문 DOCX) vs 교통영향평가(HWP)? **HWP는 별도 기술 과제라
-   우선순위가 로드맵을 바꿈.**
-6. Region selection UX — 우리가 목업 먼저 제시할지.
+**답변 완료 (v2.1):** ~~첫 시장~~ → 한국/대전 먼저, 최종은 어댑터로 전 세계.
+~~genesis 스케일~~ → micro 먼저. ~~합격선~~ → R1.5 초안 확정(우리 설정). ~~§5/부록~~ →
+§5는 PDF에 있었음(정독 완료), 부록은 사용자가 TK에게 요청. ~~Region UX~~ → 우리가 목업
+먼저. ~~genesis 사용자~~ → 외부 컨설턴트 판매 제품. ~~Nexus 경계~~ → 당분간 Vissim 중심,
+궁극적으로 전 제품 통합. ~~HWP~~ → 기존 도구 우선, 과도하면 보고 후 사용자 결정.
 
-**우리 쪽(유나/Inhi 교수):**
-7. **첫 시장**: 한국(대전)과 WA(MRWA) 중 어디 먼저? 신호 체계·보고서 양식·언어가 다 달라
-   동시 타깃은 비쌈.
-8. **Genesis의 사용자**: Dochak 내부 엔지니어용 도구인가, 외부 컨설턴트 판매 제품인가?
-   (UX 다듬기 수준이 달라짐.)
-9. **Nexus와의 경계**: base-model 관리는 Nexus의 영역 — genesis가 만든 네트워크는 어느
-   제품에 속하나? (교수님과 제품 경계 정리.)
-10. **Vissim 라이선스 수**: 스윕은 병렬 실행 수 = 라이선스 수. 1개면 야간 직렬 큐가 상한 —
-    스윕 처리량 약속에 직결.
-11. **OSM 라이선스(ODbL)**: 상용 제품에서의 고지/공유 의무 확인. 대전 데이터 사용권,
-    MRWA 데이터 기밀성도.
-12. **미국행 일정과 인수인계**: 언제 가는지, 부재 중 개발 주체는 누구인지 — 자동화/문서화
-    수준을 여기 맞춰야 함.
-13. **다음 TK 데모의 정의**: genesis MVP 데모의 합격 서사를 미리 합의 (예: "Murdoch 절반을
-    지도에서 재구축, 구조 diff 90% 일치" 같은 측정 가능한 문장).
-14. **보정 루프의 성공 지표**: GEH 개선폭? 엔지니어 시간 절감? — EPIC 2를 측정할 잣대.
+**남은 질문:**
+1. **대전 신호/카운트 샘플 파일** — 언제, 어떤 형태, 라이선스/반출 제약? (WA SCATS 샘플도.)
+2. **부록 A(신호 데이터)·B(포화류)·C(장래수요)** — 사용자가 TK에게 요청, 수령 대기.
+3. **Vissim 라이선스 수** — 스윕 병렬도 = 라이선스 수. 1개면 야간 직렬 큐가 상한.
+4. **OSM ODbL 라이선스** — 상용 제품 고지/공유 의무; 대전 데이터 사용권.
+5. **미국행 일정과 인수인계** — 자동화/문서화 수준을 여기 맞춰야 함.
+6. **다음 TK 데모의 정의** — genesis MVP 합격 서사를 측정 가능한 문장으로 미리 합의
+   (제안: "Murdoch 일부를 지도+데이터에서 재구축, R1.5 게이트 통과 + 수작업 모델과 구조 diff
+   일치율 N%").
+7. **보정 루프 성공 지표** — GEH 개선폭? 엔지니어 시간 절감?
+8. **HWP 도구 현황 조사 결과 보고** — python 생태계(pyhwp/hwpx 등) + Hancom COM 자동화
+   조사 후, "가능/비용" 보고서를 사용자에게 (에스컬레이션 규칙의 1회차 실행).
+
+## §5 Vissim Guidelines 정독 결과 (v2.1 — 289쪽 전체 확인 후)
+
+**정정: §5는 PDF 안에 있었음** (197–239쪽; 이전 "146쪽에서 잘림" 판단은 파일 메타데이터
+착오). 부록 A/B/C만 별도 문서 — 사용자가 TK에게 요청 예정. §5가 준 것:
+
+1. **Vissim micro 검증 수치 확보 (Table 5-12/13/14, p.231-234):** GEH<5 합격률
+   Cat1/2/3 = 95/85/80%, GEH<10 = 100/95/90%, R²>0.95/0.95/0.9, 통행시간 ±15% 또는 1분
+   (100/90/85%), 신호 주기 ±3초 또는 5%, 녹색 ±3초 또는 10%, 포화류 ±10%.
+   ★**우리 대시보드의 Category 1 기준(≥95% GEH<5, 100% GEH<10)이 Table 5-12 Cat 1과
+   정확히 일치** — 이미 규정 그대로 구현되어 있음이 확인됨. Cat 2/3 프로파일만 추가하면 됨.
+2. **런 규율:** 시드 5–10개, 전 시나리오 동일 시드, 평균 보고, 시뮬레이션 해상도 10 steps/s
+   고정(시나리오 간 변경 금지), warm-up = max(15분, 최장 통행시간×2), cool-down 동일.
+   → 스윕 MVP(R3.3)의 스펙이 그대로 확정됨.
+3. **★MRWA 디폴트 팩 — genesis의 공짜 자산:** §5의 표들이 사실상 "규정 준수 네트워크
+   초기화 라이브러리": 중차량 12종 가감속 곡선(Table 5-2), 포화류→safety distance 매핑
+   (Table 5-6), 이동류별 critical gap/follow-up(Table 5-9 — 우리 priority-rule verb의 경고
+   범위로도 즉시 인용 가능), conflict area front/rear gap(Table 5-10), 회전반경별 감속구간
+   설계속도(Table 5-8), 검지기 배치 기본값(정지선 2.0m 후방, 길이 4.5m), 버스 정차 기본값
+   (정류장 10s/환승 20s ±5s — **Murdoch 모델의 공유 분포 10s±2s와 근사, BusDwell 곡선의
+   맥락 확인**), 차종별 색상 분포. genesis는 이 팩으로 인스턴스화하면 "MRWA 기본값으로
+   생성됨"이라고 보고서에 쓸 수 있음.
+4. **신호 코딩 규칙:** 신호그룹 번호는 SCATS와 일치 필수, SCATS 소수값은 항상 올림,
+   min green/yellow+allred는 컨트롤러 값 그대로(변경 금지). VAP(.vv) 구조 상세(§5.4.2.5)는
+   EPIC 5(phase plan 편집)의 설계 참고자료.
+5. **경계/코딩 관행(R1.2에 반영):** 링크/커넥터 최소화, diverge 차로변경거리 500m 시작점,
+   차로폭 3.5m 표준, 버스전용은 별도 링크가 아니라 lane closure로, 대기행렬이 모델 경계를
+   넘으면 한계로 보고.
 
 ## 가이드라인(두 PDF)이 이 계획에 주는 통찰 — 요약
 
