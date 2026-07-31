@@ -19,6 +19,7 @@ import services.agent.tools_edit as tools_edit  # noqa: F401 - import registers 
 import services.agent.tools_metrics as tools_metrics  # noqa: F401 - import registers tools
 import services.agent.tools_network as tools_network  # noqa: F401 - import registers tools
 import services.agent.tools_run as tools_run  # noqa: F401 - import registers tools
+import services.agent.tools_sweep as tools_sweep  # noqa: F401 - import registers tools
 from services.agent.toolkit import default_registry, dispatch, render_contract
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -106,12 +107,15 @@ EXPECTED_WRITE_TOOL_NAMES = {
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
-# M2.4; docs/phase2/DECISIONS.md's v2 unit (3) entry). Both cost a real Vissim
-# instance so both are tier="run", but they are NOT the same provider — see
+# M2.4; docs/phase2/DECISIONS.md's v2 unit (3) entry), plus Phase 0.1's
+# run_demand_stress_sweep (master-roadmap-2026-07.md S0.1, task #33). All
+# three cost a real Vissim instance so all three are tier="run", but they are
+# NOT all the same provider — see
 # test_run_tools_are_tier_run_with_their_own_providers below.
 EXPECTED_RUN_TOOL_NAMES = {
     "run_simulation",
     "load_check",
+    "run_demand_stress_sweep",
 }
 
 # v2 unit (4) adds set_conflict_area_status: the seventh write-tier tool, and

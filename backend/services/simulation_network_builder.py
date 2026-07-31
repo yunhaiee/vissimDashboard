@@ -565,3 +565,142 @@ def reparse_reduced_speed_area(inpx_path: Path | str, area_nos: list[str]) -> di
         "length_m": length_values[0],
         "lane_count": len(area_nos),
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 0.1: demand-stress sweep (services.agent.tools_sweep.run_demand_stress_sweep)
+#
+# scale_vehicle_input_volumes -- the isolation primitive the sweep tool builds
+# its SCALED variant from. Unlike inject_reduced_speed_area (mutates ONE file
+# in place), this ALWAYS reads from ``source_inpx`` and writes to a SEPARATE
+# ``output_path`` -- ``source_inpx`` is opened for reading only (ET.parse) and
+# is never touched, which is what lets the sweep tool point ``source_inpx`` at
+# the session's live working copy without risk: even a bug in this function
+# can only ever corrupt ``output_path``, a brand-new scratch file the caller
+# owns, never the network the user is actually editing.
+#
+# XML-level multiplication (not a COM set -> get per volume) per the task
+# brief: "XML-level volume multiplication across all intervals is fine and
+# fast". Every ``<timeIntervalVehVolume volume="...">`` under a matched
+# ``<vehicleInput>`` is multiplied in place in the in-memory tree -- ALL
+# intervals of a multi-interval input scale together (a demand-stress sweep
+# scales the whole day-profile, never just interval 1), matching v2 unit ⑤'s
+# own "volumes" list shape 1:1 (this function does not need to know or care
+# about that shape; it walks the raw XML directly, exactly like
+# _parse_vehicle_inputs's own ``.//timeIntervalVehVolume`` traversal).
+# ---------------------------------------------------------------------------
+
+#: Decimal precision for a scaled volume attribute -- generous enough that
+#: round(base * factor, N) round-trips through XML text and back losslessly
+#: for any realistic veh/h magnitude (0-100000), while keeping the written
+#: attribute human-legible (unlike _INJECTED_PRECISION's 9 digits, chosen for
+#: a much tighter guardrails.py float-tolerance compare this value never has
+#: to clear -- KPI delta math downstream only ever compares AGGREGATE run
+#: results, never this raw written attribute against a readback).
+_DEMAND_SCALE_PRECISION = 4
+
+
+def _format_volume(value: float) -> str:
+    """A compact, non-scientific-notation text rendering of a scaled volume
+    attribute -- ``:g`` strips trailing zeros (``660.0`` -> ``"660"``,
+    ``127.39`` -> ``"127.39"``) while staying in fixed-point notation for
+    every realistic veh/h magnitude this function ever sees (well under
+    ``:g``'s ~1e16 switch-to-scientific-notation threshold)."""
+    return f"{round(value, _DEMAND_SCALE_PRECISION):g}"
+
+
+def scale_vehicle_input_volumes(
+    source_inpx: Path | str,
+    output_path: Path | str,
+    *,
+    scale_percent: float,
+    input_nos: list[str] | None = None,
+) -> dict[str, Any]:
+    """Write a COPY of ``source_inpx`` to ``output_path`` with every matched
+    ``<vehicleInput>``'s ``<timeIntervalVehVolume volume="...">`` (every time
+    interval) multiplied by ``1 + scale_percent / 100`` -- ``source_inpx`` is
+    opened read-only (``ET.parse``) and is NEVER written to; ``output_path``
+    is a brand-new file (sibling-temp-file + ``os.replace``, same crash-safe
+    two-step ``inject_reduced_speed_area`` uses).
+
+    ``input_nos=None`` (the default) scales EVERY ``<vehicleInput>`` in the
+    network; an explicit list restricts scaling to just those input numbers
+    (every other input's volumes are copied through unchanged). A
+    ``<vehicleInput>`` with no ``<timeIntervalVehVolume>`` children at all
+    (no configured demand -- e.g. a freshly-authored network before any
+    volume has ever been set) contributes nothing to scale and is reported
+    separately, never silently dropped or treated as an error: scaling zero
+    volume by any factor is still zero, an honest (if uninteresting) outcome.
+
+    Returns ``{"factor", "scaled_input_nos", "empty_input_nos",
+    "unmatched_input_nos", "base_total_veh_h", "scaled_total_veh_h"}``:
+
+    - ``factor``: the multiplier actually applied.
+    - ``scaled_input_nos``: matched inputs that had >=1 volume interval and
+      were actually multiplied.
+    - ``empty_input_nos``: matched inputs with zero ``<timeIntervalVehVolume>``
+      children -- nothing to scale (see above).
+    - ``unmatched_input_nos``: entries of ``input_nos`` that named no real
+      ``<vehicleInput>`` in the network at all (only ever non-empty when
+      ``input_nos`` was given) -- the caller's own signal to refuse rather
+      than silently scale nothing.
+    - ``base_total_veh_h`` / ``scaled_total_veh_h``: the sum of every scaled
+      interval's volume, before and after -- a fast sanity number a caller
+      can log without re-deriving it from the KPI run results.
+    """
+    source_inpx = Path(source_inpx)
+    output_path = Path(output_path)
+    tree = ET.parse(source_inpx)
+    root = tree.getroot()
+
+    factor = 1.0 + (float(scale_percent) / 100.0)
+    wanted = set(input_nos) if input_nos is not None else None
+
+    all_input_nos: set[str] = set()
+    scaled_input_nos: list[str] = []
+    empty_input_nos: list[str] = []
+    base_total = 0.0
+    scaled_total = 0.0
+
+    for vi in root.findall(".//vehicleInput"):
+        no = vi.get("no", "")
+        all_input_nos.add(no)
+        if wanted is not None and no not in wanted:
+            continue
+
+        volume_elements = vi.findall(".//timeIntervalVehVolume")
+        if not volume_elements:
+            empty_input_nos.append(no)
+            continue
+
+        scaled_input_nos.append(no)
+        for vol_el in volume_elements:
+            raw = vol_el.get("volume")
+            if raw is None:
+                continue
+            base_volume = float(raw)
+            base_total += base_volume
+            new_volume = round(base_volume * factor, _DEMAND_SCALE_PRECISION)
+            scaled_total += new_volume
+            vol_el.set("volume", _format_volume(new_volume))
+
+    unmatched_input_nos = sorted(wanted - all_input_nos) if wanted is not None else []
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if hasattr(ET, "indent"):
+        ET.indent(tree, space="  ")
+    tmp_path = output_path.with_name(output_path.stem + "_scaling" + output_path.suffix)
+    tree.write(tmp_path, encoding="UTF-8", xml_declaration=True)
+    os.replace(tmp_path, output_path)
+
+    def _sort_key(value: str) -> tuple[int, str]:
+        return (0, f"{int(value):020d}") if value.isdigit() else (1, value)
+
+    return {
+        "factor": factor,
+        "scaled_input_nos": sorted(scaled_input_nos, key=_sort_key),
+        "empty_input_nos": sorted(empty_input_nos, key=_sort_key),
+        "unmatched_input_nos": unmatched_input_nos,
+        "base_total_veh_h": round(base_total, _DEMAND_SCALE_PRECISION),
+        "scaled_total_veh_h": round(scaled_total, _DEMAND_SCALE_PRECISION),
+    }

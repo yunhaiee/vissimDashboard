@@ -122,6 +122,7 @@ import services.agent.tools_edit  # noqa: F401
 import services.agent.tools_metrics  # noqa: F401
 import services.agent.tools_network  # noqa: F401
 import services.agent.tools_run  # noqa: F401
+import services.agent.tools_sweep  # noqa: F401 - Phase 0.1: run_demand_stress_sweep
 from services.agent import approval_focus, complexity, session_store
 from services.agent.gates import ApprovalRequired, signature
 from services.agent.guardrails import GuardrailEngine, GuardrailReport

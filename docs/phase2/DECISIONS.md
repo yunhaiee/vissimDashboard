@@ -2846,3 +2846,20 @@ travel-time band is captured as data while the page still applies flat ±15% (pr
 report-path thresholds unexamined (out of this unit's bounds). The unit also surfaced two more
 pre-existing broken pins hiding behind the known base-model failure (the contract test aborts
 at first failure, masking later ones) — chip filed.
+
+## 2026-07-31 — Phase 0.1: demand-stress sweep MVP shipped (run_demand_stress_sweep)
+
+The "+10% 수요면?" question now gets simulated evidence: BASE and SCALED variants through the
+existing job queue with an IDENTICAL seed set (5–10, §5 rule, test-pinned), per-KPI deltas +
+per-seed breakdown, one bounded ko headline. Isolation is by construction, not restoration:
+the scaled variant is written to a temp clone parsed READ-ONLY from the working copy, and the
+tool computes the working copy's sha256 before/after and RAISES on any difference — a
+deliberate-tampering test proves the guard. KPIs/timeouts/job plumbing reused from run tools
+(module-qualified so tests fake both variants identically). Live-proven: 10 real runs in 280s,
++10% demand → +11.5% delay / −6.5% speed / +15.7% travel time, sqlite-verified run rows,
+hashes identical. Deferred, recorded: scale bounds live in the tool (constraints.py was
+fenced for the concurrent MRWA-pack unit) — follow-up adds an always-fires warn-tier
+`demand_stress_sweep_plan` disclosure so the approval card's scale/seeds/run-count text is
+code-guaranteed. Standing finding: **`data/practice.inpx` is NOT live-COM-loadable** (no
+vissimVersion, missing real-export sections — a hand-authored static fixture); every live
+check substitutes an Examples Demo network, and that is now the recorded convention.

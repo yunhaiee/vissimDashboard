@@ -98,7 +98,9 @@ EXPECTED_WRITE_TOOLS = {
 # run_simulation, even though it never mutates the network; see
 # tools_check.py's module docstring for why no COM network-consistency
 # check exists to wrap instead).
-EXPECTED_RUN_TOOLS = {"run_simulation", "load_check"}
+# Phase 0.1 adds run_demand_stress_sweep (tier="run" -- costs two real
+# Vissim jobs, same cost class as run_simulation).
+EXPECTED_RUN_TOOLS = {"run_simulation", "load_check", "run_demand_stress_sweep"}
 
 
 @pytest.fixture(autouse=True)

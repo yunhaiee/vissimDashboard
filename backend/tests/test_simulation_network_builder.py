@@ -15,6 +15,9 @@ Two things are exercised here:
   did not change ``_apply_speed_limits``'s pre-existing output for its own
   caller, ``build_simulation_network`` -- the only place these two private
   helpers were used before this unit, with zero prior test coverage.
+- Phase 0.1's ``scale_vehicle_input_volumes`` (the demand-stress sweep's
+  isolation primitive, ``services.agent.tools_sweep``) -- pure ElementTree,
+  no Vissim COM here either.
 """
 from __future__ import annotations
 
@@ -27,6 +30,7 @@ from services.simulation_network_builder import (
     build_simulation_network,
     inject_reduced_speed_area,
     reparse_reduced_speed_area,
+    scale_vehicle_input_volumes,
 )
 
 # A minimal but real-shaped .inpx: <links> (one 2-lane link), plus the two
@@ -355,3 +359,157 @@ def test_build_simulation_network_speed_limits_output_unchanged_by_the_refactor(
     points = distributions[0].findall(".//speedDistributionDataPoint")
     xs = sorted(float(p.get("x")) for p in points)
     assert xs == pytest.approx([39.9, 40.1], abs=1e-9)  # unchanged .1f/0.1-margin behavior
+
+
+# ---------------------------------------------------------------------------
+# scale_vehicle_input_volumes -- Phase 0.1's demand-stress sweep isolation
+# primitive (services.agent.tools_sweep.run_demand_stress_sweep)
+# ---------------------------------------------------------------------------
+
+_VEHICLE_INPUTS_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network version="2400">
+  <links>
+    <link no="101" name="L1"><lanes><lane width="3.5"/></lanes></link>
+  </links>
+  <vehicleInputs>
+    <vehicleInput no="1" name="VI1" link="101">
+      <timeIntVehVols>
+        <timeIntervalVehVolume timeInt="1 0" volume="1000" cont="false" vehComp="1"/>
+      </timeIntVehVols>
+    </vehicleInput>
+    <vehicleInput no="2" name="VI2" link="101">
+      <timeIntVehVols>
+        <timeIntervalVehVolume timeInt="1 0" volume="500" cont="true" vehComp="1"/>
+        <timeIntervalVehVolume timeInt="1 1200000" volume="800" cont="true" vehComp="1"/>
+        <timeIntervalVehVolume timeInt="1 1800000" volume="200" cont="false" vehComp="1"/>
+      </timeIntVehVols>
+    </vehicleInput>
+    <vehicleInput no="3" name="VI3_no_volume" link="101"/>
+  </vehicleInputs>
+</network>
+"""
+
+
+@pytest.fixture()
+def vehicle_inputs_inpx(tmp_path: Path) -> Path:
+    path = tmp_path / "source.inpx"
+    path.write_text(_VEHICLE_INPUTS_INPX, encoding="utf-8")
+    return path
+
+
+def _volumes_by_input(root: ET.Element) -> dict[str, list[float]]:
+    result: dict[str, list[float]] = {}
+    for vi in root.findall(".//vehicleInput"):
+        result[vi.get("no")] = [
+            float(v.get("volume")) for v in vi.findall(".//timeIntervalVehVolume")
+        ]
+    return result
+
+
+def test_scale_never_touches_source_inpx(vehicle_inputs_inpx: Path, tmp_path: Path):
+    before_bytes = vehicle_inputs_inpx.read_bytes()
+    output_path = tmp_path / "scaled.inpx"
+
+    scale_vehicle_input_volumes(vehicle_inputs_inpx, output_path, scale_percent=10.0)
+
+    assert vehicle_inputs_inpx.read_bytes() == before_bytes
+    assert output_path.exists()
+    assert output_path != vehicle_inputs_inpx
+
+
+def test_scale_all_inputs_multiplies_every_interval(vehicle_inputs_inpx: Path, tmp_path: Path):
+    output_path = tmp_path / "scaled.inpx"
+    summary = scale_vehicle_input_volumes(vehicle_inputs_inpx, output_path, scale_percent=10.0)
+
+    assert summary["factor"] == pytest.approx(1.10)
+    assert sorted(summary["scaled_input_nos"]) == ["1", "2"]
+    assert summary["empty_input_nos"] == ["3"]
+    assert summary["unmatched_input_nos"] == []
+    assert summary["base_total_veh_h"] == pytest.approx(1000 + 500 + 800 + 200)
+    assert summary["scaled_total_veh_h"] == pytest.approx((1000 + 500 + 800 + 200) * 1.10)
+
+    root = ET.parse(output_path).getroot()
+    volumes = _volumes_by_input(root)
+    assert volumes["1"] == pytest.approx([1100.0])
+    # ALL intervals of a multi-interval input scale together.
+    assert volumes["2"] == pytest.approx([550.0, 880.0, 220.0])
+    assert volumes["3"] == []  # nothing to scale, nothing invented
+
+
+def test_scale_negative_percent_shrinks_volumes(vehicle_inputs_inpx: Path, tmp_path: Path):
+    output_path = tmp_path / "scaled.inpx"
+    summary = scale_vehicle_input_volumes(vehicle_inputs_inpx, output_path, scale_percent=-25.0)
+
+    assert summary["factor"] == pytest.approx(0.75)
+    root = ET.parse(output_path).getroot()
+    volumes = _volumes_by_input(root)
+    assert volumes["1"] == pytest.approx([750.0])
+
+
+def test_scale_percent_zero_is_a_no_op_on_values(vehicle_inputs_inpx: Path, tmp_path: Path):
+    output_path = tmp_path / "scaled.inpx"
+    scale_vehicle_input_volumes(vehicle_inputs_inpx, output_path, scale_percent=0.0)
+
+    root = ET.parse(output_path).getroot()
+    volumes = _volumes_by_input(root)
+    assert volumes["1"] == pytest.approx([1000.0])
+    assert volumes["2"] == pytest.approx([500.0, 800.0, 200.0])
+
+
+def test_scale_minus_100_percent_zeroes_out_demand(vehicle_inputs_inpx: Path, tmp_path: Path):
+    output_path = tmp_path / "scaled.inpx"
+    scale_vehicle_input_volumes(vehicle_inputs_inpx, output_path, scale_percent=-100.0)
+
+    root = ET.parse(output_path).getroot()
+    volumes = _volumes_by_input(root)
+    assert volumes["1"] == pytest.approx([0.0])
+    assert volumes["2"] == pytest.approx([0.0, 0.0, 0.0])
+
+
+def test_scale_input_nos_filter_leaves_other_inputs_untouched(
+    vehicle_inputs_inpx: Path, tmp_path: Path
+):
+    output_path = tmp_path / "scaled.inpx"
+    summary = scale_vehicle_input_volumes(
+        vehicle_inputs_inpx, output_path, scale_percent=10.0, input_nos=["1"]
+    )
+
+    assert summary["scaled_input_nos"] == ["1"]
+    assert summary["empty_input_nos"] == []  # "3" was never matched, not "empty"
+    assert summary["unmatched_input_nos"] == []
+
+    root = ET.parse(output_path).getroot()
+    volumes = _volumes_by_input(root)
+    assert volumes["1"] == pytest.approx([1100.0])
+    assert volumes["2"] == pytest.approx([500.0, 800.0, 200.0])  # untouched
+
+
+def test_scale_input_nos_naming_a_nonexistent_input_is_reported_unmatched(
+    vehicle_inputs_inpx: Path, tmp_path: Path
+):
+    output_path = tmp_path / "scaled.inpx"
+    summary = scale_vehicle_input_volumes(
+        vehicle_inputs_inpx, output_path, scale_percent=10.0, input_nos=["1", "999"]
+    )
+
+    assert summary["scaled_input_nos"] == ["1"]
+    assert summary["unmatched_input_nos"] == ["999"]
+
+
+def test_scale_input_nos_matching_only_the_empty_input_reports_it_as_empty_not_unmatched(
+    vehicle_inputs_inpx: Path, tmp_path: Path
+):
+    output_path = tmp_path / "scaled.inpx"
+    summary = scale_vehicle_input_volumes(
+        vehicle_inputs_inpx, output_path, scale_percent=10.0, input_nos=["3"]
+    )
+
+    assert summary["scaled_input_nos"] == []
+    assert summary["empty_input_nos"] == ["3"]
+    assert summary["unmatched_input_nos"] == []
+
+
+def test_scale_output_path_parent_created_if_missing(vehicle_inputs_inpx: Path, tmp_path: Path):
+    output_path = tmp_path / "nested" / "dir" / "scaled.inpx"
+    scale_vehicle_input_volumes(vehicle_inputs_inpx, output_path, scale_percent=5.0)
+    assert output_path.exists()
