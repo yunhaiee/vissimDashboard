@@ -1,0 +1,277 @@
+<title>Prism — AI 네트워크 생성: 영역 선택 목업 v1</title>
+<style>
+  :root {
+    --bg: #191917; --surface: #1f1f1d; --well: #262624; --line: rgba(255,255,255,.09);
+    --text: #e8e6e1; --text-mut: #a8a49c; --text-faint: #6f6b64;
+    --accent: #4c8dff; --accent-soft: rgba(76,141,255,.16);
+    --exclude: #e05252; --exclude-soft: rgba(224,82,82,.14);
+    --road-out: #3a3a37; --road-in: #4c8dff; --ok: #46c08a;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f3f0; --surface: #ffffff; --well: #ebeae6; --line: rgba(0,0,0,.1);
+    --text: #23211d; --text-mut: #5f5b53; --text-faint: #97928a;
+    --road-out: #cfcdc7;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f3f0; --surface: #ffffff; --well: #ebeae6; --line: rgba(0,0,0,.1);
+      --text: #23211d; --text-mut: #5f5b53; --text-faint: #97928a; --road-out: #cfcdc7;
+    }
+  }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 "Pretendard", "Malgun Gothic", system-ui, sans-serif; margin: 0; padding: 20px; }
+  .wrap { max-width: 1060px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  header h1 { font-size: 17px; font-weight: 700; margin: 0; letter-spacing: -.01em; }
+  .tag { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; color: var(--accent); border: 1px solid var(--accent); border-radius: 99px; padding: 1.5px 9px; }
+  .steps { color: var(--text-faint); font-size: 12px; margin: 0 0 14px; }
+  .steps b { color: var(--accent); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 14px; align-items: start; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .mapcard, .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+  .mapcard { padding: 10px; }
+  .toolbar { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+  .toolbar button { background: var(--well); color: var(--text-mut); border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; font-family: inherit; }
+  .toolbar button.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .toolbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .toolbar .spacer { flex: 1; }
+  svg { width: 100%; height: auto; display: block; border-radius: 8px; background: var(--well); cursor: crosshair; }
+  .panel { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+  .panel h2 { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--text-faint); margin: 0; font-weight: 700; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .stat { background: var(--well); border-radius: 8px; padding: 8px 10px; }
+  .stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 11px; color: var(--text-mut); }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; min-height: 20px; }
+  .chip { font-size: 11px; background: var(--exclude-soft); color: var(--exclude); border-radius: 99px; padding: 2px 9px; }
+  .empty { color: var(--text-faint); font-size: 12px; }
+  .cta { background: var(--accent); border: none; color: #fff; font-weight: 700; font-size: 14px; padding: 11px; border-radius: 9px; cursor: pointer; font-family: inherit; }
+  .cta:disabled { background: var(--well); color: var(--text-faint); cursor: not-allowed; }
+  .hint { font-size: 11.5px; color: var(--text-mut); line-height: 1.55; }
+  .legend { display: flex; gap: 14px; font-size: 11px; color: var(--text-mut); flex-wrap: wrap; }
+  .sw { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+  .notes { margin-top: 16px; background: var(--surface); border: 1px dashed var(--line); border-radius: 12px; padding: 12px 16px; }
+  .notes h3 { font-size: 12px; margin: 0 0 6px; color: var(--text-mut); }
+  .notes ol { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--text-mut); }
+  .notes li { margin-bottom: 4px; }
+</style>
+<div class="wrap">
+  <header>
+    <h1>AI 네트워크 생성 — 영역 선택</h1>
+    <span class="tag">MOCKUP v1 · 인터랙션 초안</span>
+  </header>
+  <p class="steps"><b>① 영역 선택</b> · ② 데이터 연결(대전 스마트교차로) · ③ AI 생성 · ④ 검증 게이트</p>
+
+  <div class="grid">
+    <div class="mapcard">
+      <div class="toolbar" role="tablist">
+        <button id="m-lasso" class="on">✏️ 영역 그리기</button>
+        <button id="m-street">🛣️ 도로 선택</button>
+        <button id="m-block">⬛ 블록 제외</button>
+        <span class="spacer"></span>
+        <button id="reset">초기화</button>
+      </div>
+      <svg id="map" viewBox="0 0 640 460" aria-label="대전 예시 지도"></svg>
+      <div class="legend" style="margin-top:8px">
+        <span><span class="sw" style="background:var(--road-in)"></span>포함</span>
+        <span><span class="sw" style="background:var(--road-out)"></span>범위 밖</span>
+        <span><span class="sw" style="background:var(--exclude); opacity:.8"></span>제외됨</span>
+        <span>· 라쏘: 클릭으로 꼭짓점, 더블클릭으로 닫기</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>선택 요약</h2>
+      <div class="stats">
+        <div class="stat"><b id="s-seg">0</b><span>도로 구간</span></div>
+        <div class="stat"><b id="s-int">0</b><span>교차로</span></div>
+        <div class="stat"><b id="s-km">0.0</b><span>연장 (km)</span></div>
+      </div>
+      <div>
+        <h2>제외된 항목</h2>
+        <div class="chips" id="chips"><span class="empty">없음 — 도로/블록을 클릭해 제외</span></div>
+      </div>
+      <button class="cta" id="cta" disabled>AI 네트워크 생성 시작 →</button>
+      <p class="hint">제외된 구간·블록은 생성에서 빠집니다. 경계에 걸친 간선은 유지되고,
+      제외 블록의 내부 이면도로만 빠집니다. 생성 후 <b>검증 게이트(V1–V9)</b>를 통과해야
+      완료로 표시됩니다.</p>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h3>디자인 오픈 질문 — 이 목업으로 확인하고 싶은 것</h3>
+    <ol>
+      <li><b>선택 시작 방식:</b> 라쏘(그리기)가 기본인가, 아니면 "교차로 하나 클릭 → 연결된
+        도로로 자동 확장(seed &amp; grow)"이 더 자연스러운가?</li>
+      <li><b>제외의 단위:</b> 블록 제외 시 내부 도로만 빠지고 경계 간선은 남는 현재 규칙이
+        기대와 일치하는가? (지금 블록 모드로 직접 확인 가능)</li>
+      <li><b>경계 처리:</b> 라쏘에 절반만 걸린 구간은 지금 "포함"으로 처리 — 잘라야 하나,
+        통째로 넣어야 하나, 물어봐야 하나?</li>
+    </ol>
+  </div>
+</div>
+
+<script>
+(function () {
+  const SVG = document.getElementById('map');
+  const NS = 'http://www.w3.org/2000/svg';
+  // ---- fake Daejeon-ish grid ----------------------------------------------
+  const V = [70, 190, 320, 450, 570];          // vertical street x
+  const H = [60, 170, 280, 390];               // horizontal street y
+  const VN = ['대덕대로', '한밭대로', '갈마로', '문예로', '둔산로'];
+  const HN = ['계룡로', '월평로', '유등천동로', '탄방로'];
+  const M_PER_PX = 7;                          // fake scale
+  const segs = [];                             // {x1,y1,x2,y2,name,state,cells:[]}
+  // horizontal segments
+  for (let r = 0; r < H.length; r++) for (let c = 0; c < V.length - 1; c++)
+    segs.push({ x1: V[c], y1: H[r], x2: V[c + 1], y2: H[r], name: HN[r],
+      cells: [cid(c, r - 1), cid(c, r)] });
+  // vertical segments
+  for (let c = 0; c < V.length; c++) for (let r = 0; r < H.length - 1; r++)
+    segs.push({ x1: V[c], y1: H[r], x2: V[c], y2: H[r + 1], name: VN[c],
+      cells: [cid(c - 1, r), cid(c, r)] });
+  segs.forEach((s, i) => { s.id = i; s.state = 'out'; });
+  function cid(c, r) { return (c < 0 || r < 0 || c >= V.length - 1 || r >= H.length - 1) ? null : `c${c}-${r}`; }
+
+  const excludedCells = new Set();
+  let mode = 'lasso';
+  let lasso = [];            // polygon points while drawing
+  let closedLasso = null;    // final polygon
+
+  // ---- layers -------------------------------------------------------------
+  const gCells = el('g'), gLasso = el('g'), gRoads = el('g'), gHits = el('g'), gLabels = el('g');
+  [gCells, gLasso, gRoads, gHits, gLabels].forEach(g => SVG.appendChild(g));
+
+  // block cells
+  for (let c = 0; c < V.length - 1; c++) for (let r = 0; r < H.length - 1; r++) {
+    const rect = el('rect', { x: V[c] + 3, y: H[r] + 3, width: V[c+1]-V[c]-6, height: H[r+1]-H[r]-6, rx: 4,
+      fill: 'transparent', 'data-cell': cid(c, r) });
+    rect.style.cursor = 'pointer';
+    rect.addEventListener('click', () => { if (mode !== 'block') return;
+      const k = cid(c, r);
+      excludedCells.has(k) ? excludedCells.delete(k) : excludedCells.add(k);
+      render(); });
+    gCells.appendChild(rect);
+  }
+  // street labels
+  VN.forEach((n, i) => label(V[i] + 4, 52, n, -90));
+  HN.forEach((n, i) => label(76, H[i] - 6, n, 0));
+  // roads + hit bands
+  segs.forEach(s => {
+    s.elVis = el('polyline', { points: pts(s), stroke: 'var(--road-out)', 'stroke-width': 5,
+      fill: 'none', 'stroke-linecap': 'round' });
+    gRoads.appendChild(s.elVis);
+    const hit = el('polyline', { points: pts(s), stroke: 'transparent', 'stroke-width': 16, fill: 'none' });
+    hit.style.cursor = 'pointer';
+    hit.addEventListener('click', ev => {
+      if (mode === 'street') {
+        s.state = s.state === 'excluded' ? (insideLasso(s) ? 'in' : 'out')
+                : s.state === 'in' ? 'excluded' : 'in';
+        s.state === 'excluded' ? manualEx.add(s.id) : manualEx.delete(s.id);
+        render(); ev.stopPropagation();
+      }
+    });
+    gHits.appendChild(hit);
+  });
+
+  // ---- lasso interaction --------------------------------------------------
+  SVG.addEventListener('click', ev => {
+    if (mode !== 'lasso') return;
+    const p = svgPoint(ev); lasso.push(p); closedLasso = null; render();
+  });
+  SVG.addEventListener('dblclick', ev => {
+    if (mode !== 'lasso' || lasso.length < 3) return;
+    closedLasso = lasso.slice(); lasso = [];
+    segs.forEach(s => { if (s.state !== 'excluded') s.state = insideLasso(s) ? 'in' : 'out'; });
+    render(); ev.preventDefault();
+  });
+
+  function insideLasso(s) {
+    if (!closedLasso) return false;
+    return pip((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, closedLasso);
+  }
+  function pip(x, y, poly) { // point-in-polygon
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+
+  // ---- modes / reset ------------------------------------------------------
+  const btns = { lasso: btn('m-lasso'), street: btn('m-street'), block: btn('m-block') };
+  Object.entries(btns).forEach(([k, b]) => b.addEventListener('click', () => {
+    mode = k; Object.values(btns).forEach(x => x.classList.remove('on')); b.classList.add('on');
+    SVG.style.cursor = k === 'lasso' ? 'crosshair' : 'default';
+  }));
+  btn('reset').addEventListener('click', () => {
+    lasso = []; closedLasso = null; excludedCells.clear();
+    segs.forEach(s => s.state = 'out'); render();
+  });
+
+  // ---- render -------------------------------------------------------------
+  function render() {
+    // block-exclusion rule: a segment is excluded if EVERY adjacent block is excluded
+    segs.forEach(s => {
+      const adj = s.cells.filter(Boolean);
+      if (adj.length && adj.every(c => excludedCells.has(c))) s.state = 'excluded';
+      else if (s.state === 'excluded' && !manualEx.has(s.id)) s.state = insideLasso(s) ? 'in' : 'out';
+    });
+    gCells.querySelectorAll('rect').forEach(r => {
+      const on = excludedCells.has(r.getAttribute('data-cell'));
+      r.setAttribute('fill', on ? 'var(--exclude-soft)' : 'transparent');
+      r.setAttribute('stroke', on ? 'var(--exclude)' : 'none');
+      r.setAttribute('stroke-dasharray', '4 3');
+    });
+    segs.forEach(s => {
+      s.elVis.setAttribute('stroke', s.state === 'in' ? 'var(--road-in)' : s.state === 'excluded' ? 'var(--exclude)' : 'var(--road-out)');
+      s.elVis.setAttribute('stroke-dasharray', s.state === 'excluded' ? '6 5' : 'none');
+      s.elVis.setAttribute('stroke-width', s.state === 'in' ? 6 : 5);
+    });
+    // lasso overlay
+    gLasso.innerHTML = '';
+    const poly = closedLasso || lasso;
+    if (poly.length) {
+      gLasso.appendChild(el('polygon', { points: poly.map(p => p.x + ',' + p.y).join(' '),
+        fill: 'var(--accent-soft)', stroke: 'var(--accent)', 'stroke-width': 1.5,
+        'stroke-dasharray': closedLasso ? 'none' : '5 4' }));
+      poly.forEach(p => gLasso.appendChild(el('circle', { cx: p.x, cy: p.y, r: 3, fill: 'var(--accent)' })));
+    }
+    // stats
+    const inSegs = segs.filter(s => s.state === 'in');
+    const exSegs = segs.filter(s => s.state === 'excluded');
+    const nodes = new Set();
+    inSegs.forEach(s => { nodes.add(s.x1 + ',' + s.y1); nodes.add(s.x2 + ',' + s.y2); });
+    const km = inSegs.reduce((a, s) => a + Math.hypot(s.x2 - s.x1, s.y2 - s.y1) * M_PER_PX, 0) / 1000;
+    txt('s-seg', inSegs.length); txt('s-int', nodes.size); txt('s-km', km.toFixed(1));
+    document.getElementById('cta').disabled = inSegs.length === 0;
+    // chips
+    const chips = document.getElementById('chips'); chips.innerHTML = '';
+    const items = [...excludedCells].map(c => '블록 ' + c.slice(1))
+      .concat(exSegs.filter(s => manualEx.has(s.id)).map(s => s.name + ' 구간'));
+    if (!items.length) chips.innerHTML = '<span class="empty">없음 — 도로/블록을 클릭해 제외</span>';
+    else items.slice(0, 12).forEach(t => { const c = document.createElement('span'); c.className = 'chip'; c.textContent = t; chips.appendChild(c); });
+  }
+  // track manual street exclusions separately from block-derived ones
+  const manualEx = new Set();
+  gHits.addEventListener('click', ev => {
+    if (mode !== 'street') return;
+    const idx = [...gHits.children].indexOf(ev.target);
+    if (idx >= 0) { const s = segs[idx];
+      s.state === 'excluded' ? manualEx.add(s.id) : manualEx.delete(s.id); }
+  }, true);
+  document.getElementById('cta').addEventListener('click', () =>
+    alert('목업입니다 — 실제 제품에서는 여기서 ② 데이터 연결 단계로 넘어갑니다.'));
+
+  // ---- helpers ------------------------------------------------------------
+  function el(t, attrs) { const e = document.createElementNS(NS, t); for (const k in (attrs || {})) e.setAttribute(k, attrs[k]); return e; }
+  function pts(s) { return s.x1 + ',' + s.y1 + ' ' + s.x2 + ',' + s.y2; }
+  function label(x, y, t, rot) { const e = el('text', { x, y, fill: 'var(--text-faint)', 'font-size': 10,
+    transform: rot ? `rotate(${rot} ${x} ${y})` : '' }); e.textContent = t; gLabels.appendChild(e); }
+  function svgPoint(ev) { const pt = SVG.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+    const p = pt.matrixTransform(SVG.getScreenCTM().inverse()); return { x: Math.round(p.x), y: Math.round(p.y) }; }
+  function btn(id) { return document.getElementById(id); }
+  function txt(id, v) { document.getElementById(id).textContent = v; }
+  render();
+})();
+</script>
