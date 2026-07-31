@@ -160,16 +160,18 @@ review.
 
 ## To-do (forward plan, updated 2026-07-31)
 
-> **2026-07-31 — TK requirements meeting.** TK's full product vision (AI network genesis from
-> map data, auto-calibration loop, scenario sweep with ranked conclusions, style-customizable
-> report engine, full phase-plan editing) is specced and sequenced in
-> **docs/product/tk-requirements-2026-07-31.md** — five EPICs, phased A (pre-paper: sweep MVP,
-> report styling v1, Daejeon/WA data-intake spike), B (post-paper: calibration loop, v2b
-> XML-build foundation, style-from-sample), C (network genesis + phase-plan redesign). The
-> paper-critical path below remains priority 1; Phase A items ride alongside it. MRWA
-> compliance mapping: docs/meeting-brief-tk-mrwa.md.
+> **2026-07-31 — TK requirements meeting + PRIORITY FLIP (user decision, same day).** TK's
+> full product vision (AI network genesis from map data, auto-calibration loop, scenario sweep
+> with ranked conclusions, style-customizable report engine, full phase-plan editing) is
+> specced in **docs/product/tk-requirements-2026-07-31.md** (v2). **The paper is DEFERRED —
+> user will write it after going to the States; product build is now priority 1.** Phase 1 =
+> sweep MVP (multi-seed from day one), report styling v1, v2b XML-build start, the
+> SCATS→fixed-time conversion module (its algorithm spec is in the MRWA PDF's LinSig chapter),
+> Daejeon/WA data intake. The genesis benchmark is rebuilding the Murdoch model from map+data
+> and diffing against TK's hand-built one. EPIC 2/3 instrumentation still accumulates paper
+> data by design. MRWA compliance mapping: docs/meeting-brief-tk-mrwa.md.
 
-### 1. Paper-critical path (deadline ~09-05)
+### 1. Paper-critical path (DEFERRED 2026-07-31 — written after the user's move to the States; instrumentation keeps accumulating data meanwhile)
 
 - Obtain real Korean intersection .inpx (professor emailed 07-24 — waiting)
 - Ground-truth eval tasks with Dochak engineers (Dr. Chun/Dr. Oh)
