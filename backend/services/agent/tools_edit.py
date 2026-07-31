@@ -2106,6 +2106,258 @@ def remove_connector(params: RemoveConnectorParams) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Q4 unit (4): signal-head + detector placement -- genesis milestone (b)'s
+# "hands" (manual placement now, policy later; see docs/product/
+# master-roadmap-2026-07.md item 3.1). Genuine COM CREATE/REMOVE verbs, the
+# SAME shape Q4 unit (2)'s measurement infra established (native Add*/
+# Remove* methods, COM-create preferred over XML injection -- see
+# vissim_com.VissimController's own module comment for the full
+# live-verified writeup: the pywin32 Lane-object landmine, the display-unit
+# landmine on BOTH Pos and a detector's own Length, the signal head's
+# COM-object-only SG wiring vs. the detector's flat scalar SC/PortNo wiring).
+#
+# **Reference integrity, both directions.** Probed
+# (backend/tools/probe_signal_heads_detectors.py [1b.9]): nothing else in
+# the schema references a signal head or detector by its own "no" -- both
+# are LEAF objects like queue counters/travel-time sections, so neither
+# remove tool below needs a reference-integrity refusal of its own. The
+# OTHER direction -- a signal head/detector itself dangling once the LANE it
+# sits on disappears -- is now covered by extending
+# services.inpx_structure.LANE_TOKEN_REFERENCE_SITES this unit: a
+# remove_last_lane/remove_connector call against a lane a signal head or
+# detector still references now REFUSES, naming it, exactly like a
+# reducedSpeedArea/priorityRule reference already did.
+#
+# **Preflight scope (this unit's own "constraints.py minimal" instruction).**
+# Both add_ tools' PRIMARY object_not_found target is the LINK they place
+# against (mirrors add_queue_counter/add_data_collection_point's own
+# precedent exactly). add_signal_head's sc_no/sg_no and add_detector's
+# optional sc_no get NO dedicated preflight Finding -- a bogus one fails
+# CLOSED as a tool_execution_error via vissim_com.py's own
+# _item_by_key/_signal_group_by_key structured errors (naming the real
+# available numbers), the SAME deliberate, documented scope cut
+# add_travel_time_section's to_link and add_data_collection_measurement's
+# point_nos already established. This unit's own ONE new constraint,
+# signal_head_detector_pos_out_of_range (below), instead covers the
+# data-driven range check the shadow model can answer for free.
+# ---------------------------------------------------------------------------
+
+#: MRWA Appendix A default for a detector at a signalized-intersection
+#: approach: 2.0 m back from the signal head/stop line, 4.5 m long
+#: (docs/product/master-roadmap-2026-07.md item 3.1's own "§5 기본값
+#: 2.0m/4.5m" citation; this codebase's local extract of Appendix A --
+#: docs/product/reference/mrwa-appendix-a-extract.md -- runs to ~p.49 and
+#: does not itself carry the source PDF's page 78, so that exact page cite
+#: could not be independently re-verified on this machine -- the figures
+#: themselves are corroborated by the roadmap entry, not invented here).
+#: NOT a Vissim schema constraint (real detector lengths in the wild range
+#: 1-6 m, backend/tools/probe_signal_heads_detectors.py's own static scan)
+#: -- a POLICY default this tool applies, stated as such in its own
+#: docstring so the LLM knows it is the authority default, not a hard rule.
+_MRWA_DETECTOR_SETBACK_M = 2.0
+_MRWA_DETECTOR_LENGTH_M = 4.5
+
+
+class AddSignalHeadParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_no: str
+    lane_index: int = Field(ge=1)
+    pos_m: float
+    sc_no: str
+    sg_no: str
+    name: str = ""
+
+
+@tool(name="add_signal_head", tier="write", provider="edit", params=AddSignalHeadParams)
+def add_signal_head(params: AddSignalHeadParams) -> dict[str, Any]:
+    """Add a signal head on one lane of link_no at pos_m metres, wired to signal group sg_no of controller sc_no (COM AddSignalHead + SetAttValue('SG', <SG object>)) on the active edit session's working network -- Genesis (b)'s auto-placement hand for signal heads. sc_no/sg_no are NOT covered by the object_not_found preflight (see this module's own comment) -- a bogus controller or signal group fails closed as a tool_execution_error instead, naming the real available numbers."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_no, "link_no")
+    sc_no = _coerce_id(params.sc_no, "sc_no")
+    sg_no = _coerce_id(params.sg_no, "sg_no")
+    result = session.add_signal_head(link_no, params.lane_index, params.pos_m, sc_no, sg_no, params.name)
+    session.persist()
+
+    verification = {
+        "written_value": {
+            "link": params.link_no,
+            "lane_index": params.lane_index,
+            "pos": _round_pos_m(params.pos_m),
+            "sc": params.sc_no,
+            "sg": params.sg_no,
+        },
+        "readback_value": {
+            "link": result["link"],
+            "lane_index": result["lane_index"],
+            "pos": _round_pos_m(result["pos"]),
+            "sc": result["sc"],
+            "sg": result["sg"],
+        },
+    }
+    message = (
+        f"Signal head {result['no']} added on link {params.link_no} lane {params.lane_index} at "
+        f"{params.pos_m} m, wired to SC {params.sc_no} SG {params.sg_no}."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "name": result["name"]},
+    }
+
+
+class RemoveSignalHeadParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(name="remove_signal_head", tier="write", provider="edit", params=RemoveSignalHeadParams)
+def remove_signal_head(params: RemoveSignalHeadParams) -> dict[str, Any]:
+    """Remove a signal head (COM RemoveSignalHead) on the active edit session's working network -- signal heads are never referenced by another object (see services.inpx_structure.ID_BEARING_ELEMENTS/probe [1b.9]), so no reference-integrity check runs here."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+    session.remove_signal_head(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "signal_heads", params.no)
+    verification = _remove_verification(params.no, still_present)
+    return {
+        "message": f"Signal head {params.no} removed.",
+        "verification": verification,
+    }
+
+
+class AddDetectorParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_no: str
+    lane_index: int = Field(ge=1)
+    pos_m: float | None = None
+    length_m: float = _MRWA_DETECTOR_LENGTH_M
+    sc_no: str | None = None
+    port_no: int | None = None
+    name: str = ""
+
+    @model_validator(mode="after")
+    def _sc_and_port_together(self) -> "AddDetectorParams":
+        if (self.sc_no is None) != (self.port_no is None):
+            raise ValueError(
+                "add_detector: sc_no and port_no must be given together (a detector's "
+                "controller wiring is the (sc_no, port_no) pair -- see probe [1b.4b]/[1b.6]), "
+                "or both omitted to add an unwired detector."
+            )
+        return self
+
+
+@tool(name="add_detector", tier="write", provider="edit", params=AddDetectorParams)
+def add_detector(params: AddDetectorParams) -> dict[str, Any]:
+    """Add a detector on one lane of link_no, length_m long (MRWA Appendix A default 4.5 m at a signalized-intersection approach -- see this module's own _MRWA_DETECTOR_LENGTH_M comment for the citation), optionally wired to controller sc_no port port_no (COM AddDetector + SetAttValue('Length'/'SC'/'PortNo')) on the active edit session's working network -- Genesis (b)'s auto-placement hand for detectors. pos_m is OPTIONAL: when omitted, this tool looks for an EXISTING signal head on the same (link_no, lane_index) and defaults pos to that head's own pos minus the MRWA 2.0 m stop-line setback, stating so in the result message; if no such head exists, pos_m must be given explicitly (never guessed silently). sc_no is NOT covered by the object_not_found preflight (see this module's own comment) -- a bogus controller fails closed as a tool_execution_error instead."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_no, "link_no")
+
+    pos_m = params.pos_m
+    default_note = ""
+    if pos_m is None:
+        shadow = build_shadow_model(session.working_inpx)
+        candidate_heads = [
+            head
+            for head in shadow.get("signal_heads", [])
+            if str(head.get("link", "")) == params.link_no and head.get("lane_index") == params.lane_index
+        ]
+        if not candidate_heads:
+            raise ValueError(
+                f"add_detector: pos_m was not given and no signal head exists on link "
+                f"{params.link_no} lane {params.lane_index} to use as a stop-line proxy -- "
+                "give pos_m explicitly (MRWA Appendix A default: 2.0 m back from the stop line)."
+            )
+        # The stop-line proxy is the head FURTHEST along the lane (closest to
+        # the approach's downstream end, where a stop line sits) -- when
+        # several heads share this exact (link, lane), the largest pos wins.
+        stop_line_head = max(candidate_heads, key=lambda head: head.get("pos") or 0.0)
+        head_pos = float(stop_line_head.get("pos") or 0.0)
+        pos_m = head_pos - _MRWA_DETECTOR_SETBACK_M
+        if pos_m < 0:
+            raise ValueError(
+                f"add_detector: default pos (signal head {stop_line_head['no']}'s own pos "
+                f"{head_pos} m minus the MRWA {_MRWA_DETECTOR_SETBACK_M} m setback) is negative -- "
+                "give pos_m explicitly."
+            )
+        default_note = (
+            f" (pos defaulted to {pos_m:.3f} m -- {_MRWA_DETECTOR_SETBACK_M} m back from signal "
+            f"head {stop_line_head['no']}'s own pos {head_pos} m, the MRWA stop-line default)"
+        )
+
+    sc_no = _coerce_id(params.sc_no, "sc_no") if params.sc_no is not None else None
+    result = session.add_detector(
+        link_no, params.lane_index, pos_m, params.length_m, sc_no, params.port_no, params.name
+    )
+    session.persist()
+
+    # Live-caught (backend/tools/signal_heads_detectors_live_check.py, Phase
+    # A): when sc_no/port_no are OMITTED, Vissim's own AddDetector does NOT
+    # leave them blank -- it silently assigns its own default (observed on
+    # Beijing: SC 1 / PortNo 1, the network's first controller). Comparing
+    # the caller's own "" / None against that surprise default would make
+    # constraint #6 (write_verification_failed) refuse+rollback every
+    # correct, controller-less add -- so sc/port_no are only ever PART OF
+    # THE CLAIM (present in written_value/readback_value at all) when the
+    # caller actually asked to wire them; omitted means "no claim possible"
+    # for that field, the same CATALOG-GAP philosophy this module already
+    # applies to a link with no resolvable length.
+    written_value: dict[str, Any] = {
+        "link": params.link_no,
+        "lane_index": params.lane_index,
+        "pos": _round_pos_m(pos_m),
+        "length": _round_pos_m(params.length_m),
+    }
+    readback_value: dict[str, Any] = {
+        "link": result["link"],
+        "lane_index": result["lane_index"],
+        "pos": _round_pos_m(result["pos"]),
+        "length": _round_pos_m(result["length"]),
+    }
+    if params.sc_no is not None:
+        written_value["sc"] = params.sc_no
+        readback_value["sc"] = result.get("sc") or ""
+    if params.port_no is not None:
+        written_value["port_no"] = params.port_no
+        readback_value["port_no"] = result.get("port_no")
+    verification = {"written_value": written_value, "readback_value": readback_value}
+    message = (
+        f"Detector {result['no']} added on link {params.link_no} lane {params.lane_index} at "
+        f"{pos_m:.3f} m (length {params.length_m} m).{default_note}"
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "name": result["name"]},
+    }
+
+
+class RemoveDetectorParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(name="remove_detector", tier="write", provider="edit", params=RemoveDetectorParams)
+def remove_detector(params: RemoveDetectorParams) -> dict[str, Any]:
+    """Remove a detector (COM RemoveDetector) on the active edit session's working network -- detectors are never referenced by another object (see services.inpx_structure.ID_BEARING_ELEMENTS/probe [1b.9]), so no reference-integrity check runs here."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+    session.remove_detector(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "detectors", params.no)
+    verification = _remove_verification(params.no, still_present)
+    return {
+        "message": f"Detector {params.no} removed.",
+        "verification": verification,
+    }
+
+
+# ---------------------------------------------------------------------------
 # rollback_last_edit()
 #
 # QUEUE 3 unit 7. NOT a COM verb -- like set_reduced_speed_area, this tool

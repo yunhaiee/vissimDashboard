@@ -2163,6 +2163,144 @@ def test_postwrite_remove_queue_counter_still_present_after_remove_refuses():
 
 
 # ---------------------------------------------------------------------------
+# postwrite -- Q4 unit (4)'s own remove_signal_head/remove_detector, the
+# SAME real-engine test this file's own comment above says the unit-③ bug
+# class needs per verb pair: a genuinely successful remove must NOT refuse
+# against constraint #6, and a remove that leaves the object still present
+# MUST refuse. Neither "signal_heads" nor "detectors" is registered in
+# guardrails.py's own _SHADOW_OBJECT_ID_FIELDS (same as "queue_counters"
+# before them -- neither object class needs "nothing else moved" diff
+# coverage of its own since both are leaf objects nothing else references),
+# so this fixture's own before/after models never need a signal_heads/
+# detectors key at all -- exactly mirroring remove_queue_counter's own two
+# tests above, not remove_connector's (which DOES need _ALLOWS_REMOVED_
+# OBJECTS_IN since "links"/"link_lanes" ARE tracked).
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_remove_signal_head_successful_removal_does_not_refuse():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_signal_head", no="61")
+    verification = {
+        "written_value": {"removed_no": "61", "still_present": False},
+        "readback_value": {"removed_no": "61", "still_present": False},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_signal_head_still_present_after_remove_refuses():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_signal_head", no="61")
+    verification = {
+        "written_value": {"removed_no": "61", "still_present": False},
+        "readback_value": {"removed_no": "61", "still_present": True},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.blocking is True
+    assert [f.constraint_id for f in report.findings] == ["write_verification_failed"]
+
+
+def test_postwrite_remove_detector_successful_removal_does_not_refuse():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_detector", no="1")
+    verification = {
+        "written_value": {"removed_no": "1", "still_present": False},
+        "readback_value": {"removed_no": "1", "still_present": False},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_detector_still_present_after_remove_refuses():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_detector", no="1")
+    verification = {
+        "written_value": {"removed_no": "1", "still_present": False},
+        "readback_value": {"removed_no": "1", "still_present": True},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.blocking is True
+    assert [f.constraint_id for f in report.findings] == ["write_verification_failed"]
+
+
+def test_postwrite_add_signal_head_diff_exempts_the_derived_head_count_shift():
+    # LIVE-CAUGHT (backend/tools/signal_heads_detectors_live_check.py, Phase
+    # B): a signal group's own head COUNT is embedded in TWO places
+    # add_signal_head never writes directly -- signals[].phases (signal_
+    # parser's own "SG22 (3 heads)" label text) and signal_program_splits[].
+    # head_count -- both PURELY DERIVED by counting real <signalHead sg="...">
+    # elements, so this must NEVER be evidence for ANY tool, matching the
+    # link_behavior_type_assignments/link_count precedent exactly. Reproduced
+    # live: a genuine, correct add_signal_head false-positived on BOTH
+    # signals#1:phases and signal_program_splits#1.1.22:head_count and was
+    # refused+rolled-back by the real orchestrator before this fix.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        links=[{"id": "101", "name": "A", "lanes": 4, "length": 335.0}],
+        signals=[
+            {
+                "sc_no": "1", "sc_name": "", "cycle_time": 90, "controller_type": "FIXEDTIME",
+                "phases": [{"start": 0, "duration": 30, "signal_groups": ["SG22 (2 heads)"], "signal_group_ids": ["22"], "movements": []}],
+            }
+        ],
+        signal_program_splits=[
+            {
+                "id": "1.1.22", "sc_no": "1", "program_no": "1", "sg_no": "22", "sg_name": "",
+                "green_window": {"green_start_s": 0, "green_end_s": 30}, "amber_s": 3.0,
+                "min_green_s": None, "head_count": 2, "cycle_s": 90, "active": True,
+            }
+        ],
+    )
+    after = _shadow_model(
+        links=[{"id": "101", "name": "A", "lanes": 4, "length": 335.0}],
+        signals=[
+            {
+                "sc_no": "1", "sc_name": "", "cycle_time": 90, "controller_type": "FIXEDTIME",
+                "phases": [{"start": 0, "duration": 30, "signal_groups": ["SG22 (3 heads)"], "signal_group_ids": ["22"], "movements": []}],
+            }
+        ],
+        signal_program_splits=[
+            {
+                "id": "1.1.22", "sc_no": "1", "program_no": "1", "sg_no": "22", "sg_name": "",
+                "green_window": {"green_start_s": 0, "green_end_s": 30}, "amber_s": 3.0,
+                "min_green_s": None, "head_count": 3, "cycle_s": 90, "active": True,
+            }
+        ],
+    )
+    action = _action(
+        "add_signal_head", link_no="101", lane_index=4, pos_m=20.0, sc_no="1", sg_no="22"
+    )
+    verification = {
+        "written_value": {"link": "101", "lane_index": 4, "pos": 20.0, "sc": "1", "sg": "22"},
+        "readback_value": {"link": "101", "lane_index": 4, "pos": 20.0, "sc": "1", "sg": "22"},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+# ---------------------------------------------------------------------------
 # postwrite -- remove_connector's own removed "links"/"link_lanes" entries
 # are expected, never evidence -- Q4 unit (3), _ALLOWS_REMOVED_OBJECTS_IN
 # ---------------------------------------------------------------------------

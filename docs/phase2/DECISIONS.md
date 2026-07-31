@@ -2928,3 +2928,19 @@ live-caught when a correct remove_connector was refused for shifting an unrelate
 audit chip for the remaining derived-field class was spawned. Registry 91→92. Suite
 1839→1882 (controller re-ran; 215 tests across the four touched files green). v2b: 4/13
 bullets + spine.
+
+## 2026-07-31 — Q4 ④: signal-head + detector placement shipped
+
+Schema resolved: heads carry ONE composite `sg="<sc> <sg>"` token (no separate controller
+attr); detectors carry flat `sc` + `portNo` scalars — settling the old catalog note about
+port-number binding. COM-create per ② precedent; new landmines: a head's SG is assignable
+ONLY as a COM object (resolved via the existing `_signal_group_by_key`), and **COM silently
+fills defaults for unset optional fields** (SC=1/PortNo=1 observed) — write verification now
+claims only what the caller supplied. The reverse reference gap closed: heads/detectors would
+have DANGLED when their lane/connector was removed — `LANE_TOKEN_REFERENCE_SITES` extended,
+and `remove_last_lane`/`remove_connector` now refuse naming them (proven live). MRWA defaults
+(2.0 m setback / 4.5 m length) cited in-tool; pos omitted → stop-line-proxy default (head
+pos − 2.0 m) stated in the result, never silent. One derived-field exemption bug live-caught
+(head counts on signals/splits) — same class as ③'s, audit chip already open. Registry 92→93.
+Suite 1882→1928 (controller re-ran). Real-model facts: 39 signal heads, **zero detectors** on
+Murdoch — genesis milestone (b) is genuinely needed there. v2b: 6/13 + spine.

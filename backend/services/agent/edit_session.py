@@ -264,6 +264,45 @@ class VissimEditSession:
     def get_travel_time_section(self, no: int) -> dict[str, Any]:
         return self._ensure_connected().get_travel_time_section(no)
 
+    # Q4 unit (4): signal-head + detector placement -- genesis milestone
+    # (b)'s "hands". Both genuine COM CREATE/REMOVE verbs (native Add*/
+    # Remove* methods exist -- see vissim_com.VissimController's own module
+    # comment for the full live-verified writeup, including the pywin32
+    # object-reference landmine, the display-unit landmine, the signal
+    # head's COM-object-only SG wiring, and the detector's scalar SC/PortNo
+    # wiring).
+
+    def add_signal_head(
+        self, link_no: int, lane_index: int, pos_m: float, sc_no: int, sg_no: int, name: str = ""
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_signal_head(link_no, lane_index, pos_m, sc_no, sg_no, name)
+
+    def remove_signal_head(self, no: int) -> None:
+        self._ensure_connected().remove_signal_head(no)
+
+    def get_signal_head(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_signal_head(no)
+
+    def add_detector(
+        self,
+        link_no: int,
+        lane_index: int,
+        pos_m: float,
+        length_m: float = 4.5,
+        sc_no: int | None = None,
+        port_no: int | None = None,
+        name: str = "",
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_detector(
+            link_no, lane_index, pos_m, length_m, sc_no, port_no, name
+        )
+
+    def remove_detector(self, no: int) -> None:
+        self._ensure_connected().remove_detector(no)
+
+    def get_detector(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_detector(no)
+
     # v2 unit ⑥: static routing decision route relative-flow verbs.
 
     def set_route_relative_flow(

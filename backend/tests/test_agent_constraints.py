@@ -52,6 +52,8 @@ def _shadow_model(
     data_collection_points: list[dict[str, Any]] | None = None,
     data_collection_measurements: list[dict[str, Any]] | None = None,
     travel_time_sections: list[dict[str, Any]] | None = None,
+    signal_heads: list[dict[str, Any]] | None = None,
+    detectors: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -150,6 +152,13 @@ def _shadow_model(
         shadow["data_collection_measurements"] = data_collection_measurements
     if travel_time_sections is not None:
         shadow["travel_time_sections"] = travel_time_sections
+    # signal_heads/detectors deliberately OMITTED by default too (Q4 unit
+    # (4)) -- same "most tests have nothing to do with this object class"
+    # reasoning as the object classes above.
+    if signal_heads is not None:
+        shadow["signal_heads"] = signal_heads
+    if detectors is not None:
+        shadow["detectors"] = detectors
     return shadow
 
 
@@ -5008,9 +5017,22 @@ def test_registry_size_matches_m3_1_catalog_port():
     # documented gap; remove_connector's OWN route/priority-rule/conflict-area
     # consequence is a REFUSAL enforced by services.inpx_structure's spine
     # (extended ID_REFERENCE_SITES, not a new constraints.py entry either)
-    # == 92.
+    # == 92, + 1 (Q4 unit (4), signal-head + detector placement:
+    # signal_head_detector_pos_out_of_range -- NOT a §-numbered catalog
+    # entry, this unit's ONE new constraint per its own "constraints.py
+    # minimal" instruction: refuses an add_signal_head/add_detector pos_m
+    # that falls outside [0, the target link's own length], mirroring
+    # measurement_infra_pos_out_of_range's own shape as a separate
+    # constraint id/table; object_not_found already existed and was
+    # EXTENDED in place (new _TOOL_TARGET_SPEC/_OBJECT_CLASS_LABELS entries)
+    # to gate all four new tools, not added -- sc_no/sg_no/port_no existence
+    # is enforced by vissim_com.py's own fail-closed COM errors instead, the
+    # SAME deliberate scope cut add_travel_time_section's to_link already
+    # established; a detector's own length_m and zone-past-link-end are
+    # documented, deliberate scope cuts too, not new constraints)
+    # == 93.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 92
+    assert len(get_registry()) == 93
 
 
 def test_registry_has_unique_ids():
@@ -6532,3 +6554,194 @@ def test_measurement_infra_pos_out_of_range_does_not_apply_to_unrelated_tool():
     findings = run_checks("preflight", action, shadow, {})
 
     assert not any(f.constraint_id == "measurement_infra_pos_out_of_range" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (4): signal-head + detector placement -- object_not_found lockstep
+# wiring (all 4 of the unit's tools) + signal_head_detector_pos_out_of_range
+# (the unit's ONE new constraint).
+# ---------------------------------------------------------------------------
+
+
+def test_object_not_found_fires_for_missing_link_on_add_signal_head():
+    shadow = _shadow_model()  # default fixture link id "101", length 280.0
+    action = _action(
+        "add_signal_head", link_no="999", lane_index=1, pos_m=10.0, sc_no="1", sg_no="1"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    _assert_well_formed_messages(matches[0], must_contain_ko="999")
+
+
+def test_object_not_found_silent_when_link_present_for_add_signal_head():
+    shadow = _shadow_model()
+    action = _action(
+        "add_signal_head", link_no="101", lane_index=1, pos_m=10.0, sc_no="1", sg_no="1"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_does_not_fire_for_bogus_sc_no_on_add_signal_head():
+    """Deliberate scope cut (this unit's own "constraints.py minimal"
+    instruction, mirroring add_travel_time_section's to_link precedent):
+    sc_no/sg_no are NOT covered by object_not_found -- a bogus one fails
+    closed as a plain tool_execution_error from vissim_com.py instead."""
+    shadow = _shadow_model()
+    action = _action(
+        "add_signal_head", link_no="101", lane_index=1, pos_m=10.0, sc_no="999", sg_no="1"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_fires_for_missing_signal_head_on_remove():
+    shadow = _shadow_model(
+        signal_heads=[
+            {"no": "1", "name": "", "link": "101", "lane_index": 1, "pos": 10.0, "sc": "1", "sg": "1"}
+        ]
+    )
+    action = _action("remove_signal_head", no="999")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "object_not_found"]) == 1
+
+
+def test_object_not_found_silent_when_signal_head_present_for_remove():
+    shadow = _shadow_model(
+        signal_heads=[
+            {"no": "1", "name": "", "link": "101", "lane_index": 1, "pos": 10.0, "sc": "1", "sg": "1"}
+        ]
+    )
+    action = _action("remove_signal_head", no="1")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_fires_for_missing_link_on_add_detector():
+    shadow = _shadow_model()
+    action = _action("add_detector", link_no="999", lane_index=1, pos_m=10.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "object_not_found"]) == 1
+
+
+def test_object_not_found_fires_for_missing_detector_on_remove():
+    shadow = _shadow_model(
+        detectors=[
+            {
+                "no": "1", "name": "", "link": "101", "lane_index": 1, "pos": 10.0,
+                "length": 4.5, "sc": "", "port_no": None,
+            }
+        ]
+    )
+    action = _action("remove_detector", no="999")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "object_not_found"]) == 1
+
+
+# --- signal_head_detector_pos_out_of_range ----------------------------------
+
+
+def test_signal_head_detector_pos_out_of_range_fires_for_negative_pos_on_add_signal_head():
+    shadow = _shadow_model()  # link "101", length 280.0
+    action = _action(
+        "add_signal_head", link_no="101", lane_index=1, pos_m=-5.0, sc_no="1", sg_no="1"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "signal_head_detector_pos_out_of_range"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].phase == "preflight"
+    _assert_well_formed_messages(matches[0], must_contain_ko="101")
+
+
+def test_signal_head_detector_pos_out_of_range_fires_for_pos_beyond_link_length_on_add_detector():
+    shadow = _shadow_model()  # link "101", length 280.0
+    action = _action("add_detector", link_no="101", lane_index=1, pos_m=280.1)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len(
+        [f for f in findings if f.constraint_id == "signal_head_detector_pos_out_of_range"]
+    ) == 1
+
+
+def test_signal_head_detector_pos_out_of_range_silent_within_bounds():
+    shadow = _shadow_model()  # link "101", length 280.0
+    for tool_name, extra in [
+        ("add_signal_head", {"sc_no": "1", "sg_no": "1"}),
+        ("add_detector", {}),
+    ]:
+        action = _action(tool_name, link_no="101", lane_index=1, pos_m=140.0, **extra)
+        findings = run_checks("preflight", action, shadow, {})
+        assert not any(
+            f.constraint_id == "signal_head_detector_pos_out_of_range" for f in findings
+        )
+
+
+def test_signal_head_detector_pos_out_of_range_accepts_the_boundary_values():
+    shadow = _shadow_model()  # link "101", length 280.0
+    for pos in (0.0, 280.0):
+        action = _action("add_detector", link_no="101", lane_index=1, pos_m=pos)
+        findings = run_checks("preflight", action, shadow, {})
+        assert not any(
+            f.constraint_id == "signal_head_detector_pos_out_of_range" for f in findings
+        )
+
+
+def test_signal_head_detector_pos_out_of_range_silent_when_link_unknown():
+    """Deliberately silent -- object_not_found (#1) is the one that fires
+    for an unknown link; this check would have no length to compare
+    against anyway."""
+    shadow = _shadow_model()
+    action = _action("add_detector", link_no="999", lane_index=1, pos_m=-5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "signal_head_detector_pos_out_of_range" for f in findings
+    )
+    assert any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_signal_head_detector_pos_out_of_range_does_not_apply_to_remove_tools():
+    shadow = _shadow_model(
+        signal_heads=[
+            {"no": "1", "name": "", "link": "101", "lane_index": 1, "pos": 10.0, "sc": "1", "sg": "1"}
+        ]
+    )
+    action = _action("remove_signal_head", no="1")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "signal_head_detector_pos_out_of_range" for f in findings
+    )
+
+
+def test_signal_head_detector_pos_out_of_range_does_not_apply_to_unrelated_tool():
+    shadow = _shadow_model()
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "signal_head_detector_pos_out_of_range" for f in findings
+    )

@@ -239,6 +239,54 @@ def test_find_lane_token_references_matches_nested_connector_objectref():
 
 
 # ---------------------------------------------------------------------------
+# Component 3b continued -- Q4 unit (4)'s new lane-token reference sites:
+# signal heads + detectors. Both carry the SAME "<link> <lane>" XML token on
+# their own "lane" attribute (verified live/statically,
+# backend/tools/probe_signal_heads_detectors.py) -- so remove_last_lane/
+# remove_connector now correctly refuse when a signal head or detector still
+# references the lane about to disappear, closing a real gap neither verb
+# could see before this unit's shadow model existed.
+# ---------------------------------------------------------------------------
+
+
+def test_find_lane_token_references_finds_signal_head_lane_reference():
+    root = ET.fromstring(
+        '<network><links><link no="101"><lanes><lane/><lane/></lanes></link></links>'
+        '<signalHeads><signalHead no="1" lane="101 1" pos="10" sg="1 1"/></signalHeads>'
+        "</network>"
+    )
+    referrers = struct.find_lane_token_references(root, "101", 1)
+    assert len(referrers) == 1
+    assert referrers[0]["site"] == "signal head"
+    # lane 2 is genuinely unreferenced.
+    assert struct.find_lane_token_references(root, "101", 2) == []
+
+
+def test_find_lane_token_references_finds_detector_lane_reference():
+    root = ET.fromstring(
+        '<network><links><link no="101"><lanes><lane/><lane/></lanes></link></links>'
+        '<detectors><detector no="1" lane="101 1" pos="8" length="4.5" sc="1" portNo="1"/></detectors>'
+        "</network>"
+    )
+    referrers = struct.find_lane_token_references(root, "101", 1)
+    assert len(referrers) == 1
+    assert referrers[0]["site"] == "detector"
+    assert struct.find_lane_token_references(root, "101", 2) == []
+
+
+def test_find_lane_token_references_both_signal_head_and_detector_on_the_same_lane():
+    root = ET.fromstring(
+        '<network><links><link no="101"><lanes><lane/></lanes></link></links>'
+        '<signalHeads><signalHead no="1" lane="101 1" pos="10" sg="1 1"/></signalHeads>'
+        '<detectors><detector no="1" lane="101 1" pos="8" length="4.5" sc="1" portNo="1"/></detectors>'
+        "</network>"
+    )
+    referrers = struct.find_lane_token_references(root, "101", 1)
+    sites = sorted(r["site"] for r in referrers)
+    assert sites == ["detector", "signal head"]
+
+
+# ---------------------------------------------------------------------------
 # Component 3c: reference integrity -- dangling references on ADD
 # ---------------------------------------------------------------------------
 
@@ -386,6 +434,53 @@ def test_remove_last_lane_refuses_when_last_lane_is_referenced(tmp_path: Path):
     assert excinfo.value.referrers[0]["tag"] == "objectRef"
     assert excinfo.value.referrers[0]["value"] == "1 2"
     # Refused BEFORE any write -- the file is untouched.
+    assert path.read_bytes() == original_bytes
+
+
+def test_remove_last_lane_refuses_when_last_lane_is_referenced_by_a_signal_head(tmp_path: Path):
+    """Q4 unit (4) end-to-end: remove_last_lane now sees a signal head's
+    own "<link> <lane>" reference too (extended LANE_TOKEN_REFERENCE_SITES),
+    closing a gap that existed before this unit's shadow model did -- a
+    signal head could not be represented at all, so this refusal was
+    structurally impossible to reach until now."""
+    path = tmp_path / "fixture.inpx"
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?><network>'
+        '<links><link no="1" name="A"><geometry><linkPolyPts>'
+        '<linkPolyPoint x="0" y="0" zOffset="0"/><linkPolyPoint x="100" y="0" zOffset="0"/>'
+        "</linkPolyPts></geometry><lanes><lane width=\"3.5\"/><lane width=\"3.5\"/></lanes></link></links>"
+        '<signalHeads><signalHead no="61" name="" lane="1 2" pos="43.15" sg="1 22"/></signalHeads>'
+        "</network>",
+        encoding="utf-8",
+    )
+    original_bytes = path.read_bytes()
+
+    with pytest.raises(struct.ReferenceIntegrityError) as excinfo:
+        struct.remove_last_lane(path, "1", run_load_check=False)
+
+    assert excinfo.value.referrers[0]["site"] == "signal head"
+    assert excinfo.value.referrers[0]["value"] == "1 2"
+    # Refused BEFORE any write -- the file is untouched.
+    assert path.read_bytes() == original_bytes
+
+
+def test_remove_last_lane_refuses_when_last_lane_is_referenced_by_a_detector(tmp_path: Path):
+    path = tmp_path / "fixture.inpx"
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?><network>'
+        '<links><link no="1" name="A"><geometry><linkPolyPts>'
+        '<linkPolyPoint x="0" y="0" zOffset="0"/><linkPolyPoint x="100" y="0" zOffset="0"/>'
+        "</linkPolyPts></geometry><lanes><lane width=\"3.5\"/><lane width=\"3.5\"/></lanes></link></links>"
+        '<detectors><detector no="1" name="" lane="1 2" pos="8" length="4.5" sc="1" portNo="1"/></detectors>'
+        "</network>",
+        encoding="utf-8",
+    )
+    original_bytes = path.read_bytes()
+
+    with pytest.raises(struct.ReferenceIntegrityError) as excinfo:
+        struct.remove_last_lane(path, "1", run_load_check=False)
+
+    assert excinfo.value.referrers[0]["site"] == "detector"
     assert path.read_bytes() == original_bytes
 
 

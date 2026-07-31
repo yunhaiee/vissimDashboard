@@ -106,6 +106,12 @@ EXPECTED_WRITE_TOOLS = {
     "set_link_closure",
     "set_turn_ban",
     "remove_connector",
+    # Q4 unit (4): signal-head + detector placement (COM CREATE/REMOVE
+    # verbs -- see tools_edit.py's own docstring).
+    "add_signal_head",
+    "remove_signal_head",
+    "add_detector",
+    "remove_detector",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

@@ -1334,6 +1334,260 @@ class VissimController:
         except Exception as exc:
             raise RuntimeError(f"Could not read travel time section {no}: {exc}") from exc
 
+    # ---------------------------------------------------------------------
+    # Q4 unit (4): signal-head + detector placement -- genesis milestone
+    # (b)'s "hands" (manual placement now, policy later). COM surfaces
+    # verified live (backend/tools/probe_signal_heads_detectors.py, run
+    # against Urban Intersection Beijing.CN -- METERS display -- and Toll
+    # Plaza Camden.US -- FEET display, for the unit-length round trip):
+    # ``Net.SignalHeads.AddSignalHead(Key, Lane, Pos)`` / ``RemoveSignalHead
+    # (obj)`` and ``Net.Detectors.AddDetector(Key, Lane, Pos)`` /
+    # ``RemoveDetector(obj)`` -- the SAME "purpose-built native Add/Remove,
+    # COM-create over XML injection" shape Q4 unit (2)'s measurement infra
+    # already established, with the SAME two landmines:
+    #
+    # **Landmine 1 (pywin32 marshalling, re-confirmed):** both Add methods'
+    # ``Lane`` param needs the REAL ``Net.Links...Lanes.ItemByKey(...)``
+    # object -- passing the ``"<link> <lane>"`` string token Vissim's own
+    # saved XML uses raises ``TypeError: The Python instance can not be
+    # converted to a COM object`` (live-verified both ways). Reused verbatim:
+    # :meth:`_lane_by_index` (the SAME helper ``set_lane_blocked_vehicle_
+    # classes``/``add_data_collection_point`` already resolve a Lane through).
+    #
+    # **Landmine 2 (the FOURTH display-unit confirmation):** ``Pos`` on BOTH
+    # Add calls AND ``Length`` on a Detector are network-display-unit-typed --
+    # live-verified on Camden (FEET): passing ``Pos=15.0``/``Length=4.5``
+    # saved as ``pos="4.572"``/``length="1.3716000000000002"`` (exactly
+    # 15.0/4.5 * 0.3048). Reused verbatim: :meth:`_length_m_to_com`/
+    # :meth:`_length_com_to_m`.
+    #
+    # **The signal-head reference question (new to this unit).** A signal
+    # head's saved XML carries ONE composite attribute, ``sg="<sc_no>
+    # <sg_no>"`` -- there is no separate ``sc``/controller attribute at all
+    # (a signal group's own identity is already scoped to its controller,
+    # matching :meth:`_signal_group_by_key`'s existing ``SGs.ItemByKey``
+    # precedent). Live-verified this does NOT accept the composite STRING on
+    # write (``SetAttValue('SG', '1 22')`` -> "is not a valid key") nor
+    # exists under any other attribute id tried (``SigGroup``/
+    # ``SignalGroup`` both raise "Could not find attribute") -- the ONLY
+    # working write is ``SetAttValue('SG', <SG COM object>)``, resolved via
+    # the SAME :meth:`_signal_group_by_key` helper ``set_signal_green_split``
+    # already uses. Readback (``AttValue('SG')``) returns the HYPHENATED
+    # ``"1-22"`` COM form -- the SAME hyphen-vs-space landmine
+    # ``get_data_collection_point``'s own ``Lane`` readback already
+    # documents (``AttValue('Lane')`` here also returns ``"10023-1"``,
+    # hyphenated) -- split via ``.partition("-")``, never a literal-space
+    # split, on any COM readback.
+    #
+    # **The detector controller-wiring question (new to this unit).**
+    # Resolves the pre-existing catalog note ("port numbers bind detectors
+    # to external controllers", constraints.py's #35 docstring) into an
+    # exact schema: TWO flat, independently-writable scalar attributes,
+    # ``SC`` (the owning signal controller's plain ``no`` -- an INT, no COM
+    # object needed, unlike the signal head's own ``SG``) and ``PortNo``
+    # (the detector's port/channel number on that controller). Every real
+    # detector in every 2026 example network that has one carries BOTH
+    # (0/826 missing either, static scan) -- there is no "unbound" detector
+    # in the wild, even on controllers with zero vehicle signal heads at all
+    # (e.g. Air Taxi Vertiport's railway-crossing/gate controllers still
+    # populate ``sc``) -- but neither is required by COM itself, so both stay
+    # optional params here (the caller-facing tool validates them as an
+    # all-or-nothing pair; see ``tools_edit.add_detector``).
+    #
+    # **Reference-map finding (probe [1b.9]):** nothing else in the schema
+    # references a signal head or detector by its own ``no`` (0/2240+
+    # coincidental small-integer collisions on either scan, all traced to
+    # unrelated elements) -- both are LEAF objects like queue counters/
+    # travel-time sections, so neither remove method below needs a
+    # reference-integrity check of its own. The OTHER direction (signal
+    # heads/detectors THEMSELVES reference a lane, and must not be left
+    # dangling when a lane/connector is removed) is handled in
+    # ``services.inpx_structure.LANE_TOKEN_REFERENCE_SITES``, extended this
+    # unit -- see that module's own comment.
+    # ---------------------------------------------------------------------
+
+    def available_signal_head_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.SignalHeads)
+
+    def available_detector_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.Detectors)
+
+    def add_signal_head(
+        self, link_no: int, lane_index: int, pos_m: float, sc_no: int, sg_no: int, name: str = ""
+    ) -> dict[str, Any]:
+        """Create a signal head on lane ``lane_index`` of ``link_no`` at
+        ``pos_m`` metres, wired to signal group ``sg_no`` of controller
+        ``sc_no``. Both the lane and the signal group are resolved to real
+        COM objects before the Add call (landmine 1 above); a bogus
+        ``sc_no``/``sg_no`` fails CLOSED via :meth:`_item_by_key`/
+        :meth:`_signal_group_by_key`'s own structured errors, naming the
+        controller's real available signal-group numbers."""
+        try:
+            lane = self._lane_by_index(link_no, lane_index)
+            signal_controller = self._item_by_key(
+                self.vissim.Net.SignalControllers,
+                sc_no,
+                "Signal controller",
+                self.available_signal_controller_nos(),
+            )
+            sg = self._signal_group_by_key(signal_controller, sc_no, sg_no)
+            existing = self.available_signal_head_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            pos_com = self._length_m_to_com(float(pos_m), self._net_unit_length())
+            head = self.vissim.Net.SignalHeads.AddSignalHead(new_no, lane, pos_com)
+            head.SetAttValue("SG", sg)
+            if name:
+                head.SetAttValue("Name", name)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a signal head on link {link_no} lane {lane_index} at pos {pos_m} "
+                f"wired to SC {sc_no} SG {sg_no}: {exc}"
+            ) from exc
+        return self.get_signal_head(new_no)
+
+    def remove_signal_head(self, no: int) -> None:
+        try:
+            head = self._item_by_key(
+                self.vissim.Net.SignalHeads, no, "Signal head", self.available_signal_head_nos()
+            )
+            self.vissim.Net.SignalHeads.RemoveSignalHead(head)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove signal head {no}: {exc}") from exc
+
+    def get_signal_head(self, no: int) -> dict[str, Any]:
+        try:
+            head = self._item_by_key(
+                self.vissim.Net.SignalHeads, no, "Signal head", self.available_signal_head_nos()
+            )
+            unit = self._net_unit_length()
+            # Lane/SG both read back HYPHENATED ("10023-1"/"1-22") -- landmine
+            # 2's own comment above -- split on the FIRST "-" only (link/sc
+            # numbers never contain one).
+            lane_link, _, lane_idx = str(head.AttValue("Lane") or "").partition("-")
+            sg_sc, _, sg_no = str(head.AttValue("SG") or "").partition("-")
+            return {
+                "no": no,
+                "name": str(head.AttValue("Name") or ""),
+                "link": lane_link,
+                "lane_index": int(lane_idx) if lane_idx.isdigit() else None,
+                "pos": self._length_com_to_m(float(head.AttValue("Pos")), unit),
+                "sc": sg_sc,
+                "sg": sg_no,
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read signal head {no}: {exc}") from exc
+
+    def add_detector(
+        self,
+        link_no: int,
+        lane_index: int,
+        pos_m: float,
+        length_m: float = 4.5,
+        sc_no: int | None = None,
+        port_no: int | None = None,
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Create a detector on lane ``lane_index`` of ``link_no`` at
+        ``pos_m`` metres, ``length_m`` long (MRWA Appendix A default 4.5 m --
+        see ``tools_edit.add_detector``'s own docstring for the citation).
+        ``sc_no``/``port_no`` wire the detector to an external controller's
+        port (both plain scalars, no COM object needed for either -- unlike
+        the signal head's own ``SG``) -- an all-or-nothing pair enforced by
+        the caller (``tools_edit.AddDetectorParams``), not this method. A
+        bogus ``sc_no`` fails CLOSED via :meth:`_item_by_key`'s own
+        structured error; ``port_no`` has no existence check anywhere in
+        Vissim's own object model (it is just an integer field inside the
+        controller's own opaque wiring, not a queryable collection) so an
+        unused/duplicate port is accepted silently, matching the guardrail
+        doctrine's "Vissim almost never refuses a bad edit" thesis -- not a
+        gap this method can close.
+
+        **Live-caught landmine (backend/tools/signal_heads_detectors_live_
+        check.py, Phase A):** when ``sc_no``/``port_no`` are BOTH ``None``
+        (the caller never asked to wire a controller), Vissim's own
+        ``AddDetector`` does NOT leave the saved ``sc``/``portNo``
+        attributes blank -- it silently assigns its own default (observed
+        live on Urban Intersection Beijing.CN: ``SC=1``/``PortNo=1``, the
+        network's first controller). ``tools_edit.add_detector`` deliberately
+        does NOT compare against this surprise value (its own
+        written_value/readback_value only ever include ``sc``/``port_no``
+        when the caller actually supplied them) -- see that tool's own
+        comment for why a caller-omitted field must never become an
+        unverifiable claim."""
+        try:
+            lane = self._lane_by_index(link_no, lane_index)
+            existing = self.available_detector_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            unit = self._net_unit_length()
+            pos_com = self._length_m_to_com(float(pos_m), unit)
+            detector = self.vissim.Net.Detectors.AddDetector(new_no, lane, pos_com)
+            detector.SetAttValue("Length", self._length_m_to_com(float(length_m), unit))
+            if sc_no is not None:
+                self._item_by_key(
+                    self.vissim.Net.SignalControllers,
+                    sc_no,
+                    "Signal controller",
+                    self.available_signal_controller_nos(),
+                )
+                detector.SetAttValue("SC", sc_no)
+            if port_no is not None:
+                detector.SetAttValue("PortNo", port_no)
+            if name:
+                detector.SetAttValue("Name", name)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a detector on link {link_no} lane {lane_index} at pos {pos_m}: {exc}"
+            ) from exc
+        return self.get_detector(new_no)
+
+    def remove_detector(self, no: int) -> None:
+        try:
+            detector = self._item_by_key(
+                self.vissim.Net.Detectors, no, "Detector", self.available_detector_nos()
+            )
+            self.vissim.Net.Detectors.RemoveDetector(detector)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove detector {no}: {exc}") from exc
+
+    def get_detector(self, no: int) -> dict[str, Any]:
+        try:
+            detector = self._item_by_key(
+                self.vissim.Net.Detectors, no, "Detector", self.available_detector_nos()
+            )
+            unit = self._net_unit_length()
+            lane_link, _, lane_idx = str(detector.AttValue("Lane") or "").partition("-")
+            sc_raw = detector.AttValue("SC")
+            port_raw = detector.AttValue("PortNo")
+            sc_str = str(sc_raw) if sc_raw not in (None, "") else ""
+            try:
+                port_int = int(port_raw) if port_raw not in (None, "") else None
+            except (TypeError, ValueError):
+                port_int = None
+            return {
+                "no": no,
+                "name": str(detector.AttValue("Name") or ""),
+                "link": lane_link,
+                "lane_index": int(lane_idx) if lane_idx.isdigit() else None,
+                "pos": self._length_com_to_m(float(detector.AttValue("Pos")), unit),
+                "length": self._length_com_to_m(float(detector.AttValue("Length")), unit),
+                "sc": sc_str,
+                "port_no": port_int,
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read detector {no}: {exc}") from exc
+
     def set_route_relative_flow(
         self, decision_no: int, route_no: int, rel_flow: float, interval_no: int = 1
     ) -> None:

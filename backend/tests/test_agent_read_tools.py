@@ -123,6 +123,12 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_link_closure",
     "set_turn_ban",
     "remove_connector",
+    # Q4 unit (4) adds 4 signal-head + detector placement verbs (COM
+    # CREATE/REMOVE, see tools_edit.py's own docstring).
+    "add_signal_head",
+    "remove_signal_head",
+    "add_detector",
+    "remove_detector",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -2603,6 +2609,9 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "data_collection_points",
         "data_collection_measurements",
         "travel_time_sections",
+        # Q4 unit (4): signal-head + detector placement.
+        "signal_heads",
+        "detectors",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -2674,6 +2683,12 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         s["from_link"] == "" and s["from_pos"] is None and s["to_link"] == "" and s["to_pos"] is None
         for s in shadow["travel_time_sections"]
     )
+    # Q4 unit (4): the demo .inpx carries no <signalHeads>/<detectors>
+    # elements at all -- both shadow keys must still be present and
+    # well-formed (empty list, not absent/None), same shape as
+    # signals/conflict_areas/queue_counters above.
+    assert shadow["signal_heads"] == []
+    assert shadow["detectors"] == []
 
 
 def test_build_shadow_model_is_mtime_cached_across_repeat_calls():

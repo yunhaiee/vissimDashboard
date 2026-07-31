@@ -121,7 +121,13 @@ def test_health_check_runner_against_demo_dataset():
     # link_id/connector_no + closed/banned params, which a whole-network
     # dataset scan has no equivalent of, so it does not opt into the dataset
     # scan either, same shape as every addition above.
-    assert report["summary"]["edit_time_only_n"] == 78
+    # 79, not 78: Q4 unit (4) (signal-head + detector placement) added one
+    # preflight-only constraint, signal_head_detector_pos_out_of_range, for the
+    # unit's new add_signal_head/add_detector tools -- it needs a proposed
+    # action's own link/pos params, which a whole-network dataset scan has no
+    # equivalent of, so it does not opt into the dataset scan either, same
+    # shape as every addition above.
+    assert report["summary"]["edit_time_only_n"] == 79
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

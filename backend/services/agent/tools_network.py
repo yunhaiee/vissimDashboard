@@ -558,6 +558,76 @@ def _parse_travel_time_sections(root: ET.Element) -> list[dict[str, Any]]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Q4 unit (4): signal-head + detector placement -- genesis milestone (b)'s
+# "hands". Shapes verified live/statically
+# (backend/tools/probe_signal_heads_detectors.py, static re-scan of all 25
+# real Vissim 2026 example networks + live COM against Urban Intersection
+# Beijing.CN/Toll Plaza Camden.US): a signal head is the SAME lane-TOKEN+pos
+# shape reducedSpeedArea/priorityRule/dataCollectionPoint already use
+# (:func:`_parse_lane_token`), PLUS one composite signal-group reference,
+# ``sg="<sc_no> <sg_no>"`` (space-separated in the XML -- NOT the hyphenated
+# ``"1-22"`` form live COM's own ``AttValue('SG')`` readback uses, same
+# space-vs-hyphen split ``_parse_lane_token``'s own docstring already
+# documents for ``Lane``). A detector is the same lane-TOKEN+pos+length shape
+# (mirrors ``reducedSpeedArea``'s own ``with_length`` convention in
+# ``inpx_parser.py``), PLUS two FLAT controller-wiring attributes, ``sc``
+# (plain controller number) and ``portNo`` (port/channel number) -- resolving
+# the pre-existing catalog note "port numbers bind detectors to external
+# controllers" (constraints.py's #35 docstring) into an exact schema.
+# ---------------------------------------------------------------------------
+
+
+def _parse_signal_heads(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, link, lane_index, pos, sc, sg}`` per
+    ``<signalHead>``. ``sc``/``sg`` split the single composite ``sg="<sc_no>
+    <sg_no>"`` attribute -- a signal head carries NO separate controller
+    attribute of its own (the signal group's own identity is already scoped
+    to its controller)."""
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//signalHeads/signalHead"):
+        link_id, lane_no = _parse_lane_token(el.get("lane"))
+        sc_no, sg_no = _parse_lane_token(el.get("sg"))
+        result.append(
+            {
+                "no": el.get("no", ""),
+                "name": el.get("name", "") or "",
+                "link": link_id,
+                "lane_index": int(lane_no) if lane_no.isdigit() else None,
+                "pos": _coerce_float_or_none(el.get("pos")),
+                "sc": sc_no,
+                "sg": sg_no,
+            }
+        )
+    return result
+
+
+def _parse_detectors(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, link, lane_index, pos, length, sc, port_no}`` per
+    ``<detector>``. ``sc``/``port_no`` are the detector's controller-wiring
+    attributes -- BOTH flat scalars (unlike a signal head's composite ``sg``
+    token), empty/``None`` when the detector is unwired (never observed on a
+    real example network, but not assumed either -- see
+    ``vissim_com.VissimController.add_detector``'s own docstring)."""
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//detectors/detector"):
+        link_id, lane_no = _parse_lane_token(el.get("lane"))
+        port_raw = (el.get("portNo") or "").strip()
+        result.append(
+            {
+                "no": el.get("no", ""),
+                "name": el.get("name", "") or "",
+                "link": link_id,
+                "lane_index": int(lane_no) if lane_no.isdigit() else None,
+                "pos": _coerce_float_or_none(el.get("pos")),
+                "length": _coerce_float_or_none(el.get("length")),
+                "sc": (el.get("sc") or "").strip(),
+                "port_no": int(port_raw) if port_raw.isdigit() else None,
+            }
+        )
+    return result
+
+
 def _parse_evaluation_config(root: ET.Element) -> dict[str, Any]:
     """{present, net_perf_eval_act, link_eval_act, queue_eval_act,
     ln_chg_eval_act, eval_interval_s} from the .inpx's top-level
@@ -2323,6 +2393,10 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         "data_collection_points": _parse_data_collection_points(root),
         "data_collection_measurements": _parse_data_collection_measurements(root),
         "travel_time_sections": _parse_travel_time_sections(root),
+        # Q4 unit (4): signal-head + detector placement -- see each parser's
+        # own docstring.
+        "signal_heads": _parse_signal_heads(root),
+        "detectors": _parse_detectors(root),
         "routing_decisions": routing_decisions,
         "routes": _flatten_routes(routing_decisions),
         "vehicle_compositions": vehicle_compositions,

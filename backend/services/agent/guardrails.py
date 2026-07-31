@@ -624,6 +624,22 @@ _ALWAYS_EXEMPT_FIELDS: dict[str, frozenset[str]] = {
     # link_behavior_type_assignments#1.default and was refused+rolled-back
     # by the real orchestrator before this fix.
     "link_behavior_type_assignments": frozenset({"link_count"}),
+    # Q4 unit (4), LIVE-CAUGHT (backend/tools/signal_heads_detectors_live_
+    # check.py, Phase B): a signal group's own head COUNT is embedded in TWO
+    # places neither add_signal_head/remove_signal_head ever writes
+    # directly -- ``signals[].phases[].signal_groups`` (signal_parser's own
+    # "SG22 (3 heads)" label text, tools_network._signal_to_contract_shape's
+    # "phases" field) and ``signal_program_splits[].head_count``
+    # (tools_network._flatten_signal_program_splits) -- both PURELY DERIVED
+    # by counting real ``<signalHead sg="...">`` elements
+    # (signal_parser._build_signal_head_index), matching every precedent
+    # above exactly. Reproduced live: a genuine, correct add_signal_head
+    # false-positived as "something else moved" on signals#1:phases AND
+    # signal_program_splits#1.1.22:head_count/#1.2.22:head_count (both
+    # programs sharing the same physical controller) and was
+    # refused+rolled-back by the real orchestrator before this fix.
+    "signals": frozenset({"phases"}),
+    "signal_program_splits": frozenset({"head_count"}),
 }
 
 

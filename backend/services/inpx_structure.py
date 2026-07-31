@@ -357,6 +357,21 @@ LANE_TOKEN_REFERENCE_SITES: tuple[ReferenceSite, ...] = (
     # reference, "intLink" references a whole LINK, not a specific lane).
     ReferenceSite("priority rule", ".//priorityRule", "lane"),
     ReferenceSite("priority rule conflict marker", ".//priorityRule/conflictMarker", "lane"),
+    # Q4 unit (4): signal-head + detector placement. Both carry the SAME
+    # space-separated "<link> <lane>" XML token on their own "lane" attribute
+    # (verified live/statically, backend/tools/probe_signal_heads_detectors.py
+    # across all 25 real Vissim 2026 example networks + live COM against
+    # Urban Intersection Beijing.CN/Toll Plaza Camden.US) -- so a lane
+    # structurally removed by remove_last_lane/remove_connector (v2b units
+    # (1)/(3)) while a signal head or detector still references it is now
+    # caught by this registry BEFORE either of those pre-existing removal
+    # verbs ever touches the file, exactly like reducedSpeedArea/priorityRule
+    # above. Neither object type existed in this codebase's shadow model
+    # before this unit, so this entry closes a real, previously-unreachable
+    # gap in those two verbs' own reference-integrity coverage -- not merely
+    # future-proofing for a hypothetical.
+    ReferenceSite("signal head", ".//signalHeads/signalHead", "lane"),
+    ReferenceSite("detector", ".//detectors/detector", "lane"),
 )
 
 

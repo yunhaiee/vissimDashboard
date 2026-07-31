@@ -741,6 +741,40 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "connector_no",
     },
+    # Q4 unit (4): signal-head + detector placement. Both ADD tools' PRIMARY
+    # target is the link they place against (mirrors add_queue_counter/
+    # add_data_collection_point's own precedent exactly) -- add_signal_head's
+    # sc_no/sg_no and add_detector's optional sc_no get NO dedicated
+    # preflight Finding here (same deliberate, documented scope cut as
+    # add_travel_time_section's to_link/add_data_collection_measurement's
+    # point_nos: a bogus one fails closed as a tool_execution_error via
+    # vissim_com.py's own structured errors instead). Each REMOVE tool's
+    # target is the object's own "no" in the new shadow-model list this unit
+    # added (tools_network._parse_signal_heads/_parse_detectors).
+    "add_signal_head": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_no",
+    },
+    "remove_signal_head": {
+        "object_class": "signal_heads",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
+    "add_detector": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_no",
+    },
+    "remove_detector": {
+        "object_class": "detectors",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -764,6 +798,9 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
         "ko": "데이터 수집 측정", "en": "data collection measurement", "ja": "データ収集測定",
     },
     "travel_time_sections": {"ko": "통행시간 구간", "en": "travel time section", "ja": "旅行時間区間"},
+    # Q4 unit (4): signal-head + detector placement.
+    "signal_heads": {"ko": "신호 헤드", "en": "signal head", "ja": "信号ヘッド"},
+    "detectors": {"ko": "검지기", "en": "detector", "ja": "検知器"},
 }
 
 
@@ -1036,6 +1073,11 @@ register(
             "remove_data_collection_measurement",
             "add_travel_time_section",
             "remove_travel_time_section",
+            # Q4 unit (4): signal-head + detector placement.
+            "add_signal_head",
+            "remove_signal_head",
+            "add_detector",
+            "remove_detector",
         ],
         phase="preflight",
         tier="refuse",
@@ -8202,6 +8244,91 @@ register(
         phase="preflight",
         tier="refuse",
         check=_check_measurement_infra_pos_out_of_range,
+        message_ko="위치 {pos}m가 링크 {link_id}의 길이(0~{length}m) 범위를 벗어났습니다.",
+        message_en="Position {pos} m falls outside link {link_id}'s own length (0-{length} m).",
+        message_ja="位置 {pos}m がリンク {link_id} の長さ(0〜{length}m)の範囲外です。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# signal_head_detector_pos_out_of_range (refuse, preflight) -- Q4 unit (4)'s
+# ONE new constraint (this unit's own "constraints.py minimal" instruction:
+# _TOOL_TARGET_SPEC entries above + at most one small constraint here;
+# everything else lives in services/vissim_com.py and
+# services/agent/tools_edit.py, per those modules' own comments).
+#
+# Mirrors measurement_infra_pos_out_of_range's own shape exactly (refuse
+# pos < 0 or > link length -- Vissim itself does not refuse an out-of-range
+# Pos on either Add method, untested live by this unit's own probe, same
+# defensive "Vissim almost never refuses a bad edit" reasoning) -- kept as
+# its OWN constraint id/table rather than folded into the measurement-infra
+# one, so add_signal_head/add_detector's own applies_to list stays
+# independent of a sibling unit's table. A detector's own length_m and a
+# zone running past the link's own end (pos + length_m > link length) are
+# DELIBERATELY NOT checked here -- same "constraints.py minimal" scope cut
+# measurement_infra_pos_out_of_range's own docstring already applies to a
+# queue counter's proximity to the nearest stop line: a real, documented gap
+# for a future unit, not silently assumed safe. A caller-omitted pos_m that
+# tools_edit.add_detector's own stop-line-proxy default computes is NOT
+# re-validated here either -- this check only ever sees the caller's own
+# literal params (matching every other preflight check in this file); that
+# tool's own defaulting logic refuses a negative result itself.
+# ---------------------------------------------------------------------------
+
+# {tool: (link_param, pos_param)} -- every tool here carries exactly one
+# (link, pos) pair (unlike add_travel_time_section's two).
+_SIGNAL_HEAD_DETECTOR_POS_FIELDS: dict[str, tuple[str, str]] = {
+    "add_signal_head": ("link_no", "pos_m"),
+    "add_detector": ("link_no", "pos_m"),
+}
+
+
+def _check_signal_head_detector_pos_out_of_range(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    tool = action.get("tool", "")
+    fields = _SIGNAL_HEAD_DETECTOR_POS_FIELDS.get(tool)
+    if fields is None:
+        return None
+    link_param, pos_param = fields
+
+    params = action.get("params", {})
+    pos = _coerce_number(params.get(pos_param))
+    if pos is None:
+        return None  # malformed/omitted param -- pydantic validation's or the tool's own job
+
+    link_id = str(params.get(link_param, ""))
+    link = _find_by_field(shadow_model.get("links", []), "id", link_id)
+    if link is None:
+        return None  # unknown link -- object_not_found's job (#1)
+    length = _coerce_number(link.get("length"))
+    if length is None:
+        return None  # CATALOG-GAP: link carries no resolvable length -- no claim possible
+    if 0 <= pos <= length:
+        return None
+
+    return Finding(
+        constraint_id="signal_head_detector_pos_out_of_range",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "signal_head_detector_pos_out_of_range",
+            pos=pos,
+            link_id=link_id,
+            length=length,
+        ),
+        details={"tool": tool, "field": pos_param, "link_id": link_id, "pos": pos, "link_length": length},
+    )
+
+
+register(
+    Constraint(
+        id="signal_head_detector_pos_out_of_range",
+        applies_to=list(_SIGNAL_HEAD_DETECTOR_POS_FIELDS.keys()),
+        phase="preflight",
+        tier="refuse",
+        check=_check_signal_head_detector_pos_out_of_range,
         message_ko="위치 {pos}m가 링크 {link_id}의 길이(0~{length}m) 범위를 벗어났습니다.",
         message_en="Position {pos} m falls outside link {link_id}'s own length (0-{length} m).",
         message_ja="位置 {pos}m がリンク {link_id} の長さ(0〜{length}m)の範囲外です。",
