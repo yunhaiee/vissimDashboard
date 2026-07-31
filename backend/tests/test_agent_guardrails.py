@@ -2678,3 +2678,189 @@ def test_postwrite_diff_still_flags_an_added_driving_behavior_for_a_tool_not_opt
         entry["object_class"] == "driving_behaviors" and entry["object_id"] == "7" and entry["change"] == "added"
         for entry in diff
     )
+
+
+# ---------------------------------------------------------------------------
+# diff_shadow_models / rollback_last_edit's dynamic diff exemption --
+# QUEUE 3 unit 7
+# ---------------------------------------------------------------------------
+
+
+def test_diff_shadow_models_reports_a_field_change_with_no_exemption():
+    from services.agent.guardrails import diff_shadow_models
+
+    before = _shadow_model(vehicle_inputs=[{"no": "1", "name": "VI1", "link": "101", "volume": 700.0}])
+    after = _shadow_model(vehicle_inputs=[{"no": "1", "name": "VI1", "link": "101", "volume": 500.0}])
+
+    diff = diff_shadow_models(before, after)
+
+    assert {
+        "object_class": "vehicle_inputs",
+        "object_id": "1",
+        "change": "field_changed",
+        "field": "volume",
+        "before": 700.0,
+        "after": 500.0,
+    } in diff
+
+
+def test_diff_shadow_models_reports_removed_and_added_objects():
+    from services.agent.guardrails import diff_shadow_models
+
+    before = _shadow_model(
+        des_speed_distributions=[_speed_distribution("50", [{"speed_kmh": 0.0, "cum_fraction": 0.0}])]
+    )
+    after = _shadow_model(des_speed_distributions=[])
+
+    diff = diff_shadow_models(before, after)
+
+    assert {"object_class": "des_speed_distributions", "object_id": "50", "change": "removed"} in diff
+    # Symmetric direction: swapping before/after turns the same difference
+    # into an "added" event.
+    assert {"object_class": "des_speed_distributions", "object_id": "50", "change": "added"} in diff_shadow_models(
+        after, before
+    )
+
+
+def test_diff_shadow_models_still_honors_the_blanket_always_exempt_fields():
+    # des_speed_distributions.referenced_by/reference_count are PURELY
+    # DERIVED (_ALWAYS_EXEMPT_FIELDS) -- even the unexempted, no-tool-context
+    # oracle must not treat their drift as a real difference, or rollback's
+    # own reported reverted_targets would demand postwrite exempt fields no
+    # tool ever legitimately "writes" in the first place.
+    from services.agent.guardrails import diff_shadow_models
+
+    dist_before = _speed_distribution("50", [{"speed_kmh": 0.0, "cum_fraction": 0.0}])
+    dist_before["reference_count"] = 2
+    dist_after = _speed_distribution("50", [{"speed_kmh": 0.0, "cum_fraction": 0.0}])
+    dist_after["reference_count"] = 1
+
+    diff = diff_shadow_models(
+        _shadow_model(des_speed_distributions=[dist_before]),
+        _shadow_model(des_speed_distributions=[dist_after]),
+    )
+
+    assert diff == []
+
+
+def test_postwrite_diff_is_silent_when_rollback_reports_an_expected_removal():
+    # The des_speed_distributions object rollback_last_edit's own
+    # diff_shadow_models call found gone must be exempt via expect_removed,
+    # NOT the field-level "fields" mechanism -- reproduces the real gap this
+    # unit found: reverting set_reduced_speed_area's own injected
+    # <speedDistribution> makes it disappear, and nothing in the STATIC
+    # per-tool spec table could ever have predicted that.
+    action = _action("rollback_last_edit")
+    before = _shadow_model(
+        des_speed_distributions=[_speed_distribution("50", [{"speed_kmh": 0.0, "cum_fraction": 0.0}])]
+    )
+    after = _shadow_model(des_speed_distributions=[])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action,
+        before,
+        after,
+        {
+            "written_value": "deadbeef",
+            "readback_value": "deadbeef",
+            "reverted_targets": [
+                {"object_class": "des_speed_distributions", "object_id": "50", "expect_removed": True}
+            ],
+        },
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_still_flags_an_unclaimed_removal():
+    action = _action("rollback_last_edit")
+    before = _shadow_model(
+        des_speed_distributions=[_speed_distribution("50", [{"speed_kmh": 0.0, "cum_fraction": 0.0}])]
+    )
+    after = _shadow_model(des_speed_distributions=[])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": "deadbeef", "readback_value": "deadbeef"}
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {"object_class": "des_speed_distributions", "object_id": "50", "change": "removed"} in diff
+
+
+def test_postwrite_diff_is_silent_for_rollback_when_reverted_targets_covers_the_only_change():
+    # rollback_last_edit's own postwrite exemption is DYNAMIC -- it comes
+    # from verification["reverted_targets"], never a static
+    # _WRITE_TARGET_FIELD_SPEC entry (rollback_last_edit has none). A clean
+    # rollback that only moved the field it claims must produce an EMPTY
+    # diff, exactly like any other tool's own target field.
+    action = _action("rollback_last_edit")
+    before = _shadow_model(vehicle_inputs=[{"no": "1", "name": "VI1", "link": "101", "volume": 700.0}])
+    after = _shadow_model(vehicle_inputs=[{"no": "1", "name": "VI1", "link": "101", "volume": 500.0}])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action,
+        before,
+        after,
+        {
+            "written_value": "deadbeef",
+            "readback_value": "deadbeef",
+            "reverted_targets": [{"object_class": "vehicle_inputs", "object_id": "1", "fields": ["volume"]}],
+        },
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_still_flags_a_rollback_that_moved_more_than_it_claimed():
+    # The dynamic exemption only covers what the tool ITSELF reports --
+    # anything else that changed is still genuine evidence, same "verify,
+    # don't trust" guarantee every other tool's exemption gives.
+    action = _action("rollback_last_edit")
+    before = _shadow_model(
+        vehicle_inputs=[{"no": "1", "name": "VI1", "link": "101", "volume": 700.0}],
+        links=[{"id": "101", "name": "Main St EB approach", "lanes": 3, "length": 280.0}],
+    )
+    after = _shadow_model(
+        vehicle_inputs=[{"no": "1", "name": "VI1", "link": "101", "volume": 500.0}],
+        links=[{"id": "101", "name": "MUTATED", "lanes": 3, "length": 280.0}],  # unclaimed drift
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action,
+        before,
+        after,
+        {
+            "written_value": "deadbeef",
+            "readback_value": "deadbeef",
+            "reverted_targets": [{"object_class": "vehicle_inputs", "object_id": "1", "fields": ["volume"]}],
+        },
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(entry["object_class"] == "links" and entry["field"] == "name" for entry in diff)
+
+
+def test_postwrite_diff_treats_rollback_with_no_reverted_targets_like_any_unmapped_change():
+    # No reverted_targets at all (e.g. the undone tool was itself unmapped,
+    # like set_reduced_speed_area, or history metadata was unavailable) --
+    # falls back to the conservative default: any tracked-object change is
+    # evidence, matching test_postwrite_diff_with_unmapped_tool_treats_any_
+    # change_as_evidence's own precedent for every other unmapped case.
+    action = _action("rollback_last_edit")
+    before = _shadow_model(vehicle_inputs=[{"no": "1", "name": "VI1", "link": "101", "volume": 700.0}])
+    after = _shadow_model(vehicle_inputs=[{"no": "1", "name": "VI1", "link": "101", "volume": 500.0}])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": "deadbeef", "readback_value": "deadbeef"}
+    )
+
+    assert report.blocking is True

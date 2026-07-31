@@ -4800,9 +4800,14 @@ def test_registry_size_matches_m3_1_catalog_port():
     # IN PLACE (real param names, a real reference-count check replacing a
     # gameable caller-supplied flag), not added; object_not_found already
     # existed and was EXTENDED in place to gate all three new tools, not
-    # added) == 88.
+    # added) == 88, + 1 (QUEUE 3 unit 7, 2026-07-31: rollback_invalidates_
+    # run_results -- NOT a §-numbered catalog entry, a defensive addition for
+    # the new rollback_last_edit tool: warns when a simulation was run after
+    # the edit being undone, since that run's KPIs no longer correspond to
+    # the model once the rollback lands -- see that constraint's own comment)
+    # == 89.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 88
+    assert len(get_registry()) == 89
 
 
 def test_registry_has_unique_ids():
@@ -4814,6 +4819,41 @@ def test_every_constraint_has_well_formed_ko_en_ja_templates():
     for constraint in get_registry():
         for template in (constraint.message_ko, constraint.message_en, constraint.message_ja):
             assert isinstance(template, str) and template.strip()
+
+
+# ---------------------------------------------------------------------------
+# rollback_invalidates_run_results (warn, postwrite) — QUEUE 3 unit 7
+# ---------------------------------------------------------------------------
+
+
+def test_rollback_invalidates_run_results_fires_when_run_since_edit_true():
+    action = _action("rollback_last_edit")
+    shadow = _shadow_model()
+
+    findings = run_checks("postwrite", action, shadow, {"run_since_edit": True})
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.constraint_id == "rollback_invalidates_run_results"
+    assert finding.tier == "warn"
+    _assert_well_formed_messages(finding, must_contain_ko="시뮬레이션")
+
+
+def test_rollback_invalidates_run_results_silent_when_no_run_since_edit():
+    action = _action("rollback_last_edit")
+    shadow = _shadow_model()
+
+    assert run_checks("postwrite", action, shadow, {"run_since_edit": False}) == []
+    assert run_checks("postwrite", action, shadow, {}) == []
+
+
+def test_rollback_invalidates_run_results_does_not_apply_to_other_tools():
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+    shadow = _shadow_model()
+
+    findings = run_checks("postwrite", action, shadow, {"run_since_edit": True})
+
+    assert not any(f.constraint_id == "rollback_invalidates_run_results" for f in findings)
 
 
 # ---------------------------------------------------------------------------

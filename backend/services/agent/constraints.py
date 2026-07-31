@@ -7763,3 +7763,63 @@ register(
         message_ja="走行挙動 '{driving_behavior_no}' が見つかりません。候補: {candidates}。",
     )
 )
+
+
+# ---------------------------------------------------------------------------
+# #89 rollback_invalidates_run_results (warn, postwrite) — QUEUE 3 unit 7
+#
+# Not a §-numbered catalog entry -- a defensive addition specific to the new
+# rollback_last_edit tool. run_since_edit (extra["run_since_edit"], sourced
+# from the tool's own verification payload -- see guardrails.py's
+# GuardrailEngine.postwrite and services.agent.rollback.RollbackPlan's own
+# docstring for how it is determined from the session's persisted history)
+# is True when a run_simulation call succeeded AFTER the edit rollback_last_
+# edit just undid. That run's KPIs were computed against a model that no
+# longer exists once the rollback lands -- Vissim will not say so (it has no
+# concept of "these numbers came from a network state you've since
+# reverted"), so this is exactly the class of silent lie the validation
+# layer exists to catch (docs/phase2/00-EXECUTION-GUIDE.md SS4). warn, not
+# refuse -- the rollback itself is correct and intended; the point is to
+# make sure nobody keeps trusting a now-stale run result, not to block
+# undoing a bad edit.
+# ---------------------------------------------------------------------------
+
+
+def _check_rollback_invalidates_run_results(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "rollback_last_edit":
+        return None
+    if not extra.get("run_since_edit"):
+        return None
+
+    return Finding(
+        constraint_id="rollback_invalidates_run_results",
+        tier="warn",
+        phase="postwrite",
+        messages=_render("rollback_invalidates_run_results"),
+        suggested_fix=None,
+        details={"run_since_edit": True},
+    )
+
+
+register(
+    Constraint(
+        id="rollback_invalidates_run_results",
+        applies_to=["rollback_last_edit"],
+        phase="postwrite",
+        tier="warn",
+        check=_check_rollback_invalidates_run_results,
+        message_ko="이 되돌리기 이전에 시뮬레이션을 실행한 적이 있습니다. 그 결과(KPI)는 방금 "
+        "되돌린 편집이 반영된 모델을 기준으로 계산된 것이므로, 지금 모델 상태와 더 이상 일치하지 "
+        "않습니다 -- 그 결과를 신뢰하지 말고, 필요하다면 다시 실행하세요.",
+        message_en="A simulation was run after the edit that was just undone. Those results "
+        "(KPIs) were computed against the model as it existed WITH that edit applied, so they "
+        "no longer correspond to the model now -- do not trust that run's numbers; re-run if "
+        "you need current results.",
+        message_ja="この巻き戻しより前にシミュレーションを実行したことがあります。その結果"
+        "（KPI）は、たった今取り消した編集が反映されたモデルを基準に計算されたものであり、"
+        "現在のモデル状態とはもはや一致しません -- その結果は信頼せず、必要であれば再度実行して"
+        "ください。",
+    )
+)

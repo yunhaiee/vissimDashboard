@@ -95,7 +95,14 @@ def test_health_check_runner_against_demo_dataset():
     # link_behavior_type_driving_behavior_target_not_found) -- all four need
     # a proposed action's own params, so none opts into the dataset scan
     # either, same shape as every addition above.
-    assert report["summary"]["edit_time_only_n"] == 74
+    # 75, not 74: QUEUE 3 unit 7 (2026-07-31) added one postwrite-only
+    # constraint for the new rollback_last_edit tool
+    # (rollback_invalidates_run_results) -- it needs a proposed rollback
+    # action's own postwrite extra (run_since_edit, sourced from the
+    # session's history), which a whole-network dataset scan has no
+    # equivalent of, so it does not opt into the dataset scan either, same
+    # shape as every addition above.
+    assert report["summary"]["edit_time_only_n"] == 75
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

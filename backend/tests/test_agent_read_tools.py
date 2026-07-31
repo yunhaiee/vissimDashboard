@@ -97,6 +97,8 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "duplicate_driving_behavior",
     "set_driving_behavior_parameter",
     "set_link_behavior_type_driving_behavior",
+    # QUEUE 3 unit 7 adds rollback_last_edit (no COM).
+    "rollback_last_edit",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md

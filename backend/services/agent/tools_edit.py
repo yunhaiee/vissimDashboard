@@ -124,12 +124,17 @@ exists for an XML-injected object).
 
 from __future__ import annotations
 
+import hashlib
+import os
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from services.agent import guardrails, rollback
 from services.agent.edit_session import get_active_edit_session
 from services.agent.toolkit import tool
+from services.agent.tools_network import build_shadow_model
+from services.datasets import get_active_inpx_path
 from services.simulation_network_builder import (
     inject_reduced_speed_area,
     reparse_reduced_speed_area,
@@ -1330,3 +1335,190 @@ def set_link_behavior_type_driving_behavior(
         f"behavior {params.driving_behavior_no}."
     )
     return {"message": message, "verification": verification}
+
+
+# ---------------------------------------------------------------------------
+# rollback_last_edit()
+#
+# QUEUE 3 unit 7. NOT a COM verb -- like set_reduced_speed_area, this tool
+# only ever touches session.working_inpx as a PATH; _ensure_connected() is
+# never called, so no Vissim instance is ever launched for a rollback. See
+# services.agent.rollback's own module docstring for the full
+# persistence-reality map (what "artifact versions already exist" concretely
+# means here: ArtifactManager's append-only edit_NNN.inpx chain + its
+# existing rollback_to(version), plus the session's persisted state.json
+# history for descriptive metadata) and the "one level of undo only" design
+# decision (a naive latest-1 scheme breaks the moment a rollback has itself
+# happened once -- see that module for why).
+#
+# Rollback is itself an edit: registered tier="write" like every other tool
+# in this module, so it goes through the EXACT SAME approval card, preflight,
+# and postwrite verification as any write (task requirement #1) -- nothing
+# in orchestrator.py needed to change for that; the gate/preflight/postwrite
+# sandwich is generic over tier, not over tool name.
+#
+# No params at all: the tool is entirely self-determining (it always targets
+# "whatever the last applied edit was"), so there is nothing for a caller to
+# supply, and nothing to get wrong.
+#
+# Verification-first (task requirement #2): the restore is a byte-for-byte
+# file copy from the archived version file (or the active dataset's source
+# .inpx for target_version == 0 -- ArtifactManager.rollback_to's own
+# pristine-clone special case), and BOTH sides of the copy are hashed
+# (SHA-256) independently -- written_value is the archived file's own hash,
+# readback_value is a FRESH hash of the working copy AFTER the copy landed.
+# These must agree byte-for-byte; constraint #6 (write_verification_failed,
+# applies_to ["*"]) already refuses+rolls-back on any mismatch, exactly like
+# every other tool in this module -- no bespoke verification path needed for
+# that half. The "nothing else moved" diff (guardrails.py's postwrite) does
+# NOT get a comparison against the archived shadow model for free (that
+# machinery is built to compare THIS action's own before/after, not an
+# arbitrary earlier snapshot) -- so this tool implements its own comparison
+# instead, per the task brief's own fallback: it reparses the working copy
+# both immediately before and immediately after the restore and computes the
+# FULL structural diff between the two (guardrails.diff_shadow_models --
+# reusing the SAME comparison logic postwrite itself uses, unexempted), then
+# reports every entry back as `verification["reverted_targets"]`.
+# guardrails.py's GuardrailEngine.postwrite reads that key to build a DYNAMIC
+# exemption covering exactly those object(s)/field(s)/addition(s)/
+# removal(s) (see that module's own comment), so a clean rollback's postwrite
+# diff comes back genuinely EMPTY, and any OTHER, unexplained drift still
+# refuses+rolls-back like it would for any other tool. This diff-driven
+# design (rather than looking the undone tool up in the static
+# _WRITE_TARGET_FIELD_SPEC table) is deliberate: it works uniformly whether
+# the undone tool is a plain field edit (e.g. set_vehicle_input_volume) or
+# one that ADDS a whole new object (e.g. set_reduced_speed_area's own
+# des_speed_distribution -- reverting it makes that object DISAPPEAR again,
+# which a static per-tool table has no vocabulary for at all), and it never
+# needs updating when a new write tool is added elsewhere in this module.
+#
+# Structured refusals (task requirement #3): rollback.compute_rollback_plan
+# raises one of three typed errors -- nothing to undo, target snapshot
+# missing, or "already at the rollback boundary" (requirement #4: only ONE
+# level of undo is supported, per rollback.py's own documented design
+# decision) -- each embedding a literal, greppable error_type marker exactly
+# like NoEditSessionError's own "no_edit_session" convention. Raised, never
+# returned as a dict, so toolkit.dispatch reports a genuine status: "error"
+# envelope (this module's own docstring explains why every failure path here
+# raises).
+#
+# Run interaction (task requirement #5): rollback.RollbackPlan.run_since_edit
+# is threaded into verification["run_since_edit"], which guardrails.py's
+# GuardrailEngine.postwrite forwards into constraints.py's extra dict for the
+# new rollback_invalidates_run_results warn-tier constraint (applies_to
+# ["rollback_last_edit"]) -- see that constraint's own comment.
+# ---------------------------------------------------------------------------
+
+
+class RollbackLastEditParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+def _describe_diff_entry(entry: dict[str, Any]) -> str:
+    label = f"{entry['object_class']}#{entry['object_id']}"
+    if entry["change"] == "field_changed":
+        # entry["before"] is the CURRENT (pre-rollback, about-to-be-undone)
+        # value; entry["after"] is the RESTORED (post-rollback, target) value
+        # -- diff_shadow_models(current_model, restored_model) puts current
+        # in the "before" slot, so this reads naturally as new -> old.
+        return f"{label}.{entry['field']}: {entry['before']!r} → {entry['after']!r}"
+    if entry["change"] == "removed":
+        return f"{label} (removed -- undoes an object the edit had added)"
+    return f"{label} (re-added -- restores an object the edit had removed)"  # change == "added"
+
+
+@tool(name="rollback_last_edit", tier="write", provider="edit", params=RollbackLastEditParams)
+def rollback_last_edit(params: RollbackLastEditParams) -> dict[str, Any]:
+    """Undo the most recently applied edit on the active edit session's working network, restoring it byte-for-byte to the state immediately before that edit -- refused with a clear reason when there is nothing to undo, the archived pre-edit snapshot cannot be found, or the immediately preceding action was itself an undo (only one level of rollback is supported at a time; make a new edit before rolling back again). Takes no parameters -- it always targets whichever edit was applied most recently."""
+    del params
+    session = _require_session()
+    work_dir = session.working_inpx.parent
+
+    # Raises NothingToRollBackError / RollbackTargetNotRecoverableError /
+    # RollbackAlreadyAtBoundaryError -- never returned as a dict (module
+    # docstring's "Failure shape" section).
+    plan = rollback.compute_rollback_plan(work_dir)
+
+    before_mtime = session.working_inpx.stat().st_mtime
+    current_model = build_shadow_model(session.working_inpx)
+
+    target_path = (
+        get_active_inpx_path()
+        if plan.target_version == 0
+        else rollback.version_path(work_dir, plan.target_version)
+    )
+    written_hash = rollback.restore_working_copy(session.working_inpx, target_path)
+    readback_hash = hashlib.sha256(session.working_inpx.read_bytes()).hexdigest()
+
+    # Cache-busting guard, mirrors ArtifactManager._refresh_shadow_model
+    # exactly -- build_shadow_model is mtime-keyed (tools_network.py), and a
+    # fast filesystem can copy-then-reparse within the SAME mtime tick, which
+    # would otherwise silently hand back the STALE pre-restore parse here.
+    after_mtime = session.working_inpx.stat().st_mtime
+    if after_mtime <= before_mtime:
+        after_mtime = before_mtime + 0.001
+        os.utime(session.working_inpx, (after_mtime, after_mtime))
+    restored_model = build_shadow_model(session.working_inpx)
+
+    # The tool's own oracle: exactly what did this restore change? (module
+    # docstring's "Verification-first" paragraph.)
+    diff = guardrails.diff_shadow_models(current_model, restored_model)
+
+    reverted_targets: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in diff:
+        key = (entry["object_class"], entry["object_id"])
+        bucket = reverted_targets.setdefault(
+            key,
+            {
+                "object_class": entry["object_class"],
+                "object_id": entry["object_id"],
+                "fields": [],
+                "expect_removed": False,
+                "expect_added": False,
+            },
+        )
+        if entry["change"] == "field_changed":
+            bucket["fields"].append(entry["field"])
+        elif entry["change"] == "removed":
+            bucket["expect_removed"] = True
+        elif entry["change"] == "added":
+            bucket["expect_added"] = True
+    for bucket in reverted_targets.values():
+        bucket["fields"] = sorted(set(bucket["fields"]))
+
+    target_descriptions = [_describe_diff_entry(entry) for entry in diff]
+
+    if plan.undone_tool:
+        undo_summary = plan.undone_tool
+        if target_descriptions:
+            undo_summary += f" ({'; '.join(target_descriptions)})"
+    else:
+        undo_summary = "the most recently applied edit (its own history record is unavailable)"
+
+    message = (
+        f"Rolled back to version {plan.target_version} (undid version {plan.reverted_from_version}: "
+        f"{undo_summary}). Restored working copy verified byte-for-byte identical to the archived "
+        "pre-edit snapshot."
+    )
+    if plan.run_since_edit:
+        message += (
+            " NOTE: a simulation was run after that edit -- its results no longer correspond to "
+            "the model now that it has been undone."
+        )
+
+    return {
+        "message": message,
+        "verification": {
+            "written_value": written_hash,
+            "readback_value": readback_hash,
+            "reverted_targets": list(reverted_targets.values()),
+            "run_since_edit": plan.run_since_edit,
+        },
+        "artifacts": {
+            "restored_to_version": plan.target_version,
+            "reverted_from_version": plan.reverted_from_version,
+            "undone_tool": plan.undone_tool,
+            "undone_params": plan.undone_params,
+            "history_available": plan.history_available,
+        },
+    }

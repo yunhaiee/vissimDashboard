@@ -80,6 +80,10 @@ EXPECTED_WRITE_TOOLS = {
     "duplicate_driving_behavior",
     "set_driving_behavior_parameter",
     "set_link_behavior_type_driving_behavior",
+    # QUEUE 3 unit 7: rollback_last_edit (no COM -- see tools_edit.py's own
+    # docstring; write-tier like every other tool in this set, gated exactly
+    # the same way).
+    "rollback_last_edit",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

@@ -2701,3 +2701,23 @@ pre-existing constraint defects fixed en route: #40 trusted a gameable caller fl
 reference-count based) and #33 checked param names that never existed (`axhze` et al.).
 Registry 84→88. Suite 1603/1/1 (controller re-ran; re-drove refuse-on-shared, range refuse,
 both not-found paths and the clean duplicate against the real model).
+
+## 2026-07-31 — Q3 unit ⑦: rollback_last_edit shipped — undo that never forgets
+
+The artifact layer already had everything file-level (append-only `edit_NNN.inpx` chain,
+byte-identical `rollback_to`, version counter that never overwrites history); what was missing
+was metadata — which tool produced which version, and whether the latest version IS a rollback.
+`rollback.py` recovers that from the already-persisted `state.json` history rather than adding
+a new persistence mechanism. **One-level undo with an explicit boundary, deliberately:** with
+no predecessor pointer, a naive `latest−1` stack would REDO the undone edit on the second
+invocation (undoing v2→v1 creates v3 whose content equals v1; `latest−1` from v3 is v2). A
+second consecutive rollback refuses with a clear reason; a fresh edit resets the boundary.
+Matching reality beats faking a stack. Rollback is itself a write — same approval, same
+postwrite "nothing else moved" check, via a new diff-driven dynamic exemption
+(`diff_shadow_models`) since its target is whatever the UNDONE tool touched, including object
+additions/removals no static spec table could name. A warn constraint
+(`rollback_invalidates_run_results`, #89) fires when a simulation ran since the undone edit.
+The ledger records the rollback AND which edit it undid — the audit trail never loses
+information by undoing. Registry 88→89. Suite 1632/1/1 (controller re-ran; independently
+verified byte-identical restore by sha256 on a throwaway clone — and found in passing that
+`save_version` refuses to snapshot a corrupt working copy, which is correct).

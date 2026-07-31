@@ -714,12 +714,42 @@ class GuardrailEngine:
             extra["written_value"] = payload["written_value"]
         if "readback_value" in payload:
             extra["readback_value"] = payload["readback_value"]
+        # QUEUE 3 unit 7: rollback_last_edit's own signal (see that tool's
+        # docstring) for the rollback_invalidates_run_results constraint —
+        # inert for every other tool (payload never carries this key).
+        if "run_since_edit" in payload:
+            extra["run_since_edit"] = payload["run_since_edit"]
 
         findings = list(
             constraints.run_checks("postwrite", action, after_model or {}, extra)
         )
 
-        diff_evidence = _nothing_else_moved_diff(action, before_model or {}, after_model or {})
+        # QUEUE 3 unit 7: rollback_last_edit's dynamic diff exemption (see
+        # diff_shadow_models's own docstring) — the tool reports exactly
+        # which object(s)/field(s)/addition(s)/removal(s) its OWN revert is
+        # expected to change, via `verification["reverted_targets"]`. Inert
+        # for every other tool (payload never carries this key, so
+        # extra_exemptions stays empty).
+        extra_exemptions: list[dict[str, Any]] = []
+        for entry in payload.get("reverted_targets") or ():
+            if not isinstance(entry, dict):
+                continue
+            object_class, object_id = entry.get("object_class"), entry.get("object_id")
+            if not object_class or object_id is None:
+                continue
+            extra_exemptions.append(
+                {
+                    "object_class": object_class,
+                    "object_id": str(object_id),
+                    "fields": frozenset(entry.get("fields") or ()),
+                    "expect_removed": bool(entry.get("expect_removed")),
+                    "expect_added": bool(entry.get("expect_added")),
+                }
+            )
+
+        diff_evidence = _nothing_else_moved_diff(
+            action, before_model or {}, after_model or {}, extra_exemptions or None
+        )
         if diff_evidence:
             findings.append(_diff_finding(diff_evidence))
 
@@ -766,6 +796,8 @@ def _diff_object_list(
     *,
     suppress_added: bool = False,
     always_exempt_fields: frozenset[str] = frozenset(),
+    exempt_removed_ids: frozenset[str] = frozenset(),
+    exempt_added_ids: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Structural diff of one shadow-model object list, id-keyed.
 
@@ -799,15 +831,32 @@ def _diff_object_list(
     ANY OTHER tool reassigns something to point at a different
     distribution) — no per-tool spec could enumerate every tool capable of
     moving such a reference, so the field itself is exempt everywhere.
+
+    ``exempt_removed_ids``/``exempt_added_ids`` (QUEUE 3 unit 7,
+    ``rollback_last_edit``) — specific object ids allowed to disappear/
+    appear without becoming evidence, ID-SPECIFIC (unlike ``suppress_added``,
+    which is a blanket per-object-CLASS "this tool is known to add here"
+    flag with no removal counterpart at all). A rollback that restores the
+    network to an earlier state can legitimately make an object that a LATER
+    edit created disappear again (e.g. undoing ``set_reduced_speed_area``
+    removes the ``des_speed_distributions`` entry it had added) — there is
+    no static, tool-name-keyed table that could pre-declare this the way
+    ``_ALLOWS_NEW_OBJECTS_IN`` does for a normal forward write, since which
+    id disappears depends on which earlier edit is being undone. Empty by
+    default (every pre-existing caller is unaffected).
     """
     before_by_id = _index_by_id(before, id_field)
     after_by_id = _index_by_id(after, id_field)
     evidence: list[dict[str, Any]] = []
 
     for obj_id in sorted(set(before_by_id) - set(after_by_id)):
+        if obj_id in exempt_removed_ids:
+            continue
         evidence.append({"object_class": object_class, "object_id": obj_id, "change": "removed"})
     if not suppress_added:
         for obj_id in sorted(set(after_by_id) - set(before_by_id)):
+            if obj_id in exempt_added_ids:
+                continue
             evidence.append({"object_class": object_class, "object_id": obj_id, "change": "added"})
     for obj_id in sorted(set(before_by_id) & set(after_by_id)):
         before_obj, after_obj = before_by_id[obj_id], after_by_id[obj_id]
@@ -929,8 +978,23 @@ def _paired_extra_target_id(extra_spec: dict[str, Any], action: dict[str, Any]) 
 
 
 def _nothing_else_moved_diff(
-    action: dict[str, Any], before_model: dict[str, Any], after_model: dict[str, Any]
+    action: dict[str, Any],
+    before_model: dict[str, Any],
+    after_model: dict[str, Any],
+    extra_exemptions: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    """``extra_exemptions`` (QUEUE 3 unit 7, ``rollback_last_edit``): a list
+    of ``{"object_class", "object_id", "fields", "expect_removed",
+    "expect_added"}`` dicts to exempt, computed by the CALLER
+    (``GuardrailEngine.postwrite``) rather than looked up from the static
+    ``_WRITE_TARGET_FIELD_SPEC`` table — a rollback's own target is dynamic
+    (whichever object(s)/field(s) the UNDONE edit touched, a different one
+    every time, possibly an addition or removal rather than a field change),
+    so it cannot be a fixed per-tool table entry the way every other write
+    tool's single, unchanging target field is. ``None``/empty for every
+    OTHER tool (the default), so this parameter is completely inert for
+    byte-compatible behavior with every pre-existing caller.
+    """
     tool = action.get("tool", "")
     spec = _WRITE_TARGET_FIELD_SPEC.get(tool)
     exemptions: dict[str, list[tuple[str, frozenset[str]]]] = {}
@@ -948,6 +1012,19 @@ def _nothing_else_moved_diff(
                 (extra_target_id, frozenset({extra_spec["value_field"], *extra_spec.get("coupled_fields", ())}))
             )
 
+    removed_ok: dict[str, set[str]] = {}
+    added_ok: dict[str, set[str]] = {}
+    for entry in extra_exemptions or ():
+        object_class = entry["object_class"]
+        object_id = entry["object_id"]
+        fields = entry.get("fields") or frozenset()
+        if fields:
+            exemptions.setdefault(object_class, []).append((object_id, frozenset(fields)))
+        if entry.get("expect_removed"):
+            removed_ok.setdefault(object_class, set()).add(object_id)
+        if entry.get("expect_added"):
+            added_ok.setdefault(object_class, set()).add(object_id)
+
     allow_new = _ALLOWS_NEW_OBJECTS_IN.get(tool, frozenset())
 
     evidence: list[dict[str, Any]] = []
@@ -961,9 +1038,34 @@ def _nothing_else_moved_diff(
                 exemptions.get(object_class),
                 suppress_added=object_class in allow_new,
                 always_exempt_fields=_ALWAYS_EXEMPT_FIELDS.get(object_class, frozenset()),
+                exempt_removed_ids=frozenset(removed_ok.get(object_class, ())),
+                exempt_added_ids=frozenset(added_ok.get(object_class, ())),
             )
         )
     return evidence
+
+
+def diff_shadow_models(
+    before_model: dict[str, Any], after_model: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The full structural "nothing else moved" diff between two shadow
+    models, with NO tool-specific target exemptions at all — every tracked
+    object class's every added/removed/changed-field difference is reported
+    (only the blanket, purely-derived ``_ALWAYS_EXEMPT_FIELDS`` are still
+    filtered, since those are never a real change ANY tool could have
+    intended — see that table's own comment).
+
+    QUEUE 3 unit 7: ``rollback_last_edit``'s own oracle. It calls this once
+    with (shadow model right before its restore, shadow model right after)
+    to discover exactly what its own restore changed, and reports the result
+    back via ``verification["reverted_targets"]`` — which
+    ``GuardrailEngine.postwrite`` then uses to build a DYNAMIC exemption (see
+    that method's own comment) for the SAME before/after pair it independently
+    re-diffs. A rollback's own claim and postwrite's own re-check therefore
+    always compare like-for-like: anything genuinely unexplained still shows
+    up as evidence exactly as it would for any other tool.
+    """
+    return _nothing_else_moved_diff({"tool": "", "params": {}}, before_model, after_model)
 
 
 def _values_differ(before: Any, after: Any) -> bool:
