@@ -54,6 +54,7 @@ def _shadow_model(
     travel_time_sections: list[dict[str, Any]] | None = None,
     signal_heads: list[dict[str, Any]] | None = None,
     detectors: list[dict[str, Any]] | None = None,
+    stop_signs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     shadow = {
         "links": links
@@ -159,6 +160,11 @@ def _shadow_model(
         shadow["signal_heads"] = signal_heads
     if detectors is not None:
         shadow["detectors"] = detectors
+    # stop_signs deliberately OMITTED by default too (Q4 unit (6)) -- same
+    # "most tests have nothing to do with this object class" reasoning as
+    # the object classes above.
+    if stop_signs is not None:
+        shadow["stop_signs"] = stop_signs
     return shadow
 
 
@@ -5087,9 +5093,23 @@ def test_registry_size_matches_m3_1_catalog_port():
     # new constraints, mirroring #2's own documented gap and set_link_
     # closure/set_turn_ban's own "is this actually a connector" inline
     # checks)
-    # == 94.
+    # == 94, + 1 (Q4 unit (6), stop-sign + priority-rule/conflict-area
+    # placement: add_priority_rule_marker_invalid -- NOT a #-numbered catalog
+    # entry, this unit's ONE new constraint per its own "constraints.py
+    # minimal" instruction: refuses a negative/non-finite gap_time_s/
+    # headway_m in ANY of add_priority_rule's own "markers" list entries,
+    # the creation-side counterpart of priority_rule_gap_headway_invalid's
+    # own "0 is legitimate, only negative refused" semantics; object_not_found
+    # already existed and was EXTENDED in place (new _TOOL_TARGET_SPEC/
+    # _OBJECT_CLASS_LABELS entries) to gate all four new tools, not added;
+    # add_stop_sign/add_priority_rule's own pos-bounds checks are TABLE
+    # WIRING onto the pre-existing signal_head_detector_pos_out_of_range
+    # check (new _SIGNAL_HEAD_DETECTOR_POS_FIELDS entries), not a new
+    # constraint either; conflict areas get no verb/constraint at all --
+    # confirmed non-creatable via COM, a documented finding, not a gap)
+    # == 95.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 94
+    assert len(get_registry()) == 95
 
 
 def test_registry_has_unique_ids():
@@ -6802,3 +6822,272 @@ def test_signal_head_detector_pos_out_of_range_does_not_apply_to_unrelated_tool(
     assert not any(
         f.constraint_id == "signal_head_detector_pos_out_of_range" for f in findings
     )
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (6): stop-sign + priority-rule/conflict-area PLACEMENT (creation).
+# object_not_found coverage for add_stop_sign/remove_stop_sign/add_priority_
+# rule/remove_priority_rule, table-wiring reuse of signal_head_detector_pos_
+# out_of_range for add_stop_sign/add_priority_rule, and this unit's own ONE
+# new constraint, add_priority_rule_marker_invalid.
+# ---------------------------------------------------------------------------
+
+
+def test_object_not_found_fires_for_missing_link_on_add_stop_sign():
+    shadow = _shadow_model()  # default fixture link id "101"
+    action = _action("add_stop_sign", link_no="999", lane_index=1, pos_m=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "object_not_found"]) == 1
+
+
+def test_object_not_found_silent_when_link_present_for_add_stop_sign():
+    shadow = _shadow_model()
+    action = _action("add_stop_sign", link_no="101", lane_index=1, pos_m=5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_fires_for_missing_stop_sign_on_remove():
+    shadow = _shadow_model(
+        stop_signs=[{"no": "1", "name": "", "link": "101", "lane_index": 1, "pos": 5.0, "sc": None, "sg": None}]
+    )
+    action = _action("remove_stop_sign", no="999")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "object_not_found"]) == 1
+
+
+def test_object_not_found_silent_when_stop_sign_present_for_remove():
+    shadow = _shadow_model(
+        stop_signs=[{"no": "1", "name": "", "link": "101", "lane_index": 1, "pos": 5.0, "sc": None, "sg": None}]
+    )
+    action = _action("remove_stop_sign", no="1")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_fires_for_missing_link_on_add_priority_rule():
+    shadow = _shadow_model()  # default fixture link id "101"
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="999",
+        stop_lane_index=1,
+        stop_pos_m=5.0,
+        markers=[{"link_no": "101", "lane_index": 1, "pos_m": 3.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "object_not_found"]) == 1
+
+
+def test_object_not_found_silent_when_stop_link_present_for_add_priority_rule():
+    shadow = _shadow_model()
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="101",
+        stop_lane_index=1,
+        stop_pos_m=5.0,
+        markers=[{"link_no": "101", "lane_index": 1, "pos_m": 3.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_does_not_fire_for_bogus_marker_link_on_add_priority_rule():
+    """Deliberate scope cut (this unit's own "constraints.py minimal"
+    instruction, mirroring add_travel_time_section's to_link precedent):
+    only stop_link_no is covered by object_not_found -- a bogus marker link
+    fails closed as a plain tool_execution_error from vissim_com.py
+    instead."""
+    shadow = _shadow_model()
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="101",
+        stop_lane_index=1,
+        stop_pos_m=5.0,
+        markers=[{"link_no": "999", "lane_index": 1, "pos_m": 3.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_fires_for_missing_priority_rule_on_remove():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)  # real rule "no" == "4"
+    action = _action("remove_priority_rule", no="999")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len([f for f in findings if f.constraint_id == "object_not_found"]) == 1
+
+
+def test_object_not_found_silent_when_priority_rule_present_for_remove():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("remove_priority_rule", no="4")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+# --- signal_head_detector_pos_out_of_range reuse (table wiring) ------------
+
+
+def test_signal_head_detector_pos_out_of_range_fires_for_negative_pos_on_add_stop_sign():
+    shadow = _shadow_model()  # link "101", length 280.0
+    action = _action("add_stop_sign", link_no="101", lane_index=1, pos_m=-5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "signal_head_detector_pos_out_of_range"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+
+
+def test_signal_head_detector_pos_out_of_range_fires_for_pos_beyond_link_length_on_add_priority_rule():
+    shadow = _shadow_model()  # link "101", length 280.0
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="101",
+        stop_lane_index=1,
+        stop_pos_m=280.1,
+        markers=[{"link_no": "101", "lane_index": 1, "pos_m": 3.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert len(
+        [f for f in findings if f.constraint_id == "signal_head_detector_pos_out_of_range"]
+    ) == 1
+
+
+def test_signal_head_detector_pos_out_of_range_silent_for_a_marker_own_pos_beyond_its_link():
+    """The marker's own (link, pos) inside "markers" is a deliberate scope
+    cut (see this unit's own docstring on _SIGNAL_HEAD_DETECTOR_POS_FIELDS)
+    -- only stop_link_no/stop_pos_m are checked."""
+    shadow = _shadow_model()  # link "101", length 280.0
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="101",
+        stop_lane_index=1,
+        stop_pos_m=5.0,
+        markers=[{"link_no": "101", "lane_index": 1, "pos_m": 9999.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "signal_head_detector_pos_out_of_range" for f in findings
+    )
+
+
+# --- add_priority_rule_marker_invalid (this unit's ONE new constraint) -----
+
+
+def test_add_priority_rule_marker_invalid_fires_for_negative_gap_time():
+    shadow = _shadow_model()
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="101",
+        stop_lane_index=1,
+        stop_pos_m=5.0,
+        markers=[{"link_no": "101", "lane_index": 1, "pos_m": 3.0, "gap_time_s": -1.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "add_priority_rule_marker_invalid"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details["marker_index"] == 1
+    assert matches[0].details["invalid_fields"] == {"gap_time_s": -1.0}
+    _assert_well_formed_messages(matches[0], must_contain_ko="gap_time_s")
+
+
+def test_add_priority_rule_marker_invalid_fires_for_negative_headway():
+    shadow = _shadow_model()
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="101",
+        stop_lane_index=1,
+        stop_pos_m=5.0,
+        markers=[{"link_no": "101", "lane_index": 1, "pos_m": 3.0, "headway_m": -0.5}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "add_priority_rule_marker_invalid"]
+    assert len(matches) == 1
+    assert matches[0].details["invalid_fields"] == {"headway_m": -0.5}
+
+
+def test_add_priority_rule_marker_invalid_silent_for_zero_the_most_common_real_value():
+    """Mirrors priority_rule_gap_headway_invalid's own "0 is legitimate"
+    semantics exactly -- 0 must NOT be refused."""
+    shadow = _shadow_model()
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="101",
+        stop_lane_index=1,
+        stop_pos_m=5.0,
+        markers=[{"link_no": "101", "lane_index": 1, "pos_m": 3.0, "gap_time_s": 0.0, "headway_m": 0.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "add_priority_rule_marker_invalid" for f in findings)
+
+
+def test_add_priority_rule_marker_invalid_silent_when_fields_omitted():
+    shadow = _shadow_model()
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="101",
+        stop_lane_index=1,
+        stop_pos_m=5.0,
+        markers=[{"link_no": "101", "lane_index": 1, "pos_m": 3.0}],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "add_priority_rule_marker_invalid" for f in findings)
+
+
+def test_add_priority_rule_marker_invalid_reports_each_bad_marker_by_index():
+    shadow = _shadow_model()
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="101",
+        stop_lane_index=1,
+        stop_pos_m=5.0,
+        markers=[
+            {"link_no": "101", "lane_index": 1, "pos_m": 3.0, "gap_time_s": 1.0},
+            {"link_no": "101", "lane_index": 2, "pos_m": 4.0, "gap_time_s": -2.0},
+        ],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "add_priority_rule_marker_invalid"]
+    assert len(matches) == 1
+    assert matches[0].details["marker_index"] == 2
+
+
+def test_add_priority_rule_marker_invalid_does_not_apply_to_other_tools():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=-1.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "add_priority_rule_marker_invalid" for f in findings)

@@ -118,6 +118,13 @@ EXPECTED_WRITE_TOOLS = {
     "add_link",
     "remove_link",
     "add_connector",
+    # Q4 unit (6): stop-sign + priority-rule/conflict-area placement (COM
+    # CREATE/REMOVE verbs -- see tools_edit.py's own docstring; no verb for
+    # conflict areas -- they are confirmed non-creatable via COM).
+    "add_stop_sign",
+    "remove_stop_sign",
+    "add_priority_rule",
+    "remove_priority_rule",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

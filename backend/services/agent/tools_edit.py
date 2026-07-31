@@ -987,6 +987,268 @@ def set_priority_rule_gap_headway(params: SetPriorityRuleGapHeadwayParams) -> di
 
 
 # ---------------------------------------------------------------------------
+# add_stop_sign(link_no, lane_index, pos_m, name="", sc_no=None, sg_no=None)
+# / remove_stop_sign(no)
+#
+# add_priority_rule(stop_link_no, stop_lane_index, stop_pos_m, markers) /
+# remove_priority_rule(no)
+#
+# Q4 unit (6) -- stop-sign + priority-rule/conflict-area PLACEMENT
+# (creation), the genesis counterpart to QUEUE 3 unit (2)'s gap/headway
+# SETTERS above. Probed before building
+# (backend/tools/probe_stop_signs_priority_placement.py, Roundabout
+# Buehl.DE clone): stop signs are a genuine native COM create/remove
+# (``AddStopSign``/``RemoveStopSign``), mirroring add_signal_head/
+# add_detector's own shape exactly.
+#
+# **Priority rules are NOT a native create -- the central finding of this
+# unit.** ``Net.PriorityRules.AddPriorityRule(Key, Lane, Pos,
+# ConflictMarkers)`` is a CONFIRMED SILENT NO-OP (live-verified exhaustively:
+# every plain-Python and explicit-VARIANT argument shape either raised or
+# returned ``None`` with NO exception while genuinely creating nothing,
+# checked against both ``Net.PriorityRules.GetAll()``'s own before/after id
+# set AND the saved .inpx). The real, working path is
+# ``DuplicatePriorityRule`` + per-marker ``AddConflictMarker``/
+# ``RemoveConflictMarker`` on the duplicate -- see
+# ``vissim_com.VissimController.add_priority_rule``'s own module comment for
+# the full mechanism and its two child-collection landmines (stale
+# ``ConflictMarkers`` caching; marker order is NOT append-order). This means
+# add_priority_rule REQUIRES an existing priority rule in the network to
+# duplicate as a structural template -- stated as a clear refusal, not
+# silently worked around, when none exists.
+#
+# **Conflict areas are the special case this unit's task brief asks about
+# and does NOT ship a verb for.** A type-library scan of
+# ``IConflictAreaContainer``/``IConflictAreaContainerBase`` (this unit's own
+# probe, Phase 1a) found NO Add/Remove method of any kind on either
+# interface -- only the read/set-attribute surface ``set_conflict_area_
+# status`` (Q3/Q4 units already shipped) already uses. This RE-CONFIRMS,
+# in the genesis-creation context specifically, what earlier units already
+# established (00-EXECUTION-GUIDE.md SS3.2, Q4 unit (5)'s own live
+# observation of 6 auto-created conflict areas from add_connector alone):
+# conflict areas are genuinely non-creatable/non-removable via COM, derived
+# purely from geometry. This family's deliverable is this DOCUMENTED
+# confirmation -- the existing ``set_conflict_area_status`` setter plus
+# ``_ALLOWS_NEW_OBJECTS_IN["add_link"/"add_connector"]``'s own recompute
+# exemptions (Q4 unit (5)) already cover the genesis flow end to end; no new
+# verb, no new exemption entry needed for THIS unit's own additions (neither
+# add_stop_sign nor add_priority_rule creates/removes links or connectors,
+# so neither can trigger the conflict-area recompute at all).
+# ---------------------------------------------------------------------------
+
+
+class AddStopSignParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_no: str
+    lane_index: int = Field(ge=1)
+    pos_m: float
+    name: str = ""
+    sc_no: str | None = None
+    sg_no: str | None = None
+
+    @model_validator(mode="after")
+    def _sc_and_sg_together(self) -> "AddStopSignParams":
+        if (self.sc_no is None) != (self.sg_no is None):
+            raise ValueError(
+                "add_stop_sign: sc_no and sg_no must be given together (a stop sign's optional "
+                "signal-group link is the (sc_no, sg_no) pair), or both omitted to add an "
+                "unwired stop sign."
+            )
+        return self
+
+
+@tool(name="add_stop_sign", tier="write", provider="edit", params=AddStopSignParams)
+def add_stop_sign(params: AddStopSignParams) -> dict[str, Any]:
+    """Add a stop sign on one lane of link_no at pos_m metres (COM AddStopSign), optionally wired to signal group sg_no of controller sc_no (SetAttValue('SG', <SG object>), mirroring add_signal_head's own wiring) on the active edit session's working network -- unsignalized-control genesis. sc_no/sg_no are NOT covered by the object_not_found preflight (see this module's own comment) -- a bogus controller or signal group fails closed as a tool_execution_error instead, naming the real available numbers."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_no, "link_no")
+    sc_no = _coerce_id(params.sc_no, "sc_no") if params.sc_no is not None else None
+    sg_no = _coerce_id(params.sg_no, "sg_no") if params.sg_no is not None else None
+    result = session.add_stop_sign(link_no, params.lane_index, params.pos_m, params.name, sc_no, sg_no)
+    session.persist()
+
+    written_value: dict[str, Any] = {
+        "link": params.link_no,
+        "lane_index": params.lane_index,
+        "pos": _round_pos_m(params.pos_m),
+    }
+    readback_value: dict[str, Any] = {
+        "link": result["link"],
+        "lane_index": result["lane_index"],
+        "pos": _round_pos_m(result["pos"]),
+    }
+    # sc/sg are only ever PART OF THE CLAIM when the caller actually asked
+    # to wire them -- mirrors add_detector's own sc_no/port_no precedent
+    # exactly (a caller-omitted field must never become an unverifiable
+    # claim; COM does not leave SG blank on an unwired stop sign -- it
+    # reads back None, which is not itself surprising, but this module
+    # still only ever compares what the caller actually asked for).
+    if params.sc_no is not None:
+        written_value["sc"] = params.sc_no
+        readback_value["sc"] = result.get("sc") or ""
+    if params.sg_no is not None:
+        written_value["sg"] = params.sg_no
+        readback_value["sg"] = result.get("sg") or ""
+    verification = {"written_value": written_value, "readback_value": readback_value}
+    message = (
+        f"Stop sign {result['no']} added on link {params.link_no} lane {params.lane_index} at "
+        f"{params.pos_m} m."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "name": result["name"]},
+    }
+
+
+class RemoveStopSignParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(name="remove_stop_sign", tier="write", provider="edit", params=RemoveStopSignParams)
+def remove_stop_sign(params: RemoveStopSignParams) -> dict[str, Any]:
+    """Remove a stop sign (COM RemoveStopSign) on the active edit session's working network -- stop signs are never referenced by another object (see services.inpx_structure.ID_BEARING_ELEMENTS/this unit's own corpus-wide static scan), so no reference-integrity check runs here."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+    session.remove_stop_sign(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "stop_signs", params.no)
+    verification = _remove_verification(params.no, still_present)
+    return {
+        "message": f"Stop sign {params.no} removed.",
+        "verification": verification,
+    }
+
+
+class PriorityRuleMarkerSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_no: str
+    lane_index: int = Field(ge=1)
+    pos_m: float
+    gap_time_s: float | None = None
+    headway_m: float | None = None
+
+
+class AddPriorityRuleParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stop_link_no: str
+    stop_lane_index: int = Field(ge=1)
+    stop_pos_m: float
+    markers: list[PriorityRuleMarkerSpec] = Field(min_length=1)
+
+
+@tool(name="add_priority_rule", tier="write", provider="edit", params=AddPriorityRuleParams)
+def add_priority_rule(params: AddPriorityRuleParams) -> dict[str, Any]:
+    """Create a priority rule at (stop_link_no, stop_lane_index, stop_pos_m) with one conflict marker per entry of markers (each {link_no, lane_index, pos_m, gap_time_s?, headway_m?}) on the active edit session's working network -- unsignalized-control genesis (the multi-marker case: a minor-road stop line yielding to two conflicting major-road lanes). Vissim's own AddPriorityRule is confirmed non-functional (silent no-op, live-verified) -- this REALLY duplicates an existing priority rule as a structural template (DuplicatePriorityRule), overrides its stop-line lane/pos, replaces its inherited marker(s) with the caller's own (AddConflictMarker/RemoveConflictMarker), and sets each marker's gap_time_s/headway_m via the SAME SetAttValue mechanism set_priority_rule_gap_headway already uses -- a marker whose gap_time_s/headway_m is omitted keeps Vissim's own out-of-the-box default (MinGapTime=3.0s/MinClear=5.0m, live-verified), reported in the result, never silently. REFUSES when the network has no existing priority rule to duplicate (a real, stated limitation -- genesis of the FIRST priority rule in an empty network is not supported by this verb). Each returned marker carries its REAL, readback-verified marker_index (Vissim's own marker ordering is NOT append-order -- see vissim_com.py's own module comment) for a follow-up set_priority_rule_gap_headway call to address it by. stop_link_no/each marker's link_no are NOT all covered by the object_not_found preflight (only stop_link_no is -- see this module's own comment) -- a bogus marker link fails closed as a tool_execution_error instead."""
+    session = _require_session()
+    stop_link_no = _coerce_id(params.stop_link_no, "stop_link_no")
+    marker_dicts: list[dict[str, Any]] = []
+    for marker in params.markers:
+        marker_dicts.append(
+            {
+                "link_no": _coerce_id(marker.link_no, "markers[].link_no"),
+                "lane_index": marker.lane_index,
+                "pos_m": marker.pos_m,
+                "gap_time_s": marker.gap_time_s,
+                "headway_m": marker.headway_m,
+            }
+        )
+    result = session.add_priority_rule(
+        stop_link_no, params.stop_lane_index, params.stop_pos_m, marker_dicts
+    )
+    session.persist()
+
+    # Per-marker CONDITIONAL claim, mirroring add_detector's own sc_no/
+    # port_no precedent: gap_time_s/headway_m only ever appear in the
+    # written/readback pair when the caller actually supplied them for that
+    # SPECIFIC marker -- an omitted field silently defaulting to Vissim's
+    # own 3.0s/5.0m must never become an unverifiable "the caller asked for
+    # this exact value" claim. result["markers"] is in the SAME order as
+    # params.markers (vissim_com.VissimController.add_priority_rule's own
+    # contract), even though each entry's own marker_index need not equal
+    # its list position.
+    written_markers: list[dict[str, Any]] = []
+    readback_markers: list[dict[str, Any]] = []
+    for marker, marker_result in zip(params.markers, result["markers"]):
+        w: dict[str, Any] = {
+            "link": marker.link_no,
+            "lane_index": marker.lane_index,
+            "pos": _round_pos_m(marker.pos_m),
+        }
+        r: dict[str, Any] = {
+            "link": marker_result["link"],
+            "lane_index": marker_result["lane_index"],
+            "pos": _round_pos_m(marker_result["pos"]),
+        }
+        if marker.gap_time_s is not None:
+            w["gap_time_s"] = marker.gap_time_s
+            r["gap_time_s"] = marker_result["gap_time_s"]
+        if marker.headway_m is not None:
+            w["headway_m"] = marker.headway_m
+            r["headway_m"] = marker_result["headway_m"]
+        written_markers.append(w)
+        readback_markers.append(r)
+
+    verification = {
+        "written_value": {
+            "link": params.stop_link_no,
+            "lane_index": params.stop_lane_index,
+            "pos": _round_pos_m(params.stop_pos_m),
+            "markers": written_markers,
+        },
+        "readback_value": {
+            "link": result["link"],
+            "lane_index": result["lane_index"],
+            "pos": _round_pos_m(result["pos"]),
+            "markers": readback_markers,
+        },
+    }
+    marker_desc = "; ".join(
+        f"marker {rm['marker_index']} on link {rm['link']} lane {rm['lane_index']} @ {rm['pos']}m "
+        f"(gap={rm['gap_time_s']}s, clearance={rm['headway_m']}m)"
+        for rm in result["markers"]
+    )
+    message = (
+        f"Priority rule {result['no']} added on link {params.stop_link_no} lane "
+        f"{params.stop_lane_index} at {params.stop_pos_m} m (duplicated from template rule "
+        f"{result['template_rule_no']}), with {marker_desc}."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": result["no"], "markers": result["markers"]},
+    }
+
+
+class RemovePriorityRuleParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(name="remove_priority_rule", tier="write", provider="edit", params=RemovePriorityRuleParams)
+def remove_priority_rule(params: RemovePriorityRuleParams) -> dict[str, Any]:
+    """Remove a priority rule AND every one of its own conflict markers atomically (COM RemovePriorityRule) on the active edit session's working network -- nothing else in the schema references a priority rule by its own no (verified via a corpus-wide static scan, this unit's own probe), so no reference-integrity check runs here."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+    session.remove_priority_rule(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "priority_rules", params.no)
+    verification = _remove_verification(params.no, still_present)
+    return {
+        "message": f"Priority rule {params.no} removed.",
+        "verification": verification,
+    }
+
+
+# ---------------------------------------------------------------------------
 # set_des_speed_distribution_points(distribution_no, points)
 #
 # QUEUE 3 (v2a) unit 3 -- the "legitimate CC1 route" showcase. ATOMIC

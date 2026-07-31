@@ -799,6 +799,47 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "from_link",
     },
+    # Q4 unit (6): stop-sign + priority-rule/conflict-area PLACEMENT
+    # (creation). add_stop_sign's PRIMARY target is the link it places
+    # against (mirrors add_signal_head/add_queue_counter's own precedent
+    # exactly) -- sc_no/sg_no get no dedicated preflight Finding here, same
+    # deliberate, documented scope cut as add_detector's optional sc_no.
+    # remove_stop_sign's target is the object's own "no" in the new
+    # "stop_signs" shadow-model list this unit added
+    # (tools_network._parse_stop_signs).
+    "add_stop_sign": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_no",
+    },
+    "remove_stop_sign": {
+        "object_class": "stop_signs",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
+    # add_priority_rule's PRIMARY target is stop_link_no (mirrors add_
+    # travel_time_section's own "primary here, deeper targets fail closed
+    # via COM instead" split exactly) -- each marker's own link_no gets no
+    # dedicated preflight Finding here, same deliberate, documented scope
+    # cut as add_data_collection_measurement's point_nos. remove_priority_
+    # rule's target is the EXISTING "priority_rules" object class QUEUE 3
+    # unit 2 already wired here for set_priority_rule_gap_headway, just a
+    # different param name ("no", matching every other remove_* tool's own
+    # convention, rather than "priority_rule_no").
+    "add_priority_rule": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "stop_link_no",
+    },
+    "remove_priority_rule": {
+        "object_class": "priority_rules",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -825,6 +866,8 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     # Q4 unit (4): signal-head + detector placement.
     "signal_heads": {"ko": "신호 헤드", "en": "signal head", "ja": "信号ヘッド"},
     "detectors": {"ko": "검지기", "en": "detector", "ja": "検知器"},
+    # Q4 unit (6): stop-sign + priority-rule/conflict-area placement.
+    "stop_signs": {"ko": "정지 표지판", "en": "stop sign", "ja": "一時停止標識"},
 }
 
 
@@ -1102,6 +1145,13 @@ register(
             "remove_signal_head",
             "add_detector",
             "remove_detector",
+            # Q4 unit (6): stop-sign + priority-rule/conflict-area placement
+            # (easy to forget -- unit (2)'s own review caught this once
+            # already).
+            "add_stop_sign",
+            "remove_stop_sign",
+            "add_priority_rule",
+            "remove_priority_rule",
         ],
         phase="preflight",
         tier="refuse",
@@ -6420,6 +6470,80 @@ register(
 
 
 # ---------------------------------------------------------------------------
+# add_priority_rule_marker_invalid (refuse, preflight) -- Q4 unit (6)'s ONE
+# new constraint (this unit's own "constraints.py minimal" instruction:
+# _TOOL_TARGET_SPEC entries + table wiring above + at most one small
+# constraint here; everything else lives in services/vissim_com.py and
+# services/agent/tools_edit.py, per those modules' own comments).
+#
+# The CREATION-side counterpart of priority_rule_gap_headway_invalid just
+# above -- same "0 is a legitimate, common real value; only negative/
+# non-finite is refused" semantics QUEUE 3 unit 2 already established
+# (13/20 real Murdoch conflict markers carry minGapTime="0"), extended from
+# a single (gap_time_s, headway_m) pair to add_priority_rule's own LIST of
+# per-marker pairs -- the shape mismatch (list vs scalar) is why this is a
+# distinct check rather than a widened applies_to on the existing one
+# (_check_priority_rule_gap_headway_invalid reads flat "gap_time_s"/
+# "headway_m" params; add_priority_rule's own live in "markers[i]").
+# ---------------------------------------------------------------------------
+
+
+def _check_add_priority_rule_marker_invalid(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> list[Finding]:
+    if action.get("tool") != "add_priority_rule":
+        return []
+
+    params = action.get("params", {})
+    markers = params.get("markers") or []
+    findings: list[Finding] = []
+    for idx, marker in enumerate(markers, start=1):
+        if not isinstance(marker, dict):
+            continue
+        bad_fields: dict[str, Any] = {}
+        for field_name in ("gap_time_s", "headway_m"):
+            raw = marker.get(field_name)
+            if raw is None:
+                continue
+            value = _coerce_number(raw)
+            if value is None or not math.isfinite(value) or value < 0:
+                bad_fields[field_name] = raw
+        if not bad_fields:
+            continue
+        fields_text = ", ".join(f"{k}={v}" for k, v in bad_fields.items())
+        findings.append(
+            Finding(
+                constraint_id="add_priority_rule_marker_invalid",
+                tier="refuse",
+                phase="preflight",
+                messages=_render(
+                    "add_priority_rule_marker_invalid", marker_index=idx, fields_text=fields_text
+                ),
+                suggested_fix={"min": "0 or greater", "must_be": "finite"},
+                details={"marker_index": idx, "invalid_fields": bad_fields},
+            )
+        )
+    return findings
+
+
+register(
+    Constraint(
+        id="add_priority_rule_marker_invalid",
+        applies_to=["add_priority_rule"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_add_priority_rule_marker_invalid,
+        message_ko="markers[{marker_index}]의 값이 유효하지 않습니다: {fields_text}. gap_time_s와 "
+        "headway_m은 모두 0 이상의 유한한 값이어야 합니다 (Vissim 자체가 음수를 거부합니다).",
+        message_en="markers[{marker_index}] has invalid value(s): {fields_text}. Both gap_time_s "
+        "and headway_m must be finite numbers >= 0 (Vissim itself rejects negative values).",
+        message_ja="markers[{marker_index}] の値が無効です: {fields_text}。gap_time_s と headway_m "
+        "は両方とも0以上の有限の値である必要があります(Vissim自体が負の値を拒否します)。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
 # priority_rule_gap_headway_implausible (warn, preflight) — QUEUE 3 unit 2
 #
 # Not a §-numbered catalog entry. The task brief's draft bounds ("critical
@@ -8322,9 +8446,21 @@ register(
 
 # {tool: (link_param, pos_param)} -- every tool here carries exactly one
 # (link, pos) pair (unlike add_travel_time_section's two).
+#
+# Q4 unit (6): "add_stop_sign"/"add_priority_rule" added -- pure table
+# wiring against this pre-existing, already-generic check (same field-pair
+# shape, same "Vissim itself does not refuse an out-of-range Pos, untested
+# live by this unit's own probe" reasoning), not a new constraint. Each
+# marker's own (link, pos) inside add_priority_rule's "markers" list is
+# DELIBERATELY NOT checked here -- same documented scope cut as add_
+# travel_time_section's own to_link/measurement_infra's queue-counter-
+# proximity gap; a bogus marker link/pos fails closed via COM instead (see
+# tools_edit.add_priority_rule's own docstring).
 _SIGNAL_HEAD_DETECTOR_POS_FIELDS: dict[str, tuple[str, str]] = {
     "add_signal_head": ("link_no", "pos_m"),
     "add_detector": ("link_no", "pos_m"),
+    "add_stop_sign": ("link_no", "pos_m"),
+    "add_priority_rule": ("stop_link_no", "stop_pos_m"),
 }
 
 

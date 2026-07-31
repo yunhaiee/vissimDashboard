@@ -181,7 +181,10 @@ the PAIRS and distribution-assignment line items).**
 - ✅ Detectors (placement/length) — shipped (Q4 ④, add/remove; MRWA defaults 2.0 m
   setback / 4.5 m length cited in-tool; sc/portNo wiring resolved; COM silently
   defaults unset fields — verification claims only what the caller supplied)
-- ⬜ Stop signs & priority rules (placement)
+- ✅ Stop signs & priority rules (placement) — shipped (Q4 ⑥: add/remove stop signs
+  native; **AddPriorityRule is a confirmed silent no-op** — creation goes through
+  DuplicatePriorityRule + marker replacement, so a zero-rule network cannot get its
+  first rule; conflict areas re-confirmed non-creatable, status-only)
 - ✅ Measurement infrastructure — shipped (Q4 ②, 8 verbs: add/remove queue counters,
   travel-time sections, data-collection points + measurements; COM-create with the
   spine's reference-integrity guard — COM itself does NOT refuse dangling removals;

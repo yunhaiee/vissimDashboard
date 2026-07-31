@@ -124,6 +124,7 @@ ObjectType = Literal[
     "des_speed_decision",
     "priority_rule",
     "vehicle_type",
+    "stop_sign",
 ]
 
 # {object_type: {shadow_key, id_field, name_field}} — the one place that maps
@@ -183,6 +184,10 @@ _OBJECT_TYPE_SPECS: dict[str, dict[str, str]] = {
     # (+optional veh_class_no) params, not through this generic object_type
     # machinery, mirroring vehicle_type's own split above.
     "driving_behavior": {"shadow_key": "driving_behaviors", "id_field": "no", "name_field": "name"},
+    # Q4 unit (6): keyed against the FLAT "stop_signs" list (a stop sign has
+    # a genuine single-token identity, its own "no" -- same as
+    # vehicle_type/driving_behavior above, no nested-vs-flat split needed).
+    "stop_sign": {"shadow_key": "stop_signs", "id_field": "no", "name_field": "name"},
 }
 
 _TOP_K = 5
@@ -623,6 +628,60 @@ def _parse_detectors(root: ET.Element) -> list[dict[str, Any]]:
                 "length": _coerce_float_or_none(el.get("length")),
                 "sc": (el.get("sc") or "").strip(),
                 "port_no": int(port_raw) if port_raw.isdigit() else None,
+            }
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (6): stop-sign + priority-rule/conflict-area PLACEMENT (creation).
+# ``<stopSign>`` shape verified statically across all 25 real Vissim 2026
+# example networks (7 carry one: 3D - Complex Intersection Karlsruhe.DE,
+# Border Crossing Breitenau.DE, BRT Priority Texas.US, Bus Mall Eugene.US,
+# Railroad Trucks Portland.US, Signalization RBC Boise.US, Toll Plaza
+# Camden.US -- 477 total) plus the real Murdoch Drive production model (0)
+# and ``data/practice.inpx`` (0); live-verified against Vissim 2026
+# (``backend/tools/probe_stop_signs_priority_placement.py``, Roundabout
+# Buehl.DE clone): a stop sign is the SAME lane-TOKEN+pos shape
+# signalHead/detector/reducedSpeedArea/priorityRule already use
+# (:func:`_parse_lane_token`), PLUS an OPTIONAL ``sg`` composite reference
+# (the SAME space-separated ``"<sc_no> <sg_no>"`` token signalHead's own
+# ``sg`` uses) present on a real MINORITY of stop signs (19/27 BRT Priority
+# Texas.US, 10/17 Bus Mall, 11/22 Railroad Trucks, 0/112 Boise despite its
+# "RBC" signalized name, 0 elsewhere) -- Vissim's own "stop sign becomes
+# inactive while this signal group shows green" feature. **No dwell-
+# distribution reference of any kind** -- confirms QUEUE (Q3, v2a) unit 5's
+# own docstring finding (:func:`_parse_time_distributions`) that stop signs
+# are NOT among dwell-time distribution's referrers, this time from the stop
+# -sign side. A corpus-wide attribute-name grep found nothing anywhere else
+# in the schema that ever references a stop sign by its own ``no`` -- a leaf
+# object, same class as a signal head/detector/queue counter.
+# ---------------------------------------------------------------------------
+
+
+def _parse_stop_signs(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, link, lane_index, pos, sc, sg}`` per ``<stopSign>``
+    -- ``sc``/``sg`` split the optional composite ``sg="<sc_no> <sg_no>"``
+    attribute (empty string when the stop sign carries no signal-group link,
+    the common case). Does NOT expose ``anmFlag`` -- unreadable over live
+    COM on this installation (``vissim_com.VissimController.get_stop_sign``'s
+    own docstring), parsed here from the XML for completeness alone would
+    invite a false "this is COM-verified" impression, so it is left out of
+    the shadow model entirely rather than surfaced as an unverifiable field.
+    """
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//stopSigns/stopSign"):
+        link_id, lane_no = _parse_lane_token(el.get("lane"))
+        sc_no, sg_no = _parse_lane_token(el.get("sg"))
+        result.append(
+            {
+                "no": el.get("no", ""),
+                "name": el.get("name", "") or "",
+                "link": link_id,
+                "lane_index": int(lane_no) if lane_no.isdigit() else None,
+                "pos": _coerce_float_or_none(el.get("pos")),
+                "sc": sc_no,
+                "sg": sg_no,
             }
         )
     return result
@@ -2397,6 +2456,9 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         # own docstring.
         "signal_heads": _parse_signal_heads(root),
         "detectors": _parse_detectors(root),
+        # Q4 unit (6): stop-sign placement -- see _parse_stop_signs' own
+        # docstring.
+        "stop_signs": _parse_stop_signs(root),
         "routing_decisions": routing_decisions,
         "routes": _flatten_routes(routing_decisions),
         "vehicle_compositions": vehicle_compositions,

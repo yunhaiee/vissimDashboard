@@ -2964,3 +2964,23 @@ straight links + contiguous-range connectors; curvature/z/AddConnectorEx recorde
 Drivability spot-check honestly untested (an unrelated AddVehicleAtLinkPosition COM error,
 stated not hidden). Registry 93→94. Suite 1928→1961 (controller re-ran; runtime/ dataset
 sha256-verified untouched). v2b: 7/13 + spine.
+
+## 2026-08-01 — Q4 ⑥: stop-sign + priority-rule placement shipped; AddPriorityRule is a silent no-op
+
+The purest silent-failure specimen of the whole catalog: `Net.PriorityRules.AddPriorityRule`
+EXISTS in the type library, accepts every tried argument shape (plain and VARIANT-typed),
+raises nothing, returns None — and creates nothing, proven by GetAll() diff AND the saved XML.
+The real creation path is `DuplicatePriorityRule` + fresh-fetched `.ConflictMarkers`
+Add/Remove — the duplicate-then-edit pattern's second appearance (Q3 ⑥ driving behaviors).
+Recorded limitation: a network with ZERO priority rules cannot get its first one from this
+verb. Two more landmines: held child-collection references under-report after writes
+(re-fetch fresh, always) and marker order is NOT append-order (indices re-derived from
+readback matched by link/lane/pos). New-marker Vissim defaults read live: 3.0s/5.0m. Stop
+signs are a genuine native create; corpus grep (25 networks, 477 stop signs) shows nothing
+references either object by id — leaf objects; lane-token registry extended so lane/connector
+removals refuse when they'd orphan a stop sign. Conflict areas re-confirmed non-creatable
+(typelib: zero Add/Remove) — documented, no verb, ⑤'s recompute exemptions cover genesis.
+Integration proof: Q3's gap/clearance setter edited a just-created rule's marker live.
+Reviewer note: probe work-dirs under runtime/<name>/ are confirmed LONG-standing convention
+(~60 since queue 1) — uploads/current is the untouchable zone, sha-verified intact again.
+Registry 94→95. Suite 1961→2008 (controller re-ran). v2b: 8/13 + spine.

@@ -372,6 +372,18 @@ LANE_TOKEN_REFERENCE_SITES: tuple[ReferenceSite, ...] = (
     # future-proofing for a hypothetical.
     ReferenceSite("signal head", ".//signalHeads/signalHead", "lane"),
     ReferenceSite("detector", ".//detectors/detector", "lane"),
+    # Q4 unit (6): stop-sign + priority-rule/conflict-area PLACEMENT
+    # (creation). A stop sign carries the SAME space-separated "<link>
+    # <lane>" XML token on its own "lane" attribute (verified
+    # live/statically, backend/tools/probe_stop_signs_priority_placement.py
+    # across all 25 real Vissim 2026 example networks that carry one) --
+    # closing the same reverse-reference gap unit (4) closed for signal
+    # heads/detectors: without this entry, remove_last_lane/remove_connector
+    # would silently dangle a stop sign that still names the lane about to
+    # disappear. The priorityRule/conflictMarker sites above already cover
+    # priority rules (added in an earlier unit) -- unaffected by this unit,
+    # re-verified relevant by this same probe.
+    ReferenceSite("stop sign", ".//stopSigns/stopSign", "lane"),
 )
 
 

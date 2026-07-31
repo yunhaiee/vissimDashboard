@@ -287,6 +287,30 @@ def test_find_lane_token_references_both_signal_head_and_detector_on_the_same_la
 
 
 # ---------------------------------------------------------------------------
+# Component 3b continued -- Q4 unit (6)'s new lane-token reference site:
+# stop signs. Carries the SAME "<link> <lane>" XML token on its own "lane"
+# attribute (verified live/statically,
+# backend/tools/probe_stop_signs_priority_placement.py) -- so remove_last_
+# lane/remove_connector now correctly refuse when a stop sign still
+# references the lane about to disappear (the priorityRule/conflictMarker
+# sites were already present from an earlier unit; unaffected by this one).
+# ---------------------------------------------------------------------------
+
+
+def test_find_lane_token_references_finds_stop_sign_lane_reference():
+    root = ET.fromstring(
+        '<network><links><link no="101"><lanes><lane/><lane/></lanes></link></links>'
+        '<stopSigns><stopSign no="1" lane="101 1" pos="5.0"/></stopSigns>'
+        "</network>"
+    )
+    referrers = struct.find_lane_token_references(root, "101", 1)
+    assert len(referrers) == 1
+    assert referrers[0]["site"] == "stop sign"
+    # lane 2 is genuinely unreferenced.
+    assert struct.find_lane_token_references(root, "101", 2) == []
+
+
+# ---------------------------------------------------------------------------
 # Component 3c: reference integrity -- dangling references on ADD
 # ---------------------------------------------------------------------------
 
@@ -481,6 +505,31 @@ def test_remove_last_lane_refuses_when_last_lane_is_referenced_by_a_detector(tmp
         struct.remove_last_lane(path, "1", run_load_check=False)
 
     assert excinfo.value.referrers[0]["site"] == "detector"
+    assert path.read_bytes() == original_bytes
+
+
+def test_remove_last_lane_refuses_when_last_lane_is_referenced_by_a_stop_sign(tmp_path: Path):
+    """Q4 unit (6) end-to-end: remove_last_lane now sees a stop sign's own
+    "<link> <lane>" reference too (extended LANE_TOKEN_REFERENCE_SITES),
+    the same real gap unit (4) closed for signal heads/detectors."""
+    path = tmp_path / "fixture.inpx"
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?><network>'
+        '<links><link no="1" name="A"><geometry><linkPolyPts>'
+        '<linkPolyPoint x="0" y="0" zOffset="0"/><linkPolyPoint x="100" y="0" zOffset="0"/>'
+        "</linkPolyPts></geometry><lanes><lane width=\"3.5\"/><lane width=\"3.5\"/></lanes></link></links>"
+        '<stopSigns><stopSign no="1" name="" lane="1 2" pos="5.0"/></stopSigns>'
+        "</network>",
+        encoding="utf-8",
+    )
+    original_bytes = path.read_bytes()
+
+    with pytest.raises(struct.ReferenceIntegrityError) as excinfo:
+        struct.remove_last_lane(path, "1", run_load_check=False)
+
+    assert excinfo.value.referrers[0]["site"] == "stop sign"
+    assert excinfo.value.referrers[0]["value"] == "1 2"
+    # Refused BEFORE any write -- the file is untouched.
     assert path.read_bytes() == original_bytes
 
 

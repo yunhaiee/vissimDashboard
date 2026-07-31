@@ -433,6 +433,43 @@ class VissimEditSession:
     def get_priority_rule_gap_headway(self, priority_rule_no: int, marker_index: int) -> dict[str, float]:
         return self._ensure_connected().get_priority_rule_gap_headway(priority_rule_no, marker_index)
 
+    # Q4 unit (6): stop-sign + priority-rule PLACEMENT (creation) --
+    # genesis counterpart to the gap/headway setters above. See
+    # vissim_com.VissimController's own module comment for the full
+    # live-verified writeup, including AddPriorityRule's confirmed silent
+    # no-op and the DuplicatePriorityRule-based real creation path.
+
+    def add_stop_sign(
+        self,
+        link_no: int,
+        lane_index: int,
+        pos_m: float,
+        name: str = "",
+        sc_no: int | None = None,
+        sg_no: int | None = None,
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_stop_sign(link_no, lane_index, pos_m, name, sc_no, sg_no)
+
+    def remove_stop_sign(self, no: int) -> None:
+        self._ensure_connected().remove_stop_sign(no)
+
+    def get_stop_sign(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_stop_sign(no)
+
+    def add_priority_rule(
+        self,
+        stop_link_no: int,
+        stop_lane_index: int,
+        stop_pos_m: float,
+        markers: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_priority_rule(
+            stop_link_no, stop_lane_index, stop_pos_m, markers
+        )
+
+    def remove_priority_rule(self, no: int) -> None:
+        self._ensure_connected().remove_priority_rule(no)
+
     # QUEUE (v2a) unit: vehicle-type distribution/function reference
     # verbs. Each reference field is a flat, independent attribute on the
     # VehicleType object itself -- no shared-sum semantics, no paired

@@ -2301,6 +2301,154 @@ def test_postwrite_add_signal_head_diff_exempts_the_derived_head_count_shift():
 
 
 # ---------------------------------------------------------------------------
+# postwrite -- Q4 unit (6)'s own remove_stop_sign/add_priority_rule/
+# remove_priority_rule -- the SAME real-engine test class as unit (4)'s own
+# remove_signal_head/remove_detector tests above (a genuinely successful
+# remove must NOT refuse against constraint #6, and a remove that leaves the
+# object still present MUST refuse), plus add_priority_rule/remove_priority_
+# rule's own _ALLOWS_NEW_OBJECTS_IN/_ALLOWS_REMOVED_OBJECTS_IN coverage for
+# "priority_rule_markers" (QUEUE 3 unit 2's own tracked flat list).
+# "stop_signs" is NOT registered in guardrails.py's own
+# _SHADOW_OBJECT_ID_FIELDS (a leaf object, same as signal_heads/detectors/
+# queue_counters before it), so remove_stop_sign's own fixture never needs a
+# stop_signs key at all.
+# ---------------------------------------------------------------------------
+
+
+def test_postwrite_remove_stop_sign_successful_removal_does_not_refuse():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_stop_sign", no="1")
+    verification = {
+        "written_value": {"removed_no": "1", "still_present": False},
+        "readback_value": {"removed_no": "1", "still_present": False},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_stop_sign_still_present_after_remove_refuses():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_stop_sign", no="1")
+    verification = {
+        "written_value": {"removed_no": "1", "still_present": False},
+        "readback_value": {"removed_no": "1", "still_present": True},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.blocking is True
+    assert [f.constraint_id for f in report.findings] == ["write_verification_failed"]
+
+
+def test_postwrite_add_priority_rule_diff_suppresses_its_own_new_markers():
+    # add_priority_rule's own sanctioned action creates 1+ new
+    # "priority_rule_markers" entries under a brand-new rule number --
+    # _ALLOWS_NEW_OBJECTS_IN["add_priority_rule"], mirroring duplicate_
+    # driving_behavior's own precedent exactly.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0)]
+    )
+    after = _shadow_model(
+        priority_rule_markers=[
+            _priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0),
+            _priority_rule_marker_entry("62", 1, gap_time_s=3.0, headway_m=5.0, link="632"),
+        ]
+    )
+    action = _action(
+        "add_priority_rule",
+        stop_link_no="101",
+        stop_lane_index=1,
+        stop_pos_m=5.0,
+        markers=[{"link_no": "632", "lane_index": 1, "pos_m": 3.0}],
+    )
+    verification = {
+        "written_value": {
+            "link": "101", "lane_index": 1, "pos": 5.0,
+            "markers": [{"link": "632", "lane_index": 1, "pos": 3.0}],
+        },
+        "readback_value": {
+            "link": "101", "lane_index": 1, "pos": 5.0,
+            "markers": [{"link": "632", "lane_index": 1, "pos": 3.0}],
+        },
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_priority_rule_diff_suppresses_its_own_removed_markers():
+    # remove_priority_rule's own sanctioned action removes the rule's own
+    # EXISTING "priority_rule_markers" entries atomically --
+    # _ALLOWS_REMOVED_OBJECTS_IN["remove_priority_rule"], the removal-side
+    # mirror of the add test above.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model(
+        priority_rule_markers=[
+            _priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0),
+            _priority_rule_marker_entry("62", 1, gap_time_s=3.0, headway_m=5.0, link="632"),
+        ]
+    )
+    after = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0)]
+    )
+    action = _action("remove_priority_rule", no="62")
+    verification = {
+        "written_value": {"removed_no": "62", "still_present": False},
+        "readback_value": {"removed_no": "62", "still_present": False},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_remove_priority_rule_still_present_after_remove_refuses():
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model()
+    action = _action("remove_priority_rule", no="62")
+    verification = {
+        "written_value": {"removed_no": "62", "still_present": False},
+        "readback_value": {"removed_no": "62", "still_present": True},
+    }
+
+    report = engine.postwrite(action, before, after, verification)
+
+    assert report.blocking is True
+    assert [f.constraint_id for f in report.findings] == ["write_verification_failed"]
+
+
+def test_postwrite_diff_still_flags_an_unopted_tool_creating_a_priority_rule_marker():
+    # The suppression is tool-SPECIFIC (_ALLOWS_NEW_OBJECTS_IN), not a
+    # blanket "never flag a new marker" rule -- mirrors
+    # test_postwrite_diff_still_flags_a_removed_link_for_a_tool_not_opted_in
+    # exactly, applied to the add side.
+    engine = GuardrailEngine(disabled=False)
+    before = _shadow_model()
+    after = _shadow_model(
+        priority_rule_markers=[_priority_rule_marker_entry("4", 1, gap_time_s=3.2, headway_m=0.0)]
+    )
+    action = _action("set_vehicle_input_volume", input_no="1", volume=600)
+
+    report = engine.postwrite(action, before, after, {"written_value": 600, "readback_value": 600})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert {"object_class": "priority_rule_markers", "object_id": "4.1", "change": "added"} in diff
+
+
+# ---------------------------------------------------------------------------
 # postwrite -- remove_connector's own removed "links"/"link_lanes" entries
 # are expected, never evidence -- Q4 unit (3), _ALLOWS_REMOVED_OBJECTS_IN
 # ---------------------------------------------------------------------------

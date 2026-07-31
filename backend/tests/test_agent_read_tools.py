@@ -135,6 +135,13 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "add_link",
     "remove_link",
     "add_connector",
+    # Q4 unit (6) adds 4 stop-sign + priority-rule placement verbs (COM
+    # CREATE/REMOVE, see tools_edit.py's own docstring) -- no verb for
+    # conflict areas (confirmed non-creatable via COM).
+    "add_stop_sign",
+    "remove_stop_sign",
+    "add_priority_rule",
+    "remove_priority_rule",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -2618,6 +2625,8 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         # Q4 unit (4): signal-head + detector placement.
         "signal_heads",
         "detectors",
+        # Q4 unit (6): stop-sign placement.
+        "stop_signs",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -2695,6 +2704,7 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
     # signals/conflict_areas/queue_counters above.
     assert shadow["signal_heads"] == []
     assert shadow["detectors"] == []
+    assert shadow["stop_signs"] == []
 
 
 def test_build_shadow_model_is_mtime_cached_across_repeat_calls():
@@ -2847,6 +2857,38 @@ def test_signal_to_contract_shape_carries_controller_type_but_omits_min_green_su
         "controller_type": "unknown",
     }
     assert "min_green_intergreen_sum" not in shaped
+
+
+# ---------------------------------------------------------------------------
+# Q4 unit (6): _parse_stop_signs -- direct-tested against synthetic XML
+# fixtures matching the REAL shape confirmed live/statically across every
+# real Vissim 2026 example network that carries one
+# (backend/tools/probe_stop_signs_priority_placement.py -- e.g. Signalization
+# RBC Boise.US's own ``<stopSign anmFlag="false" lane="10006 1" name=""
+# no="1" pos="0.511785" sg="22 2" />``). The demo .inpx carries none (see the
+# pin test above's own ``assert shadow["stop_signs"] == []``), so a
+# hand-built fixture is the only way to exercise the populated-list code
+# path at all -- mirrors the measurement-infra parser tests' own precedent.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_stop_signs_reads_lane_pos_and_optional_sg():
+    root = ET.fromstring(
+        '<network><stopSigns>'
+        '<stopSign anmFlag="false" lane="10006 1" name="" no="1" pos="0.511785" sg="22 2" />'
+        '<stopSign anmFlag="false" lane="101 1" name="" no="2" pos="30.8" />'
+        "</stopSigns></network>"
+    )
+    result = tools_network._parse_stop_signs(root)
+    assert result == [
+        {"no": "1", "name": "", "link": "10006", "lane_index": 1, "pos": 0.511785, "sc": "22", "sg": "2"},
+        {"no": "2", "name": "", "link": "101", "lane_index": 1, "pos": 30.8, "sc": "", "sg": ""},
+    ]
+
+
+def test_parse_stop_signs_empty_when_section_absent():
+    root = ET.fromstring("<network/>")
+    assert tools_network._parse_stop_signs(root) == []
 
 
 # ---------------------------------------------------------------------------

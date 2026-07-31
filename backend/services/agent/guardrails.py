@@ -568,6 +568,18 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
     # failure to prove the obvious.
     "add_link": frozenset({"links", "link_lanes", "conflict_areas"}),
     "add_connector": frozenset({"links", "link_lanes", "conflict_areas"}),
+    # Q4 unit (6): add_priority_rule's own sanctioned action creates a
+    # brand-new "priority_rule_markers" entry (or several) -- the FLAT list
+    # QUEUE 3 unit 2 already wired into _SHADOW_OBJECT_ID_FIELDS. The
+    # template rule's own INHERITED markers are added-then-removed within
+    # the SAME call (see vissim_com.VissimController.add_priority_rule's own
+    # module comment) under the brand-new rule's own numbering, so they
+    # never appear in "before" at all -- only the NET-SURVIVING markers
+    # show up as "added" here, needing this one opt-in, mirroring
+    # duplicate_driving_behavior's own precedent exactly ("stop_signs" needs
+    # no entry at all -- a leaf object class not in _SHADOW_OBJECT_ID_FIELDS,
+    # same as signal_heads/detectors/queue_counters above).
+    "add_priority_rule": frozenset({"priority_rule_markers"}),
 }
 
 # Q4 unit (3): the REMOVAL-side mirror of ``_ALLOWS_NEW_OBJECTS_IN`` above --
@@ -590,6 +602,13 @@ _ALLOWS_REMOVED_OBJECTS_IN: dict[str, frozenset[str]] = {
     # identical reason (a plain link's removal is just as "links"/
     # "link_lanes"-tracked as a connector's).
     "remove_link": frozenset({"links", "link_lanes"}),
+    # Q4 unit (6): remove_priority_rule's own sanctioned action removes the
+    # rule's own EXISTING "priority_rule_markers" entries atomically
+    # (verified live -- vissim_com.VissimController.remove_priority_rule's
+    # own docstring) -- the removal-side mirror of add_priority_rule's own
+    # entry above ("stop_signs" needs no entry -- leaf object class, not in
+    # _SHADOW_OBJECT_ID_FIELDS, same as remove_signal_head/remove_detector).
+    "remove_priority_rule": frozenset({"priority_rule_markers"}),
 }
 
 # QUEUE 3 (v2a) unit 3's SECOND regression fix, found live-testing this same

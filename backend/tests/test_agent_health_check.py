@@ -133,7 +133,13 @@ def test_health_check_runner_against_demo_dataset():
     # which a whole-network dataset scan has no equivalent of, so it does
     # not opt into the dataset scan either, same shape as every addition
     # above.
-    assert report["summary"]["edit_time_only_n"] == 80
+    # 81, not 80: Q4 unit (6) (stop-sign + priority-rule/conflict-area
+    # placement) added one preflight-only constraint,
+    # add_priority_rule_marker_invalid, for the new add_priority_rule tool --
+    # it needs a proposed action's own "markers" param, which a whole-network
+    # dataset scan has no equivalent of, so it does not opt into the dataset
+    # scan either, same shape as every addition above.
+    assert report["summary"]["edit_time_only_n"] == 81
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

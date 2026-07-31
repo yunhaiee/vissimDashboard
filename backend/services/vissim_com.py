@@ -2539,6 +2539,363 @@ class VissimController:
         return self._collection_nos(self.vissim.Net.PriorityRules)
 
     # -----------------------------------------------------------------
+    # Stop-sign + priority-rule PLACEMENT (creation) -- Q4 unit (6), the
+    # genesis counterpart to QUEUE 3 unit (2)'s gap/headway SETTERS above.
+    #
+    # COM ids/behavior verified EMPIRICALLY live against Vissim 2026
+    # (backend/tools/probe_stop_signs_priority_placement.py, Roundabout
+    # Buehl.DE clone -- 61 real priority rules, 0 stop signs).
+    #
+    # **Stop signs.** ``Net.StopSigns.AddStopSign(Key, Lane, Pos)`` creates
+    # and RETURNS the new object directly (unlike AddPriorityRule below) --
+    # the same shape :meth:`add_signal_head`/:meth:`add_detector`/
+    # :meth:`add_queue_counter` already use. ``AnmFlag`` ("animation flag")
+    # is UNREADABLE on this dev box -- ``AttValue('AnmFlag')`` raises
+    # "get_AttValue failed - module not active" (gated behind a licensed
+    # add-on module this installation does not have) -- never touched by
+    # this codebase, not exposed by :meth:`get_stop_sign`. ``SG`` (an
+    # OPTIONAL signal-group link -- real .inpx attribute, present on a real
+    # minority of stop signs across the 25-network corpus, e.g. 19/27 on
+    # BRT Priority Texas.US, 0/112 on Signalization RBC Boise.US) reads back
+    # ``None`` when unwired, and is wired the SAME way :meth:`add_signal_head`
+    # wires a head's own SG -- ``SetAttValue('SG', <SG COM object>)``,
+    # resolved via the existing :meth:`_signal_group_by_key` -- an optional,
+    # all-or-nothing (sc_no, sg_no) pair, mirroring :meth:`add_detector`'s
+    # own (sc_no, port_no) precedent.
+    #
+    # **Priority rules -- the load-bearing finding of this unit.**
+    # ``Net.PriorityRules.AddPriorityRule(Key, Lane, Pos, ConflictMarkers)``
+    # is a GENUINE SILENT NO-OP. Tried live, exhaustively: explicit ``Key``
+    # and ``Key=None``; ``ConflictMarkers`` as a plain Python list of
+    # ``(Lane, Pos)`` 2-tuples AND ``(Key, Lane, Pos)`` 3-tuples; and
+    # explicit ``win32com.client.VARIANT(VT_ARRAY|VT_VARIANT, ...)`` nested
+    # arrays. Every shape either RAISED (an empty/omitted ``ConflictMarkers``
+    # raises "Argument ConflictMarkers is not an array" / "The number of
+    # Conflict markers must be at least 1"; a malformed VARIANT nesting
+    # raises "The array contains too few elements") or -- the dangerous
+    # case -- returned ``None`` with NO exception at all while genuinely
+    # creating nothing (verified against BOTH ``Net.PriorityRules.GetAll()``'s
+    # own before/after id set AND the saved .inpx -- neither ever gained a
+    # new rule). This is a WORSE silent failure than any prior unit's own
+    # "COM does not enforce referential integrity" findings: the call looks
+    # like ordinary success (no exception, a legal-looking ``None`` return
+    # matching several OTHER Add* methods' own "returns None, read back
+    # separately" convention elsewhere in this codebase).
+    #
+    # The real creation path is ``DuplicatePriorityRule(Source, NewKey)`` --
+    # copies an EXISTING rule (attributes AND its own conflict markers)
+    # wholesale, mirroring the ``duplicate_driving_behavior`` genesis
+    # pattern QUEUE 3 unit 6 already established for driving behaviors
+    # (also an object family with no from-scratch Add at all). This means
+    # :meth:`add_priority_rule` REQUIRES at least one existing priority rule
+    # somewhere in the network to use as a structural template -- a real,
+    # STATED limitation (raised as a clear error, never silently worked
+    # around): a network with zero priority rules cannot genesis its first
+    # one through this verb today.
+    #
+    # Once duplicated: ``SetAttValue('Lane', <Lane object>)``/``('Pos', ...)``
+    # on the rule itself overrides the copied stop-line location (verified
+    # live: works on a duplicate exactly like any other SetAttValue in this
+    # module). The duplicate's own INHERITED conflict marker(s) are then
+    # replaced with the caller's own: ``rule.ConflictMarkers.
+    # AddConflictMarker(Key, Lane, Pos)`` genuinely creates a NEW marker on
+    # an ALREADY-EXISTING rule (``Key`` accepts ``None``; the 2-arg form --
+    # Lane, Pos with no Key -- fails "The Python instance can not be
+    # converted to a COM object" since positional Key is genuinely
+    # required, unlike every other ``Add*`` method in this codebase). A
+    # freshly-created marker's own out-of-the-box default is
+    # ``MinGapTime=3.0`` s / ``MinClear=5.0`` m (verified live, read
+    # directly off the just-returned marker object before this codebase
+    # ever calls ``SetAttValue`` on it) -- Austroads/MRWA movement-type-
+    # specific defaults are deliberately NOT applied here (no cheap
+    # movement-type inference exists in this codebase's shadow model, per
+    # this unit's own task-brief escape hatch); :meth:`add_priority_rule`
+    # instead reports whichever value is actually in effect (caller-supplied
+    # or this Vissim default) for every marker, explicitly, never silently.
+    # ``ConflictMarkers.RemoveConflictMarker(<marker object>)`` removes the
+    # template's own now-superseded marker(s) afterward.
+    #
+    # TWO LANDMINES specific to this child collection (both live-caught,
+    # both worse than any prior single-object COM landmine in this
+    # codebase):
+    #   1. STALE CACHING -- a ``.ConflictMarkers`` PROPERTY ACCESS held once
+    #      in a variable and reused across multiple ``.GetAll()`` calls
+    #      returns a STALE snapshot after Add/RemoveConflictMarker WITHIN
+    #      THE SAME COM session (reproduced twice: a held reference
+    #      under-counted a marker the SAVED .inpx already contained, both
+    #      immediately and after further calls). This module always
+    #      RE-READS ``rule.ConflictMarkers`` fresh immediately before every
+    #      ``.GetAll()``/``.AddConflictMarker()``/``.RemoveConflictMarker()``
+    #      call below -- never holds the child-collection object across
+    #      calls.
+    #   2. NOT APPEND-ORDER -- a newly-added marker does NOT necessarily
+    #      land at the END of ``GetAll()``'s own order (observed live: a
+    #      marker added at Pos=4.0 landed BEFORE a pre-existing Pos=18.48
+    #      marker on the same rule, consistent with an ascending-by-Pos
+    #      ordering Vissim applies on its own, not insertion order). The
+    #      1-based ``marker_index`` QUEUE 3 unit 2's own
+    #      ``set_priority_rule_gap_headway``/``get_priority_rule_gap_headway``
+    #      already address markers by is therefore NEVER assumed to equal
+    #      the caller's own input order here -- :meth:`add_priority_rule`
+    #      re-derives each marker's real final index from a FRESH
+    #      post-creation readback, matched back to the caller's own request
+    #      by (link, lane_index, pos_m), and reports that mapping explicitly
+    #      in its own return value so a FOLLOW-UP
+    #      ``set_priority_rule_gap_headway`` call addresses the right one.
+    #
+    # ``RemovePriorityRule(rule object)`` removes the rule AND every one of
+    # its own conflict markers atomically (verified live: a fresh reload
+    # after removal shows neither the rule nor any orphaned marker).
+    # -----------------------------------------------------------------
+
+    def available_stop_sign_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.StopSigns)
+
+    def add_stop_sign(
+        self,
+        link_no: int,
+        lane_index: int,
+        pos_m: float,
+        name: str = "",
+        sc_no: int | None = None,
+        sg_no: int | None = None,
+    ) -> dict[str, Any]:
+        """Create a stop sign on lane ``lane_index`` of ``link_no`` at
+        ``pos_m`` metres (COM ``AddStopSign``). ``sc_no``/``sg_no`` OPTIONALLY
+        wire the stop sign to a signal group (real, minority .inpx shape --
+        see this block's own module comment), resolved via the existing
+        :meth:`_signal_group_by_key`, mirroring :meth:`add_signal_head`'s own
+        SG-wiring precedent."""
+        try:
+            lane = self._lane_by_index(link_no, lane_index)
+            existing = self.available_stop_sign_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            pos_com = self._length_m_to_com(float(pos_m), self._net_unit_length())
+            stop_sign = self.vissim.Net.StopSigns.AddStopSign(new_no, lane, pos_com)
+            if name:
+                stop_sign.SetAttValue("Name", name)
+            if sc_no is not None and sg_no is not None:
+                signal_controller = self._item_by_key(
+                    self.vissim.Net.SignalControllers,
+                    sc_no,
+                    "Signal controller",
+                    self.available_signal_controller_nos(),
+                )
+                sg = self._signal_group_by_key(signal_controller, sc_no, sg_no)
+                stop_sign.SetAttValue("SG", sg)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a stop sign on link {link_no} lane {lane_index} at pos {pos_m}: {exc}"
+            ) from exc
+        return self.get_stop_sign(new_no)
+
+    def remove_stop_sign(self, no: int) -> None:
+        try:
+            stop_sign = self._item_by_key(
+                self.vissim.Net.StopSigns, no, "Stop sign", self.available_stop_sign_nos()
+            )
+            self.vissim.Net.StopSigns.RemoveStopSign(stop_sign)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove stop sign {no}: {exc}") from exc
+
+    def get_stop_sign(self, no: int) -> dict[str, Any]:
+        """{"no", "name", "link", "lane_index", "pos", "sc", "sg"} -- ``sc``/
+        ``sg`` are ``None`` when the stop sign carries no signal-group link
+        (the common case -- see this block's own module comment). Does NOT
+        expose ``AnmFlag`` -- unreadable on this installation (see this
+        block's own module comment); no reliable read path exists."""
+        try:
+            stop_sign = self._item_by_key(
+                self.vissim.Net.StopSigns, no, "Stop sign", self.available_stop_sign_nos()
+            )
+            unit = self._net_unit_length()
+            lane_link, _, lane_idx = str(stop_sign.AttValue("Lane") or "").partition("-")
+            sg_raw = stop_sign.AttValue("SG")
+            sc: str | None = None
+            sg: str | None = None
+            if sg_raw not in (None, ""):
+                sc, _, sg = str(sg_raw).partition("-")
+            return {
+                "no": no,
+                "name": str(stop_sign.AttValue("Name") or ""),
+                "link": lane_link,
+                "lane_index": int(lane_idx) if lane_idx.isdigit() else None,
+                "pos": self._length_com_to_m(float(stop_sign.AttValue("Pos")), unit),
+                "sc": sc,
+                "sg": sg,
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read stop sign {no}: {exc}") from exc
+
+    def add_priority_rule(
+        self,
+        stop_link_no: int,
+        stop_lane_index: int,
+        stop_pos_m: float,
+        markers: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Create a priority rule at (``stop_link_no``, ``stop_lane_index``,
+        ``stop_pos_m``) with one conflict marker per entry of ``markers``
+        (each ``{"link_no", "lane_index", "pos_m", "gap_time_s"?,
+        "headway_m"?}``) -- see this block's own module comment for the full
+        live-verified mechanism (``DuplicatePriorityRule`` + per-marker
+        ``AddConflictMarker``/``RemoveConflictMarker``, since
+        ``AddPriorityRule`` itself is a confirmed silent no-op) and its two
+        landmines (stale ``ConflictMarkers`` caching; not-append-order).
+
+        Raises :class:`ValueError` when ``markers`` is empty (Vissim's own
+        floor -- a priority rule needs >=1 conflict marker). Raises
+        :class:`RuntimeError` when the network has no EXISTING priority rule
+        to duplicate as a structural template -- a real, stated limitation,
+        not a silent failure.
+
+        Returns ``{"no", "link", "lane_index", "pos", "template_rule_no",
+        "markers": [{"marker_index", "link", "lane_index", "pos",
+        "gap_time_s", "headway_m"}, ...]}`` -- ``markers`` is ordered to
+        match the CALLER's own input order (not necessarily
+        ``marker_index`` order -- see the module comment's landmine 2), each
+        entry carrying its REAL, readback-verified ``marker_index`` for a
+        follow-up ``set_priority_rule_gap_headway`` call to address it by.
+        """
+        if not markers:
+            raise ValueError(
+                "add_priority_rule: at least one conflict marker is required -- Vissim's own "
+                "floor is >=1 marker per priority rule (live-verified: AddPriorityRule itself "
+                "raises 'The number of Conflict markers must be at least 1' on an empty array)."
+            )
+        try:
+            templates = list(self.vissim.Net.PriorityRules.GetAll())
+            if not templates:
+                raise RuntimeError(
+                    "add_priority_rule: this network has no existing priority rule to duplicate "
+                    "as a structural template. Net.PriorityRules.AddPriorityRule is confirmed "
+                    "non-functional (silent no-op, live-verified against Vissim 2026), and "
+                    "DuplicatePriorityRule needs a real source rule -- genesis of the FIRST "
+                    "priority rule in a network with none today is not supported by this verb."
+                )
+            template = templates[0]
+            template_no = int(template.AttValue("No"))
+            existing_nos = self.available_priority_rule_nos()
+            new_no = (max(existing_nos) if existing_nos else 0) + 1
+            unit = self._net_unit_length()
+
+            stop_lane = self._lane_by_index(stop_link_no, stop_lane_index)
+
+            self.vissim.Net.PriorityRules.DuplicatePriorityRule(template, new_no)
+            rule = self._item_by_key(
+                self.vissim.Net.PriorityRules,
+                new_no,
+                "Priority rule",
+                self.available_priority_rule_nos(),
+            )
+            rule.SetAttValue("Lane", stop_lane)
+            rule.SetAttValue("Pos", self._length_m_to_com(float(stop_pos_m), unit))
+
+            # Landmine 1: re-read .ConflictMarkers fresh, never hold it.
+            inherited_markers = list(rule.ConflictMarkers.GetAll())
+
+            requested: list[dict[str, Any]] = []
+            for marker in markers:
+                marker_link_no = int(marker["link_no"])
+                marker_lane_index = int(marker["lane_index"])
+                marker_pos_m = round(float(marker["pos_m"]), 6)
+                marker_lane = self._lane_by_index(marker_link_no, marker_lane_index)
+                marker_pos_com = self._length_m_to_com(marker_pos_m, unit)
+                new_marker = rule.ConflictMarkers.AddConflictMarker(None, marker_lane, marker_pos_com)
+                gap_time_s = marker.get("gap_time_s")
+                headway_m = marker.get("headway_m")
+                if gap_time_s is not None:
+                    new_marker.SetAttValue("MinGapTime", gap_time_s)
+                if headway_m is not None:
+                    new_marker.SetAttValue("MinClear", headway_m)
+                requested.append(
+                    {
+                        "link_no": marker_link_no,
+                        "lane_index": marker_lane_index,
+                        "pos_m": marker_pos_m,
+                    }
+                )
+
+            # Remove the template's own inherited marker(s) now that the
+            # caller's own are in place -- these are live COM object
+            # references captured BEFORE any add, so they stay valid
+            # regardless of how the collection's own order shifted
+            # (landmine 2).
+            for old_marker in inherited_markers:
+                rule.ConflictMarkers.RemoveConflictMarker(old_marker)
+
+            # Re-derive each caller marker's REAL final marker_index
+            # (landmine 2: not append order) via a fresh readback, matched
+            # by (link, lane_index, rounded pos_m).
+            final_markers = list(rule.ConflictMarkers.GetAll())
+            by_key: dict[tuple[str, str, float], dict[str, Any]] = {}
+            for idx, com_marker in enumerate(final_markers, start=1):
+                lane_raw = str(com_marker.AttValue("Lane") or "")
+                m_link, _, m_lane = lane_raw.partition("-")
+                m_pos = round(self._length_com_to_m(float(com_marker.AttValue("Pos")), unit), 6)
+                by_key[(m_link, m_lane, m_pos)] = {
+                    "marker_index": idx,
+                    "link": m_link,
+                    "lane_index": int(m_lane) if m_lane.isdigit() else None,
+                    "pos": m_pos,
+                    "gap_time_s": float(com_marker.AttValue("MinGapTime")),
+                    "headway_m": float(com_marker.AttValue("MinClear")),
+                }
+
+            result_markers: list[dict[str, Any]] = []
+            for req in requested:
+                key = (str(req["link_no"]), str(req["lane_index"]), req["pos_m"])
+                matched = by_key.get(key)
+                if matched is None:
+                    raise RuntimeError(
+                        f"add_priority_rule: could not match requested marker "
+                        f"{req!r} back to a created marker by (link, lane_index, pos) after "
+                        "creation -- this should not happen; every requested marker's own "
+                        "(link, lane, pos) should be unique on this rule."
+                    )
+                result_markers.append(matched)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add priority rule on link {stop_link_no} lane {stop_lane_index} at "
+                f"pos {stop_pos_m}: {exc}"
+            ) from exc
+
+        return {
+            "no": new_no,
+            "link": str(stop_link_no),
+            "lane_index": stop_lane_index,
+            "pos": round(float(stop_pos_m), 6),
+            "template_rule_no": template_no,
+            "markers": result_markers,
+        }
+
+    def remove_priority_rule(self, no: int) -> None:
+        """Removes the rule AND every one of its own conflict markers
+        atomically (verified live -- see this block's own module comment).
+        Nothing else in the schema references a priority rule by its own
+        ``no`` (verified via a corpus-wide static scan, this unit's own
+        probe) so no reference-integrity check is needed here -- unlike
+        ``remove_data_collection_point``'s own COM-does-not-enforce-this
+        precedent."""
+        try:
+            rule = self._item_by_key(
+                self.vissim.Net.PriorityRules, no, "Priority rule", self.available_priority_rule_nos()
+            )
+            self.vissim.Net.PriorityRules.RemovePriorityRule(rule)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove priority rule {no}: {exc}") from exc
+
+    # -----------------------------------------------------------------
     # Vehicle-type reference-assignment verbs -- QUEUE (v2a) unit
     #
     # COM ids/behavior verified EMPIRICALLY live against Vissim 2026
