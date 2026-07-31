@@ -39,6 +39,11 @@ Motivating examples (acceptance narratives, not feature specs):
 
 **R1.1 Region selection UI.** Street/block-granular include·exclude (polygon lasso + per-street
 toggle) — 명시적으로 "사각형 아님". Output: bounded set of ways/intersections to model.
+**인터랙션 확정 (목업 v3, 2026-07-31 — docs/product/mockups/region-selection-mockup.html):**
+① 라쏘가 기본, 확정 시 도로-선택 모드 자동 전환(coarse→fine); ② 라쏘에 일부라도 걸치면
+전체 포함, 이후 개별 제외로 다듬기; ③ 블록 제외는 **"공유 벽" 규칙** — 도로는 양측 블록이
+모두 제외될 때만 제거(한쪽이 포함이면 경계 도로 유지: 연결성 보존, V3 게이트와 정합),
+제외 블록은 도로와 별개로 수요/존 생성에서 빠짐.
 **R1.2 Geometry synthesis.** From map data (OSM baseline; aerial/RIMS-assisted correction),
 generate Vissim links, connectors, lane counts, turn pockets, node footprints as .inpx XML —
 the v2b "XML-build + reparse + reference-integrity" tier (currently 0/13 shipped).

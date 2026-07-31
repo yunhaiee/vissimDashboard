@@ -104,8 +104,11 @@
         "도로 선택" 모드로 전환되어 세밀한 다듬기로 이어짐.</li>
       <li><b>✅ 결정 — 경계 처리:</b> 라쏘에 <u>일부라도 걸치면 전체 포함</u> (끝점 포함
         또는 라쏘 변과 교차). 이후 도로 선택 모드에서 개별 제외로 다듬기.</li>
-      <li><b>⬜ 열림 — 제외의 단위:</b> 블록 제외 시 내부 도로만 빠지고 경계 간선은 남는
-        현재 규칙이 기대와 일치하는가? (블록 모드로 직접 확인 가능)</li>
+      <li><b>✅ 결정 — 제외의 단위 ("공유 벽" 규칙):</b> 도로는 <u>양측 블록이 모두
+        제외될 때만</u> 함께 제거됨. 한쪽이라도 포함 영역에 접한 경계 도로는 유지 —
+        포함 영역의 통과 교통이 그 도로를 쓰고, 제거하면 네트워크 연결성이 깨져 검증
+        게이트(V3)가 어차피 거부하기 때문. 제외 블록은 도로와 별개로 수요/존 생성에서
+        빠짐.</li>
     </ol>
   </div>
 </div>
@@ -148,7 +151,16 @@
     rect.style.cursor = 'pointer';
     rect.addEventListener('click', () => { if (mode !== 'block') return;
       const k = cid(c, r);
-      excludedCells.has(k) ? excludedCells.delete(k) : excludedCells.add(k);
+      const adding = !excludedCells.has(k);
+      adding ? excludedCells.add(k) : excludedCells.delete(k);
+      if (adding) {
+        // 공유 벽 규칙 설명: 인접 포함 블록이 있는 경계 도로는 유지됨
+        const dropped = segs.filter(s => { const a = s.cells.filter(Boolean);
+          return a.includes(k) && a.every(c2 => excludedCells.has(c2)); }).length;
+        flash(dropped
+          ? `블록 제외 — 양측이 모두 제외된 도로 ${dropped}개 구간이 함께 빠졌습니다`
+          : '블록 제외 — 경계 도로는 인접한 포함 영역이 있어 유지됩니다 (공유 벽 규칙)');
+      }
       render(); });
     gCells.appendChild(rect);
   }
