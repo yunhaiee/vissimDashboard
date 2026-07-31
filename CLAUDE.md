@@ -2,15 +2,21 @@
 
 Vissim traffic-simulation validation dashboard (Dochak) + LLM agent that edits Vissim via COM.
 FastAPI backend on **port 8001** + Next.js 16 frontend on 3000; file-based storage, no DB.
-Goal: working system + TR-C paper substrate before ~2026-09-05.
+**Goal (re-set 2026-07-31): the full consultant pipeline as a product** — scoping → data →
+AI network build → AI calibration → scenario sweep → styled report. Master plan:
+`docs/product/master-roadmap-2026-07.md` (8 tracks / 5 phases); requirements:
+`docs/product/tk-requirements-2026-07-31.md` (v2.1). The TR-C paper is DEFERRED (post-US-move);
+sweep/calibration instrumentation still accumulates paper data by design. Target market:
+Korea/Daejeon first via a format-neutral adapter layer; micro (not meso); Vissim-focused.
 
-## Read this first for any Phase 2 (agent) work
+## Read this first for any agent/COM work
 
 `docs/phase2/` in order: `00-EXECUTION-GUIDE.md` (rules + verified landmines — Vissim COM and
 model semantics WILL bite you without it) → `01-ARCHITECTURE.md` → `02-ROADMAP.md` (find your
 milestone; M0+M1 are done) → `03-RESEARCH-DIGEST.md` → `04-EVAL-PLAN.md`.
 Record any interface-gap deviation in `docs/phase2/DECISIONS.md` (protocol + examples inside).
-Deferred UX debt: `docs/ux-backlog.md`. Overall plan: `docs/ROADMAP.md`.
+Deferred UX debt: `docs/ux-backlog.md`. Legacy plan + deployment ladder: `docs/ROADMAP.md`.
+MRWA guideline mapping (client authority numbers): `docs/meeting-brief-tk-mrwa.md`.
 
 ## Hard rules
 
