@@ -1944,7 +1944,18 @@ export async function fetchBaseWorkbook(): Promise<BaseWorkbookResponse> {
 
 export type ReportBlock = { type: string; heading?: string; body?: string };
 export type ReportMeta = { title?: string; subtitle?: string; author?: string; date?: string; project?: string; revision?: string; reviewer?: string; description?: string };
-export type ReportSpec = { meta: ReportMeta; blocks: ReportBlock[]; filename?: string };
+// Mirrors backend/routers/report.py's ReportStyle -- the company style
+// profile (R4.2). Every field optional; see lib/reportStyleProfile.ts's
+// profileToApiStyle() for the frontend-profile -> this-shape seam.
+export type ReportStyle = {
+  palette?: string[];
+  font_family?: string;
+  font_size_title?: number;
+  font_size_label?: number;
+  figure_width_in?: number;
+  figure_height_in?: number;
+};
+export type ReportSpec = { meta: ReportMeta; blocks: ReportBlock[]; filename?: string; style?: ReportStyle };
 
 export async function buildReport(spec: ReportSpec): Promise<Blob> {
   const r = await apiMutationFetch("/api/report/build", {
@@ -1953,6 +1964,14 @@ export async function buildReport(spec: ReportSpec): Promise<Blob> {
     body: JSON.stringify(spec),
     cache: "no-store",
   });
+  if (!r.ok) throw new Error(await r.text());
+  return r.blob();
+}
+
+/** CSV of exactly the rows a report block renders (R4.1's "데이터 내보내기").
+ * `blockType` matches ReportBlock["type"] (e.g. "geh-validation"). */
+export async function fetchReportBlockDataCsv(blockType: string): Promise<Blob> {
+  const r = await apiFetch(`/api/report/data/${encodeURIComponent(blockType)}`, { cache: "no-store" });
   if (!r.ok) throw new Error(await r.text());
   return r.blob();
 }

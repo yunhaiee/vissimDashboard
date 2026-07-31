@@ -169,6 +169,25 @@ def _geh_validation_rows(period):
     return rows
 
 
+def geh_validation_csv_rows() -> list[dict]:
+    """Flat (period, node, ...) rows for CSV export -- built from the exact
+    same :func:`_geh_validation_rows` the .docx "Count Validation (GEH)"
+    table (:func:`_add_geh_validation`) renders from."""
+    rows = []
+    for period, label in (("AM", "AM Peak"), ("PM", "PM Peak")):
+        for nid, obs, mdl, g in _geh_validation_rows(period):
+            grade = _geh_grade(g)
+            rows.append({
+                "period": label,
+                "node": f"Node {nid}",
+                "observed": round(obs) if obs is not None else None,
+                "modelled": round(mdl) if mdl is not None else None,
+                "geh": round(g, 2) if g is not None else None,
+                "grade": {"good": "양호", "fair": "보통", "poor": "불량"}.get(grade, "-"),
+            })
+    return rows
+
+
 def _add_geh_validation(doc, counter, *, heading="Count Validation (GEH)"):
     from docx.shared import Pt
     from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -229,7 +248,7 @@ def _add_overview(doc, *, heading="Overview"):
 
 # --- travel-time charts -----------------------------------------------------
 
-def _add_travel_charts(doc, counter, *, heading="Travel Time Validation"):
+def _add_travel_charts(doc, counter, *, heading="Travel Time Validation", style=None):
     from docx.shared import Inches
 
     _section_heading(doc, heading)
@@ -240,9 +259,20 @@ def _add_travel_charts(doc, counter, *, heading="Travel Time Validation"):
     if not specs:
         _styled(doc, "통행시간 데이터가 없습니다.", "Body Text")
         return
+    # Figure export size (R4.2): the embed width shown in the .docx page.
+    # Unset (no company style profile) keeps the pre-existing literal 5.8in;
+    # height is only passed when explicitly set, so python-docx keeps the
+    # picture's native aspect ratio by default -- same as before this field
+    # existed.
+    style = style or {}
+    width_in = style.get("figure_width_in") or 5.8
+    height_in = style.get("figure_height_in")
+    picture_kwargs = {"width": Inches(width_in)}
+    if height_in:
+        picture_kwargs["height"] = Inches(height_in)
     for spec in specs:
-        png = render_travel_chart(spec)
-        doc.add_picture(BytesIO(png), width=Inches(5.8))
+        png = render_travel_chart(spec, style=style)
+        doc.add_picture(BytesIO(png), **picture_kwargs)
         _caption(doc, f"Figure {counter.next_figure()} - {spec['name']} ({spec['period']} Peak)")
         doc.add_paragraph("")
 
@@ -265,6 +295,11 @@ def build_report(spec: dict) -> bytes:
 
     meta = spec.get("meta") or {}
     blocks = spec.get("blocks") or []
+    # Company style profile (R4.2) -- absent/None reproduces today's exact
+    # appearance byte-for-byte (see report_exports.render_travel_chart and
+    # _add_travel_charts above); only present when the report page's user
+    # explicitly set a profile.
+    style = spec.get("style") or None
     doc = Document(_TEMPLATE_PATH) if os.path.exists(_TEMPLATE_PATH) else Document()
     counter = _Counter()
 
@@ -286,7 +321,7 @@ def build_report(spec: dict) -> bytes:
             _caption(doc, f"Table {counter.next_table()} - Flow / GEH Validation Summary (AM/PM)")
             add_flow_geh_section(doc, with_heading=False)
         elif btype == "travel-time-charts":
-            _add_travel_charts(doc, counter, heading=heading or "Travel Time Validation")
+            _add_travel_charts(doc, counter, heading=heading or "Travel Time Validation", style=style)
         elif btype == "text":
             _add_text(doc, block)
         # unknown types are ignored

@@ -187,6 +187,17 @@ function hashScenarioId(id: string): number {
   return hash;
 }
 
+// Report style presets (R4.2) need a starting palette to offer a company
+// before they customize it -- "respect scenarioPalette.ts as the DEFAULT
+// palette" per the report-styling spec. This reuses paletteColorAt (the same
+// curated-then-generated lookup getScenarioDisplayColor uses below) instead
+// of hand-picking a second list, so the report's default swatches and the
+// dashboard's scenario colors can never drift apart.
+export function getDefaultReportPalette(count = 6): string[] {
+  const n = Number.isInteger(count) && count > 0 ? count : 6;
+  return Array.from({ length: n }, (_, index) => paletteColorAt(index));
+}
+
 export function getScenarioDisplayColor(
   scenario: Pick<ScenarioMeta, "id">,
   fallbackIndex = 0,

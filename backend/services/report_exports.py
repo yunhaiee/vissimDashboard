@@ -172,26 +172,16 @@ def _set_border(cell, edge, sz=12, color="E69138"):
 
 # --- 1. LoS summary (.docx) -------------------------------------------------
 
-def add_los_section(doc, *, level: int = 1, heading: str = "VISSIM LoS Summary", with_heading: bool = True) -> None:
-    """Append the colour-coded LoS table (AM/PM) to an existing Document."""
-    from docx.shared import Pt
-    from docx.enum.table import WD_TABLE_ALIGNMENT
+def los_summary_rows() -> dict:
+    """Structured LoS rows (per movement + per-node weighted-overall).
 
+    The single source both the .docx table (:func:`add_los_section`) and the
+    CSV data-extract endpoint (:func:`los_summary_csv_rows`, used by the report
+    page's "데이터 내보내기" button) render from -- the row/weighting math is
+    computed exactly once here, never re-derived in a second pipeline.
+    """
     am = _movement_rows(_scenario_for_period("AM"))
     pm = _movement_rows(_scenario_for_period("PM"))
-
-    if with_heading:
-        doc.add_heading(heading, level=level)
-    ds = get_active_dataset().get("filename") or "active dataset"
-    note = doc.add_paragraph().add_run(
-        f"Source: {ds}. AM/PM = base scenarios. LOS = HCM signalized thresholds on VISSIM control delay "
-        "(A<=10, B<=20, C<=35, D<=55, E<=80, F>80 s/veh). Max Queue = QLENMAX (per lane group, network units)."
-    )
-    note.font.size = Pt(8)
-
-    if not am and not pm:
-        doc.add_paragraph("No simulation results are available yet. Run a scenario, then re-export.")
-        return
 
     def idx(rows):
         return {(r["node"], r["approach"], r["turn"]): r for r in rows}
@@ -218,7 +208,66 @@ def add_los_section(doc, *, level: int = 1, heading: str = "VISSIM LoS Summary",
                 wd += d * ww; w += ww
         return round(wd / w, 2) if w else None
 
-    total_rows = 2 + sum(len(v) + 1 for v in nodes.values())
+    per_node = []
+    for nid in sorted(nodes, key=int):
+        rowkeys = nodes[nid]
+        movement_rows = []
+        for k in rowkeys:
+            a = ai.get(k, {}); p = pi.get(k, {})
+            movement_rows.append({
+                "node": nid, "approach": k[1], "turn": k[2],
+                "am_volume": a.get("volume"), "am_delay": a.get("delay"), "am_los": a.get("los"), "am_qmax": a.get("qmax"),
+                "pm_volume": p.get("volume"), "pm_delay": p.get("delay"), "pm_los": p.get("los"), "pm_qmax": p.get("qmax"),
+            })
+        amd = weighted(rowkeys, ai); pmd = weighted(rowkeys, pi)
+        per_node.append({
+            "node": nid,
+            "rows": movement_rows,
+            "weighted_overall": {"am_delay": amd, "am_los": _los(amd), "pm_delay": pmd, "pm_los": _los(pmd)},
+        })
+    return {"per_node": per_node, "am_count": len(am), "pm_count": len(pm)}
+
+
+def los_summary_csv_rows() -> list[dict]:
+    """Flat rows for CSV export -- identical numbers to the .docx table:
+    one row per movement, plus one 'Weighted Overall' row per node."""
+    data = los_summary_rows()
+    rows: list[dict] = []
+    for node in data["per_node"]:
+        for r in node["rows"]:
+            rows.append({**r, "row_type": "movement"})
+        wo = node["weighted_overall"]
+        rows.append({
+            "node": node["node"], "approach": "", "turn": "Weighted Overall",
+            "am_volume": None, "am_delay": wo["am_delay"], "am_los": wo["am_los"], "am_qmax": None,
+            "pm_volume": None, "pm_delay": wo["pm_delay"], "pm_los": wo["pm_los"], "pm_qmax": None,
+            "row_type": "weighted_overall",
+        })
+    return rows
+
+
+def add_los_section(doc, *, level: int = 1, heading: str = "VISSIM LoS Summary", with_heading: bool = True) -> None:
+    """Append the colour-coded LoS table (AM/PM) to an existing Document."""
+    from docx.shared import Pt
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+
+    data = los_summary_rows()
+
+    if with_heading:
+        doc.add_heading(heading, level=level)
+    ds = get_active_dataset().get("filename") or "active dataset"
+    note = doc.add_paragraph().add_run(
+        f"Source: {ds}. AM/PM = base scenarios. LOS = HCM signalized thresholds on VISSIM control delay "
+        "(A<=10, B<=20, C<=35, D<=55, E<=80, F>80 s/veh). Max Queue = QLENMAX (per lane group, network units)."
+    )
+    note.font.size = Pt(8)
+
+    if data["am_count"] == 0 and data["pm_count"] == 0:
+        doc.add_paragraph("No simulation results are available yet. Run a scenario, then re-export.")
+        return
+
+    per_node = data["per_node"]
+    total_rows = 2 + sum(len(n["rows"]) + 1 for n in per_node)
     t = doc.add_table(rows=total_rows, cols=11)
     t.alignment = WD_TABLE_ALIGNMENT.CENTER
     t.style = "Table Grid"
@@ -233,27 +282,27 @@ def add_los_section(doc, *, level: int = 1, heading: str = "VISSIM LoS Summary",
         _setcell(c, sub[i], bold=True, fill="D9D9D9", size=8)
 
     ri = 2
-    for nid in sorted(nodes, key=int):
-        rowkeys = nodes[nid]
+    for node in per_node:
+        nid = node["node"]
         start = ri
-        for k in rowkeys:
-            a = ai.get(k, {}); p = pi.get(k, {})
+        for r_data in node["rows"]:
             r = t.rows[ri].cells
-            _setcell(r[1], k[1]); _setcell(r[2], k[2])
-            _setcell(r[3], a.get("volume")); _setcell(r[4], a.get("delay"))
-            _setcell(r[5], a.get("los"), bold=True, fill=_LOS_FILL.get(a.get("los")))
-            _setcell(r[6], a.get("qmax"))
-            _setcell(r[7], p.get("volume")); _setcell(r[8], p.get("delay"))
-            _setcell(r[9], p.get("los"), bold=True, fill=_LOS_FILL.get(p.get("los")))
-            _setcell(r[10], p.get("qmax"))
+            _setcell(r[1], r_data["approach"]); _setcell(r[2], r_data["turn"])
+            _setcell(r[3], r_data["am_volume"]); _setcell(r[4], r_data["am_delay"])
+            _setcell(r[5], r_data["am_los"], bold=True, fill=_LOS_FILL.get(r_data["am_los"]))
+            _setcell(r[6], r_data["am_qmax"])
+            _setcell(r[7], r_data["pm_volume"]); _setcell(r[8], r_data["pm_delay"])
+            _setcell(r[9], r_data["pm_los"], bold=True, fill=_LOS_FILL.get(r_data["pm_los"]))
+            _setcell(r[10], r_data["pm_qmax"])
             ri += 1
         r = t.rows[ri].cells
         _setcell(r[1].merge(r[2]), "Weighted Overall", bold=True)
-        amd = weighted(rowkeys, ai); pmd = weighted(rowkeys, pi)
+        wo = node["weighted_overall"]
+        amd, pmd = wo["am_delay"], wo["pm_delay"]
         _setcell(r[3], ""); _setcell(r[4], amd, bold=True)
-        _setcell(r[5], _los(amd), bold=True, fill=_LOS_FILL.get(_los(amd)))
+        _setcell(r[5], wo["am_los"], bold=True, fill=_LOS_FILL.get(wo["am_los"]))
         _setcell(r[6], ""); _setcell(r[7], ""); _setcell(r[8], pmd, bold=True)
-        _setcell(r[9], _los(pmd), bold=True, fill=_LOS_FILL.get(_los(pmd)))
+        _setcell(r[9], wo["pm_los"], bold=True, fill=_LOS_FILL.get(wo["pm_los"]))
         _setcell(r[10], "")
         overall = ri
         ri += 1
@@ -325,6 +374,36 @@ def _collect_flow_geh(period):
     return rows, tot
 
 
+def _pct_diff(m, o):
+    return (m - o) / o * 100 if o else 0.0
+
+
+def _flow_geh_row(label, node, s):
+    # Rounding matches the .docx table's display precision exactly (%Diff to
+    # 1dp, Flow/GEH % to whole percent) -- see build()'s _setcell calls below
+    # -- so a CSV value and its rendered table cell are the same number.
+    return {
+        "period": label, "node": node, "counts": s["counts"],
+        "observed": round(s["obs"]), "modelled": round(s["mdl"]),
+        "pct_diff": round(_pct_diff(s["mdl"], s["obs"]), 1),
+        "flow_pct": round(s["flow_ok"] / s["counts"] * 100) if s["counts"] else 0,
+        "geh_pct": round(s["geh_ok"] / s["counts"] * 100) if s["counts"] else 0,
+    }
+
+
+def flow_geh_csv_rows() -> list[dict]:
+    """Flat (period, node, ...) rows for CSV export -- built from the exact
+    same :func:`_collect_flow_geh` the .docx table renders from (including the
+    same ``_pct_diff``/flow%/GEH% formulas), plus a 'Total' row per period."""
+    rows: list[dict] = []
+    for period, label in (("AM", "AM Peak"), ("PM", "PM Peak")):
+        node_rows, tot = _collect_flow_geh(period)
+        for nid, s in node_rows:
+            rows.append({**_flow_geh_row(label, f"Node {nid}", s), "row_type": "node"})
+        rows.append({**_flow_geh_row(label, "Total", tot), "row_type": "total"})
+    return rows
+
+
 def add_flow_geh_section(doc, *, level: int = 1, heading: str = "Traffic Flow Validation Summary", with_heading: bool = True) -> None:
     """Append the Flow/GEH validation tables (AM & PM) to an existing Document."""
     from docx.shared import Pt
@@ -343,7 +422,7 @@ def add_flow_geh_section(doc, *, level: int = 1, heading: str = "Traffic Flow Va
     head = ["", "No. Counts", "Observed Flow", "Modelled Flow", "% Diff", "Flow", "GEH"]
 
     def pct_diff(m, o):
-        return (m - o) / o * 100 if o else 0.0
+        return _pct_diff(m, o)
 
     def build(title, rows, tot):
         doc.add_heading(title, level=2)
@@ -455,43 +534,80 @@ def travel_chart_specs() -> list[dict]:
     return specs
 
 
-def render_travel_chart(spec: dict) -> bytes:
-    """Render one cumulative travel-time chart spec to PNG bytes."""
+# Company-style overrides (R4.2). Every key is optional; ``style=None`` (or
+# any key left out/None) reproduces the exact literal defaults below, which
+# ARE the pre-existing hardcoded values -- so a caller that never passes
+# ``style`` gets byte-for-byte the same chart as before this feature existed.
+# ``palette`` is positional-by-role, not a generic series list: [0] = model
+# line, [1] = observed line. The tolerance band always stays neutral grey --
+# it is a reference guide, not a data series, so it is not palette-driven.
+_DEFAULT_CHART_MODEL_COLOR = "#e8000b"
+_DEFAULT_CHART_OBSERVED_COLOR = "#2f4b7c"
+_DEFAULT_CHART_BAND_COLOR = "#9a9a9a"
+_DEFAULT_CHART_TITLE_SIZE = 12
+_DEFAULT_CHART_LEGEND_SIZE = 9
+
+
+def render_travel_chart(spec: dict, style: dict | None = None) -> bytes:
+    """Render one cumulative travel-time chart spec to PNG bytes.
+
+    ``style`` (optional): {"palette": [model_hex, observed_hex, ...],
+    "font_family": str, "font_size_title": int, "font_size_label": int}. See
+    the module docstring above -- omitting a key (or the whole dict) keeps
+    that element exactly as it was before this parameter existed.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.ticker import FuncFormatter, MultipleLocator
 
+    style = style or {}
+    palette = style.get("palette") or []
+    model_color = palette[0] if len(palette) > 0 else _DEFAULT_CHART_MODEL_COLOR
+    obs_color = palette[1] if len(palette) > 1 else _DEFAULT_CHART_OBSERVED_COLOR
+    band_color = _DEFAULT_CHART_BAND_COLOR
+    title_size = style.get("font_size_title") or _DEFAULT_CHART_TITLE_SIZE
+    legend_size = style.get("font_size_label") or _DEFAULT_CHART_LEGEND_SIZE
+    # Axis-label/tick sizing had no explicit fontsize before (matplotlib's
+    # rcParams default applied) -- only pass one when the caller opts in, so
+    # the no-style path calls set_xlabel/set_ylabel exactly as before.
+    axis_label_kwargs = {"fontsize": style["font_size_label"]} if style.get("font_size_label") else {}
+    font_family = style.get("font_family") or None
+    rc = {"font.family": font_family} if font_family else {}
+
     name = spec["name"]; per = spec["period"]; d = spec["dist_km"]
     obs = spec["obs"]; mdl = spec["model"]; high = spec["high"]; low = spec["low"]
     max_dist = spec.get("max_dist") or max(d, 2.0)
     x = [0.0, d]
-    fig, ax = plt.subplots(figsize=(9.6, 6.0), dpi=140)
-    ax.plot(x, [0, high], color="#9a9a9a", lw=1.3, ls="--", label="+15%")
-    ax.plot(x, [0, low], color="#9a9a9a", lw=1.3, ls="--", label="-15%")
-    ax.plot(x, [0, obs], color="#2f4b7c", lw=2.4, label="TomTom Average")
-    ax.plot(x, [0, mdl], color="#e8000b", lw=2.4, marker="o", ms=6, label="Base 2022")
-    mdl_dy, obs_dy = (10, -16) if mdl >= obs else (-16, 10)
-    ax.annotate(_mmss(mdl), (d, mdl), textcoords="offset points", xytext=(10, mdl_dy),
-                color="#e8000b", fontsize=10, fontweight="bold")
-    ax.annotate(_mmss(obs), (d, obs), textcoords="offset points", xytext=(10, obs_dy),
-                color="#2f4b7c", fontsize=10)
-    ax.annotate("0:00", (0, 0), textcoords="offset points", xytext=(-2, 8), color="#e8000b", fontsize=9)
-    ax.set_xlim(0, max_dist * 1.18)
-    ax.set_ylim(0, max(high, mdl) * 1.18)
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda s, _p=None: _mmss(s)))
-    ax.yaxis.set_major_locator(MultipleLocator(30))
-    ax.xaxis.set_major_locator(MultipleLocator(0.5))
-    ax.grid(True, color="#ededed", lw=0.8)
-    ax.set_axisbelow(True)
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
-    ax.set_xlabel("Relative Distance from Start (km)")
-    ax.set_ylabel("Travel Time from Start (mm:ss)")
-    ax.set_title(f"{name}  -  {per} Peak", fontsize=12, fontweight="bold")
-    ax.legend(loc="upper left", frameon=False, ncol=4, fontsize=9)
-    fig.tight_layout()
-    png = BytesIO(); fig.savefig(png, bbox_inches="tight"); plt.close(fig)
+    with plt.rc_context(rc):
+        fig, ax = plt.subplots(figsize=(9.6, 6.0), dpi=140)
+        ax.plot(x, [0, high], color=band_color, lw=1.3, ls="--", label="+15%")
+        ax.plot(x, [0, low], color=band_color, lw=1.3, ls="--", label="-15%")
+        ax.plot(x, [0, obs], color=obs_color, lw=2.4, label="TomTom Average")
+        ax.plot(x, [0, mdl], color=model_color, lw=2.4, marker="o", ms=6, label="Base 2022")
+        mdl_dy, obs_dy = (10, -16) if mdl >= obs else (-16, 10)
+        ax.annotate(_mmss(mdl), (d, mdl), textcoords="offset points", xytext=(10, mdl_dy),
+                    color=model_color, fontsize=10, fontweight="bold")
+        ax.annotate(_mmss(obs), (d, obs), textcoords="offset points", xytext=(10, obs_dy),
+                    color=obs_color, fontsize=10)
+        ax.annotate("0:00", (0, 0), textcoords="offset points", xytext=(-2, 8), color=model_color, fontsize=9)
+        ax.set_xlim(0, max_dist * 1.18)
+        ax.set_ylim(0, max(high, mdl) * 1.18)
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda s, _p=None: _mmss(s)))
+        ax.yaxis.set_major_locator(MultipleLocator(30))
+        ax.xaxis.set_major_locator(MultipleLocator(0.5))
+        ax.grid(True, color="#ededed", lw=0.8)
+        ax.set_axisbelow(True)
+        for spine_side in ("top", "right"):
+            ax.spines[spine_side].set_visible(False)
+        ax.set_xlabel("Relative Distance from Start (km)", **axis_label_kwargs)
+        ax.set_ylabel("Travel Time from Start (mm:ss)", **axis_label_kwargs)
+        ax.set_title(f"{name}  -  {per} Peak", fontsize=title_size, fontweight="bold")
+        if axis_label_kwargs:
+            ax.tick_params(labelsize=axis_label_kwargs["fontsize"])
+        ax.legend(loc="upper left", frameon=False, ncol=4, fontsize=legend_size)
+        fig.tight_layout()
+        png = BytesIO(); fig.savefig(png, bbox_inches="tight"); plt.close(fig)
     return png.getvalue()
 
 

@@ -2815,3 +2815,19 @@ in a later milestone" (stale since M2) and instead says the step is still owed a
 approval (controller applied — outside the agent's file set), and approval cards render object
 params as bounded JSON instead of `[object Object]`. Controller re-verified the renderer
 guarantee with a 40KB envelope at both tiers.
+
+## 2026-07-31 — Phase 0.2: report data-extract + figure styling v1 shipped
+
+CSV export (utf-8-sig for Excel/Korean) for the four report blocks that render actual
+tables/figures, each endpoint backed by the SAME functions the .docx builder uses — extracted
+`los_summary_rows`/`flow_geh_csv_rows`/`geh_validation_csv_rows` rather than computing twice
+(the three-GEH-pipelines lesson applied preemptively). XLSX deferred: every source is a single
+flat table. Styling threads through ONE seam: `render_travel_chart(spec, style=None)` where
+every field is optional and omitted-style is test-pinned byte-identical to the pre-existing
+output; the frontend's 회사 스타일 profile (localStorage `vissim-report-style-profile`,
+JSON export/import) is translated by `profileToApiStyle()` which OMITS the style key entirely
+when the profile is empty — the no-profile default is byte-identical by construction, not by
+care. Default palette seeded from `scenarioPalette.ts` via a new `getDefaultReportPalette()` so
+report and dashboard colors cannot drift (the one approved scope addition). Suite 1739 green +
+15 new tests; the only new failure seen in the agent's run was a transient 529 on the live-API
+smoke test, unrelated.
