@@ -98,14 +98,14 @@
   </div>
 
   <div class="notes">
-    <h3>디자인 오픈 질문 — 이 목업으로 확인하고 싶은 것</h3>
+    <h3>디자인 결정 기록 (v2, 2026-07-31)</h3>
     <ol>
-      <li><b>선택 시작 방식:</b> 라쏘(그리기)가 기본인가, 아니면 "교차로 하나 클릭 → 연결된
-        도로로 자동 확장(seed &amp; grow)"이 더 자연스러운가?</li>
-      <li><b>제외의 단위:</b> 블록 제외 시 내부 도로만 빠지고 경계 간선은 남는 현재 규칙이
-        기대와 일치하는가? (지금 블록 모드로 직접 확인 가능)</li>
-      <li><b>경계 처리:</b> 라쏘에 절반만 걸린 구간은 지금 "포함"으로 처리 — 잘라야 하나,
-        통째로 넣어야 하나, 물어봐야 하나?</li>
+      <li><b>✅ 결정 — 선택 시작 방식:</b> 라쏘가 기본. 라쏘 확정(더블클릭) 시 자동으로
+        "도로 선택" 모드로 전환되어 세밀한 다듬기로 이어짐.</li>
+      <li><b>✅ 결정 — 경계 처리:</b> 라쏘에 <u>일부라도 걸치면 전체 포함</u> (끝점 포함
+        또는 라쏘 변과 교차). 이후 도로 선택 모드에서 개별 제외로 다듬기.</li>
+      <li><b>⬜ 열림 — 제외의 단위:</b> 블록 제외 시 내부 도로만 빠지고 경계 간선은 남는
+        현재 규칙이 기대와 일치하는가? (블록 모드로 직접 확인 가능)</li>
     </ol>
   </div>
 </div>
@@ -182,12 +182,27 @@
     if (mode !== 'lasso' || lasso.length < 3) return;
     closedLasso = lasso.slice(); lasso = [];
     segs.forEach(s => { if (s.state !== 'excluded') s.state = insideLasso(s) ? 'in' : 'out'; });
+    // 라쏘 확정 → 정밀 보정 단계로 자동 전환 (사용자 결정: 라쏘가 기본, 도로 선택은
+    // 세밀한 다듬기용). 다시 그리려면 "영역 그리기"를 누르면 됨.
+    setMode('street');
+    flash('영역 확정 — 개별 도로를 클릭해 다듬으세요 (포함↔제외)');
     render(); ev.preventDefault();
   });
 
   function insideLasso(s) {
+    // PARTIAL-INCLUSION RULE (사용자 결정 2026-07-31): 라쏘에 일부라도 걸치면
+    // 전체 포함 — 끝점 중 하나가 안에 있거나, 구간이 라쏘 변과 교차하면 포함.
     if (!closedLasso) return false;
-    return pip((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, closedLasso);
+    const poly = closedLasso;
+    if (pip(s.x1, s.y1, poly) || pip(s.x2, s.y2, poly)) return true;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++)
+      if (segX(s.x1, s.y1, s.x2, s.y2, poly[j].x, poly[j].y, poly[i].x, poly[i].y)) return true;
+    return false;
+  }
+  function segX(ax, ay, bx, by, cx, cy, dx, dy) { // segment intersection
+    const o = (px, py, qx, qy, rx, ry) => Math.sign((qy - py) * (rx - qx) - (qx - px) * (ry - qy));
+    return o(ax, ay, bx, by, cx, cy) !== o(ax, ay, bx, by, dx, dy)
+        && o(cx, cy, dx, dy, ax, ay) !== o(cx, cy, dx, dy, bx, by);
   }
   function pip(x, y, poly) { // point-in-polygon
     let inside = false;
@@ -200,10 +215,19 @@
 
   // ---- modes / reset ------------------------------------------------------
   const btns = { lasso: btn('m-lasso'), street: btn('m-street'), block: btn('m-block') };
-  Object.entries(btns).forEach(([k, b]) => b.addEventListener('click', () => {
-    mode = k; Object.values(btns).forEach(x => x.classList.remove('on')); b.classList.add('on');
+  function setMode(k) {
+    mode = k; Object.values(btns).forEach(x => x.classList.remove('on')); btns[k].classList.add('on');
     SVG.style.cursor = k === 'lasso' ? 'crosshair' : 'default';
-  }));
+  }
+  Object.entries(btns).forEach(([k, b]) => b.addEventListener('click', () => setMode(k)));
+  function flash(msg) {
+    let n = document.getElementById('flash');
+    if (!n) { n = document.createElement('div'); n.id = 'flash';
+      n.style.cssText = 'margin-top:6px;font-size:12px;color:var(--accent);';
+      document.querySelector('.legend').after(n); }
+    n.textContent = msg;
+    clearTimeout(n._t); n._t = setTimeout(() => { n.textContent = ''; }, 5000);
+  }
   btn('reset').addEventListener('click', () => {
     lasso = []; closedLasso = null; excludedCells.clear();
     segs.forEach(s => s.state = 'out'); render();
