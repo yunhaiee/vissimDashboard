@@ -3005,3 +3005,31 @@ complete"). Registry 95→96. Suite 2008→2052 (controller re-ran).
 two read-only git commands — the queue's worst violation (a failed pop loses work). Tree
 verified undamaged (empty stash list, HEAD intact, dataset sha unchanged), disclosure was
 honest, but future briefs now name `git stash` explicitly as forbidden. v2b: 9/13 + spine.
+
+## 2026-08-01 — Q4 ⑧ (stretch): composite-intersection probe — PARTIAL, and the partial is valuable
+
+Honest status: Stage 0 (gap probes) completed and reproduced twice; Stages 1–6 (the actual
+composed intersection build) never executed — a native SIGSEGV at the stage boundary killed
+the run, and the agent stopped per instruction rather than thrash. **The Stage-0 verdicts are
+solid and settle the two questions genesis milestone (b) most needed:**
+
+1. **Signal controllers ARE creatable — via `DuplicateSignalController`.** Plain
+   `AddSignalController`+`AddSignalGroup` create a real but NON-FUNCTIONAL skeleton (bare
+   SC+SG makes RunSingleStep fail outright); duplicating a donor copies a full working
+   program. **Third appearance of the duplicate-then-edit pattern** (driving behaviors Q3 ⑥,
+   priority rules Q4 ⑥, now controllers) — plain Add is a trap, Duplicate is the path; now a
+   named house pattern. Same family limitation: a zero-SC network can't mint its first.
+2. **Vehicle inputs ARE creatable** (`AddVehicleInput(Key, Link)`, GetAll-diff-proven twice);
+   whether a created input actually generates traffic is unproven (Stage 5 never ran).
+
+**GENESIS GAP LIST (= the next queue's spec; partial, composition-scale unproven):**
+① [BLOCKING, infrastructure] sequential COM connect/disconnect cycles in ONE process segfault
+after ~2-3 cycles — genesis's whole-intersection build job must use per-stage process
+boundaries (probe redesigned for this, unvalidated past Stage 0) or root-cause the crash;
+② `add_signal_controller` verb (duplicate-then-edit shape); ③ `add_vehicle_input` verb
+(creation proven, traffic-generation check owed); ④ full-composition proof (all Q4 verbs into
+one intersection) still owed — every verb is individually live-proven, the ensemble is not.
+
+Probe script committed compile-clean; Stage 0 live-validated ×2; suite at baseline (2053 incl.
+the flaky smoke), runtime/uploads sha-verified twice. v2b stays 9/13 + spine (this was a
+probe unit; "new intersection construction" bullet remains ⬜ with this probe as its spec).
