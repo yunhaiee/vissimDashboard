@@ -176,6 +176,13 @@ _OBJECT_TYPE_SPECS: dict[str, dict[str, str]] = {
     # set_vehicle_type_reference's own vehicle_type_no+field params, not
     # through this generic object_type machinery).
     "vehicle_type": {"shadow_key": "vehicle_types", "id_field": "no", "name_field": "name"},
+    # QUEUE 3 unit 6: keyed against the FLAT "driving_behaviors" list (a
+    # driving behavior has a genuine single-token identity, its own "no") --
+    # a specific link-behavior-type ASSIGNMENT is addressed by
+    # set_link_behavior_type_driving_behavior's own link_behavior_type_no
+    # (+optional veh_class_no) params, not through this generic object_type
+    # machinery, mirroring vehicle_type's own split above.
+    "driving_behavior": {"shadow_key": "driving_behaviors", "id_field": "no", "name_field": "name"},
 }
 
 _TOP_K = 5
@@ -1184,6 +1191,234 @@ def _parse_time_distributions(root: ET.Element) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# get_driving_behaviors / duplicate_driving_behavior / set_driving_behavior_
+# parameter / set_link_behavior_type_driving_behavior -- QUEUE 3 unit 6.
+#
+# A driving behavior is referenced NOT by links directly but by
+# link-behavior-TYPES (a separate Net.LinkBehaviorTypes collection): each
+# type carries a DEFAULT driving-behavior assignment plus zero or more
+# per-vehicle-class overrides, and each LINK in turn references a
+# link-behavior-type (never a driving behavior directly) via its own
+# linkBehavType attribute. Live-verified (backend/tools/probe_driving_
+# behaviors.py + two follow-up probe scripts) against "Roundabout
+# Billings.US"; statically cross-checked against the real Murdoch production
+# model (runtime/uploads/current/current.inpx -- known to raise on live COM
+# load, like every prior QUEUE-3 unit's own finding, so this is XML-only):
+# 15 real driving behaviors, 15 real link-behavior-types in a clean 1:1
+# drivBehavDef mapping with ZERO per-class overrides anywhere, but only TWO
+# of the 15 types are actually assigned to any link -- no=101 (293 links,
+# EVERY named corridor: "Murdoch Dr NB/SB", "South St EB/WB", "Barry Marshal
+# Pde NB/SB", "Robin Warren EB/WB", "Jennalup St EB/WB") and no=1 (19 links).
+# Driving behavior #101 is therefore the single most shared calibration
+# object in the real production model -- the live proof point for this
+# unit's refuse-when-shared design.
+# ---------------------------------------------------------------------------
+
+
+def _link_behavior_type_link_counts(root: ET.Element) -> dict[str, int]:
+    """{link_behavior_type_no: count} from every real ``<link
+    linkBehavType="...">`` -- the blast-radius SIZE (how many links) behind
+    each link-behavior-type's own driving-behavior assignment(s)."""
+    counts: dict[str, int] = {}
+    for link in root.findall(".//links/link"):
+        lbt_no = (link.get("linkBehavType") or "").strip()
+        if not lbt_no:
+            continue
+        counts[lbt_no] = counts.get(lbt_no, 0) + 1
+    return counts
+
+
+def _parse_link_behavior_types(root: ET.Element, link_counts: dict[str, int]) -> list[dict[str, Any]]:
+    """{no, name, driving_behavior_default, overrides: [{veh_class_no,
+    driving_behavior_no}], link_count} per ``<linkBehaviorTypes>
+    <linkBehaviorType drivBehavDef="..."><vehClassDrivBehav>
+    <vehClassDrivingBehavior vehClass="..." drivBehav="..."/></...>``.
+    ``link_count`` is :func:`_link_behavior_type_link_counts`'s own tally for
+    this type -- the real number of links whose driving-behavior physics
+    change if this type's DEFAULT assignment is reassigned."""
+    result: list[dict[str, Any]] = []
+    for lbt in root.findall(".//linkBehaviorTypes/linkBehaviorType"):
+        no = lbt.get("no", "")
+        overrides: list[dict[str, Any]] = []
+        for override in lbt.findall(".//vehClassDrivingBehavior"):
+            veh_class_no = (override.get("vehClass") or "").strip()
+            driving_behavior_no = (override.get("drivBehav") or "").strip()
+            if not veh_class_no or not driving_behavior_no:
+                continue
+            overrides.append({"veh_class_no": veh_class_no, "driving_behavior_no": driving_behavior_no})
+        result.append(
+            {
+                "no": no,
+                "name": lbt.get("name", ""),
+                "driving_behavior_default": (lbt.get("drivBehavDef") or "").strip(),
+                "overrides": overrides,
+                "link_count": link_counts.get(no, 0),
+            }
+        )
+    return result
+
+
+def _driving_behavior_link_behavior_type_refs(
+    link_behavior_types: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """{driving_behavior_no: [{link_behavior_type_no, link_behavior_type_name,
+    veh_class_no (``None`` for a DEFAULT assignment), link_count}, ...]} --
+    the reference graph powering ``set_driving_behavior_parameter``'s
+    refuse-when-shared check: a driving behavior is "shared" whenever this
+    list has more than one entry (or, per the task's own design, is
+    referenced at all -- see ``constraints.py``'s rewritten
+    ``driving_behavior_shared_object_edit``)."""
+    refs: dict[str, list[dict[str, Any]]] = {}
+    for lbt in link_behavior_types:
+        default_no = lbt["driving_behavior_default"]
+        if default_no:
+            refs.setdefault(default_no, []).append(
+                {
+                    "link_behavior_type_no": lbt["no"],
+                    "link_behavior_type_name": lbt["name"],
+                    "veh_class_no": None,
+                    "link_count": lbt["link_count"],
+                }
+            )
+        for override in lbt["overrides"]:
+            refs.setdefault(override["driving_behavior_no"], []).append(
+                {
+                    "link_behavior_type_no": lbt["no"],
+                    "link_behavior_type_name": lbt["name"],
+                    "veh_class_no": override["veh_class_no"],
+                    "link_count": lbt["link_count"],
+                }
+            )
+    return refs
+
+
+#: Consumer-list cap for a driving behavior's ``referenced_by`` -- mirrors
+#: ``_SPEED_DISTRIBUTION_REFERENCE_CAP``'s own bounded-envelope reasoning
+#: (suggestion/reference lists reach LLM prompts); the COUNT is always the
+#: real, untruncated total.
+_DRIVING_BEHAVIOR_CONSUMER_CAP = 10
+
+
+def _bounded_driving_behavior_consumers(consumers: list[dict[str, Any]]) -> dict[str, Any]:
+    """{count, consumers, truncated} -- like :func:`_bounded_reference_ids`
+    but keeps each consumer's full dict (link_behavior_type_no/name/
+    veh_class_no/link_count), not a bare id string, since the refuse-when-
+    shared message must NAME every consumer (bounded) per this unit's own
+    task brief."""
+    capped = consumers[:_DRIVING_BEHAVIOR_CONSUMER_CAP]
+    return {"count": len(consumers), "consumers": capped, "truncated": len(consumers) > len(capped)}
+
+
+#: {"WIEDEMANN74": 74, "WIEDEMANN99": 99} -- every other real
+#: ``carFollowModType`` (``"NOINTERACTION"`` on Footpath/pedestrian
+#: behaviors, live-verified on both the real Murdoch model and "Roundabout
+#: Billings.US") maps to ``None``. Matches ``constraints.py``'s pre-existing
+#: ``car_following_model`` int contract (``driving_behavior_parameter_model_
+#: mismatch`` already compares against literal ``74``/``99``).
+_CAR_FOLLOW_MODEL_INTS: dict[str, int] = {"WIEDEMANN74": 74, "WIEDEMANN99": 99}
+
+#: {canonical parameter name: XML attribute name} -- matches
+#: ``vissim_com.VissimController.DRIVING_BEHAVIOR_PARAM_FIELDS``'s keys
+#: exactly (the write whitelist); see that dict's own module comment for the
+#: full live-verified per-field reasoning (why these 8, why not W99 CC0-CC9).
+_DRIVING_BEHAVIOR_PARAM_XML_ATTRS: dict[str, str] = {
+    "ax": "w74ax",
+    "bx_add": "w74bxAdd",
+    "bx_mult": "w74bxMult",
+    "saf_dist_fact_ln_chg": "safDistFactLnChg",
+    "coop_ln_chg_speed_diff": "coopLnChgSpeedDiff",
+    "min_speed_for_lat": "minSpeedForLat",
+    "lat_dist_driv_def": "latDistDrivDef",
+    "lat_dist_stand_def": "latDistStandDef",
+}
+
+
+def _parse_driving_behaviors(
+    root: ET.Element, link_behavior_types: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """{no, name, car_follow_mod_type, car_following_model, <8 whitelisted
+    params>, referenced_by, reference_count} per ``<drivingBehaviors>
+    <drivingBehavior>``.
+
+    Vissim's .inpx storage is ALWAYS metric/canonical regardless of the
+    network's own display unit (live-verified: a FEET-display network's own
+    XML still stores ``w74ax="2"``, meters -- the display-unit conversion
+    happens only at the COM ``AttValue`` boundary, see
+    ``vissim_com.VissimController``'s own driving-behavior module comment)
+    -- so these raw XML values are already genuine meters/km/h, no
+    conversion needed here, mirroring ``_parse_speed_distribution_points``'/
+    ``_parse_time_distribution_points``' own "XML is unit-native" finding.
+    """
+    refs_by_behavior = _driving_behavior_link_behavior_type_refs(link_behavior_types)
+
+    result: list[dict[str, Any]] = []
+    for d in root.findall(".//drivingBehaviors/drivingBehavior"):
+        no = d.get("no", "")
+        car_follow_mod_type = (d.get("carFollowModType") or "").strip().upper()
+        consumers = refs_by_behavior.get(no, [])
+        entry: dict[str, Any] = {
+            "no": no,
+            "name": d.get("name", ""),
+            "car_follow_mod_type": car_follow_mod_type,
+            "car_following_model": _CAR_FOLLOW_MODEL_INTS.get(car_follow_mod_type),
+            "referenced_by": _bounded_driving_behavior_consumers(consumers),
+            "reference_count": len(consumers),
+        }
+        for canonical, xml_attr in _DRIVING_BEHAVIOR_PARAM_XML_ATTRS.items():
+            entry[canonical] = _coerce_float_or_none(d.get(xml_attr))
+        result.append(entry)
+    return result
+
+
+def _flatten_link_behavior_type_assignments(
+    link_behavior_types: list[dict[str, Any]], driving_behaviors: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """A flat, one-entry-per-(link_behavior_type, target) view of
+    ``link_behavior_types`` -- ONE ``"{lbt_no}.default"`` entry per type plus
+    one ``"{lbt_no}.{veh_class_no}"`` entry per EXISTING per-vehicle-class
+    override, mirroring ``_flatten_routes``' precedent (v2 unit ⑥) exactly:
+    ``set_link_behavior_type_driving_behavior``'s target has no
+    single-token identity of its own (a call picks EITHER the default OR one
+    existing override via its own optional ``veh_class_no`` param) -- this
+    is the shape ``guardrails.py``'s postwrite machinery needs.
+    ``driving_behavior_name`` is a DERIVED display field (looked up from
+    ``driving_behavior_no`` at parse time, the same "coupled_fields"
+    situation ``set_des_speed_decision``'s own ``des_speed_distr_name``
+    established) -- ``guardrails.py`` must exempt it alongside
+    ``driving_behavior_no`` or a correct write false-positives as "something
+    else moved".
+    """
+    names_by_no = {b["no"]: b["name"] for b in driving_behaviors}
+    flat: list[dict[str, Any]] = []
+    for lbt in link_behavior_types:
+        default_no = lbt["driving_behavior_default"]
+        flat.append(
+            {
+                "id": f"{lbt['no']}.default",
+                "link_behavior_type_no": lbt["no"],
+                "link_behavior_type_name": lbt["name"],
+                "veh_class_no": None,
+                "driving_behavior_no": default_no,
+                "driving_behavior_name": names_by_no.get(default_no, ""),
+                "link_count": lbt["link_count"],
+            }
+        )
+        for override in lbt["overrides"]:
+            flat.append(
+                {
+                    "id": f"{lbt['no']}.{override['veh_class_no']}",
+                    "link_behavior_type_no": lbt["no"],
+                    "link_behavior_type_name": lbt["name"],
+                    "veh_class_no": override["veh_class_no"],
+                    "driving_behavior_no": override["driving_behavior_no"],
+                    "driving_behavior_name": names_by_no.get(override["driving_behavior_no"], ""),
+                    "link_count": lbt["link_count"],
+                }
+            )
+    return flat
+
+
+# ---------------------------------------------------------------------------
 # get_vehicle_types -- QUEUE (v2a) unit: vehicle type properties,
 # SCALARS/REFERENCES only.
 #
@@ -1862,6 +2097,14 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
     des_decel_functions = _parse_function_names(root, "desDecelerationFunctions", "desDecelerationFunction")
     max_decel_functions = _parse_function_names(root, "maxDecelerationFunctions", "maxDecelerationFunction")
     curve_speed_functions = _parse_function_names(root, "curvSpeedFuncs", "curvSpeedFunc")
+    # QUEUE 3 unit 6: link_behavior_types is parsed first -- both driving_
+    # behaviors' own reference graph and the flattened assignments list need
+    # it.
+    link_behavior_types = _parse_link_behavior_types(root, _link_behavior_type_link_counts(root))
+    driving_behaviors = _parse_driving_behaviors(root, link_behavior_types)
+    link_behavior_type_assignments = _flatten_link_behavior_type_assignments(
+        link_behavior_types, driving_behaviors
+    )
     return {
         "links": net["links"],
         "nodes": net["nodes"],
@@ -1927,6 +2170,10 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         # parking direction-change duration, and pedestrian-area wait time
         # -- NOT stop signs, disproving this unit's own task brief).
         "time_distributions": _parse_time_distributions(root),
+        # QUEUE 3 unit 6 (2026-07-31): driving-behavior duplicate-then-edit.
+        "link_behavior_types": link_behavior_types,
+        "driving_behaviors": driving_behaviors,
+        "link_behavior_type_assignments": link_behavior_type_assignments,
     }
 
 
@@ -2961,5 +3208,50 @@ def get_time_distributions(params: GetTimeDistributionsParams) -> dict[str, Any]
         result["hint"] = (
             f"Showing {len(capped)} of {total} time distributions. Narrow with "
             "time_distribution_no to see a specific one instead of the whole list."
+        )
+    return result
+
+
+#: Item cap for an UNFILTERED get_driving_behaviors call -- the real max
+#: observed is 15 (both the real Murdoch production model and the richest
+#: Vissim 2026 example networks probed); 60 mirrors _TIME_DISTRIBUTIONS_
+#: DEFAULT_CAP's own generous-headroom reasoning.
+_DRIVING_BEHAVIORS_DEFAULT_CAP = 60
+
+
+class GetDrivingBehaviorsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    behavior_no: str | None = Field(
+        default=None,
+        description="Exact driving-behavior 'no' to return (narrows to at most one result).",
+    )
+
+
+@tool(
+    name="get_driving_behaviors",
+    tier="read",
+    provider="inspect",
+    params=GetDrivingBehaviorsParams,
+)
+def get_driving_behaviors(params: GetDrivingBehaviorsParams) -> dict[str, Any]:
+    """Return the network's driving behaviors -- id, name, car_follow_mod_type (WIEDEMANN74/WIEDEMANN99/NOINTERACTION/...), car_following_model (74/99/None -- which model's parameters actually apply), the 8 WRITABLE scalar params this agent supports (ax/bx_add/bx_mult -- Wiedemann-74 car-following, meters/dimensionless; saf_dist_fact_ln_chg/coop_ln_chg_speed_diff/min_speed_for_lat/lat_dist_driv_def/lat_dist_stand_def -- lane-change/lateral aggressiveness, dimensionless/km/h/meters -- all already converted to genuine canonical units, never the network's own raw display unit), and referenced_by (which link-behavior-types -- by number, name, an optional veh_class_no for a per-class override, and that type's own real link_count -- currently use this behavior as their DEFAULT or a per-vehicle-class override; bounded list, reference_count is the real untruncated total). NOT writable via this agent: W99 CC0-CC9 (a SEPARATE, pre-existing agency-policy restriction -- WSDOT/Maryland DOT guidance says use default for this parameter tier) and CC1 (a Time Distribution REFERENCE, not a scalar -- see get_time_distributions). Driving behaviors are GLOBAL, SHARED objects: a behavior referenced by more than one consumer (reference_count > 1, or even exactly 1 -- see set_driving_behavior_parameter) CANNOT be edited in place -- duplicate_driving_behavior(source_no, new_name) first, edit the zero-reference copy with set_driving_behavior_parameter, then wire it to its intended link-behavior-type with set_link_behavior_type_driving_behavior. Optionally filter by behavior_no -- an unfiltered call on a large network returns only the first 60 (with an explicit truncated flag and a hint)."""
+    behaviors = _current_shadow_model()["driving_behaviors"]
+
+    if params.behavior_no is not None:
+        behaviors = [b for b in behaviors if str(b.get("no")) == str(params.behavior_no)]
+
+    total = len(behaviors)
+    filtered = params.behavior_no is not None
+    if filtered:
+        return {"count": total, "driving_behaviors": behaviors}
+
+    capped = behaviors[:_DRIVING_BEHAVIORS_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {"count": total, "driving_behaviors": capped, "truncated": truncated}
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} driving behaviors. Narrow with "
+            "behavior_no to see a specific one instead of the whole list."
         )
     return result

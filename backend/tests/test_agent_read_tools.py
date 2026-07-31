@@ -53,6 +53,8 @@ EXPECTED_TOOL_NAMES = {
     "get_vehicle_types",
     # QUEUE (Q3, v2a) unit 5 adds get_time_distributions.
     "get_time_distributions",
+    # QUEUE 3 unit 6 adds get_driving_behaviors.
+    "get_driving_behaviors",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -91,6 +93,10 @@ EXPECTED_WRITE_TOOL_NAMES = {
     # QUEUE (Q3, v2a) unit 5
     "set_time_distribution_normal",
     "set_time_distribution_points",
+    # QUEUE 3 unit 6: driving-behavior duplicate-then-edit, all three verbs.
+    "duplicate_driving_behavior",
+    "set_driving_behavior_parameter",
+    "set_link_behavior_type_driving_behavior",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -2411,6 +2417,10 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "curve_speed_functions",
         # QUEUE (Q3, v2a) unit 5: dwell-time distributions.
         "time_distributions",
+        # QUEUE 3 unit 6: driving-behavior duplicate-then-edit.
+        "link_behavior_types",
+        "driving_behaviors",
+        "link_behavior_type_assignments",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2

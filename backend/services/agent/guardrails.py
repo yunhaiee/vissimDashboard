@@ -119,6 +119,17 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # identity, their own "no" -- no flattening needed, same reasoning as
     # des_speed_distributions/vehicle_types above.
     "time_distributions": "no",
+    # QUEUE 3 unit 6: driving behaviors have a genuine single-token identity,
+    # their own "no" -- no flattening needed (duplicate_driving_behavior's
+    # new object and set_driving_behavior_parameter's target both live here).
+    "driving_behaviors": "no",
+    # QUEUE 3 unit 6: the FLAT link_behavior_type_assignments list
+    # tools_network._flatten_link_behavior_type_assignments builds (not
+    # "link_behavior_types" -- an assignment's own identity is the
+    # (link_behavior_type, target) pair, where target is EITHER the literal
+    # "default" or a veh_class_no, mirroring "routes"/"vehicle_composition_
+    # entries"/etc above exactly).
+    "link_behavior_type_assignments": "id",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -377,6 +388,47 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "none_means": "not_persisted",
         "coupled_fields": ("point_count", "points_truncated"),
     },
+    # QUEUE 3 unit 6: driving-behavior parameter write. The target field name
+    # varies at CALL TIME by the action's own "parameter" param (8 possible
+    # canonical scalar names -- see tools_edit.SetDrivingBehaviorParameterParams'
+    # Literal), mirroring set_vehicle_type_reference's "value_field_param"
+    # mechanism EXACTLY -- with ONE difference: that tool's chosen field
+    # names a REFERENCE (shadow-model field = "{field}_no"), this tool's
+    # chosen field names the VALUE ITSELF (shadow-model field = the literal
+    # parameter name, no suffix) -- "value_field_param_suffix": "" overrides
+    # _spec_value_field's default "_no" suffix for this one entry, every
+    # other caller (only set_vehicle_type_reference today) unaffected. Plain
+    # XML attribute, always parseable whenever the drivingBehavior element
+    # exists (verified live -- backend/tools/probe_driving_behaviors.py),
+    # so a None after a write IS evidence the write never reached the file.
+    "set_driving_behavior_parameter": {
+        "object_class": "driving_behaviors",
+        "id_param": "behavior_no",
+        "value_field_param": "parameter",
+        "value_field_param_suffix": "",
+        "none_means": "not_persisted",
+    },
+    # QUEUE 3 unit 6: link-behavior-type driving-behavior assignment. TWO-part
+    # identity (link_behavior_type_no + veh_class_no) like routes/vehicle-
+    # composition-entries/etc above, but veh_class_no is OPTIONAL at the
+    # action layer (None targets the DEFAULT assignment) -- "id_param_parts_
+    # defaults" substitutes the literal string "default" for the missing
+    # part, matching tools_network._flatten_link_behavior_type_assignments'
+    # own "{lbt_no}.default" synthesized id exactly. driving_behavior_name is
+    # a DERIVED display field (looked up from driving_behavior_no at parse
+    # time) -- the SAME des_speed_distr_name coupling set_des_speed_decision's
+    # own spec entry established. Plain XML attribute (drivBehavDef/
+    # drivBehav), always parseable whenever the linkBehaviorType/override
+    # element exists, so a None after a write IS evidence the write never
+    # reached the file.
+    "set_link_behavior_type_driving_behavior": {
+        "object_class": "link_behavior_type_assignments",
+        "id_param_parts": ("link_behavior_type_no", "veh_class_no"),
+        "id_param_parts_defaults": {"veh_class_no": "default"},
+        "value_field": "driving_behavior_no",
+        "none_means": "not_persisted",
+        "coupled_fields": ("driving_behavior_name",),
+    },
 }
 
 # v2a unit ⑧: ``set_des_speed_decision`` is the first write tool whose action
@@ -432,6 +484,11 @@ _PAIRED_EXTRA_TARGET_SPEC: dict[str, dict[str, Any]] = {
 # them, so "added" stays unconditional evidence exactly as before.
 _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
     "set_reduced_speed_area": frozenset({"des_speed_distributions"}),
+    # QUEUE 3 unit 6: duplicate_driving_behavior's own sanctioned action IS
+    # creating a brand-new driving_behaviors object (via the native
+    # DuplicateDrivingBehavior COM method) -- see vissim_com.VissimController's
+    # own module comment.
+    "duplicate_driving_behavior": frozenset({"driving_behaviors"}),
 }
 
 # QUEUE 3 (v2a) unit 3's SECOND regression fix, found live-testing this same
@@ -477,6 +534,17 @@ _ALWAYS_EXEMPT_FIELDS: dict[str, frozenset[str]] = {
     # fields on an UNRELATED time_distributions entry -- the same "blanket,
     # tool-agnostic exemption" reasoning those two entries already document.
     "time_distributions": frozenset({"referenced_by", "reference_count"}),
+    # QUEUE 3 unit 6: "referenced_by"/"reference_count" on driving_behaviors
+    # are PURELY DERIVED from link_behavior_types' own default/override
+    # assignments -- no tool ever writes them directly (matching the three
+    # precedents above exactly). set_link_behavior_type_driving_behavior
+    # reassigning a link-behavior-type's target legitimately shifts BOTH the
+    # old and new driving behavior's own reference_count/referenced_by, even
+    # though that tool's own write target is "link_behavior_type_
+    # assignments", not "driving_behaviors" at all -- the same cross-object-
+    # class situation set_des_speed_decision's own reassignment created for
+    # des_speed_distributions.
+    "driving_behaviors": frozenset({"referenced_by", "reference_count"}),
 }
 
 
@@ -484,35 +552,50 @@ def _spec_value_field(spec: dict[str, Any], action: dict[str, Any]) -> str:
     """The top-level shadow-model field NAME this write's value lives in.
 
     Every spec names it as a fixed ``"value_field"`` string EXCEPT
-    ``set_vehicle_type_reference`` (QUEUE (v2a) unit), whose target field is
-    chosen at CALL TIME by the action's own ``"field"`` param (one of 8
-    reference kinds) -- ``"value_field_param"`` names which params key holds
-    that choice, and the shadow model's own flat field is that value + "_no"
-    (matching the ``des_speed_distr``/``des_speed_distr_no`` naming
-    convention ``set_des_speed_decision``'s spec entry already established).
-    Every OTHER spec lacks ``"value_field_param"``, so this always falls
-    through to the existing fixed-string behavior for them, unchanged.
+    ``set_vehicle_type_reference`` (QUEUE (v2a) unit) and
+    ``set_driving_behavior_parameter`` (QUEUE 3 unit 6), whose target field
+    is chosen at CALL TIME by the action's own params -- ``"value_field_
+    param"`` names which params key holds that choice. ``set_vehicle_type_
+    reference``'s chosen field names a REFERENCE, so the shadow model's own
+    flat field is that value + ``"_no"`` (matching the ``des_speed_distr``/
+    ``des_speed_distr_no`` naming convention ``set_des_speed_decision``'s
+    spec entry already established) -- the DEFAULT suffix, unchanged.
+    ``set_driving_behavior_parameter``'s chosen field names the VALUE
+    ITSELF, not a reference, so its spec overrides the suffix to ``""`` via
+    ``"value_field_param_suffix"``. Every OTHER spec lacks
+    ``"value_field_param"``, so this always falls through to the existing
+    fixed-string behavior for them, unchanged.
     """
     value_field_param = spec.get("value_field_param")
     if value_field_param is None:
         return spec["value_field"]
     chosen = action.get("params", {}).get(value_field_param, "")
-    return f"{chosen}_no"
+    suffix = spec.get("value_field_param_suffix", "_no")
+    return f"{chosen}{suffix}"
 
 
 def _target_id_for_spec(spec: dict[str, str], action: dict[str, Any]) -> str:
     """The write action's target object id in the shadow model, per its
     ``_WRITE_TARGET_FIELD_SPEC`` entry.
 
-    Every tool but ``set_route_relative_flow`` supplies a single
-    ``id_param`` naming ONE of ``action["params"]``'s own keys, read
-    directly. ``set_route_relative_flow``'s target has a TWO-part identity
-    (decision_no + route_no) with no single param to read, so its spec
-    supplies ``id_param_parts`` instead -- joined with ``"."`` into the SAME
-    synthesized ``"{decision_no}.{route_no}"`` string
-    ``tools_network._flatten_routes`` already uses as the flat
-    ``shadow_model["routes"]`` list's own ``id`` field, so the two sides
+    Every tool but the two--plus-part-identity ones (``set_route_relative_
+    flow`` and its siblings) supplies a single ``id_param`` naming ONE of
+    ``action["params"]``'s own keys, read directly. Two-part-identity tools
+    supply ``id_param_parts`` instead -- joined with ``"."`` into the SAME
+    synthesized string the matching ``tools_network._flatten_*`` helper
+    already uses as its flat list's own ``id`` field, so the two sides
     (this lookup, and that list's own keys) always agree.
+    ``id_param_parts_defaults`` (QUEUE 3 unit 6, ``set_link_behavior_type_
+    driving_behavior``) substitutes a fixed default string for a part whose
+    own param is ``None``/absent in this action -- that tool's
+    ``veh_class_no`` is OPTIONAL (omitted targets the DEFAULT assignment),
+    and ``tools_network._flatten_link_behavior_type_assignments`` synthesizes
+    the literal string ``"default"`` for that case, so this lookup must too,
+    or the two sides would disagree (``"None"`` vs ``"default"``). Every
+    OTHER two-part-identity tool has no entry here, so this is a no-op for
+    them -- byte-compatible with the pre-existing behavior (a present-but-
+    ``None`` part still renders as the literal string ``"None"``, matching
+    ``str(params.get(part, ""))``'s old behavior for that same edge case).
     """
     params = action.get("params", {})
     id_param = spec.get("id_param")
@@ -520,7 +603,14 @@ def _target_id_for_spec(spec: dict[str, str], action: dict[str, Any]) -> str:
         return str(params.get(id_param, ""))
     id_param_parts = spec.get("id_param_parts")
     if id_param_parts:
-        return ".".join(str(params.get(part, "")) for part in id_param_parts)
+        defaults = spec.get("id_param_parts_defaults", {})
+        parts: list[str] = []
+        for part in id_param_parts:
+            value = params.get(part)
+            if value is None and part in defaults:
+                value = defaults[part]
+            parts.append(str(value) if value is not None else "")
+        return ".".join(parts)
     return ""
 
 

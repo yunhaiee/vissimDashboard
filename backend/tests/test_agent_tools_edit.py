@@ -311,6 +311,48 @@ class FakeEditSession:
         self._record("get_time_distribution_points", time_distribution_no=time_distribution_no)
         return self._readback["time_distribution_points"]
 
+    # QUEUE 3 unit 6: driving-behavior duplicate-then-edit.
+
+    def duplicate_driving_behavior(self, source_no: int, new_name: str) -> dict[str, Any]:
+        self._record("duplicate_driving_behavior", source_no=source_no, new_name=new_name)
+        return self._readback["duplicate_driving_behavior"]
+
+    def get_driving_behavior(self, behavior_no: int) -> dict[str, Any]:
+        self._record("get_driving_behavior", behavior_no=behavior_no)
+        return self._readback["driving_behavior"]
+
+    def set_driving_behavior_parameter(self, behavior_no: int, parameter: str, value: float) -> dict[str, Any]:
+        self._record(
+            "set_driving_behavior_parameter", behavior_no=behavior_no, parameter=parameter, value=value
+        )
+        return self._readback.get(
+            "driving_behavior_set_return", self._readback.get("driving_behavior")
+        )
+
+    def set_link_behavior_type_driving_behavior(
+        self, link_behavior_type_no: int, driving_behavior_no: int, veh_class_no: int | None = None
+    ) -> dict[str, Any]:
+        self._record(
+            "set_link_behavior_type_driving_behavior",
+            link_behavior_type_no=link_behavior_type_no,
+            driving_behavior_no=driving_behavior_no,
+            veh_class_no=veh_class_no,
+        )
+        return self._readback.get(
+            "link_behavior_type_assignment_set_return",
+            self._readback.get("link_behavior_type_assignment"),
+        )
+
+    def get_link_behavior_type_driving_behavior(
+        self, link_behavior_type_no: int, veh_class_no: int | None = None
+    ) -> dict[str, Any]:
+        self._record(
+            "get_link_behavior_type_driving_behavior",
+            link_behavior_type_no=link_behavior_type_no,
+            veh_class_no=veh_class_no,
+        )
+        return self._readback["link_behavior_type_assignment"]
+
     def persist(self) -> None:
         self.persist_calls += 1
 
@@ -1992,6 +2034,211 @@ def test_set_time_distribution_points_no_active_session_is_a_structured_error():
         "set_time_distribution_points",
         time_distribution_no="200",
         points=[{"duration_s": 0.0, "cum_fraction": 0.0}, {"duration_s": 5.0, "cum_fraction": 1.0}],
+    )
+
+    assert envelope["status"] == "error"
+    assert "no_edit_session" in envelope["message"]
+
+
+# ---------------------------------------------------------------------------
+# duplicate_driving_behavior / set_driving_behavior_parameter /
+# set_link_behavior_type_driving_behavior -- QUEUE 3 unit 6
+# ---------------------------------------------------------------------------
+
+_DUPLICATE_READBACK = {
+    "no": "7",
+    "name": "Ramp copy",
+    "car_follow_mod_type": "WIEDEMANN74",
+    "car_following_model": 74,
+    "ax": 2.0,
+    "bx_add": 2.0,
+    "bx_mult": 3.0,
+    "saf_dist_fact_ln_chg": 0.6,
+    "coop_ln_chg_speed_diff": 10.8,
+    "min_speed_for_lat": 3.6,
+    "lat_dist_driv_def": 1.22,
+    "lat_dist_stand_def": 0.46,
+}
+
+
+def test_duplicate_driving_behavior_happy_path():
+    session = FakeEditSession(readback={"duplicate_driving_behavior": _DUPLICATE_READBACK})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("duplicate_driving_behavior", source_no="1", new_name="Ramp copy")
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": "Ramp copy", "readback_value": "Ramp copy"}
+    assert envelope["artifacts"]["new_no"] == "7"
+    assert session.calls == [{"op": "duplicate_driving_behavior", "source_no": 1, "new_name": "Ramp copy"}]
+    assert session.persist_calls == 1
+
+
+def test_duplicate_driving_behavior_no_active_session_is_a_structured_error():
+    envelope = _dispatch("duplicate_driving_behavior", source_no="1", new_name="Ramp copy")
+
+    assert envelope["status"] == "error"
+    assert "no_edit_session" in envelope["message"]
+
+
+def test_duplicate_driving_behavior_vissim_refusal_surfaces_as_structured_error():
+    session = FakeEditSession(raise_on={"duplicate_driving_behavior": RuntimeError("bogus source")})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("duplicate_driving_behavior", source_no="999", new_name="x")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert session.persist_calls == 0
+
+
+def test_duplicate_driving_behavior_rejects_empty_name_at_param_layer():
+    session = FakeEditSession(readback={"duplicate_driving_behavior": _DUPLICATE_READBACK})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("duplicate_driving_behavior", source_no="1", new_name="")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_driving_behavior_parameter_happy_path():
+    session = FakeEditSession(readback={"driving_behavior": _DUPLICATE_READBACK})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_driving_behavior_parameter", behavior_no="7", parameter="ax", value=2.0)
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": 2.0, "readback_value": 2.0}
+    assert session.calls == [
+        {"op": "set_driving_behavior_parameter", "behavior_no": 7, "parameter": "ax", "value": 2.0}
+    ]
+    assert session.persist_calls == 1
+
+
+def test_set_driving_behavior_parameter_readback_mismatch_still_reports_ok_envelope():
+    # Mismatch detection is guardrails.py's job (constraint #6), covered in
+    # test_agent_guardrails.py -- the tool layer just reports what it saw.
+    mismatched = dict(_DUPLICATE_READBACK, ax=999.0)
+    session = FakeEditSession(readback={"driving_behavior": mismatched})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_driving_behavior_parameter", behavior_no="7", parameter="ax", value=2.0)
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": 2.0, "readback_value": 999.0}
+
+
+def test_set_driving_behavior_parameter_vissim_refusal_surfaces_as_structured_error():
+    session = FakeEditSession(
+        raise_on={
+            "set_driving_behavior_parameter": RuntimeError(
+                "AttValue failed: Value -1.5 ft is lower than minimum value ... (Min: 0 ft)."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_driving_behavior_parameter", behavior_no="7", parameter="ax", value=-1.5)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert session.persist_calls == 0
+
+
+def test_set_driving_behavior_parameter_rejects_unwhitelisted_parameter_at_param_layer():
+    # W99 CC0-CC9 (e.g. "cc0") and any other non-whitelisted name are NOT
+    # legal Literal values -- rejected before the tool function ever runs,
+    # never reaching the agency_restricted_parameter_write constraint (that
+    # constraint's own coverage is for defense-in-depth against a future/
+    # hypothetical tool, per its own docstring).
+    session = FakeEditSession(readback={"driving_behavior": _DUPLICATE_READBACK})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("set_driving_behavior_parameter", behavior_no="7", parameter="cc0", value=1.5)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
+    assert session.calls == []
+
+
+def test_set_driving_behavior_parameter_no_active_session_is_a_structured_error():
+    envelope = _dispatch("set_driving_behavior_parameter", behavior_no="7", parameter="ax", value=2.0)
+
+    assert envelope["status"] == "error"
+    assert "no_edit_session" in envelope["message"]
+
+
+_LBT_DEFAULT_READBACK = {"link_behavior_type_no": "1", "veh_class_no": None, "driving_behavior_no": "7"}
+_LBT_OVERRIDE_READBACK = {"link_behavior_type_no": "1", "veh_class_no": "20", "driving_behavior_no": "7"}
+
+
+def test_set_link_behavior_type_driving_behavior_default_happy_path():
+    session = FakeEditSession(readback={"link_behavior_type_assignment": _LBT_DEFAULT_READBACK})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="7"
+    )
+
+    assert envelope["status"] == "ok"
+    assert envelope["verification"] == {"written_value": "7", "readback_value": "7"}
+    assert session.calls == [
+        {
+            "op": "set_link_behavior_type_driving_behavior",
+            "link_behavior_type_no": 1,
+            "driving_behavior_no": 7,
+            "veh_class_no": None,
+        }
+    ]
+    assert session.persist_calls == 1
+
+
+def test_set_link_behavior_type_driving_behavior_veh_class_override_happy_path():
+    session = FakeEditSession(readback={"link_behavior_type_assignment": _LBT_OVERRIDE_READBACK})
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_link_behavior_type_driving_behavior",
+        link_behavior_type_no="1",
+        driving_behavior_no="7",
+        veh_class_no="20",
+    )
+
+    assert envelope["status"] == "ok"
+    assert session.calls == [
+        {
+            "op": "set_link_behavior_type_driving_behavior",
+            "link_behavior_type_no": 1,
+            "driving_behavior_no": 7,
+            "veh_class_no": 20,
+        }
+    ]
+
+
+def test_set_link_behavior_type_driving_behavior_vissim_refusal_surfaces_as_structured_error():
+    session = FakeEditSession(
+        raise_on={
+            "set_link_behavior_type_driving_behavior": RuntimeError(
+                "Object 999999 of type Driving Behavior does not exist."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="999999"
+    )
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert session.persist_calls == 0
+
+
+def test_set_link_behavior_type_driving_behavior_no_active_session_is_a_structured_error():
+    envelope = _dispatch(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="7"
     )
 
     assert envelope["status"] == "error"

@@ -33,6 +33,8 @@ def _shadow_model(
     des_speed_distributions: list[dict[str, Any]] | None = None,
     vehicle_types: list[dict[str, Any]] | None = None,
     time_distributions: list[dict[str, Any]] | None = None,
+    driving_behaviors: list[dict[str, Any]] | None = None,
+    link_behavior_type_assignments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "links": links
@@ -76,6 +78,15 @@ def _shadow_model(
         # flattening needed) -- see tools_network._parse_time_distributions
         # for the real shape this mirrors.
         "time_distributions": time_distributions if time_distributions is not None else [],
+        # QUEUE 3 unit 6: driving_behaviors itself (id = "no", no flattening
+        # needed) -- see tools_network._parse_driving_behaviors for the real
+        # shape this mirrors. link_behavior_type_assignments is the FLAT list
+        # (id = "{lbt_no}.default" or "{lbt_no}.{veh_class_no}") -- see
+        # tools_network._flatten_link_behavior_type_assignments.
+        "driving_behaviors": driving_behaviors if driving_behaviors is not None else [],
+        "link_behavior_type_assignments": (
+            link_behavior_type_assignments if link_behavior_type_assignments is not None else []
+        ),
     }
 
 
@@ -2431,5 +2442,239 @@ def test_postwrite_time_distribution_points_diff_flags_an_unrelated_distribution
     diff = report.first_refusal().details["nothing_else_moved_diff"]
     assert any(
         entry["object_class"] == "time_distributions" and entry["object_id"] == "180"
+        for entry in diff
+    )
+
+
+# ---------------------------------------------------------------------------
+# QUEUE 3 unit 6: driving-behavior duplicate-then-edit
+# ---------------------------------------------------------------------------
+
+
+def _driving_behavior(no: str, *, ax: float = 2.0, reference_count: int = 0) -> dict[str, Any]:
+    return {
+        "no": no,
+        "name": f"Behavior {no}",
+        "car_follow_mod_type": "WIEDEMANN74",
+        "car_following_model": 74,
+        "ax": ax,
+        "bx_add": 2.0,
+        "bx_mult": 3.0,
+        "saf_dist_fact_ln_chg": 0.6,
+        "coop_ln_chg_speed_diff": 10.8,
+        "min_speed_for_lat": 3.6,
+        "lat_dist_driv_def": 1.22,
+        "lat_dist_stand_def": 0.46,
+        "referenced_by": {"consumers": [], "count": 0, "truncated": False},
+        "reference_count": reference_count,
+    }
+
+
+def _lbt_assignment(
+    lbt_no: str, *, veh_class_no: str | None = None, driving_behavior_no: str = "7", driving_behavior_name: str = "Behavior 7"
+) -> dict[str, Any]:
+    suffix = "default" if veh_class_no is None else veh_class_no
+    return {
+        "id": f"{lbt_no}.{suffix}",
+        "link_behavior_type_no": lbt_no,
+        "link_behavior_type_name": "Urban",
+        "veh_class_no": veh_class_no,
+        "driving_behavior_no": driving_behavior_no,
+        "driving_behavior_name": driving_behavior_name,
+        "link_count": 293,
+    }
+
+
+def test_postwrite_driving_behavior_parameter_target_persisted_check_happy_path():
+    action = _action("set_driving_behavior_parameter", behavior_no="7", parameter="ax", value=2.0)
+    before = _shadow_model(driving_behaviors=[_driving_behavior("7", ax=1.5)])
+    after = _shadow_model(driving_behaviors=[_driving_behavior("7", ax=2.0)])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 2.0, "readback_value": 2.0})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_driving_behavior_parameter_target_persisted_check_fires_when_not_persisted():
+    action = _action("set_driving_behavior_parameter", behavior_no="7", parameter="ax", value=2.0)
+    before = _shadow_model(driving_behaviors=[_driving_behavior("7", ax=1.5)])
+    after = _shadow_model(driving_behaviors=[_driving_behavior("7", ax=1.5)])  # unchanged -- dropped write
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 2.0, "readback_value": 2.0})
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "driving_behaviors"
+    assert check["object_id"] == "7"
+    assert check["field"] == "ax"
+    assert check["saved_value"] == 1.5
+
+
+def test_postwrite_driving_behavior_parameter_diff_flags_an_unrelated_behavior_change():
+    action = _action("set_driving_behavior_parameter", behavior_no="7", parameter="ax", value=2.0)
+    before = _shadow_model(driving_behaviors=[_driving_behavior("7", ax=1.5), _driving_behavior("8", ax=1.0)])
+    after = _shadow_model(driving_behaviors=[_driving_behavior("7", ax=2.0), _driving_behavior("8", ax=99.0)])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 2.0, "readback_value": 2.0})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(entry["object_class"] == "driving_behaviors" and entry["object_id"] == "8" for entry in diff)
+
+
+def test_postwrite_driving_behavior_diff_never_flags_referenced_by_or_reference_count_on_unrelated_behavior():
+    # QUEUE 3 unit 6's own regression-avoidance, mirroring des_speed_
+    # distributions'/time_distributions' own _ALWAYS_EXEMPT_FIELDS precedent:
+    # set_link_behavior_type_driving_behavior reassigning a link-behavior-
+    # type's target legitimately shifts BOTH the old and new driving
+    # behavior's own reference_count/referenced_by, even though that tool's
+    # own write target is link_behavior_type_assignments, not driving_
+    # behaviors at all.
+    action = _action(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="7"
+    )
+    before = _shadow_model(
+        driving_behaviors=[_driving_behavior("6", reference_count=1), _driving_behavior("7", reference_count=0)],
+        link_behavior_type_assignments=[_lbt_assignment("1", driving_behavior_no="6", driving_behavior_name="Behavior 6")],
+    )
+    after = _shadow_model(
+        driving_behaviors=[_driving_behavior("6", reference_count=0), _driving_behavior("7", reference_count=1)],
+        link_behavior_type_assignments=[_lbt_assignment("1", driving_behavior_no="7", driving_behavior_name="Behavior 7")],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": "7", "readback_value": "7"})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_link_behavior_type_default_target_persisted_check_happy_path():
+    action = _action(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="7"
+    )
+    before = _shadow_model(link_behavior_type_assignments=[_lbt_assignment("1", driving_behavior_no="1", driving_behavior_name="Behavior 1")])
+    after = _shadow_model(link_behavior_type_assignments=[_lbt_assignment("1", driving_behavior_no="7", driving_behavior_name="Behavior 7")])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": "7", "readback_value": "7"})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_link_behavior_type_default_target_persisted_check_fires_when_not_persisted():
+    action = _action(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="7"
+    )
+    before = _shadow_model(link_behavior_type_assignments=[_lbt_assignment("1", driving_behavior_no="1", driving_behavior_name="Behavior 1")])
+    after = _shadow_model(link_behavior_type_assignments=[_lbt_assignment("1", driving_behavior_no="1", driving_behavior_name="Behavior 1")])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": "7", "readback_value": "7"})
+
+    assert report.blocking is True
+    check = report.first_refusal().details["persistence_check"]
+    assert check["object_class"] == "link_behavior_type_assignments"
+    assert check["object_id"] == "1.default"
+    assert check["saved_value"] == "1"
+
+
+def test_postwrite_link_behavior_type_veh_class_override_target_persisted_check_uses_the_composite_id():
+    # veh_class_no OPTIONAL at the action layer -- omitted targets
+    # "{lbt_no}.default"; given, targets "{lbt_no}.{veh_class_no}" -- proves
+    # id_param_parts_defaults resolves the SAME literal "default" string
+    # tools_network._flatten_link_behavior_type_assignments synthesizes.
+    action = _action(
+        "set_link_behavior_type_driving_behavior",
+        link_behavior_type_no="1",
+        driving_behavior_no="7",
+        veh_class_no="20",
+    )
+    before = _shadow_model(
+        link_behavior_type_assignments=[
+            _lbt_assignment("1", driving_behavior_no="1", driving_behavior_name="Behavior 1"),
+            _lbt_assignment("1", veh_class_no="20", driving_behavior_no="6", driving_behavior_name="Behavior 6"),
+        ]
+    )
+    after = _shadow_model(
+        link_behavior_type_assignments=[
+            _lbt_assignment("1", driving_behavior_no="1", driving_behavior_name="Behavior 1"),
+            _lbt_assignment("1", veh_class_no="20", driving_behavior_no="7", driving_behavior_name="Behavior 7"),
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": "7", "readback_value": "7"})
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_link_behavior_type_diff_flags_an_unrelated_assignment_change():
+    action = _action(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="7"
+    )
+    before = _shadow_model(
+        link_behavior_type_assignments=[
+            _lbt_assignment("1", driving_behavior_no="1", driving_behavior_name="Behavior 1"),
+            _lbt_assignment("4", driving_behavior_no="4", driving_behavior_name="Behavior 4"),
+        ]
+    )
+    after = _shadow_model(
+        link_behavior_type_assignments=[
+            _lbt_assignment("1", driving_behavior_no="7", driving_behavior_name="Behavior 7"),
+            _lbt_assignment("4", driving_behavior_no="99", driving_behavior_name="Behavior 99"),  # unrelated drift
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": "7", "readback_value": "7"})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        entry["object_class"] == "link_behavior_type_assignments" and entry["object_id"] == "4.default"
+        for entry in diff
+    )
+
+
+def test_postwrite_diff_suppresses_duplicate_driving_behavior_own_new_object():
+    # QUEUE 3 unit 6: duplicate_driving_behavior legitimately creates a
+    # BRAND NEW driving_behaviors object via the sanctioned DuplicateDriving
+    # Behavior COM call -- must NOT read as "something else moved", mirroring
+    # set_reduced_speed_area's own des_speed_distributions precedent exactly.
+    action = _action("duplicate_driving_behavior", source_no="1", new_name="Ramp copy")
+    before = _shadow_model(driving_behaviors=[_driving_behavior("1")])
+    after = _shadow_model(driving_behaviors=[_driving_behavior("1"), _driving_behavior("7")])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {"written_value": "Ramp copy", "readback_value": "Ramp copy"},
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_still_flags_an_added_driving_behavior_for_a_tool_not_opted_in():
+    # The suppression is tool-SPECIFIC (_ALLOWS_NEW_OBJECTS_IN), not a
+    # blanket "never flag added driving behaviors" rule.
+    action = _action("set_driving_behavior_parameter", behavior_no="1", parameter="ax", value=2.0)
+    before = _shadow_model(driving_behaviors=[_driving_behavior("1", ax=1.5)])
+    after = _shadow_model(driving_behaviors=[_driving_behavior("1", ax=2.0), _driving_behavior("7")])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(action, before, after, {"written_value": 2.0, "readback_value": 2.0})
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        entry["object_class"] == "driving_behaviors" and entry["object_id"] == "7" and entry["change"] == "added"
         for entry in diff
     )

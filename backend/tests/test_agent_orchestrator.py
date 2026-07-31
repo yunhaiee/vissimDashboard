@@ -40,6 +40,8 @@ EXPECTED_READ_TOOLS = {
     "get_vehicle_types",
     # QUEUE (Q3, v2a) unit 5 adds get_time_distributions.
     "get_time_distributions",
+    # QUEUE 3 unit 6 adds get_driving_behaviors.
+    "get_driving_behaviors",
     "get_run_kpis",
     "compare_scenarios",
 }
@@ -74,6 +76,10 @@ EXPECTED_WRITE_TOOLS = {
     # QUEUE (Q3, v2a) unit 5
     "set_time_distribution_normal",
     "set_time_distribution_points",
+    # QUEUE 3 unit 6: driving-behavior duplicate-then-edit, all three verbs.
+    "duplicate_driving_behavior",
+    "set_driving_behavior_parameter",
+    "set_link_behavior_type_driving_behavior",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

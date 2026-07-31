@@ -1905,6 +1905,415 @@ class VissimController:
             ) from exc
         return self.get_time_distribution_points(time_distribution_no)
 
+    # -----------------------------------------------------------------
+    # Driving-behavior duplicate-then-edit verbs -- QUEUE 3 unit 6
+    #
+    # COM ids/behavior verified EMPIRICALLY live against Vissim 2026
+    # (backend/tools/probe_driving_behaviors.py + two follow-up probe scripts,
+    # "Roundabout Billings.US" clone -- the real Murdoch Drive production
+    # model is, like every prior QUEUE-3 unit, known to raise on
+    # ``load_network`` ("The network file could not be loaded"); its STATIC
+    # XML is still the ground truth cross-checked against this network's own
+    # findings, see tools/probe_driving_behaviors.py's own module docstring).
+    #
+    # **THE DUPLICATE MECHANISM.** ``Net.DrivingBehaviors`` exposes TWO
+    # object-creating methods, live-verified to behave VERY differently:
+    # ``AddDrivingBehavior(no)`` creates a brand-new object seeded from
+    # Vissim's own INTERNAL DEFAULT TEMPLATE -- live-verified NOT a copy of
+    # any source (Name comes back blank; several stochastic-looking scalars
+    # -- CoopLnChgSpeedDiff, LatDistDrivDef, LatDistStandDef, MinSpeedForLat
+    # -- differ from a real source no=1's own values). ``DuplicateDrivingBehavior
+    # (Source, NewKey)`` is a SEPARATE, purpose-built method -- live-verified
+    # to be an EXACT, full attribute-for-attribute copy (every one of 26
+    # scalars checked, INCLUDING Name and the w99cc1Distr/zipperOvtTmDistr
+    # distribution references, came back byte-identical to the source; the
+    # ONLY difference is the new object's own ``No``). This module therefore
+    # calls ``DuplicateDrivingBehavior`` exclusively -- no attribute-by-
+    # attribute copy loop is needed, and ``AddDrivingBehavior`` is never
+    # called. Both methods require an EXPLICIT integer ``NewKey``/second arg
+    # (the no-args overload raises "This VARIANT data type is unknown.") --
+    # this module computes the next free number itself
+    # (``max(existing) + 1``) so callers never need to guess a free slot in a
+    # real network's non-contiguous number space (the real Murdoch model's
+    # own 15 behaviors use no 1-6, 10-13, 19-20, 101-103).
+    #
+    # **THE WHITELIST -- why only these 8 scalars, and no W99 CC0-CC9 at
+    # all.** The full driving-behavior object carries ~130 attributes. This
+    # unit's write verb (``set_driving_behavior_parameter``) only ever
+    # touches a small, explicitly-reasoned subset:
+    #   - Wiedemann-74 car-following (``ax``/``bx_add``/``bx_mult`` ->
+    #     ``W74ax``/``W74bxAdd``/``W74bxMult``): the task brief's own
+    #     suggested whitelist example.
+    #   - Lane-change/lateral aggressiveness (``saf_dist_fact_ln_chg``,
+    #     ``coop_ln_chg_speed_diff``, ``min_speed_for_lat``,
+    #     ``lat_dist_driv_def``, ``lat_dist_stand_def``): the task brief's
+    #     own "lane-change aggressiveness" ask, verified live to be
+    #     model-independent (present and meaningful on both a WIEDEMANN74 and
+    #     a WIEDEMANN99 real behavior).
+    #   - Wiedemann-99 CC0-CC9 (the task brief's OWN suggested "CC0/CC2/CC7-
+    #     ish" example) are DELIBERATELY EXCLUDED -- ``constraints.py``'s
+    #     PRE-EXISTING ``agency_restricted_parameter_write`` constraint
+    #     (registered before this unit, catalog §6 "Some parameters are
+    #     off-limits by agency policy": WSDOT/Maryland DOT both say of this
+    #     parameter tier simply "use default") already refuses EVERY CC0-CC9
+    #     write unconditionally, for a DIFFERENT reason than the shared-object
+    #     blast-radius problem duplication solves -- duplication fixes "this
+    #     edit changes every link using the behavior", not "an AI is
+    #     self-certifying a deviation from agency-recommended defaults". Both
+    #     concerns are real and independent; excluding CC0-CC9 from this
+    #     unit's own whitelist keeps that pre-existing, catalog-sourced
+    #     refusal fully intact rather than silently routing around it. See
+    #     this unit's drafted DECISIONS.md entry for the full reasoning.
+    #   - CC1 (``w99cc1Distr``) was never a candidate at all: unit 5 already
+    #     proved it is a Time Distribution REFERENCE, not a scalar --
+    #     unrelated to this unit's scalar whitelist and edited (if ever) via
+    #     a completely different verb shape.
+    #
+    # **DISPLAY-UNIT LANDMINE, a THIRD family beyond speed's own
+    # (``NetPara@UnitSpeed``).** ``Net.NetPara`` has NO queryable
+    # ``UnitLength``/``UnitDist``/``UnitPosition`` attribute at all (all three
+    # raise "Could not find attribute") -- live-verified the REAL id is
+    # ``UnitLenShort`` (``"METERS"`` or ``"FEET"`` on the two real networks
+    # probed; the .inpx's own ``<netPara unitLenShort="...">`` attribute
+    # confirms the same value statically). Distance-type driving-behavior
+    # scalars (``ax``, ``lat_dist_driv_def``, ``lat_dist_stand_def``) are
+    # read/written by COM in THIS display unit, not always meters -- live-
+    # verified both directions on "Roundabout Billings.US" (a FEET-display
+    # network): XML-stored ``w74ax="2"`` (meters, Vissim's internal storage
+    # is always metric) read back over COM as ``W74ax=6.561679790026246``,
+    # exactly ``2 / 0.3048``. Speed-type scalars (``coop_ln_chg_speed_diff``,
+    # ``min_speed_for_lat``) reuse the EXISTING ``_net_unit_speed``/
+    # ``_speed_kmh_to_com``/``_speed_com_to_kmh`` machinery unit 3 already
+    # built (verified live: XML ``coopLnChgSpeedDiff="10.8"`` km/h read back
+    # as ``6.710808876163207``, exactly ``10.8 * 0.621371``). ``bx_add``/
+    # ``bx_mult``/``saf_dist_fact_ln_chg`` are verified DIMENSIONLESS
+    # multipliers/factors -- read back byte-identical to the XML-stored value
+    # on the same FEET-display network, no conversion applied by COM at all.
+    #
+    # **SILENT-FAILURE MAP** (``backend/tools/probe_driving_behaviors.py`` +
+    # two follow-up probe scripts, run against a duplicated SCRATCH behavior,
+    # never the shared source): ``ax``/``lat_dist_driv_def``/
+    # ``lat_dist_stand_def`` REFUSE a negative value (Vissim's own floor is 0
+    # -- "... (Min: 0 ft)"); ``saf_dist_fact_ln_chg`` REFUSES both negative
+    # (floor 0) AND above 1 (Vissim's own ceiling -- "... (Max: 1)"), matching
+    # its real nature as a [0, 1] factor. ``bx_add``/``bx_mult``/
+    # ``coop_ln_chg_speed_diff``/``min_speed_for_lat`` ALL SILENTLY ACCEPT a
+    # negative value (Vissim's own model genuinely allows it for these four)
+    # AND an absurdly large one (99999, unbounded upward on every field
+    # tested) -- ``constraints.py``'s own preflight checks proactively refuse
+    # the four floor/ceiling violations (a nicer, bilingual message than
+    # Vissim's raw COM error) and WARN on implausible magnitudes across the
+    # whole whitelist, mirroring every prior unit's "refuse what Vissim
+    # refuses anyway, warn what it silently accepts" pattern.
+    #
+    # **THE ASSIGNMENT SURFACE.** ``Net.LinkBehaviorTypes`` (a SEPARATE
+    # collection from ``Net.DrivingBehaviors`` and from ``Net.Links`` --
+    # links reference a link-behavior-TYPE via their own ``LinkBehavType``
+    # attribute, live-verified read-only informational context this module
+    # does not write) has a plain, always-writable ``DrivBehavDef`` scalar
+    # (the type's DEFAULT driving-behavior assignment, live-verified fails
+    # CLOSED on a bogus target: "Object 999999 of type Driving Behavior does
+    # not exist") PLUS a per-vehicle-class override child collection
+    # (``.VehClassDrivBehav``, matching the XML's own ``vehClassDrivBehav``/
+    # ``vehClassDrivingBehavior`` nesting) whose entries carry ``VehClass``/
+    # ``DrivBehav``. **A REAL, REPRODUCIBLE COM LANDMINE, live-verified
+    # THREE separate ways (plain call, ``CastTo`` to the typed interface,
+    # ``gencache.EnsureDispatch``):** the type library exposes
+    # ``AddVehClassDrivingBehavior(VehClass)`` on this child collection, but
+    # every attempt to CALL it raises ``TypeError: The Python instance can
+    # not be converted to a COM object`` -- a pywin32 marshalling failure,
+    # not a Vissim-side refusal (the identical call pattern works fine for
+    # ``DuplicateDrivingBehavior``/``DuplicateLinkBehaviorType`` on sibling
+    # collections). Mutating an EXISTING override's own ``DrivBehav`` (plain
+    # ``SetAttValue`` on an object already returned by ``GetAll()``, no
+    # ``Add`` involved) works perfectly and fails closed on a bogus target,
+    # live-verified. This module therefore supports writing the link-
+    # behavior-type's DEFAULT assignment, and REASSIGNING an EXISTING
+    # per-vehicle-class override -- creating a BRAND NEW override for a
+    # vehicle class that has none today is NOT supported (a genuine,
+    # documented interface gap, not an oversight); see this unit's drafted
+    # DECISIONS.md entry.
+    # -----------------------------------------------------------------
+
+    _M_PER_FT = 0.3048
+
+    def _net_unit_length(self) -> str:
+        """The active network's own SHORT-length display unit
+        (``Net.NetPara.AttValue('UnitLenShort')``) -- ``"METERS"`` or
+        ``"FEET"`` on the two real Vissim 2026 example networks probed (no
+        queryable ``UnitLength``/``UnitDist``/``UnitPosition`` attribute
+        exists at all -- verified live, all three raise). Defensively
+        defaults to meters (no conversion) on any failure, mirroring
+        :meth:`_net_unit_speed`'s own fallback."""
+        try:
+            return str(self.vissim.Net.NetPara.AttValue("UnitLenShort") or "").strip().upper()
+        except Exception:
+            return "METERS"
+
+    def _length_m_to_com(self, value_m: float, unit: str) -> float:
+        if unit == "FEET":
+            return value_m / self._M_PER_FT
+        return value_m
+
+    def _length_com_to_m(self, value: float, unit: str) -> float:
+        if unit == "FEET":
+            return value * self._M_PER_FT
+        return value
+
+    #: {canonical parameter name: (COM AttValue id, unit_kind)} -- the SOLE
+    #: source of truth for ``set_driving_behavior_parameter``'s whitelist and
+    #: ``get_driving_behavior``'s scalar readout, both keyed off this same
+    #: dict so the two can never drift apart. ``unit_kind`` is one of
+    #: "length" (meters, converted via ``_length_m_to_com``/
+    #: ``_length_com_to_m``), "speed" (km/h, converted via the existing
+    #: ``_speed_kmh_to_com``/``_speed_com_to_kmh``), or "none" (dimensionless,
+    #: no conversion -- verified live for every field tagged "none" below).
+    #: See this block's own module comment for the full live-verified
+    #: per-field reasoning (why these 8, why not W99 CC0-CC9).
+    DRIVING_BEHAVIOR_PARAM_FIELDS: dict[str, tuple[str, str]] = {
+        "ax": ("W74ax", "length"),
+        "bx_add": ("W74bxAdd", "none"),
+        "bx_mult": ("W74bxMult", "none"),
+        "saf_dist_fact_ln_chg": ("SafDistFactLnChg", "none"),
+        "coop_ln_chg_speed_diff": ("CoopLnChgSpeedDiff", "speed"),
+        "min_speed_for_lat": ("MinSpeedForLat", "speed"),
+        "lat_dist_driv_def": ("LatDistDrivDef", "length"),
+        "lat_dist_stand_def": ("LatDistStandDef", "length"),
+    }
+
+    #: {"WIEDEMANN74": 74, "WIEDEMANN99": 99} -- every other real
+    #: ``CarFollowModType`` value observed (``"NOINTERACTION"`` on Footpath/
+    #: pedestrian behaviors, live-verified on both the real Murdoch model and
+    #: "Roundabout Billings.US") maps to ``None`` -- matches
+    #: ``constraints.py``'s pre-existing ``car_following_model`` int contract
+    #: (``driving_behavior_parameter_model_mismatch`` already compared
+    #: against literal ``74``/``99``) rather than introducing a second,
+    #: string-keyed convention.
+    _CAR_FOLLOW_MODEL_INTS: dict[str, int] = {"WIEDEMANN74": 74, "WIEDEMANN99": 99}
+
+    def available_driving_behavior_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.DrivingBehaviors)
+
+    def get_driving_behavior(self, behavior_no: int) -> dict[str, Any]:
+        """{"no", "name", "car_follow_mod_type", "car_following_model",
+        <8 whitelisted params>} for one driving behavior -- every whitelisted
+        param already converted to its genuine canonical unit (meters/km/h),
+        never the network's own raw display unit."""
+        try:
+            behavior = self._item_by_key(
+                self.vissim.Net.DrivingBehaviors,
+                behavior_no,
+                "Driving behavior",
+                self.available_driving_behavior_nos(),
+            )
+            length_unit = self._net_unit_length()
+            speed_unit = self._net_unit_speed()
+            car_follow_mod_type = str(behavior.AttValue("CarFollowModType") or "").strip().upper()
+            result: dict[str, Any] = {
+                "no": str(behavior.AttValue("No")),
+                "name": str(behavior.AttValue("Name") or ""),
+                "car_follow_mod_type": car_follow_mod_type,
+                "car_following_model": self._CAR_FOLLOW_MODEL_INTS.get(car_follow_mod_type),
+            }
+            for canonical, (attr_id, unit_kind) in self.DRIVING_BEHAVIOR_PARAM_FIELDS.items():
+                raw = float(behavior.AttValue(attr_id))
+                if unit_kind == "length":
+                    result[canonical] = self._length_com_to_m(raw, length_unit)
+                elif unit_kind == "speed":
+                    result[canonical] = self._speed_com_to_kmh(raw, speed_unit)
+                else:
+                    result[canonical] = raw
+            return result
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read driving behavior {behavior_no}: {exc}") from exc
+
+    def set_driving_behavior_parameter(self, behavior_no: int, parameter: str, value: float) -> dict[str, Any]:
+        """Set ONE whitelisted scalar (``parameter`` -- a
+        :data:`DRIVING_BEHAVIOR_PARAM_FIELDS` key) on a driving behavior,
+        genuine canonical units in (meters/km/h), converted to the network's
+        own display unit at the COM boundary. Returns
+        :meth:`get_driving_behavior`'s full post-write dict so the caller
+        always gets a complete readback to verify against.
+
+        Raises whatever Vissim's own ``SetAttValue`` raises for a value
+        outside its floor/ceiling (see this block's own module comment for
+        the live-verified silent-failure map) -- ``constraints.py``'s own
+        preflight checks exist so every known floor/ceiling violation is
+        refused BEFORE ever reaching this call, with a structured, bilingual
+        reason instead of this raw COM error string. Callers MUST NOT call
+        this on a SHARED behavior (more than one link-behavior-type
+        referencing it) -- that is a preflight refusal
+        (``driving_behavior_shared_object_edit``), never enforced here.
+        """
+        field = self.DRIVING_BEHAVIOR_PARAM_FIELDS.get(parameter)
+        if field is None:
+            raise ValueError(f"Unknown driving-behavior parameter: {parameter!r}")
+        attr_id, unit_kind = field
+        try:
+            behavior = self._item_by_key(
+                self.vissim.Net.DrivingBehaviors,
+                behavior_no,
+                "Driving behavior",
+                self.available_driving_behavior_nos(),
+            )
+            if unit_kind == "length":
+                com_value = self._length_m_to_com(float(value), self._net_unit_length())
+            elif unit_kind == "speed":
+                com_value = self._speed_kmh_to_com(float(value), self._net_unit_speed())
+            else:
+                com_value = float(value)
+            behavior.SetAttValue(attr_id, com_value)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set driving behavior {behavior_no} {parameter}={value}: {exc}"
+            ) from exc
+        return self.get_driving_behavior(behavior_no)
+
+    def duplicate_driving_behavior(self, source_no: int, new_name: str) -> dict[str, Any]:
+        """Duplicate driving behavior ``source_no`` via the native
+        ``DuplicateDrivingBehavior`` COM method (see this block's own module
+        comment for why -- an EXACT, live-verified full attribute copy, never
+        ``AddDrivingBehavior``'s default-template object), auto-assigning the
+        next free number (``max(existing) + 1``), then renaming the copy to
+        ``new_name``. Returns :meth:`get_driving_behavior`'s full dict for
+        the NEW object (readback-verified: ``no`` is the new number, ``name``
+        is ``new_name``) -- the copy has ZERO referencing consumers by
+        construction (nothing points at a brand-new object number), so it is
+        immediately eligible for :meth:`set_driving_behavior_parameter`.
+
+        Raises whatever Vissim's own ``DuplicateDrivingBehavior``/
+        ``SetAttValue('Name', ...)`` raise (e.g. a genuinely bogus
+        ``source_no`` -- surfaced first via :meth:`_item_by_key`'s existence
+        check on the SOURCE before ever calling ``DuplicateDrivingBehavior``,
+        so a not-found source produces the same structured
+        ``VissimObjectNotFoundError`` every other verb in this module uses,
+        not a raw COM error naming the wrong object).
+        """
+        try:
+            existing_nos = self.available_driving_behavior_nos()
+            # Existence-check the SOURCE explicitly (via _item_by_key) before
+            # calling DuplicateDrivingBehavior -- a bogus source_no passed
+            # straight to Vissim's own method still raises, but with a less
+            # specific error than this module's own VissimObjectNotFoundError
+            # shape every other verb here already gives.
+            self._item_by_key(
+                self.vissim.Net.DrivingBehaviors, source_no, "Driving behavior", existing_nos
+            )
+            new_no = (max(existing_nos) if existing_nos else 0) + 1
+            copy = self.vissim.Net.DrivingBehaviors.DuplicateDrivingBehavior(source_no, new_no)
+            copy.SetAttValue("Name", new_name)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not duplicate driving behavior {source_no} as {new_name!r}: {exc}"
+            ) from exc
+        return self.get_driving_behavior(new_no)
+
+    def available_link_behavior_type_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.LinkBehaviorTypes)
+
+    def _link_behavior_type_veh_class_override(self, link_behavior_type: Any, veh_class_no: int) -> Any:
+        """The link-behavior-type's EXISTING ``VehClassDrivBehav`` entry for
+        ``veh_class_no``, or raises :class:`VissimObjectNotFoundError` naming
+        every vehicle class that DOES have an override -- there is no
+        ``ItemByKey`` on this child collection (verified live), and creating
+        a brand-new override is a reproducible pywin32 landmine (see this
+        block's own module comment) this module deliberately does not
+        attempt -- only an EXISTING override can be reassigned."""
+        overrides = list(link_behavior_type.VehClassDrivBehav.GetAll())
+        for override in overrides:
+            if int(override.AttValue("VehClass")) == veh_class_no:
+                return override
+        available = sorted(int(o.AttValue("VehClass")) for o in overrides)
+        raise VissimObjectNotFoundError(
+            f"Link-behavior-type {int(link_behavior_type.AttValue('No'))} has no existing "
+            f"per-vehicle-class override for vehicle class {veh_class_no}. Available override "
+            f"vehicle classes: {_format_available_keys(available)}. Creating a brand-new "
+            "override is not supported by this agent (a known COM interface limitation) -- "
+            "only an existing override can be reassigned."
+        )
+
+    def get_link_behavior_type_driving_behavior(
+        self, link_behavior_type_no: int, veh_class_no: int | None = None
+    ) -> dict[str, Any]:
+        """The driving-behavior number currently assigned as
+        ``link_behavior_type_no``'s DEFAULT (``veh_class_no=None``) or as its
+        EXISTING per-vehicle-class override (``veh_class_no`` given)."""
+        try:
+            link_behavior_type = self._item_by_key(
+                self.vissim.Net.LinkBehaviorTypes,
+                link_behavior_type_no,
+                "Link behavior type",
+                self.available_link_behavior_type_nos(),
+            )
+            if veh_class_no is None:
+                return {
+                    "link_behavior_type_no": str(link_behavior_type.AttValue("No")),
+                    "veh_class_no": None,
+                    "driving_behavior_no": str(link_behavior_type.AttValue("DrivBehavDef")),
+                }
+            override = self._link_behavior_type_veh_class_override(link_behavior_type, veh_class_no)
+            return {
+                "link_behavior_type_no": str(link_behavior_type.AttValue("No")),
+                "veh_class_no": str(veh_class_no),
+                "driving_behavior_no": str(override.AttValue("DrivBehav")),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read link behavior type {link_behavior_type_no} "
+                f"(veh_class_no={veh_class_no}) driving-behavior assignment: {exc}"
+            ) from exc
+
+    def set_link_behavior_type_driving_behavior(
+        self, link_behavior_type_no: int, driving_behavior_no: int, veh_class_no: int | None = None
+    ) -> dict[str, Any]:
+        """Assign ``driving_behavior_no`` as ``link_behavior_type_no``'s
+        DEFAULT (``veh_class_no=None``, ``SetAttValue('DrivBehavDef', ...)``)
+        or as its EXISTING per-vehicle-class override's target
+        (``veh_class_no`` given, ``SetAttValue('DrivBehav', ...)`` on the
+        matched override) -- the assignment half of the duplicate-then-edit
+        flow: without this, a freshly duplicated-and-edited behavior is dead
+        weight, referenced by nothing. Returns
+        :meth:`get_link_behavior_type_driving_behavior`'s full dict for a
+        readback-verified result.
+
+        Raises whatever Vissim's own ``SetAttValue`` raises for a bogus
+        ``driving_behavior_no`` (live-verified fails CLOSED: "Object N of
+        type Driving Behavior does not exist") -- ``constraints.py``'s own
+        preflight checks refuse this proactively with a structured reason;
+        raises :class:`VissimObjectNotFoundError` (via
+        :meth:`_link_behavior_type_veh_class_override`) when ``veh_class_no``
+        is given but has no EXISTING override to reassign.
+        """
+        try:
+            link_behavior_type = self._item_by_key(
+                self.vissim.Net.LinkBehaviorTypes,
+                link_behavior_type_no,
+                "Link behavior type",
+                self.available_link_behavior_type_nos(),
+            )
+            if veh_class_no is None:
+                link_behavior_type.SetAttValue("DrivBehavDef", driving_behavior_no)
+            else:
+                override = self._link_behavior_type_veh_class_override(link_behavior_type, veh_class_no)
+                override.SetAttValue("DrivBehav", driving_behavior_no)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set link behavior type {link_behavior_type_no} "
+                f"(veh_class_no={veh_class_no}) driving-behavior assignment to "
+                f"{driving_behavior_no}: {exc}"
+            ) from exc
+        return self.get_link_behavior_type_driving_behavior(link_behavior_type_no, veh_class_no)
+
     def get_sim_sec(self) -> float:
         try:
             value = float(self.vissim.Simulation.AttValue("SimSec"))

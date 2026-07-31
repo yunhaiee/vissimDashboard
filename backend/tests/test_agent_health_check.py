@@ -87,7 +87,15 @@ def test_health_check_runner_against_demo_dataset():
     # ten need a proposed action's own params (time_distribution_no plus
     # mean_s/std_dev_s/points), so none opts into the dataset scan either,
     # same shape as every addition above.
-    assert report["summary"]["edit_time_only_n"] == 70
+    # 74, not 70: QUEUE 3 unit 6 (2026-07-31) added four more preflight-only
+    # constraints for the three new driving-behavior duplicate-then-edit
+    # tools (driving_behavior_parameter_range_invalid /
+    # driving_behavior_parameter_value_implausible /
+    # link_behavior_type_veh_class_override_not_found /
+    # link_behavior_type_driving_behavior_target_not_found) -- all four need
+    # a proposed action's own params, so none opts into the dataset scan
+    # either, same shape as every addition above.
+    assert report["summary"]["edit_time_only_n"] == 74
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

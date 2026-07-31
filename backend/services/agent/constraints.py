@@ -572,6 +572,43 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "time_distribution_no",
     },
+    # QUEUE 3 unit 6: duplicate_driving_behavior/set_driving_behavior_parameter
+    # added to the object_not_found / _TOOL_TARGET_SPEC lockstep table -- both
+    # target the SAME single-token identity (driving_behaviors object class,
+    # keyed by "no"): duplicate's source_no must already exist, and
+    # set_driving_behavior_parameter's behavior_no must already exist
+    # (whether it is SAFE to edit in place -- i.e. has zero referencing
+    # consumers -- is the separate, dedicated
+    # driving_behavior_shared_object_edit check, below).
+    "duplicate_driving_behavior": {
+        "object_class": "driving_behaviors",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "source_no",
+    },
+    "set_driving_behavior_parameter": {
+        "object_class": "driving_behaviors",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "behavior_no",
+    },
+    # QUEUE 3 unit 6: set_link_behavior_type_driving_behavior added to the
+    # object_not_found / _TOOL_TARGET_SPEC lockstep table -- this only covers
+    # the LINK-BEHAVIOR-TYPE-level lookup (link_behavior_types object class,
+    # keyed by "no", param "link_behavior_type_no"); the deeper lookups (does
+    # veh_class_no have an EXISTING override to reassign; does the PROPOSED
+    # driving_behavior_no target exist) have no single flat id the generic
+    # machinery can check, so they are dedicated checks
+    # (link_behavior_type_veh_class_override_not_found,
+    # link_behavior_type_driving_behavior_target_not_found, below) -- the
+    # same split routes/composition entries/des-speed entries/signal-program
+    # splits/priority-rule markers established.
+    "set_link_behavior_type_driving_behavior": {
+        "object_class": "link_behavior_types",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "link_behavior_type_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -586,6 +623,8 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "des_speed_distributions": {"ko": "희망속도분포", "en": "desired-speed distribution", "ja": "希望速度分布"},
     "vehicle_types": {"ko": "차량 유형", "en": "vehicle type", "ja": "車両タイプ"},
     "time_distributions": {"ko": "시간분포", "en": "time distribution", "ja": "時間分布"},
+    "driving_behaviors": {"ko": "행동유형", "en": "driving behavior", "ja": "行動タイプ"},
+    "link_behavior_types": {"ko": "링크 행동유형", "en": "link behavior type", "ja": "リンク行動タイプ"},
 }
 
 
@@ -748,6 +787,11 @@ register(
             # (easy to forget -- unit ② caught this).
             "set_time_distribution_normal",
             "set_time_distribution_points",
+            # QUEUE 3 unit 6 -- driving-behavior duplicate-then-edit, all
+            # three verbs (easy to forget -- unit ② caught this).
+            "duplicate_driving_behavior",
+            "set_driving_behavior_parameter",
+            "set_link_behavior_type_driving_behavior",
         ],
         phase="preflight",
         tier="refuse",
@@ -3203,13 +3247,29 @@ register(
 # Catalog §1 "Writing a parameter the active model ignores": every driving
 # behaviour stores parameters for BOTH Wiedemann 74 and 99 regardless of
 # which is active; writing a model-99 parameter on a model-74 behaviour
-# changes nothing, and nothing reports the no-op. No M2 tool edits driving
-# behaviours today; applies_to names the future tool explicitly.
-# CATALOG-GAP: reads shadow_model["driving_behaviors"] defensively.
+# changes nothing, and nothing reports the no-op.
+#
+# GAP CLOSED in QUEUE 3 unit 6 (2026-07-31): shadow_model["driving_behaviors"]
+# is now populated for real (tools_network._parse_driving_behaviors, keyed by
+# "no" not "id" -- see that field's own docstring) and set_driving_behavior_
+# parameter is a real, shipped tool. Two fixes made live-data-necessary:
+# (1) _MODEL_74_ONLY_PARAMS was WRONG -- the pre-existing placeholder names
+# ("axhze"/"bxadd"/"bxmult") never matched any real COM/XML attribute;
+# verified live (backend/tools/probe_driving_behaviors.py) the real Wiedemann
+# 74 scalar family is "ax"/"bx_add"/"bx_mult" (vissim_com.VissimController.
+# DRIVING_BEHAVIOR_PARAM_FIELDS' own canonical names). (2) the mismatch
+# condition compared against the OPPOSITE explicit model only (74-vs-99
+# symmetric pair); real data has a THIRD car_following_model value this
+# codebase never anticipated -- "NOINTERACTION" (Footpath/pedestrian
+# behaviors, car_following_model None per the shadow-model parser's own
+# int-mapping contract, live-verified 1 of 15 on the real Murdoch production
+# model) -- on which NEITHER a W74 NOR a W99 parameter is ever active, so the
+# condition is now "not the REQUIRED model" (covers None too), not "the
+# opposite explicit model".
 # ---------------------------------------------------------------------------
 
 _MODEL_99_ONLY_PARAMS = {f"cc{n}" for n in range(0, 10)}  # Wiedemann 99 (freeway)
-_MODEL_74_ONLY_PARAMS = {"axhze", "bxadd", "bxmult"}  # Wiedemann 74 (urban)
+_MODEL_74_ONLY_PARAMS = {"ax", "bx_add", "bx_mult"}  # Wiedemann 74 (urban)
 
 
 def _check_driving_behavior_parameter_model_mismatch(
@@ -3219,19 +3279,19 @@ def _check_driving_behavior_parameter_model_mismatch(
         return None
 
     params = action.get("params", {})
-    behavior_id = str(params.get("behavior_id", ""))
+    behavior_id = str(params.get("behavior_no", params.get("behavior_id", "")))
     parameter = str(params.get("parameter", "")).lower()
 
-    behaviors = shadow_model.get("driving_behaviors")  # CATALOG-GAP: not in shadow-model contract
+    behaviors = shadow_model.get("driving_behaviors")
     if not behaviors:
         return None
-    behavior = _find_by_field(behaviors, "id", behavior_id)
+    behavior = _find_by_field(behaviors, "no", behavior_id)
     if behavior is None:
         return None
 
     model = behavior.get("car_following_model")
-    mismatched = (model == 74 and parameter in _MODEL_99_ONLY_PARAMS) or (
-        model == 99 and parameter in _MODEL_74_ONLY_PARAMS
+    mismatched = (parameter in _MODEL_99_ONLY_PARAMS and model != 99) or (
+        parameter in _MODEL_74_ONLY_PARAMS and model != 74
     )
     if not mismatched:
         return None
@@ -3244,7 +3304,7 @@ def _check_driving_behavior_parameter_model_mismatch(
             "driving_behavior_parameter_model_mismatch",
             parameter=parameter,
             behavior_id=behavior_id,
-            model=model,
+            model=behavior.get("car_follow_mod_type", model),
         ),
         suggested_fix=None,
         details={"behavior_id": behavior_id, "parameter": parameter, "car_following_model": model},
@@ -3698,11 +3758,34 @@ register(
 # set isn't attached to a link — editing one to fix a single ramp changes
 # EVERY link using it. The catalog's own remedy: "never edit a shared
 # behaviour in place; duplicate it, edit the copy, and retarget only the
-# intended links." Real, deterministic check on action.params alone (no
-# shadow-model dependency) — no M2 tool edits driving behaviours today, but
-# unlike #33/#36 this fires unless the caller explicitly marks that it
-# duplicated first.
+# intended links."
+#
+# REWRITTEN in QUEUE 3 unit 6 (2026-07-31): the ORIGINAL implementation
+# trusted a caller-supplied ``duplicated_before_edit`` boolean — a
+# self-reported flag any planner call could simply always set ``True``,
+# giving zero real protection. Now that shadow_model["driving_behaviors"] is
+# populated for real (tools_network._parse_driving_behaviors), this is a REAL
+# reference-count check against the actual reference graph (which
+# link-behavior-types — by default assignment or per-vehicle-class override
+# — point at this behavior number): the target REFUSES unless its
+# reference_count is exactly 0. Per the user-approved safety design ("The
+# copy, having zero references, is then freely editable in place" — a
+# freshly duplicated behavior always starts at 0), this is a strictly
+# stronger, un-gameable version of the same guardrail — there is no flag to
+# set, no way to talk the check into skipping. Every consumer (bounded, per
+# the observation-budget standing rule) is named in the refusal message, per
+# this unit's own task brief. Degrades silently only when the shadow model
+# has no driving_behaviors data at all or the target itself does not exist
+# (the latter is #1 object_not_found's job).
 # ---------------------------------------------------------------------------
+
+
+def _driving_behavior_consumer_label(consumer: dict[str, Any]) -> str:
+    label = str(consumer.get("link_behavior_type_name") or consumer.get("link_behavior_type_no", "?"))
+    veh_class_no = consumer.get("veh_class_no")
+    if veh_class_no:
+        label = f"{label} (veh class {veh_class_no})"
+    return label
 
 
 def _check_driving_behavior_shared_object_edit(
@@ -3712,18 +3795,41 @@ def _check_driving_behavior_shared_object_edit(
         return None
 
     params = action.get("params", {})
-    if params.get("duplicated_before_edit") is True:
-        return None
+    behavior_no = str(params.get("behavior_no", ""))
+
+    behaviors = shadow_model.get("driving_behaviors")
+    if not behaviors:
+        return None  # no reference data to check against yet
+    behavior = _find_by_field(behaviors, "no", behavior_no)
+    if behavior is None:
+        return None  # missing target is object_not_found's job (#1)
+
+    reference_count = behavior.get("reference_count", 0) or 0
+    if reference_count == 0:
+        return None  # a fresh, unshared (e.g. just-duplicated) copy is safe to edit in place
+
+    consumers = (behavior.get("referenced_by") or {}).get("consumers", [])
+    labels = [_driving_behavior_consumer_label(c) for c in consumers]
+    consumers_ko, consumers_en, consumers_ja = _capped_join(labels, "곳", "consumer(s)", "件")
 
     return Finding(
         constraint_id="driving_behavior_shared_object_edit",
         tier="refuse",
         phase="preflight",
         messages=_render(
-            "driving_behavior_shared_object_edit", behavior_id=params.get("behavior_id", "?")
+            "driving_behavior_shared_object_edit",
+            behavior_id=behavior_no,
+            reference_count=reference_count,
+            consumers_ko=consumers_ko,
+            consumers_en=consumers_en,
+            consumers_ja=consumers_ja,
         ),
-        suggested_fix={"hint": "duplicate the behaviour, edit the copy, and retarget only the intended links"},
-        details={"behavior_id": params.get("behavior_id")},
+        suggested_fix={
+            "hint": "duplicate_driving_behavior first, edit the copy, and retarget only the intended link-behavior-type",
+            "reference_count": reference_count,
+            "consumers": labels,
+        },
+        details={"behavior_id": behavior_no, "reference_count": reference_count, "consumers": labels},
     )
 
 
@@ -3734,15 +3840,18 @@ register(
         phase="preflight",
         tier="refuse",
         check=_check_driving_behavior_shared_object_edit,
-        message_ko="행동유형 '{behavior_id}'은(는) 여러 링크가 공유하는 전역 객체입니다. 복제 없이 "
-        "제자리에서 편집하면 이 행동유형을 쓰는 모든 링크가 함께 바뀝니다 — 먼저 복제한 뒤 그 "
-        "사본만 편집하고 의도한 링크에만 재적용해야 합니다.",
-        message_en="Behavior '{behavior_id}' is a global object shared by multiple links. "
-        "Editing it in place changes every link using it — duplicate it first, edit the copy, "
-        "and retarget only the intended links.",
-        message_ja="行動タイプ '{behavior_id}' は複数のリンクが共有するグローバルオブジェクトです。"
-        "複製せずにその場で編集すると、この行動タイプを使用するすべてのリンクが変更されます — "
-        "先に複製し、そのコピーのみを編集して、意図したリンクにのみ再適用してください。",
+        message_ko="행동유형 '{behavior_id}'은(는) {reference_count}개 링크 행동유형이 참조하는 "
+        "전역 객체입니다 ({consumers_ko}). 제자리에서 편집하면 이 행동유형을 쓰는 모든 곳이 함께 "
+        "바뀝니다 — duplicate_driving_behavior로 먼저 복제한 뒤 그 사본(참조 0개)만 편집하고, "
+        "의도한 링크 행동유형에만 재적용하세요.",
+        message_en="Behavior '{behavior_id}' is a global object referenced by {reference_count} "
+        "link-behavior-type consumer(s) ({consumers_en}). Editing it in place changes every one "
+        "of them at once — duplicate_driving_behavior it first, edit the copy (zero "
+        "references), and retarget only the intended link-behavior-type.",
+        message_ja="行動タイプ '{behavior_id}' は{reference_count}件のリンク行動タイプが参照する"
+        "グローバルオブジェクトです({consumers_ja})。その場で編集すると、これを使用するすべての"
+        "箇所が同時に変更されます — 先にduplicate_driving_behaviorで複製し、そのコピー(参照0件)"
+        "のみを編集して、意図したリンク行動タイプにのみ再適用してください。",
     )
 )
 
@@ -3769,16 +3878,22 @@ def _check_parameter_diff_not_calibration_meaningful(
         return None
 
     params = action.get("params", {})
-    behavior_id = str(params.get("behavior_id", ""))
+    behavior_id = str(params.get("behavior_no", ""))
     parameter = str(params.get("parameter", ""))
 
-    behaviors = shadow_model.get("driving_behaviors")  # CATALOG-GAP: not in shadow-model contract
+    behaviors = shadow_model.get("driving_behaviors")
     if not behaviors:
         return None
-    behavior = _find_by_field(behaviors, "id", behavior_id)
+    behavior = _find_by_field(behaviors, "no", behavior_id)
     if behavior is None:
         return None
 
+    # CATALOG-GAP: "parameters"/"calibration_reference_value" remain
+    # unpopulated by tools_network._parse_driving_behaviors -- no
+    # calibration-reference baseline exists anywhere in this codebase yet
+    # (a future calibration-tracking unit's job); this check stays a
+    # documented no-op in production until that lands, exactly as before
+    # this unit closed driving_behaviors' OWN gap.
     param_info = (behavior.get("parameters") or {}).get(parameter)
     if not param_info:
         return None
@@ -7352,5 +7467,299 @@ register(
         "reference(s) total: {refs_en}. Editing this value affects every one of them at once.",
         message_ja="時間分布 '{distribution_no}' は共有対象です -- 合計{reference_count}件が参照中: "
         "{refs_ja}。この値を編集すると、これらすべてに同時に影響します。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# #85 driving_behavior_parameter_range_invalid (refuse, preflight)
+#
+# QUEUE 3 unit 6. Proactively refuses the whitelisted driving-behavior
+# scalars' known floor/ceiling violations -- live-verified
+# (backend/tools/probe_driving_behaviors.py + follow-up probe scripts)
+# Vissim's own SetAttValue rejects: ax < 0 ("Average standstill distance ...
+# Min: 0"), lat_dist_driv_def < 0 / lat_dist_stand_def < 0 ("Lateral minimum
+# distance ... Min: 0"), and saf_dist_fact_ln_chg outside [0, 1] ("Safety
+# distance reduction factor ... Min: 0"/"... Max: 1", a genuine [0, 1]
+# factor). Mirrors every prior unit's "refuse what Vissim refuses anyway,
+# with a nicer bilingual message" precedent (set_priority_rule_gap_headway,
+# set_des_speed_distribution_points, set_time_distribution_normal/points).
+# bx_add/bx_mult/coop_ln_chg_speed_diff/min_speed_for_lat are DELIBERATELY
+# excluded here -- live-verified Vissim itself ACCEPTS a negative value for
+# all four; #86 (below) covers implausible MAGNITUDE across the whole
+# whitelist instead.
+# ---------------------------------------------------------------------------
+
+#: {parameter: (min, max)} -- inclusive bounds Vissim's own COM layer
+#: enforces (``None`` = no known bound on that side). Only the 4 fields with
+#: a live-verified floor/ceiling appear here; the other 4 whitelisted fields
+#: are absent by design (see this constraint's own module comment).
+_DRIVING_BEHAVIOR_PARAM_BOUNDS: dict[str, tuple[float | None, float | None]] = {
+    "ax": (0.0, None),
+    "lat_dist_driv_def": (0.0, None),
+    "lat_dist_stand_def": (0.0, None),
+    "saf_dist_fact_ln_chg": (0.0, 1.0),
+}
+
+
+def _check_driving_behavior_parameter_range_invalid(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_driving_behavior_parameter":
+        return None
+
+    params = action.get("params", {})
+    parameter = str(params.get("parameter", ""))
+    bounds = _DRIVING_BEHAVIOR_PARAM_BOUNDS.get(parameter)
+    if bounds is None:
+        return None
+    value = _coerce_number(params.get("value"))
+    if value is None:
+        return None
+
+    lo, hi = bounds
+    if (lo is not None and value < lo) or (hi is not None and value > hi):
+        return Finding(
+            constraint_id="driving_behavior_parameter_range_invalid",
+            tier="refuse",
+            phase="preflight",
+            messages=_render(
+                "driving_behavior_parameter_range_invalid",
+                parameter=parameter,
+                value=value,
+                lo=lo if lo is not None else "-∞",
+                hi=hi if hi is not None else "+∞",
+            ),
+            suggested_fix={"min": lo, "max": hi},
+            details={"parameter": parameter, "value": value, "min": lo, "max": hi},
+        )
+    return None
+
+
+register(
+    Constraint(
+        id="driving_behavior_parameter_range_invalid",
+        applies_to=["set_driving_behavior_parameter"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_driving_behavior_parameter_range_invalid,
+        message_ko="'{parameter}'={value}는 허용 범위[{lo}, {hi}]를 벗어납니다. Vissim이 자체적으로 "
+        "거부하는 값이며 (COM 오류로 이어지기 전에) 여기서 거부합니다.",
+        message_en="'{parameter}'={value} is outside the allowed range [{lo}, {hi}]. Vissim's own "
+        "COM layer rejects this value -- refused here before it ever reaches a raw COM error.",
+        message_ja="'{parameter}'={value} は許容範囲[{lo}, {hi}]外です。Vissim自体がこの値を拒否する"
+        "ため、生のCOMエラーに至る前にここで拒否します。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# #86 driving_behavior_parameter_value_implausible (warn, preflight)
+#
+# QUEUE 3 unit 6. Vissim SILENTLY ACCEPTS an absurdly large magnitude on
+# every whitelisted scalar (live-verified: 99999 accepted on saf_dist_fact_
+# ln_chg was actually REJECTED by the [0,1] ceiling -- #85's job -- but
+# bx_add/bx_mult/coop_ln_chg_speed_diff/min_speed_for_lat/ax/lat_dist_driv_
+# def/lat_dist_stand_def all accept unbounded-upward values with no
+# complaint) -- the same "silently accepts, warn on implausible magnitude"
+# pattern _check_des_speed_distribution_points_speed_implausible/
+# _check_time_distribution_mean_implausible already established for their
+# own sibling collections. Bounds are generous engineering-judgment ceilings
+# (never expected to fire on real calibrated data), not physical limits.
+# ---------------------------------------------------------------------------
+
+#: {parameter: implausible-above threshold} -- generous, not physical
+#: (real Wiedemann-74/lane-change values observed across every network
+#: probed this unit stay under 15; these are 10-60x that).
+_DRIVING_BEHAVIOR_PARAM_IMPLAUSIBLE_ABOVE: dict[str, float] = {
+    "ax": 100.0,  # meters
+    "bx_add": 100.0,
+    "bx_mult": 100.0,
+    "coop_ln_chg_speed_diff": 300.0,  # km/h
+    "min_speed_for_lat": 300.0,  # km/h
+    "lat_dist_driv_def": 100.0,  # meters
+    "lat_dist_stand_def": 100.0,  # meters
+}
+
+
+def _check_driving_behavior_parameter_value_implausible(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_driving_behavior_parameter":
+        return None
+
+    params = action.get("params", {})
+    parameter = str(params.get("parameter", ""))
+    threshold = _DRIVING_BEHAVIOR_PARAM_IMPLAUSIBLE_ABOVE.get(parameter)
+    if threshold is None:
+        return None
+    value = _coerce_number(params.get("value"))
+    if value is None or abs(value) <= threshold:
+        return None
+
+    return Finding(
+        constraint_id="driving_behavior_parameter_value_implausible",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "driving_behavior_parameter_value_implausible",
+            parameter=parameter,
+            value=value,
+            threshold=threshold,
+        ),
+        suggested_fix=None,
+        details={"parameter": parameter, "value": value, "threshold": threshold},
+    )
+
+
+register(
+    Constraint(
+        id="driving_behavior_parameter_value_implausible",
+        applies_to=["set_driving_behavior_parameter"],
+        phase="preflight",
+        tier="warn",
+        check=_check_driving_behavior_parameter_value_implausible,
+        message_ko="'{parameter}'={value}는 매우 비현실적인 크기입니다 (기준: |값| > {threshold}). "
+        "Vissim은 이 값을 조용히 받아들이므로, 오타나 단위 착오가 아닌지 다시 확인하세요.",
+        message_en="'{parameter}'={value} is an implausibly large magnitude (threshold: |value| > "
+        "{threshold}). Vissim silently accepts this -- double-check it is not a typo or a unit "
+        "mistake.",
+        message_ja="'{parameter}'={value} は非現実的に大きな値です(基準: |値| > {threshold})。"
+        "Vissimはこの値を黙って受け入れるため、誤入力や単位の誤りでないか再確認してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# #87 link_behavior_type_veh_class_override_not_found (refuse, preflight)
+#
+# QUEUE 3 unit 6. set_link_behavior_type_driving_behavior's SECOND-level
+# lookup (does veh_class_no have an EXISTING per-vehicle-class override to
+# reassign) -- the generic object_not_found/_TOOL_TARGET_SPEC machinery only
+# covers the FIRST level (does link_behavior_type_no itself exist). Creating
+# a BRAND-NEW override is a live-verified, reproducible pywin32/COM
+# landmine (AddVehClassDrivingBehavior raises "The Python instance can not
+# be converted to a COM object" -- see vissim_com.VissimController's own
+# module comment) this codebase deliberately does not attempt -- a caller
+# naming a vehicle class with no existing override gets this clean,
+# structured refusal instead of a confusing failure deep in COM.
+# ---------------------------------------------------------------------------
+
+
+def _check_link_behavior_type_veh_class_override_not_found(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_link_behavior_type_driving_behavior":
+        return None
+
+    params = action.get("params", {})
+    veh_class_no = params.get("veh_class_no")
+    if veh_class_no is None:
+        return None  # targeting the DEFAULT assignment -- no override lookup needed
+
+    veh_class_no = str(veh_class_no)
+    link_behavior_type_no = str(params.get("link_behavior_type_no", ""))
+    lbt = _find_by_field(shadow_model.get("link_behavior_types", []), "no", link_behavior_type_no)
+    if lbt is None:
+        return None  # missing link-behavior-type is object_not_found's job (#1)
+
+    overrides = lbt.get("overrides", [])
+    if _find_by_field(overrides, "veh_class_no", veh_class_no) is not None:
+        return None
+
+    candidates = [str(o.get("veh_class_no", "")) for o in overrides]
+    return Finding(
+        constraint_id="link_behavior_type_veh_class_override_not_found",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "link_behavior_type_veh_class_override_not_found",
+            link_behavior_type_no=link_behavior_type_no,
+            veh_class_no=veh_class_no,
+            candidates=", ".join(candidates) if candidates else "-",
+        ),
+        suggested_fix=candidates,
+        details={
+            "link_behavior_type_no": link_behavior_type_no,
+            "veh_class_no": veh_class_no,
+            "candidates": candidates,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="link_behavior_type_veh_class_override_not_found",
+        applies_to=["set_link_behavior_type_driving_behavior"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_link_behavior_type_veh_class_override_not_found,
+        message_ko="링크 행동유형 '{link_behavior_type_no}'에는 차량클래스 '{veh_class_no}'에 대한 "
+        "기존 재정의가 없습니다. 이 에이전트는 새 차량클래스별 재정의를 생성할 수 없습니다(알려진 "
+        "COM 제약) -- 기존 재정의만 재할당할 수 있습니다. 이 유형의 기존 재정의 차량클래스: "
+        "{candidates}.",
+        message_en="Link-behavior-type '{link_behavior_type_no}' has no EXISTING override for "
+        "vehicle class '{veh_class_no}'. This agent cannot create a brand-new per-vehicle-class "
+        "override (a known COM limitation) -- only an existing one can be reassigned. This "
+        "type's existing override vehicle classes: {candidates}.",
+        message_ja="リンク行動タイプ '{link_behavior_type_no}' には車両クラス '{veh_class_no}' の"
+        "既存の上書きがありません。このエージェントは新しい車種別上書きを作成できません(既知の"
+        "COM制約) -- 既存の上書きのみ再割り当て可能です。このタイプの既存上書き車両クラス: "
+        "{candidates}。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# #88 link_behavior_type_driving_behavior_target_not_found (refuse, preflight)
+#
+# QUEUE 3 unit 6. Does the PROPOSED driving_behavior_no target actually
+# exist? Mirrors des_speed_distribution_not_found's own split from
+# set_des_speed_decision's primary-target lookup: object_not_found/
+# _TOOL_TARGET_SPEC validates the object being EDITED
+# (link_behavior_type_no); this validates the object being POINTED AT.
+# ---------------------------------------------------------------------------
+
+
+def _check_link_behavior_type_driving_behavior_target_not_found(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_link_behavior_type_driving_behavior":
+        return None
+
+    params = action.get("params", {})
+    driving_behavior_no = str(params.get("driving_behavior_no", ""))
+    behaviors = shadow_model.get("driving_behaviors", [])
+    if _find_by_field(behaviors, "no", driving_behavior_no) is not None:
+        return None
+
+    candidates = difflib.get_close_matches(
+        driving_behavior_no, [str(b.get("no", "")) for b in behaviors], n=5
+    )
+    return Finding(
+        constraint_id="link_behavior_type_driving_behavior_target_not_found",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "link_behavior_type_driving_behavior_target_not_found",
+            driving_behavior_no=driving_behavior_no,
+            candidates=", ".join(candidates) if candidates else "-",
+        ),
+        suggested_fix=candidates,
+        details={"driving_behavior_no": driving_behavior_no, "candidates": candidates},
+    )
+
+
+register(
+    Constraint(
+        id="link_behavior_type_driving_behavior_target_not_found",
+        applies_to=["set_link_behavior_type_driving_behavior"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_link_behavior_type_driving_behavior_target_not_found,
+        message_ko="주행행태 '{driving_behavior_no}'을(를) 찾을 수 없습니다. 후보: {candidates}.",
+        message_en="Driving behavior '{driving_behavior_no}' was not found. Candidates: "
+        "{candidates}.",
+        message_ja="走行挙動 '{driving_behavior_no}' が見つかりません。候補: {candidates}。",
     )
 )

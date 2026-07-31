@@ -2994,8 +2994,27 @@ def test_stale_route_files_after_edit_skipped_when_absent():
 
 def test_driving_behavior_parameter_model_mismatch_fires_on_mismatch():
     shadow = _shadow_model()
-    shadow["driving_behaviors"] = [{"id": "5", "car_following_model": 74}]
-    action = _action("set_driving_behavior_parameter", behavior_id="5", parameter="cc1", value=1.2)
+    shadow["driving_behaviors"] = [{"no": "5", "car_following_model": 74}]
+    action = _action("set_driving_behavior_parameter", behavior_no="5", parameter="cc1", value=1.2)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [
+        f for f in findings if f.constraint_id == "driving_behavior_parameter_model_mismatch"
+    ]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+
+
+def test_driving_behavior_parameter_model_mismatch_fires_on_noninteraction_model():
+    # QUEUE 3 unit 6: a THIRD real car_following_model value (None, mapped
+    # from the real "NOINTERACTION" carFollowModType on Footpath/pedestrian
+    # behaviors) is neither 74 nor 99 -- writing a W74-only param there is
+    # ALSO a no-op the old (model == 74/99 symmetric) condition would have
+    # missed.
+    shadow = _shadow_model()
+    shadow["driving_behaviors"] = [{"no": "10", "car_following_model": None}]
+    action = _action("set_driving_behavior_parameter", behavior_no="10", parameter="ax", value=2.0)
 
     findings = run_checks("preflight", action, shadow, {})
 
@@ -3008,8 +3027,25 @@ def test_driving_behavior_parameter_model_mismatch_fires_on_mismatch():
 
 def test_driving_behavior_parameter_model_mismatch_silent_when_matching_model():
     shadow = _shadow_model()
-    shadow["driving_behaviors"] = [{"id": "5", "car_following_model": 99}]
-    action = _action("set_driving_behavior_parameter", behavior_id="5", parameter="cc1", value=1.2)
+    shadow["driving_behaviors"] = [{"no": "5", "car_following_model": 99}]
+    action = _action("set_driving_behavior_parameter", behavior_no="5", parameter="cc1", value=1.2)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "driving_behavior_parameter_model_mismatch" for f in findings
+    )
+
+
+def test_driving_behavior_parameter_model_mismatch_silent_for_lane_change_params_any_model():
+    # Lane-change/lateral params (this unit's own whitelist half) are
+    # model-independent -- never flagged as a mismatch regardless of
+    # car_following_model.
+    shadow = _shadow_model()
+    shadow["driving_behaviors"] = [{"no": "5", "car_following_model": 99}]
+    action = _action(
+        "set_driving_behavior_parameter", behavior_no="5", parameter="saf_dist_fact_ln_chg", value=0.6
+    )
 
     findings = run_checks("preflight", action, shadow, {})
 
@@ -3020,7 +3056,7 @@ def test_driving_behavior_parameter_model_mismatch_silent_when_matching_model():
 
 def test_driving_behavior_parameter_model_mismatch_skipped_when_behaviors_absent():
     shadow = _shadow_model()
-    action = _action("set_driving_behavior_parameter", behavior_id="5", parameter="cc1", value=1.2)
+    action = _action("set_driving_behavior_parameter", behavior_no="5", parameter="cc1", value=1.2)
 
     findings = run_checks("preflight", action, shadow, {})
 
@@ -3453,11 +3489,33 @@ def test_evaluation_change_deletes_results_does_not_apply_to_other_tools():
     )
 
 
-def test_driving_behavior_shared_object_edit_fires_without_duplication_flag():
+def _driving_behavior(
+    no: str, reference_count: int = 0, consumers: list[dict[str, Any]] | None = None, **extra: Any
+) -> dict[str, Any]:
+    consumers = consumers or []
+    return {
+        "no": no,
+        "name": f"Behavior {no}",
+        "car_follow_mod_type": "WIEDEMANN74",
+        "car_following_model": 74,
+        "referenced_by": {"consumers": consumers, "count": len(consumers), "truncated": False},
+        "reference_count": reference_count,
+        **extra,
+    }
+
+
+def test_driving_behavior_shared_object_edit_fires_when_referenced():
+    # QUEUE 3 unit 6 rewrite: reference-count based, not a caller-supplied
+    # flag -- a behavior with ANY real consumer refuses, unconditionally.
     shadow = _shadow_model()
-    action = _action(
-        "set_driving_behavior_parameter", behavior_id="5", parameter="w99cc0", value=1.5
-    )
+    shadow["driving_behaviors"] = [
+        _driving_behavior(
+            "5",
+            reference_count=1,
+            consumers=[{"link_behavior_type_no": "1", "link_behavior_type_name": "Urban", "veh_class_no": None, "link_count": 293}],
+        )
+    ]
+    action = _action("set_driving_behavior_parameter", behavior_no="5", parameter="ax", value=1.5)
 
     findings = run_checks("preflight", action, shadow, {})
 
@@ -3466,17 +3524,44 @@ def test_driving_behavior_shared_object_edit_fires_without_duplication_flag():
     finding = matches[0]
     assert finding.tier == "refuse"
     _assert_well_formed_messages(finding, must_contain_ko="5")
+    assert finding.details["consumers"] == ["Urban"]
 
 
-def test_driving_behavior_shared_object_edit_silent_when_duplicated_first():
+def test_driving_behavior_shared_object_edit_silent_when_zero_references():
+    # A freshly duplicated behavior (reference_count 0) is safe to edit.
     shadow = _shadow_model()
+    shadow["driving_behaviors"] = [_driving_behavior("7", reference_count=0)]
+    action = _action("set_driving_behavior_parameter", behavior_no="7", parameter="ax", value=1.5)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "driving_behavior_shared_object_edit" for f in findings
+    )
+
+
+def test_driving_behavior_shared_object_edit_no_escape_flag():
+    # There is no caller-supplied override anymore -- a stray/legacy
+    # "duplicated_before_edit": True must NOT suppress a real reference.
+    shadow = _shadow_model()
+    shadow["driving_behaviors"] = [_driving_behavior("5", reference_count=1, consumers=[{"link_behavior_type_no": "1"}])]
     action = _action(
         "set_driving_behavior_parameter",
-        behavior_id="5",
-        parameter="w99cc0",
+        behavior_no="5",
+        parameter="ax",
         value=1.5,
         duplicated_before_edit=True,
     )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert any(f.constraint_id == "driving_behavior_shared_object_edit" for f in findings)
+
+
+def test_driving_behavior_shared_object_edit_silent_when_target_missing():
+    shadow = _shadow_model()
+    shadow["driving_behaviors"] = []
+    action = _action("set_driving_behavior_parameter", behavior_no="999", parameter="ax", value=1.5)
 
     findings = run_checks("preflight", action, shadow, {})
 
@@ -3488,9 +3573,9 @@ def test_driving_behavior_shared_object_edit_silent_when_duplicated_first():
 def test_parameter_diff_not_calibration_meaningful_fires_when_moved_off_reference():
     shadow = _shadow_model()
     shadow["driving_behaviors"] = [
-        {"id": "5", "parameters": {"cc1": {"calibration_reference_value": 1.5}}}
+        {"no": "5", "parameters": {"cc1": {"calibration_reference_value": 1.5}}}
     ]
-    action = _action("set_driving_behavior_parameter", behavior_id="5", parameter="cc1")
+    action = _action("set_driving_behavior_parameter", behavior_no="5", parameter="cc1")
     extra = {"written_value": 2.0, "readback_value": 2.0}
 
     findings = run_checks("postwrite", action, shadow, extra)
@@ -3505,9 +3590,9 @@ def test_parameter_diff_not_calibration_meaningful_fires_when_moved_off_referenc
 def test_parameter_diff_not_calibration_meaningful_silent_when_matches_reference():
     shadow = _shadow_model()
     shadow["driving_behaviors"] = [
-        {"id": "5", "parameters": {"cc1": {"calibration_reference_value": 1.5}}}
+        {"no": "5", "parameters": {"cc1": {"calibration_reference_value": 1.5}}}
     ]
-    action = _action("set_driving_behavior_parameter", behavior_id="5", parameter="cc1")
+    action = _action("set_driving_behavior_parameter", behavior_no="5", parameter="cc1")
     extra = {"written_value": 1.5, "readback_value": 1.5}
 
     findings = run_checks("postwrite", action, shadow, extra)
@@ -3519,7 +3604,7 @@ def test_parameter_diff_not_calibration_meaningful_silent_when_matches_reference
 
 def test_parameter_diff_not_calibration_meaningful_skipped_when_reference_absent():
     shadow = _shadow_model()
-    action = _action("set_driving_behavior_parameter", behavior_id="5", parameter="cc1")
+    action = _action("set_driving_behavior_parameter", behavior_no="5", parameter="cc1")
     extra = {"written_value": 2.0, "readback_value": 2.0}
 
     findings = run_checks("postwrite", action, shadow, extra)
@@ -3531,7 +3616,7 @@ def test_parameter_diff_not_calibration_meaningful_skipped_when_reference_absent
 
 def test_agency_restricted_parameter_write_fires_for_restricted_parameter():
     shadow = _shadow_model()
-    action = _action("set_driving_behavior_parameter", behavior_id="5", parameter="cc1", value=1.2)
+    action = _action("set_driving_behavior_parameter", behavior_no="5", parameter="cc1", value=1.2)
 
     findings = run_checks("preflight", action, shadow, {})
 
@@ -3544,7 +3629,7 @@ def test_agency_restricted_parameter_write_silent_for_unrestricted_parameter():
     shadow = _shadow_model()
     action = _action(
         "set_driving_behavior_parameter",
-        behavior_id="5",
+        behavior_no="5",
         parameter="look_ahead_distance",
         value=100,
     )
@@ -3553,6 +3638,243 @@ def test_agency_restricted_parameter_write_silent_for_unrestricted_parameter():
 
     assert not any(
         f.constraint_id == "agency_restricted_parameter_write" for f in findings
+    )
+
+
+# ---------------------------------------------------------------------------
+# QUEUE 3 unit 6: driving-behavior duplicate-then-edit -- #1 object_not_found
+# for the three new tools, #85-#88.
+# ---------------------------------------------------------------------------
+
+
+def test_object_not_found_fires_for_missing_duplicate_source():
+    shadow = _shadow_model()
+    shadow["driving_behaviors"] = [_driving_behavior("1")]
+    action = _action("duplicate_driving_behavior", source_no="999", new_name="copy")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    _assert_well_formed_messages(matches[0], must_contain_ko="999")
+
+
+def test_object_not_found_silent_when_duplicate_source_present():
+    shadow = _shadow_model()
+    shadow["driving_behaviors"] = [_driving_behavior("1")]
+    action = _action("duplicate_driving_behavior", source_no="1", new_name="copy")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_fires_for_missing_set_driving_behavior_parameter_target():
+    shadow = _shadow_model()
+    shadow["driving_behaviors"] = [_driving_behavior("1")]
+    action = _action("set_driving_behavior_parameter", behavior_no="999", parameter="ax", value=2.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert any(f.constraint_id == "object_not_found" for f in findings)
+
+
+def test_object_not_found_fires_for_missing_link_behavior_type():
+    shadow = _shadow_model()
+    shadow["link_behavior_types"] = [{"no": "1", "name": "Urban", "overrides": []}]
+    action = _action(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="999", driving_behavior_no="7"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    _assert_well_formed_messages(matches[0], must_contain_ko="999")
+
+
+def test_object_not_found_silent_when_link_behavior_type_present():
+    shadow = _shadow_model()
+    shadow["link_behavior_types"] = [{"no": "1", "name": "Urban", "overrides": []}]
+    shadow["driving_behaviors"] = [_driving_behavior("7")]
+    action = _action(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="7"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(f.constraint_id == "object_not_found" for f in findings)
+
+
+@pytest.mark.parametrize(
+    "parameter,value",
+    [("ax", -1.0), ("lat_dist_driv_def", -0.5), ("lat_dist_stand_def", -0.5), ("saf_dist_fact_ln_chg", -0.1), ("saf_dist_fact_ln_chg", 1.5)],
+)
+def test_driving_behavior_parameter_range_invalid_fires_for_known_floor_ceiling(parameter, value):
+    shadow = _shadow_model()
+    action = _action("set_driving_behavior_parameter", behavior_no="7", parameter=parameter, value=value)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "driving_behavior_parameter_range_invalid"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+
+
+@pytest.mark.parametrize(
+    "parameter,value",
+    [
+        ("ax", 2.0),
+        ("saf_dist_fact_ln_chg", 0.0),
+        ("saf_dist_fact_ln_chg", 1.0),
+        # Vissim itself silently accepts negative values here (live-verified)
+        # -- this constraint deliberately has no bound for these two.
+        ("bx_add", -2.0),
+        ("bx_mult", -3.0),
+    ],
+)
+def test_driving_behavior_parameter_range_invalid_silent_for_in_range_values(parameter, value):
+    shadow = _shadow_model()
+    action = _action("set_driving_behavior_parameter", behavior_no="7", parameter=parameter, value=value)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "driving_behavior_parameter_range_invalid" for f in findings
+    )
+
+
+def test_driving_behavior_parameter_range_invalid_does_not_apply_to_other_tools():
+    shadow = _shadow_model()
+    action = _action("set_vehicle_input_volume", input_no="1", volume=-5.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "driving_behavior_parameter_range_invalid" for f in findings
+    )
+
+
+def test_driving_behavior_parameter_value_implausible_fires_for_huge_magnitude():
+    shadow = _shadow_model()
+    action = _action("set_driving_behavior_parameter", behavior_no="7", parameter="bx_add", value=99999.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "driving_behavior_parameter_value_implausible"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+
+
+def test_driving_behavior_parameter_value_implausible_silent_for_realistic_value():
+    shadow = _shadow_model()
+    action = _action("set_driving_behavior_parameter", behavior_no="7", parameter="bx_add", value=2.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "driving_behavior_parameter_value_implausible" for f in findings
+    )
+
+
+def test_driving_behavior_parameter_value_implausible_silent_for_parameter_with_no_threshold():
+    # saf_dist_fact_ln_chg has no implausible-magnitude threshold (it is
+    # already bounded [0, 1] by #85) -- an out-of-range value there is #85's
+    # job, never #86's.
+    shadow = _shadow_model()
+    action = _action("set_driving_behavior_parameter", behavior_no="7", parameter="saf_dist_fact_ln_chg", value=0.5)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "driving_behavior_parameter_value_implausible" for f in findings
+    )
+
+
+def test_link_behavior_type_veh_class_override_not_found_fires_for_missing_override():
+    shadow = _shadow_model()
+    shadow["link_behavior_types"] = [
+        {"no": "1", "name": "Urban", "overrides": [{"veh_class_no": "20", "driving_behavior_no": "6"}]}
+    ]
+    action = _action(
+        "set_link_behavior_type_driving_behavior",
+        link_behavior_type_no="1",
+        driving_behavior_no="7",
+        veh_class_no="30",
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [
+        f for f in findings if f.constraint_id == "link_behavior_type_veh_class_override_not_found"
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    assert finding.suggested_fix == ["20"]
+    _assert_well_formed_messages(finding, must_contain_ko="30")
+
+
+def test_link_behavior_type_veh_class_override_not_found_silent_when_override_present():
+    shadow = _shadow_model()
+    shadow["link_behavior_types"] = [
+        {"no": "1", "name": "Urban", "overrides": [{"veh_class_no": "20", "driving_behavior_no": "6"}]}
+    ]
+    action = _action(
+        "set_link_behavior_type_driving_behavior",
+        link_behavior_type_no="1",
+        driving_behavior_no="7",
+        veh_class_no="20",
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "link_behavior_type_veh_class_override_not_found" for f in findings
+    )
+
+
+def test_link_behavior_type_veh_class_override_not_found_silent_when_targeting_default():
+    shadow = _shadow_model()
+    shadow["link_behavior_types"] = [{"no": "1", "name": "Urban", "overrides": []}]
+    action = _action(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="7"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "link_behavior_type_veh_class_override_not_found" for f in findings
+    )
+
+
+def test_link_behavior_type_driving_behavior_target_not_found_fires_for_missing_target():
+    shadow = _shadow_model()
+    shadow["driving_behaviors"] = [_driving_behavior("6")]
+    action = _action(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="999"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [
+        f for f in findings if f.constraint_id == "link_behavior_type_driving_behavior_target_not_found"
+    ]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+
+
+def test_link_behavior_type_driving_behavior_target_not_found_silent_when_target_present():
+    shadow = _shadow_model()
+    shadow["driving_behaviors"] = [_driving_behavior("7")]
+    action = _action(
+        "set_link_behavior_type_driving_behavior", link_behavior_type_no="1", driving_behavior_no="7"
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "link_behavior_type_driving_behavior_target_not_found" for f in findings
     )
 
 
@@ -4465,9 +4787,22 @@ def test_registry_size_matches_m3_1_catalog_port():
     # set_time_distribution_points tools, mirroring the set_priority_rule_
     # gap_headway/set_des_speed_distribution_points precedents; object_
     # not_found already existed and was EXTENDED in place to gate both new
-    # tools, not added) == 84.
+    # tools, not added) == 84, + 4 (QUEUE 3 unit 6, 2026-07-31:
+    # driving_behavior_parameter_range_invalid /
+    # driving_behavior_parameter_value_implausible /
+    # link_behavior_type_veh_class_override_not_found /
+    # link_behavior_type_driving_behavior_target_not_found -- all four "not
+    # a #-numbered catalog entry, a defensive addition" shapes for the three
+    # new driving-behavior duplicate-then-edit tools, mirroring the
+    # set_priority_rule_gap_headway/set_des_speed_distribution_points
+    # precedents; #33 driving_behavior_parameter_model_mismatch and #40
+    # driving_behavior_shared_object_edit already existed and were CORRECTED
+    # IN PLACE (real param names, a real reference-count check replacing a
+    # gameable caller-supplied flag), not added; object_not_found already
+    # existed and was EXTENDED in place to gate all three new tools, not
+    # added) == 88.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 84
+    assert len(get_registry()) == 88
 
 
 def test_registry_has_unique_ids():

@@ -137,7 +137,12 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
 - ✅ Priority-rule gap/headway parameters — shipped (Q3 unit ②, `get_priority_rules` +
   `set_priority_rule_gap_headway`; live-proven: `MinHdwy` is a COM alias of `MinClear`,
   metres — one underlying "minimum clearance" value, not a third attribute)
-- ⬜ Driving-behavior params via duplicate-then-edit (expert-gated)
+- ✅ Driving-behavior params via duplicate-then-edit — shipped (Q3 unit ⑥,
+  `duplicate_driving_behavior` / `set_driving_behavior_parameter` /
+  `set_link_behavior_type_driving_behavior`; a referenced behavior REFUSES in-place
+  edits — duplicate → edit the zero-ref copy → assign. W99 CC0–CC9 deliberately
+  excluded: the pre-existing agency-restriction constraint refuses all CC writes and
+  a verb would route around it)
 - ✅ Dwell-time distributions — shipped (Q3 unit ⑤, `get_time_distributions` +
   `set_time_distribution_normal`/`_points`; the real object model is the GLOBAL
   TimeDistributions collection shared by PT dwell, CC1, zipper-overtake, parking
@@ -148,7 +153,7 @@ Legend: ✅ shipped · ⚠️ shipped with a by-design limitation · ⬜ planned
   `set_vehicle_type_reference`, 8-field whitelist; accel/decel FUNCTION curve
   editing remains probe-report-only — same ReplaceAll shape as unit ③, untested)
 
-**Status: 11 of 12 bullets shipped (one tool, `set_des_speed_decision`, satisfies both
+**Status: 12 of 12 bullets shipped — V2a COMPLETE (one tool, `set_des_speed_decision`, satisfies both
 the PAIRS and distribution-assignment line items).**
 
 ---

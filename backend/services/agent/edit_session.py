@@ -333,6 +333,35 @@ class VissimEditSession:
     def get_time_distribution_points(self, time_distribution_no: int) -> list[dict[str, float]]:
         return self._ensure_connected().get_time_distribution_points(time_distribution_no)
 
+    # QUEUE 3 unit 6: driving-behavior duplicate-then-edit verbs -- see
+    # VissimController's own module comment (driving-behavior block) for the
+    # full live-verified writeup (DuplicateDrivingBehavior's exact-copy
+    # fidelity, the whitelist's per-field reasoning, the display-unit
+    # landmine, and the AddVehClassDrivingBehavior COM/pywin32 landmine).
+
+    def duplicate_driving_behavior(self, source_no: int, new_name: str) -> dict[str, Any]:
+        return self._ensure_connected().duplicate_driving_behavior(source_no, new_name)
+
+    def get_driving_behavior(self, behavior_no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_driving_behavior(behavior_no)
+
+    def set_driving_behavior_parameter(self, behavior_no: int, parameter: str, value: float) -> dict[str, Any]:
+        return self._ensure_connected().set_driving_behavior_parameter(behavior_no, parameter, value)
+
+    def set_link_behavior_type_driving_behavior(
+        self, link_behavior_type_no: int, driving_behavior_no: int, veh_class_no: int | None = None
+    ) -> dict[str, Any]:
+        return self._ensure_connected().set_link_behavior_type_driving_behavior(
+            link_behavior_type_no, driving_behavior_no, veh_class_no
+        )
+
+    def get_link_behavior_type_driving_behavior(
+        self, link_behavior_type_no: int, veh_class_no: int | None = None
+    ) -> dict[str, Any]:
+        return self._ensure_connected().get_link_behavior_type_driving_behavior(
+            link_behavior_type_no, veh_class_no
+        )
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

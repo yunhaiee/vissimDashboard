@@ -1157,3 +1157,176 @@ def set_time_distribution_points(params: SetTimeDistributionPointsParams) -> dic
         ),
         "verification": verification,
     }
+
+
+# ---------------------------------------------------------------------------
+# duplicate_driving_behavior(source_no, new_name)
+# set_driving_behavior_parameter(behavior_no, parameter, value)
+# set_link_behavior_type_driving_behavior(link_behavior_type_no,
+#                                          driving_behavior_no, veh_class_no)
+#
+# QUEUE 3 unit 6 -- driving-behavior parameters via duplicate-then-edit.
+# THREE separate approvals, matching the product-owner-approved safety
+# design exactly (never a compound auto-flow; batch composition is a later
+# unit's job): duplicate (creates a brand-new, zero-reference object -- the
+# FIRST tool in this codebase that creates a new object via a native COM
+# "Duplicate" method, live-verified an EXACT full attribute copy, see
+# vissim_com.VissimController's own driving-behavior module comment) -> edit
+# the copy (refused unless it has ZERO referencing consumers --
+# constraints.py's rewritten driving_behavior_shared_object_edit, a REAL
+# reference-count check against the shadow model's own driving_behaviors[]
+# .reference_count, not a caller-supplied "trust me" flag) -> assign the
+# edited copy to its intended link-behavior-type (the ONLY real assignment
+# surface, live-verified -- links reference a link-behavior-type, never a
+# driving behavior directly).
+#
+# set_driving_behavior_parameter's own whitelist (the 8 keys of
+# vissim_com.VissimController.DRIVING_BEHAVIOR_PARAM_FIELDS) deliberately
+# EXCLUDES every W99 CC0-CC9 -- constraints.py's PRE-EXISTING
+# agency_restricted_parameter_write constraint (registered before this unit,
+# catalog §6, sourced from WSDOT/Maryland DOT guidance) already refuses every
+# CC parameter write unconditionally, for a DIFFERENT reason than the
+# shared-object blast-radius problem duplication solves; this unit's own
+# task brief suggested "W99 CC0/CC2/CC7-ish" as an EXAMPLE whitelist, but
+# shipping any of them would silently route around that pre-existing,
+# catalog-sourced policy refusal rather than respect it -- see this unit's
+# drafted DECISIONS.md entry for the full reasoning.
+#
+# set_link_behavior_type_driving_behavior can reassign a link-behavior-
+# type's DEFAULT assignment OR REASSIGN an EXISTING per-vehicle-class
+# override -- it CANNOT create a brand-new override for a vehicle class that
+# has none today (a real, reproducible pywin32/COM landmine live-verified
+# three separate ways -- see vissim_com.VissimController's own module
+# comment); a caller trying that gets a clear, structured refusal
+# (link_behavior_type_veh_class_override_not_found), never a raw COM error.
+# ---------------------------------------------------------------------------
+
+
+class DuplicateDrivingBehaviorParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_no: str
+    new_name: str = Field(min_length=1)
+
+
+@tool(
+    name="duplicate_driving_behavior",
+    tier="write",
+    provider="edit",
+    params=DuplicateDrivingBehaviorParams,
+)
+def duplicate_driving_behavior(params: DuplicateDrivingBehaviorParams) -> dict[str, Any]:
+    """Create an exact, full-attribute duplicate of an existing driving behavior (source_no) on the active edit session's working network, named new_name -- the FIRST step of the duplicate-then-edit flow for driving behaviors, which are GLOBAL, SHARED objects that must never be edited in place (see set_driving_behavior_parameter). The copy gets the next free driving-behavior number automatically (you never need to guess a free slot) and starts with EVERY attribute -- including every Wiedemann-74/99 car-following parameter and lane-change setting -- identical to source_no (a native Vissim COM copy operation, not an attribute-by-attribute reconstruction). The copy has ZERO referencing consumers by construction, so it is immediately eligible for set_driving_behavior_parameter -- but it is dead weight (referenced by nothing) until you also call set_link_behavior_type_driving_behavior to wire it to its intended link-behavior-type."""
+    session = _require_session()
+    source_no = _coerce_id(params.source_no, "source_no")
+
+    result = session.duplicate_driving_behavior(source_no, params.new_name)
+    session.persist()
+
+    # written_value/readback_value carry EXACTLY the same key set (the
+    # set_reduced_speed_area precedent): constraint #6 (write_verification_
+    # failed, applies_to ["*"]) compares them structurally, and a dict with
+    # an extra key on either side is a mismatch REGARDLESS of whether every
+    # shared key's value agrees. The auto-assigned new number (result["no"])
+    # is not something the caller "wrote" (it was computed by this tool, not
+    # supplied) -- it is reported separately via `artifacts`, never inside
+    # the compared dicts; the one genuinely write-then-verify-able value here
+    # is the NAME.
+    verification: dict[str, Any] = {"written_value": params.new_name, "readback_value": result["name"]}
+    message = (
+        f"Driving behavior {params.source_no} duplicated as new behavior {result['no']} "
+        f"({params.new_name!r}) -- an exact copy, zero referencing consumers so far."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"new_no": result["no"], "driving_behavior": result},
+    }
+
+
+class SetDrivingBehaviorParameterParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    behavior_no: str
+    parameter: Literal[
+        "ax",
+        "bx_add",
+        "bx_mult",
+        "saf_dist_fact_ln_chg",
+        "coop_ln_chg_speed_diff",
+        "min_speed_for_lat",
+        "lat_dist_driv_def",
+        "lat_dist_stand_def",
+    ]
+    value: float
+
+
+@tool(
+    name="set_driving_behavior_parameter",
+    tier="write",
+    provider="edit",
+    params=SetDrivingBehaviorParameterParams,
+)
+def set_driving_behavior_parameter(params: SetDrivingBehaviorParameterParams) -> dict[str, Any]:
+    """Set ONE whitelisted calibration parameter on a driving behavior on the active edit session's working network -- REFUSED unless behavior_no has ZERO referencing link-behavior-types (get_driving_behaviors shows reference_count/referenced_by): driving behaviors are global objects shared by every link-behavior-type that points at them, so editing a shared one in place would silently change car-following/lane-change physics everywhere it is used at once. Duplicate first (duplicate_driving_behavior), then edit the zero-reference copy. parameter is one of: ax/bx_add/bx_mult (Wiedemann-74 car-following -- ax is a distance in METERS, bx_add/bx_mult are dimensionless multipliers -- refused if behavior_no's car_following_model is not 74), or saf_dist_fact_ln_chg/coop_ln_chg_speed_diff/min_speed_for_lat/lat_dist_driv_def/lat_dist_stand_def (lane-change/lateral aggressiveness -- saf_dist_fact_ln_chg is a dimensionless factor in [0, 1], coop_ln_chg_speed_diff/min_speed_for_lat are speeds in KM/H, lat_dist_driv_def/lat_dist_stand_def are distances in METERS -- model-independent, apply regardless of car_following_model). W99 CC0-CC9 are NOT writable through this agent at all (a separate, unconditional agency-policy restriction; use default and get written engineering sign-off to deviate) and CC1 is a Time Distribution reference, not a scalar."""
+    session = _require_session()
+    behavior_no = _coerce_id(params.behavior_no, "behavior_no")
+
+    result = session.set_driving_behavior_parameter(behavior_no, params.parameter, params.value)
+    session.persist()
+
+    readback = result[params.parameter]
+    verification: dict[str, Any] = {"written_value": params.value, "readback_value": readback}
+    message = (
+        f"Driving behavior {params.behavior_no} {params.parameter} set to {params.value} "
+        f"(now {readback})."
+    )
+    return {"message": message, "verification": verification, "artifacts": {"driving_behavior": result}}
+
+
+class SetLinkBehaviorTypeDrivingBehaviorParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_behavior_type_no: str
+    driving_behavior_no: str
+    # None (default) targets the link-behavior-type's DEFAULT assignment;
+    # given, targets an EXISTING per-vehicle-class override (creating a new
+    # one is not supported -- see this tool's own docstring and the module
+    # docstring's "QUEUE 3 unit 6" paragraph).
+    veh_class_no: str | None = None
+
+
+@tool(
+    name="set_link_behavior_type_driving_behavior",
+    tier="write",
+    provider="edit",
+    params=SetLinkBehaviorTypeDrivingBehaviorParams,
+)
+def set_link_behavior_type_driving_behavior(
+    params: SetLinkBehaviorTypeDrivingBehaviorParams,
+) -> dict[str, Any]:
+    """Assign driving_behavior_no as a link-behavior-type's DEFAULT driving behavior (veh_class_no omitted) or reassign an EXISTING per-vehicle-class override's target (veh_class_no given) on the active edit session's working network -- the ASSIGNMENT step of the duplicate-then-edit flow: without this, a duplicated-and-edited behavior is never actually used by anything. Links reference a link-behavior-type (get_driving_behaviors' referenced_by shows each behavior's current link-behavior-type consumers, including that type's own real link_count -- how many links inherit this assignment), never a driving behavior directly -- there is no single-link-level assignment. veh_class_no must name an EXISTING per-vehicle-class override (creating a brand-new override for a vehicle class that has none today is not supported by this agent -- a known COM interface limitation, not an oversight); reassigning the DEFAULT (veh_class_no omitted) has no such restriction."""
+    session = _require_session()
+    link_behavior_type_no = _coerce_id(params.link_behavior_type_no, "link_behavior_type_no")
+    driving_behavior_no = _coerce_id(params.driving_behavior_no, "driving_behavior_no")
+    veh_class_no = (
+        None if params.veh_class_no is None else _coerce_id(params.veh_class_no, "veh_class_no")
+    )
+
+    result = session.set_link_behavior_type_driving_behavior(
+        link_behavior_type_no, driving_behavior_no, veh_class_no
+    )
+    session.persist()
+
+    verification: dict[str, Any] = {
+        "written_value": params.driving_behavior_no,
+        "readback_value": result["driving_behavior_no"],
+    }
+    target_note = (
+        "default assignment" if params.veh_class_no is None else f"vehicle-class {params.veh_class_no} override"
+    )
+    message = (
+        f"Link-behavior-type {params.link_behavior_type_no}'s {target_note} set to driving "
+        f"behavior {params.driving_behavior_no}."
+    )
+    return {"message": message, "verification": verification}

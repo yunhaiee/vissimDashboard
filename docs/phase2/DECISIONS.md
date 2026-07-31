@@ -2680,3 +2680,24 @@ assignments share ONE normal distribution (no=10, 10s±2s), and five staged `Bus
 empirical curves exist UNREFERENCED — built but never wired in. Suite 1552/1/1 (controller
 re-ran; re-drove type-mismatch both directions, shared-target warn on the 18-ref distribution,
 monotonicity refuse and implausible-mean warn against the real model).
+
+## 2026-07-31 — Q3 unit ⑥: driving-behavior duplicate-then-edit shipped — v2a COMPLETE (12/12)
+
+Probed live (Roundabout Billings.US). `DuplicateDrivingBehavior(Source, NewKey)` is a
+purpose-built COM method producing an exact 26/26-attribute copy (the tempting
+`AddDrivingBehavior` creates from Vissim's DEFAULT template — verified different, never used).
+The user's safety design is mechanical, not advisory: `set_driving_behavior_parameter` REFUSES
+any behavior with ≥1 reference (`driving_behavior_shared_object_edit`), naming the consumers
+and pointing at duplicate → edit-the-zero-ref-copy → assign; on the real model every one of
+the 15 behaviors is referenced (1:1 with link-behavior-types; #101's type covers 293 links —
+every named corridor), so ALL in-place edits refuse there, which is exactly right. **W99
+CC0–CC9 excluded on purpose:** the pre-existing agency-restriction constraint (#42,
+WSDOT/Maryland-sourced) unconditionally refuses CC writes; a CC verb would silently route
+around our own policy refusal — the whitelist is 8 W74/lane-change/lateral scalars instead.
+Landmines: `NetPara.UnitLenShort` (not UnitLength) drives length-field display units — new
+conversion helper; `AddVehClassDrivingBehavior` hits a reproducible pywin32 marshalling bug, so
+creating NEW per-class overrides is a documented refusal (mutating existing ones works). Two
+pre-existing constraint defects fixed en route: #40 trusted a gameable caller flag (now
+reference-count based) and #33 checked param names that never existed (`axhze` et al.).
+Registry 84→88. Suite 1603/1/1 (controller re-ran; re-drove refuse-on-shared, range refuse,
+both not-found paths and the clean duplicate against the real model).
