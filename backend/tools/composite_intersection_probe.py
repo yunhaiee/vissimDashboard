@@ -127,9 +127,11 @@ brief's own "after each stage" requirement:
      + 1 ``add_data_collection_measurement`` + 1 ``add_travel_time_section``,
      all on Junction A.
   5. Demand smoke test: gated on Stage 0's own verdict -- a genuine
-     ``AddVehicleInput``-driven RunSingleStep sequence, checked DECISIVELY
-     (vehicles found specifically on Junction A's own isolated links, which
-     nothing else in Beijing's real network can reach), or -- only if Stage
+     ``AddVehicleInput``-driven RunSingleStep sequence over a window whose
+     own adequacy is printed first (see HARNESS LANDMINE 2 below), checked
+     DECISIVELY (vehicles found specifically on Junction A's own isolated
+     links, which nothing else in Beijing's real network can reach), or --
+     only if Stage
      0's finding fails to reproduce -- the task brief's own specified
      fallback: the load oracle + a bare ``AddVehicleAtLinkPosition``
      drivability check (Q4 unit (5)'s own pattern), with the gap recorded,
@@ -167,6 +169,86 @@ COM work reliable. This is itself a genesis-relevant finding: a future
 production job that builds a whole intersection in one long-lived worker
 process should expect the same instability and needs the same per-stage
 process boundary, not just per-turn.
+
+**THE PROCESS-BOUNDARY FIX IS NOW VALIDATED (2026-08-03, first end-to-end
+run; Stages 1-6 and Phase B had NEVER executed before this).** All eight
+stage subprocesses ran to completion with ZERO native crashes -- no exit
+139, no silent death, no missing state record. Evidence: every stage
+recorded its own PASS/FAIL into the state file under its own pid, and the
+orchestrator's crash-recording fallback ("subprocess died ... before it
+could record its own outcome") never fired once. Each stage process stays
+at ~2 COM connect/disconnect cycles (the edit session's own, plus
+``tools_check._load_check``'s), comfortably under the ~2-3 that killed the
+single-process design. What this means for genesis: the whole-intersection
+build job can be built on per-stage process boundaries TODAY -- this is no
+longer an unvalidated hypothesis, and gap (1) of the DECISIONS.md GENESIS
+GAP LIST is closed. The underlying native crash is still not root-caused
+(nobody has read a crash dump), but it no longer blocks anything, so the
+root-cause hunt is a curiosity, not a dependency.
+
+**HARNESS LANDMINE 1 -- an out-of-band COM write inside a verb's postwrite
+window makes the guardrail refuse the VERB (live-caught here, Stage 2).**
+Stage 2 creates its fresh controller with a raw ``DuplicateSignalController``
+call (no verb wraps it yet), then dispatched ``add_signal_head``. The four
+heads were all created correctly (61/62/63/64; reparse counted 52+4=56) --
+but the REAL ``GuardrailEngine.postwrite`` refused the first one:
+``report.blocking=True findings=['conflict_area_data_unavailable',
+'write_verification_failed']``, naming ``signals#2:added`` plus 44
+``signal_program_splits#2.{1,2}.{1..22}:added``. **The guardrail was
+correct and the harness was wrong**: the duplicate lived only in memory when
+the "before" snapshot was parsed off disk, and the verb's own ``persist()``
+then flushed BOTH writes, so the diff attributed the whole controller to
+``add_signal_head``. Fix: ``session.persist()`` immediately after the
+duplicate. **Genesis consequence, and the sharpest thing this run produced
+for gap (2)'s spec:** a real ``add_signal_controller`` verb built on
+``DuplicateSignalController`` MUST ship
+``_ALLOWS_NEW_OBJECTS_IN["add_signal_controller"] = {"signals",
+"signal_program_splits"}`` -- exactly mirroring ``add_connector``'s own
+``conflict_areas`` entry and ``duplicate_driving_behavior``'s
+``driving_behaviors`` entry -- or every correct call will be refused and
+rolled back. The id list above is the live-proven evidence for that entry,
+and it also shows the shape: ONE duplicate carries the donor's TWO signal
+programs x 22 signal groups.
+
+**HARNESS LANDMINE 2 -- ``IVehicle`` has NO ``Link`` attribute, and the
+probe's own bare ``except`` hid that behind a confident wrong answer
+(live-caught here, Stage 5).** Stage 5 originally located vehicles with
+``v.AttValue("Link")``. That attribute does not exist: Vissim logged
+``Error VEHICLE: Could not find attribute with ID LINK.`` once per vehicle
+-- 13 identical lines for 13 vehicles -- into the run's own ``.err`` file,
+while ``except Exception: continue`` swallowed every one. The reported
+"0 vehicles on Junction A" was therefore not a measurement at all; the
+check was structurally incapable of ever returning True. Two compounding
+errors, both now fixed: (a) the read is ``AttValue("Lane")``, a
+``"<link>-<lane>"`` token (the pattern ``add_links_connectors_live_check.py``
+already proved), and any locate failure is now reported LOUDLY and voids
+the proof rather than silently emptying it; (b) the window was
+underpowered by ~40x -- Beijing's ``<simulation simRes="10">`` makes 45
+RunSingleStep calls just 4.5 SIMULATION seconds, against a 12 s headway at
+300 veh/h, an expected 0.375 arrivals. The generalizable rule, worth more
+than either bug: **a "no vehicles found" result is only evidence if the
+harness first proves the window could have contained one** -- so Stage 5
+now prints simRes, the derived sim-seconds, the headway and the expected
+arrival count before it steps.
+
+**BOTH FIXES RE-RUN AND CONFIRMED, whole probe green end to end
+(2026-08-03, second run, exit code 0, every stage PASS).** Stage 2's
+postwrite came back ``report.blocking=False findings=['conflict_area_data_
+unavailable']``. Stage 5 printed ``simRes=10 ... 300 RunSingleStep calls =
+30 SIMULATION seconds. At 2000 veh/h (headway 1.80 s) that is an expected
+16.7 arrivals`` and then delivered the CROWN PROOF this probe was built for:
+``126 vehicle(s) network-wide; 9 of them specifically on Junction A's OWN
+isolated links [43, 46, 55, 63, 68, 73, 77, 81, 105]`` with
+``vehicle_locate_failures: 0``. Those links are unreachable from anything
+else in Beijing's real network, so the only possible origin is the vehicle
+input this probe created -- **an ``AddVehicleInput``-created input does
+genuinely generate traffic, and that traffic does genuinely drive through a
+junction built entirely from Q4 verbs.** That was the check gap (3) of the
+GENESIS GAP LIST explicitly still owed, and gap (4)'s full-composition proof
+is the run itself. Final composite network: 146 links, 307 conflict areas,
+56 signal heads, 2 stop signs, 29 queue counters, 32 data collection points,
+25 travel time sections, 13 vehicle inputs -- ``load_ok=True init_ok=True``
+from a fresh Vissim instance.
 
 Usage: ``python tools/composite_intersection_probe.py [example_dir]`` --
 runs every stage end to end (via internal per-stage subprocesses) and prints
@@ -215,6 +297,15 @@ INNER_R = 15.0
 ARM_LEN = round(OUTER_R - INNER_R, 3)
 
 _DIRECTIONS = {"N": (0.0, 1.0), "S": (0.0, -1.0), "E": (1.0, 0.0), "W": (-1.0, 0.0)}
+
+#: Stage 5's demand window, sized from the network's OWN <simulation simRes="10">
+#: rather than guessed (see the module docstring's harness-landmine block): 300
+#: RunSingleStep calls = 30 simulation seconds, and 2000 veh/h is a 1.8 s
+#: headway, so a correct build is expected to produce ~16 arrivals. The
+#: original 45 steps / 300 veh/h pair was 4.5 sim-seconds against a 12 s
+#: headway -- an expected 0.375 arrivals, i.e. a test that could not pass.
+_DEMAND_STEPS = 300
+_DEMAND_VOLUME_VPH = 2000.0
 
 #: Beijing SC 1's real signal groups (static-scan-confirmed: 01/02-03/04/05/06+
 #: under signalController/sgs/signalGroup) -- reused as the "wire to an
@@ -798,6 +889,17 @@ def stage2_control(
             sc_no_used = str(new_sc_no)
             sc_provenance = f"FRESH, independently-duplicated SC {new_sc_no} ({sg_count} inherited signal groups)"
             _log(f"      {sc_provenance} -- created via DuplicateSignalController(SC1, {new_sc_no}).")
+            # LIVE-CAUGHT HARNESS BUG (2026-08-03 first end-to-end run) -- see the
+            # module docstring. The duplicate above is an OUT-OF-BAND, un-verbed COM
+            # write; it must be PERSISTED here so it lands in the "before" snapshot
+            # below. Without this, add_signal_head's own postwrite window straddles
+            # the duplicate and the REAL GuardrailEngine correctly refuses the head
+            # (write_verification_failed, tier=refuse) for signals#2 + 44
+            # signal_program_splits#2.* it never asked for. The guardrail was right;
+            # the harness was mis-attributing its own side write to the verb.
+            session.persist()
+            _log("      Duplicate PERSISTED before the add_signal_head baseline snapshot, so the "
+                 "verb's own postwrite window contains only the verb's own write.")
 
         shadow_before_first = build_shadow_model(working_path)
         baseline = len(shadow_before_first["signal_heads"])
@@ -1223,7 +1325,13 @@ def stage5_demand(
                 return {"vehicle_input_gap": True, "reproduced": False,
                         "load_ok": load_result["load_ok"], "init_ok": load_result["init_ok"]}
 
-            new_vi.SetAttValue("Volume(1)", 300.0)
+            # LIVE-CAUGHT HARNESS BUG #2 (2026-08-03) -- see the module docstring:
+            # the original 300 veh/h over 45 RunSingleStep calls could never have
+            # produced a vehicle. Beijing's own <simulation simRes="10"> means 45
+            # steps = 4.5 SIMULATION SECONDS, and 300 veh/h is a 12 s headway, so
+            # the expected arrival count was 0.375. Volume and step count are both
+            # raised here so the window is genuinely capable of proving the claim.
+            new_vi.SetAttValue("Volume(1)", _DEMAND_VOLUME_VPH)
             tmp_path = working_path.with_name(working_path.stem + "_saving" + working_path.suffix)
             controller.save_net_as(tmp_path)
             os.replace(tmp_path, working_path)
@@ -1236,26 +1344,58 @@ def stage5_demand(
         try:
             controller2.connect(visible=False, launch_if_missing=True, attach_to_running=False)
             controller2.load_network(str(working_path))
-            for _ in range(45):
+            sim_res = float(controller2.vissim.Simulation.AttValue("SimRes"))
+            _log(
+                f"      Network simRes={sim_res:g} steps/sim-second -> {_DEMAND_STEPS} RunSingleStep "
+                f"calls = {_DEMAND_STEPS / sim_res:g} SIMULATION seconds. At "
+                f"{_DEMAND_VOLUME_VPH:g} veh/h (headway {3600.0 / _DEMAND_VOLUME_VPH:.2f} s) that is "
+                f"an expected {(_DEMAND_STEPS / sim_res) * _DEMAND_VOLUME_VPH / 3600.0:.1f} arrivals -- "
+                "stated explicitly so an underpowered window can never again be misread as a "
+                "negative result."
+            )
+            for _ in range(_DEMAND_STEPS):
                 controller2.run_single_step()
             all_vehicles = list(controller2.vissim.Net.Vehicles.GetAll())
             on_junction_a: list[int] = []
+            attr_failures = 0
+            first_attr_error: str | None = None
             for v in all_vehicles:
+                # IVehicle has NO "Link" attribute (live-proven: the ORIGINAL code
+                # here read AttValue("Link") and Vissim logged 'VEHICLE: Could not
+                # find attribute with ID LINK.' once per vehicle into the .err file
+                # while the bare `except: continue` swallowed every one -- see the
+                # module docstring). "Lane" is the house-proven read (a "<link>-<lane>"
+                # token, exactly as add_links_connectors_live_check.py uses it).
                 try:
-                    link_id = str(int(float(v.AttValue("Link"))))
-                except Exception:
+                    lane_token = str(v.AttValue("Lane") or "")
+                    link_id = lane_token.partition("-")[0]
+                except Exception as exc:
+                    attr_failures += 1
+                    if first_attr_error is None:
+                        first_attr_error = f"{type(exc).__name__}: {exc}"
                     continue
                 if link_id in junction_a_link_ids:
                     on_junction_a.append(int(v.AttValue("No")))
-            crown_proof = len(on_junction_a) > 0
+            if attr_failures:
+                # NEVER silent again: a harness that cannot read a vehicle's lane
+                # must say so loudly rather than report a confident empty list.
+                _log(
+                    f"      WARNING: {attr_failures}/{len(all_vehicles)} vehicle(s) could not be "
+                    f"located at all (first error: {first_attr_error}). The 'on Junction A' count "
+                    "below is NOT trustworthy while this is non-zero."
+                )
+            crown_proof = len(on_junction_a) > 0 and attr_failures == 0
             _log(
-                f"      After 45 RunSingleStep calls: {len(all_vehicles)} vehicle(s) network-wide; "
-                f"{len(on_junction_a)} of them specifically on Junction A's OWN isolated links "
-                f"{sorted(on_junction_a)} -- {'CROWN PROOF: a demand-generated vehicle genuinely traversed the genesis junction.' if crown_proof else 'none yet (may need more steps -- see log for total count).'}"
+                f"      After {_DEMAND_STEPS} RunSingleStep calls: {len(all_vehicles)} vehicle(s) "
+                f"network-wide; {len(on_junction_a)} of them specifically on Junction A's OWN "
+                f"isolated links {sorted(on_junction_a)} -- "
+                f"{'CROWN PROOF: a demand-generated vehicle genuinely traversed the genesis junction.' if crown_proof else 'NOT proven (see the counts and any warning above).'}"
             )
             return {
                 "vehicle_input_gap": False, "vehicle_input_no": new_vi_no,
                 "vehicles_total": len(all_vehicles), "vehicles_on_junction_a": on_junction_a,
+                "vehicle_locate_failures": attr_failures,
+                "sim_seconds": _DEMAND_STEPS / sim_res, "volume_vph": _DEMAND_VOLUME_VPH,
                 "crown_proof": crown_proof,
             }
         finally:

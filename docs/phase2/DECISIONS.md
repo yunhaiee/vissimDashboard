@@ -3113,3 +3113,54 @@ verb already). Those four ship as data awaiting a consumer. Movement type is **n
 controller confirmed all 13 rules and all 20 markers on the real model read FORWARD — so the
 check compares against the whole envelope and the rendered message says so rather than implying
 a movement-specific match. Suite 2189→2224 (+35).
+
+## 2026-08-03 — Q5 ①: the composite probe ran end to end; genesis gaps ①, ③, ④ closed
+
+Stages 1–6 and Phase B had never executed. Both now do; the second run is green end to end
+(exit 0, every stage PASS). **Gap ① closed — per-stage process boundaries work:** 8 stage
+subprocesses across two runs, zero native crashes, and the orchestrator's own crash-recording
+fallback never fired. Each stage holds ~2 COM cycles, under the 2–3 that killed the
+single-process design. **The native crash itself is still NOT root-caused** — the Event-Viewer
+analysis the last unit named as missing was performed and found no python/Vissim fault events
+since 07-31, so there is no faulting module on record. Un-blocked, not solved; say it that way.
+**Gap ④ closed:** 146 links, 307 conflict areas, 56 signal heads, 2 stop signs, 29 queue
+counters, 32 DCPs, 25 TTSs, 13 vehicle inputs, `load_ok`/`init_ok` from a fresh instance.
+
+**Two harness bugs, both in the probe, neither a verb bug (`services/` untouched).**
+
+(1) Stage 2 made a raw `DuplicateSignalController` call inside `add_signal_head`'s postwrite
+window. The guardrail refused the VERB — `write_verification_failed` (refuse), naming
+`signals#2:added` plus 44 `signal_program_splits#2.{1,2}.{1..22}:added` — while all four heads
+had in fact been created correctly. **The guardrail was right and the harness was wrong:** the
+duplicate lived only in memory when the "before" snapshot was parsed off disk, so the verb's own
+`persist()` flushed both writes and the diff blamed the verb. Fixed by persisting the duplicate
+first. **This is gap ②'s spec, live-proven rather than guessed:** a real `add_signal_controller`
+MUST ship `_ALLOWS_NEW_OBJECTS_IN["add_signal_controller"] = {"signals",
+"signal_program_splits"}`, mirroring `add_connector`'s `conflict_areas` entry — or every correct
+call is refused and rolled back. One duplicate carries the donor's 2 programs × 22 signal groups.
+
+(2) Stage 5's crown proof was structurally incapable of passing. It read `v.AttValue("Link")`;
+`IVehicle` has no such attribute, and Vissim logged `VEHICLE: Could not find attribute with ID
+LINK.` once per vehicle — 13 identical lines — into the run's `.err` file while a bare
+`except: continue` ate every one. Run 1's "0 vehicles on Junction A" was never a measurement.
+The window was also underpowered ~40×: `simRes=10` makes 45 steps just 4.5 simulation seconds
+against a 12 s headway, an expected 0.375 arrivals. **New house rule, worth more than either
+bug: a "none found" result is evidence only if the harness first proves the window could have
+contained one** — Stage 5 now prints simRes, sim-seconds, headway and expected arrivals before
+stepping, and any locate failure is reported loudly and voids the proof.
+
+**Gap ③'s owed traffic-generation check is ANSWERED:** 126 vehicles network-wide, 9 of them on
+Junction A's own isolated links (unreachable from the rest of Beijing), 0 locate failures — an
+`AddVehicleInput`-created input genuinely generates traffic that drives through a junction built
+entirely from Q4 verbs. Its XML matches Beijing's real inputs (`vehComp="1"
+volType="STOCHASTIC"`). Only the verb wrapper remains, so **gap ② is the last one fully open.**
+
+Q4 ⑥'s recorded limitation reproduced on a second network exactly as predicted: Beijing has zero
+priority rules, `add_priority_rule` cannot mint the first, and the composite intersection
+therefore ends with `priority_rules: 0` — a real, persisting genesis limitation, not a probe
+failure. Controller re-verified from the run's own machine-written state file rather than the
+agent's prose. Suite 2224 passed / 1 known RAG failure / 1 skipped. `runtime/uploads/` verified
+untouched by mtime: 133 files, newest 2026-07-31, **zero modified today**. A human's Vissim GUI
+(PID 50960, `SouthStreet_Base2026`, open since 07-28) survived the whole COM-heavy run unchanged
+— controller confirmed same PID and title afterwards. That is `attach_to_running=False` earning
+its place in the hard rules.
