@@ -393,8 +393,27 @@ def _object_refs(details: dict[str, Any]) -> list[str]:
 # no button, so this is the one explicit override, to "none".
 # ---------------------------------------------------------------------------
 
+# Q5 unit (3) adds the SECOND override, and it is a genuine
+# behaviour-preserving fix rather than a new policy. volume_out_of_range used
+# to name exactly one write tool (set_vehicle_input_volume) and so derived
+# ("fix", "set_vehicle_input_volume") for free. That unit wired
+# add_vehicle_input onto the SAME constraint (identical 0..20000 veh/h claim,
+# only the param name differs -- constraints.py's _VOLUME_FIELDS), which made
+# applies_to two-long and silently degraded this dataset finding to
+# ("inspect", None): the health page lost its actionable Fix button for an
+# out-of-range volume. Caught by
+# test_suggested_action_kind_derivation_covers_every_dataset_checkable_constraint,
+# not shipped.
+#
+# The override states the true remedy explicitly instead of relying on an
+# arity accident: this finding is ALWAYS about an EXISTING vehicle input the
+# dataset scan just read (health_check._scan_vehicle_inputs), so the verb
+# that resolves it is the SETTER. add_vehicle_input creates a new input and
+# could never fix an existing one's volume -- it is a legitimate second
+# consumer of the same bounds check, not a second possible remedy.
 _OVERRIDE_KIND: dict[str, tuple[str, str | None]] = {
     "evaluation_config_disarmed": ("none", None),
+    "volume_out_of_range": ("fix", "set_vehicle_input_volume"),
 }
 
 

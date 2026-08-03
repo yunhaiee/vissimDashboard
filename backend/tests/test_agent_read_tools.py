@@ -173,6 +173,17 @@ EXPECTED_WRITE_TOOL_NAMES = {
     # point at a controller) is exactly the kind of silent cascade this
     # layer exists to prevent -- a deliberate, recorded scope cut.
     "add_signal_controller",
+    # Q5 unit (3) adds add_vehicle_input -- vehicle-input genesis, the LAST
+    # item on the GENESIS GAP LIST, and the first creation verb here where
+    # plain COM Add is the real path (AddPriorityRule was a silent no-op,
+    # AddSignalController a non-functional skeleton) AND the first with no
+    # zero-object family limitation at all: a network with zero vehicle
+    # inputs genuinely can mint its first. No remove_vehicle_input:
+    # RemoveVehicleInput exists, but nothing in this unit needs it and a
+    # remove verb whose object is what makes a network carry traffic at all
+    # deserves its own reference-integrity story -- a deliberate, recorded
+    # scope cut, mirroring remove_signal_controller's.
+    "add_vehicle_input",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md

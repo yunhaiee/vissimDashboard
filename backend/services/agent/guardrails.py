@@ -639,6 +639,33 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
     # count is therefore a PER-DONOR number, which is precisely why this has
     # to be a per-object-CLASS opt-in and could never be an id list.
     "add_signal_controller": frozenset({"signals", "signal_program_splits"}),
+    # Q5 unit (3): add_vehicle_input's own sanctioned action (native
+    # AddVehicleInput) creates a brand-new "vehicle_inputs" entry AND --
+    # on a network that has no <vehicleComposition> at all yet -- one
+    # brand-new "vehicle_composition_entries" entry, because saving
+    # MATERIALISES the default composition 1 the fresh input references
+    # (VehComp(1) = '1'). Both classes are tracked by
+    # _SHADOW_OBJECT_ID_FIELDS above, so each is individually load-bearing:
+    # without "vehicle_inputs" EVERY correct call is refused and rolled
+    # back by postwrite's own diff, and without
+    # "vehicle_composition_entries" every correct call on a
+    # composition-less network is -- i.e. precisely the from-nothing
+    # genesis case this verb exists for.
+    #
+    # Both derived from real diff_shadow_models runs over saved .inpx files
+    # (backend/tools/probe_vehicle_input_create.py [A.7]/[C.3]/[G.2]), not
+    # guessed: `vehicle_inputs: 1 added` alone on Urban Intersection
+    # Beijing.CN (12 pre-existing inputs, 3 pre-existing compositions) and
+    # on Toll Plaza Camden.US, versus `vehicle_inputs: 1 added` PLUS
+    # `vehicle_composition_entries: 1 added` (`1.700`) on Air Taxi
+    # Vertiport (0 inputs, 0 compositions), with ZERO non-"added"
+    # differences in all three. The composition row is the same class of
+    # unpredicted-from-the-API-name byproduct as Q5 unit (2)'s 44
+    # signal_program_splits rows and Q4 unit (7)'s auto-created
+    # pt_line_stop. ("vehicle_compositions" itself needs no entry -- it is
+    # not in _SHADOW_OBJECT_ID_FIELDS, so the diff never watches it, same
+    # as signal_heads/stop_signs/queue_counters.)
+    "add_vehicle_input": frozenset({"vehicle_inputs", "vehicle_composition_entries"}),
 }
 
 # Q4 unit (3): the REMOVAL-side mirror of ``_ALLOWS_NEW_OBJECTS_IN`` above --

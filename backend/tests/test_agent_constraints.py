@@ -5296,9 +5296,31 @@ def test_registry_size_matches_m3_1_catalog_port():
     # fails CLOSED inside vissim_com.VissimController.add_signal_controller
     # with a stated error (the same deliberate split add_priority_rule's own
     # limitation already uses).
-    # == 102.
+    # == 102, + 2 (Q5 unit (3), add_vehicle_input -- vehicle-input genesis,
+    # the LAST GENESIS GAP LIST item): vehicle_input_on_connector (warn -- COM
+    # ACCEPTS a vehicle input on a connector and it genuinely generates
+    # traffic, so this SHIPPED AS A WARN after the probe overturned the
+    # refusal it was planned to be; what is really wrong is that the demand
+    # enters mid-junction and bypasses the upstream approach, measured as a
+    # controlled triple on Beijing with all demand zeroed: 13 vehicles from a
+    # plain-link input, 13 from a connector input, 0 from the null control --
+    # backend/tools/probe_vehicle_input_create.py Parts B/D/E/F) and
+    # vehicle_input_created_covers_first_interval_only (warn -- the caller's
+    # volume only ever lands on interval 1 while the network decides how many
+    # intervals a fresh input carries: 5 rows ['450','0','0','0','0'] on Toll
+    # Plaza Camden.US, 12 rows on Air Taxi Vertiport whose second interval
+    # starts at 1000 ms, i.e. the requested demand runs for ONE SECOND).
+    # No third constraint: the target link's own existence is #1
+    # object_not_found via a plain _TOOL_TARGET_SPEC entry PLUS an entry in
+    # #1's own applies_to list (a spec alone does nothing -- see that list's
+    # comment for the ten already-shipped verbs found missing there), and the
+    # 0..20000 veh/h bound is TABLE WIRING onto the pre-existing
+    # volume_out_of_range check (_VOLUME_FIELDS), not a new constraint,
+    # mirroring how Q4 unit (6) wired add_stop_sign/add_priority_rule onto
+    # signal_head_detector_pos_out_of_range.
+    # == 104.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 102
+    assert len(get_registry()) == 104
 
 
 def test_registry_has_unique_ids():
@@ -7775,3 +7797,382 @@ def test_signal_controller_duplicate_constraints_are_silent_for_every_other_tool
                 "signal_controller_duplicate_inherits_donor_program",
             )
         ], action["tool"]
+
+
+# ---------------------------------------------------------------------------
+# Q5 unit (3): add_vehicle_input -- vehicle_input_on_connector (warn) and
+# vehicle_input_created_covers_first_interval_only (warn), plus the
+# volume_out_of_range TABLE WIRING and the object_not_found lockstep.
+#
+# Both warns are grounded in live measurement, not taste
+# (backend/tools/probe_vehicle_input_create.py, 2026-08-03) -- see each
+# check's own comment block in constraints.py for the numbers. The connector
+# one in particular shipped as a WARN only because the probe overturned the
+# refusal it was planned to be: COM accepts the input and it genuinely
+# generates traffic.
+# ---------------------------------------------------------------------------
+
+
+def _link(link_id: str, *, is_connector: bool = False, from_link: str | None = None,
+          to_link: str | None = None, length: float = 280.0) -> dict[str, Any]:
+    return {
+        "id": link_id,
+        "name": "",
+        "lanes": 2,
+        "length": length,
+        "is_connector": is_connector,
+        "from_link": from_link,
+        "to_link": to_link,
+        "from_pos": 335.02 if is_connector else None,
+        "to_pos": 0.1 if is_connector else None,
+    }
+
+
+def _vi(no: str, *, link: str = "101", volume: float = 900.0, interval_count: int = 1) -> dict[str, Any]:
+    return {
+        "no": no, "name": "", "link": link, "volume": volume, "interval_count": interval_count,
+    }
+
+
+def test_vehicle_input_on_connector_warns_and_names_the_upstream_approach():
+    action = _action("add_vehicle_input", link_no="10000", volume_vph=450.0)
+    shadow = _shadow_model(
+        links=[_link("1"), _link("2"), _link("10000", is_connector=True, from_link="1", to_link="2")]
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+    finding = next(f for f in findings if f.constraint_id == "vehicle_input_on_connector")
+
+    assert finding.tier == "warn"
+    assert finding.details["upstream_link"] == "1"
+    assert finding.details["downstream_link"] == "2"
+    assert finding.suggested_fix == {"upstream_link": "1"}
+    _assert_well_formed_messages(finding, must_contain_ko="커넥터")
+    # The alternative has to be NAMED, not merely implied -- a refusal or
+    # warning without the nearest allowed alternative is half a finding.
+    assert "'1'" in finding.messages["en"]
+
+
+def test_vehicle_input_on_connector_is_a_warn_not_a_refusal():
+    # Deliberate and measured: COM accepts the write and the input genuinely
+    # generates traffic (13 vehicles, identical to the plain-link arm,
+    # against a 0-vehicle null control). Refusing something Vissim permits
+    # and that works would violate the guardrail doctrine.
+    action = _action("add_vehicle_input", link_no="10000", volume_vph=450.0)
+    shadow = _shadow_model(
+        links=[_link("1"), _link("10000", is_connector=True, from_link="1", to_link="2")]
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert [f.tier for f in findings if f.constraint_id == "vehicle_input_on_connector"] == ["warn"]
+    assert not [f for f in findings if f.tier == "refuse"]
+
+
+def test_vehicle_input_on_connector_silent_for_a_plain_link():
+    action = _action("add_vehicle_input", link_no="101", volume_vph=450.0)
+    shadow = _shadow_model(links=[_link("101")])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not [f for f in findings if f.constraint_id == "vehicle_input_on_connector"]
+
+
+def test_vehicle_input_on_connector_says_so_when_the_upstream_link_is_unreadable():
+    # "absent" is not "empty": a connector entry with no from_link cannot
+    # name an alternative, and the message must SAY that rather than render
+    # a confident "Place it on link ''".
+    action = _action("add_vehicle_input", link_no="10000", volume_vph=450.0)
+    shadow = _shadow_model(links=[_link("10000", is_connector=True, from_link=None, to_link=None)])
+
+    findings = run_checks("preflight", action, shadow, {})
+    finding = next(f for f in findings if f.constraint_id == "vehicle_input_on_connector")
+
+    assert finding.details["upstream_link"] is None
+    assert finding.suggested_fix == {"upstream_link": None}
+    assert "could not be read" in finding.messages["en"]
+
+
+def test_vehicle_input_created_covers_first_interval_only_warns_on_a_multi_interval_network():
+    # Toll Plaza Camden.US's real shape: 5 inputs, each with 5 interval rows.
+    action = _action("add_vehicle_input", link_no="101", volume_vph=450.0)
+    shadow = _shadow_model(vehicle_inputs=[_vi("1", interval_count=5), _vi("2", interval_count=5)])
+
+    findings = run_checks("preflight", action, shadow, {})
+    finding = next(
+        f for f in findings
+        if f.constraint_id == "vehicle_input_created_covers_first_interval_only"
+    )
+
+    assert finding.tier == "warn"
+    assert finding.details == {
+        "network_interval_count": 5,
+        "intervals_left_at_zero": 4,
+        "volume": 450.0,
+    }
+    _assert_well_formed_messages(finding, must_contain_ko="구간 1")
+
+
+def test_vehicle_input_created_covers_first_interval_only_silent_on_a_single_interval_network():
+    action = _action("add_vehicle_input", link_no="101", volume_vph=450.0)
+    shadow = _shadow_model(vehicle_inputs=[_vi("1", interval_count=1)])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not [
+        f for f in findings
+        if f.constraint_id == "vehicle_input_created_covers_first_interval_only"
+    ]
+
+
+def test_vehicle_input_created_covers_first_interval_only_silent_when_the_datum_is_absent():
+    """The STATED CATALOG-GAP, pinned so it can never be mistaken for a pass:
+    on a network with zero vehicle inputs -- exactly the from-nothing genesis
+    case -- there is nothing to read an interval count off, so preflight is
+    silent and tools_edit.add_vehicle_input's own post-write reparse carries
+    the fact instead. Live-relevant: Air Taxi Vertiport has 0 inputs and its
+    first-ever input lands with 12 interval rows."""
+    action = _action("add_vehicle_input", link_no="101", volume_vph=450.0)
+    shadow = _shadow_model(vehicle_inputs=[])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not [
+        f for f in findings
+        if f.constraint_id == "vehicle_input_created_covers_first_interval_only"
+    ]
+
+
+def test_vehicle_input_created_covers_first_interval_only_silent_when_inputs_disagree():
+    # No single honest claim is available, so the check says nothing rather
+    # than picking one of the two counts.
+    action = _action("add_vehicle_input", link_no="101", volume_vph=450.0)
+    shadow = _shadow_model(
+        vehicle_inputs=[_vi("1", interval_count=5), _vi("2", interval_count=2)]
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not [
+        f for f in findings
+        if f.constraint_id == "vehicle_input_created_covers_first_interval_only"
+    ]
+
+
+def test_volume_out_of_range_table_wiring_covers_add_vehicle_input():
+    # TABLE WIRING onto the pre-existing check (_VOLUME_FIELDS), not a new
+    # constraint -- the param name differs (volume_vph vs volume), the claim
+    # does not.
+    shadow = _shadow_model(links=[_link("101")])
+
+    refused = run_checks(
+        "preflight", _action("add_vehicle_input", link_no="101", volume_vph=25000.0), shadow, {}
+    )
+    finding = next(f for f in refused if f.constraint_id == "volume_out_of_range")
+    assert finding.tier == "refuse"
+
+    allowed = run_checks(
+        "preflight", _action("add_vehicle_input", link_no="101", volume_vph=20000.0), shadow, {}
+    )
+    assert not [f for f in allowed if f.constraint_id == "volume_out_of_range"]
+
+
+def test_object_not_found_fires_for_add_vehicle_input_bogus_link():
+    # A _TOOL_TARGET_SPEC entry alone does nothing -- the tool must ALSO be
+    # in #1's own applies_to list. This test is what proves both halves
+    # landed (ten already-shipped verbs have only the first half; see that
+    # list's own comment in constraints.py).
+    action = _action("add_vehicle_input", link_no="999", volume_vph=450.0)
+    shadow = _shadow_model(links=[_link("101")])
+
+    findings = run_checks("preflight", action, shadow, {})
+    finding = next(f for f in findings if f.constraint_id == "object_not_found")
+
+    assert finding.tier == "refuse"
+    assert finding.details["target_id"] == "999"
+    assert finding.details["object_class"] == "links"
+
+
+def test_vehicle_input_creation_constraints_are_silent_for_every_other_tool():
+    shadow = _shadow_model(
+        links=[_link("10000", is_connector=True, from_link="1", to_link="2")],
+        vehicle_inputs=[_vi("1", link="10000", interval_count=5)],
+    )
+    for action in (
+        _action("set_vehicle_input_volume", input_no="1", volume=450.0),
+        _action("add_queue_counter", link_no="10000", pos_m=5.0),
+        _action("set_turn_ban", connector_no="10000", banned=True, vehicle_classes=["10"]),
+    ):
+        findings = run_checks("preflight", action, shadow, {})
+        assert not [
+            f for f in findings
+            if f.constraint_id
+            in (
+                "vehicle_input_on_connector",
+                "vehicle_input_created_covers_first_interval_only",
+            )
+        ], action["tool"]
+
+
+# ---------------------------------------------------------------------------
+# object_not_found / _TOOL_TARGET_SPEC lockstep -- GAP CLOSURE (2026-08-03)
+#
+# Ten already-shipped verbs had a _TOOL_TARGET_SPEC entry but were never named
+# in #1's own applies_to list, so #1 never ran for them at all: a bogus
+# link/connector/stop id fell through to a raw COM error or a bare ValueError
+# surfaced as tool_execution_error, instead of #1's structured refusal naming
+# the real available ids. Q5 unit (3) measured and reported the gap without
+# fixing it (see that list's own comment in constraints.py); these tests are
+# the sweep that closes it.
+#
+# The registry-level invariant test below is the real regression guard -- the
+# per-verb tests prove the behaviour each verb gained, but only the invariant
+# stops the ELEVENTH verb from shipping half-wired the same way.
+# ---------------------------------------------------------------------------
+
+_LOCKSTEP_LINKS = [
+    {"id": "101", "name": "Main St EB", "lanes": 2, "length": 280.0, "is_connector": False},
+    {"id": "102", "name": "Main St WB", "lanes": 2, "length": 280.0, "is_connector": False},
+    {
+        "id": "9001", "name": "EB to WB turn", "lanes": 1, "length": 30.0, "is_connector": True,
+        "from_link": "101", "to_link": "102", "from_pos": 100.0, "to_pos": 0.1,
+    },
+]
+_LOCKSTEP_PT_STOPS = [
+    {"no": "99569", "name": "Central platform", "link": "101", "lane_index": 1, "pos": 5.0, "length": 15.0}
+]
+_LOCKSTEP_PT_LINES = [
+    {
+        "no": "52004", "name": "WB", "veh_type": "300", "entry_link": "101",
+        "dest_link": "102", "dest_pos": 189.13, "entry_tm_distr": None,
+        "link_seq": ["101"], "stops": [],
+    }
+]
+
+
+def _lockstep_shadow() -> dict[str, Any]:
+    return _shadow_model(
+        links=_LOCKSTEP_LINKS, pt_stops=_LOCKSTEP_PT_STOPS, pt_lines=_LOCKSTEP_PT_LINES
+    )
+
+
+#: (tool, bogus-target params, expected object_class). One row per verb wired
+#: by this unit -- the bogus id is "999" throughout, deliberately far enough
+#: from every fixture id that the candidate machinery is exercised separately
+#: (below) rather than incidentally here.
+_NEWLY_WIRED_VERBS = [
+    (
+        "add_connector",
+        {"from_link": "999", "from_lanes": [1], "from_pos_m": 10.0,
+         "to_link": "102", "to_lanes": [1], "to_pos_m": 0.1},
+        "links",
+    ),
+    ("add_pt_line", {"entry_link_no": "999", "dest_link_no": "102", "dest_pos_m": 189.13}, "links"),
+    ("add_pt_stop", {"link_no": "999", "lane_index": 1, "pos_m": 5.0}, "links"),
+    ("remove_connector", {"connector_no": "999"}, "links"),
+    ("remove_link", {"no": "999"}, "links"),
+    ("remove_pt_line", {"no": "999"}, "pt_lines"),
+    ("remove_pt_stop", {"no": "999"}, "pt_stops"),
+    ("set_lane_closure", {"link_id": "999", "lane_index": 1, "vehicle_classes": ["10"]}, "links"),
+    ("set_link_closure", {"link_id": "999", "vehicle_classes": ["10"], "closed": True}, "links"),
+    ("set_turn_ban", {"connector_no": "999", "vehicle_classes": ["10"], "banned": True}, "links"),
+]
+
+
+@pytest.mark.parametrize(
+    "tool,params,object_class", _NEWLY_WIRED_VERBS, ids=[row[0] for row in _NEWLY_WIRED_VERBS]
+)
+def test_object_not_found_fires_for_every_newly_wired_verb(
+    tool: str, params: dict[str, Any], object_class: str
+):
+    """A _TOOL_TARGET_SPEC entry alone does NOTHING -- the tool must ALSO be
+    named in #1's own applies_to list. Each of these ten had only the first
+    half until this unit; before it, every one of these actions produced no
+    preflight finding at all and the bogus id reached COM."""
+    findings = run_checks("preflight", _action(tool, **params), _lockstep_shadow(), {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    assert finding.phase == "preflight"
+    assert finding.details == {"tool": tool, "target_id": "999", "object_class": object_class}
+    _assert_well_formed_messages(finding, must_contain_ko="999")
+
+
+@pytest.mark.parametrize(
+    "tool,params,expected_ids",
+    [
+        ("set_link_closure", {"link_id": "1012", "vehicle_classes": ["10"], "closed": True}, {"101", "102"}),
+        ("set_turn_ban", {"connector_no": "9010", "vehicle_classes": ["10"], "banned": True}, {"9001"}),
+        ("remove_pt_stop", {"no": "99560"}, {"99569"}),
+        ("remove_pt_line", {"no": "52005"}, {"52004"}),
+    ],
+    ids=["links_via_set_link_closure", "connector_via_set_turn_ban", "pt_stops", "pt_lines"],
+)
+def test_object_not_found_suggests_near_misses_for_the_newly_wired_object_classes(
+    tool: str, params: dict[str, Any], expected_ids: set[str]
+):
+    """The POINT of wiring these verbs is the difflib-suggested near miss --
+    a bare "not found" is what they already had from COM. One case per object
+    class the ten verbs actually reach (links, pt_stops, pt_lines)."""
+    findings = run_checks("preflight", _action(tool, **params), _lockstep_shadow(), {})
+
+    finding = next(f for f in findings if f.constraint_id == "object_not_found")
+    assert _candidate_ids(finding.suggested_fix) == expected_ids
+
+
+@pytest.mark.parametrize(
+    "tool,params",
+    [
+        # set_turn_ban: 101 IS a real link, just not a connector --
+        # tools_edit.set_turn_ban's own "is not a connector (turn)" ValueError
+        # owns this, and it can only fire on an id that exists.
+        ("set_turn_ban", {"connector_no": "101", "vehicle_classes": ["10"], "banned": True}),
+        # remove_link: 9001 IS a real link entry, just a connector --
+        # tools_edit.remove_link's own "is a CONNECTOR ... use remove_connector"
+        # ValueError owns this.
+        ("remove_link", {"no": "9001"}),
+        # remove_connector: 101 exists but is a plain link --
+        # inpx_structure._find_connector's own ValueError owns this.
+        ("remove_connector", {"connector_no": "101"}),
+    ],
+    ids=["set_turn_ban_on_plain_link", "remove_link_on_connector", "remove_connector_on_plain_link"],
+)
+def test_object_not_found_stays_silent_when_the_id_exists_but_is_the_wrong_kind(
+    tool: str, params: dict[str, Any]
+):
+    """"Existence is generic, appropriateness is dedicated" -- the same split
+    add_signal_controller's donor-type check and add_vehicle_input's
+    vehicle_input_on_connector warn established. Wiring these three verbs into
+    #1 must NOT start double-reporting what their own inline ValueErrors
+    already own: a connector IS a "links" entry, so #1 correctly sees the id
+    as present and stays quiet."""
+    findings = run_checks("preflight", _action(tool, **params), _lockstep_shadow(), {})
+
+    assert not [f for f in findings if f.constraint_id == "object_not_found"]
+
+
+def test_object_not_found_applies_to_is_in_lockstep_with_the_spec_table():
+    """THE regression guard for this whole class of miss (a spec entry with no
+    applies_to entry is silently inert, and vice versa). Both directions are
+    pinned, and there is currently NO deliberate omission in either -- see the
+    applies_to list's own comment in constraints.py. If a future verb
+    legitimately belongs in only one half, record WHY there and add it to the
+    matching allowlist below rather than loosening the assertion."""
+    import services.agent.constraints as constraints_module
+
+    spec_tools = set(constraints_module._TOOL_TARGET_SPEC)
+    applies_to = next(c for c in get_registry() if c.id == "object_not_found").applies_to
+
+    #: Tools with a _TOOL_TARGET_SPEC entry deliberately NOT run through #1.
+    spec_only_by_design: set[str] = set()
+    #: Tools in #1's applies_to deliberately carrying no spec entry (they would
+    #: be inert -- _check_object_not_found returns None on a spec miss).
+    applies_to_only_by_design: set[str] = set()
+
+    assert spec_tools - set(applies_to) == spec_only_by_design
+    assert set(applies_to) - spec_tools == applies_to_only_by_design
+    # A duplicate entry would make the difference above pass while still
+    # signalling a careless merge.
+    assert len(applies_to) == len(set(applies_to))

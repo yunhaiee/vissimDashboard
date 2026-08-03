@@ -140,6 +140,10 @@ EXPECTED_WRITE_TOOLS = {
     # tools_edit.py's own comment block; plain AddSignalController is a trap
     # and is deliberately NOT wrapped by any verb).
     "add_signal_controller",
+    # Q5 unit (3): vehicle-input genesis (plain COM AddVehicleInput is the
+    # real path here -- see tools_edit.py's own comment block; the last
+    # GENESIS GAP LIST item).
+    "add_vehicle_input",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

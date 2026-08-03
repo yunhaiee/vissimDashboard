@@ -39,12 +39,19 @@ class FakeEditSession:
         self,
         readback: dict[str, Any] | None = None,
         raise_on: dict[str, Exception] | None = None,
+        working_inpx: Path | None = None,
     ) -> None:
         self.calls: list[dict[str, Any]] = []
         self._readback = readback or {}
         self._raise_on = raise_on or {}
         self.persist_calls = 0
         self.closed = False
+        # Q5 unit (3): add_vehicle_input is the first COM-shaped tool here
+        # that ALSO reparses the persisted working copy (it needs the real
+        # interval count, which COM exposes no attribute for -- see
+        # tools_edit.py's own comment block). Optional, so every pre-existing
+        # test that constructs a FakeEditSession is byte-unchanged.
+        self.working_inpx = working_inpx
 
     def _record(self, op: str, **kwargs: Any) -> None:
         self.calls.append({"op": op, **kwargs})
@@ -329,6 +336,28 @@ class FakeEditSession:
     def get_signal_controller(self, sc_no: int) -> dict[str, Any]:
         self._record("get_signal_controller", sc_no=sc_no)
         return self._readback["signal_controller"]
+
+    # Q5 unit (3): vehicle-input genesis.
+
+    def add_vehicle_input(
+        self,
+        link_no: int,
+        volume_vph: float,
+        name: str = "",
+        composition_no: int | None = None,
+    ) -> dict[str, Any]:
+        self._record(
+            "add_vehicle_input",
+            link_no=link_no,
+            volume_vph=volume_vph,
+            name=name,
+            composition_no=composition_no,
+        )
+        return self._readback["vehicle_input"]
+
+    def get_vehicle_input(self, input_no: int) -> dict[str, Any]:
+        self._record("get_vehicle_input", input_no=input_no)
+        return self._readback["vehicle_input"]
 
     # QUEUE 3 unit 6: driving-behavior duplicate-then-edit.
 
@@ -2721,6 +2750,199 @@ def test_add_signal_controller_rejects_empty_name_at_param_layer():
     set_active_edit_session(session)
 
     envelope = _dispatch("add_signal_controller", source_sc_no="1", new_name="")
+
+    assert envelope["status"] == "error"
+    assert session.calls == []
+    assert session.persist_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# add_vehicle_input -- Q5 unit (3), vehicle-input genesis (the LAST GENESIS
+# GAP LIST item). The readback mirrors VissimController.get_vehicle_input's
+# real shape, which itself mirrors what the live probe measured on Beijing
+# (VehComp(1) '1', VolType(1) 'STOCHASTIC') --
+# backend/tools/probe_vehicle_input_create.py [A.3]/[A.6].
+#
+# The interval tests below use a REAL synthetic .inpx and the REAL
+# build_shadow_model reparse (not a rigged number), because "how many
+# intervals were left at zero" is the one fact the tool cannot get from COM
+# and must read back off the persisted file.
+# ---------------------------------------------------------------------------
+
+_VEHICLE_INPUT_READBACK = {
+    "no": "21",
+    "name": "North approach",
+    "link": "1",
+    "volume": 450.0,
+    "composition_no": "1",
+    "volume_type": "STOCHASTIC",
+}
+
+
+def _vehicle_input_inpx(path: Path, no: str, link: str, volumes: list[float]) -> Path:
+    """A minimal .inpx whose one vehicle input carries ``len(volumes)``
+    interval rows -- nested under <timeIntVehVols>, which is where Vissim
+    really puts them (a direct-child xpath finds nothing; that exact mistake
+    cost this unit's own probe a re-run)."""
+    rows = "".join(
+        f'<timeIntervalVehVolume timeInt="1 {i * 1000}" volume="{v}" vehComp="1" '
+        f'volType="STOCHASTIC" cont="false"/>'
+        for i, v in enumerate(volumes)
+    )
+    path.write_text(
+        '<network version="2400">'
+        "<links><link no=\"1\"><lanes><lane width=\"3.5\"/></lanes></link></links>"
+        "<vehicleCompositions/>"
+        f'<vehicleInputs><vehicleInput no="{no}" name="" link="{link}" anmFlag="false">'
+        f"<timeIntVehVols>{rows}</timeIntVehVols>"
+        "</vehicleInput></vehicleInputs>"
+        "</network>",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_add_vehicle_input_happy_path(tmp_path: Path):
+    working = _vehicle_input_inpx(tmp_path / "w.inpx", "21", "1", [450.0])
+    session = FakeEditSession(
+        readback={"vehicle_input": _VEHICLE_INPUT_READBACK}, working_inpx=working
+    )
+    set_active_edit_session(session)
+
+    # dispatch(...) directly, not the _dispatch(**params) helper -- this
+    # tool has a "name" param and the helper's own first positional is
+    # called "name" too.
+    envelope = dispatch(
+        "add_vehicle_input",
+        {"link_no": "1", "volume_vph": 450.0, "name": "North approach"},
+        registry=default_registry,
+    )
+
+    assert envelope["status"] == "ok"
+    # written/readback carry EXACTLY the same key set -- the LINK and the
+    # VOLUME are what the caller supplied; the auto-assigned number rides in
+    # artifacts (add_queue_counter's precedent).
+    assert envelope["verification"] == {
+        "written_value": {"link": "1", "volume": 450.0},
+        "readback_value": {"link": "1", "volume": 450.0},
+    }
+    assert envelope["artifacts"]["new_vehicle_input_no"] == "21"
+    assert envelope["artifacts"]["vehicle_input"] == _VEHICLE_INPUT_READBACK
+    assert session.calls == [
+        {
+            "op": "add_vehicle_input",
+            "link_no": 1,
+            "volume_vph": 450.0,
+            "name": "North approach",
+            "composition_no": None,
+        }
+    ]
+    assert session.persist_calls == 1
+
+
+def test_add_vehicle_input_coerces_composition_no_to_an_int_com_key(tmp_path: Path):
+    working = _vehicle_input_inpx(tmp_path / "w.inpx", "21", "1", [450.0])
+    session = FakeEditSession(
+        readback={"vehicle_input": _VEHICLE_INPUT_READBACK}, working_inpx=working
+    )
+    set_active_edit_session(session)
+
+    _dispatch("add_vehicle_input", link_no="1", volume_vph=450.0, composition_no="2")
+
+    assert session.calls[0]["composition_no"] == 2
+    assert session.calls[0]["link_no"] == 1
+
+
+def test_add_vehicle_input_message_stays_quiet_on_a_single_interval_network(tmp_path: Path):
+    working = _vehicle_input_inpx(tmp_path / "w.inpx", "21", "1", [450.0])
+    session = FakeEditSession(
+        readback={"vehicle_input": _VEHICLE_INPUT_READBACK}, working_inpx=working
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("add_vehicle_input", link_no="1", volume_vph=450.0)
+
+    assert envelope["artifacts"]["interval_count"] == 1
+    assert envelope["artifacts"]["intervals_left_at_zero"] == 0
+    assert "time intervals" not in envelope["message"]
+
+
+def test_add_vehicle_input_message_names_the_intervals_left_at_zero(tmp_path: Path):
+    """The Toll Plaza Camden.US shape, measured live: a fresh input on a
+    5-interval network gets 5 rows and volumes ['450','0','0','0','0'], i.e.
+    the requested demand silently stops when interval 1's window ends. The
+    message is the only place a human sees that, because the count is a
+    property of the NETWORK and cannot be inferred from the parameters."""
+    working = _vehicle_input_inpx(tmp_path / "w.inpx", "21", "1", [450.0, 0.0, 0.0, 0.0, 0.0])
+    session = FakeEditSession(
+        readback={"vehicle_input": _VEHICLE_INPUT_READBACK}, working_inpx=working
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("add_vehicle_input", link_no="1", volume_vph=450.0)
+
+    assert envelope["artifacts"]["interval_count"] == 5
+    assert envelope["artifacts"]["intervals_left_at_zero"] == 4
+    assert "5 time intervals" in envelope["message"]
+    assert "other 4 are still 0 veh/h" in envelope["message"]
+    assert "set_vehicle_input_volume" in envelope["message"]
+
+
+def test_add_vehicle_input_no_active_session_is_a_structured_error():
+    envelope = _dispatch("add_vehicle_input", link_no="1", volume_vph=450.0)
+
+    assert envelope["status"] == "error"
+    assert "no_edit_session" in envelope["message"]
+
+
+def test_add_vehicle_input_vissim_refusal_surfaces_as_structured_error(tmp_path: Path):
+    # A bogus link fails CLOSED inside vissim_com (_link_object_by_no) and
+    # must reach the caller as a structured tool_execution_error with NO
+    # persist -- never a silent no-op, never a half-written file.
+    working = _vehicle_input_inpx(tmp_path / "w.inpx", "21", "1", [450.0])
+    session = FakeEditSession(
+        raise_on={
+            "add_vehicle_input": RuntimeError(
+                "Link 999 does not exist in the loaded VISSIM network."
+            )
+        },
+        working_inpx=working,
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("add_vehicle_input", link_no="999", volume_vph=450.0)
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "does not exist" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+def test_add_vehicle_input_rejects_a_non_numeric_volume_at_param_layer(tmp_path: Path):
+    working = _vehicle_input_inpx(tmp_path / "w.inpx", "21", "1", [450.0])
+    session = FakeEditSession(
+        readback={"vehicle_input": _VEHICLE_INPUT_READBACK}, working_inpx=working
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("add_vehicle_input", link_no="1", volume_vph="lots")
+
+    assert envelope["status"] == "error"
+    assert session.calls == []
+    assert session.persist_calls == 0
+
+
+def test_add_vehicle_input_requires_a_volume(tmp_path: Path):
+    """volume_vph has no default ON PURPOSE: a fresh input's own Volume(1)
+    default is 0.0 (live-measured), so an input created without one is a real
+    object that generates nothing."""
+    working = _vehicle_input_inpx(tmp_path / "w.inpx", "21", "1", [450.0])
+    session = FakeEditSession(
+        readback={"vehicle_input": _VEHICLE_INPUT_READBACK}, working_inpx=working
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("add_vehicle_input", link_no="1")
 
     assert envelope["status"] == "error"
     assert session.calls == []

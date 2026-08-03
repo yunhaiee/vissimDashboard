@@ -2070,6 +2070,119 @@ def add_signal_controller(params: AddSignalControllerParams) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# add_vehicle_input(link_no, volume_vph, name="", composition_no=None)
+#
+# Q5 unit (3) -- vehicle-input GENESIS, the LAST item on the GENESIS GAP
+# LIST (DECISIONS.md 2026-08-01). With this verb an agent can build a
+# working intersection from nothing and Vissim will run it: geometry
+# (add_link/add_connector, Q4 unit 5), control (add_signal_controller +
+# add_signal_head, Q5 unit 2 / Q4 unit 4), measurement (Q4 unit 2) and now
+# DEMAND.
+#
+# The FIRST creation verb in this codebase where plain ``Add`` is the real
+# path -- ``AddPriorityRule`` was a silent no-op and ``AddSignalController``
+# a non-functional skeleton, both needing a ``Duplicate*`` instead. It is
+# also the first with NO zero-object family limitation: a network with zero
+# vehicle inputs genuinely CAN mint its first (live-proven on Air Taxi
+# Vertiport). See vissim_com.VissimController's own vehicle-input-genesis
+# module comment for the full writeup and
+# backend/tools/probe_vehicle_input_create.py for the measurements behind
+# every claim here.
+#
+# ``volume_vph`` is REQUIRED. A fresh input's own Volume(1) default is 0.0,
+# so an input created without one is a real object that generates nothing --
+# exactly the silent-success shape the guardrail doctrine exists to prevent.
+#
+# The new input's own number is auto-assigned (max + 1) exactly like
+# add_queue_counter/duplicate_driving_behavior -- the caller never guesses a
+# free slot -- and is reported via ``artifacts``, never inside the compared
+# verification dicts (an auto-assigned id is not something the caller
+# "wrote"; constraint #6 compares written/readback structurally and an extra
+# key on either side is a mismatch regardless of value).
+#
+# ONE reparse after persist(), deliberately: COM exposes no interval-count
+# attribute, and the number of time intervals a fresh input carries is the
+# NETWORK's property, not the verb's (5 on Toll Plaza Camden.US, 12 on Air
+# Taxi Vertiport, 1 on Beijing -- all live-measured). The caller's volume
+# only ever lands on interval 1, so a message that did not say how many
+# intervals were left at zero would be the same silent lie
+# vehicle_input_created_covers_first_interval_only warns about. The reparse
+# is the same build_shadow_model call every remove verb in this module
+# already makes.
+#
+# guardrails._ALLOWS_NEW_OBJECTS_IN["add_vehicle_input"] = {"vehicle_inputs",
+# "vehicle_composition_entries"} is REQUIRED -- without the first, EVERY
+# correct call is refused and rolled back; without the second, every correct
+# call on a network with no <vehicleComposition> yet is (Vissim materialises
+# the default composition the input references when saving). Both derived
+# from real diff_shadow_models runs, not guessed.
+# ---------------------------------------------------------------------------
+
+
+class AddVehicleInputParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_no: str
+    volume_vph: float
+    name: str = ""
+    composition_no: str | None = None
+
+
+@tool(name="add_vehicle_input", tier="write", provider="edit", params=AddVehicleInputParams)
+def add_vehicle_input(params: AddVehicleInputParams) -> dict[str, Any]:
+    """Create a NEW vehicle input (a demand source) on link_no carrying volume_vph veh/h on the active edit session's working network -- the verb that makes a network built from scratch actually carry traffic, and the last missing piece of Genesis. The new input gets the next free input number automatically, the name you give it, and Vissim's default vehicle composition unless composition_no names another. Two things to plan for: (1) volume_vph applies to TIME INTERVAL 1 only -- if this network's demand model has several intervals, the rest stay at 0 veh/h until you set them with set_vehicle_input_volume(interval_no=...); the result message reports how many intervals this network actually has. (2) A vehicle input placed on a CONNECTOR is accepted by Vissim and does generate traffic, but the demand then enters mid-junction and bypasses the upstream approach entirely -- put it on the approach link itself unless you specifically mean that."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_no, "link_no")
+    composition_no = (
+        None if params.composition_no is None else _coerce_id(params.composition_no, "composition_no")
+    )
+
+    result = session.add_vehicle_input(link_no, params.volume_vph, params.name, composition_no)
+    session.persist()
+
+    # written/readback carry EXACTLY the same key set (constraint #6's
+    # structural compare requires it): the LINK and the VOLUME are the two
+    # values the caller supplied and this tool can verify; the auto-assigned
+    # number rides in artifacts.
+    verification: dict[str, Any] = {
+        "written_value": {"link": params.link_no, "volume": float(params.volume_vph)},
+        "readback_value": {"link": result["link"], "volume": float(result["volume"])},
+    }
+
+    # See this section's own comment for why this reparse is deliberate:
+    # COM has no interval-count attribute, and "how many intervals stayed at
+    # zero" is the one thing a caller cannot infer from the parameters.
+    shadow_model = build_shadow_model(session.working_inpx)
+    persisted = next(
+        (vi for vi in shadow_model.get("vehicle_inputs", []) if str(vi.get("no")) == str(result["no"])),
+        None,
+    )
+    interval_count = int((persisted or {}).get("interval_count") or 0)
+    unset_intervals = max(interval_count - 1, 0)
+
+    message = (
+        f"Vehicle input {result['no']} added on link {params.link_no} at {params.volume_vph} veh/h "
+        f"(vehicle composition {result['composition_no'] or 'default'})."
+    )
+    if unset_intervals:
+        message += (
+            f" This network's demand model has {interval_count} time intervals and this volume "
+            f"applies to interval 1 only -- the other {unset_intervals} are still 0 veh/h. Use "
+            "set_vehicle_input_volume(interval_no=...) on the new number to fill them."
+        )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {
+            "new_vehicle_input_no": result["no"],
+            "vehicle_input": result,
+            "interval_count": interval_count,
+            "intervals_left_at_zero": unset_intervals,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Q4 unit (2): measurement-infrastructure placement -- queue counters,
 # data-collection points/measurements, travel-time sections. Genuine COM
 # CREATE/REMOVE verbs (see vissim_com.VissimController's own module comment

@@ -913,6 +913,20 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "sc_name",
         "param": "source_sc_no",
     },
+    # Q5 unit (3): add_vehicle_input's target is the LINK it places demand
+    # on -- the same "links" object class add_queue_counter/add_stop_sign/
+    # add_signal_head already use, just a different param name. Whether that
+    # link is a CONNECTOR is deliberately NOT this entry's business (it is a
+    # real link either way, so #1 must stay silent): that is the dedicated
+    # vehicle_input_on_connector warn below, the same "existence is generic,
+    # appropriateness is dedicated" split add_signal_controller's own donor
+    # type check already established.
+    "add_vehicle_input": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -1232,6 +1246,65 @@ register(
             # (easy to forget -- unit (2)'s own review caught this class of
             # miss twice before).
             "add_signal_controller",
+            # Q5 unit (3): add_vehicle_input's target LINK must already exist.
+            "add_vehicle_input",
+            # GAP CLOSURE (2026-08-03): the ten verbs below each shipped with
+            # a _TOOL_TARGET_SPEC entry but were never named HERE, so #1 never
+            # ran for them at all -- a spec entry alone does NOTHING. Q5 unit
+            # (3) found and reported this rather than absorbing it as a
+            # drive-by; this is the unit that closes it. Several of those
+            # verbs' own table comments above already claim they were "added
+            # to the object_not_found / _TOOL_TARGET_SPEC lockstep table", so
+            # the intent was always here -- only half the wiring had landed,
+            # and a bogus link/connector/stop id fell through to a raw COM
+            # error or a bare ValueError surfaced as tool_execution_error
+            # instead of #1's structured refusal naming the real available ids
+            # and difflib-suggesting near misses.
+            #
+            # Each was re-checked against its OWN tools_edit.py implementation
+            # before being added here -- all ten target exactly ONE flat id in
+            # exactly the object class their spec entry names, and all ten
+            # currently fail on a bogus id with a message that neither lists
+            # the real ids nor suggests near misses:
+            #   add_connector     from_link     -> _lane_by_index COM raise
+            #   add_pt_line       entry_link_no -> _link_object_by_no COM raise
+            #   add_pt_stop       link_no       -> _lane_by_index COM raise
+            #   remove_connector  connector_no  -> inpx_structure._find_connector ValueError
+            #   remove_link       no            -> inline "link ... not found" ValueError
+            #   remove_pt_line    no            -> _item_by_key COM raise
+            #   remove_pt_stop    no            -> _item_by_key COM raise
+            #   set_lane_closure  link_id       -> _lane_by_index COM raise
+            #   set_link_closure  link_id       -> inline "link ... not found" ValueError
+            #   set_turn_ban      connector_no  -> inline "connector ... not found" ValueError
+            #
+            # The three verbs that ALSO carry an inline APPROPRIATENESS check
+            # keep it, unchanged and un-duplicated: set_turn_ban's "is this
+            # really a connector", remove_link's "this is a CONNECTOR, use
+            # remove_connector", and remove_connector's own "exists but is not
+            # a connector" each fire on an id that DOES exist in "links" --
+            # exactly the case where #1 stays silent. That is the same
+            # "existence is generic, appropriateness is dedicated" split
+            # add_signal_controller's donor-type check and add_vehicle_input's
+            # vehicle_input_on_connector warn already established, not a
+            # conflict with it.
+            "add_connector",
+            "add_pt_line",
+            "add_pt_stop",
+            "remove_connector",
+            "remove_link",
+            "remove_pt_line",
+            "remove_pt_stop",
+            "set_lane_closure",
+            "set_link_closure",
+            "set_turn_ban",
+            # NO deliberate omissions remain: set(_TOOL_TARGET_SPEC) - set(this
+            # list) is now EMPTY, pinned by
+            # test_object_not_found_applies_to_is_in_lockstep_with_the_spec_table.
+            # add_data_collection_measurement -- the absence Q4 unit (2)'s
+            # comment above points at -- was never half-wired: its point_nos is
+            # a LIST with no single-param home, so it has no spec entry EITHER
+            # and is absent from both halves by design. Any FUTURE deliberate
+            # omission must be recorded here AND in that test's own allowlist.
         ],
         phase="preflight",
         tier="refuse",
@@ -1248,17 +1321,32 @@ register(
 
 # ---------------------------------------------------------------------------
 # #2 volume_out_of_range (refuse, preflight)
+#
+# Q5 unit (3): "add_vehicle_input" added -- pure TABLE WIRING against this
+# pre-existing check (same 0..20000 veh/h envelope, same refuse tier, only
+# the param name differs), not a new constraint. Mirrors the precedent
+# signal_head_detector_pos_out_of_range established when Q4 unit (6) wired
+# add_stop_sign/add_priority_rule onto it: a creation verb's own value
+# bounds are the same claim as the setter's, so they share one constraint id
+# and one message rather than growing the registry.
 # ---------------------------------------------------------------------------
+
+#: {tool: the param carrying a veh/h volume}. Kept local to this one check.
+_VOLUME_FIELDS: dict[str, str] = {
+    "set_vehicle_input_volume": "volume",
+    "add_vehicle_input": "volume_vph",
+}
 
 
 def _check_volume_out_of_range(
     action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
 ) -> Finding | None:
-    if action.get("tool") != "set_vehicle_input_volume":
+    volume_param = _VOLUME_FIELDS.get(action.get("tool", ""))
+    if volume_param is None:
         return None
 
     params = action.get("params", {})
-    raw_volume = params.get("volume")
+    raw_volume = params.get(volume_param)
     if raw_volume is None:
         return None
     volume = _coerce_number(raw_volume)
@@ -1281,7 +1369,7 @@ def _check_volume_out_of_range(
 register(
     Constraint(
         id="volume_out_of_range",
-        applies_to=["set_vehicle_input_volume"],
+        applies_to=list(_VOLUME_FIELDS.keys()),
         phase="preflight",
         tier="refuse",
         check=_check_volume_out_of_range,
@@ -9486,5 +9574,228 @@ register(
         "({shape_ja})。空の制御機ではなく元と同じ信号時間で動作するため、新しい番号に対して"
         "set_signal_green_split(必要に応じてset_signal_offset)で意図した時間計画に変更して"
         "ください。またadd_signal_headで信号灯を接続するまでは何も制御しません。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# vehicle_input_on_connector (warn, preflight) -- Q5 unit (3). The FIRST of
+# this unit's two constraints.
+#
+# **This shipped as a WARN because the probe overturned the refusal it was
+# expected to be.** The plan was "Vissim's own UI does not offer vehicle
+# inputs on connectors, so COM must be refusing or silently breaking them --
+# refuse". Both halves were wrong, and the measurement says so
+# (backend/tools/probe_vehicle_input_create.py Parts B/D/E/F, 2026-08-03):
+# COM ACCEPTS AddVehicleInput(key, <connector Link object>), the saved file
+# reloads clean (load_ok/init_ok, empty .err), and the input genuinely
+# GENERATES TRAFFIC -- the same 13 vehicles over the same window as the
+# identical input on a plain link, against a NULL CONTROL (same network, all
+# 12 real inputs zeroed, no new input) that produced exactly 0. Refusing it
+# would have refused something Vissim actually permits and that actually
+# works, which the guardrail doctrine forbids on taste alone
+# (00-EXECUTION-GUIDE.md SS4).
+#
+# What IS real, and is what this warn says: demand placed on a connector
+# enters MID-JUNCTION. Beijing's connector 10000 runs link 1 -> link 2 from
+# pos 335.02 m, so an input on it skips the whole 335 m approach: at t=30 s
+# the plain-link arm still had 8 of its 13 vehicles ON the approach while the
+# connector arm had 12 of 13 already piled onto the NEXT connector. Nothing
+# queues on the approach, nothing metering that approach applies, and any
+# report of the approach's own flow or queue simply cannot see this demand --
+# a confident wrong number with no error attached, i.e. tier 2 of the
+# doctrine ("legal but suspicious ... execute AND attach the specific
+# constraint warning") verbatim.
+#
+# The nearest allowed alternative is concrete and free: a connector's own
+# from_link is already in the shadow model, so the message can name the
+# approach the caller probably meant.
+# ---------------------------------------------------------------------------
+
+
+def _check_vehicle_input_on_connector(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "add_vehicle_input":
+        return None
+
+    link_id = str(action.get("params", {}).get("link_no", ""))
+    link = _find_by_field(shadow_model.get("links", []), "id", link_id)
+    if link is None:
+        return None  # missing link is object_not_found's job (#1)
+    if not link.get("is_connector"):
+        return None
+
+    upstream = str(link.get("from_link") or "")
+    if upstream:
+        alt_ko = f"대신 상류 접근링크 '{upstream}'에 배치하세요"
+        alt_en = f"Place it on the upstream approach link '{upstream}' instead"
+        alt_ja = f"代わりに上流の流入リンク '{upstream}' に配置してください"
+    else:
+        # from_link absent on this entry -- say so rather than inventing an
+        # alternative the caller cannot act on.
+        alt_ko = "이 커넥터의 상류 링크를 모델에서 읽을 수 없어 대안을 제시하지 못했습니다"
+        alt_en = (
+            "This connector's own upstream link could not be read from the model, so no "
+            "specific alternative is named"
+        )
+        alt_ja = "このコネクタの上流リンクをモデルから読み取れないため、代替は提示できません"
+
+    return Finding(
+        constraint_id="vehicle_input_on_connector",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "vehicle_input_on_connector",
+            link_id=link_id,
+            upstream=upstream or "-",
+            alt_ko=alt_ko,
+            alt_en=alt_en,
+            alt_ja=alt_ja,
+        ),
+        suggested_fix={"upstream_link": upstream or None},
+        details={
+            "link_id": link_id,
+            "is_connector": True,
+            "upstream_link": upstream or None,
+            "downstream_link": str(link.get("to_link") or "") or None,
+            "from_pos": link.get("from_pos"),
+        },
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_input_on_connector",
+        applies_to=["add_vehicle_input"],
+        phase="preflight",
+        tier="warn",
+        check=_check_vehicle_input_on_connector,
+        message_ko="'{link_id}'은(는) 일반 링크가 아니라 커넥터입니다. Vissim은 커넥터 위의 차량 "
+        "입력을 허용하고 실제로 교통량도 생성하지만(실측 확인), 수요가 교차로 한가운데에서 "
+        "발생하므로 상류 접근로 전체를 건너뜁니다. 그 결과 접근로에는 대기행렬이 생기지 않고, "
+        "접근로에 적용되는 신호·우선순위 제어도 이 교통량에는 적용되지 않으며, 접근로 기준 "
+        "교통량·대기행렬 보고서에도 이 수요가 나타나지 않습니다. {alt_ko}.",
+        message_en="'{link_id}' is a connector, not a plain link. Vissim does accept a vehicle "
+        "input on a connector and it does generate traffic (measured live), but the demand then "
+        "enters mid-junction and bypasses the whole upstream approach: nothing queues on that "
+        "approach, signal or priority control placed on that approach does not apply to this "
+        "traffic, and any report of "
+        "the approach's own flow or queue will not see this demand at all. {alt_en}.",
+        message_ja="'{link_id}' は通常のリンクではなくコネクタです。Vissimはコネクタ上の車両"
+        "インプットを受け付け、実際に交通も生成されます(実測確認済み)が、需要が交差点の途中から"
+        "発生するため上流の流入部全体を迂回します。その結果、流入部には待ち行列ができず、流入部に"
+        "適用される信号・優先制御もこの交通には効かず、流入部基準の交通量・待ち行列レポートにも"
+        "この需要は現れません。{alt_ja}。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# vehicle_input_created_covers_first_interval_only (warn, preflight) -- Q5
+# unit (3)'s second constraint.
+#
+# The silent lie this exists for, live-measured: add_vehicle_input writes
+# Volume(1) and nothing else, but the NUMBER of time intervals a fresh input
+# carries is the NETWORK's property, not the verb's. On Toll Plaza Camden.US
+# (5 real inputs x 5 interval rows each) a freshly created input came back
+# with 5 rows and volumes ['450', '0', '0', '0', '0']; on Air Taxi Vertiport,
+# whose own time-interval set has 12 intervals starting at 0 ms / 1000 ms /
+# 190000 ms / ..., the first-ever input carried 12 rows, so a requested
+# 450 veh/h actually applies for ONE SECOND and is 0 for the rest of the run.
+# Nothing in Vissim complains; the model runs and reports confident,
+# nearly-empty numbers.
+# (backend/tools/probe_vehicle_input_create.py Parts C/G, 2026-08-03.)
+#
+# **Stated CATALOG-GAP: this check can only fire when the network ALREADY has
+# a vehicle input to read an interval count off.** The interval count lives
+# in the .inpx's own <timeIntervalSet>, which build_shadow_model does not
+# parse (adding that parse is a tools_network change, deliberately out of
+# this unit's scope) -- so on a from-nothing network with zero inputs, which
+# is exactly the genesis case, preflight is silent. That gap is covered, not
+# ignored: tools_edit.add_vehicle_input reparses the persisted file after its
+# own write and reports the REAL interval count and how many intervals were
+# left at zero in its result message, which is always accurate because it is
+# a readback rather than a prediction.
+#
+# Warn, not refuse: filling interval 1 only is the correct behaviour for a
+# creation verb (there is no sane way to guess the other intervals' volumes),
+# and set_vehicle_input_volume(interval_no=...) is the real follow-up. This
+# is the creation-side sibling of #13 (vehicle_input_multi_interval_write_
+# gap), which says the same thing about the SETTER; kept as its own
+# constraint because #13 keys off an EXISTING input_no this verb does not
+# have yet.
+# ---------------------------------------------------------------------------
+
+
+def _network_vehicle_input_interval_count(shadow_model: dict[str, Any]) -> int | None:
+    """The interval count every vehicle input in this network agrees on, or
+    ``None`` when the model has no input to read one off (the stated gap) or
+    when its inputs disagree -- in which case no single claim is honest and
+    this check stays silent rather than picking one."""
+    counts: set[int] = set()
+    for vehicle_input in shadow_model.get("vehicle_inputs", []):
+        count = _coerce_number(vehicle_input.get("interval_count"), int)
+        if count is not None:
+            counts.add(count)
+    if len(counts) != 1:
+        return None
+    return counts.pop()
+
+
+def _check_vehicle_input_created_covers_first_interval_only(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "add_vehicle_input":
+        return None
+
+    interval_count = _network_vehicle_input_interval_count(shadow_model)
+    if interval_count is None or interval_count <= 1:
+        return None
+
+    volume = action.get("params", {}).get("volume_vph")
+    return Finding(
+        constraint_id="vehicle_input_created_covers_first_interval_only",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "vehicle_input_created_covers_first_interval_only",
+            interval_count=interval_count,
+            unset_count=interval_count - 1,
+            volume=volume,
+        ),
+        suggested_fix={
+            "next_steps": [
+                "set_vehicle_input_volume(input_no=<new number>, interval_no=i) for i in "
+                f"2..{interval_count}",
+            ],
+        },
+        details={
+            "network_interval_count": interval_count,
+            "intervals_left_at_zero": interval_count - 1,
+            "volume": volume,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="vehicle_input_created_covers_first_interval_only",
+        applies_to=["add_vehicle_input"],
+        phase="preflight",
+        tier="warn",
+        check=_check_vehicle_input_created_covers_first_interval_only,
+        message_ko="이 네트워크의 수요 모델은 시간 구간이 {interval_count}개입니다. 새 차량 입력에 "
+        "지정한 {volume} veh/h는 구간 1에만 적용되고 나머지 {unset_count}개 구간은 0 veh/h로 "
+        "남습니다. 즉 구간 1의 시간대가 끝나면 이 진입 교통량은 조용히 사라집니다. 새 번호에 대해 "
+        "set_vehicle_input_volume(interval_no=...)으로 나머지 구간도 채우세요.",
+        message_en="This network's demand model has {interval_count} time intervals. The "
+        "{volume} veh/h you give the new vehicle input applies to interval 1 only -- the other "
+        "{unset_count} stay at 0 veh/h, so this demand silently stops once interval 1's window "
+        "ends. Fill the rest with set_vehicle_input_volume(interval_no=...) on the new number.",
+        message_ja="このネットワークの需要モデルには時間区間が{interval_count}個あります。新しい"
+        "車両インプットに指定した {volume} veh/h は区間1にのみ適用され、残りの{unset_count}区間は"
+        "0 veh/hのままです。つまり区間1の時間帯が終わると、この流入交通量は静かに消えます。新しい"
+        "番号に対してset_vehicle_input_volume(interval_no=...)で残りの区間も埋めてください。",
     )
 )

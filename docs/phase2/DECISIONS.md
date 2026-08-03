@@ -3231,3 +3231,78 @@ the behavior we want. Forensics agreed before the user confirmed: `SouthStreet_B
 unchanged since 2026-06-23, a `.vissimpdb` write at 10:41:29 (the normal-close signature), and
 zero Application Error / WER / Hang events all day. No data loss, no tooling fault,
 `attach_to_running=False` behaving correctly throughout.
+
+## 2026-08-03 — Q5 ③: `add_vehicle_input` — the genesis gap list closes
+
+The last gap-list item. Creation and traffic generation were already proven by Q5 ①; this unit
+ships the verb wrapper (`tools_edit` → `edit_session` → `vissim_com`), the paired reader
+`get_vehicle_input`, and the guardrail/constraint plumbing around them. Unlike controllers,
+behaviors, and priority rules, vehicle inputs need no duplicate-then-edit — plain
+`AddVehicleInput(link)` produces a functional object.
+
+**The unpredicted diff row.** On a network with **no `<vehicleComposition>` at all** (Air Taxi
+Vertiport), saving materialises the default composition the fresh input references, so the
+postwrite diff carries a `vehicle_composition_entries` row nobody would predict from the API
+name — same shape as Q5 ②'s 44 `signal_program_splits`. Hence
+`_ALLOWS_NEW_OBJECTS_IN["add_vehicle_input"] = {"vehicle_inputs", "vehicle_composition_entries"}`,
+with the counterfactual RUN on three real before/after pairs, not reasoned about: Beijing
+12→13 inputs / 7→7 entries (popping the entry refuses 1 row), Air Taxi 0→1 / 0→1 (refuses 2),
+Toll Plaza 5→6 / 86→86 (refuses 1). Narrowing to `{vehicle_inputs}` alone still refuses on Air
+Taxi — each class individually necessary, though the composition class is only *provable* on a
+zero-composition network (n=1; the n=2 composition-having networks never materialise one).
+
+**Two constraints (registry 102→104), both from measured behavior.**
+`vehicle_input_on_connector` (warn): a connector input is NOT dead — controlled triple on
+Beijing with all 12 real inputs zeroed: plain link 13 vehicles, connector 13, null control 0.
+What differs is WHERE demand enters: connector 10000 injects mid-junction, bypassing the 335 m
+approach — by t=30 s, 12 of its 13 vehicles sat on the *next* connector (10002), the 13th on
+link 2, vs 8 of 13 still on the approach for the plain-link arm. Nothing queues on the
+approach, approach-scoped control doesn't apply, approach reports never see the demand.
+`vehicle_input_created_covers_first_interval_only` (warn): a created input fills interval 1
+only; the interval structure belongs to the NETWORK, not the verb (Toll Plaza's multi-interval
+evidence). New landmine for the catalog.
+
+**Ten already-shipped verbs were half-wired — found, fixed, and mis-reported.** They had
+`_TOOL_TARGET_SPEC` entries but were never named in `object_not_found.applies_to`, so check #1
+never ran for them: `add_connector`, `add_pt_line`, `add_pt_stop`, `remove_connector`,
+`remove_link`, `remove_pt_line`, `remove_pt_stop`, `set_lane_closure`, `set_link_closure`,
+`set_turn_ban`. The agent's report said it had NOT fixed them; the code wired all ten — the
+verification caught the report/code contradiction, and the controller then proved the wiring
+safe rather than merely undisclosed: connectors genuinely live in the shadow `links` list
+(Beijing 112 = 56 + 56), real ids stay silent, bogus ids refuse, for all ten. Parametrized
+tests pin each verb and fail if the wiring is reverted.
+
+**A hand-map re-entered `health_check`, deliberately.** Generalising `volume_out_of_range` to
+`{set_vehicle_input_volume, add_vehicle_input}` made its `applies_to` multi-tool, which
+silently degraded the health finding from `('fix', set_vehicle_input_volume)` to
+`('inspect', None)` — losing the grounded payload (`input_no`, `suggested_fix` min/max) the
+frontend prompt interpolates. Restored via a second `_OVERRIDE_KIND` entry. Recorded tension:
+this is exactly the hand-maintained id→tool map the derivation exists to avoid.
+`test_suggested_action_never_returns_fix_without_a_real_write_tool` guards it structurally
+(the tool must exist in the write tier AND in that constraint's `applies_to`); what it cannot
+guard is semantic staleness — if a better volume verb ever ships, the override keeps winning
+silently. Acceptable for 2 entries; a third should trigger a rethink.
+
+**Both of last unit's defects were entry requirements here, and both held:** `get_vehicle_input`
+does a genuine `int(AttValue("No"))` readback with a test that fails if it echoes, and every
+touched test file passes in isolation (513/163/13/13/150/137/10).
+
+**The verification's adversaries refuted two of our OWN claims, not the unit's code.** (1) The
+probe docstring said "all 12 located vehicles" piled onto 10002 — `state.json` says 13 located,
+`{10002: 12, 2: 1}`; the error came from reading the *truncated* `lanes[:12]` sample as the
+population, the exact failure mode the same docstring lectures about. Fixed to "12 of its 13"
+(the shipped constraint text already had it right). The en warn text's "no signal or priority
+control on it applies" also read as absolute where ko/ja scope it to the approach — scoped now;
+the probe's own pile-up at 10002's downstream heads shows downstream control very much applies.
+(2) The integrity enumeration ("exactly 15 in-window files") was false under its own stated
+filter — 158 including `__pycache__`, no right-edge anchor, plus a sibling verifier's leaked
+`backend/global.txt` (deleted here, never committed). The *substantive* conclusion survived by
+a stronger method: content-hashing all 353 index entries against worktree bytes (LF-normalised
+per `.gitattributes`) shows exactly 12 tracked files modified, 0 deleted, forbidden docs
+byte-identical to their committed blobs, `runtime/uploads/` untouched.
+
+Suite 2252→2305. The +51 vs the agent's "+33 declared": it counted test FUNCTIONS, pytest
+counts CASES — its 15 new functions in `test_agent_constraints.py` alone expand to 29 ids.
+Controller re-derived the full id-set diff at HEAD in a throwaway worktree: all 51 new ids are
+genuinely new; no existing parameter list grew. Full suite 2303 passed / 1 failed (known RAG) /
+1 skipped.

@@ -491,6 +491,157 @@ class VissimController:
                 f"Could not read vehicle input {input_no} interval {interval_no} continuous flag: {exc}"
             ) from exc
 
+    # -----------------------------------------------------------------
+    # Q5 unit (3): vehicle-input GENESIS -- the LAST item on the GENESIS
+    # GAP LIST (docs/phase2/DECISIONS.md, 2026-08-01). Live findings, all
+    # from backend/tools/probe_vehicle_input_create.py (2026-08-03, Vissim
+    # 2026 SP09, seven parts across four example networks) unless
+    # attributed to an earlier unit:
+    #
+    # - ``Net.VehicleInputs.AddVehicleInput(Key, Link)`` is the REAL path
+    #   and needs no duplicate-then-edit dance. This is the FIRST creation
+    #   verb in this codebase where plain ``Add`` is not a trap:
+    #   ``AddPriorityRule`` was a silent no-op (Q4 unit 6),
+    #   ``AddSignalController`` a non-functional skeleton (Q5 unit 1/2),
+    #   and both needed a ``Duplicate*`` instead. ``DuplicateVehicleInput``
+    #   does exist here too and is deliberately NOT wrapped -- there is
+    #   nothing it gives that Add + a volume does not.
+    # - **The ``Link`` argument needs a real COM OBJECT** (the pywin32
+    #   marshalling landmine Q4 unit (2)'s measurement-infra block already
+    #   recorded): a raw int/str raises ``TypeError: The Python instance
+    #   can not be converted to a COM object``, a Lane object raises
+    #   ``Type mismatch.``, ``None`` raises "Argument Link must be
+    #   provided.", and the 1-argument form raises "Parameter not
+    #   optional." -- each proven to create NOTHING by its own ``GetAll()``
+    #   id-set diff. Nothing here fails silently, so
+    #   :meth:`_link_object_by_no` (reused verbatim, not reimplemented) is
+    #   the whole guard needed.
+    # - **A fresh input's defaults:** ``Name=''``, ``Volume(1)=0.0``,
+    #   ``VehComp(1)='1'``, ``VolType(1)='STOCHASTIC'``, ``Cont(1)=0``. A
+    #   created-and-left-alone input therefore generates NOTHING, which is
+    #   why ``volume_vph`` is a required parameter here, not an optional
+    #   one.
+    # - **No family limitation.** A network with ZERO vehicle inputs CAN
+    #   mint its first (live-proven on ``Air Taxi Vertiport``: ``GetAll()``
+    #   ``[] -> [1]``, saved file reloads ``load_ok``/``init_ok``) --
+    #   unlike :meth:`add_priority_rule` and :meth:`add_signal_controller`,
+    #   which are duplicate-based and genuinely stuck without a donor. That
+    #   is what makes "build an intersection from nothing" reachable.
+    # - **Two shadow-model classes gain rows, not one.** One created input
+    #   adds a ``vehicle_inputs`` row everywhere, AND -- on a network with
+    #   no ``<vehicleComposition>`` at all -- a ``vehicle_composition_
+    #   entries`` row too, because saving MATERIALISES the default
+    #   composition 1 the input references. Hence
+    #   ``guardrails._ALLOWS_NEW_OBJECTS_IN["add_vehicle_input"] =
+    #   {"vehicle_inputs", "vehicle_composition_entries"}``.
+    # - **A CONNECTOR target is accepted and genuinely generates traffic**
+    #   (measured against a null control: same network, all demand zeroed,
+    #   0 vehicles with no input vs 13 with one, on either a plain link or
+    #   a connector). It is NOT refused here or in constraints.py -- it is
+    #   WARNED about (``vehicle_input_on_connector``), because what
+    #   actually differs is that demand enters mid-junction and bypasses
+    #   the upstream approach entirely.
+    # - ``No`` reads back as a python ``int`` on this collection (unlike
+    #   ``SignalControllers``, which hands back a float). The ``int()`` in
+    #   :meth:`get_vehicle_input` is a defensive house convention matching
+    #   :meth:`_collection_nos`, not a fix for anything observed here.
+    # -----------------------------------------------------------------
+
+    def get_vehicle_input(self, input_no: int) -> dict[str, Any]:
+        """Read one vehicle input's identity + interval-1 demand:
+        ``{"no", "name", "link", "volume", "composition_no",
+        "volume_type"}``.
+
+        The paired reader for :meth:`add_vehicle_input` (guardrail
+        doctrine: every setter needs a reader used for post-write
+        verification). Complements the two narrower pre-existing readers
+        (:meth:`get_vehicle_input_volume`, :meth:`get_vehicle_input_continuous`)
+        rather than replacing them: those answer "what is interval i's
+        volume/continuity", this one answers "what IS this object".
+
+        ``volume``/``composition_no``/``volume_type`` are interval 1's --
+        the same interval :meth:`set_vehicle_input` defaults to. An input
+        on a multi-interval network carries more; the caller
+        (``tools_edit.add_vehicle_input``) reports the real interval count
+        from a reparse of the persisted file, since COM exposes no
+        interval-count attribute this method could read.
+        """
+        try:
+            vehicle_input = self._item_by_key(
+                self.vissim.Net.VehicleInputs,
+                input_no,
+                "Vehicle input",
+                self.available_vehicle_input_nos(),
+            )
+            return {
+                # READ BACK, never echo the argument. ``add_vehicle_input``
+                # returns this dict for a number it COMPUTED (max+1), and
+                # ``artifacts.new_vehicle_input_no`` is taken straight from
+                # here -- echoing ``input_no`` would make the verb's own
+                # identity claim unfalsifiable, which is exactly the
+                # verify-by-state-diff-never-return-value rule this layer
+                # exists to enforce. (Q5 unit (2) shipped precisely that
+                # defect in ``get_signal_controller`` and had to fix it.)
+                # ``int()`` mirrors :meth:`_collection_nos`'s own guard so a
+                # float-typed ``No`` could never render as "13.0" and miss
+                # every shadow-model id keyed "13".
+                "no": str(int(vehicle_input.AttValue("No"))),
+                "name": str(vehicle_input.AttValue("Name") or ""),
+                "link": str(vehicle_input.AttValue("Link") or ""),
+                "volume": float(vehicle_input.AttValue("Volume(1)")),
+                "composition_no": str(vehicle_input.AttValue("VehComp(1)") or ""),
+                "volume_type": str(vehicle_input.AttValue("VolType(1)") or ""),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read vehicle input {input_no}: {exc}") from exc
+
+    def add_vehicle_input(
+        self,
+        link_no: int,
+        volume_vph: float,
+        name: str = "",
+        composition_no: int | None = None,
+    ) -> dict[str, Any]:
+        """Create a vehicle input on ``link_no`` carrying ``volume_vph``
+        veh/h in interval 1, auto-assigning the next free number
+        (``max(existing) + 1``, or 1 on a network with none -- mirroring
+        :meth:`add_queue_counter`/:meth:`duplicate_driving_behavior`).
+
+        ``volume_vph`` is REQUIRED, not optional: a fresh input's own
+        ``Volume(1)`` default is 0.0 (live-measured), i.e. an input created
+        and left alone generates nothing at all -- the exact shape of
+        silent failure this layer exists to prevent.
+
+        ``composition_no`` is optional; omitted leaves Vissim's own default
+        (``VehComp(1) = '1'``). On a network that has no
+        ``<vehicleComposition>`` yet, saving materialises composition 1
+        automatically (see this block's own module comment).
+
+        Returns :meth:`get_vehicle_input`'s dict for the NEW input. Raises
+        :class:`VissimObjectNotFoundError` for a bogus ``link_no`` (checked
+        via :meth:`_link_object_by_no` before COM is asked, so the error
+        names the real available link numbers).
+        """
+        try:
+            link = self._link_object_by_no(link_no)
+            existing = self.available_vehicle_input_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            vehicle_input = self.vissim.Net.VehicleInputs.AddVehicleInput(new_no, link)
+            if name:
+                vehicle_input.SetAttValue("Name", name)
+            if composition_no is not None:
+                vehicle_input.SetAttValue("VehComp(1)", composition_no)
+            vehicle_input.SetAttValue("Volume(1)", float(volume_vph))
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a vehicle input on link {link_no} at {volume_vph} veh/h: {exc}"
+            ) from exc
+        return self.get_vehicle_input(new_no)
+
     def set_sim_duration(self, seconds: int) -> None:
         self.vissim.Simulation.SetAttValue("SimPeriod", seconds)
         self._reset_run_tracking()

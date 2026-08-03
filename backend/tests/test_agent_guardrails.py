@@ -3976,3 +3976,162 @@ def test_postwrite_diff_still_flags_an_added_signal_controller_for_a_tool_not_op
         entry["object_class"] == "signals" and entry["object_id"] == "2" and entry["change"] == "added"
         for entry in diff
     )
+
+
+# ---------------------------------------------------------------------------
+# Q5 unit (3): add_vehicle_input -- the table entry this verb cannot ship
+# without, and the one whose SECOND class nobody would have predicted from
+# the API name.
+#
+# One AddVehicleInput call adds a "vehicle_inputs" row everywhere; on a
+# network with NO <vehicleComposition> at all it ALSO adds a
+# "vehicle_composition_entries" row, because saving materialises the default
+# composition 1 the fresh input references (VehComp(1) = '1'). Both classes
+# are tracked by _SHADOW_OBJECT_ID_FIELDS, so each is individually
+# load-bearing.
+#
+# The counterfactual behind these four tests was RUN, against the real
+# before/after .inpx pairs backend/tools/probe_vehicle_input_create.py left
+# on disk, not reasoned about:
+#
+#   Beijing (12 inputs, 3 compositions)  unexempted diff = 1 row
+#     shipped {inputs, comp_entries} -> no write_verification_failed
+#     popped (no entry)              -> REFUSE, 1 row  [vehicle_inputs#21:added]
+#     {vehicle_inputs} only          -> no refusal (sufficient HERE)
+#     {vehicle_composition_entries}  -> REFUSE, 1 row  [vehicle_inputs#21:added]
+#   Air Taxi (0 inputs, 0 compositions)  unexempted diff = 2 rows
+#     shipped {inputs, comp_entries} -> no write_verification_failed
+#     popped (no entry)              -> REFUSE, 2 rows [vehicle_inputs#1:added,
+#                                       vehicle_composition_entries#1.700:added]
+#     {vehicle_inputs} only          -> REFUSE, 1 row
+#                                       [vehicle_composition_entries#1.700:added]
+#     {vehicle_composition_entries}  -> REFUSE, 1 row  [vehicle_inputs#1:added]
+#   Toll Plaza (5 inputs x 5 intervals)  identical to Beijing.
+#
+# i.e. the composition class is proven necessary ONLY by the zero-composition
+# network -- which is precisely the from-nothing genesis case this verb
+# exists for, so a table entry derived from Beijing alone would have shipped
+# broken for exactly the use it was built for. The synthetic fixtures below
+# mirror those two shapes.
+# ---------------------------------------------------------------------------
+
+
+def _vehicle_input_entry(
+    no: str, *, link: str = "101", volume: float = 450.0, name: str = ""
+) -> dict[str, Any]:
+    return {"no": no, "name": name, "link": link, "volume": volume, "interval_count": 1}
+
+
+# The composition-entry fixtures below deliberately REUSE this file's own
+# pre-existing ``_composition_entry`` (defined ~2850 lines up, for
+# set_vehicle_composition_share's tests) rather than defining a second one.
+# A second module-level def with the same name silently SHADOWS the first for
+# the WHOLE module -- which is exactly what happened while writing this block
+# and broke five unrelated, pre-existing tests. Caught by the full suite
+# before it shipped; recorded here so the next person does not repeat it.
+
+
+def test_postwrite_diff_suppresses_add_vehicle_input_own_new_input():
+    # The Beijing/Toll Plaza shape: a network that already has compositions,
+    # so only "vehicle_inputs" moves.
+    action = _action("add_vehicle_input", link_no="101", volume_vph=450.0)
+    before = _shadow_model(
+        vehicle_inputs=[_vehicle_input_entry("1")],
+        vehicle_composition_entries=[_composition_entry("1", "100")],
+    )
+    after = _shadow_model(
+        vehicle_inputs=[_vehicle_input_entry("1"), _vehicle_input_entry("2")],
+        vehicle_composition_entries=[_composition_entry("1", "100")],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {
+            "written_value": {"link": "101", "volume": 450.0},
+            "readback_value": {"link": "101", "volume": 450.0},
+        },
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_suppresses_add_vehicle_input_auto_materialised_composition():
+    # The Air Taxi shape, and the ONLY one that proves the second class is
+    # needed: a network with zero compositions gains one relative-flow entry
+    # as a byproduct of saving the new input.
+    action = _action("add_vehicle_input", link_no="101", volume_vph=450.0)
+    before = _shadow_model(vehicle_inputs=[], vehicle_composition_entries=[])
+    after = _shadow_model(
+        vehicle_inputs=[_vehicle_input_entry("1")],
+        vehicle_composition_entries=[_composition_entry("1", "700")],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {
+            "written_value": {"link": "101", "volume": 450.0},
+            "readback_value": {"link": "101", "volume": 450.0},
+        },
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_still_flags_an_unrelated_change_during_add_vehicle_input():
+    # The exemption suppresses ADDITIONS in those two classes -- it must not
+    # blind the diff to a FIELD change on a PRE-EXISTING input (another
+    # approach's demand must not move when a new one is created).
+    action = _action("add_vehicle_input", link_no="101", volume_vph=450.0)
+    before = _shadow_model(vehicle_inputs=[_vehicle_input_entry("1", volume=500.0)])
+    after = _shadow_model(
+        vehicle_inputs=[
+            _vehicle_input_entry("1", volume=900.0),  # someone else's demand drifted
+            _vehicle_input_entry("2"),
+        ]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {
+            "written_value": {"link": "101", "volume": 450.0},
+            "readback_value": {"link": "101", "volume": 450.0},
+        },
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        entry["object_class"] == "vehicle_inputs"
+        and entry["object_id"] == "1"
+        and entry["change"] == "field_changed"
+        for entry in diff
+    )
+
+
+def test_postwrite_diff_still_flags_an_added_vehicle_input_for_a_tool_not_opted_in():
+    # The suppression is tool-SPECIFIC (_ALLOWS_NEW_OBJECTS_IN), not a
+    # blanket "never flag added vehicle inputs" rule.
+    action = _action("set_vehicle_input_volume", input_no="1", volume=450.0)
+    before = _shadow_model(vehicle_inputs=[_vehicle_input_entry("1", volume=450.0)])
+    after = _shadow_model(
+        vehicle_inputs=[_vehicle_input_entry("1", volume=450.0), _vehicle_input_entry("2")]
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": 450.0, "readback_value": 450.0}
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        entry["object_class"] == "vehicle_inputs"
+        and entry["object_id"] == "2"
+        and entry["change"] == "added"
+        for entry in diff
+    )

@@ -593,6 +593,27 @@ class VissimEditSession:
     def get_signal_controller(self, sc_no: int) -> dict[str, Any]:
         return self._ensure_connected().get_signal_controller(sc_no)
 
+    # Q5 unit (3): vehicle-input genesis -- the LAST GENESIS GAP LIST item.
+    # See VissimController's own module comment (vehicle-input genesis block)
+    # for the full live-verified writeup (the COM-object-only Link argument,
+    # a fresh input's zero-volume default, the absence of any zero-object
+    # family limitation, the auto-materialised default vehicle composition,
+    # and the connector target that is accepted and DOES generate traffic).
+
+    def add_vehicle_input(
+        self,
+        link_no: int,
+        volume_vph: float,
+        name: str = "",
+        composition_no: int | None = None,
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_vehicle_input(
+            link_no, volume_vph, name, composition_no
+        )
+
+    def get_vehicle_input(self, input_no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_vehicle_input(input_no)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

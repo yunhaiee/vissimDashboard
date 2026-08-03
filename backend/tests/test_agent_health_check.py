@@ -163,7 +163,17 @@ def test_health_check_runner_against_demo_dataset():
     # equivalent of that -- "this model contains a fixed-time controller" is
     # not a finding, it is just a fact -- so both land in edit_time_only,
     # same shape as every addition above.
-    assert report["summary"]["edit_time_only_n"] == 88
+    # 90, not 88: Q5 unit (3) (vehicle-input genesis) added two
+    # preflight-only constraints for the new add_vehicle_input tool --
+    # vehicle_input_on_connector and
+    # vehicle_input_created_covers_first_interval_only. Both key off a
+    # PROPOSED action's own link_no/volume_vph (which link demand is being
+    # placed on right now, and how much), and a whole-network dataset scan
+    # has no equivalent of that -- "this model contains connectors" and
+    # "this model has 5 time intervals" are not findings, they are just
+    # facts -- so both land in edit_time_only, same shape as every addition
+    # above.
+    assert report["summary"]["edit_time_only_n"] == 90
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.
@@ -499,11 +509,26 @@ def test_suggested_action_kind_derivation_covers_every_dataset_checkable_constra
         )
         assert (kind, tool) == (expected_kind, expected_tool), constraint_id
 
-    # Only evaluation_config_disarmed is a hand-maintained override -- every
-    # other id's kind/tool above comes purely from applies_to + the write
-    # registry, proving the derivation (not a second hardcoded table) is
-    # doing the real work for 13 of the 14 ids.
-    assert set(health_check_module._OVERRIDE_KIND) == {"evaluation_config_disarmed"}
+    # TWO hand-maintained overrides as of Q5 unit (3) -- every other id's
+    # kind/tool above still comes purely from applies_to + the write
+    # registry, so the derivation (not a second hardcoded table) is doing the
+    # real work for 12 of the 14 ids.
+    #
+    # volume_out_of_range joined the list because Q5 unit (3) wired
+    # add_vehicle_input onto that same constraint (identical 0..20000 veh/h
+    # claim, only the param name differs). That made applies_to two-long,
+    # and the arity rule then silently degraded this dataset finding from
+    # ("fix", "set_vehicle_input_volume") to ("inspect", None) -- the health
+    # page would have lost its Fix button for an out-of-range volume. THIS
+    # test caught it. The override states the true remedy explicitly rather
+    # than depending on an arity accident: the finding is always about an
+    # EXISTING input the dataset scan just read, so the setter is the verb
+    # that resolves it; add_vehicle_input creates a new input and could never
+    # fix an existing one's volume.
+    assert set(health_check_module._OVERRIDE_KIND) == {
+        "evaluation_config_disarmed",
+        "volume_out_of_range",
+    }
 
 
 def test_suggested_action_never_returns_fix_without_a_real_write_tool():
