@@ -62,7 +62,7 @@ AI가 거부한다 ④ 벽 먼저, 탑은 그 위에(v2b 없이 genesis 없음) 
 | 0.4 | ✅ | **Region 선택 UX 목업** (v1 발행: docs/product/mockups/region-selection-mockup.html) (폴리곤 라쏘 + 도로 단위 토글, 제외 시각화) | X | 사용자 디자인 주도권; genesis UI의 계약을 먼저 정의 |
 | 0.5 | ✅ | **HWP 도구 생태 조사 보고서** (pyhwp/hwpx/Hancom COM — 가능/비용/추천) | R | 에스컬레이션 규칙 1회차; 보고서 포맷 우선순위 결정 자료 |
 | 0.6 | ✅ | **Cat 1/2/3 검증 프로파일** (Table 5-12/13/14를 드롭다운으로; Cat1은 이미 일치 확인) | C | 수치 확보됨; 대시보드 확장만 |
-| 0.7 | ⬜ | **어댑터 계약 초안** (controller/program/phase/detector/count 중립 스키마 — 문서+Pydantic) | D | 대전 파일 도착 전에 계약을 먼저; 도착 즉시 어댑터 착수 가능 |
+| 0.7 | ✅ | **어댑터 계약 초안** (controller/program/phase/detector/count 중립 스키마 — 문서+Pydantic) | D | 대전 파일 도착 전에 계약을 먼저; 도착 즉시 어댑터 착수 가능 |
 
 Exit: 스윕 데모 가능, 스타일된 리포트 1장, MRWA 인용 경고 실동작, 목업 TK 송부.
 

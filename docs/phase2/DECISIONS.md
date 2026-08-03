@@ -3033,3 +3033,39 @@ one intersection) still owed — every verb is individually live-proven, the ens
 Probe script committed compile-clean; Stage 0 live-validated ×2; suite at baseline (2053 incl.
 the flaky smoke), runtime/uploads sha-verified twice. v2b stays 9/13 + spine (this was a
 probe unit; "new intersection construction" bullet remains ⬜ with this probe as its spec).
+
+## 2026-08-03 — Phase 0.7: the adapter contract; Appendix A falsified the schema three times
+
+New package `backend/services/dataimport/` (`import` is a keyword), layered
+schema → base → quality → adapters. **The unit's value is what the falsification test broke.**
+Mapping MRWA Appendix A field-by-field onto the first-draft neutral schema failed three times,
+each fixed in the SCHEMA, never by bending the data: (1) `DetectorCountData` added — detector
+volumes have no turning movement, and forcing them into `TurningCountData` would have made
+every adapter in every region invent an approach and a movement; (2) the ≤1.0 cap on phase
+frequency removed — repeat right-turn phasing genuinely runs a phase twice per cycle, so the
+cap would have forced adapters to clamp a true value into a false one; (3)
+`SignalGroupWindow.green_duration_s` added — Event History gives green LENGTH but not cycle
+POSITION, and the model previously offered no way to say that without fabricating a start time.
+A fourth finding needed no change but is recorded: Appendix A supplies NO turning counts at all
+(Main Roads gives detector volumes; movement demand is a separate survey) — the adapter says so
+with an INFO rather than leaving an unexplained empty list.
+
+**Never-invent is enforced structurally, not by convention:** per-record `Provenance` is
+required and frozen (read records must cite a locator; computed ones must name the algorithm
+and its authority); `absent` maps field→reason and a validator refuses to let a field be
+claimed absent while holding a value (controller re-verified both, plus that `volume_unit` has
+no default — a PCU figure read as a vehicle count is the wrong number nobody notices). No
+`UNKNOWN` enum member anywhere: absence is `None`, because UNKNOWN is an invented value wearing
+a hat. `TurnType` is geometric not semantic — WA drives left, Korea right, so "the opposed
+turn" would mean different things per country; drive side is stated once on site metadata.
+Vehicle class is a reference (scheme + code + optional coarse canonical), not an enum, because
+mapping Austroads 7 onto a Korean code is a research question, not an import step.
+
+Gate tiers argued rather than felt: REFUSE only for self-contradiction (overlapping intervals,
+approach total ≠ movement sum, dangling references) or a stated authority minimum; everything
+else WARN — because a gate that refuses everything gets switched off, and a Monday count is a
+real count while an overlapping interval is not a real anything. Collection-minimum citations
+say "page cite pending" — that rule reached us via the meeting brief, not a page we can point
+at, so the never-invent rule was applied to our own authority claims first. Contract:
+`docs/product/adapter-contract.md`; 10 open unknowns listed there for the Daejeon side. Suite
+2053→2189 (+137, controller re-ran).
