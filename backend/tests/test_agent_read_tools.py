@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+import services.agent.tools_check as tools_check  # noqa: F401 - import registers tools
 import services.agent.tools_edit as tools_edit  # noqa: F401 - import registers tools
 import services.agent.tools_metrics as tools_metrics  # noqa: F401 - import registers tools
 import services.agent.tools_network as tools_network  # noqa: F401 - import registers tools
@@ -73,6 +74,14 @@ EXPECTED_TOOL_NAMES = {
 # services.agent.orchestrator, which imports tools_edit/tools_run for their
 # registration side effect) -- that held for full-suite runs but made the
 # three registry-shape tests fail whenever this file ran in isolation.
+# Q5 unit (2) found that regression had come BACK, unnoticed since v2 unit
+# (3): load_check was added to EXPECTED_RUN_TOOL_NAMES below, but its module
+# (tools_check.py) was never added to the imports above -- so the pin was
+# satisfied only by test_agent_orchestrator.py happening to import
+# orchestrator.py (which imports tools_check) earlier in the same session.
+# `pytest tests/test_agent_read_tools.py` alone failed 2 tests. The rule the
+# paragraph above states is only as good as its last line: every module named
+# in the expected sets below needs its own import here.
 # v2 unit (2) adds set_reduced_speed_area (XML-injection, not COM), the sixth.
 # v2 unit (4) adds set_conflict_area_status, the seventh.
 # v2 unit (6) adds set_route_relative_flow, the eighth.
@@ -154,6 +163,16 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "add_pt_line",
     "remove_pt_line",
     "set_pt_line_stop_dwell",
+    # Q5 unit (2) adds add_signal_controller -- signal-controller genesis via
+    # duplicate-then-edit (COM DuplicateSignalController; plain
+    # AddSignalController creates a non-functional skeleton and is
+    # deliberately NOT wrapped, see tools_edit.py's own comment block). No
+    # remove_signal_controller: RemoveSignalController exists and works
+    # pre-run, but nothing in this unit needs it and a remove verb with no
+    # reference-integrity story (signal heads, detectors and stop signs all
+    # point at a controller) is exactly the kind of silent cascade this
+    # layer exists to prevent -- a deliberate, recorded scope cut.
+    "add_signal_controller",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md

@@ -136,6 +136,10 @@ EXPECTED_WRITE_TOOLS = {
     "add_pt_line",
     "remove_pt_line",
     "set_pt_line_stop_dwell",
+    # Q5 unit (2): signal-controller genesis (duplicate-then-edit -- see
+    # tools_edit.py's own comment block; plain AddSignalController is a trap
+    # and is deliberately NOT wrapped by any verb).
+    "add_signal_controller",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

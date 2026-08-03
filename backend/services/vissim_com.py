@@ -826,6 +826,164 @@ class VissimController:
             f"Available signal group numbers: {available}."
         )
 
+    # -----------------------------------------------------------------
+    # Q5 unit (2): signal-controller GENESIS -- duplicate-then-edit, the
+    # FOURTH appearance of this codebase's now-named house pattern (driving
+    # behaviors Q3 unit 6, priority rules Q4 unit 6, controllers Q4 unit
+    # 8/Q5 unit 1). Live findings, all from
+    # backend/tools/probe_signal_controller_duplicate.py (2026-08-03, Vissim
+    # 2026 SP09) unless attributed to an earlier unit:
+    #
+    # - ``Net.SignalControllers.AddSignalController(Key)`` +
+    #   ``.SGs.AddSignalGroup(Key)`` DO create real objects, but the result
+    #   is a NON-FUNCTIONAL skeleton: a controller with no real timing
+    #   program makes ``RunSingleStep`` fail outright (Q4 unit 8 / Q5 unit
+    #   1, live-verified twice). Plain ``Add`` is the trap; it is
+    #   deliberately NOT wrapped by any verb here.
+    # - ``DuplicateSignalController(Source, NewKey)`` is the real path, and
+    #   it accepts BOTH argument shapes -- an int key (the
+    #   ``DuplicateDrivingBehavior`` convention) AND a COM object (the
+    #   ``DuplicatePriorityRule`` convention). Both were tried independently
+    #   in one session, each proven by its own ``GetAll()`` id-set diff
+    #   (never by a bare non-exception -- ``AddPriorityRule``'s silent-no-op
+    #   precedent). This method uses the INT form, so the source is
+    #   existence-checked by :meth:`_item_by_key` first and a bogus number
+    #   raises this module's own structured ``VissimObjectNotFoundError``.
+    # - The copy is an EXACT, INDEPENDENT copy: Type, CycTm, Offset, ProgNo,
+    #   every signal-group number and the whole ``IntSupplyData`` program
+    #   blob (byte-length-identical) come across, **including the donor's
+    #   NAME** -- which is why this method renames in the same call rather
+    #   than leaving two identically-named controllers behind. Renaming the
+    #   copy does NOT touch the donor (re-read live; an alias would have
+    #   shown the new name). The copy survives ``RunSingleStep`` and its own
+    #   green splits are immediately editable via
+    #   :meth:`set_signal_green_split` -- a real edit against the copy moved
+    #   exactly one ``signal_program_splits`` row, the copy's own.
+    # - **Family limitation, stated not engineered around:** a network with
+    #   ZERO signal controllers cannot get its first from this verb. Proven
+    #   live on ``Roundabout Billings.US`` (0 controllers): a nonexistent
+    #   int source raises "Object 1 of type Signal Controller does not
+    #   exist.", a ``None`` source raises "Empty values are not permitted
+    #   here.", and ``GetAll()`` is still empty after both. Identical shape
+    #   to :meth:`add_priority_rule`'s own recorded limitation.
+    # - **Ordering landmine:** structural controller edits are refused once
+    #   a simulation has started -- after one ``RunSingleStep``,
+    #   ``RemoveSignalController`` raised "This action cannot be performed
+    #   during simulation." Harmless here (an edit session never runs a
+    #   simulation) but real for any future build-then-run job that reuses
+    #   one COM session.
+    # - Non-fixed-time donors are refused at the CONSTRAINTS layer, not
+    #   here (constraints.py's signal_controller_duplicate_source_type_
+    #   unsupported): COM itself permits duplicating a
+    #   RINGBARRIERCONTROLLER/VAP/... controller, but such a controller's
+    #   program lives in an external file (all 49 of Boise's RBC controllers
+    #   carry ``supplyFile1='#data#<no>.prbc'`` and NO ``intSupplyData``
+    #   attribute at all -- absent, not present-and-empty; the token occurs
+    #   0 times in the whole Boise .inpx), ``signal_parser`` yields ZERO
+    #   ``signal_program_splits`` rows for the whole family, and constraint
+    #   #4 already refuses every timing edit on it -- i.e. the copy would be
+    #   both unverifiable and permanently uneditable. That is a policy
+    #   decision from measured data, recorded in this unit's DECISIONS entry.
+    # -----------------------------------------------------------------
+
+    def get_signal_controller(self, sc_no: int) -> dict[str, Any]:
+        """Read one signal controller's identity + top-level timing
+        attributes: ``{"no", "name", "type", "cycle_time_s", "offset_s",
+        "program_no", "signal_group_nos"}``.
+
+        The paired reader for :meth:`add_signal_controller` (guardrail
+        doctrine: every setter needs a reader used for post-write
+        verification). ``cycle_time_s`` is the same ``CycTm`` rollup
+        :meth:`get_signal_cycle` reads -- on a program-driven fixed-time
+        controller it is NOT the effective simulated cycle (see
+        :meth:`set_signal_cycle`'s docstring; Beijing's own controller is
+        ``cycTmIsVar="true"`` and genuinely stores 0.0 there), so it is
+        reported as-is and never presented as the real cycle.
+        """
+        try:
+            signal_controller = self._item_by_key(
+                self.vissim.Net.SignalControllers,
+                sc_no,
+                "Signal controller",
+                self.available_signal_controller_nos(),
+            )
+            raw_cycle = signal_controller.AttValue("CycTm")
+            raw_offset = signal_controller.AttValue("Offset")
+            raw_prog = signal_controller.AttValue("ProgNo")
+            return {
+                # READ BACK, never echo the argument. ``add_signal_controller``
+                # returns this dict for a number it COMPUTED (max+1), and
+                # ``artifacts.new_sc_no`` is taken straight from here -- echoing
+                # ``sc_no`` would make the verb's own identity claim
+                # unfalsifiable, which is exactly the
+                # verify-by-state-diff-never-return-value rule this layer
+                # exists to enforce. ``int()`` first because COM hands ``No``
+                # back as a float on some collections (:meth:`_collection_nos`
+                # does the same), and a "2.0" here would silently miss every
+                # shadow-model id keyed "2".
+                "no": str(int(signal_controller.AttValue("No"))),
+                "name": str(signal_controller.AttValue("Name") or ""),
+                "type": str(signal_controller.AttValue("Type") or ""),
+                "cycle_time_s": None if raw_cycle is None else float(raw_cycle),
+                "offset_s": None if raw_offset is None else float(raw_offset),
+                "program_no": None if raw_prog in (None, "") else str(raw_prog),
+                "signal_group_nos": [str(no) for no in self._collection_nos(signal_controller.SGs)],
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read signal controller {sc_no}: {exc}") from exc
+
+    def add_signal_controller(self, source_sc_no: int, new_name: str) -> dict[str, Any]:
+        """Create a new signal controller as an exact duplicate of
+        ``source_sc_no`` (native ``DuplicateSignalController``, int-key
+        form -- see this block's own module comment for why plain
+        ``AddSignalController`` is a trap), auto-assigning the next free
+        number (``max(existing) + 1``, mirroring
+        :meth:`duplicate_driving_behavior`/:meth:`add_priority_rule`), then
+        renaming the copy to ``new_name`` (the copy inherits the donor's own
+        name otherwise).
+
+        Returns :meth:`get_signal_controller`'s dict for the NEW controller.
+
+        Raises :class:`VissimObjectNotFoundError` for a bogus
+        ``source_sc_no`` (checked before the duplicate call, so the error
+        names the real available numbers) and :class:`RuntimeError` when the
+        network has NO signal controller to duplicate at all -- the stated
+        genesis limitation, never a silent failure.
+        """
+        try:
+            existing_nos = self.available_signal_controller_nos()
+            if not existing_nos:
+                raise RuntimeError(
+                    "add_signal_controller: this network has no existing signal controller to "
+                    "duplicate. Net.SignalControllers.AddSignalController does create a bare "
+                    "controller, but one with no real timing program makes the simulation fail "
+                    "outright (live-verified), and DuplicateSignalController needs a real source "
+                    "-- genesis of the FIRST signal controller in a network with none today is "
+                    "not supported by this verb."
+                )
+            # Existence-check the SOURCE explicitly before calling Vissim's
+            # own method, so a bogus number produces this module's
+            # structured not-found error rather than a raw COM one
+            # (duplicate_driving_behavior's precedent).
+            self._item_by_key(
+                self.vissim.Net.SignalControllers,
+                source_sc_no,
+                "Signal controller",
+                existing_nos,
+            )
+            new_no = max(existing_nos) + 1
+            copy = self.vissim.Net.SignalControllers.DuplicateSignalController(source_sc_no, new_no)
+            copy.SetAttValue("Name", new_name)
+        except (VissimObjectNotFoundError, RuntimeError):
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not duplicate signal controller {source_sc_no} as {new_name!r}: {exc}"
+            ) from exc
+        return self.get_signal_controller(new_no)
+
     def set_conflict_area_status(self, conflict_area_no: int, status: str) -> None:
         """Set a conflict area's right-of-way status (COM attribute id
         ``Status`` -- verified empirically live against Vissim 2026 via

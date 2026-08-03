@@ -580,6 +580,19 @@ class VissimEditSession:
             link_behavior_type_no, veh_class_no
         )
 
+    # Q5 unit (2): signal-controller genesis via duplicate-then-edit -- see
+    # VissimController's own module comment (signal-controller genesis block)
+    # for the full live-verified writeup (both DuplicateSignalController
+    # argument shapes, what the copy inherits including the donor's NAME, the
+    # zero-controller family limitation, and the during-simulation ordering
+    # landmine).
+
+    def add_signal_controller(self, source_sc_no: int, new_name: str) -> dict[str, Any]:
+        return self._ensure_connected().add_signal_controller(source_sc_no, new_name)
+
+    def get_signal_controller(self, sc_no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_signal_controller(sc_no)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

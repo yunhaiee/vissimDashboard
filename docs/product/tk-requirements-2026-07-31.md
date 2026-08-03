@@ -61,7 +61,7 @@ program/phase/detector 스키마)이고 각 지역 포맷은 플러그인 어댑
 turning counts. 15-min interval profiling (guideline-required, our multi-interval verbs ready).
 **R1.5 AI network validation gate — 합격선 초안 (v2.1: 사용자 위임으로 우리가 설정).**
 Build isn't done until every REFUSE-tier check passes; WARN-tier findings ride on the result.
-Same refuse-with-reason doctrine as the 90-constraint registry, applied to construction:
+Same refuse-with-reason doctrine as the constraint registry, applied to construction:
 
 | # | check | tier |
 |---|---|---|

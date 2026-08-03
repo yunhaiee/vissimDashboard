@@ -1990,6 +1990,86 @@ def set_link_behavior_type_driving_behavior(
 
 
 # ---------------------------------------------------------------------------
+# add_signal_controller(source_sc_no, new_name)
+#
+# Q5 unit (2) -- signal-controller GENESIS, gap (2) of the GENESIS GAP LIST
+# (DECISIONS.md 2026-08-01) and the last one still fully open. The FOURTH
+# appearance of the duplicate-then-edit house pattern (driving behaviors
+# Q3 unit 6, priority rules Q4 unit 6, controllers Q4 unit 8/Q5 unit 1):
+# plain ``AddSignalController`` creates a real but NON-FUNCTIONAL skeleton
+# that makes the simulation fail outright, so no verb wraps it;
+# ``DuplicateSignalController`` copies a donor's whole working program and
+# is the only path shipped. See vissim_com.VissimController's own
+# signal-controller-genesis module comment for the full live-verified
+# writeup, and backend/tools/probe_signal_controller_duplicate.py for the
+# measurements behind every claim here.
+#
+# ONE tool, not two: unlike driving behaviors (duplicate -> edit -> assign,
+# three approvals) the "edit" and "assign" halves already exist as shipped
+# verbs -- ``set_signal_green_split``/``set_signal_offset`` edit the copy's
+# timing, ``add_signal_head(sc_no=..., sg_no=...)`` wires real geometry to
+# it. Adding a fourth verb that only renames would be padding.
+#
+# The copy's own new number is auto-assigned (max + 1) exactly like
+# duplicate_driving_behavior/add_priority_rule -- the caller never guesses a
+# free slot -- and is reported via ``artifacts``, never inside the compared
+# verification dicts (an auto-assigned id is not something the caller
+# "wrote"; constraint #6 compares written/readback structurally and an extra
+# key on either side is a mismatch regardless of value). The one genuinely
+# write-then-verify-able value here is the NAME, mirroring
+# duplicate_driving_behavior's identical reasoning.
+#
+# guardrails._ALLOWS_NEW_OBJECTS_IN["add_signal_controller"] = {"signals",
+# "signal_program_splits"} is REQUIRED for this verb -- without it every
+# correct call is refused and rolled back by postwrite's own diff. That is
+# not a guess: Q5 unit (1) reproduced exactly that refusal live, and this
+# unit's own probe re-derived the id set from a real
+# diff_shadow_models over the saved .inpx (1 "signals" row + donor_programs
+# x donor_signal_groups "signal_program_splits" rows, e.g. 44 for Beijing's
+# 2 x 22, 2 for Air Taxi's 1 x 2; zero other differences).
+# ---------------------------------------------------------------------------
+
+
+class AddSignalControllerParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_sc_no: str
+    new_name: str = Field(min_length=1)
+
+
+@tool(name="add_signal_controller", tier="write", provider="edit", params=AddSignalControllerParams)
+def add_signal_controller(params: AddSignalControllerParams) -> dict[str, Any]:
+    """Create a NEW signal controller on the active edit session's working network as an exact duplicate of an existing one (source_sc_no), named new_name -- the only supported way to add a controller, and Genesis (b)'s hand for signalizing a junction that has no controller of its own yet. Vissim CAN create a bare empty controller, but one with no real timing program makes the simulation fail outright (live-verified), so this verb always copies a working donor instead: the copy inherits the donor's controller type, cycle time, offset, active program number, every signal group, and its ENTIRE timing program (all green splits, ambers and red-ambers), then gets the next free controller number automatically and the name you give it. Two consequences to plan for: (1) the copy runs the DONOR's timings until you change them -- use set_signal_green_split (and set_signal_offset for coordination) on the NEW controller number to make them the intended ones; (2) the copy controls nothing until you wire geometry to it with add_signal_head(sc_no=<new number>, sg_no=...). REFUSED when the donor is not a fixed-time controller (RBC/VAP/railway-crossing and similar keep their program in external files this agent can neither read back nor edit) and when the network has NO signal controller at all to copy -- a network with zero controllers cannot get its first one from this verb, a real and stated limitation."""
+    session = _require_session()
+    source_sc_no = _coerce_id(params.source_sc_no, "source_sc_no")
+
+    result = session.add_signal_controller(source_sc_no, params.new_name)
+    session.persist()
+
+    # written/readback carry EXACTLY the same key set (the
+    # duplicate_driving_behavior precedent, and constraint #6's structural
+    # compare requires it): the NAME is the one value the caller supplied
+    # and this tool can verify; the auto-assigned number rides in artifacts.
+    verification: dict[str, Any] = {
+        "written_value": params.new_name,
+        "readback_value": result["name"],
+    }
+    sg_count = len(result.get("signal_group_nos") or [])
+    message = (
+        f"Signal controller {params.source_sc_no} duplicated as new controller {result['no']} "
+        f"({params.new_name!r}) -- type {result['type'] or 'unknown'}, {sg_count} signal group(s), "
+        f"the donor's whole timing program copied. It runs SC {params.source_sc_no}'s timings "
+        "until you edit them (set_signal_green_split on the new number), and controls nothing "
+        "until signal heads are wired to it (add_signal_head)."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"new_sc_no": result["no"], "signal_controller": result},
+    }
+
+
+# ---------------------------------------------------------------------------
 # Q4 unit (2): measurement-infrastructure placement -- queue counters,
 # data-collection points/measurements, travel-time sections. Genuine COM
 # CREATE/REMOVE verbs (see vissim_com.VissimController's own module comment

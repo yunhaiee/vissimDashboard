@@ -320,6 +320,16 @@ class FakeEditSession:
         self._record("get_time_distribution_points", time_distribution_no=time_distribution_no)
         return self._readback["time_distribution_points"]
 
+    # Q5 unit (2): signal-controller genesis (duplicate-then-edit).
+
+    def add_signal_controller(self, source_sc_no: int, new_name: str) -> dict[str, Any]:
+        self._record("add_signal_controller", source_sc_no=source_sc_no, new_name=new_name)
+        return self._readback["signal_controller"]
+
+    def get_signal_controller(self, sc_no: int) -> dict[str, Any]:
+        self._record("get_signal_controller", sc_no=sc_no)
+        return self._readback["signal_controller"]
+
     # QUEUE 3 unit 6: driving-behavior duplicate-then-edit.
 
     def duplicate_driving_behavior(self, source_no: int, new_name: str) -> dict[str, Any]:
@@ -2617,3 +2627,101 @@ def test_build_apply_edit_plan_message_small_plan_names_every_step():
     assert "1. set_signal_cycle: applied, readback ok" in message
     assert "2. set_signal_offset: applied, readback ok" in message
     assert "more" not in message  # both steps fit -- no truncation needed
+
+
+# ---------------------------------------------------------------------------
+# add_signal_controller -- Q5 unit (2), signal-controller genesis via
+# duplicate-then-edit. The readback mirrors
+# VissimController.get_signal_controller's real shape, which itself mirrors
+# what the live probe measured on Beijing (a FIXEDTIME donor with 22 signal
+# groups, cycTmIsVar so CycTm genuinely reads 0.0, active program 2) --
+# backend/tools/probe_signal_controller_duplicate.py [A.3].
+# ---------------------------------------------------------------------------
+
+_SIGNAL_CONTROLLER_READBACK = {
+    "no": "2",
+    "name": "North junction",
+    "type": "FIXEDTIME",
+    "cycle_time_s": 0.0,
+    "offset_s": 0.0,
+    "program_no": "2",
+    "signal_group_nos": [str(n) for n in range(1, 23)],
+}
+
+
+def test_add_signal_controller_happy_path():
+    session = FakeEditSession(readback={"signal_controller": _SIGNAL_CONTROLLER_READBACK})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("add_signal_controller", source_sc_no="1", new_name="North junction")
+
+    assert envelope["status"] == "ok"
+    # written/readback carry EXACTLY the same key set -- the NAME is the one
+    # value the caller supplied and this tool can verify; the auto-assigned
+    # number rides in artifacts (duplicate_driving_behavior's precedent).
+    assert envelope["verification"] == {
+        "written_value": "North junction",
+        "readback_value": "North junction",
+    }
+    assert envelope["artifacts"]["new_sc_no"] == "2"
+    assert envelope["artifacts"]["signal_controller"] == _SIGNAL_CONTROLLER_READBACK
+    assert session.calls == [
+        {"op": "add_signal_controller", "source_sc_no": 1, "new_name": "North junction"}
+    ]
+    assert session.persist_calls == 1
+
+
+def test_add_signal_controller_message_names_what_the_copy_inherited():
+    # The message is the only place a human sees that the copy is NOT blank:
+    # it must name the type, the signal-group count, and both follow-ups.
+    session = FakeEditSession(readback={"signal_controller": _SIGNAL_CONTROLLER_READBACK})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("add_signal_controller", source_sc_no="1", new_name="North junction")
+
+    message = envelope["message"]
+    assert "FIXEDTIME" in message
+    assert "22 signal group(s)" in message
+    assert "set_signal_green_split" in message
+    assert "add_signal_head" in message
+
+
+def test_add_signal_controller_no_active_session_is_a_structured_error():
+    envelope = _dispatch("add_signal_controller", source_sc_no="1", new_name="North junction")
+
+    assert envelope["status"] == "error"
+    assert "no_edit_session" in envelope["message"]
+
+
+def test_add_signal_controller_vissim_refusal_surfaces_as_structured_error():
+    # The zero-controller genesis limitation (live-proven on Roundabout
+    # Billings.US: 0 controllers, every duplicate attempt raises and creates
+    # nothing) fails CLOSED inside vissim_com and must reach the caller as a
+    # structured tool_execution_error with NO persist -- never a silent
+    # no-op, and never a half-written file.
+    session = FakeEditSession(
+        raise_on={
+            "add_signal_controller": RuntimeError(
+                "add_signal_controller: this network has no existing signal controller to duplicate."
+            )
+        }
+    )
+    set_active_edit_session(session)
+
+    envelope = _dispatch("add_signal_controller", source_sc_no="1", new_name="North junction")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "tool_execution_error"
+    assert "no existing signal controller" in envelope["message"]
+    assert session.persist_calls == 0
+
+
+def test_add_signal_controller_rejects_empty_name_at_param_layer():
+    session = FakeEditSession(readback={"signal_controller": _SIGNAL_CONTROLLER_READBACK})
+    set_active_edit_session(session)
+
+    envelope = _dispatch("add_signal_controller", source_sc_no="1", new_name="")
+
+    assert envelope["status"] == "error"
+    assert session.calls == []
+    assert session.persist_calls == 0

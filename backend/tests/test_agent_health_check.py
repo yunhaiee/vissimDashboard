@@ -154,7 +154,16 @@ def test_health_check_runner_against_demo_dataset():
     # add_detector action's own length_m/pos_m params) -- none has a
     # whole-network dataset-scan equivalent, so all four land in
     # edit_time_only, same shape as every addition above.
-    assert report["summary"]["edit_time_only_n"] == 86
+    # 88, not 86: Q5 unit (2) (signal-controller genesis) added two
+    # preflight-only constraints for the new add_signal_controller tool --
+    # signal_controller_duplicate_source_type_unsupported and
+    # signal_controller_duplicate_inherits_donor_program. Both key off a
+    # PROPOSED action's own source_sc_no (which controller is being
+    # duplicated right now), and a whole-network dataset scan has no
+    # equivalent of that -- "this model contains a fixed-time controller" is
+    # not a finding, it is just a fact -- so both land in edit_time_only,
+    # same shape as every addition above.
+    assert report["summary"]["edit_time_only_n"] == 88
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

@@ -617,6 +617,28 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
     # "conflict_areas" addition for.
     "add_pt_stop": frozenset({"pt_stops"}),
     "add_pt_line": frozenset({"pt_lines", "pt_line_stops"}),
+    # Q5 unit (2): add_signal_controller's own sanctioned action (native
+    # DuplicateSignalController) creates a brand-new "signals" entry AND --
+    # because the copy carries the donor's ENTIRE timing program -- one
+    # brand-new "signal_program_splits" entry per (copied program, copied
+    # signal group) pair. Both classes are tracked by
+    # _SHADOW_OBJECT_ID_FIELDS above, so without BOTH opted in every
+    # correct call would be refused and rolled back by postwrite's own diff.
+    #
+    # **This entry is the only one in this table that was live-PROVEN
+    # necessary before its verb existed.** Q5 unit (1)'s composite probe
+    # made a raw DuplicateSignalController call inside add_signal_head's
+    # postwrite window and the engine refused that verb with
+    # write_verification_failed naming `signals#2:added` plus 44
+    # `signal_program_splits#2.{1,2}.{1..22}:added` (DECISIONS.md
+    # 2026-08-03). Q5 unit (2)'s own probe then re-derived the same id set
+    # from a real diff_shadow_models over a saved .inpx: exactly
+    # `signals: 1 added` + `signal_program_splits: 44 added` for Beijing's
+    # 2-programs x 22-signal-groups donor, `1 + 2` for Air Taxi's
+    # 1 x 2 donor, and ZERO non-"added" differences either time. The split
+    # count is therefore a PER-DONOR number, which is precisely why this has
+    # to be a per-object-CLASS opt-in and could never be an id list.
+    "add_signal_controller": frozenset({"signals", "signal_program_splits"}),
 }
 
 # Q4 unit (3): the REMOVAL-side mirror of ``_ALLOWS_NEW_OBJECTS_IN`` above --

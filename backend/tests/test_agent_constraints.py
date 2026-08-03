@@ -5281,9 +5281,24 @@ def test_registry_size_matches_m3_1_catalog_port():
     # TABLE_5_8_RSA_DESIGN_SPEED ships empty rather than inventing them) --
     # see mrwa_reference.py's own module docstring and this unit's drafted
     # DECISIONS.md entry for the full reasoning on both scope cuts.
-    # == 100.
+    # == 100, + 2 (Q5 unit (2), add_signal_controller -- signal-controller
+    # genesis via duplicate-then-edit): signal_controller_duplicate_source_
+    # type_unsupported (refuse -- the CREATE-side mirror of #4's population:
+    # a non-fixed-time donor keeps its program in an external file, so the
+    # copy would be neither verifiable nor editable; measured grounds in
+    # backend/tools/probe_signal_controller_duplicate.py Part D) and
+    # signal_controller_duplicate_inherits_donor_program (warn -- the copy
+    # runs the DONOR's timings until edited and controls nothing until
+    # signal heads are wired to it; one Beijing duplicate inherits 2
+    # programs x 22 signal groups = 44 green splits). No third constraint:
+    # the donor's own existence is #1 object_not_found via a plain
+    # _TOOL_TARGET_SPEC entry, and the zero-controller genesis limitation
+    # fails CLOSED inside vissim_com.VissimController.add_signal_controller
+    # with a stated error (the same deliberate split add_priority_rule's own
+    # limitation already uses).
+    # == 102.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 100
+    assert len(get_registry()) == 102
 
 
 def test_registry_has_unique_ids():
@@ -7536,3 +7551,227 @@ def test_pt_line_stop_not_found_does_not_apply_to_unrelated_tool():
     findings = run_checks("preflight", action, shadow, {})
 
     assert not any(f.constraint_id == "pt_line_stop_not_found" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# Q5 unit (2): add_signal_controller -- object_not_found lockstep + the
+# unit's own two constraints.
+#
+# Fixture note: the shared _shadow_model helper above has no
+# signal_program_splits kwarg (no earlier constraint needed one), so these
+# tests set that key directly rather than widening a fixture every other
+# test in this file shares. The row shape mirrors
+# tools_network._flatten_signal_program_splits exactly.
+# ---------------------------------------------------------------------------
+
+
+def _signal(sc_no: str, *, controller_type: str = "FIXEDTIME", name: str = "") -> dict[str, Any]:
+    return {
+        "sc_no": sc_no,
+        "sc_name": name,
+        "cycle_time": 0,
+        "controller_type": controller_type,
+        "phases": [],
+    }
+
+
+def _shadow_with_splits(signals: list[dict[str, Any]], splits: list[dict[str, Any]]) -> dict[str, Any]:
+    shadow = _shadow_model(signals=signals)
+    shadow["signal_program_splits"] = splits
+    return shadow
+
+
+def _split_row(sc_no: str, program_no: str, sg_no: str) -> dict[str, Any]:
+    return {
+        "id": f"{sc_no}.{program_no}.{sg_no}",
+        "sc_no": sc_no,
+        "program_no": program_no,
+        "sg_no": sg_no,
+        "sg_name": f"SG{sg_no}",
+        "green_window": {"green_start_s": 10.0, "green_end_s": 40.0},
+        "amber_s": 3.0,
+        "min_green_s": None,
+        "head_count": 2,
+        "cycle_s": 90.0,
+        "active": True,
+    }
+
+
+def test_object_not_found_fires_for_add_signal_controller_bogus_source():
+    # The _TOOL_TARGET_SPEC/applies_to lockstep -- easy to forget, and a
+    # miss here means a bogus donor reaches COM instead of being refused
+    # with the real available controller numbers.
+    action = _action("add_signal_controller", source_sc_no="999", new_name="North junction")
+    shadow = _shadow_model(signals=[_signal("1"), _signal("2")])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert matches[0].tier == "refuse"
+    assert matches[0].details == {
+        "tool": "add_signal_controller",
+        "target_id": "999",
+        "object_class": "signals",
+    }
+
+
+def test_object_not_found_offers_signal_controller_candidates_for_a_near_miss_source():
+    # #1's candidates are difflib near-misses, not "every object in the
+    # class" -- a typo'd donor number gets the real controller back.
+    action = _action("add_signal_controller", source_sc_no="12", new_name="North junction")
+    shadow = _shadow_model(signals=[_signal("1", name="Beijing"), _signal("2")])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "object_not_found"]
+    assert len(matches) == 1
+    assert _candidate_ids(matches[0].suggested_fix) == {"1", "2"}
+
+
+def test_signal_controller_duplicate_source_type_unsupported_refuses_an_rbc_donor():
+    action = _action("add_signal_controller", source_sc_no="22", new_name="North junction")
+    shadow = _shadow_model(
+        signals=[
+            _signal("22", controller_type="RINGBARRIERCONTROLLER", name="State/10th"),
+            _signal("1", controller_type="FIXEDTIME", name="Beijing"),
+        ]
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [
+        f for f in findings
+        if f.constraint_id == "signal_controller_duplicate_source_type_unsupported"
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    assert finding.details["controller_type"] == "RINGBARRIERCONTROLLER"
+    # A refusal must carry the nearest allowed alternative (doctrine §4).
+    assert finding.details["duplicable_donors"] == ["1 (Beijing)"]
+    _assert_well_formed_messages(finding, must_contain_ko="복제")
+
+
+def test_signal_controller_duplicate_source_type_unsupported_refuses_an_unknown_type_donor():
+    # Refuse-on-unproven-type, matching #4's own conservative stance: a
+    # controller whose type signal_parser could not read is not assumed safe.
+    action = _action("add_signal_controller", source_sc_no="9", new_name="copy")
+    shadow = _shadow_model(signals=[_signal("9", controller_type="unknown")])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [
+        f for f in findings
+        if f.constraint_id == "signal_controller_duplicate_source_type_unsupported"
+    ]
+    assert len(matches) == 1
+    assert matches[0].details["duplicable_donors"] == []
+
+
+@pytest.mark.parametrize("controller_type", ["FIXEDTIME", "FIXEDTIMESIMPLE"])
+def test_signal_controller_duplicate_source_type_unsupported_silent_for_both_allowed_families(
+    controller_type,
+):
+    # Both families were live-measured as duplicable (probe Parts A and B) --
+    # neither may be refused here.
+    action = _action("add_signal_controller", source_sc_no="1", new_name="copy")
+    shadow = _shadow_model(signals=[_signal("1", controller_type=controller_type)])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not [
+        f for f in findings
+        if f.constraint_id == "signal_controller_duplicate_source_type_unsupported"
+    ]
+
+
+def test_signal_controller_duplicate_source_type_unsupported_silent_when_donor_missing():
+    action = _action("add_signal_controller", source_sc_no="999", new_name="copy")
+    shadow = _shadow_model(signals=[_signal("1")])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not [
+        f for f in findings
+        if f.constraint_id == "signal_controller_duplicate_source_type_unsupported"
+    ]
+
+
+def test_signal_controller_duplicate_inherits_donor_program_names_the_real_shape():
+    # Beijing's measured shape, scaled: 2 programs x 2 signal groups.
+    action = _action("add_signal_controller", source_sc_no="1", new_name="North junction")
+    shadow = _shadow_with_splits(
+        [_signal("1")],
+        [
+            _split_row("1", "1", "1"),
+            _split_row("1", "1", "2"),
+            _split_row("1", "2", "1"),
+            _split_row("1", "2", "2"),
+        ],
+    )
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [
+        f for f in findings
+        if f.constraint_id == "signal_controller_duplicate_inherits_donor_program"
+    ]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "warn"
+    assert finding.details["inherited_program_count"] == 2
+    assert finding.details["inherited_signal_group_count"] == 2
+    assert finding.details["inherited_green_split_count"] == 4
+    assert "2 program(s) x 2 signal group(s) = 4 green split(s)" in finding.messages["en"]
+    _assert_well_formed_messages(finding, must_contain_ko="신호 프로그램")
+
+
+def test_signal_controller_duplicate_inherits_donor_program_says_so_when_splits_unreadable():
+    # A supported-type donor whose splits this model does not expose (e.g. a
+    # stage-based program signal_parser reports without green windows): the
+    # warn still fires -- the copy still inherits SOMETHING -- but it must
+    # not render a confident "0 program(s) x 0 signal group(s)".
+    action = _action("add_signal_controller", source_sc_no="1", new_name="copy")
+    shadow = _shadow_with_splits([_signal("1")], [])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [
+        f for f in findings
+        if f.constraint_id == "signal_controller_duplicate_inherits_donor_program"
+    ]
+    assert len(matches) == 1
+    assert "does not expose" in matches[0].messages["en"]
+    assert "0 program(s)" not in matches[0].messages["en"]
+
+
+def test_signal_controller_duplicate_inherits_donor_program_silent_for_unsupported_donor():
+    # The refuse check owns that case -- firing both would bury the refusal.
+    action = _action("add_signal_controller", source_sc_no="22", new_name="copy")
+    shadow = _shadow_model(signals=[_signal("22", controller_type="VAP")])
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not [
+        f for f in findings
+        if f.constraint_id == "signal_controller_duplicate_inherits_donor_program"
+    ]
+
+
+def test_signal_controller_duplicate_constraints_are_silent_for_every_other_tool():
+    shadow = _shadow_model(signals=[_signal("1", controller_type="VAP")])
+    for action in (
+        _action("set_signal_offset", sc_no="1", offset=10),
+        _action("add_signal_head", link_no="101", lane_index=1, pos_m=50.0, sc_no="1", sg_no="1"),
+        _action("duplicate_driving_behavior", source_no="1", new_name="copy"),
+    ):
+        findings = run_checks("preflight", action, shadow, {})
+        assert not [
+            f for f in findings
+            if f.constraint_id
+            in (
+                "signal_controller_duplicate_source_type_unsupported",
+                "signal_controller_duplicate_inherits_donor_program",
+            )
+        ], action["tool"]

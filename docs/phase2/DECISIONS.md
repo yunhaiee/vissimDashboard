@@ -3164,3 +3164,70 @@ untouched by mtime: 133 files, newest 2026-07-31, **zero modified today**. A hum
 (PID 50960, `SouthStreet_Base2026`, open since 07-28) survived the whole COM-heavy run unchanged
 — controller confirmed same PID and title afterwards. That is `attach_to_running=False` earning
 its place in the hard rules.
+
+## 2026-08-03 — Q5 ②: `add_signal_controller`, and two defects the verification caught
+
+The last fully-open genesis gap closes. `DuplicateSignalController` is the real path — the
+FOURTH appearance of duplicate-then-edit (driving behaviors Q3 ⑥, priority rules Q4 ⑥,
+controllers Q4 ⑧/Q5 ①) — and plain `AddSignalController` stays deliberately unwrapped: it
+creates a real object that is a non-functional skeleton, and a controller with no real timing
+program makes `RunSingleStep` fail outright (live-verified twice now).
+
+**Live findings.** `DuplicateSignalController(Source, NewKey)` accepts BOTH argument shapes —
+an int key (`DuplicateDrivingBehavior`'s convention) and a COM object (`DuplicatePriorityRule`'s)
+— each proven by its own `GetAll()` id-set diff, never by a bare non-exception. The verb uses
+the int form so the donor is existence-checked first. **The copy inherits the donor's NAME**,
+so the verb renames inside the same call; without that a network ends up with two
+identically-named controllers. Gap ②'s spec, predicted from Q5 ①'s harness bug, held exactly:
+`_ALLOWS_NEW_OBJECTS_IN["add_signal_controller"] = {"signals", "signal_program_splits"}`, and
+the counterfactual was run rather than assumed — popping the entry turns a correct call into
+`write_verification_failed` with 45 evidence rows on Beijing (1 signal + 44 splits), and
+narrowing it to `{"signals"}` alone still leaves 44. Both classes are individually necessary.
+
+**New ordering landmine:** structural controller edits are refused once a simulation has
+started — after one `RunSingleStep`, `RemoveSignalController` raised "This action cannot be
+performed during simulation." Harmless for an edit session, real for any future build-then-run
+job reusing one COM session.
+
+**Two constraints (registry 100→102).** A refuse when the donor is a non-fixed-time type, from
+measured data rather than taste: all 49 of Boise's RBC controllers carry
+`supplyFile1='#data#<no>.prbc'` and **no `intSupplyData` attribute at all** — absent, not
+present-and-empty; the token occurs **0 times** in the whole 2.7 MB file, against exactly 1
+populated blob in Beijing's (controller re-counted both independently). `signal_parser` yields
+zero `signal_program_splits` rows for that entire family, so such a copy would be both
+unverifiable and permanently uneditable. And a warn naming what the copy inherits — the silent
+lie being a caller who asks for "a controller for the north junction", gets one, and reads
+confident delay numbers produced by a verbatim copy of a *different* intersection's timing.
+
+**The verification found two real defects; both are fixed here, neither was the agent's headline.**
+
+1. **The reader echoed its own argument.** `get_signal_controller` returned `"no": str(sc_no)`,
+   while its named precedent `get_driving_behavior` does a genuine `AttValue("No")` readback.
+   `add_signal_controller` returns that dict for a number it *computed* (`max+1`) and the agent
+   layer lifts `artifacts.new_sc_no` straight out of it — so the verb's identity claim was
+   unfalsifiable by construction, in the one place this codebase's
+   verify-by-state-diff-never-return-value rule most obviously applies. Now
+   `str(int(AttValue("No")))`; `int()` because COM returns `No` as a float on some collections
+   (`_collection_nos` already carries the same guard) and a `"2.0"` would miss every
+   shadow-model id keyed `"2"`. New `tests/test_vissim_com_signal_controller.py` (8 tests) pins
+   it, and the counterfactual was run: restoring the echo fails with `'7' == '42'`.
+2. **A registry pin that only passed because another test file ran first.** `pytest
+   tests/test_agent_read_tools.py` alone failed 2 tests — `load_check` is in
+   `EXPECTED_RUN_TOOL_NAMES` but `tools_check.py` was never added to that file's imports, so the
+   pin was satisfied by `test_agent_orchestrator.py` importing `orchestrator.py` earlier in the
+   session. **Pre-existing since v2 ③, not this unit's doing** — and the file's own comment
+   block already documents this exact bug class being diagnosed and fixed once before. The rule
+   is only as good as its last line. 150 pass in isolation now.
+
+Suite 2224→2252 (+20 from the unit, +8 from the fix above). Frontend `tsc --noEmit` clean;
+contract 11/12, the one failure being the base-model layout test CLAUDE.md names as
+pre-existing. `runtime/uploads/` verified untouched by mtime: 133 files, newest 2026-07-31,
+zero modified today. Stale "90-constraint registry" figure corrected in
+`docs/product/tk-requirements-2026-07-31.md` to carry no number, so it cannot go stale again.
+
+**The Vissim GUI that vanished mid-run was the user closing it** — reported here because the
+agent flagged the correlation with its own COM window rather than explaining it away, which is
+the behavior we want. Forensics agreed before the user confirmed: `SouthStreet_Base.inpx`
+unchanged since 2026-06-23, a `.vissimpdb` write at 10:41:29 (the normal-close signature), and
+zero Application Error / WER / Hang events all day. No data loss, no tooling fault,
+`attach_to_running=False` behaving correctly throughout.

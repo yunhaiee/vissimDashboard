@@ -896,6 +896,23 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
     # express (mirrors set_route_relative_flow's/set_des_speed_decision's own
     # split exactly) -- see the dedicated pt_line_stop_not_found check below,
     # which ALSO validates time_distribution_no in the same pass.
+    #
+    # Q5 unit (2): add_signal_controller's target is the DONOR it duplicates
+    # -- the "signals" object class set_signal_cycle/set_signal_offset
+    # already use, just a different param name ("source_sc_no"), exactly
+    # mirroring duplicate_driving_behavior's own "source_no points at the
+    # driving_behaviors class" entry. Whether the donor is of a duplicable
+    # TYPE is a separate dedicated check
+    # (signal_controller_duplicate_source_type_unsupported, below) -- the
+    # same "existence is generic, appropriateness is dedicated" split
+    # time_distribution_type_mismatch and des_speed_distribution_not_found
+    # already established.
+    "add_signal_controller": {
+        "object_class": "signals",
+        "id_field": "sc_no",
+        "name_field": "sc_name",
+        "param": "source_sc_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -1211,6 +1228,10 @@ register(
             "remove_stop_sign",
             "add_priority_rule",
             "remove_priority_rule",
+            # Q5 unit (2): add_signal_controller's DONOR must already exist
+            # (easy to forget -- unit (2)'s own review caught this class of
+            # miss twice before).
+            "add_signal_controller",
         ],
         phase="preflight",
         tier="refuse",
@@ -9224,5 +9245,246 @@ register(
         message_ja="この検知器は信号ヘッド '{head_no}' から{actual_setback}m後方に配置されており、"
         "MRWA附録A規定値{default_m}mと異なります。値自体が誤りとは限りませんが、MRWA規定値からの"
         "逸脱のため、理由を記録してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# signal_controller_duplicate_source_type_unsupported (refuse, preflight) --
+# Q5 unit (2). The FIRST of this unit's two constraints, and the one that
+# keeps add_signal_controller inside the guardrail doctrine's
+# "verifiability" axis (00-EXECUTION-GUIDE.md §4).
+#
+# add_signal_controller creates a new controller by DUPLICATING an existing
+# one, so the copy is only as knowable as its donor. Constraint #4
+# (signal_controller_type_unsupported, pre-existing) already refuses every
+# cycle/offset/green-split EDIT on a controller outside
+# _SUPPORTED_CONTROLLER_TYPES; this is the CREATE-side mirror of the same
+# population, and it is deliberately a separate constraint rather than one
+# more entry on #4's applies_to list, because the param it reads is
+# different (``source_sc_no``, the DONOR) and the remedy it offers is
+# different (pick another donor, not "give up on this edit").
+#
+# Measured grounds (backend/tools/probe_signal_controller_duplicate.py
+# Part D, 2026-08-03, on Signalization RBC Boise.US -- 49 RBC controllers):
+#   - all 49 carry their program in an EXTERNAL file
+#     (``supplyFile1='#data#<no>.prbc'``) and NONE carries an in-file
+#     ``intSupplyData`` program at all;
+#   - build_shadow_model yields ZERO ``signal_program_splits`` rows for the
+#     whole network, versus 44 for Beijing's single FIXEDTIME controller --
+#     so nothing this codebase can read would ever verify what a copy
+#     inherited;
+#   - constraint #4 then refuses every timing edit on the copy, so it would
+#     also be permanently uneditable by this agent.
+# NOT claimed (the COM half is blocked on this machine -- Boise fails to
+# load, an RBC licensing block already recorded in DECISIONS.md 2026-07-31,
+# and this unit re-confirmed it is NOT the scenario-management flag): that
+# Vissim itself refuses such a duplicate, or that the copy would literally
+# share the donor's external file. Both are plausible; neither was observed;
+# the refusal rests on neither.
+# ---------------------------------------------------------------------------
+
+
+def _fixedtime_donor_candidates(shadow_model: dict[str, Any]) -> list[str]:
+    """Controller ids in this network whose type IS duplicable -- the
+    "nearest allowed alternative" the guardrail doctrine requires a refusal
+    to carry. Bounded by _CANDIDATE_CAP, like every other candidate list."""
+    candidates: list[str] = []
+    for signal in shadow_model.get("signals", []):
+        if signal.get("controller_type") in _SUPPORTED_CONTROLLER_TYPES:
+            name = str(signal.get("sc_name") or "").strip()
+            sc_no = str(signal.get("sc_no", ""))
+            candidates.append(f"{sc_no} ({name})" if name else sc_no)
+        if len(candidates) >= _CANDIDATE_CAP:
+            break
+    return candidates
+
+
+def _check_signal_controller_duplicate_source_type_unsupported(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "add_signal_controller":
+        return None
+
+    source_sc_no = str(action.get("params", {}).get("source_sc_no", ""))
+    donor = _find_by_field(shadow_model.get("signals", []), "sc_no", source_sc_no)
+    if donor is None:
+        return None  # missing donor is object_not_found's job (#1)
+
+    controller_type = donor.get("controller_type")
+    if controller_type in _SUPPORTED_CONTROLLER_TYPES:
+        return None
+
+    displayed_type = controller_type if controller_type else "unknown"
+    candidates = _fixedtime_donor_candidates(shadow_model)
+    if candidates:
+        candidates_ko, candidates_en, candidates_ja = _capped_join(
+            candidates, "개", "candidates", "件"
+        )
+    else:
+        candidates_ko = candidates_en = candidates_ja = "-"
+
+    return Finding(
+        constraint_id="signal_controller_duplicate_source_type_unsupported",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "signal_controller_duplicate_source_type_unsupported",
+            sc_no=source_sc_no,
+            controller_type=displayed_type,
+            candidates_ko=candidates_ko,
+            candidates_en=candidates_en,
+            candidates_ja=candidates_ja,
+        ),
+        suggested_fix={"duplicable_donors": candidates},
+        details={
+            "source_sc_no": source_sc_no,
+            "controller_type": displayed_type,
+            "duplicable_donors": candidates,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="signal_controller_duplicate_source_type_unsupported",
+        applies_to=["add_signal_controller"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_signal_controller_duplicate_source_type_unsupported,
+        message_ko="복제 원본 신호제어기 '{sc_no}'의 타입({controller_type})은 복제할 수 없습니다. "
+        "이 타입은 신호 프로그램이 .inpx 밖의 외부 파일에 있어, 복사본이 무엇을 물려받았는지 "
+        "확인할 수도 없고 이후 수정할 수도 없습니다. 고정시간(fixed-time) 제어기를 원본으로 "
+        "선택하세요. 후보: {candidates_ko}.",
+        message_en="Source signal controller '{sc_no}' has controller type "
+        "'{controller_type}', which cannot be duplicated: this type keeps its signal program in "
+        "an external file outside the .inpx, so what the copy inherited could neither be "
+        "verified nor edited afterwards. Duplicate a fixed-time controller instead. "
+        "Candidates: {candidates_en}.",
+        message_ja="複製元の信号制御機 '{sc_no}' のタイプ('{controller_type}')は複製できません。"
+        "このタイプは信号プログラムを.inpx外部のファイルに保持するため、コピーが何を継承したかを"
+        "検証することも、その後編集することもできません。固定時間式(fixed-time)制御機を元に"
+        "選んでください。候補: {candidates_ja}。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# signal_controller_duplicate_inherits_donor_program (warn, preflight) --
+# Q5 unit (2)'s second constraint, and the one this unit's brief specifically
+# sanctioned ("if a duplicate-then-edit verb needs a warn naming what the
+# copy inherits from the donor, that is the kind that earns its place").
+#
+# The silent lie this exists for: a caller asks for "a new signal controller
+# for the north junction", gets one, wires heads to it, runs the model, and
+# reads confident delay numbers produced by a timing plan that is actually a
+# verbatim copy of a DIFFERENT intersection's. Nothing in Vissim complains;
+# the copy is a perfectly valid controller. Live-measured on Beijing: one
+# duplicate carries 2 programs x 22 signal groups = 44 green splits, every
+# one identical to the donor's (backend/tools/probe_signal_controller_
+# duplicate.py [A.3]/[A.9]).
+#
+# Warn, not refuse: duplicating IS the correct and only way to create a
+# controller here, and inheriting a working program is exactly why it is
+# correct -- the copy is a legitimate starting point, not an error. It just
+# must never be mistaken for a blank one. Tier 2 of the doctrine
+# ("allowed-with-warning: legal but suspicious ... execute AND attach the
+# specific constraint warning") verbatim.
+#
+# Silent when the donor is missing (#1's job) or of an unduplicable type
+# (the refuse check above owns that case -- firing both would bury the
+# refusal in noise).
+# ---------------------------------------------------------------------------
+
+
+def _donor_program_shape(shadow_model: dict[str, Any], sc_no: str) -> tuple[int, int, int]:
+    """(program count, signal-group count, total green-split rows) the copy
+    will inherit, read from the FLAT signal_program_splits list -- the same
+    rows guardrails.py's postwrite diff counts as "added" for this verb."""
+    rows = [
+        row
+        for row in shadow_model.get("signal_program_splits", [])
+        if str(row.get("sc_no", "")) == sc_no
+    ]
+    programs = {str(row.get("program_no", "")) for row in rows}
+    signal_groups = {str(row.get("sg_no", "")) for row in rows}
+    return len(programs), len(signal_groups), len(rows)
+
+
+def _check_signal_controller_duplicate_inherits_donor_program(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "add_signal_controller":
+        return None
+
+    source_sc_no = str(action.get("params", {}).get("source_sc_no", ""))
+    donor = _find_by_field(shadow_model.get("signals", []), "sc_no", source_sc_no)
+    if donor is None:
+        return None  # missing donor is object_not_found's job (#1)
+    if donor.get("controller_type") not in _SUPPORTED_CONTROLLER_TYPES:
+        return None  # the refuse check above owns this case
+
+    program_count, sg_count, split_count = _donor_program_shape(shadow_model, source_sc_no)
+    if split_count:
+        shape_ko = f"프로그램 {program_count}개 x 신호그룹 {sg_count}개 = 녹색시간 {split_count}건"
+        shape_en = (
+            f"{program_count} program(s) x {sg_count} signal group(s) = "
+            f"{split_count} green split(s)"
+        )
+        shape_ja = f"プログラム{program_count}個 x 信号グループ{sg_count}個 = 青時間{split_count}件"
+    else:
+        # A supported-type donor whose splits this model does not expose --
+        # say so rather than rendering a confident "0 x 0".
+        shape_ko = "이 모델에서 녹색시간 정보를 읽을 수 없는 프로그램"
+        shape_en = "a program whose green splits this model does not expose"
+        shape_ja = "このモデルでは青時間情報を読み取れないプログラム"
+
+    return Finding(
+        constraint_id="signal_controller_duplicate_inherits_donor_program",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "signal_controller_duplicate_inherits_donor_program",
+            sc_no=source_sc_no,
+            shape_ko=shape_ko,
+            shape_en=shape_en,
+            shape_ja=shape_ja,
+        ),
+        suggested_fix={
+            "next_steps": [
+                "set_signal_green_split on the NEW controller number",
+                "set_signal_offset on the NEW controller number (coordination)",
+                "add_signal_head(sc_no=<new number>, sg_no=...) to wire geometry to it",
+            ],
+        },
+        details={
+            "source_sc_no": source_sc_no,
+            "inherited_program_count": program_count,
+            "inherited_signal_group_count": sg_count,
+            "inherited_green_split_count": split_count,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="signal_controller_duplicate_inherits_donor_program",
+        applies_to=["add_signal_controller"],
+        phase="preflight",
+        tier="warn",
+        check=_check_signal_controller_duplicate_inherits_donor_program,
+        message_ko="새 신호제어기는 원본 '{sc_no}'의 신호 프로그램을 그대로 물려받습니다 "
+        "({shape_ko}). 빈 제어기가 아니라 원본과 똑같은 신호시간으로 동작하므로, 새 번호에 대해 "
+        "set_signal_green_split(필요시 set_signal_offset)으로 실제 의도한 시간계획으로 바꾸세요. "
+        "또한 add_signal_head로 신호등을 연결하기 전까지는 아무것도 제어하지 않습니다.",
+        message_en="The new signal controller inherits source '{sc_no}'s entire signal program "
+        "({shape_en}). It is not a blank controller -- it will run the SOURCE's timings until you "
+        "change them with set_signal_green_split (and set_signal_offset for coordination) on the "
+        "new controller number, and it controls nothing at all until signal heads are wired to it "
+        "with add_signal_head.",
+        message_ja="新しい信号制御機は元の '{sc_no}' の信号プログラムをそのまま継承します"
+        "({shape_ja})。空の制御機ではなく元と同じ信号時間で動作するため、新しい番号に対して"
+        "set_signal_green_split(必要に応じてset_signal_offset)で意図した時間計画に変更して"
+        "ください。またadd_signal_headで信号灯を接続するまでは何も制御しません。",
     )
 )

@@ -3817,3 +3817,162 @@ def test_postwrite_diff_treats_rollback_with_no_reverted_targets_like_any_unmapp
     )
 
     assert report.blocking is True
+
+
+# ---------------------------------------------------------------------------
+# Q5 unit (2): add_signal_controller -- the ONE table entry this verb cannot
+# ship without. Both "signals" AND "signal_program_splits" are tracked by
+# _SHADOW_OBJECT_ID_FIELDS, and one DuplicateSignalController call adds rows
+# to BOTH (the copy carries the donor's whole timing program), so without
+# _ALLOWS_NEW_OBJECTS_IN["add_signal_controller"] covering both classes every
+# correct call is refused and rolled back by this exact diff.
+#
+# That is not a hypothesis: Q5 unit (1)'s composite probe made a raw
+# DuplicateSignalController call inside add_signal_head's postwrite window
+# and the real engine refused THAT verb, naming `signals#2:added` plus 44
+# `signal_program_splits#2.{1,2}.{1..22}:added` (DECISIONS.md 2026-08-03).
+# The first test below reproduces that id shape exactly -- one donor with 2
+# programs x 2 signal groups, scaled down only so the fixture stays readable
+# -- and asserts the shipped entry suppresses it. The live E2E against a real
+# COM write is backend/tools/signal_controller_live_check.py; the shadow
+# deltas both fixtures mirror were measured in
+# backend/tools/probe_signal_controller_duplicate.py [A.9]/[B.4].
+# ---------------------------------------------------------------------------
+
+
+def _signal_entry(sc_no: str, *, controller_type: str = "FIXEDTIME", name: str = "") -> dict[str, Any]:
+    return {
+        "sc_no": sc_no,
+        "sc_name": name,
+        "cycle_time": 0,
+        "controller_type": controller_type,
+        "phases": [],
+    }
+
+
+def test_postwrite_diff_suppresses_add_signal_controller_own_new_controller_and_splits():
+    action = _action("add_signal_controller", source_sc_no="1", new_name="North junction")
+    before = _shadow_model(
+        signals=[_signal_entry("1")],
+        signal_program_splits=[
+            _green_split_entry("1", "1", "1"),
+            _green_split_entry("1", "1", "2"),
+            _green_split_entry("1", "2", "1"),
+            _green_split_entry("1", "2", "2"),
+        ],
+    )
+    after = _shadow_model(
+        signals=[_signal_entry("1"), _signal_entry("2", name="North junction")],
+        signal_program_splits=[
+            _green_split_entry("1", "1", "1"),
+            _green_split_entry("1", "1", "2"),
+            _green_split_entry("1", "2", "1"),
+            _green_split_entry("1", "2", "2"),
+            # the copy's inherited program: donor programs x donor signal
+            # groups, all identical to the donor's own windows.
+            _green_split_entry("2", "1", "1"),
+            _green_split_entry("2", "1", "2"),
+            _green_split_entry("2", "2", "1"),
+            _green_split_entry("2", "2", "2"),
+        ],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {"written_value": "North junction", "readback_value": "North junction"},
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_suppresses_add_signal_controller_with_a_single_program_donor():
+    # Air Taxi Vertiport's shape (probe Part B): a FIXEDTIMESIMPLE donor with
+    # ONE program and 2 signal groups adds 1 + 2 rows, not 1 + 44 -- the
+    # per-call split count is donor-specific, which is exactly why the
+    # exemption is a per-object-CLASS opt-in and not an id list.
+    action = _action("add_signal_controller", source_sc_no="11", new_name="Second door")
+    before = _shadow_model(
+        signals=[_signal_entry("11", controller_type="FIXEDTIMESIMPLE", name="Terminal door")],
+        signal_program_splits=[
+            _green_split_entry("11", "1", "1"),
+            _green_split_entry("11", "1", "2"),
+        ],
+    )
+    after = _shadow_model(
+        signals=[
+            _signal_entry("11", controller_type="FIXEDTIMESIMPLE", name="Terminal door"),
+            _signal_entry("22", controller_type="FIXEDTIMESIMPLE", name="Second door"),
+        ],
+        signal_program_splits=[
+            _green_split_entry("11", "1", "1"),
+            _green_split_entry("11", "1", "2"),
+            _green_split_entry("22", "1", "1"),
+            _green_split_entry("22", "1", "2"),
+        ],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after, {"written_value": "Second door", "readback_value": "Second door"}
+    )
+
+    assert report.findings == []
+    assert report.blocking is False
+
+
+def test_postwrite_diff_still_flags_an_unrelated_change_during_add_signal_controller():
+    # The exemption suppresses ADDITIONS in those two classes -- it must not
+    # blind the diff to a FIELD change on a pre-existing controller's split
+    # (the donor's own timing must not move when it is duplicated).
+    action = _action("add_signal_controller", source_sc_no="1", new_name="North junction")
+    before = _shadow_model(
+        signals=[_signal_entry("1")],
+        signal_program_splits=[_green_split_entry("1", "1", "1", green_start_s=10.0, green_end_s=40.0)],
+    )
+    after = _shadow_model(
+        signals=[_signal_entry("1"), _signal_entry("2", name="North junction")],
+        signal_program_splits=[
+            _green_split_entry("1", "1", "1", green_start_s=10.0, green_end_s=55.0),  # donor drifted
+            _green_split_entry("2", "1", "1"),
+        ],
+    )
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {"written_value": "North junction", "readback_value": "North junction"},
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        entry["object_class"] == "signal_program_splits"
+        and entry["object_id"] == "1.1.1"
+        and entry["change"] == "field_changed"
+        for entry in diff
+    )
+
+
+def test_postwrite_diff_still_flags_an_added_signal_controller_for_a_tool_not_opted_in():
+    # The suppression is tool-SPECIFIC (_ALLOWS_NEW_OBJECTS_IN), not a
+    # blanket "never flag added signal controllers" rule -- exactly the
+    # situation Q5 unit (1) hit, where a raw duplicate appeared inside
+    # add_signal_head's postwrite window and was correctly refused.
+    action = _action("add_signal_head", link_no="101", lane_index=1, pos_m=50.0, sc_no="1", sg_no="1")
+    before = _shadow_model(signals=[_signal_entry("1")])
+    after = _shadow_model(signals=[_signal_entry("1"), _signal_entry("2")])
+    engine = GuardrailEngine(disabled=False)
+
+    report = engine.postwrite(
+        action, before, after,
+        {"written_value": {"link": "101"}, "readback_value": {"link": "101"}},
+    )
+
+    assert report.blocking is True
+    diff = report.first_refusal().details["nothing_else_moved_diff"]
+    assert any(
+        entry["object_class"] == "signals" and entry["object_id"] == "2" and entry["change"] == "added"
+        for entry in diff
+    )
