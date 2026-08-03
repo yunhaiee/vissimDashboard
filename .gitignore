@@ -22,6 +22,12 @@ frontend/.next-dev-log
 runtime/
 data/
 
+# Client-confidential source data (TK/Dochak drops: Daejeon SIS signal + count data,
+# Main Roads WA signal/travel-time/turning-movement data). NEVER commit — this is the
+# client's data, not ours, and the repo is only private, not secret.
+client-data/
+*.zip
+
 # AI-tool session caches
 .omc/
 .codex/
