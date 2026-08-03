@@ -171,7 +171,16 @@ the PAIRS and distribution-assignment line items).**
   WKT is always raw metres while LaneWidths/Pos are display-units; straight-line
   fidelity, curvature/z/non-contiguous mappings recorded follow-ups; removes refuse
   naming referrers; reroute = route tools' territory)
-- ⬜ Link geometry edits (lanes / length / curvature)
+- ✅ Link geometry edits (lanes / length / curvature) — shipped (Q6 ①:
+  `set_link_lane_count` via ILaneContainer AddLane/RemoveLane — the M0.3 "not
+  editable" premise was NumLanes-the-attribute only, measured false for the
+  container; every count change shifts the centreline half a lane width (warn);
+  `set_link_geometry` moves existing points raw-metres, point COUNT immutable,
+  refuses shortening past anchored objects — Vissim silently relocates them and
+  stretches far-end connectors 11.7→237.7 m; `set_link_point_radius` two-step
+  USERINPUT/Rad; junction reshapes CREATE conflict areas — exempted for :added
+  rows only, removals stay loud; z-offset/RecalculateSpline/SplitLink
+  deliberately unwrapped)
 - ✅ Turn bans / movement removal — shipped (Q4 ③, `set_turn_ban` reversible on the
   connector's lanes + `remove_connector` structural, refuses-when-referenced naming
   referrers — Vissim itself silently DROPS dangling conflict areas on recompute)

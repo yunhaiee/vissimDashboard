@@ -3306,3 +3306,76 @@ counts CASES — its 15 new functions in `test_agent_constraints.py` alone expan
 Controller re-derived the full id-set diff at HEAD in a throwaway worktree: all 51 new ids are
 genuinely new; no existing parameter list grew. Full suite 2303 passed / 1 failed (known RAG) /
 1 skipped.
+
+## 2026-08-03 — Q6 ①: link geometry edits — the M0.3 premise measured false
+
+First Q6 unit (user approved Q6 = geometry · parking · pedestrian 2026-08-03, closing 1.1's
+remainder). Three verbs + a paired reader, built on a 10-part probe with a null control
+(Part G: an untouched load+save moves 0 of 112 links, 0 lane counts, 0 endpoints — every diff
+below is attributable).
+
+**The catalog premise was wrong, measurably.** `SetAttValue("NumLanes")` fails loudly — but
+`ILaneContainer.AddLane/RemoveLane` genuinely work on an existing link. The M0.3-era constraint
+`lane_count_edit_unsupported` was built on "lane count cannot be changed"; its premise is now
+measured false, so its ko/en/ja text and `suggested_fix` were rewritten and `set_link_lane_count`
+exempted. Measured behaviors that became constraints/refusals: every lane-count change silently
+moves the centreline by half a lane width (warn `link_lane_count_shifts_centerline`);
+`RemoveLane` silently cascade-deletes lane-anchored objects — 53 heads/32 DCPs → 52/31 in a
+control/treatment pair, `load_check` still green (refused via the lane-token registry, naming
+referrers); shortening a link silently RELOCATES everything past the new end — a DCP at
+132.485 m clamped to exactly the new end, and three far-end connectors stretched to reach,
+**11.71 m → 237.70 m** for connector 10006 (refuse `link_geometry_truncates_anchored_objects`,
+naming the objects and the minimum safe length). Curvature is per-point `Rad`/`RadiusSrc`, a
+two-step USERINPUT write (warn `link_point_radius_overrides_geometry`). Registry 104→107.
+
+**Units, the full map:** COM X/Y are raw metres in BOTH directions even on a feet network
+(ratio 1.0 to the persisted file) while `Length2D`, `Width`, `Rad`, and `ZOffset` on the same
+objects are ×3.280840 display units. z is scaled where x/y are not. Point COUNT is immutable
+(no Add/Remove/Insert on the point containers; WKT exists only as an `AddLink` argument) —
+`set_link_geometry` refuses a differing point count.
+
+**Reshapes at junctions CREATE conflict areas** — live-caught by the check itself, not
+predicted: lengthening Beijing link 1 by 10 m materialised conflict areas 905/906/907 and the
+real postwrite refused a correct edit. Hence `_ALLOWS_NEW_OBJECTS_IN` entries for both shape
+verbs ({link_lanes, conflict_areas} / {conflict_areas}), every counterfactual RUN (popped and
+narrowed variants each refusing with named rows), and the asymmetry pinned by test: an *added*
+conflict area is excused, a *removed* one stays blocking evidence — Q4 ③'s silent-drop finding
+keeps its alarm.
+
+**Blast radius, disclosed and verified:** the probe's corpus scan found six lane-token sites
+the registry didn't know (`pavementMarking` 815, `desSpeedDecision` 584, `parkingLot` 573,
+`dataCollectionPoint` 222, `ptStop` 189, `vehicleAttributeDecision` 66 — counts reproduced by
+an independent parser in review), including `dataCollectionPoint@lane`, the very class Part A
+watched get destroyed. Registering them makes `remove_link`/`remove_connector`/
+`remove_last_lane` refuse MORE — fail-safe, regression suites green.
+
+**The verification (12 agents, 6 dimensions, adversarial refutation) found one real code
+defect — in the probe, not the verbs.** `_moved_links` computed deltas as before-minus-after
+(`b`/`a` bound inverted), so every persisted centreline delta in `state.json` and two of three
+A2 table rows were sign-flipped — and internally inconsistent with the Camden row, which came
+from a raw-subtraction path. Systematic (parts a/b/d), caught by an adversary diffing the .inpx
+pairs directly. Fixed after-minus-before; the docstring now flags the recorded `state.json`'s
+inverted sign. Prose drifts fixed in the same pass: a y-value wrong at the 4th decimal
+(+0.47050 vs measured +0.470445), three distinct FromPos values collapsed to one, a stale
+`--part {a..g}` (real range a..j). The pattern across three units now: **the machine-written
+artifact is always right; the prose describing it is where errors live.**
+
+**Refusal messages must survive the dispatch cap.** `toolkit.dispatch` truncates exception text
+at 300 chars; a 12-referrer `ReferenceIntegrityError` measured 613 and lost most referrer names
+mid-word. The render now names the first three plus an honest "and N more" (full list always on
+`.referrers`), pinned by test. All six of the unit's own refusals measure 184–273 chars —
+under the cap whole. Known residuals, recorded not fixed: the pydantic `invalid_params` path
+bypasses the cap entirely (pre-existing), and `ReferenceIntegrityError` carries no
+envelope-artifact recovery. Also recorded: `add_link_lane_count_high` deliberately NOT extended
+to `set_link_lane_count` — multi-tool `applies_to` would degrade the health suggested-action to
+`('inspect', None)`, the exact Q5 ③ regression; and `link_geometry_live_check`'s log was
+print-only (its refusal evidence survived the session only in a scratchpad) — now tees to
+`runtime/link-geometry-live-check/live_check.log`.
+
+Deliberately unwrapped: point-count changes, `RecalculateSpline` (redistributes points ~30 m;
+`RecalculateSplineHeight` zeroed a just-written ZOffset), `SplitLink`, z-offset writes (the
+shadow model cannot see z — `set_link_point_radius`'s parallel blind spot is pinned by a test
+so it stays deliberate). Suite 2305→2371 (+64 unit, +2 referrer-cap pins), 2369 passed / 1
+known RAG fail / 1 skipped. Isolation: constraints 527, inpx_structure 51, tools_link_geometry
+28, vissim_com_link_geometry 22, health_check 13 (edit_time_only 90→93, derived not
+hand-counted).

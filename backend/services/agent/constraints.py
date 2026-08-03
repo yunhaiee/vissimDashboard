@@ -927,6 +927,39 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "link_no",
     },
+    # Q6 unit (1): link geometry edits (lanes / length / curvature). All
+    # three target an EXISTING link by its own "links" id -- the plainest
+    # entries in this whole table, and (unlike every add_* entry above, whose
+    # link param names where a NEW object is placed) the link IS the thing
+    # being edited. Deeper checks have no single flat id the generic
+    # machinery can express and live elsewhere by the established split:
+    # whether shrinking would destroy lane-anchored objects is
+    # tools_edit.set_link_lane_count's own reference-integrity refusal (the
+    # remove_link/remove_pt_stop precedent, via services.inpx_structure);
+    # whether point_index exists and is INTERIOR fails closed inside
+    # tools_edit/vissim_com with the link's real point count named (the same
+    # deliberate cut set_lane_closure's own lane_index documents above); and
+    # the two genuinely semantic failures the probe measured DO get dedicated
+    # checks below (link_geometry_truncates_anchored_objects,
+    # link_lane_count_shifts_centerline).
+    "set_link_lane_count": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_id",
+    },
+    "set_link_geometry": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_id",
+    },
+    "set_link_point_radius": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_id",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -1297,6 +1330,12 @@ register(
             "set_lane_closure",
             "set_link_closure",
             "set_turn_ban",
+            # Q6 unit (1): link geometry edits. Wired AT BIRTH here, in the
+            # same change that adds their _TOOL_TARGET_SPEC entries -- the
+            # whole point of the gap closure above.
+            "set_link_lane_count",
+            "set_link_geometry",
+            "set_link_point_radius",
             # NO deliberate omissions remain: set(_TOOL_TARGET_SPEC) - set(this
             # list) is now EMPTY, pinned by
             # test_object_not_found_applies_to_is_in_lockstep_with_the_spec_table.
@@ -2528,8 +2567,26 @@ register(
 # any pre-existing setter is still refused exactly as before.
 # ---------------------------------------------------------------------------
 
+# **Q6 unit (1): this constraint's own premise is now MEASURED FALSE for the
+# COM layer, and the exemption list is what keeps it useful anyway.** Its text
+# says "there is no COM add/remove-lane attribute" -- ``ILaneContainer.
+# AddLane(Key, Width)``/``RemoveLane(Lane)`` genuinely exist and genuinely
+# work on an EXISTING link (live-proven both directions,
+# backend/tools/probe_link_geometry.py Parts A/B). What IS still true, and is
+# the only part a naive caller could stumble into, is that a link's own
+# ``NumLanes`` attribute is READ-ONLY ("put_AttValue failed - the attribute
+# NUMLANES is not editable", measured) -- so a tool that merely carries a
+# lane-count-shaped param and expects to set it is still refused correctly.
+# ``set_link_lane_count`` is exempted here for exactly the reason
+# ``add_link``/``add_connector`` are (Q4 unit (5)'s live-caught regression:
+# without the exemption EVERY call of a verb carrying such a param is refused
+# forever, silently, before it reaches COM) -- and this unit checked that trap
+# deliberately rather than rediscovering it live, because that unit recorded
+# it. The messages are left describing the delete-and-rebuild alternative for
+# tools that genuinely have no other route; the honest route now has a name,
+# and the ko/en/ja text points at it.
 _LANE_COUNT_PARAM_NAMES = {"lane_count", "num_lanes", "lanes"}
-_LANE_COUNT_PARAM_EXEMPT_TOOLS = frozenset({"add_link", "add_connector"})
+_LANE_COUNT_PARAM_EXEMPT_TOOLS = frozenset({"add_link", "add_connector", "set_link_lane_count"})
 
 
 def _check_lane_count_edit_unsupported(
@@ -2546,9 +2603,9 @@ def _check_lane_count_edit_unsupported(
                 phase="preflight",
                 messages=_render("lane_count_edit_unsupported", param=key),
                 suggested_fix={
-                    "hint": "check whether the extra lane already exists but is class-restricted "
-                    "(opening it is a safe attribute change); otherwise this requires "
-                    "delete-and-rebuild of the link"
+                    "hint": "use set_link_lane_count to change an existing link's lane count "
+                    "(COM AddLane/RemoveLane), or set_lane_closure when the extra lane already "
+                    "exists but is class-restricted"
                 },
                 details={"param": key},
             )
@@ -2562,18 +2619,18 @@ register(
         phase="preflight",
         tier="refuse",
         check=_check_lane_count_edit_unsupported,
-        message_ko="'{param}' 파라미터로 차로 수를 직접 편집하는 기능은 지원되지 않습니다. Vissim은 "
-        "링크 생성 시점에 차로 폭 배열로 차로 수를 고정하며, 차로를 추가/삭제하는 COM 속성이 "
-        "없습니다. 이미 존재하지만 제한된 차로를 여는 것은 안전하지만, 그 외에는 링크를 "
-        "삭제 후 재생성해야 합니다.",
-        message_en="Directly editing lane count via '{param}' is not supported. Vissim fixes "
-        "lane count at link construction (the lane-width array) — there is no COM "
-        "add/remove-lane attribute. Opening an already-existing but restricted lane is safe; "
-        "anything else requires delete-and-rebuild of the link.",
-        message_ja="'{param}' パラメータによる車線数の直接編集はサポートされていません。Vissimは"
-        "リンク作成時に車線幅の配列で車線数を固定しており、車線を追加/削除するCOM属性は"
-        "ありません。既存だが制限されている車線を開放するのは安全ですが、それ以外はリンクを"
-        "削除して再作成する必要があります。",
+        message_ko="이 도구의 '{param}' 파라미터로는 차로 수를 편집할 수 없습니다. 링크의 NumLanes "
+        "속성 자체는 읽기 전용입니다(실측 확인). 기존 링크의 차로 수를 바꾸려면 "
+        "set_link_lane_count를 사용하세요. 이미 존재하지만 제한된 차로를 여는 것은 "
+        "set_lane_closure로 안전하게 할 수 있습니다.",
+        message_en="Lane count cannot be edited through this tool's '{param}' parameter: a "
+        "link's own NumLanes attribute is read-only (measured). Use set_link_lane_count to "
+        "change an existing link's lane count, or set_lane_closure to reopen an "
+        "already-existing but class-restricted lane.",
+        message_ja="このツールの '{param}' パラメータで車線数を編集することはできません。リンクの"
+        "NumLanes属性自体が読み取り専用です(実測確認)。既存リンクの車線数を変更するには"
+        "set_link_lane_countを、既存だが制限されている車線を開放するにはset_lane_closureを"
+        "使用してください。",
     )
 )
 
@@ -3886,9 +3943,28 @@ register(
 # "Splitting a link renumbers it and inserts a gap": both are consequences of
 # a link geometry edit invalidating everything anchored to that link
 # (signal heads, detectors, priority rules; routes referencing the old link
-# number). No M2 tool edits link geometry today. CATALOG-GAP: reads an
-# optional per-link "geometry_edited_this_turn" flag, defensively.
+# number). CATALOG-GAP: reads an optional per-link "geometry_edited_this_turn"
+# flag, defensively.
+#
+# **Q6 unit (1): the tools this M0.3 check was written FOR finally exist.**
+# Its original comment said "No M2 tool edits link geometry today", and the
+# flag it watches is set by nothing at all -- no parser produces it, so this
+# constraint has been inert since M0.3. ``set_link_geometry`` and
+# ``set_link_lane_count`` are exactly the edits it describes (one moves the
+# polyline, the other makes Vissim re-centre it -- measured), so the check now
+# ALSO fires off the action's own link_id for those two tools, and the
+# pre-existing flag path is left untouched for any future caller that can set
+# it. ``set_link_point_radius`` is deliberately NOT included: it is the one
+# geometry-adjacent write measured NOT to move the shape at all (x/y and
+# Length2D unchanged), so nothing anchored to the link needs re-validating.
+# This is a WARN about re-validating what is anchored; the REFUSAL that stops
+# an edit which would silently relocate those same objects is the separate
+# link_geometry_truncates_anchored_objects, below.
 # ---------------------------------------------------------------------------
+
+#: The write tools whose sanctioned action genuinely changes a link's drawn
+#: shape (see the block comment above for why the radius verb is absent).
+_GEOMETRY_EDITING_TOOLS = frozenset({"set_link_geometry", "set_link_lane_count"})
 
 
 def _check_link_geometry_edit_reference_integrity(
@@ -3898,6 +3974,10 @@ def _check_link_geometry_edit_reference_integrity(
     edited = [
         str(link.get("id", "?")) for link in links if link.get("geometry_edited_this_turn")
     ]
+    if action.get("tool") in _GEOMETRY_EDITING_TOOLS:
+        link_id = str(action.get("params", {}).get("link_id", "")).strip()
+        if link_id and link_id not in edited:
+            edited.append(link_id)
     if not edited:
         return None
 
@@ -9797,5 +9877,361 @@ register(
         "車両インプットに指定した {volume} veh/h は区間1にのみ適用され、残りの{unset_count}区間は"
         "0 veh/hのままです。つまり区間1の時間帯が終わると、この流入交通量は静かに消えます。新しい"
         "番号に対してset_vehicle_input_volume(interval_no=...)で残りの区間も埋めてください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# Q6 unit (1): link geometry edits (lanes / length / curvature). THREE new
+# constraints, each from a measurement in backend/tools/probe_link_geometry.py
+# rather than from taste -- one refuse and two warns.
+#
+# What is deliberately NOT here, and why: the reference-integrity refusal that
+# stops a lane-count reduction from destroying lane-anchored objects lives in
+# tools_edit.set_link_lane_count (services.inpx_structure's
+# ReferenceIntegrityError, naming every referrer), following
+# remove_link/remove_connector/remove_pt_stop's own precedent exactly -- a
+# refusal whose evidence is "here are the 4 objects that would silently
+# vanish" has no useful ko/en/ja TEMPLATE form, and duplicating the traversal
+# here would give this codebase two competing answers to one question.
+# ---------------------------------------------------------------------------
+
+#: Every shadow-model list whose entries anchor themselves at a POSITION
+#: along a link, as ``(object_class, link_field)``. Deliberately mirrors --
+#: rather than imports -- ``tools_edit._POSITION_ANCHOR_SITES``, which asks
+#: the same question of the raw XML: the two run at different layers
+#: (preflight against the shadow model; the tool against the working copy it
+#: is about to write), and this file has kept every such table independent
+#: since ``_TOOL_TARGET_SPEC``/``_WRITE_TARGET_FIELD_SPEC`` were deliberately
+#: not shared with guardrails.py.
+_LINK_POSITION_ANCHOR_CLASSES: tuple[tuple[str, str], ...] = (
+    ("signal_heads", "link"),
+    ("detectors", "link"),
+    ("data_collection_points", "link"),
+    ("stop_signs", "link"),
+    ("pt_stops", "link"),
+    ("queue_counters", "link_id"),
+)
+
+
+def _link_position_anchors(shadow_model: dict[str, Any], link_id: str) -> list[dict[str, Any]]:
+    """Every object anchored at a position along ``link_id``, from the shadow
+    model: the lane/link-anchored measurement and control objects, plus every
+    CONNECTOR endpoint attached to the link (a connector is itself a "links"
+    entry carrying from_link/from_pos/to_link/to_pos -- inpx_parser's own
+    pre-existing fields, so this needs no parser change)."""
+    anchors: list[dict[str, Any]] = []
+    for object_class, link_field in _LINK_POSITION_ANCHOR_CLASSES:
+        for obj in shadow_model.get(object_class, []) or []:
+            if str(obj.get(link_field, "")) != str(link_id):
+                continue
+            pos = _coerce_number(obj.get("pos"))
+            if pos is None:
+                continue
+            anchors.append({"kind": object_class, "no": str(obj.get("no", "")), "pos": float(pos)})
+    for link in shadow_model.get("links", []) or []:
+        if not link.get("is_connector"):
+            continue
+        for side in ("from", "to"):
+            if str(link.get(f"{side}_link", "")) != str(link_id):
+                continue
+            pos = _coerce_number(link.get(f"{side}_pos"))
+            if pos is None:
+                continue
+            anchors.append(
+                {"kind": f"connector_{side}", "no": str(link.get("id", "")), "pos": float(pos)}
+            )
+    return anchors
+
+
+def _polyline_length_m(points: Any) -> float | None:
+    """Total 2D length of a ``[[x, y], ...]``-shaped point list, or ``None``
+    when the shape is not that -- a hallucinated param must make this check
+    silent, never crash a preflight pass."""
+    try:
+        coords = [(float(p[0]), float(p[1])) for p in points]
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    if len(coords) < 2:
+        return None
+    return sum(
+        math.hypot(coords[i][0] - coords[i - 1][0], coords[i][1] - coords[i - 1][1])
+        for i in range(1, len(coords))
+    )
+
+
+def _check_link_geometry_truncates_anchored_objects(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_link_geometry":
+        return None
+    params = action.get("params", {})
+    link_id = str(params.get("link_id", ""))
+    new_length = _polyline_length_m(params.get("points_xy"))
+    if not link_id or new_length is None:
+        return None
+
+    truncated = [
+        anchor
+        for anchor in _link_position_anchors(shadow_model, link_id)
+        if anchor["pos"] > new_length + 1e-6
+    ]
+    if not truncated:
+        return None
+
+    worst = max(anchor["pos"] for anchor in truncated)
+    labels = [
+        f"{a['kind']} {a['no']} @ {a['pos']:.1f}m"
+        for a in sorted(truncated, key=lambda a: -a["pos"])
+    ]
+    objects_ko, objects_en, objects_ja = _capped_join(labels, "개", "objects", "件")
+    return Finding(
+        constraint_id="link_geometry_truncates_anchored_objects",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "link_geometry_truncates_anchored_objects",
+            link_id=link_id,
+            new_length=f"{new_length:.1f}",
+            min_length=f"{worst:.1f}",
+            count=len(truncated),
+            objects_ko=objects_ko,
+            objects_en=objects_en,
+            objects_ja=objects_ja,
+        ),
+        suggested_fix={
+            "min_length_m": round(worst, 3),
+            "requested_length_m": round(new_length, 3),
+            "objects": truncated[:10],
+            "next_steps": [
+                f"keep link {link_id} at least {worst:.1f} m long",
+                "or move/remove the listed objects first",
+            ],
+        },
+        details={
+            "link_id": link_id,
+            "requested_length_m": round(new_length, 3),
+            "min_length_m": round(worst, 3),
+            "truncated_count": len(truncated),
+        },
+    )
+
+
+register(
+    Constraint(
+        id="link_geometry_truncates_anchored_objects",
+        applies_to=["set_link_geometry"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_link_geometry_truncates_anchored_objects,
+        # The flagship silent failure of this unit, measured twice live: a
+        # data-collection point at pos 132.485 m on a link shortened to
+        # 82.803 m came back at EXACTLY the new end and persisted there, and
+        # shortening Urban Intersection Beijing.CN link 5 from 452.06 m to
+        # 226.03 m clamped all three connectors anchored at its far end AND
+        # stretched their own geometry to reach -- an 11.71 m turn silently
+        # became a 237.70 m one. load_check passes, conflict areas stay at
+        # 224, nothing in Vissim says a word.
+        message_ko="링크 {link_id}을(를) {new_length} m로 줄이면 그보다 뒤쪽에 배치된 객체 "
+        "{count}개({objects_ko})가 조용히 링크 끝으로 끌려옵니다. Vissim은 이 편집을 거부하지 "
+        "않고 각 객체의 위치를 새 끝점으로 바꿔버리며, 이 링크에 붙은 커넥터는 끝점까지 늘어나 "
+        "짧은 회전 커넥터가 수백 m짜리가 됩니다(실측). 링크 길이를 최소 {min_length} m 이상으로 "
+        "유지하거나, 해당 객체들을 먼저 옮기거나 삭제하세요.",
+        message_en="Shortening link {link_id} to {new_length} m would silently drag {count} "
+        "object(s) anchored beyond that point ({objects_en}) to the link's new end. Vissim does "
+        "not refuse this -- it rewrites each object's position to the new end, and stretches "
+        "connectors attached to the link so they still reach, turning a short turn connector "
+        "into a hundreds-of-metres one (measured). Keep the link at least {min_length} m long, "
+        "or move/remove those objects first.",
+        message_ja="リンク {link_id} を {new_length} m に短縮すると、その先に配置されたオブジェクト"
+        "{count}件({objects_ja})が静かにリンクの新しい終点へ移動させられます。Vissimはこの編集を"
+        "拒否せず、各オブジェクトの位置を新しい終点に書き換え、リンクに接続されたコネクタは"
+        "終点まで引き伸ばされて短い右左折コネクタが数百mになります(実測)。リンク長を最低"
+        "{min_length} m以上に保つか、対象オブジェクトを先に移動・削除してください。",
+    )
+)
+
+
+def _check_link_lane_count_shifts_centerline(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_link_lane_count":
+        return None
+    params = action.get("params", {})
+    link_id = str(params.get("link_id", ""))
+    requested = _coerce_number(params.get("lane_count"), cast=int)
+    if not link_id or requested is None:
+        return None
+
+    link = _find_by_field(shadow_model.get("links", []) or [], "id", link_id)
+    if link is None:
+        return None
+    current = _coerce_number(link.get("lanes"), cast=int)
+    if current is None or current == requested:
+        return None
+
+    widths = [w for w in (link.get("lane_widths") or []) if _coerce_number(w) is not None]
+    width = _coerce_number(params.get("lane_width_m"))
+    if width is None:
+        width = float(widths[-1]) if widths else 3.5
+    shift = abs(requested - current) * float(width) / 2.0
+    return Finding(
+        constraint_id="link_lane_count_shifts_centerline",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "link_lane_count_shifts_centerline",
+            link_id=link_id,
+            current=current,
+            requested=requested,
+            shift=f"{shift:.2f}",
+        ),
+        details={
+            "link_id": link_id,
+            "current_lane_count": current,
+            "requested_lane_count": requested,
+            "expected_centerline_shift_m": round(shift, 3),
+            "lane_width_m": round(float(width), 3),
+        },
+    )
+
+
+register(
+    Constraint(
+        id="link_lane_count_shifts_centerline",
+        applies_to=["set_link_lane_count"],
+        phase="preflight",
+        tier="warn",
+        check=_check_link_lane_count_shifts_centerline,
+        # Measured three times, on two networks, in both directions: Vissim
+        # keeps a link's lanes centred on its polyline, so changing the lane
+        # count re-centres the POLYLINE -- every point of Beijing link 4 moved
+        # 1.75 m when a 3.5 m lane was added, every point of link 8 moved
+        # 1.5 m when a 3.0 m lane was removed, and Camden link 1's whole
+        # polyline translated 0.5334 m for a 1.0668 m lane. Length2D never
+        # changes. A warn, not a refusal: this is Vissim's own correct
+        # behaviour for a widened road and the caller may well want it -- but
+        # a link that silently moves sideways can leave the kerb line it was
+        # matched to, which nothing else in the pipeline would report.
+        message_ko="링크 {link_id}의 차로 수를 {current}개에서 {requested}개로 바꾸면 Vissim이 "
+        "링크 중심선을 다시 계산하여 링크 전체가 옆으로 약 {shift} m 이동합니다(실측: 이동량은 "
+        "추가/삭제된 차로 폭의 절반). 링크 길이는 변하지 않습니다. 실측 도면에 맞춘 모델이라면 "
+        "이동 후 위치가 여전히 맞는지 확인하세요.",
+        message_en="Changing link {link_id} from {current} to {requested} lanes makes Vissim "
+        "recompute the link's centreline: the whole link moves sideways by about {shift} m "
+        "(measured -- exactly half the added/removed lane width). Its length does not change. If "
+        "this model is matched to survey geometry, check the link still sits where it should.",
+        message_ja="リンク {link_id} の車線数を{current}本から{requested}本に変更すると、Vissimが"
+        "リンクの中心線を再計算し、リンク全体が横に約{shift} m移動します(実測: 移動量は追加/削除"
+        "された車線幅の半分)。リンク長は変わりません。実測図面に合わせたモデルの場合は、移動後の"
+        "位置が正しいか確認してください。",
+    )
+)
+
+
+def _geometric_radius_m(shadow_model: dict[str, Any], link_id: str, point_index: Any) -> float | None:
+    """The circumradius of the three consecutive polyline points centred on
+    ``point_index`` -- i.e. the radius the DRAWN shape actually has, which is
+    what Vissim itself computes when ``radiusSrc`` is CALCULATED. ``None``
+    when it cannot be computed (link/point missing, or the three points are
+    collinear, where the true radius is infinite rather than any number worth
+    printing). Used only to put the caller's override next to reality in the
+    warning text -- never to refuse."""
+    if point_index is None:
+        return None
+    link = _find_by_field(shadow_model.get("links", []) or [], "id", str(link_id))
+    if link is None:
+        return None
+    points = link.get("points") or []
+    index = int(point_index)
+    if not 2 <= index <= len(points) - 1:
+        return None
+    try:
+        ax, ay = float(points[index - 2][0]), float(points[index - 2][1])
+        bx, by = float(points[index - 1][0]), float(points[index - 1][1])
+        cx, cy = float(points[index][0]), float(points[index][1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    area2 = abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax))
+    if area2 < 1e-9:
+        return None
+    side_a = math.hypot(bx - ax, by - ay)
+    side_b = math.hypot(cx - bx, cy - by)
+    side_c = math.hypot(cx - ax, cy - ay)
+    return (side_a * side_b * side_c) / (2.0 * area2)
+
+
+def _check_link_point_radius_overrides_geometry(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_link_point_radius":
+        return None
+    params = action.get("params", {})
+    radius = _coerce_number(params.get("radius_m"))
+    if radius is None:
+        # radius_m omitted == RESTORE Vissim's own computed radius. That is
+        # the direction that REMOVES a divergence, so it warns about nothing.
+        return None
+    link_id = str(params.get("link_id", ""))
+    point_index = _coerce_number(params.get("point_index"), cast=int)
+    geometric = _geometric_radius_m(shadow_model, link_id, point_index)
+    return Finding(
+        constraint_id="link_point_radius_overrides_geometry",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "link_point_radius_overrides_geometry",
+            link_id=link_id,
+            point_index=point_index,
+            radius=f"{float(radius):g}",
+            geometric=("-" if geometric is None else f"{geometric:.1f}"),
+        ),
+        suggested_fix={
+            "next_steps": [
+                "omit radius_m to hand the radius back to Vissim's own polyline computation",
+                f"or reshape the link with set_link_geometry(link_id='{link_id}', ...) so the "
+                "drawn curve really has that radius",
+            ]
+        },
+        details={
+            "link_id": link_id,
+            "point_index": point_index,
+            "radius_m": float(radius),
+            "geometric_radius_m": None if geometric is None else round(geometric, 3),
+        },
+    )
+
+
+register(
+    Constraint(
+        id="link_point_radius_overrides_geometry",
+        applies_to=["set_link_point_radius"],
+        phase="preflight",
+        tier="warn",
+        check=_check_link_point_radius_overrides_geometry,
+        # Measured: Vissim REFUSES a Rad write outright while radiusSrc is
+        # CALCULATED ("Attribute Radius cannot be changed"), and accepts it
+        # only after the source is switched to USERINPUT -- at which point the
+        # radius the curve-speed model reads is whatever the caller said, and
+        # the drawn shape no longer constrains it (x/y and Length2D are
+        # unchanged by the write, also measured). 16 082 of the 60 420
+        # polyline points across the 25 real 2026 example networks are already
+        # USERINPUT, so this is a first-class Vissim feature, not an abuse --
+        # hence a warn that names both numbers rather than a refusal.
+        message_ko="링크 {link_id}의 점 {point_index}의 곡선 반경을 {radius} m로 직접 지정하면 "
+        "Vissim이 폴리라인에서 계산하던 값(현재 형상 기준 약 {geometric} m) 대신 이 값을 "
+        "사용합니다. 링크 형상 자체는 바뀌지 않으므로, 그려진 모양과 곡선 감속 모델이 보는 반경이 "
+        "달라집니다. 형상을 실제로 바꾸려면 set_link_geometry를, 계산값으로 되돌리려면 radius_m을 "
+        "생략하세요.",
+        message_en="Overriding the curve radius at link {link_id} point {point_index} to "
+        "{radius} m makes Vissim use that number instead of the one it computes from the "
+        "polyline (about {geometric} m for the shape as drawn). The link's shape itself does not "
+        "change, so the drawn curve and the radius the curve-speed model reads now disagree. Use "
+        "set_link_geometry to change the real shape, or omit radius_m to restore the computed "
+        "value.",
+        message_ja="リンク {link_id} の点 {point_index} の曲線半径を {radius} m に直接指定すると、"
+        "Vissimはポリラインから計算した値(現在の形状では約{geometric} m)ではなくこの値を使用します。"
+        "リンク形状自体は変わらないため、描かれた曲線と曲線速度モデルが読む半径が食い違います。"
+        "実際の形状を変えるにはset_link_geometryを、計算値に戻すにはradius_mを省略してください。",
     )
 )

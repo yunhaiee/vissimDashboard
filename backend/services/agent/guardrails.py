@@ -472,6 +472,57 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "value_field": "dwell_tm_distr",
         "none_means": "not_persisted",
     },
+    # Q6 unit (1): link geometry edits on an EXISTING link. Both entries
+    # target the "links" class by the link's own single-token id -- the
+    # SIMPLEST identity in this whole table, and the first time a tool writes
+    # a "links" row's own fields rather than creating/removing the row.
+    #
+    # set_link_lane_count's coupled_fields are not a guess: a lane-count
+    # change was MEASURED to move FOUR fields together on the target link
+    # (backend/tools/probe_link_geometry.py Parts A/B, both directions) --
+    # "lanes" is the intended one, "lane_widths"/"width_total" follow because
+    # the added/removed lane is itself a width, and "points" follows because
+    # Vissim re-centers the link's polyline on its new total width (every
+    # point moved exactly half the changed lane's width: 1.75 m for a 3.5 m
+    # lane, 1.5 m for a 3.0 m one, 0.5334 m for a 1.0668 m one). Exempting
+    # "lanes" alone would false-positive every correct call as "something
+    # else moved" -- the same lesson unit ⑧'s des_speed_distr_name coupling
+    # taught, applied from measurement BEFORE shipping rather than after a
+    # live failure.
+    #
+    # set_link_geometry's value_field is the "points" LIST itself (list of
+    # [x, y] pairs -- _values_differ recurses through it with the 1e-9
+    # tolerance that exists precisely because SaveNetAs re-serializes
+    # geometry with ~5.7e-14 drift), with "length" coupled because
+    # inpx_parser derives it from those same points. none_means
+    # "not_persisted" for both: a link's lanes/points are plain XML the
+    # parser can always see whenever the <link> element exists -- there is no
+    # opaque-blob case here at all.
+    #
+    # **set_link_point_radius has NO entry, and that is a documented blind
+    # spot, not an oversight**: the shadow model carries no per-point
+    # curvature at all (inpx_parser._parse_links keeps x/y only), so neither
+    # this check nor the nothing-else-moved diff can see a radius write in
+    # either direction. That tool verifies itself by REPARSING the persisted
+    # working copy for the point's own rad/radiusSrc attributes (see its own
+    # comment in tools_edit.py) -- a genuine file-level readback, but one
+    # this engine does not independently corroborate. A later unit that
+    # teaches the shadow model about per-point radius should add the entry
+    # here and delete that note.
+    "set_link_lane_count": {
+        "object_class": "links",
+        "id_param": "link_id",
+        "value_field": "lanes",
+        "none_means": "not_persisted",
+        "coupled_fields": ("lane_widths", "width_total", "points"),
+    },
+    "set_link_geometry": {
+        "object_class": "links",
+        "id_param": "link_id",
+        "value_field": "points",
+        "none_means": "not_persisted",
+        "coupled_fields": ("length",),
+    },
 }
 
 # v2a unit ⑧: ``set_des_speed_decision`` is the first write tool whose action
@@ -590,6 +641,33 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
     # failure to prove the obvious.
     "add_link": frozenset({"links", "link_lanes", "conflict_areas"}),
     "add_connector": frozenset({"links", "link_lanes", "conflict_areas"}),
+    # Q6 unit (1): set_link_lane_count's own sanctioned action ADDS a
+    # "link_lanes" row per lane it appends (the flat (link_id, lane_index)
+    # list v2b unit (1) added) and -- MEASURED, not assumed -- also makes
+    # Vissim recompute its geometry-derived conflict areas: widening Beijing
+    # link 4 from 4 to 5 lanes added conflict area 905 where the wider link
+    # now overlaps a crossing movement, in the SAME diff that shows the one
+    # added lane (backend/tools/probe_link_geometry.py Part A). That is the
+    # exact mechanism Q4 unit (5) already had to opt add_connector into, now
+    # reproduced for a lane-count change. The counterfactual for BOTH classes
+    # was RUN, not reasoned about (backend/tools/link_geometry_live_check.py):
+    # popping either one turns a correct call into write_verification_failed.
+    # No "links" entry: the target link is not ADDED, it is field-changed --
+    # that is _WRITE_TARGET_FIELD_SPEC's job below.
+    "set_link_lane_count": frozenset({"link_lanes", "conflict_areas"}),
+    # Q6 unit (1), LIVE-CAUGHT by this unit's own live check exactly the way
+    # Q4 unit (5)'s conflict-area entry was: LENGTHENING Beijing link 1 by
+    # 10 m -- a correct, minimal reshape -- made Vissim recompute its
+    # geometry-derived conflict areas and add THREE brand-new ones (905, 906,
+    # 907) where the longer link now overlaps other movements, which the real
+    # GuardrailEngine.postwrite refused and rolled back before this entry
+    # existed (reproduced: backend/tools/link_geometry_live_check.py Phase B).
+    # Only "conflict_areas": a reshape adds no links and no lanes, so nothing
+    # else is opted in, and there is deliberately NO removal-side entry --
+    # Vissim SILENTLY DROPS a dangling conflict area (Q4 unit (3)'s finding),
+    # and that is the one thing that must stay loud evidence rather than an
+    # assumed exemption.
+    "set_link_geometry": frozenset({"conflict_areas"}),
     # Q4 unit (6): add_priority_rule's own sanctioned action creates a
     # brand-new "priority_rule_markers" entry (or several) -- the FLAT list
     # QUEUE 3 unit 2 already wired into _SHADOW_OBJECT_ID_FIELDS. The
@@ -702,6 +780,18 @@ _ALLOWS_REMOVED_OBJECTS_IN: dict[str, frozenset[str]] = {
     # add_pt_stop/add_pt_line's own entries above.
     "remove_pt_stop": frozenset({"pt_stops"}),
     "remove_pt_line": frozenset({"pt_lines", "pt_line_stops"}),
+    # Q6 unit (1): the shrink half of set_link_lane_count REMOVES a
+    # "link_lanes" row per lane it deletes -- measured (Beijing link 8, 4 -> 3
+    # lanes: exactly one removed row, "8.4"). Note this is the ONE tool in
+    # this file present in BOTH tables, because a single call can go either
+    # way depending on whether the requested count is above or below the
+    # link's current one; the two suppressions are independent flags in
+    # _diff_object_list, so a grow can never be excused as a shrink or vice
+    # versa. Conflict areas are deliberately NOT opted in on the removal
+    # side: the probe never observed a lane-count change DROP one, and Q4
+    # unit (3) proved Vissim silently drops dangling conflict areas -- the
+    # one case that must stay loud evidence rather than an assumed exemption.
+    "set_link_lane_count": frozenset({"link_lanes"}),
 }
 
 # QUEUE 3 (v2a) unit 3's SECOND regression fix, found live-testing this same

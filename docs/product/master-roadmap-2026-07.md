@@ -70,7 +70,7 @@ Exit: 스윕 데모 가능, 스타일된 리포트 1장, MRWA 인용 경고 실�
 
 | # | 항목 | Track | 의존 |
 |---|---|---|---|
-| 1.1 | ✅(주말 Q4로 대부분 완료) **v2b 스파인 + 10/13 불릿**: 스파인(inpx_structure.py) + lane/link closure·turn bans·측정 인프라·signal heads/detectors·links/connectors 생성·stop signs/priority rules·PT stops/lines — **composite ✅ 2026-08-03 (Q5 ①: 전 스테이지 green, 프로세스 경계 검증 + 합성 증명)**, **signal controller 생성 ✅ 2026-08-03 (Q5 ②: `add_signal_controller`, duplicate-then-edit 4번째; genesis 갭 ② 종료)**, **vehicle input 생성 ✅ 2026-08-03 (Q5 ③: `add_vehicle_input` + 커넥터/인터벌 warn 2건 + 반쯤 배선된 10개 동사 `object_not_found` 배선 완결; genesis 갭 리스트 전체 종료)**; 잔여: geometry edits·parking·pedestrian(→ Q6, 2026-08-03 사용자 승인, 착수) | G | — |
+| 1.1 | ✅(주말 Q4로 대부분 완료) **v2b 스파인 + 10/13 불릿**: 스파인(inpx_structure.py) + lane/link closure·turn bans·측정 인프라·signal heads/detectors·links/connectors 생성·stop signs/priority rules·PT stops/lines — **composite ✅ 2026-08-03 (Q5 ①: 전 스테이지 green, 프로세스 경계 검증 + 합성 증명)**, **signal controller 생성 ✅ 2026-08-03 (Q5 ②: `add_signal_controller`, duplicate-then-edit 4번째; genesis 갭 ② 종료)**, **vehicle input 생성 ✅ 2026-08-03 (Q5 ③: `add_vehicle_input` + 커넥터/인터벌 warn 2건 + 반쯤 배선된 10개 동사 `object_not_found` 배선 완결; genesis 갭 리스트 전체 종료)**; **link geometry edits ✅ 2026-08-03 (Q6 ①: lane count/centreline·points·curvature 3동사 + refuse/warn 3건, registry 107)**; 잔여: parking·pedestrian(→ Q6 ②③, 진행중) | G | — |
 | 1.2 | **대전 어댑터 v1** (신호+카운트 → 중립 스키마 → 기존 신호/입력 모델) + R2.5 데이터 품질 게이트 | D | TK 파일 (0.7 계약 선행) |
 | 1.3 | **감사추적 export v1** — 액션 레저 → "파라미터 변경 기록+근거" 섹션 (DOCX; 승인 시 사유 1줄 입력) | R | 없음 |
 | 1.4 | **프로젝트 워크스페이스** (P②: 전역 활성 데이터셋 싱글톤 제거 — 접근통제 경계) | P | 없음 |

@@ -488,6 +488,35 @@ def test_remove_last_lane_refuses_when_last_lane_is_referenced_by_a_signal_head(
     assert path.read_bytes() == original_bytes
 
 
+def test_reference_integrity_message_caps_rendered_referrers_but_keeps_them_all():
+    """toolkit.dispatch truncates exception text at 300 chars, and an
+    uncapped 12-referrer render measured 613 -- the names that make the
+    refusal actionable were being cut mid-word by a layer that knows nothing
+    about them. The message names the first three and counts the rest; the
+    full list survives on ``.referrers``."""
+    referrers = [
+        {"site": f"signal head {i}", "tag": "signalHead", "attribute": "lane", "value": f"1 {i}"}
+        for i in range(1, 13)
+    ]
+    exc = struct.ReferenceIntegrityError("lane 4 of link 1 would vanish", referrers)
+
+    msg = str(exc)
+    assert "signal head 1 (signalHead@lane='1 1')" in msg
+    assert "signal head 3" in msg
+    assert "signal head 4" not in msg
+    assert msg.endswith("; and 9 more")
+    assert len(msg) < 297  # survives toolkit's dispatch cap whole
+    assert len(exc.referrers) == 12  # nothing lost programmatically
+
+
+def test_reference_integrity_message_names_every_referrer_when_three_or_fewer():
+    referrers = [
+        {"site": "queue counter", "tag": "queueCounter", "attribute": "lane", "value": "1 2"},
+    ]
+    exc = struct.ReferenceIntegrityError("desc", referrers)
+    assert str(exc) == "desc: still referenced by queue counter (queueCounter@lane='1 2')"
+
+
 def test_remove_last_lane_refuses_when_last_lane_is_referenced_by_a_detector(tmp_path: Path):
     path = tmp_path / "fixture.inpx"
     path.write_text(

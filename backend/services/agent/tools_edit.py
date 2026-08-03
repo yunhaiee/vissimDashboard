@@ -3406,6 +3406,468 @@ def add_connector(params: AddConnectorParams) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Q6 unit (1): link GEOMETRY edits on an EXISTING link -- set_link_lane_count,
+# set_link_geometry, set_link_point_radius (TOOL-CATALOG v2b "Link geometry
+# edits": lanes / length / curvature). Q4 unit (5) above could only create and
+# remove WHOLE links; these three reshape one that already exists, which is
+# what network CALIBRATION actually needs (an approach is one lane too narrow,
+# a link's length is 20 m off the survey, a curve brakes traffic that should
+# not brake).
+#
+# Every capability here was measured first by
+# ``backend/tools/probe_link_geometry.py`` (ten parts, state file
+# ``runtime/link-geometry-probe/state.json``, including a NULL CONTROL part
+# proving an untouched load+save moves nothing at all) -- see
+# ``services.vissim_com``'s own link-geometry module comment for the seven
+# landmines. The three that shape THIS module's refusals:
+#
+# 1. **RemoveLane silently CASCADE-DELETES whatever is anchored on the lane**
+#    (live-proven CONTROL/TREATMENT pair: a data-collection point and a signal
+#    head created on Beijing link 4 lane 4 are simply GONE after one
+#    RemoveLane -- no exception, and ``load_check`` still passes). So
+#    ``set_link_lane_count`` runs the SAME reference-integrity preflight
+#    ``remove_link``/``remove_connector`` already use
+#    (``find_lane_token_references``, per lane about to disappear) and REFUSES
+#    naming every referrer. This is the Q4 unit (4) lane-token registry doing
+#    exactly the job it was built for -- and writing this unit found it did
+#    not yet know about ``dataCollectionPoint@lane``, the very object the
+#    probe watched get destroyed (see ``services.inpx_structure``'s own
+#    LANE_TOKEN_REFERENCE_SITES comment for the corpus scan that closed that
+#    gap and five more).
+#
+# 2. **Shortening a link silently RELOCATES everything anchored beyond the new
+#    end** -- a data-collection point at 132.485 m came back at exactly the
+#    new 82.803 m end, and shortening Beijing link 5 from 452 m to 226 m
+#    clamped all three connectors anchored at its far end and STRETCHED their
+#    own geometry to reach, turning an 11.71 m turn into a 237.70 m one. So
+#    ``set_link_geometry`` refuses a shape whose polyline is shorter than the
+#    furthest thing anchored on the link, naming each one and the minimum
+#    length that would keep them all. (Preflight also has a ko/en/ja
+#    ``link_geometry_truncates_anchored_objects`` refusal for the planner; the
+#    check is deliberately implemented on BOTH sides -- the same
+#    "mirror, don't share" convention constraints.py's ``_TOOL_TARGET_SPEC``
+#    and guardrails.py's ``_WRITE_TARGET_FIELD_SPEC`` already follow -- because
+#    constraints only run through the orchestrator, and a raw ``dispatch``
+#    call must still fail closed.)
+#
+# 3. **COM cannot add or remove a polyline point** (``ILinkPolyPointContainer``
+#    has no Add/Remove at all; there is no writable WKT attribute on a link).
+#    ``set_link_geometry`` therefore requires exactly as many points as the
+#    link already has, and says so -- with ``add_link`` named as the
+#    alternative -- rather than silently applying a prefix.
+#
+# **Both geometry tools refuse a CONNECTOR target.** For lane count: a
+# connector's every lane carries its own fromLanes/toLanes mapping, so a new
+# lane would be created unmapped and a removed one would take a real mapping
+# with it. For shape: Vissim SNAPS a connector's geometry to its resolved
+# from/to positions regardless of what is written (Q4 unit (5) landmine 4,
+# live-verified there) -- so a written connector shape is not what persists,
+# which is precisely the "completed edit with wrong numbers" this layer
+# exists to prevent. ``remove_connector`` + ``add_connector`` is the honest
+# route, and both refusals say so.
+#
+# **What is deliberately NOT wrapped:** ``ILink.RecalculateSpline()`` /
+# ``RecalculateSplineHeight()`` (they REDISTRIBUTE intermediate points and
+# zero written z-offsets -- geometry mutations disguised as recomputes),
+# ``ILink.SplitLink``/``InvertDirection``/``GenerateOppositeDirection``/
+# ``DuplicateLink`` (real methods on the same interface, unprobed by this
+# unit -- named here so a later unit knows they exist), per-point ZOffset
+# writes (Q4 unit (5)'s recorded z follow-up stays open: writable and
+# display-unit-scaled, but nothing in this codebase's shadow model can see a
+# z-coordinate, so a write would be unverifiable by state diff), and any
+# change to a link's POINT COUNT (landmine 4).
+# ---------------------------------------------------------------------------
+
+
+#: See set_link_geometry's own comment for why link COORDINATES round at a
+#: different precision than every ``pos``-shaped value in this module.
+_GEOMETRY_VERIFICATION_PRECISION = 10
+
+
+def _round_xy_m(value: float) -> float:
+    return round(float(value), _GEOMETRY_VERIFICATION_PRECISION)
+
+
+def _link_element(root: ET.Element, link_id: str) -> ET.Element | None:
+    return next((el for el in root.findall(".//links/link") if el.get("no") == str(link_id)), None)
+
+
+def _link_is_connector(link_el: ET.Element) -> bool:
+    return link_el.find("fromLinkEndPt") is not None or link_el.find("toLinkEndPt") is not None
+
+
+def _link_points_xy(link_el: ET.Element) -> list[tuple[float, float]]:
+    return [
+        (float(p.get("x", 0) or 0), float(p.get("y", 0) or 0))
+        for p in link_el.findall("geometry/linkPolyPts/linkPolyPoint")
+    ]
+
+
+def _polyline_length_m(points: list[tuple[float, float]]) -> float:
+    return sum(
+        math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1])
+        for i in range(1, len(points))
+    )
+
+
+#: Every place in the .inpx where an object anchors itself at a POSITION along
+#: a link -- the population a shortening silently relocates (landmine 5).
+#: ``(label, xpath, link_attr, pos_attr, link_attr_is_lane_token)``; the lane
+#: forms carry Vissim's ``"<link> <lane>"`` token, the link forms a plain
+#: number. Deliberately mirrors -- rather than imports -- ``services.
+#: inpx_structure``'s own reference registries: those answer "what still
+#: REFERENCES this id" (removal safety), this answers "what sits at a position
+#: that must stay inside the link" (a different question with a different
+#: answer set: a queue counter anchors by plain link id, and a connector
+#: endpoint is not a reference site at all).
+_POSITION_ANCHOR_SITES: tuple[tuple[str, str, str, str, bool], ...] = (
+    ("signal head", ".//signalHeads/signalHead", "lane", "pos", True),
+    ("detector", ".//detectors/detector", "lane", "pos", True),
+    ("data collection point", ".//dataCollectionPoints/dataCollectionPoint", "lane", "pos", True),
+    ("stop sign", ".//stopSigns/stopSign", "lane", "pos", True),
+    ("reduced speed area", ".//reducedSpeedAreas/reducedSpeedArea", "lane", "pos", True),
+    ("PT stop", ".//ptStops/ptStop", "lane", "pos", True),
+    ("priority rule", ".//priorityRules/priorityRule", "lane", "pos", True),
+    ("priority rule conflict marker", ".//priorityRule/conflictMarker", "lane", "pos", True),
+    ("queue counter", ".//queueCounters/queueCounter", "link", "pos", False),
+)
+
+
+def _position_anchors_on_link(root: ET.Element, link_id: str) -> list[dict[str, Any]]:
+    """Every object anchored at a position along ``link_id``, with that
+    position in metres (the .inpx is always raw metres). Connector endpoints
+    are included: they anchor by ``pos`` exactly like the rest, and the probe
+    proved they are clamped-and-stretched, not merely moved."""
+    anchors: list[dict[str, Any]] = []
+    for label, xpath, link_attr, pos_attr, is_lane_token in _POSITION_ANCHOR_SITES:
+        for element in root.findall(xpath):
+            raw = (element.get(link_attr) or "").strip()
+            if not raw:
+                continue
+            owner = raw.split()[0] if is_lane_token else raw
+            if owner != str(link_id):
+                continue
+            try:
+                pos = float(element.get(pos_attr) or 0)
+            except ValueError:
+                continue
+            anchors.append(
+                {"kind": label, "no": element.get("no") or "", "pos_m": pos, "anchor": raw}
+            )
+    for connector in root.findall(".//links/link"):
+        for side, tag in (("from", "fromLinkEndPt"), ("to", "toLinkEndPt")):
+            endpoint = connector.find(tag)
+            if endpoint is None or (endpoint.get("link") or "").strip() != str(link_id):
+                continue
+            try:
+                pos = float(endpoint.get("pos") or 0)
+            except ValueError:
+                continue
+            anchors.append(
+                {
+                    "kind": f"connector {side}-endpoint",
+                    "no": connector.get("no") or "",
+                    "pos_m": pos,
+                    "anchor": f"{link_id} @ {pos:.3f} m",
+                }
+            )
+    return anchors
+
+
+class SetLinkLaneCountParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_id: str
+    #: The link's TOTAL lane count after this edit (not a delta). ge=1 --
+    #: a link with zero lanes is not a link (the same floor
+    #: ``services.inpx_structure.remove_last_lane`` already enforces).
+    lane_count: int = Field(ge=1)
+    #: Width for lanes ADDED by this call, metres. Omitted -> the link's own
+    #: current LAST lane width, so a widened link stays self-consistent
+    #: instead of inheriting an unrelated 3.5 m default. Ignored when
+    #: shrinking.
+    lane_width_m: float | None = Field(default=None, gt=0)
+
+
+@tool(name="set_link_lane_count", tier="write", provider="edit", params=SetLinkLaneCountParams)
+def set_link_lane_count(params: SetLinkLaneCountParams) -> dict[str, Any]:
+    """Set an EXISTING link's total lane count (COM AddLane/RemoveLane -- Vissim's NumLanes attribute is read-only). Lanes are added/removed at the HIGHEST index only. REFUSES, naming every referrer, when shrinking would delete a lane a signal head/detector/data-collection point/stop sign/reduced-speed area/priority rule/connector still uses -- Vissim's own RemoveLane silently CASCADE-DELETES those objects (live-proven). Refuses a connector target. Note: Vissim re-centers the link's polyline on every lane-count change, so the whole link silently moves sideways by half the added/removed lane width -- the result reports the measured shift."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_id, "link_id")
+
+    root = ET.parse(session.working_inpx).getroot()
+    link_el = _link_element(root, params.link_id)
+    if link_el is None:
+        raise ValueError(f"set_link_lane_count: link {params.link_id} not found")
+    if _link_is_connector(link_el):
+        raise ValueError(
+            f"set_link_lane_count: {params.link_id} is a CONNECTOR -- each connector lane carries "
+            "its own from/to lane mapping, so an added lane would be unmapped and a removed one "
+            "would take a real movement with it. Use remove_connector + add_connector."
+        )
+
+    lanes_el = link_el.find("lanes")
+    current_count = len(lanes_el.findall("lane")) if lanes_el is not None else 0
+    current_widths = [float(l.get("width") or 3.5) for l in (lanes_el.findall("lane") if lanes_el is not None else [])]
+    points_before = _link_points_xy(link_el)
+
+    referrers: list[dict[str, Any]] = []
+    for lane_index in range(params.lane_count + 1, current_count + 1):
+        referrers.extend(find_lane_token_references(root, params.link_id, lane_index))
+    if referrers:
+        # Kept SHORT on purpose: toolkit.dispatch caps a raised exception's
+        # text at 300 characters, so the actionable half (which lanes, what
+        # would be destroyed) has to come before any explanation or the
+        # planner never sees it.
+        raise ReferenceIntegrityError(
+            f"set_link_lane_count: link {params.link_id} {current_count}->{params.lane_count} "
+            f"lanes refused -- Vissim's RemoveLane would SILENTLY DELETE what is anchored on "
+            f"lane(s) {list(range(params.lane_count + 1, current_count + 1))}",
+            referrers,
+        )
+
+    result = session.set_link_lane_count(link_no, params.lane_count, params.lane_width_m)
+    session.persist()
+
+    points_after = [(p["x"], p["y"]) for p in result["points"]]
+    shift_m = max(
+        (math.hypot(a[0] - b[0], a[1] - b[1]) for b, a in zip(points_before, points_after)),
+        default=0.0,
+    )
+    verification = {
+        "written_value": params.lane_count,
+        "readback_value": result["lanes"],
+    }
+    direction = "widened" if params.lane_count > current_count else (
+        "narrowed" if params.lane_count < current_count else "unchanged"
+    )
+    message = (
+        f"Link {params.link_id} {direction}: {current_count} -> {result['lanes']} lane(s) "
+        f"(widths {[_round_pos_m(w) for w in current_widths]} -> "
+        f"{[_round_pos_m(w) for w in result['lane_widths']]} m). Vissim re-centered the link's "
+        f"polyline: every point moved {shift_m:.3f} m sideways. Length unchanged at "
+        f"{result['length']:.3f} m."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {
+            "no": str(result["no"]),
+            "lanes": result["lanes"],
+            "centerline_shift_m": _round_pos_m(shift_m),
+        },
+    }
+
+
+class SetLinkGeometryParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_id: str
+    #: The link's polyline points, RAW METRES (the network's own base
+    #: coordinate space -- vissim_com's landmine 7: x/y are the ONE
+    #: length-shaped COM value that is never display-unit-scaled, now
+    #: confirmed in BOTH directions on a FEET network). MUST have exactly as
+    #: many entries as the link already has: COM cannot add or remove a
+    #: polyline point.
+    points_xy: list[tuple[float, float]] = Field(min_length=2)
+
+    @model_validator(mode="after")
+    def _no_degenerate_geometry(self) -> "SetLinkGeometryParams":
+        pts = self.points_xy
+        for i in range(1, len(pts)):
+            if pts[i] == pts[i - 1]:
+                raise ValueError(
+                    f"set_link_geometry: points_xy has duplicate consecutive points "
+                    f"({pts[i - 1]!r} repeated at index {i}) -- a degenerate zero-length segment. "
+                    "Vissim itself does NOT refuse this (live-verified for AddLink: a "
+                    "duplicate-point geometry silently yields Length2D=0.0), so it is refused "
+                    "here before COM is ever called."
+                )
+        if _polyline_length_m([(float(x), float(y)) for x, y in pts]) <= 0:
+            raise ValueError("set_link_geometry: points_xy describes a zero-length link -- refused.")
+        return self
+
+
+@tool(name="set_link_geometry", tier="write", provider="edit", params=SetLinkGeometryParams)
+def set_link_geometry(params: SetLinkGeometryParams) -> dict[str, Any]:
+    """Move an EXISTING link's polyline points to points_xy (raw metres, straight segments between consecutive points), changing its shape and therefore its length -- Vissim recomputes Length2D from the polyline. points_xy MUST have exactly as many points as the link already has: COM cannot add or remove a polyline point (use add_link/remove_link to change the point count). REFUSES a shortening that would move anything anchored past the new end -- Vissim silently clamps such objects TO the new end and stretches attached connectors to reach them (live-proven: an 11.7 m turn became a 237.7 m one). Refuses a connector target (Vissim overwrites a connector's written shape by snapping it to its endpoints)."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_id, "link_id")
+    points_xy = [(float(x), float(y)) for x, y in params.points_xy]
+
+    root = ET.parse(session.working_inpx).getroot()
+    link_el = _link_element(root, params.link_id)
+    if link_el is None:
+        raise ValueError(f"set_link_geometry: link {params.link_id} not found")
+    if _link_is_connector(link_el):
+        raise ValueError(
+            f"set_link_geometry: {params.link_id} is a CONNECTOR -- Vissim SNAPS a connector's "
+            "geometry to its resolved endpoints regardless of what is written (measured), so the "
+            "shape written here is not the shape that persists. Use remove_connector + "
+            "add_connector."
+        )
+
+    points_before = _link_points_xy(link_el)
+    if len(points_before) != len(points_xy):
+        raise ValueError(
+            f"set_link_geometry: link {params.link_id} has {len(points_before)} polyline "
+            f"point(s), not {len(points_xy)} -- COM cannot add or remove a link's polyline point "
+            "(no Add/Remove on the point container, no writable WKT attribute). Supply exactly "
+            f"{len(points_before)}, or build the new shape with add_link + remove_link."
+        )
+
+    new_length = _polyline_length_m(points_xy)
+    anchors = _position_anchors_on_link(root, params.link_id)
+    truncated = [a for a in anchors if a["pos_m"] > new_length + 1e-6]
+    if truncated:
+        # Message order and length are deliberate: toolkit.dispatch caps a
+        # raised exception's text at 300 characters, so the minimum safe
+        # length and the named objects come FIRST -- an explanation-first
+        # message would be truncated exactly where the actionable part starts.
+        worst = max(a["pos_m"] for a in truncated)
+        shown = sorted(truncated, key=lambda a: -a["pos_m"])[:3]
+        named = "; ".join(f"{a['kind']} {a['no']} @ {a['pos_m']:.1f}m" for a in shown)
+        more = f" (+{len(truncated) - len(shown)} more)" if len(truncated) > len(shown) else ""
+        raise ValueError(
+            f"set_link_geometry: refusing to shorten link {params.link_id} to {new_length:.3f} m "
+            f"-- keep it at least {worst:.3f} m. {len(truncated)} object(s) sit beyond the new "
+            f"end and Vissim would SILENTLY relocate each one to it: {named}{more}."
+        )
+
+    result = session.set_link_geometry(link_no, points_xy)
+    session.persist()
+
+    # Rounded to _GEOMETRY_VERIFICATION_PRECISION, NOT to _POS_VERIFICATION_
+    # PRECISION like every other pos-shaped verification in this module -- and
+    # the difference is load-bearing in both directions. Constraint #6
+    # (write_verification_failed) compares written vs readback with a
+    # NON-recursive helper: a list compares with a bare ``!=``, so any bit of
+    # float noise refuses a correct write, which is what the coarse rounding
+    # exists to absorb. But guardrails._check_one_target_persisted compares
+    # this SAME written_value against the FULL-PRECISION points inpx_parser
+    # reads back out of the saved file, with a 1e-9 tolerance -- so rounding
+    # at 1e-6 (what _round_pos_m does) would itself exceed that tolerance and
+    # refuse the same correct write from the other side. 1e-10 satisfies both:
+    # ~20x inside the persistence tolerance, and far coarser than Vissim's own
+    # ~5.7e-14 re-serialization drift. x/y need no unit-conversion de-noising
+    # at all here (landmine 7: they are the one length-shaped COM value never
+    # display-unit-scaled), so this rounding is purely about those two
+    # comparison semantics meeting in the middle.
+    written_points = [[_round_xy_m(x), _round_xy_m(y)] for x, y in points_xy]
+    readback_points = [[_round_xy_m(p["x"]), _round_xy_m(p["y"])] for p in result["points"]]
+    verification = {"written_value": written_points, "readback_value": readback_points}
+    length_before = _polyline_length_m(points_before)
+    message = (
+        f"Link {params.link_id} reshaped: {len(points_xy)} point(s) moved, length "
+        f"{length_before:.3f} m -> {result['length']:.3f} m. "
+        + (
+            f"{len(anchors)} object(s) anchored on this link stay inside it (furthest at "
+            f"{max(a['pos_m'] for a in anchors):.3f} m)."
+            if anchors
+            else "Nothing is anchored on this link."
+        )
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {
+            "no": str(result["no"]),
+            "length_m": _round_pos_m(result["length"]),
+            "point_count": result["point_count"],
+        },
+    }
+
+
+class SetLinkPointRadiusParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_id: str
+    #: 1-based polyline point index. Must be INTERIOR (2..N-1): a polyline's
+    #: end points carry no curve radius at all (measured -- Rad reads None
+    #: on every endpoint probed).
+    point_index: int = Field(ge=2)
+    #: Curve radius in metres, or omitted/null to hand the radius back to
+    #: Vissim's own polyline-derived computation (RadiusSrc=CALCULATED).
+    radius_m: float | None = Field(default=None, gt=0)
+
+
+@tool(name="set_link_point_radius", tier="write", provider="edit", params=SetLinkPointRadiusParams)
+def set_link_point_radius(params: SetLinkPointRadiusParams) -> dict[str, Any]:
+    """Override the curve radius Vissim uses at one INTERIOR polyline point of a link (COM RadiusSrc=USERINPUT then Rad -- Vissim refuses the value write outright while the source is CALCULATED), or omit radius_m to restore Vissim's own polyline-derived radius. This changes only the radius the curve-speed model reads; it does NOT bend the link (the geometry is the polyline -- use set_link_geometry for that), so an override that disagrees with the drawn shape is a real modelling claim the caller owns."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_id, "link_id")
+
+    root = ET.parse(session.working_inpx).getroot()
+    link_el = _link_element(root, params.link_id)
+    if link_el is None:
+        raise ValueError(f"set_link_point_radius: link {params.link_id} not found")
+    point_els = link_el.findall("geometry/linkPolyPts/linkPolyPoint")
+    if params.point_index >= len(point_els):
+        raise ValueError(
+            f"set_link_point_radius: link {params.link_id} has {len(point_els)} polyline "
+            f"point(s), so its INTERIOR points are 2..{len(point_els) - 1} -- point "
+            f"{params.point_index} is an end point or past the end, and a polyline's end points "
+            "carry no curve radius (measured: Rad reads None there)."
+        )
+
+    result = session.set_link_point_radius(link_no, params.point_index, params.radius_m)
+    session.persist()
+
+    # The shadow model carries no per-point curvature at all (links[].points
+    # is x/y only), so guardrails' own postwrite diff and target-persisted
+    # check are both structurally BLIND to this write -- documented, not
+    # assumed. The verification below is therefore a genuine reparse of the
+    # JUST-PERSISTED working copy (the same "read the file, not the return
+    # value" discipline _still_present_after_remove uses), not a COM echo.
+    persisted = ET.parse(session.working_inpx).getroot()
+    persisted_link = _link_element(persisted, params.link_id)
+    persisted_points = (
+        persisted_link.findall("geometry/linkPolyPts/linkPolyPoint")
+        if persisted_link is not None
+        else []
+    )
+    persisted_point = (
+        persisted_points[params.point_index - 1] if params.point_index <= len(persisted_points) else None
+    )
+    saved_src = (persisted_point.get("radiusSrc") if persisted_point is not None else None) or None
+    saved_rad = persisted_point.get("rad") if persisted_point is not None else None
+    written_value = {
+        "radius_src": "CALCULATED" if params.radius_m is None else "USERINPUT",
+        "radius_m": None if params.radius_m is None else _round_pos_m(params.radius_m),
+    }
+    readback_value = {
+        "radius_src": saved_src,
+        # A CALCULATED point's radius is Vissim's own recomputation, which is
+        # deliberately NOT claimed as matching anything the caller wrote.
+        "radius_m": (
+            None
+            if params.radius_m is None
+            else (_round_pos_m(float(saved_rad)) if saved_rad not in (None, "") else None)
+        ),
+    }
+    verification = {"written_value": written_value, "readback_value": readback_value}
+
+    if params.radius_m is None:
+        message = (
+            f"Link {params.link_id} point {params.point_index}: curve radius handed back to "
+            f"Vissim's own polyline-derived computation (radiusSrc=CALCULATED). Vissim now "
+            f"reports {result['points'][params.point_index - 1]['radius']} m for it."
+        )
+    else:
+        message = (
+            f"Link {params.link_id} point {params.point_index}: curve radius overridden to "
+            f"{params.radius_m:g} m (radiusSrc=USERINPUT). The link's shape and its "
+            f"{result['length']:.3f} m length are unchanged -- only the radius the curve-speed "
+            f"model reads."
+        )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {"no": str(result["no"]), "point_index": params.point_index},
+    }
+
+
+# ---------------------------------------------------------------------------
 # rollback_last_edit()
 #
 # QUEUE 3 unit 7. NOT a COM verb -- like set_reduced_speed_area, this tool

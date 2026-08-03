@@ -184,6 +184,19 @@ EXPECTED_WRITE_TOOL_NAMES = {
     # deserves its own reference-integrity story -- a deliberate, recorded
     # scope cut, mirroring remove_signal_controller's.
     "add_vehicle_input",
+    # Q6 unit (1) adds three link-geometry edit verbs for an EXISTING link:
+    # set_link_lane_count (COM AddLane/RemoveLane -- a link's own NumLanes
+    # attribute is read-only, measured), set_link_geometry (moves the polyline
+    # points; the point COUNT cannot change, because COM exposes no way to add
+    # or remove one), and set_link_point_radius (the per-point curve-radius
+    # override, a two-step write because Vissim refuses the value while the
+    # source is CALCULATED). No verb wraps RecalculateSpline/SplitLink/
+    # InvertDirection/GenerateOppositeDirection/DuplicateLink: they exist on
+    # the same interface but were not probed by that unit -- a deliberate,
+    # recorded scope cut.
+    "set_link_lane_count",
+    "set_link_geometry",
+    "set_link_point_radius",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md

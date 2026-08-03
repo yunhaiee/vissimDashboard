@@ -173,7 +173,20 @@ def test_health_check_runner_against_demo_dataset():
     # "this model has 5 time intervals" are not findings, they are just
     # facts -- so both land in edit_time_only, same shape as every addition
     # above.
-    assert report["summary"]["edit_time_only_n"] == 90
+    # 93, not 90: Q6 unit (1) (link geometry edits) added three
+    # preflight-only constraints for the new set_link_lane_count /
+    # set_link_geometry / set_link_point_radius tools --
+    # link_geometry_truncates_anchored_objects,
+    # link_lane_count_shifts_centerline and
+    # link_point_radius_overrides_geometry. All three key off a PROPOSED
+    # action's own params (the requested points_xy/lane_count/radius_m
+    # compared against the link as it stands right now), and a whole-network
+    # dataset scan has no equivalent of that -- "this model has links with
+    # objects anchored on them" is not a finding, it is just a fact -- so all
+    # three land in edit_time_only, same shape as every addition above.
+    # (The M0.3 link_geometry_edit_reference_integrity that unit generalized
+    # is NOT a new registration and was already counted here.)
+    assert report["summary"]["edit_time_only_n"] == 93
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

@@ -340,6 +340,33 @@ class VissimEditSession:
             from_link_no, from_lane_indices, from_pos_m, to_link_no, to_lane_indices, to_pos_m, name
         )
 
+    # Q6 unit (1): link GEOMETRY edits on an EXISTING link -- lane count,
+    # polyline shape/length, curvature. See VissimController's own module
+    # comment (link-geometry block) for the full live-verified writeup: the
+    # read-only NumLanes attribute, the centerline that silently moves by half
+    # a lane width on every lane-count change, RemoveLane's silent
+    # cascade-delete of lane-anchored objects, the point count COM cannot
+    # change, the anchored objects a shortening silently relocates, and the
+    # two-step curvature write.
+
+    def set_link_lane_count(
+        self, link_no: int, lane_count: int, lane_width_m: float | None = None
+    ) -> dict[str, Any]:
+        return self._ensure_connected().set_link_lane_count(link_no, lane_count, lane_width_m)
+
+    def set_link_geometry(
+        self, link_no: int, points_xy: list[tuple[float, float]]
+    ) -> dict[str, Any]:
+        return self._ensure_connected().set_link_geometry(link_no, points_xy)
+
+    def set_link_point_radius(
+        self, link_no: int, point_index: int, radius_m: float | None
+    ) -> dict[str, Any]:
+        return self._ensure_connected().set_link_point_radius(link_no, point_index, radius_m)
+
+    def get_link_geometry(self, link_no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_link_geometry(link_no)
+
     # v2 unit ⑥: static routing decision route relative-flow verbs.
 
     def set_route_relative_flow(

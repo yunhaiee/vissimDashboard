@@ -5318,9 +5318,36 @@ def test_registry_size_matches_m3_1_catalog_port():
     # volume_out_of_range check (_VOLUME_FIELDS), not a new constraint,
     # mirroring how Q4 unit (6) wired add_stop_sign/add_priority_rule onto
     # signal_head_detector_pos_out_of_range.
-    # == 104.
+    # == 104, + 3 (Q6 unit (1), link geometry edits -- set_link_lane_count /
+    # set_link_geometry / set_link_point_radius):
+    # link_geometry_truncates_anchored_objects (refuse -- the flagship silent
+    # failure of that unit, measured twice: a data-collection point at pos
+    # 132.485 m on a link shortened to 82.803 m came back at EXACTLY the new
+    # end, and shortening Beijing link 5 from 452.06 m to 226.03 m clamped all
+    # three connectors anchored at its far end AND stretched their geometry to
+    # reach, turning an 11.71 m turn connector into a 237.70 m one, with
+    # load_check still passing),
+    # link_lane_count_shifts_centerline (warn -- Vissim re-centres a link's
+    # polyline on every lane-count change, measured three times across two
+    # networks and both directions at exactly half the added/removed lane
+    # width: 1.75 m, 1.5 m, 0.5334 m), and
+    # link_point_radius_overrides_geometry (warn -- a USERINPUT radius is a
+    # first-class Vissim feature, 16 082 of the corpus's 60 420 polyline
+    # points already use one, but it decouples the curve-speed model from the
+    # drawn shape, so the warn names the override AND the circumradius of the
+    # shape as drawn).
+    # No fourth constraint: the reference-integrity refusal that stops a lane
+    # reduction from silently CASCADE-DELETING lane-anchored objects lives in
+    # tools_edit.set_link_lane_count (services.inpx_structure's
+    # ReferenceIntegrityError, the remove_link/remove_pt_stop precedent), the
+    # target link's own existence is #1 object_not_found via a plain
+    # _TOOL_TARGET_SPEC entry PLUS an entry in #1's own applies_to list, and
+    # the M0.3 forward-ready link_geometry_edit_reference_integrity was
+    # GENERALIZED rather than duplicated (it finally fires, off the two
+    # shape-changing tools' own link_id, instead of a flag nothing sets).
+    # == 107.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 104
+    assert len(get_registry()) == 107
 
 
 def test_registry_has_unique_ids():
@@ -8176,3 +8203,282 @@ def test_object_not_found_applies_to_is_in_lockstep_with_the_spec_table():
     # A duplicate entry would make the difference above pass while still
     # signalling a careless merge.
     assert len(applies_to) == len(set(applies_to))
+
+
+# ---------------------------------------------------------------------------
+# Q6 unit ①: link geometry edits (lanes / length / curvature)
+# ---------------------------------------------------------------------------
+
+#: A 200 m link (101) with a signal head at 180 m, a data-collection point at
+#: 150 m and a connector (301) anchored on it at 190 m; a 100 m bent link
+#: (102) with nothing on it. The pair lets every check below be shown both
+#: firing and staying silent, on real shadow-model shapes.
+_GEOMETRY_SHADOW: dict[str, Any] = {
+    "links": [
+        {
+            "id": "101",
+            "name": "Approach",
+            "points": [[0.0, 0.0], [200.0, 0.0]],
+            "lanes": 2,
+            "lane_widths": [3.5, 3.25],
+            "width_total": 6.75,
+            "length": 200.0,
+            "is_connector": False,
+            "from_link": None,
+            "to_link": None,
+            "from_pos": None,
+            "to_pos": None,
+        },
+        {
+            "id": "102",
+            "name": "Bent",
+            "points": [[0.0, 100.0], [50.0, 110.0], [100.0, 100.0]],
+            "lanes": 1,
+            "lane_widths": [3.5],
+            "width_total": 3.5,
+            "length": 101.98,
+            "is_connector": False,
+            "from_link": None,
+            "to_link": None,
+            "from_pos": None,
+            "to_pos": None,
+        },
+        {
+            "id": "301",
+            "name": "Turn",
+            "points": [[200.0, 0.0], [210.0, 10.0]],
+            "lanes": 1,
+            "lane_widths": [3.5],
+            "width_total": 3.5,
+            "length": 14.14,
+            "is_connector": True,
+            "from_link": "101",
+            "to_link": "102",
+            "from_pos": 190.0,
+            "to_pos": 0.0,
+        },
+    ],
+    "signal_heads": [{"no": "9", "name": "SH", "link": "101", "lane_index": 2, "pos": 180.0}],
+    "data_collection_points": [
+        {"no": "7", "name": "DCP", "link": "101", "lane_index": 1, "pos": 150.0}
+    ],
+    "queue_counters": [{"no": "5", "name": "QC", "link_id": "101", "pos": 20.0}],
+}
+
+
+def _geometry_action(tool: str, **params: Any) -> dict[str, Any]:
+    return {"tool": tool, "params": params}
+
+
+def test_link_geometry_truncates_anchored_objects_refuses_and_names_every_object():
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_geometry", link_id="101", points_xy=[[0.0, 0.0], [100.0, 0.0]]),
+        _GEOMETRY_SHADOW,
+    )
+
+    matches = [f for f in findings if f.constraint_id == "link_geometry_truncates_anchored_objects"]
+    assert len(matches) == 1
+    finding = matches[0]
+    assert finding.tier == "refuse"
+    # The head (180), the DCP (150) and the connector endpoint (190) are all
+    # past 100 m; the queue counter at 20 m is NOT, and must not be named.
+    assert finding.details["truncated_count"] == 3
+    assert finding.details["min_length_m"] == 190.0
+    assert "signal head" in finding.messages["en"] or "signal_heads" in finding.messages["en"]
+    assert "connector_from 301" in finding.messages["en"]
+    assert "5" not in [o["no"] for o in finding.suggested_fix["objects"]]
+
+
+def test_link_geometry_truncates_anchored_objects_stays_silent_when_everything_still_fits():
+    """The boundary that makes the refusal above a real measurement rather
+    than a blanket ban on shortening: 195 m clears the furthest anchor
+    (the connector at 190 m), 100 m does not."""
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_geometry", link_id="101", points_xy=[[0.0, 0.0], [195.0, 0.0]]),
+        _GEOMETRY_SHADOW,
+    )
+
+    assert not [f for f in findings if f.constraint_id == "link_geometry_truncates_anchored_objects"]
+
+
+def test_link_geometry_truncates_anchored_objects_stays_silent_for_a_bare_link():
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_geometry", link_id="102", points_xy=[[0.0, 100.0], [1.0, 100.0], [2.0, 100.0]]),
+        _GEOMETRY_SHADOW,
+    )
+
+    assert not [f for f in findings if f.constraint_id == "link_geometry_truncates_anchored_objects"]
+
+
+def test_link_geometry_truncates_anchored_objects_makes_no_claim_on_a_malformed_points_param():
+    """A hallucinated param shape must make this check SILENT, never crash a
+    preflight pass (every other constraint in this file follows the same
+    degrade-quietly rule)."""
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_geometry", link_id="101", points_xy="not points"),
+        _GEOMETRY_SHADOW,
+    )
+
+    assert not [f for f in findings if f.constraint_id == "link_geometry_truncates_anchored_objects"]
+
+
+def test_link_lane_count_shifts_centerline_warns_with_the_measured_half_width():
+    """Live-measured three times: the shift is exactly half the added/removed
+    lane width. Link 101's last lane is 3.25 m wide, so +1 lane at that width
+    moves the polyline 1.625 m."""
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_lane_count", link_id="101", lane_count=3),
+        _GEOMETRY_SHADOW,
+    )
+
+    matches = [f for f in findings if f.constraint_id == "link_lane_count_shifts_centerline"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["expected_centerline_shift_m"] == 1.625
+    assert "1.62" in matches[0].messages["ko"]
+
+
+def test_link_lane_count_shifts_centerline_uses_an_explicit_width_when_given():
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_lane_count", link_id="101", lane_count=4, lane_width_m=4.0),
+        _GEOMETRY_SHADOW,
+    )
+
+    finding = next(f for f in findings if f.constraint_id == "link_lane_count_shifts_centerline")
+    # Two lanes of 4.0 m -> the whole link moves 4.0 m.
+    assert finding.details["expected_centerline_shift_m"] == 4.0
+
+
+def test_link_lane_count_shifts_centerline_stays_silent_on_a_no_op():
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_lane_count", link_id="101", lane_count=2),
+        _GEOMETRY_SHADOW,
+    )
+
+    assert not [f for f in findings if f.constraint_id == "link_lane_count_shifts_centerline"]
+
+
+def test_link_point_radius_overrides_geometry_warns_and_names_the_drawn_radius():
+    """The warn puts the caller's override next to the circumradius of the
+    three points as drawn -- link 102's bend through (0,100)-(50,110)-(100,100)
+    has a real radius of exactly 130 m, so a 500 m override is visibly a claim about
+    something other than the drawn shape."""
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_point_radius", link_id="102", point_index=2, radius_m=500.0),
+        _GEOMETRY_SHADOW,
+    )
+
+    matches = [f for f in findings if f.constraint_id == "link_point_radius_overrides_geometry"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["radius_m"] == 500.0
+    assert matches[0].details["geometric_radius_m"] == pytest.approx(130.0, abs=0.01)
+    assert "500" in matches[0].messages["en"]
+
+
+def test_link_point_radius_overrides_geometry_stays_silent_when_restoring():
+    """Omitting radius_m hands the radius back to Vissim's own computation --
+    the direction that REMOVES a divergence, so there is nothing to warn."""
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_point_radius", link_id="102", point_index=2),
+        _GEOMETRY_SHADOW,
+    )
+
+    assert not [f for f in findings if f.constraint_id == "link_point_radius_overrides_geometry"]
+
+
+def test_link_point_radius_overrides_geometry_still_warns_when_the_drawn_radius_is_unknowable():
+    """A straight link's three collinear points have an INFINITE circumradius;
+    the check must still warn (the override is still a claim) while printing
+    "-" rather than inventing a number."""
+    shadow = {
+        "links": [
+            {
+                "id": "900",
+                "name": "Straight",
+                "points": [[0.0, 0.0], [50.0, 0.0], [100.0, 0.0]],
+                "lanes": 1,
+                "lane_widths": [3.5],
+                "width_total": 3.5,
+                "length": 100.0,
+                "is_connector": False,
+                "from_link": None, "to_link": None, "from_pos": None, "to_pos": None,
+            }
+        ]
+    }
+
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_point_radius", link_id="900", point_index=2, radius_m=300.0),
+        shadow,
+    )
+
+    finding = next(f for f in findings if f.constraint_id == "link_point_radius_overrides_geometry")
+    assert finding.details["geometric_radius_m"] is None
+    assert "-" in finding.messages["en"]
+
+
+def test_lane_count_edit_unsupported_exempts_set_link_lane_count():
+    """The trap Q4 unit ⑤ recorded after being bitten by it live: this
+    blanket refusal fires on ANY tool carrying a lane-count-shaped param, so
+    a new lane-count verb that is not exempted is refused forever, silently,
+    before it ever reaches COM."""
+    findings = run_checks(
+        "preflight",
+        _geometry_action("set_link_lane_count", link_id="101", lane_count=3),
+        _GEOMETRY_SHADOW,
+    )
+
+    assert not [f for f in findings if f.constraint_id == "lane_count_edit_unsupported"]
+
+
+def test_link_geometry_edit_reference_integrity_now_fires_for_the_shape_changing_tools():
+    """The M0.3 forward-ready check finally has the tools it was written for.
+    It watches a per-link "geometry_edited_this_turn" flag that NO parser sets,
+    so it had been inert since M0.3 -- it now also keys off the action's own
+    link_id for the two tools that genuinely change a link's drawn shape."""
+    findings = run_checks(
+        "postwrite",
+        _geometry_action("set_link_geometry", link_id="101", points_xy=[[0.0, 0.0], [195.0, 0.0]]),
+        _GEOMETRY_SHADOW,
+    )
+
+    matches = [f for f in findings if f.constraint_id == "link_geometry_edit_reference_integrity"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["edited_links"] == ["101"]
+
+
+def test_link_geometry_edit_reference_integrity_also_fires_for_a_lane_count_change():
+    findings = run_checks(
+        "postwrite",
+        _geometry_action("set_link_lane_count", link_id="101", lane_count=3),
+        _GEOMETRY_SHADOW,
+    )
+
+    finding = next(
+        f for f in findings if f.constraint_id == "link_geometry_edit_reference_integrity"
+    )
+    assert finding.details["edited_links"] == ["101"]
+
+
+def test_link_geometry_edit_reference_integrity_stays_silent_for_a_curvature_only_write():
+    """set_link_point_radius is the one geometry-adjacent write measured NOT
+    to move the shape at all (x/y and Length2D unchanged), so nothing anchored
+    to the link needs re-validating and this must stay quiet."""
+    findings = run_checks(
+        "postwrite",
+        _geometry_action("set_link_point_radius", link_id="101", point_index=2, radius_m=300.0),
+        _GEOMETRY_SHADOW,
+    )
+
+    assert not [f for f in findings if f.constraint_id == "link_geometry_edit_reference_integrity"]

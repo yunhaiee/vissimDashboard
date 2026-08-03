@@ -144,6 +144,13 @@ EXPECTED_WRITE_TOOLS = {
     # real path here -- see tools_edit.py's own comment block; the last
     # GENESIS GAP LIST item).
     "add_vehicle_input",
+    # Q6 unit (1): link geometry edits on an EXISTING link -- lanes, shape/
+    # length, curvature (see tools_edit.py's own comment block). The first
+    # verbs in this catalog that RESHAPE a link rather than create or remove
+    # one.
+    "set_link_lane_count",
+    "set_link_geometry",
+    "set_link_point_radius",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

@@ -429,6 +429,51 @@ LANE_TOKEN_REFERENCE_SITES: tuple[ReferenceSite, ...] = (
     # priority rules (added in an earlier unit) -- unaffected by this unit,
     # re-verified relevant by this same probe.
     ReferenceSite("stop sign", ".//stopSigns/stopSign", "lane"),
+    # Q6 unit (1): link geometry edits (lanes/length/curvature). Six sites
+    # this registry never knew about, found by a CORPUS-WIDE scan for every
+    # attribute whose value has the shape of Vissim's own "<link> <lane>"
+    # token across all 25 real Vissim 2026 example networks
+    # (backend/tools/probe_link_geometry.py's own static_lane_token_scan --
+    # the same method Q4 unit (7) used to discover detector.ptStop). The scan
+    # also reports same-SHAPE attributes in a DIFFERENT token space
+    # (signalHead@sg is "<sc> <sg>"; timeIntervalVehVolume@timeInt is a
+    # time-interval pair; signalHead3D@assocSG* are 3D-signal references) --
+    # those are deliberately NOT registered here, separated by reading the
+    # scan rather than by a silent filter.
+    #
+    # This is not future-proofing: unit (1)'s own probe live-proved that
+    # ``ILaneContainer.RemoveLane`` SILENTLY CASCADE-DELETES whatever is
+    # anchored on the lane -- a controlled CONTROL/TREATMENT pair on Urban
+    # Intersection Beijing.CN where a data-collection point and a signal head
+    # created on link 4 lane 4 are both present in the control save (53 heads
+    # / 32 points) and both simply GONE from the treatment save (52 / 31)
+    # after one RemoveLane, with no exception raised and ``load_check``
+    # returning load_ok/init_ok on the result. ``dataCollectionPoint@lane``
+    # (222 occurrences) is the object that cascade was measured on; the other
+    # five carry the identical anchor attribute in the identical shape, so
+    # they are registered on the same footing -- and because every consequence
+    # of registering a site here is a REFUSAL (fail-safe), a site registered
+    # on corpus evidence can only ever be over-cautious, never destructive.
+    #
+    # Consequence beyond this unit's own verbs, stated plainly: the three
+    # pre-existing removal verbs that already consult this registry
+    # (``tools_edit.remove_link``/``remove_connector`` and
+    # ``inpx_structure.remove_last_lane``) now ALSO refuse when one of these
+    # six sits on a lane they were about to delete. That is a behavior change
+    # -- and it closes a real hole: Q4 unit (5)'s own module comment records
+    # live-verifying that ``RemoveLink`` "silently removed a link whose lane
+    # still carried a data-collection point", which this registry could not
+    # actually catch until now.
+    ReferenceSite("data collection point", ".//dataCollectionPoints/dataCollectionPoint", "lane"),
+    ReferenceSite("PT stop", ".//ptStops/ptStop", "lane"),
+    ReferenceSite("desired speed decision", ".//desSpeedDecisions/desSpeedDecision", "lane"),
+    ReferenceSite("parking lot", ".//parkingLots/parkingLot", "lane"),
+    ReferenceSite("pavement marking", ".//pavementMarkings/pavementMarking", "lane"),
+    ReferenceSite(
+        "vehicle attribute decision",
+        ".//vehicleAttributeDecisions/vehicleAttributeDecision",
+        "lane",
+    ),
 )
 
 
@@ -489,13 +534,25 @@ class ReferenceIntegrityError(RuntimeError):
     """A removal was refused because other elements still reference the
     object/lane about to disappear. ``referrers`` names every one of them
     (never a bare count) — the guardrail doctrine's "a refused edit with a
-    clear reason" applied to structural edits."""
+    clear reason" applied to structural edits.
+
+    The rendered MESSAGE names at most ``_MAX_RENDERED_REFERRERS`` and then
+    an honest "and N more": toolkit.dispatch truncates exception text at 300
+    chars, and an uncapped 12-referrer list measured 613 chars — dispatch's
+    arbitrary mid-name cut is strictly worse than a controlled tail. The
+    full list always survives on the ``referrers`` attribute."""
+
+    _MAX_RENDERED_REFERRERS = 3
 
     def __init__(self, description: str, referrers: list[dict[str, Any]]) -> None:
         self.referrers = referrers
+        shown = referrers[: self._MAX_RENDERED_REFERRERS]
         rendered = "; ".join(
-            f"{r['site']} ({r['tag']}@{r['attribute']}={r['value']!r})" for r in referrers
+            f"{r['site']} ({r['tag']}@{r['attribute']}={r['value']!r})" for r in shown
         )
+        overflow = len(referrers) - len(shown)
+        if overflow > 0:
+            rendered = f"{rendered}; and {overflow} more"
         super().__init__(f"{description}: still referenced by {rendered}")
 
 

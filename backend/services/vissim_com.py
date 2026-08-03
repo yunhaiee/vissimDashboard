@@ -2176,6 +2176,316 @@ class VissimController:
             ) from exc
         return self.get_link(new_no)
 
+    # ---------------------------------------------------------------------
+    # Q6 unit (1): link GEOMETRY edits on an EXISTING link -- lane count,
+    # polyline shape/length, curvature. Q4 unit (5) could only CREATE and
+    # REMOVE whole links; this block reshapes one that is already there, and
+    # every claim below is measured by ``backend/tools/probe_link_geometry.py``
+    # (state file: ``runtime/link-geometry-probe/state.json``), on Urban
+    # Intersection Beijing.CN (METERS) and Toll Plaza Camden.US (FEET), with a
+    # NULL CONTROL part proving an untouched load+save moves nothing at all
+    # (0 links moved, 0 lane changes, empty ``diff_shadow_models``) -- so every
+    # diff attributed below is attributable.
+    #
+    # **Landmine 1 (the lane count is NOT an attribute).**
+    # ``SetAttValue("NumLanes", n)`` fails LOUDLY -- "put_AttValue failed - the
+    # attribute NUMLANES is not editable" -- and the lane index set is
+    # unchanged after it (judged by a ``Lanes.GetAll()`` Index-set diff, never
+    # by the absence of an exception). The real primitive is
+    # ``ILaneContainer.AddLane(Key, Width)`` / ``RemoveLane(Lane)``, both
+    # live-proven on EXISTING links (Beijing link 4: 4 -> 5 lanes; link 8:
+    # 4 -> 3). This CORRECTS the pre-M0.3 catalog note "there is no per-lane
+    # add/remove on an existing link" that ``constraints.
+    # lane_count_edit_unsupported`` was built on -- see that constraint's own
+    # updated comment.
+    #
+    # **Landmine 2 (every lane-count change silently MOVES the link's
+    # centerline by half the lane width, perpendicular).** Measured three
+    # times, on two networks and in both directions: Beijing link 4 +1 lane of
+    # 3.5 m -> every persisted point moved 1.75 m; link 8 -1 lane of 3.0 m ->
+    # 1.5 m; Camden link 1 +1 lane of 1.0668 m -> a uniform 0.5334 m
+    # translation of the WHOLE polyline. ``Length2D`` never changes. Vissim
+    # keeps the link's lanes centered on its polyline, so widening/narrowing
+    # re-centers the polyline itself -- a real geometry change nobody asked
+    # for, which is why ``set_link_lane_count`` reports the measured shift and
+    # ``constraints.link_lane_count_shifts_centerline`` warns about it.
+    #
+    # **Landmine 3 (RemoveLane SILENTLY CASCADE-DELETES whatever is anchored
+    # on the lane).** The taxonomy's third species (Q4 unit (7)'s
+    # ``RemovePTStop`` precedent), now proven for lanes by a controlled
+    # CONTROL/TREATMENT pair in ONE session: a data-collection point and a
+    # signal head created on Beijing link 4 lane 4 are both present in the
+    # control save (53 heads / 32 points) and both GONE from the treatment
+    # save (52 / 31) after a single ``RemoveLane`` -- COM's own ``ItemByKey``
+    # says "object does not exist" for each immediately after the call, no
+    # exception is raised, and ``load_check`` on the result returns
+    # load_ok/init_ok, so Vissim never objects either. This module does NOT
+    # guard against it (that would be a second, competing source of truth
+    # against the XML-based one); ``tools_edit.set_link_lane_count`` refuses
+    # first, naming every referrer, via the SAME ``services.inpx_structure``
+    # spine ``remove_link``/``remove_connector`` already use.
+    #
+    # **Landmine 4 (points are writable one coordinate at a time; the point
+    # COUNT is not writable at all).** ``X``/``Y``/``ZOffset`` are all
+    # ``SetAttValue``-able with a genuine readback, and ``Length2D`` follows
+    # exactly (a half-length write took 165.606 m -> 82.803 m, ratio 0.5000).
+    # But ``ILinkPolyPointContainer``/``ILinkPolyPointCollection`` expose NO
+    # Add/Remove/Insert of any kind (type-library scan + a live ``dir()``),
+    # and there is no ``WktLinestring``/``WKT``/``Geometry`` attribute on
+    # ``ILink`` at all (all five candidate spellings raise "Could not find
+    # attribute") -- WKT exists ONLY as an ``AddLink``/``AddConnector``
+    # argument. So COM can RESHAPE a link but never re-point it:
+    # :meth:`set_link_geometry` requires exactly as many points as the link
+    # already has, and refuses otherwise rather than silently truncating.
+    #
+    # **Landmine 5 (shortening a link silently RELOCATES everything anchored
+    # beyond the new end).** Two independent live measurements: a
+    # data-collection point at pos 132.485 m on a link shortened to 82.803 m
+    # came back at pos 82.80285441921609 -- exactly the new end -- and
+    # persisted that way; and Beijing link 5 (452.06 m) shortened to 226.03 m
+    # clamped ALL THREE connectors anchored at its far end from FromPos 452.06
+    # to 226.03 AND stretched their own geometry to reach, turning connector
+    # 10006 from an 11.71 m turn into a 237.70 m one (10008: 12.88 -> 238.86).
+    # ``load_check`` passes, conflict areas stay at 224, nothing anywhere
+    # reports it. This is the flagship silent failure of this unit and the
+    # reason ``tools_edit.set_link_geometry`` refuses a shortening that would
+    # move any anchored object.
+    #
+    # **Landmine 6 (curvature is not spline data -- it is a per-point radius
+    # OVERRIDE, and it is a two-step write).** A link's geometry IS its
+    # polyline; each point carries ``Rad`` + ``RadiusSrc`` + ``RadiusEffect``
+    # (the persisted ``rad``/``radiusSrc``/``radiusEffect`` attributes;
+    # 16 082 of 60 420 corpus points are already ``USERINPUT``). ``Rad`` is
+    # REFUSED LOUDLY while the source is ``CALCULATED`` ("AttValue failed:
+    # Object : Attribute Radius cannot be changed") and becomes writable only
+    # after ``RadiusSrc='USERINPUT'`` -- proven live (24292.24 -> 222.0,
+    # persisted ``rad="222" radiusSrc="USERINPUT"``), with x/y and Length2D
+    # unchanged. Endpoints read ``Rad`` as ``None`` on every point measured,
+    # so only INTERIOR points are addressable. ``ILink.RecalculateSpline()``
+    # exists and is deliberately NOT wrapped: it REDISTRIBUTES the
+    # intermediate points evenly (Beijing link 12's middle point moved ~30 m;
+    # spacing 27.4/87.5 -> 57.4/57.4) with no return value, and
+    # ``RecalculateSplineHeight()`` zeroed a ZOffset that had just been
+    # written -- both are geometry mutations disguised as recomputes.
+    #
+    # **Landmine 7 (units -- x/y are the exception, in BOTH directions, and z
+    # is NOT).** On Camden (FEET) a point's COM ``X``/``Y`` equal the
+    # persisted XML x/y exactly (ratio 1.0 on every coordinate measured), and
+    # a written ``X`` lands raw -- confirming, in the write direction and on a
+    # FEET network, the coordinate-space landmine Q4 unit (5) could only infer
+    # there. EVERYTHING ELSE on this surface is display-unit-scaled, each
+    # measured on the same network: ``Length2D`` reads 200.0906 against a
+    # 60.9876 m polyline (ratio 3.280840 = 1/0.3048), ``AddLane(4, 3.5)``
+    # passed RAW persisted ``width="1.0668"`` (3.5 FEET), ``Rad`` reads 940.95
+    # against a persisted ``rad`` of 286.802 (same ratio), and ``ZOffset``
+    # reads 22.0013 against a persisted ``zOffset`` of 6.706 (same ratio) --
+    # so x and y are raw metres while z, on the SAME point object, is not.
+    # ---------------------------------------------------------------------
+
+    def get_link_geometry(self, no: int) -> dict[str, Any]:
+        """Full geometry readback for one link/connector: ``{"no", "name",
+        "is_connector", "lanes", "lane_widths" (metres), "length" (metres),
+        "point_count", "points"}`` where each point is ``{"index" (1-based),
+        "x", "y" (RAW METRES -- landmine 7), "z" (metres), "radius" (metres
+        or ``None`` when Vissim has none for that point), "radius_src",
+        "radius_effect"}``.
+
+        The paired reader for all three geometry setters below. ``"no"`` is a
+        genuine ``int(AttValue("No"))`` readback off the resolved COM object,
+        never the argument echoed back (Q5 unit (2)'s ``get_signal_controller``
+        defect: a reader that echoes its own argument makes the setter's
+        identity claim unfalsifiable by construction; ``int()`` because COM
+        returns ``No`` as a float on some collections).
+        """
+        try:
+            link = self._item_by_key(self.vissim.Net.Links, no, "Link", self.available_link_nos())
+            unit = self._net_unit_length()
+            points: list[dict[str, Any]] = []
+            for index, point in enumerate(link.LinkPolyPts.GetAll(), start=1):
+                radius_raw = point.AttValue("Rad")
+                points.append(
+                    {
+                        "index": index,
+                        # RAW METRES, never converted -- landmine 7.
+                        "x": float(point.AttValue("X")),
+                        "y": float(point.AttValue("Y")),
+                        "z": self._length_com_to_m(float(point.AttValue("ZOffset") or 0.0), unit),
+                        "radius": (
+                            self._length_com_to_m(float(radius_raw), unit)
+                            if radius_raw not in (None, "")
+                            else None
+                        ),
+                        "radius_src": str(point.AttValue("RadiusSrc") or ""),
+                        "radius_effect": str(point.AttValue("RadiusEffect") or ""),
+                    }
+                )
+            return {
+                "no": int(link.AttValue("No")),
+                "name": str(link.AttValue("Name") or ""),
+                "is_connector": bool(int(link.AttValue("IsConn") or 0)),
+                "lanes": int(link.AttValue("NumLanes")),
+                "lane_widths": [
+                    self._length_com_to_m(float(lane.AttValue("Width")), unit)
+                    for lane in link.Lanes.GetAll()
+                ],
+                "length": self._length_com_to_m(float(link.AttValue("Length2D")), unit),
+                "point_count": len(points),
+                "points": points,
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read the geometry of link {no}: {exc}") from exc
+
+    def set_link_lane_count(
+        self, link_no: int, lane_count: int, lane_width_m: float | None = None
+    ) -> dict[str, Any]:
+        """Grow or shrink an EXISTING link to exactly ``lane_count`` lanes via
+        ``ILaneContainer.AddLane``/``RemoveLane`` (landmine 1 -- ``NumLanes``
+        itself is read-only). New lanes are appended at the highest index and
+        get ``lane_width_m`` metres, defaulting to the link's own CURRENT last
+        lane width so a widened link stays self-consistent rather than
+        inheriting an unrelated 3.5 m default. Shrinking removes the HIGHEST
+        indices first, which is what makes the operation expressible at all --
+        a lane has no identity besides its ordinal, so removing an interior
+        one would silently re-number every lane above it (the same reasoning
+        ``services.inpx_structure.remove_last_lane`` already documents).
+
+        **Removal SILENTLY CASCADE-DELETES anything anchored on the removed
+        lane** (landmine 3, live-proven). This method does NOT guard against
+        that -- ``tools_edit.set_link_lane_count`` refuses first, naming every
+        referrer. Returns :meth:`get_link_geometry`'s shape for the link,
+        read back from COM (so the caller can see the centerline shift
+        landmine 2 describes, not merely the new lane count).
+
+        The lane collection is re-fetched on every iteration: Q4 unit (6)
+        live-verified that HELD child-collection references under-report
+        after writes.
+        """
+        try:
+            link = self._item_by_key(
+                self.vissim.Net.Links, link_no, "Link", self.available_link_nos()
+            )
+            unit = self._net_unit_length()
+            current = self.available_lane_indices(link_no)
+            if lane_width_m is None:
+                widths = [float(lane.AttValue("Width")) for lane in link.Lanes.GetAll()]
+                width_com = widths[-1] if widths else self._length_m_to_com(3.5, unit)
+            else:
+                width_com = self._length_m_to_com(float(lane_width_m), unit)
+
+            while len(self.available_lane_indices(link_no)) < lane_count:
+                indices = self.available_lane_indices(link_no)
+                next_index = (max(indices) if indices else 0) + 1
+                link.Lanes.AddLane(next_index, width_com)
+            while len(self.available_lane_indices(link_no)) > lane_count:
+                indices = self.available_lane_indices(link_no)
+                link.Lanes.RemoveLane(link.Lanes.ItemByKey(max(indices)))
+
+            final = self.available_lane_indices(link_no)
+            if len(final) != lane_count:
+                raise RuntimeError(
+                    f"lane count is {len(final)} (indices {final}) after asking for {lane_count} "
+                    f"-- started from {current}"
+                )
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set link {link_no} to {lane_count} lane(s): {exc}"
+            ) from exc
+        return self.get_link_geometry(link_no)
+
+    def set_link_geometry(
+        self, link_no: int, points_xy: list[tuple[float, float]]
+    ) -> dict[str, Any]:
+        """Move an EXISTING link's polyline points to ``points_xy`` (RAW
+        METRES -- landmine 7), in order, one ``SetAttValue`` per coordinate.
+
+        ``points_xy`` MUST have exactly as many entries as the link already
+        has points: COM offers no way to add or remove a polyline point at
+        all (landmine 4), so any other count is refused here rather than
+        silently applied to a prefix. Each point is re-fetched by index
+        rather than held across writes (Q4 unit (6)'s held-reference
+        landmine). Returns :meth:`get_link_geometry`'s shape, so the caller
+        sees the recomputed ``length`` rather than assuming it.
+        """
+        try:
+            link = self._item_by_key(
+                self.vissim.Net.Links, link_no, "Link", self.available_link_nos()
+            )
+            existing = len(list(link.LinkPolyPts.GetAll()))
+            if existing != len(points_xy):
+                raise ValueError(
+                    f"link {link_no} has {existing} polyline point(s) but {len(points_xy)} were "
+                    "supplied -- Vissim COM cannot add or remove a link's polyline points "
+                    "(ILinkPolyPointContainer has no Add/Remove at all, and there is no writable "
+                    "WKT attribute on a link); supply exactly as many points as the link has, or "
+                    "build a new link with add_link."
+                )
+            for index, (x, y) in enumerate(points_xy):
+                point = list(link.LinkPolyPts.GetAll())[index]
+                point.SetAttValue("X", float(x))
+                point.SetAttValue("Y", float(y))
+        except (VissimObjectNotFoundError, ValueError):
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set the geometry of link {link_no} to {points_xy!r}: {exc}"
+            ) from exc
+        return self.get_link_geometry(link_no)
+
+    def set_link_point_radius(
+        self, link_no: int, point_index: int, radius_m: float | None
+    ) -> dict[str, Any]:
+        """Override (or restore) the curve radius Vissim uses at one INTERIOR
+        polyline point (landmine 6).
+
+        ``radius_m`` in metres sets ``RadiusSrc='USERINPUT'`` FIRST and then
+        ``Rad`` -- in that order, because Vissim refuses the value write
+        outright while the source is ``CALCULATED``. ``radius_m=None``
+        restores ``RadiusSrc='CALCULATED'``, handing the radius back to
+        Vissim's own polyline-derived computation (the ``Rad`` value is NOT
+        cleared explicitly: it is not writable once the source is CALCULATED
+        again, and Vissim recomputes it).
+
+        ``point_index`` is 1-based and must be an INTERIOR point: the first
+        and last point of a polyline have no curve radius at all (measured:
+        ``Rad`` reads ``None`` on every endpoint probed). Returns
+        :meth:`get_link_geometry`'s shape.
+        """
+        try:
+            link = self._item_by_key(
+                self.vissim.Net.Links, link_no, "Link", self.available_link_nos()
+            )
+            unit = self._net_unit_length()
+            points = list(link.LinkPolyPts.GetAll())
+            if not 1 <= point_index <= len(points):
+                raise VissimObjectNotFoundError(
+                    f"Link {link_no} has no polyline point {point_index}. Available point "
+                    f"indices for link {link_no}: {_format_available_keys(list(range(1, len(points) + 1)))}."
+                )
+            if point_index in (1, len(points)):
+                raise ValueError(
+                    f"point {point_index} is an END point of link {link_no}'s polyline -- only "
+                    f"INTERIOR points (2..{len(points) - 1}) carry a curve radius in Vissim "
+                    "(measured: an endpoint's Rad reads as None)."
+                )
+            point = points[point_index - 1]
+            if radius_m is None:
+                point.SetAttValue("RadiusSrc", "CALCULATED")
+            else:
+                point.SetAttValue("RadiusSrc", "USERINPUT")
+                point.SetAttValue("Rad", self._length_m_to_com(float(radius_m), unit))
+        except (VissimObjectNotFoundError, ValueError):
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set the curve radius of link {link_no} point {point_index} to "
+                f"{radius_m!r}: {exc}"
+            ) from exc
+        return self.get_link_geometry(link_no)
+
     def set_route_relative_flow(
         self, decision_no: int, route_no: int, rel_flow: float, interval_no: int = 1
     ) -> None:
