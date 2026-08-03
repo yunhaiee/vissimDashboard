@@ -198,7 +198,15 @@ the PAIRS and distribution-assignment line items).**
   travel-time sections, data-collection points + measurements; COM-create with the
   spine's reference-integrity guard — COM itself does NOT refuse dangling removals;
   nodes deferred)
-- ⬜ Parking lots / zones
+- ✅ Parking lots / zones — shipped (Q6 ②: representation-first — parser, shadow
+  class, diff support all new; `add_parking_lot`/`set_parking_lot_capacity`/
+  `remove_parking_lot` + `get_parking_lots`. Capacity on a REALPARKINGSPACE is
+  READ-ONLY derived floor(Length/LenPerSpc), so "capacity N" is realised as a
+  LENGTH write with readback verify — refused by species on ZONECONNECTOR/
+  abstract lots, whose capacity is independently stored; removal refuses
+  first-naming-referrer because Vissim silently cascade-deletes the referencing
+  parking route (573/573 corpus lots are referenced); Type writes MINT a zone
+  and are unwrapped, as are abstract lots and parking-routing decisions)
 - ✅ PT lines / stops (timetables deferred) — shipped (Q4 ⑦: add/remove PT stops and
   lines — AddPTLine natively creates a minimal route + one auto line-stop; multi-stop
   needs DuplicatePTLine, departure-time creation tractable but unwired, both recorded;

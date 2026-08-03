@@ -17,6 +17,16 @@ class VissimObjectNotFoundError(ValueError):
     pass
 
 
+class VissimParkingLotTypeError(ValueError):
+    """Q6 unit (2): a parking verb was pointed at a lot whose SPECIES it
+    cannot serve. The object exists (so it is not an
+    :class:`VissimObjectNotFoundError`) and the write would not raise over
+    COM either -- it would simply not do what the caller asked, which is the
+    class of silent wrongness this layer exists to refuse. See
+    :meth:`VissimController.set_parking_lot_capacity` for the measured
+    type-scoping (573/573 vs 56/56)."""
+
+
 # ---------------------------------------------------------------------------
 # Network-performance evaluation configuration
 #
@@ -3930,6 +3940,339 @@ class VissimController:
             ) from exc
 
     # -----------------------------------------------------------------
+    # Parking-lot verbs -- Q6 unit (2)
+    #
+    # COM ids/behavior verified EMPIRICALLY live against Vissim 2026
+    # (backend/tools/probe_parking_lot.py, ten parts, "Urban Intersection
+    # Beijing.CN" / "3D - Complex Intersection Karlsruhe.DE" / "Toll Plaza
+    # Camden.US" clones). The probe's own docstring carries the full findings
+    # and the numbers; the four that shape THIS code:
+    #
+    # 1. ``ParkingLots.AddParkingLot(Key, Lane, Pos)`` is a genuine native
+    #    create -- NOT a member of the duplicate-then-edit family (driving
+    #    behaviors Q3 ⑥, priority rules Q4 ⑥, signal controllers Q5 ②). It
+    #    works on a network that has no ``<parkingLots>`` section at all
+    #    (Beijing: 0 lots -> 1, judged by a ``GetAll()`` id-set diff, and the
+    #    saved file materialises the section). ``DuplicateParkingLot`` exists
+    #    and is deliberately unwrapped -- there is nothing a copy buys here
+    #    that a fresh create does not, and a copy would silently inherit the
+    #    donor's name/fees/attractivity.
+    #
+    # 2. **``Capacity`` is NOT writable -- it is DERIVED from ``Length`` /
+    #    ``LenPerSpc``.** ``SetAttValue("Capacity", n)`` fails LOUDLY
+    #    ("Attribute Capacity cannot be changed") on a REALPARKINGSPACE.
+    #    Measured against an untouched control lot in the same session:
+    #    Length 6/LenPerSpc 6 -> Capacity 1; Length 60 -> 10; LenPerSpc 4 ->
+    #    15; Length 0 -> 0. The persisted files satisfy
+    #    ``capacity == floor(length / lenPerSpc)``. So the only honest way to
+    #    give a caller "an N-space parking lot" is to write
+    #    ``Length = N x LenPerSpc`` and then READ ``Capacity`` BACK -- which
+    #    is exactly what :meth:`add_parking_lot`/
+    #    :meth:`set_parking_lot_capacity` do. Never echo the requested count.
+    #
+    # 3. Two SILENT edges guarded by the callers, not by Vissim:
+    #    ``LenPerSpc`` larger than ``Length`` is silently CLAMPED to Length
+    #    (1000 requested against a 60 m lot came back 60.0, no exception, and
+    #    the capacity fell 15 -> 1); ``Length = 0`` is silently ACCEPTED
+    #    (capacity 0, LenPerSpc forced to 1.0, ``load_check`` still green) --
+    #    a zero-space parking lot Vissim never complains about. One LOUD edge
+    #    that needs no guard of ours but is worth pre-empting with a better
+    #    message: a Length past the link's end is refused with Vissim's own
+    #    "Parking Lot 2 does not fit on link 1 (335.122 m)".
+    #
+    # 4. **``RemoveParkingLot`` SILENTLY CASCADE-DELETES the parking ROUTE
+    #    that references the lot** -- the ``RemovePTStop`` species (Q4 unit
+    #    (7)), not the ``RemoveDataCollectionPoint`` dangle. Live on
+    #    Karlsruhe (573 lots / 573 routes, every lot referenced): removing
+    #    lot 14 moved the persisted counts ``{'parking_lots': -1,
+    #    'parking_routes': -1}``, no exception, no dangling reference left
+    #    behind, ``load_check`` green. Callers MUST consult
+    #    ``services.inpx_structure.find_id_references(root, "parking_lots",
+    #    no)`` BEFORE calling :meth:`remove_parking_lot` (``tools_edit.
+    #    remove_parking_lot`` does).
+    #
+    # UNITS (probe Part F, Toll Plaza Camden.US, ``UnitLenShort='FEET'``):
+    # ``Pos``, ``Length`` and ``LenPerSpc`` are ALL display-unit-scaled --
+    # COM/persisted-XML ratio 3.280840 on every one of them -- while the XML
+    # itself stores metres. This is the OPPOSITE of a link polyline's X/Y
+    # (raw metres in both directions, Q6 unit (1)). Every method below
+    # converts through :meth:`_length_m_to_com`/:meth:`_length_com_to_m`.
+    #
+    # Deliberately NOT wrapped, each for a stated reason:
+    #   * ``Type`` writes -- a ``type`` write is not an attribute edit at all
+    #     but a structural re-anchor that MINTS A NEW OBJECT: flipping a
+    #     fresh Beijing lot to ZONECONNECTOR dropped its ``Lane`` ('1-1' ->
+    #     None), set ``Zone`` None -> '1' on a network with ZERO zones,
+    #     changed Capacity 1 -> 100, and created ``<zone no="1">``; flipping
+    #     back restored the lane and the capacity but LEFT THE ZONE BEHIND
+    #     (persisted delta ``{'parking_lots': +1, 'zones': +1}``). Not
+    #     reversible, and zones are a class the shadow model does not carry.
+    #   * ``AddAbstractParkingLot(Key, Link, Pos, Zone)`` -- works (produces
+    #     ``type="ABSTRACTPARKINGLOT"``, a THIRD value the 629-lot corpus
+    #     never shows), but requires a ``<zone>`` the shadow model cannot
+    #     see, so a verb around it would be unverifiable by construction
+    #     (Q4 unit (4)'s signal-head precedent, applied as a refusal instead
+    #     of a shipped verb).
+    #   * ``Net.Zones`` / ``Net.ParkLotGrps`` /
+    #     ``Net.VehicleRoutingDecisionsParking`` / ``AddVehicleRouteParking``
+    #     -- the routing machinery that makes a lot reachable at all. Real,
+    #     and out of this unit's scope; :meth:`add_parking_lot`'s caller
+    #     WARNS that a lot without one is inert rather than pretending
+    #     otherwise.
+    # -----------------------------------------------------------------
+
+    # NOTE: there is deliberately no "default length per space" constant here.
+    # Vissim's own fresh-lot default is 6.0 DISPLAY units (live-measured: 6.0
+    # on a METERS network, 6.0 display-feet = 1.8288 m on Toll Plaza
+    # Camden.US), so a metric constant would be wrong on a feet network --
+    # :meth:`_write_parking_capacity` READS the lot's current ``LenPerSpc``
+    # instead whenever the caller supplies none. (``constraints.py`` does
+    # carry a metric 6.0 for its preflight fit screen, and states there why
+    # the larger of the two possible real values keeps that screen
+    # conservative.)
+
+    def available_parking_lot_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.ParkingLots)
+
+    def _parking_lot_by_no(self, no: int) -> Any:
+        return self._item_by_key(
+            self.vissim.Net.ParkingLots, no, "Parking lot", self.available_parking_lot_nos()
+        )
+
+    def get_parking_lot(self, no: int) -> dict[str, Any]:
+        """Read one parking lot: ``{"no", "name", "type", "link",
+        "lane_index", "zone", "pos", "length", "len_per_space", "capacity",
+        "attractivity", "max_park_time_s", "des_speed_distr_no"}``.
+
+        The paired reader for every parking write below (guardrail doctrine:
+        every setter needs a reader used for post-write verification).
+
+        ``no`` is READ BACK (``str(int(AttValue("No")))``), never echoed --
+        :meth:`add_parking_lot` returns this dict for a number it COMPUTED
+        (``max+1``) and the agent layer lifts ``artifacts.no`` straight out
+        of it, so echoing the argument would make the verb's own identity
+        claim unfalsifiable, exactly the defect Q5 unit (2) shipped in
+        ``get_signal_controller`` and had to fix. ``int()`` mirrors
+        :meth:`_collection_nos`'s own guard so a float-typed ``No`` could
+        never render "1.0" and miss every shadow-model id keyed "1".
+
+        ``lane_index`` parses COM's HYPHENATED ``Lane`` form (``"1-1"`` --
+        NOT the XML's space-separated ``"1 1"``; same split
+        :meth:`get_pt_stop` already does) and is ``None`` on a lot that has
+        no lane at all (the ZONECONNECTOR/ABSTRACTPARKINGLOT species, which
+        anchors on a whole link). ``pos``/``length``/``len_per_space`` come
+        back in METRES.
+        """
+        try:
+            lot = self._parking_lot_by_no(no)
+            unit = self._net_unit_length()
+            lane_link, _, lane_idx = str(lot.AttValue("Lane") or "").partition("-")
+            link = lane_link or str(lot.AttValue("Link") or "")
+            return {
+                "no": str(int(lot.AttValue("No"))),
+                "name": str(lot.AttValue("Name") or ""),
+                "type": str(lot.AttValue("Type") or ""),
+                "link": link,
+                "lane_index": int(lane_idx) if lane_idx.isdigit() else None,
+                "zone": str(lot.AttValue("Zone") or ""),
+                "pos": self._length_com_to_m(float(lot.AttValue("Pos")), unit),
+                "length": self._length_com_to_m(float(lot.AttValue("Length")), unit),
+                "len_per_space": self._length_com_to_m(float(lot.AttValue("LenPerSpc")), unit),
+                "capacity": int(lot.AttValue("Capacity")),
+                "attractivity": float(lot.AttValue("Attrac")),
+                "max_park_time_s": float(lot.AttValue("ParkTmMax")),
+                "des_speed_distr_no": str(lot.AttValue("DesSpeedDistrDef") or ""),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read parking lot {no}: {exc}") from exc
+
+    def _write_parking_capacity(self, lot: Any, capacity: int, len_per_space_m: float | None) -> None:
+        """Realise a requested SPACE COUNT through the only surface Vissim
+        offers: ``Length = capacity x LenPerSpc`` (see landmine 2 above).
+
+        **Write ORDER is chosen per call, and that is load-bearing.** A
+        ``LenPerSpc`` larger than the lot's CURRENT ``Length`` is silently
+        clamped to that length with no exception at all (landmine 3), so the
+        order has to guarantee that whenever ``LenPerSpc`` is written there is
+        already enough ``Length`` to hold it.
+
+        The decision is made on **TARGET LENGTH vs CURRENT LENGTH**, not on
+        whether the bay size grew or shrank:
+
+        * ``target_length >= current_length`` -- write ``Length`` first, then
+          ``LenPerSpc``. The lot is now at least as long as the target, and
+          ``capacity >= 1`` means ``LenPerSpc <= target_length``, so the bay
+          write cannot clamp.
+        * ``target_length < current_length`` -- write ``LenPerSpc`` first,
+          then ``Length``. The bay is written while the lot is still at its
+          (larger) current length, and ``LenPerSpc <= target_length <
+          current_length``, so again it cannot clamp.
+
+        The earlier version branched on ``per_space_m > current_per_space_m``
+        instead, which is right in every ordinary case but has a real hole a
+        verifier found: from a DEGENERATE pre-existing state
+        ``{Length 0, LenPerSpc 1}`` -- which the ``Length = 0`` landmine can
+        produce outside these verbs -- a request for 10 spaces of 0.5 m looks
+        like a SHRINKING bay (0.5 < 1), so ``LenPerSpc`` went first, was
+        clamped to 0.0 against the zero length, and the lot ended at capacity
+        0 instead of 10. The target-length test picks Length-first there
+        (5.0 >= 0.0) and lands the correct pair.
+
+        When ``len_per_space_m`` is ``None`` the lot's own current
+        ``LenPerSpc`` is READ and reused (never a hardcoded metric default --
+        Vissim's own fresh-lot default is 6.0 DISPLAY units, which is 1.8288 m
+        on a feet network).
+
+        ``capacity < 1`` is refused here as well as at the verb layer: the
+        pydantic ``ge=1`` means production cannot reach it, but a zero target
+        length would re-create the very degenerate state described above, so
+        this function is made safe standalone rather than relying on its only
+        current caller.
+        """
+        if int(capacity) < 1:
+            raise ValueError(
+                f"Parking lot capacity must be at least 1 space (got {capacity}); a zero-length "
+                "lot is accepted silently by Vissim and reports as a zero-space lot on a network "
+                "that still loads and runs."
+            )
+        unit = self._net_unit_length()
+        current_per_space_m = self._length_com_to_m(float(lot.AttValue("LenPerSpc")), unit)
+        current_length_m = self._length_com_to_m(float(lot.AttValue("Length")), unit)
+        per_space_m = (
+            float(len_per_space_m) if len_per_space_m is not None else current_per_space_m
+        )
+        target_length_m = float(capacity) * per_space_m
+
+        if target_length_m >= current_length_m:
+            lot.SetAttValue("Length", self._length_m_to_com(target_length_m, unit))
+            if len_per_space_m is not None:
+                lot.SetAttValue("LenPerSpc", self._length_m_to_com(per_space_m, unit))
+        else:
+            if len_per_space_m is not None:
+                lot.SetAttValue("LenPerSpc", self._length_m_to_com(per_space_m, unit))
+            lot.SetAttValue("Length", self._length_m_to_com(target_length_m, unit))
+
+    def add_parking_lot(
+        self,
+        link_no: int,
+        lane_index: int,
+        pos_m: float,
+        capacity: int,
+        name: str = "",
+        len_per_space_m: float | None = None,
+    ) -> dict[str, Any]:
+        """Create a parking lot on lane ``lane_index`` of ``link_no`` at
+        ``pos_m`` metres holding ``capacity`` vehicles, auto-assigning the
+        next free number (``max(existing) + 1``, or 1 on a network with none
+        -- mirroring :meth:`add_pt_stop`/:meth:`add_vehicle_input`).
+
+        ``capacity`` is REQUIRED and is realised as ``Length = capacity x
+        LenPerSpc`` (landmine 2): a fresh lot's own default is ONE space, so
+        a lot created and left alone is a single-bay lot, not the multi-space
+        one a caller almost always means. The returned dict's ``capacity`` is
+        Vissim's own READBACK of the derived value, never the argument.
+
+        Returns :meth:`get_parking_lot`'s dict for the NEW lot. Raises
+        :class:`VissimObjectNotFoundError` for a bogus ``link_no``/
+        ``lane_index`` (checked via :meth:`_lane_by_index` before COM is
+        asked, so the error names the real available lane indices).
+        """
+        try:
+            lane = self._lane_by_index(link_no, lane_index)
+            existing = self.available_parking_lot_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            unit = self._net_unit_length()
+            pos_com = self._length_m_to_com(float(pos_m), unit)
+            lot = self.vissim.Net.ParkingLots.AddParkingLot(new_no, lane, pos_com)
+            self._write_parking_capacity(lot, int(capacity), len_per_space_m)
+            if name:
+                lot.SetAttValue("Name", name)
+        # ValueError unwrapped, same reasoning as set_parking_lot_capacity's
+        # own handler: VissimObjectNotFoundError and _write_parking_capacity's
+        # capacity floor are both deliberate, already-actionable messages.
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a parking lot on link {link_no} lane {lane_index} at pos "
+                f"{pos_m} with capacity {capacity}: {exc}"
+            ) from exc
+        return self.get_parking_lot(new_no)
+
+    #: The ONLY lot species whose ``Capacity`` is derived from
+    #: ``Length``/``LenPerSpc`` -- see :meth:`set_parking_lot_capacity` for
+    #: the corpus evidence that the other two store it independently.
+    PARKING_LOT_DERIVED_CAPACITY_TYPE = "REALPARKINGSPACE"
+
+    def set_parking_lot_capacity(
+        self, parking_lot_no: int, capacity: int, len_per_space_m: float | None = None
+    ) -> dict[str, Any]:
+        """Change an existing lot's space count -- via ``Length = capacity x
+        LenPerSpc``, because ``Capacity`` itself is read-only (landmine 2).
+        Returns :meth:`get_parking_lot`'s dict, whose ``capacity`` is the
+        genuine readback.
+
+        **REFUSES on any species but ``REALPARKINGSPACE``**, because the
+        derivation landmine 2 documents is TYPE-SCOPED and the shipped claim
+        was not. Measured: ``capacity == floor(length / lenPerSpc)`` holds on
+        573/573 REALPARKINGSPACE lots in the corpus and is violated by 56/56
+        ZONECONNECTORs (``capacity="10000"`` stored alongside ``length="3"``
+        / ``lenPerSpc="6"``) and by this unit's own probe-created
+        ABSTRACTPARKINGLOT (``length="6"``, ``lenPerSpc="6"``,
+        ``capacity="100"``). On those species capacity is stored
+        INDEPENDENTLY, so writing a length changes nothing about the space
+        count -- the readback compare would then refuse and roll back, which
+        is fail-safe but tells the caller nothing about why. An in-tool
+        refusal that names the actual type is the ``remove_link``-refuses-a-
+        connector precedent (no new constraint needed).
+        """
+        try:
+            lot = self._parking_lot_by_no(parking_lot_no)
+            lot_type = str(lot.AttValue("Type") or "").strip().upper()
+            if lot_type != self.PARKING_LOT_DERIVED_CAPACITY_TYPE:
+                # Kept SHORT on purpose: toolkit.dispatch truncates a raised
+                # exception's text at 300 chars, so the actionable half has to
+                # come first.
+                raise VissimParkingLotTypeError(
+                    f"Parking lot {parking_lot_no} is a {lot_type or 'unknown'}, not a "
+                    f"{self.PARKING_LOT_DERIVED_CAPACITY_TYPE}: its capacity is stored "
+                    "independently, not derived from length/length-per-space, so this verb "
+                    "cannot change it. Edit that species in the Vissim GUI."
+                )
+            self._write_parking_capacity(lot, int(capacity), len_per_space_m)
+        # ValueError is re-raised UNWRAPPED: every ValueError this block can
+        # produce is one WE raised deliberately with an actionable message
+        # (VissimObjectNotFoundError and VissimParkingLotTypeError both
+        # subclass it, as does _write_parking_capacity's own capacity floor).
+        # A real COM failure arrives as com_error/RuntimeError and still gets
+        # the wrapping context below.
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set parking lot {parking_lot_no} capacity to {capacity}: {exc}"
+            ) from exc
+        return self.get_parking_lot(parking_lot_no)
+
+    def remove_parking_lot(self, no: int) -> None:
+        """Removes the lot (COM ``RemoveParkingLot``). Reference-integrity is
+        NOT enforced by COM itself (landmine 4 above -- a still-referenced
+        lot's removal SILENTLY CASCADE-DELETES the referencing
+        ``vehicleRouteParking``); callers MUST check
+        ``services.inpx_structure.find_id_references`` against the working
+        copy's current XML BEFORE calling this method (see
+        ``tools_edit.remove_parking_lot``)."""
+        try:
+            lot = self._parking_lot_by_no(no)
+            self.vissim.Net.ParkingLots.RemoveParkingLot(lot)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove parking lot {no}: {exc}") from exc
+
+    # -----------------------------------------------------------------
     # Vehicle-type reference-assignment verbs -- QUEUE (v2a) unit
     #
     # COM ids/behavior verified EMPIRICALLY live against Vissim 2026
@@ -4764,9 +5107,43 @@ def _same_path(a: str | Path, b: str | Path) -> bool:
     return os.path.normcase(os.path.abspath(str(a))) == os.path.normcase(os.path.abspath(str(b)))
 
 
+#: Character budget for the rendered key list inside a
+#: :class:`VissimObjectNotFoundError`. The COUNT cap alone is not enough:
+#: ``toolkit.dispatch`` truncates a raised exception's text at 300 chars, and
+#: 20 EIGHT-DIGIT ids (a real shape -- Motorway Dyn Assign Mainz.DE's own
+#: zones are numbered 1000000+, and a 573-lot network can carry ids that wide)
+#: measured 313 chars of ``str(exc)``, so dispatch cut the message mid-number.
+#: An arbitrary mid-number cut is strictly worse than a controlled tail --
+#: the same reasoning ``inpx_structure.ReferenceIntegrityError`` already
+#: documents for its own referrer list. 180 leaves room for the surrounding
+#: "<Label> <key> does not exist ... Available <label> numbers: ..." frame
+#: inside the 300-char cap for every label this module uses.
+_AVAILABLE_KEYS_CHAR_BUDGET = 180
+
+
 def _format_available_keys(values: list[int], limit: int = 20) -> str:
+    """Bounded rendering of "which ids DO exist" -- capped by COUNT (``limit``)
+    and, since Q6 unit (2)'s verification, by rendered LENGTH as well (see
+    :data:`_AVAILABLE_KEYS_CHAR_BUDGET`). Whatever is dropped by either cap is
+    reported honestly as ``(+N more)``.
+
+    Behaviour change shared by EVERY verb that raises through
+    ``_item_by_key``/``_lane_by_index`` -- in the fail-safe direction (a
+    shorter, complete message instead of a longer, truncated one)."""
     if not values:
         return "none found"
-    shown = values[:limit]
-    suffix = f", ... (+{len(values) - limit} more)" if len(values) > limit else ""
-    return ", ".join(str(value) for value in shown) + suffix
+
+    shown: list[str] = []
+    used = 0
+    for value in values[:limit]:
+        rendered = str(value)
+        # +2 for the ", " separator every entry after the first costs.
+        cost = len(rendered) + (2 if shown else 0)
+        if shown and used + cost > _AVAILABLE_KEYS_CHAR_BUDGET:
+            break
+        shown.append(rendered)
+        used += cost
+
+    overflow = len(values) - len(shown)
+    suffix = f", ... (+{overflow} more)" if overflow > 0 else ""
+    return ", ".join(shown) + suffix

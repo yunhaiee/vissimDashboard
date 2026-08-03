@@ -245,6 +245,11 @@ ID_BEARING_ELEMENTS: dict[str, tuple[str, str]] = {
     # below) -- unlike queue counters/travel-time sections, this is a real
     # target, not future-proofing.
     "pt_stops": (".//ptStops/ptStop", "no"),
+    # Q6 unit (2): parking lots. A lot IS referenced by another element type
+    # (a ``vehicleRouteParking``'s own ``parkLot`` -- see the
+    # ID_REFERENCE_SITES entry below), so this is a real target, not
+    # future-proofing.
+    "parking_lots": (".//parkingLots/parkingLot", "no"),
 }
 
 #: Plain single-id reference sites, keyed by the object_class being
@@ -366,6 +371,38 @@ ID_REFERENCE_SITES: dict[str, tuple[ReferenceSite, ...]] = {
         # before this unit (found by this unit's own corpus-wide
         # attribute-name scan, not merely inferred from the schema).
         ReferenceSite("PT-boarding detector", ".//detectors/detector", "ptStop"),
+    ),
+    # Q6 unit (2): parking lots. ONE real site, isolated by
+    # backend/tools/probe_parking_lot.py's own corpus scan [0]/[0b] from a
+    # long tail of pure COINCIDENCES (an attribute whose VALUE happens to
+    # equal some lot number -- a link's own ``level``/``displayType``, a
+    # conflict area's ``linkA``, an acceleration-function data point's ``x``
+    # -- all reported by the scan and separated by reading it, never by a
+    # silent filter):
+    #
+    #   ``vehicleRoutingDecisionParking/vehRoutPark/vehicleRouteParking@parkLot``
+    #
+    # This entry is load-bearing, not defensive. Live-verified (probe Part
+    # C, "3D - Complex Intersection Karlsruhe.DE" -- the ONLY corpus network
+    # with both REALPARKINGSPACE lots and parking routing decisions, 573 lots
+    # / 573 routes / 12 decisions, EVERY lot referenced by exactly one route
+    # and none unreferenced): ``RemoveParkingLot`` on a still-referenced lot
+    # does NOT refuse and does NOT merely dangle the reference (the
+    # ``RemoveDataCollectionPoint`` species) -- it SILENTLY CASCADE-DELETES
+    # the referencing route outright, the ``RemovePTStop`` species. Removing
+    # lot 14 moved the persisted counts by ``{'parking_lots': -1,
+    # 'parking_routes': -1}`` (route 114 under decision 40, identified
+    # exactly by an independent ElementTree re-derivation of the saved
+    # file), with no exception, no dangling reference left behind, and
+    # ``load_check`` returning load_ok/init_ok on the result -- Vissim never
+    # objects to what it just destroyed.
+    #
+    # So this registry, and ``tools_edit.remove_parking_lot``'s own preflight
+    # use of it, is the ONLY thing standing between a careless removal and
+    # the silent truncation of a real parking routing decision's own route
+    # set -- exactly ``remove_pt_stop``'s precedent, for the same reason.
+    "parking_lots": (
+        ReferenceSite("parking route", ".//vehRoutPark/vehicleRouteParking", "parkLot"),
     ),
 }
 

@@ -3868,6 +3868,239 @@ def set_link_point_radius(params: SetLinkPointRadiusParams) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# add_parking_lot(link_no, lane_index, pos_m, capacity, len_per_space_m=None,
+#                 name="") / set_parking_lot_capacity(parking_lot_no,
+#                 capacity, len_per_space_m=None) / remove_parking_lot(no)
+#
+# Q6 unit (2). See ``vissim_com.VissimController``'s own parking-lot module
+# comment for the full live-verified writeup and
+# ``backend/tools/probe_parking_lot.py``'s docstring for every number. The two
+# facts that shape THIS layer:
+#
+# * **``capacity`` is a DERIVED read-only attribute.** Vissim refuses
+#   ``SetAttValue("Capacity", n)`` outright and computes it as
+#   ``floor(Length / LenPerSpc)``. Both verbs below therefore take the
+#   planner's own vocabulary ("a 20-space lot") and realise it as a LENGTH
+#   write, then verify against Vissim's own readback of the derived count --
+#   never against the number the caller asked for. That is the whole reason
+#   ``written_value``/``readback_value`` compare ``capacity`` at all: if the
+#   derivation ever disagreed with the request (a clamp, a rounding, a
+#   Vissim version change), constraint #6 refuses and rolls back rather than
+#   reporting a lot that is not the size the caller asked for.
+#
+# * **``remove_parking_lot`` must check reference integrity ITSELF.** COM's
+#   own ``RemoveParkingLot`` silently CASCADE-DELETES the
+#   ``vehicleRouteParking`` that referenced the lot (measured: Karlsruhe
+#   ``{'parking_lots': -1, 'parking_routes': -1}``, no exception,
+#   ``load_check`` green) -- the ``remove_pt_stop`` species. The preflight
+#   below runs against the CURRENT working-copy XML, before COM is ever
+#   asked, via ``services.inpx_structure.ID_REFERENCE_SITES["parking_lots"]``.
+#
+# The link-fit refusal lives in constraints.py
+# (``parking_lot_does_not_fit_link``) rather than inline here, because it is
+# a genuine semantic screen with ko/en/ja text and a numeric suggested fix --
+# and because our rule is deliberately CONSERVATIVE (refuse when
+# ``pos + capacity x len_per_space`` exceeds the link's own length), i.e. at
+# least as strict as Vissim's own loud "Parking Lot 2 does not fit on link 1
+# (335.122 m)". Over-refusal on this edge is fail-safe; a silently clamped
+# lot is not.
+# ---------------------------------------------------------------------------
+
+
+class AddParkingLotParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    link_no: str
+    lane_index: int = Field(ge=1)
+    pos_m: float
+    #: Space count. REQUIRED, and ge=1: a fresh lot's own Vissim default is
+    #: ONE space (live-measured), so a lot created and left alone is a
+    #: single-bay lot rather than the multi-space one a caller almost always
+    #: means -- the same "a created object's default makes it useless"
+    #: reasoning that made ``add_vehicle_input``'s ``volume_vph`` required.
+    capacity: int = Field(ge=1)
+    #: Metres of link per parking space. Omitted -> Vissim's own default
+    #: (6.0 display units on a fresh lot). Given, it is written together with
+    #: the length so the two can never disagree.
+    len_per_space_m: float | None = Field(default=None, gt=0)
+    name: str = ""
+
+
+@tool(name="add_parking_lot", tier="write", provider="edit", params=AddParkingLotParams)
+def add_parking_lot(params: AddParkingLotParams) -> dict[str, Any]:
+    """Add a parking lot on one lane of link_no at pos_m metres holding `capacity` vehicles (COM AddParkingLot) on the active edit session's working network. Vissim's Capacity attribute is READ-ONLY and derived as floor(length / length-per-space), so the requested space count is realised by writing the lot's LENGTH and verified against Vissim's own capacity readback. A fresh lot defaults to ONE space, so capacity is required. NOTE: a parking lot on its own attracts no traffic -- it is reachable only through a parking routing decision (vehicleRoutingDecisionParking), which this toolkit does not create."""
+    session = _require_session()
+    link_no = _coerce_id(params.link_no, "link_no")
+    # Canonical id in the CLAIM, not the caller's raw spelling -- COM reads
+    # "1" back for a "01"/" 1 " argument, so an uncanonicalised written_value
+    # makes constraint #6 refuse a correct write on a formatting difference.
+    # Same normalisation discipline remove_parking_lot's referrer guard needs
+    # (see its own comment for the measured bypass that motivated it).
+    canonical_link = str(link_no)
+
+    result = session.add_parking_lot(
+        link_no,
+        params.lane_index,
+        params.pos_m,
+        params.capacity,
+        params.name,
+        params.len_per_space_m,
+    )
+    session.persist()
+
+    written_value: dict[str, Any] = {
+        "link": canonical_link,
+        "lane_index": params.lane_index,
+        "pos": _round_pos_m(params.pos_m),
+        "capacity": params.capacity,
+    }
+    readback_value: dict[str, Any] = {
+        "link": result["link"],
+        "lane_index": result["lane_index"],
+        "pos": _round_pos_m(result["pos"]),
+        "capacity": result["capacity"],
+    }
+    # len_per_space is only PART OF THE CLAIM when the caller actually asked
+    # for it -- mirrors add_pt_stop's own length_m / add_stop_sign's own
+    # sc_no precedent: an omitted field (Vissim's own default silently
+    # applies) must never become an unverifiable "the caller asked for this
+    # exact value" claim. The same rule is why `des_speed_distr_no` is
+    # reported in artifacts but never verified: Vissim picks it itself (the
+    # network's lowest speed-distribution id, live-measured), and it is not
+    # the caller's choice.
+    if params.len_per_space_m is not None:
+        written_value["len_per_space"] = _round_pos_m(params.len_per_space_m)
+        readback_value["len_per_space"] = _round_pos_m(result["len_per_space"])
+    verification = {"written_value": written_value, "readback_value": readback_value}
+    message = (
+        f"Parking lot {result['no']} added on link {canonical_link} lane {params.lane_index} at "
+        f"{params.pos_m} m: {result['capacity']} space(s) over {result['length']:.3f} m "
+        f"({result['len_per_space']:.3f} m per space). Vissim assigned desired-speed "
+        f"distribution {result['des_speed_distr_no']} by default. The lot attracts no traffic "
+        f"until a parking routing decision references it."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {
+            "no": result["no"],
+            "name": result["name"],
+            "capacity": result["capacity"],
+            "length": result["length"],
+            "len_per_space": result["len_per_space"],
+            "des_speed_distr_no": result["des_speed_distr_no"],
+        },
+    }
+
+
+class SetParkingLotCapacityParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parking_lot_no: str
+    capacity: int = Field(ge=1)
+    len_per_space_m: float | None = Field(default=None, gt=0)
+
+
+@tool(
+    name="set_parking_lot_capacity",
+    tier="write",
+    provider="edit",
+    params=SetParkingLotCapacityParams,
+)
+def set_parking_lot_capacity(params: SetParkingLotCapacityParams) -> dict[str, Any]:
+    """Change an existing parking lot's space count on the active edit session's working network. Vissim's Capacity attribute is READ-ONLY (SetAttValue fails loudly) and derived as floor(length / length-per-space), so this writes the lot's LENGTH and verifies against Vissim's own capacity readback. Optionally also sets the metres-per-space. Refuses when the resulting length would not fit on the lot's own link."""
+    session = _require_session()
+    parking_lot_no = _coerce_id(params.parking_lot_no, "parking_lot_no")
+    canonical_no = str(parking_lot_no)
+
+    result = session.set_parking_lot_capacity(
+        parking_lot_no, params.capacity, params.len_per_space_m
+    )
+    session.persist()
+
+    # BARE SCALARS, not a dict -- and that is a live-caught correction, not a
+    # style choice. This tool HAS a _WRITE_TARGET_FIELD_SPEC entry, so
+    # guardrails' target-persisted check compares written_value against the
+    # shadow model's own ``capacity`` field, which is an int; a
+    # ``{"capacity": 25}`` dict can never equal ``25``, so every CORRECT call
+    # was refused by write_verification_failed until this was fixed
+    # (reproduced by backend/tools/parking_lot_live_check.py Phase B.2 on a
+    # real Beijing clone, before the fix). Same shape as set_link_lane_count's
+    # own bare ``params.lane_count`` / ``result["lanes"]`` pair.
+    #
+    # ``len_per_space_m`` is deliberately NOT a second verified field: it has
+    # no home in a single-value spec, and it does not need one, because
+    # capacity is a FUNCTION of it. Vissim derives capacity as
+    # floor(length / len_per_space) and this tool writes
+    # length = capacity x requested_len_per_space -- so a bay size that landed
+    # anywhere other than requested (the measured SILENT CLAMP is the real
+    # case) necessarily produces a capacity readback that disagrees with the
+    # request, and this scalar compare refuses. The bay size is transitively
+    # verified rather than unverified; it is still reported in the message and
+    # artifacts so the caller sees what actually landed.
+    verification = {"written_value": params.capacity, "readback_value": result["capacity"]}
+    message = (
+        f"Parking lot {canonical_no} now holds {result['capacity']} space(s) over "
+        f"{result['length']:.3f} m ({result['len_per_space']:.3f} m per space)."
+    )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {
+            "no": result["no"],
+            "capacity": result["capacity"],
+            "length": result["length"],
+            "len_per_space": result["len_per_space"],
+        },
+    }
+
+
+class RemoveParkingLotParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    no: str
+
+
+@tool(name="remove_parking_lot", tier="write", provider="edit", params=RemoveParkingLotParams)
+def remove_parking_lot(params: RemoveParkingLotParams) -> dict[str, Any]:
+    """Remove a parking lot (COM RemoveParkingLot) on the active edit session's working network -- REFUSES (never touches the file) when a parking route still references this lot: Vissim's own removal does NOT dangle the reference, it SILENTLY CASCADE-DELETES the referencing parking route outright (live-verified on the only example network that has both), so naming every referrer here is the only guard against a routing decision quietly losing a destination."""
+    session = _require_session()
+    no = _coerce_id(params.no, "no")
+
+    # COM itself does NOT refuse this -- it silently cascade-deletes the
+    # referencing vehicleRouteParking (the remove_pt_stop species, worse than
+    # remove_data_collection_point's dangling-reference one). Check reference
+    # integrity ourselves, against the CURRENT working copy XML, via the
+    # spine's registry, BEFORE ever calling COM.
+    #
+    # **The CANONICAL id goes to the guard, not the caller's raw string.**
+    # find_id_references compares ``value == str(object_id)`` (inpx_structure),
+    # so passing ``params.no`` verbatim made "0014", " 14", "+14" and "14 "
+    # all MISS the referrer lookup, sail past this refusal, reach COM, and
+    # trigger exactly the silent cascade-delete this guard exists to stop
+    # (verifier-measured). _coerce_id already normalised the value on the line
+    # above for the ACTION; the GUARD has to see the same value or the two
+    # disagree about which object is being talked about. In the orchestrated
+    # pipeline preflight's object_not_found rejects those spellings first, so
+    # this is defense-in-depth -- but a direct dispatch has no such shield.
+    canonical_no = str(no)
+    root = ET.parse(session.working_inpx).getroot()
+    referrers = find_id_references(root, "parking_lots", canonical_no)
+    if referrers:
+        raise ReferenceIntegrityError(f"Cannot remove parking lot {canonical_no}", referrers)
+
+    session.remove_parking_lot(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(session.working_inpx, "parking_lots", canonical_no)
+    verification = _remove_verification(canonical_no, still_present)
+    return {
+        "message": f"Parking lot {canonical_no} removed.",
+        "verification": verification,
+    }
+
+
+# ---------------------------------------------------------------------------
 # rollback_last_edit()
 #
 # QUEUE 3 unit 7. NOT a COM verb -- like set_reduced_speed_area, this tool

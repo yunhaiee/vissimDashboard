@@ -145,6 +145,17 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     "pt_stops": "no",
     "pt_lines": "no",
     "pt_line_stops": "id",
+    # Q6 unit (2): parking lots have a genuine single-token identity, their own
+    # "no" -- no flattening needed (mirrors pt_stops/driving_behaviors/
+    # time_distributions/vehicle_types above). Required by BOTH postwrite checks:
+    # _target_not_persisted_finding looks the class up directly (a KeyError
+    # without it), and the nothing-else-moved diff gains parking-lot coverage
+    # from the same entry -- which is the whole point, since before this unit
+    # the shadow model had no parking-lot class at all and a parking verb's own
+    # object was therefore invisible to its own verification (Q4 unit (4)'s
+    # signal-head precedent: "an object class the diff cannot see makes the
+    # verb unverifiable by construction").
+    "parking_lots": "no",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -523,6 +534,34 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "none_means": "not_persisted",
         "coupled_fields": ("length",),
     },
+    # Q6 unit (2): parking-lot capacity. The target field is "capacity" --
+    # the thing the caller asked for -- even though the tool physically
+    # writes "length", because Vissim's own Capacity attribute is READ-ONLY
+    # and DERIVED (SetAttValue fails loudly; capacity == floor(length /
+    # len_per_space), measured against an untouched control lot in
+    # backend/tools/probe_parking_lot.py Part I). Verifying the derived value
+    # is the whole point: if the derivation ever disagreed with the request,
+    # the caller must find out, not read a confident wrong space count.
+    #
+    # coupled_fields are not a guess either -- writing the length necessarily
+    # moves "length", and supplying len_per_space_m moves "len_per_space" in
+    # the same call (Part I: Length 6->60 took capacity 1->10 with
+    # len_per_space untouched; LenPerSpc 6->4 then took capacity 10->15).
+    # Exempting "capacity" alone would false-positive every correct call as
+    # "something else moved" -- the same lesson set_link_lane_count's own
+    # four-field coupling and unit ⑧'s des_speed_distr_name taught, applied
+    # from measurement BEFORE shipping.
+    #
+    # none_means "not_persisted": a lot's capacity/length are plain XML
+    # attributes the parser can always see whenever the <parkingLot> element
+    # exists -- there is no opaque-blob case here at all.
+    "set_parking_lot_capacity": {
+        "object_class": "parking_lots",
+        "id_param": "parking_lot_no",
+        "value_field": "capacity",
+        "none_means": "not_persisted",
+        "coupled_fields": ("length", "len_per_space"),
+    },
 }
 
 # v2a unit ⑧: ``set_des_speed_decision`` is the first write tool whose action
@@ -744,6 +783,32 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
     # not in _SHADOW_OBJECT_ID_FIELDS, so the diff never watches it, same
     # as signal_heads/stop_signs/queue_counters.)
     "add_vehicle_input": frozenset({"vehicle_inputs", "vehicle_composition_entries"}),
+    # Q6 unit (2): add_parking_lot's own sanctioned action (native
+    # AddParkingLot) creates a brand-new "parking_lots" entry -- the class
+    # THIS unit added to _SHADOW_OBJECT_ID_FIELDS above, so without this
+    # entry every correct call would be refused and rolled back by
+    # postwrite's own diff.
+    #
+    # **Exactly ONE class, and that is a measurement, not an omission.**
+    # Unlike Q5 unit (2)'s 44 signal_program_splits, Q5 unit (3)'s
+    # materialised vehicle_composition_entries, Q4 unit (7)'s auto-created
+    # pt_line_stop, or Q6 unit (1)'s geometry-triggered conflict areas, a
+    # parking-lot create produces NO byproduct rows at all:
+    # diff_shadow_models over the persisted before/after pair on Urban
+    # Intersection Beijing.CN (a network with zero parking lots and no
+    # <parkingLots> section) reports `parking_lots: {'added': 1}` and
+    # nothing else -- no conflict-area recompute, no materialised sibling
+    # class (backend/tools/probe_parking_lot.py Part A, with Part G's null
+    # control proving an untouched load+save moves nothing at all). The
+    # counterfactual is RUN, not reasoned about, in
+    # backend/tools/parking_lot_live_check.py: popping this entry turns a
+    # correct call into write_verification_failed.
+    #
+    # "zones" is deliberately NOT opted in even though probe Part J proved a
+    # Type write MINTS one -- no verb here writes Type, so a zone appearing
+    # during a parking write is unexplained drift and must stay loud
+    # evidence.
+    "add_parking_lot": frozenset({"parking_lots"}),
 }
 
 # Q4 unit (3): the REMOVAL-side mirror of ``_ALLOWS_NEW_OBJECTS_IN`` above --
@@ -792,6 +857,29 @@ _ALLOWS_REMOVED_OBJECTS_IN: dict[str, frozenset[str]] = {
     # unit (3) proved Vissim silently drops dangling conflict areas -- the
     # one case that must stay loud evidence rather than an assumed exemption.
     "set_link_lane_count": frozenset({"link_lanes"}),
+    # Q6 unit (2): remove_parking_lot's own sanctioned action IS making a
+    # "parking_lots" entry disappear -- the removal-side mirror of
+    # add_parking_lot's own entry above. Measured as exactly one row by a
+    # control/treatment pair inside ONE Beijing session
+    # (backend/tools/probe_parking_lot.py Part D: control saved with the
+    # fresh lot, treatment saved after RemoveParkingLot, diff
+    # `parking_lots: {'removed': 1}` and nothing else).
+    #
+    # **"parking_routes" is deliberately absent, and that absence is the
+    # point.** Vissim's own RemoveParkingLot SILENTLY CASCADE-DELETES the
+    # vehicleRouteParking that referenced the lot (Part C on 3D - Complex
+    # Intersection Karlsruhe.DE: persisted counts moved {'parking_lots': -1,
+    # 'parking_routes': -1} with no exception and load_check green). Parking
+    # routes are not a shadow-model class at all, so the diff could not see
+    # that cascade even if it wanted to -- which is exactly why
+    # tools_edit.remove_parking_lot REFUSES up front, via
+    # inpx_structure.ID_REFERENCE_SITES["parking_lots"], on any lot a route
+    # still names. The only removals this verb ever performs are ones with
+    # zero referring routes, so there is no cascade left for the diff to
+    # miss. Q4 unit (3)'s "a silently dropped object must stay loud
+    # evidence" rule, honoured by refusing earlier rather than by exempting
+    # later.
+    "remove_parking_lot": frozenset({"parking_lots"}),
 }
 
 # QUEUE 3 (v2a) unit 3's SECOND regression fix, found live-testing this same

@@ -687,6 +687,120 @@ def _parse_stop_signs(root: ET.Element) -> list[dict[str, Any]]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Q6 unit (2): parking lots / zones -- REPRESENTATION FIRST.
+#
+# Parking lots had ZERO precedent in this codebase before this unit: the
+# 2026-07-26 Tier-1 DECISIONS entry deferred them for having "no settled
+# attribute schema anywhere in this repo", and ``build_shadow_model`` carried
+# no parking-lot class at all -- so a parking verb's postwrite diff could not
+# have SEEN its own object, which by this codebase's own rule (Q4 unit (4)'s
+# signal-head precedent) makes such a verb unverifiable by construction. The
+# schema below is MEASURED, not invented: ``backend/tools/probe_parking_lot.py``
+# [0] scans every real Vissim 2026 example network for ``<parkingLot>``
+# elements and reports the full per-TYPE attribute set.
+#
+# What that scan found (629 lots across 3 real .inpx files -- 573 in
+# "3D - Complex Intersection Karlsruhe.DE", 28 x 2 in "Motorway Dyn Assign
+# Mainz.DE"; every OTHER example network has none, and most have no
+# ``<parkingLots>`` section at all):
+#
+#   * TWO species, distinguished by the ``type`` attribute and by HOW they
+#     anchor to the network:
+#       - ``REALPARKINGSPACE`` (573) carries ``lane="<link> <laneIdx>"`` --
+#         the same lane token signalHead/detector/stopSign/reducedSpeedArea
+#         use, and the very site Q6 unit (1) registered in
+#         ``inpx_structure.LANE_TOKEN_REFERENCE_SITES`` (573 occurrences,
+#         reproduced exactly by this unit's own independent scan).
+#       - ``ZONECONNECTOR`` (56) carries ``intLink="<link>"`` (a WHOLE link,
+#         no lane) plus a ``zone`` reference -- the dynamic-assignment
+#         abstraction, not a physical parking place.
+#     ``link``/``lane_index`` below therefore resolve from ``lane`` for one
+#     species and ``intLink`` for the other, so a caller never has to know
+#     which shape a given lot uses.
+#   * Every lot in the corpus carries all 28 shared attributes; the two
+#     species-specific ones (``lane``/``dirChgDurDist`` vs ``intLink``) are
+#     the only conditional ones, plus ``initOccupComp`` (1 occurrence).
+#   * ``capacity`` is DERIVED from ``length``/``lenPerSpc`` -- but ONLY on the
+#     REALPARKINGSPACE species, and that scoping is measured, not assumed:
+#     ``capacity == floor(length / lenPerSpc)`` holds on 573/573
+#     REALPARKINGSPACE lots in the corpus (e.g. capacity=6, lenPerSpc=6 ->
+#     length=36) and is violated by 56/56 ZONECONNECTORs, which store
+#     ``capacity="10000"`` next to ``length="3"``/``lenPerSpc="6"``, and by an
+#     ABSTRACTPARKINGLOT this unit's probe created (length=6, lenPerSpc=6,
+#     capacity=100). On those two species capacity is stored INDEPENDENTLY, so
+#     ``vissim_com.set_parking_lot_capacity`` refuses them outright rather than
+#     writing a length that would change nothing. All three fields are exposed
+#     here because Vissim persists all three; see ``guardrails.py``'s
+#     ``set_parking_lot_capacity`` coupled_fields for why writing capacity on a
+#     REALPARKINGSPACE necessarily moves the other two too.
+#
+# UNITS: ``pos``/``length``/``lenPerSpc`` are stored here EXACTLY as the XML
+# carries them, i.e. in the network's own DISPLAY unit -- the same convention
+# ``_parse_stop_signs``/``_parse_detectors``/``_parse_data_collection_points``
+# already follow for their own ``pos``. Probe Part F measures that space
+# directly on a FEET network. Callers that need metres convert through
+# ``vissim_com``'s ``_length_com_to_m``, which is what every parking verb in
+# ``tools_edit.py`` does.
+#
+# NOT parsed as shadow classes (deliberate, recorded): ``<zones>``,
+# ``<parkLotGrps>``, ``<vehicleRoutingDecisionParking>`` and its
+# ``<vehicleRouteParking>`` children. None of them is a write target of any
+# verb this unit ships, and adding an object class that no verb writes only
+# grows the nothing-else-moved diff's false-positive surface. The parking
+# ROUTE is nonetheless load-bearing for reference integrity -- it is
+# registered in ``inpx_structure.ID_REFERENCE_SITES["parking_lots"]`` and
+# consulted from the XML directly, exactly the way ``remove_pt_stop`` and
+# ``remove_data_collection_point`` already consult theirs.
+# ---------------------------------------------------------------------------
+
+
+def _parse_parking_lots(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, type, link, lane_index, zone, pos, length, capacity,
+    len_per_space, attractivity, rel_flow, max_park_time_s, park_fee_flat,
+    park_fee_hourly, open_from_s, open_until_s, park_direction,
+    des_speed_distr_no, dir_change_dur_distr_no}`` per ``<parkingLot>``.
+
+    ``link``/``lane_index`` resolve from ``lane="<link> <laneIdx>"`` on a
+    ``REALPARKINGSPACE`` and from ``intLink="<link>"`` on a ``ZONECONNECTOR``
+    (``lane_index`` is ``None`` for the latter -- it genuinely has none, never
+    a fabricated 1). See this section's own module comment for the corpus
+    evidence behind every field.
+    """
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//parkingLots/parkingLot"):
+        link_id, lane_no = _parse_lane_token(el.get("lane"))
+        if not link_id:
+            # ZONECONNECTOR species: a whole-link anchor, no lane at all.
+            link_id = (el.get("intLink") or "").strip()
+        capacity_raw = (el.get("capacity") or "").strip()
+        result.append(
+            {
+                "no": el.get("no", ""),
+                "name": el.get("name", "") or "",
+                "type": (el.get("type") or "").strip(),
+                "link": link_id,
+                "lane_index": int(lane_no) if lane_no.isdigit() else None,
+                "zone": (el.get("zone") or "").strip(),
+                "pos": _coerce_float_or_none(el.get("pos")),
+                "length": _coerce_float_or_none(el.get("length")),
+                "capacity": int(capacity_raw) if capacity_raw.lstrip("-").isdigit() else None,
+                "len_per_space": _coerce_float_or_none(el.get("lenPerSpc")),
+                "attractivity": _coerce_float_or_none(el.get("attrac")),
+                "rel_flow": _coerce_float_or_none(el.get("relFlow")),
+                "max_park_time_s": _coerce_float_or_none(el.get("parkTmMax")),
+                "park_fee_flat": _coerce_float_or_none(el.get("parkFeeFlat")),
+                "park_fee_hourly": _coerce_float_or_none(el.get("parkFeeHr")),
+                "open_from_s": _coerce_float_or_none(el.get("openFrom")),
+                "open_until_s": _coerce_float_or_none(el.get("openUntil")),
+                "park_direction": (el.get("parkDir") or "").strip(),
+                "des_speed_distr_no": (el.get("desSpeedDistrDef") or "").strip(),
+                "dir_change_dur_distr_no": (el.get("dirChgDurDist") or "").strip(),
+            }
+        )
+    return result
+
+
 def _parse_evaluation_config(root: ET.Element) -> dict[str, Any]:
     """{present, net_perf_eval_act, link_eval_act, queue_eval_act,
     ln_chg_eval_act, eval_interval_s} from the .inpx's top-level
@@ -2642,6 +2756,10 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         # Q4 unit (6): stop-sign placement -- see _parse_stop_signs' own
         # docstring.
         "stop_signs": _parse_stop_signs(root),
+        # Q6 unit (2): parking lots -- see _parse_parking_lots' own section
+        # comment for the measured two-species schema and the deliberately
+        # unparsed neighbours (zones, parking-lot groups, parking routes).
+        "parking_lots": _parse_parking_lots(root),
         "routing_decisions": routing_decisions,
         "routes": _flatten_routes(routing_decisions),
         "vehicle_compositions": vehicle_compositions,
@@ -3942,5 +4060,65 @@ def get_driving_behaviors(params: GetDrivingBehaviorsParams) -> dict[str, Any]:
         result["hint"] = (
             f"Showing {len(capped)} of {total} driving behaviors. Narrow with "
             "behavior_no to see a specific one instead of the whole list."
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# get_parking_lots -- Q6 unit (2)
+#
+# BOUNDED OUTPUT from day one (the 2026-07-27 lesson), and here the bound is
+# not theoretical: 3D - Complex Intersection Karlsruhe.DE carries **573**
+# parking lots, by far the largest single object list any get_* tool in this
+# module can hit (more than its 2579 links only because links are not listed
+# by a get_* tool at all). 572 of those 573 are capacity-1 individual parking
+# SPACES -- the 3D visual model of a parked car -- so an unfiltered dump would
+# be both enormous and almost entirely uninformative. Hence the tightest cap
+# in this module (30) plus a hint that names the real total.
+# ---------------------------------------------------------------------------
+
+#: Item cap for an UNFILTERED get_parking_lots call. Deliberately tighter than
+#: this module's other caps (40-60): the largest real network carries 573
+#: lots, 572 of them capacity-1 spaces, so a big listing costs a lot of
+#: observation budget to say very little (the get_vehicle_inputs cap-down
+#: lesson, DECISIONS.md 2026-07-29).
+_PARKING_LOTS_DEFAULT_CAP = 30
+
+
+class GetParkingLotsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parking_lot_no: str | None = Field(
+        default=None,
+        description="Exact parking lot 'no' to return (narrows to at most one result).",
+    )
+    link_no: str | None = Field(
+        default=None,
+        description="Only return lots anchored on this link (or connector) id.",
+    )
+
+
+@tool(name="get_parking_lots", tier="read", provider="inspect", params=GetParkingLotsParams)
+def get_parking_lots(params: GetParkingLotsParams) -> dict[str, Any]:
+    """Return the network's parking lots -- no, name, type (REALPARKINGSPACE, an actual place to park anchored on one lane, vs ZONECONNECTOR/ABSTRACTPARKINGLOT, dynamic-assignment zone connectors anchored on a whole link and carrying a zone reference instead), link, lane_index (None for the zone-connector species, which genuinely has none), zone, pos, length, capacity, len_per_space, attractivity, rel_flow, max_park_time_s, park_fee_flat, park_fee_hourly, open_from_s, open_until_s, park_direction, des_speed_distr_no, and dir_change_dur_distr_no. Positions and lengths are in the network file's own units. IMPORTANT, and it depends on `type`: on a REALPARKINGSPACE, capacity is DERIVED by Vissim as floor(length / len_per_space) and cannot be written directly -- use set_parking_lot_capacity(parking_lot_no, capacity) or add_parking_lot(link_no, lane_index, pos_m, capacity), which realise a space count by writing the LENGTH and then verify against Vissim's own capacity readback. On a ZONECONNECTOR or ABSTRACTPARKINGLOT the capacity is stored INDEPENDENTLY of length (measured: 56/56 corpus zone connectors carry capacity 10000 alongside a 3 m length), so set_parking_lot_capacity refuses those species by name -- edit them in the Vissim GUI. A parking lot attracts no traffic on its own: it is reachable only through a parking routing decision, which this toolkit does not create. Optionally filter by parking_lot_no or link_no -- an unfiltered call returns only the first 30 (with an explicit truncated flag and a hint), because a real network can carry hundreds of one-space lots."""
+    parking_lots = _current_shadow_model()["parking_lots"]
+
+    if params.parking_lot_no is not None:
+        parking_lots = [p for p in parking_lots if str(p.get("no")) == str(params.parking_lot_no)]
+    if params.link_no is not None:
+        parking_lots = [p for p in parking_lots if str(p.get("link")) == str(params.link_no)]
+
+    total = len(parking_lots)
+    filtered = params.parking_lot_no is not None or params.link_no is not None
+    if filtered:
+        return {"count": total, "parking_lots": parking_lots}
+
+    capped = parking_lots[:_PARKING_LOTS_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {"count": total, "parking_lots": capped, "truncated": truncated}
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} parking lots. Narrow with parking_lot_no or "
+            "link_no to see a specific one instead of the whole list."
         )
     return result

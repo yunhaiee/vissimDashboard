@@ -47,6 +47,9 @@ EXPECTED_READ_TOOLS = {
     # Q4 unit (7) adds get_pt_stops + get_pt_lines.
     "get_pt_stops",
     "get_pt_lines",
+    # Q6 unit (2) adds get_parking_lots -- the paired reader for the three
+    # parking write verbs below.
+    "get_parking_lots",
 }
 
 # M2.3: tools_edit.py's write tools are now offered to the planner too (see
@@ -151,6 +154,15 @@ EXPECTED_WRITE_TOOLS = {
     "set_link_lane_count",
     "set_link_geometry",
     "set_link_point_radius",
+    # Q6 unit (2): parking-lot genesis + resize + removal (see tools_edit.py's
+    # own comment block). Capacity is Vissim-DERIVED and read-only, so
+    # set_parking_lot_capacity writes the lot's LENGTH and verifies against
+    # Vissim's own capacity readback; remove_parking_lot refuses a lot a
+    # parking route still references, because COM's own removal silently
+    # cascade-deletes that route.
+    "add_parking_lot",
+    "set_parking_lot_capacity",
+    "remove_parking_lot",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools

@@ -186,7 +186,18 @@ def test_health_check_runner_against_demo_dataset():
     # three land in edit_time_only, same shape as every addition above.
     # (The M0.3 link_geometry_edit_reference_integrity that unit generalized
     # is NOT a new registration and was already counted here.)
-    assert report["summary"]["edit_time_only_n"] == 93
+    # 96, not 93: Q6 unit (2) (parking lots) added three preflight-only
+    # constraints for the new add_parking_lot / set_parking_lot_capacity /
+    # remove_parking_lot tools -- parking_lot_capacity_unrealistic,
+    # parking_lot_does_not_fit_link and
+    # parking_lot_inert_without_parking_routing_decision. All three key off a
+    # PROPOSED action's own params (the requested capacity/len_per_space_m
+    # against the target link as it stands right now), and a whole-network
+    # dataset scan has no equivalent of that -- "this model has links shorter
+    # than some hypothetical parking lot" is not a finding, it is just a
+    # fact -- so all three land in edit_time_only, same shape as every
+    # addition above.
+    assert report["summary"]["edit_time_only_n"] == 96
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

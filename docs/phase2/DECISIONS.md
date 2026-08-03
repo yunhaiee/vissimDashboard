@@ -3379,3 +3379,73 @@ so it stays deliberate). Suite 2305→2371 (+64 unit, +2 referrer-cap pins), 236
 known RAG fail / 1 skipped. Isolation: constraints 527, inpx_structure 51, tools_link_geometry
 28, vissim_com_link_geometry 22, health_check 13 (edit_time_only 90→93, derived not
 hand-counted).
+
+## 2026-08-04 — Q6 ②: parking lots — capacity is a length, and the guard that compared the wrong string
+
+Second Q6 unit. Parking lots had ZERO precedent (no parser, no shadow class, no verbs), so the
+unit is representation-first (the Q4 ④ doctrine): `_parse_parking_lots` (two species —
+lane-anchored and abstract), shadow class + diff support, THEN three verbs + a reader on top of
+a 10-part probe with a null control and a `--audit` re-derivation path.
+
+**The semantics that make the verbs non-obvious.** `Capacity` on a REALPARKINGSPACE is
+READ-ONLY and derived = `floor(Length/LenPerSpc)` (573/573 corpus lots, 0 violations) — the
+only way to give a caller "N spaces" is to write `Length = N × LenPerSpc`, so
+`set_parking_lot_capacity` is planner vocabulary realised as a LENGTH write, verified against
+Vissim's own readback. Three edges, one loud two silent: length past the link end raises
+("does not fit"), `LenPerSpc > Length` silently clamps, `Length=0` is silently accepted
+(capacity 0, `load_check` green). Removal SILENTLY CASCADE-DELETES the referencing parking
+route (Karlsruhe: 573 lots / 573 routes / 0 unreferenced — every real lot is one route away
+from this trap); we refuse first, naming the referrer, before COM is touched. A `Type` write
+is a structural mutation that MINTS a zone object and leaves it behind on flip-back —
+deliberately unwrapped, with `AddAbstractParkingLot`, `DuplicateParkingLot`, and
+zones/groups/parking-routing-decisions. Registry 107→110 (`parking_lot_capacity_unrealistic`
+refuse, `parking_lot_does_not_fit_link` refuse — conservative via the `pos +
+capacity×len_per_space` screen, whose only conservative term is `pos` since a partial last bay
+contributes ZERO capacity — and `parking_lot_inert_without_parking_routing_decision` warn).
+
+**The unit's own live check caught its first defect pre-review:** `written_value={"capacity":
+25}` (a dict) can never equal the shadow model's int, so every correct call was refused —
+guardrails failing safe against their own tool. Scalars now; 3 tests pin it.
+
+**The verification (12 agents, adversarial) then refuted four things the first pass shipped:**
+1. **An id-normalization bypass in the cascade guard.** The removal coerced `int(params.no)`
+   but the guard compared the RAW string — `'0014'`, `' 14'`, `'+14'`, `'14 '` all bypassed
+   the referrer refusal and reached the silent cascade-delete (preflight `object_not_found`
+   catches them in the orchestrated pipeline; direct dispatch did not). Fixed by canonicalising
+   once and using that everywhere; 5-spelling parametrized test, counterfactual run (restoring
+   `params.no` fails 4 of 5).
+2. **The capacity derivation is TYPE-SCOPED, not universal.** ZONECONNECTOR lots (56/56 in
+   corpus) store capacity independently (10000 alongside `length=3`); abstract lots too. The
+   verb was silently inapplicable to 9% of corpus lots while its docstring told the planner
+   otherwise. Now refuses non-REALPARKINGSPACE in-tool, naming the species; the fake is
+   type-aware so tests can catch what a derivation-hardcoding fake could not.
+3. **The clamp-dodging write order broke from degenerate states.** From a pre-existing
+   `{Length 0, LenPerSpc 1}` lot the shrink branch walked into the clamp it dodges. The branch
+   now decides on TARGET length vs current, plus a defensive `capacity ≥ 1` floor at the COM
+   layer (pydantic already enforces it above).
+4. **`VissimObjectNotFoundError` was bounded in key COUNT, not LENGTH** — 8-digit ids × 20
+   keys = 313 chars, over the 300 dispatch cap, truncating mid-number. Now budgeted to 180
+   chars of keys + honest `(+N more)` — shared machinery, every verb benefits.
+
+Probe-prose drifts fixed in the same pass (the pattern holds a fourth time — the artifact is
+right, the prose drifts): a claimed self-correction that did not actually exist in the
+docstring (`state.json.part_b.silently_ignored` carries 4 FALSE entries from a str-equality
+`took` proxy — now recorded in the file as known-wrong), an audit-header independence claim
+false for part F (its COM numerator is live-recorded), "30 attributes" → 21 probed COM ids,
+"28 defaults" → 25 (+3 caller-supplied).
+
+**Two systemic discoveries, recorded for follow-up rather than folded in:** (a) an AST sweep
+found **11 echo readers** in `vissim_com.py` (`get_pt_stop`, `get_link`, `get_signal_head`,
+`get_detector`, 7 more) — ten consumed by create verbs for computed max+1 numbers, the same
+unfalsifiable-identity shape now fixed four times one reader at a time; spawned as a dedicated
+task. (b) the raw-id-to-guard shape exists in THREE shipped verbs: `remove_pt_stop` and
+`remove_data_collection_point` are exploitable twins of defect 1 (their guard is the first
+XML consult), `remove_link` fails safe only because its raw pre-lookup errors first —
+canonicalisation commit follows immediately after this one.
+
+Constraint-message note: the en texts of two new constraints exceed 300 chars — NOT a defect;
+`Finding.messages` never traverse `_sanitize_exception_text` (disjoint surfaces, measured), but
+worth knowing before anyone "fixes" it. Envelope messages run to cap+prefix (~57-66 chars) —
+recorded. Suite 2371→2479 (+86 unit, +22 fix cycle), 2477 passed / 1 known RAG / 1 skipped;
+live check re-run end-to-end after the COM-layer fixes, all phases PASS, log teed to
+`runtime/parking-lot-live-check/live_check.log`.

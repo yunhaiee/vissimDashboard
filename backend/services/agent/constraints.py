@@ -960,6 +960,46 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "link_id",
     },
+    # Q6 unit (2): parking lots. add_parking_lot's PRIMARY target is the LINK
+    # it places against (the same "links" object class add_pt_stop/
+    # add_signal_head/add_queue_counter/add_vehicle_input already use, just a
+    # different param name); whether lane_index exists on that link has no
+    # single flat id the generic machinery can check and fails closed inside
+    # vissim_com._lane_by_index with the link's real lane indices named --
+    # the same deliberate, documented cut set_lane_closure's own lane_index
+    # carries. set_parking_lot_capacity's and remove_parking_lot's targets
+    # are the lot's own "no" in the new "parking_lots" shadow-model list this
+    # unit added (tools_network._parse_parking_lots).
+    #
+    # Whether the requested capacity is realisable at all is deliberately NOT
+    # this entry's business (the lot/link exist either way, so #1 must stay
+    # silent): those are the dedicated parking_lot_capacity_unrealistic and
+    # parking_lot_does_not_fit_link checks below -- the same "existence is
+    # generic, appropriateness is dedicated" split add_signal_controller's
+    # donor-type check and add_vehicle_input's connector warn established.
+    # And WHETHER a lot is safe to remove (zero referring parking routes) is
+    # the reference-integrity refusal inside tools_edit.remove_parking_lot
+    # itself (services.inpx_structure.find_id_references), not a Finding --
+    # mirroring remove_pt_stop's and remove_data_collection_point's own
+    # precedent exactly.
+    "add_parking_lot": {
+        "object_class": "links",
+        "id_field": "id",
+        "name_field": "name",
+        "param": "link_no",
+    },
+    "set_parking_lot_capacity": {
+        "object_class": "parking_lots",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "parking_lot_no",
+    },
+    "remove_parking_lot": {
+        "object_class": "parking_lots",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -991,6 +1031,8 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     # Q4 unit (7): PT stop + PT line placement.
     "pt_stops": {"ko": "대중교통 정류장", "en": "PT stop", "ja": "公共交通停留所"},
     "pt_lines": {"ko": "대중교통 노선", "en": "PT line", "ja": "公共交通路線"},
+    # Q6 unit (2): parking lots.
+    "parking_lots": {"ko": "주차장", "en": "parking lot", "ja": "駐車場"},
 }
 
 
@@ -1336,6 +1378,12 @@ register(
             "set_link_lane_count",
             "set_link_geometry",
             "set_link_point_radius",
+            # Q6 unit (2): parking lots. Wired AT BIRTH here, in the same
+            # change that adds their _TOOL_TARGET_SPEC entries -- the whole
+            # point of the gap closure above.
+            "add_parking_lot",
+            "set_parking_lot_capacity",
+            "remove_parking_lot",
             # NO deliberate omissions remain: set(_TOOL_TARGET_SPEC) - set(this
             # list) is now EMPTY, pinned by
             # test_object_not_found_applies_to_is_in_lockstep_with_the_spec_table.
@@ -10233,5 +10281,324 @@ register(
         "Vissimはポリラインから計算した値(現在の形状では約{geometric} m)ではなくこの値を使用します。"
         "リンク形状自体は変わらないため、描かれた曲線と曲線速度モデルが読む半径が食い違います。"
         "実際の形状を変えるにはset_link_geometryを、計算値に戻すにはradius_mを省略してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# Q6 unit (2): parking lots. THREE constraints, each from a measurement in
+# backend/tools/probe_parking_lot.py, none from taste.
+#
+# parking_lot_capacity_unrealistic (refuse, preflight)
+#
+# Vissim's own Capacity attribute is READ-ONLY and DERIVED as
+# floor(Length / LenPerSpc) (Part I, measured against an untouched control lot
+# in the same session: SetAttValue("Capacity", 37) fails loudly with
+# "Attribute Capacity cannot be changed", while Length 6->60 takes capacity
+# 1->10 and LenPerSpc 6->4 then takes it 10->15). Two consequences make an
+# up-front bounds screen necessary rather than decorative:
+#
+#   * Length = 0 is SILENTLY ACCEPTED -- capacity 0, LenPerSpc silently forced
+#     to 1.0, persisted as length="0" lenPerSpc="1" capacity="0", and
+#     load_check STILL returns load_ok/init_ok. A zero-space parking lot that
+#     Vissim never complains about is precisely the confident-wrong-number
+#     shape this layer exists to refuse; the pydantic ge=1 on both verbs stops
+#     the literal zero, and this check stops the values that are non-zero but
+#     still cannot be honestly realised.
+#   * The ceiling is not a taste call either: the whole 629-lot corpus tops
+#     out at capacity 10000 (the ZONECONNECTOR "no limit" sentinel on Motorway
+#     Dyn Assign Mainz.DE), and 572 of the 573 REALPARKINGSPACE lots on
+#     3D - Complex Intersection Karlsruhe.DE carry capacity 1.
+#     _PARKING_LOT_CAPACITY_MAX is set at that observed sentinel: anything
+#     above it has no precedent anywhere in real Vissim data AND would demand
+#     a length no real link could carry.
+# ---------------------------------------------------------------------------
+
+#: Highest space count observed anywhere in the real Vissim 2026 example
+#: corpus (Motorway Dyn Assign Mainz.DE's ZONECONNECTOR "no limit" sentinel);
+#: see this section's own comment for why the bound is measured, not chosen.
+_PARKING_LOT_CAPACITY_MAX = 10000
+
+#: Tools whose ``capacity`` param these two screens apply to.
+_PARKING_CAPACITY_TOOLS = ("add_parking_lot", "set_parking_lot_capacity")
+
+
+def _check_parking_lot_capacity_unrealistic(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    del shadow_model, extra
+    tool = action.get("tool", "")
+    if tool not in _PARKING_CAPACITY_TOOLS:
+        return None
+    raw = action.get("params", {}).get("capacity")
+    try:
+        capacity = int(raw)
+    except (TypeError, ValueError):
+        return None  # a non-integer is the params model's job, not ours
+    if 1 <= capacity <= _PARKING_LOT_CAPACITY_MAX:
+        return None
+    return Finding(
+        constraint_id="parking_lot_capacity_unrealistic",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "parking_lot_capacity_unrealistic",
+            capacity=capacity,
+            maximum=_PARKING_LOT_CAPACITY_MAX,
+        ),
+        suggested_fix={"min_capacity": 1, "max_capacity": _PARKING_LOT_CAPACITY_MAX},
+        details={"tool": tool, "capacity": capacity, "max_capacity": _PARKING_LOT_CAPACITY_MAX},
+    )
+
+
+register(
+    Constraint(
+        id="parking_lot_capacity_unrealistic",
+        applies_to=list(_PARKING_CAPACITY_TOOLS),
+        phase="preflight",
+        tier="refuse",
+        check=_check_parking_lot_capacity_unrealistic,
+        message_ko="주차장 용량 {capacity}면은 이 모델이 허용하는 범위(1~{maximum}면)를 "
+        "벗어납니다. Vissim의 Capacity 속성은 직접 쓸 수 없고 길이÷면당길이로 계산되기 때문에, "
+        "요청한 면수는 주차장 길이로 환산되어 기록됩니다. 특히 길이가 0이 되는 값은 Vissim이 "
+        "아무 경고 없이 받아들여 용량 0인 주차장을 만들고, 네트워크는 정상 로드되므로 잘못된 "
+        "결과를 그대로 보고하게 됩니다. 1~{maximum} 사이의 면수를 지정하세요.",
+        message_en="A parking capacity of {capacity} spaces is outside the range this model "
+        "accepts (1-{maximum}). Vissim's Capacity attribute cannot be written directly -- it is "
+        "derived as length / length-per-space -- so the requested count is realised as the lot's "
+        "LENGTH. A value that lands on zero length is accepted silently by Vissim, producing a "
+        "zero-space lot on a network that still loads and runs, which then reports confident "
+        "wrong numbers. Ask for a count between 1 and {maximum}.",
+        message_ja="駐車場容量 {capacity} 台はこのモデルが受け付ける範囲(1〜{maximum}台)を"
+        "外れています。VissimのCapacity属性は直接書き込めず、長さ÷1台あたり長さから算出される"
+        "ため、要求された台数は駐車場の長さとして記録されます。長さが0になる値はVissimが警告"
+        "なしに受け入れ、容量0の駐車場ができてもネットワークは正常に読み込まれるため、誤った"
+        "結果がそのまま報告されます。1〜{maximum} の範囲で指定してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# parking_lot_does_not_fit_link (refuse, preflight)
+#
+# Vissim's OWN check on this is loud and good -- writing a Length past the
+# link's end raised "AttValue failed: Parking Lot 2 does not fit on link 1
+# (335.122 m). Please reduce its length or move it." (Part I, writing 3x link
+# 1's real 335.12213607578946 m Length2D). This constraint exists anyway, for
+# two reasons the doctrine cares about:
+#
+#   1. It arrives as a PREFLIGHT refusal with ko/en/ja text and a numeric
+#      suggested_fix (the largest capacity that fits), instead of a raw COM
+#      exception surfacing as tool_execution_error -- the same "existence is
+#      generic, appropriateness is dedicated" reasoning behind
+#      signal_controller_duplicate_source_type_unsupported.
+#   2. Our rule is deliberately CONSERVATIVE and says so: refuse when
+#      ``pos + capacity x len_per_space`` exceeds the link's own length. The
+#      probe did not establish whether Vissim measures from the lot's own pos
+#      or merely compares the bare length, so this screen is at least as
+#      strict as Vissim's. Over-refusal here is fail-safe; the alternative --
+#      guessing the laxer rule and letting through a lot Vissim then clamps or
+#      rejects mid-write -- is not.
+#
+# ``len_per_space_m`` omitted means Vissim's own default, which is 6.0 DISPLAY
+# units (live-measured: 6.0 on a METERS network, 6.0 display-feet = 1.8288 m
+# on Toll Plaza Camden.US). The shadow model carries no display unit, so this
+# check uses the metric 6.0 -- the LARGER of the two possible real values, so
+# the screen stays on the conservative side on a feet network too.
+# ---------------------------------------------------------------------------
+
+_PARKING_LOT_DEFAULT_LEN_PER_SPACE_M = 6.0
+
+
+def _check_parking_lot_does_not_fit_link(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    del extra
+    tool = action.get("tool", "")
+    if tool not in _PARKING_CAPACITY_TOOLS:
+        return None
+    params = action.get("params", {})
+    try:
+        capacity = int(params.get("capacity"))
+    except (TypeError, ValueError):
+        return None
+    if capacity < 1:
+        return None  # parking_lot_capacity_unrealistic owns that case
+
+    per_space = params.get("len_per_space_m")
+    try:
+        per_space_m = (
+            float(per_space) if per_space is not None else _PARKING_LOT_DEFAULT_LEN_PER_SPACE_M
+        )
+    except (TypeError, ValueError):
+        per_space_m = _PARKING_LOT_DEFAULT_LEN_PER_SPACE_M
+    if per_space_m <= 0:
+        return None
+
+    if tool == "add_parking_lot":
+        link_id = str(params.get("link_no", ""))
+        try:
+            pos_m = float(params.get("pos_m", 0.0))
+        except (TypeError, ValueError):
+            pos_m = 0.0
+    else:
+        lot = _find_by_field(
+            shadow_model.get("parking_lots", []), "no", str(params.get("parking_lot_no", ""))
+        )
+        if lot is None:
+            return None  # object_not_found's job (#1)
+        link_id = str(lot.get("link") or "")
+        try:
+            pos_m = float(lot.get("pos") or 0.0)
+        except (TypeError, ValueError):
+            pos_m = 0.0
+
+    link = _find_by_field(shadow_model.get("links", []), "id", link_id)
+    if link is None:
+        return None  # object_not_found's job (#1)
+    raw_length = link.get("length")
+    if raw_length is None:
+        return None  # nothing to compare against; say nothing rather than guess
+    link_length_m = float(raw_length)
+
+    required_m = pos_m + capacity * per_space_m
+    if required_m <= link_length_m:
+        return None
+
+    available_m = max(link_length_m - pos_m, 0.0)
+    max_capacity = int(available_m // per_space_m)
+    return Finding(
+        constraint_id="parking_lot_does_not_fit_link",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "parking_lot_does_not_fit_link",
+            capacity=capacity,
+            link_id=link_id,
+            required=f"{required_m:.1f}",
+            link_length=f"{link_length_m:.1f}",
+            pos=f"{pos_m:.1f}",
+            per_space=f"{per_space_m:.1f}",
+            max_capacity=max_capacity,
+        ),
+        suggested_fix={"max_capacity": max_capacity, "link_length_m": round(link_length_m, 3)},
+        details={
+            "tool": tool,
+            "link_id": link_id,
+            "capacity": capacity,
+            "pos_m": pos_m,
+            "len_per_space_m": per_space_m,
+            "required_m": round(required_m, 3),
+            "link_length_m": round(link_length_m, 3),
+            "max_capacity": max_capacity,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="parking_lot_does_not_fit_link",
+        applies_to=list(_PARKING_CAPACITY_TOOLS),
+        phase="preflight",
+        tier="refuse",
+        check=_check_parking_lot_does_not_fit_link,
+        message_ko="{capacity}면 주차장은 링크 {link_id}에 들어가지 않습니다. 시작 위치 {pos} m에서 "
+        "면당 {per_space} m씩 필요해 총 {required} m가 필요하지만 링크 길이는 {link_length} m뿐입니다. "
+        "이 위치에서 가능한 최대 면수는 {max_capacity}면입니다. 면수를 줄이거나, 면당 길이를 줄이거나, "
+        "더 긴 링크에 배치하세요.",
+        message_en="A {capacity}-space parking lot does not fit on link {link_id}. Starting at "
+        "{pos} m and needing {per_space} m per space it would require {required} m, but the link "
+        "is only {link_length} m long. The largest lot that fits at this position is "
+        "{max_capacity} space(s). Reduce the capacity, reduce the metres per space, or place it "
+        "on a longer link.",
+        message_ja="{capacity}台の駐車場はリンク {link_id} に収まりません。開始位置 {pos} m から"
+        "1台あたり {per_space} m 必要なため合計 {required} m を要しますが、リンク長は "
+        "{link_length} m しかありません。この位置で収まる最大台数は {max_capacity} 台です。"
+        "台数を減らすか、1台あたりの長さを縮めるか、より長いリンクに配置してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# parking_lot_inert_without_parking_routing_decision (warn, preflight)
+#
+# The "non-functional skeleton" question, answered honestly. A REALPARKINGSPACE
+# lot is reachable ONLY through a parking routing decision (the
+# vehicleRoutingDecisionParking -> vehicleRouteParking@parkLot chain); nothing
+# else in the schema ever sends a vehicle to one. This toolkit ships no verb
+# that creates either, so a lot added onto a network with no parking routing
+# machinery changes no vehicle's behaviour at all -- while the network still
+# loads, still runs, and still reports confident numbers.
+#
+# What the probe could and could not measure, stated rather than blurred
+# (Part H): the lot has NO plain occupancy attribute (Occup/Occupancy/
+# NumSpaces/ParkSpcs/ConcatLen each raise "Could not find attribute with ID"),
+# only a simulation-run-indexed OccupRate() result; a 120 s RunContinuous on
+# Beijing with the fresh lot completed without error. That is the NEGATIVE case
+# only -- no positive control (a network WITH a parking decision, occupancy
+# > 0) was run, and the vehicle count read after the run had already ENDED is
+# not evidence of anything.
+#
+# The claim therefore rests on the CORPUS, which is unambiguous: the only
+# network with REALPARKINGSPACE lots (3D - Complex Intersection Karlsruhe.DE)
+# has exactly one parking route per lot -- 573 lots, 573 routes, ZERO
+# unreferenced -- and the two ZONECONNECTOR networks have zero parking routes
+# because they are driven by an OD matrix under dynamic assignment instead. A
+# warn, not a refusal: the lot itself is real, correctly placed, and a
+# perfectly reasonable first half of a two-step build.
+# ---------------------------------------------------------------------------
+
+
+def _check_parking_lot_inert_without_routing(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    del extra
+    if action.get("tool") != "add_parking_lot":
+        return None
+    # The shadow model carries no parking-routing-decision class (deliberate --
+    # see tools_network._parse_parking_lots' own section comment for why), so
+    # this reads the closest state the model DOES expose: whether the network
+    # has any parking lots at all. On a network that already has lots the
+    # routing machinery is presumably already there and this warn would be
+    # noise; on a from-nothing network it is exactly the case that needs
+    # saying. Stated as a proxy, not as a direct observation.
+    if shadow_model.get("parking_lots"):
+        return None
+    link_id = str(action.get("params", {}).get("link_no", ""))
+    return Finding(
+        constraint_id="parking_lot_inert_without_parking_routing_decision",
+        tier="warn",
+        phase="preflight",
+        messages=_render("parking_lot_inert_without_parking_routing_decision", link_id=link_id),
+        suggested_fix={"needs": "vehicleRoutingDecisionParking"},
+        details={"link_id": link_id, "existing_parking_lots": 0},
+    )
+
+
+register(
+    Constraint(
+        id="parking_lot_inert_without_parking_routing_decision",
+        applies_to=["add_parking_lot"],
+        phase="preflight",
+        tier="warn",
+        check=_check_parking_lot_inert_without_routing,
+        message_ko="이 네트워크에는 주차장이 하나도 없습니다. 주차장은 그 자체로 교통을 끌어들이지 "
+        "않으며, 주차 경로결정(vehicleRoutingDecisionParking)이 이 주차장을 목적지로 지정해야만 "
+        "차량이 들어옵니다. 이 도구모음에는 주차 경로결정을 만드는 기능이 없으므로, 링크 {link_id}에 "
+        "추가되는 주차장은 지금 상태로는 시뮬레이션 결과를 전혀 바꾸지 않습니다. 네트워크는 정상 "
+        "로드되고 실행되므로 오류처럼 보이지 않는다는 점에 주의하세요. Vissim GUI에서 주차 "
+        "경로결정을 추가한 뒤 사용하세요.",
+        message_en="This network has no parking lots at all yet. A parking lot does not attract "
+        "traffic on its own -- vehicles only enter one when a parking routing decision "
+        "(vehicleRoutingDecisionParking) names it as a destination, and this toolkit ships no verb "
+        "that creates one. The lot added on link {link_id} will therefore not change simulation "
+        "results as things stand, and nothing will look like an error: the network still loads and "
+        "still runs. Add the parking routing decision in the Vissim GUI before relying on it.",
+        message_ja="このネットワークにはまだ駐車場が1つもありません。駐車場それ自体は交通を"
+        "引き寄せません。駐車経路決定(vehicleRoutingDecisionParking)が目的地として指定して"
+        "はじめて車両が入ります。本ツール群には駐車経路決定を作成する機能がないため、リンク "
+        "{link_id} に追加される駐車場は現状ではシミュレーション結果を変えません。ネットワークは"
+        "正常に読み込まれ実行されるため、エラーには見えない点に注意してください。Vissim GUIで"
+        "駐車経路決定を追加してから利用してください。",
     )
 )

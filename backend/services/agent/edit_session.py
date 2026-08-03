@@ -544,6 +544,38 @@ class VissimEditSession:
     def get_pt_line_stop_dwell(self, line_no: int, stop_no: int) -> dict[str, Any]:
         return self._ensure_connected().get_pt_line_stop_dwell(line_no, stop_no)
 
+    # Q6 unit (2): parking lots -- see vissim_com.VissimController's own
+    # parking-lot module comment for the full live-verified writeup
+    # (AddParkingLot is a genuine native create; Capacity is READ-ONLY and
+    # derived from Length/LenPerSpc; RemoveParkingLot silently
+    # cascade-deletes the referencing parking route).
+
+    def add_parking_lot(
+        self,
+        link_no: int,
+        lane_index: int,
+        pos_m: float,
+        capacity: int,
+        name: str = "",
+        len_per_space_m: float | None = None,
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_parking_lot(
+            link_no, lane_index, pos_m, capacity, name, len_per_space_m
+        )
+
+    def set_parking_lot_capacity(
+        self, parking_lot_no: int, capacity: int, len_per_space_m: float | None = None
+    ) -> dict[str, Any]:
+        return self._ensure_connected().set_parking_lot_capacity(
+            parking_lot_no, capacity, len_per_space_m
+        )
+
+    def remove_parking_lot(self, no: int) -> None:
+        self._ensure_connected().remove_parking_lot(no)
+
+    def get_parking_lot(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_parking_lot(no)
+
     # QUEUE (v2a) unit: vehicle-type distribution/function reference
     # verbs. Each reference field is a flat, independent attribute on the
     # VehicleType object itself -- no shared-sum semantics, no paired

@@ -5346,8 +5346,25 @@ def test_registry_size_matches_m3_1_catalog_port():
     # GENERALIZED rather than duplicated (it finally fires, off the two
     # shape-changing tools' own link_id, instead of a flag nothing sets).
     # == 107.
+    # Q6 unit (2) adds THREE more (== 110): parking_lot_capacity_unrealistic
+    # (refuse -- Vissim's Capacity attribute is READ-ONLY and derived as
+    # floor(length / len_per_space), and a request that lands on zero length
+    # is accepted SILENTLY, producing a zero-space lot on a network that
+    # still loads and runs), parking_lot_does_not_fit_link (refuse -- a
+    # deliberately conservative pos + capacity x len_per_space screen, at
+    # least as strict as Vissim's own loud "Parking Lot 2 does not fit on
+    # link 1 (335.122 m)"), and
+    # parking_lot_inert_without_parking_routing_decision (warn -- a lot
+    # attracts nothing until a parking routing decision names it, and this
+    # toolkit ships no verb that creates one).
+    # No fourth constraint: the reference-integrity refusal that stops a
+    # removal from silently CASCADE-DELETING the referencing parking route
+    # lives in tools_edit.remove_parking_lot (services.inpx_structure's
+    # ReferenceIntegrityError, the remove_pt_stop precedent), and each verb's
+    # target existence is #1 object_not_found via a _TOOL_TARGET_SPEC entry
+    # PLUS an entry in #1's own applies_to list.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 107
+    assert len(get_registry()) == 110
 
 
 def test_registry_has_unique_ids():

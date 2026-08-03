@@ -63,6 +63,10 @@ EXPECTED_TOOL_NAMES = {
     # Q4 unit (7) adds get_pt_stops + get_pt_lines.
     "get_pt_stops",
     "get_pt_lines",
+    # Q6 unit (2) adds get_parking_lots -- the paired reader for the three
+    # parking write verbs below, and the first read tool over an object class
+    # this codebase had NO representation of at all before that unit.
+    "get_parking_lots",
 }
 
 # M2.3's tools_edit.py registers these write-tier tools, and M2.4's
@@ -197,6 +201,20 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "set_link_lane_count",
     "set_link_geometry",
     "set_link_point_radius",
+    # Q6 unit (2) adds three parking-lot verbs: add_parking_lot (native COM
+    # AddParkingLot -- a genuine create, NOT duplicate-then-edit),
+    # set_parking_lot_capacity (which writes the lot's LENGTH, because
+    # Vissim's own Capacity attribute is read-only and derived from
+    # length/len_per_space -- measured), and remove_parking_lot (which
+    # refuses when a parking route still references the lot, because COM's
+    # own removal silently cascade-deletes that route). No verb wraps
+    # DuplicateParkingLot, AddAbstractParkingLot, Zones.AddZone,
+    # ParkLotGrps.*, or the parking ROUTING-decision containers: each exists
+    # on the same interfaces and each is a deliberate, recorded scope cut --
+    # see vissim_com.py's own parking-lot module comment.
+    "add_parking_lot",
+    "set_parking_lot_capacity",
+    "remove_parking_lot",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -2686,6 +2704,17 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         "pt_stops",
         "pt_lines",
         "pt_line_stops",
+        # Q6 unit (2): parking lots. The representation half of that unit --
+        # before it, build_shadow_model had no parking-lot class at all, so a
+        # parking verb's postwrite diff could not see its own object (the Q4
+        # unit (4) signal-head precedent: an object class the diff cannot see
+        # makes the verb unverifiable by construction). Zones, parking-lot
+        # groups and parking ROUTES are deliberately NOT shadow classes -- no
+        # verb writes them, and an unwritten class only grows the
+        # nothing-else-moved diff's false-positive surface; parking routes are
+        # instead consulted straight from the XML by
+        # inpx_structure.ID_REFERENCE_SITES["parking_lots"].
+        "parking_lots",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2
@@ -3813,3 +3842,129 @@ def test_get_pt_stops_unfiltered_call_on_large_network_is_capped_and_truncated(t
     assert len(data["pt_stops"]) == 60  # _PT_STOPS_DEFAULT_CAP
     assert data["truncated"] is True
     assert "pt_stop_no" in data["hint"]
+
+
+# ---------------------------------------------------------------------------
+# get_parking_lots -- Q6 unit (2): parking lots.
+#
+# The fixture carries BOTH real species (schema copied verbatim from the two
+# corpus networks that have any -- 3D - Complex Intersection Karlsruhe.DE's
+# REALPARKINGSPACE lots and Motorway Dyn Assign Mainz.DE's ZONECONNECTORs) plus
+# enough one-space lots to cross the tool's own 30-item cap, because the real
+# Karlsruhe network carries 573 of them and an unfiltered dump there is exactly
+# what the cap exists to stop.
+# ---------------------------------------------------------------------------
+
+_PARKING_LOTS_FIXTURE_HEAD = """<?xml version="1.0" encoding="UTF-8"?>
+<network>
+  <links>
+    <link no="91" name="Deck approach">
+      <lanes><lane width="3.5"/></lanes>
+      <geometry><linkPolyPts><linkPolyPoint x="0" y="0"/><linkPolyPoint x="500" y="0"/></linkPolyPts></geometry>
+    </link>
+    <link no="26" name="Zone stub">
+      <lanes><lane width="3.5"/></lanes>
+      <geometry><linkPolyPts><linkPolyPoint x="0" y="80"/><linkPolyPoint x="100" y="80"/></linkPolyPts></geometry>
+    </link>
+  </links>
+  <parkingLots>
+    <parkingLot no="14" name="Deck" type="REALPARKINGSPACE" lane="91 1" pos="1.79" length="36"
+                capacity="6" lenPerSpc="6" attrac="70" attracLast="70" relFlow="1" parkTmMax="99999"
+                parkFeeFlat="2.5" parkFeeHr="1.25" openFrom="0" openUntil="99999"
+                parkDir="FORWARDINFORWARDOUT" desSpeedDistrDef="50" dirChgDurDist="9" zone="114"/>
+    <parkingLot no="26" name="Zone connector" type="ZONECONNECTOR" intLink="26" zone="1000005"
+                pos="22.54" length="3" capacity="10000" lenPerSpc="6" attrac="0" relFlow="0"
+                parkTmMax="99999" openFrom="0" openUntil="99999" parkDir="FORWARDINFORWARDOUT"
+                desSpeedDistrDef="65"/>
+"""
+
+_PARKING_LOTS_FIXTURE_TAIL = """  </parkingLots>
+</network>
+"""
+
+
+@pytest.fixture()
+def parking_lots_fixture_inpx(tmp_path: Path) -> Path:
+    spaces = "".join(
+        f'    <parkingLot no="{n}" name="" type="REALPARKINGSPACE" lane="91 1" pos="{n}" '
+        f'length="6.2" capacity="1" lenPerSpc="6.2" attrac="0" relFlow="1" parkTmMax="99999" '
+        f'openFrom="0" openUntil="99999" parkDir="FORWARDINREVERSEOUT" desSpeedDistrDef="15" '
+        f'dirChgDurDist="9"/>\n'
+        for n in range(101, 141)
+    )
+    path = tmp_path / "parking_lots.inpx"
+    path.write_text(
+        _PARKING_LOTS_FIXTURE_HEAD + spaces + _PARKING_LOTS_FIXTURE_TAIL, encoding="utf-8"
+    )
+    return path
+
+
+def test_get_parking_lots_reads_both_species(parking_lots_fixture_inpx: Path):
+    tools_network.set_active_inpx(parking_lots_fixture_inpx)
+
+    envelope = _dispatch("get_parking_lots", parking_lot_no="14")
+
+    assert envelope["status"] == "ok"
+    (lot,) = envelope["data"]["parking_lots"]
+    assert lot["type"] == "REALPARKINGSPACE"
+    assert lot["link"] == "91"
+    assert lot["lane_index"] == 1
+    assert lot["capacity"] == 6
+    assert lot["len_per_space"] == 6.0
+    assert lot["park_fee_flat"] == 2.5
+    assert lot["park_fee_hourly"] == 1.25
+    assert lot["park_direction"] == "FORWARDINFORWARDOUT"
+    assert lot["dir_change_dur_distr_no"] == "9"
+
+    envelope = _dispatch("get_parking_lots", parking_lot_no="26")
+    (zone_lot,) = envelope["data"]["parking_lots"]
+    assert zone_lot["type"] == "ZONECONNECTOR"
+    assert zone_lot["link"] == "26"
+    # The zone-connector species genuinely has no lane -- never a fabricated 1.
+    assert zone_lot["lane_index"] is None
+    assert zone_lot["zone"] == "1000005"
+
+
+def test_get_parking_lots_caps_an_unfiltered_call(parking_lots_fixture_inpx: Path):
+    tools_network.set_active_inpx(parking_lots_fixture_inpx)
+
+    envelope = _dispatch("get_parking_lots")
+
+    data = envelope["data"]
+    assert data["count"] == 42
+    assert len(data["parking_lots"]) == 30
+    assert data["truncated"] is True
+    assert "42 parking lots" in data["hint"]
+
+
+def test_get_parking_lots_filters_by_link_no(parking_lots_fixture_inpx: Path):
+    tools_network.set_active_inpx(parking_lots_fixture_inpx)
+
+    envelope = _dispatch("get_parking_lots", link_no="26")
+
+    data = envelope["data"]
+    assert data["count"] == 1
+    assert data["parking_lots"][0]["no"] == "26"
+    # A filtered call is never truncated -- it answers the exact question.
+    assert "truncated" not in data
+
+
+def test_get_parking_lots_on_demo_data_is_empty_but_well_formed():
+    """Most real networks carry no <parkingLots> section at all (19 of the 21
+    example networks) -- an absent section must read as zero lots, not as an
+    error or a missing key."""
+    envelope = _dispatch("get_parking_lots")
+
+    assert envelope["status"] == "ok"
+    assert envelope["data"]["count"] == 0
+    assert envelope["data"]["parking_lots"] == []
+    assert envelope["data"]["truncated"] is False
+
+
+def test_get_parking_lots_rejects_unexpected_params(parking_lots_fixture_inpx: Path):
+    tools_network.set_active_inpx(parking_lots_fixture_inpx)
+
+    envelope = _dispatch("get_parking_lots", bogus_param="nope")
+
+    assert envelope["status"] == "error"
+    assert envelope["error_type"] == "invalid_params"
