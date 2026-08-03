@@ -3069,3 +3069,47 @@ say "page cite pending" — that rule reached us via the meeting brief, not a pa
 at, so the never-invent rule was applied to our own authority claims first. Contract:
 `docs/product/adapter-contract.md`; 10 open unknowns listed there for the Daejeon side. Suite
 2053→2189 (+137, controller re-ran).
+
+## 2026-08-03 — Phase 0.3: the MRWA pack, and the client's own gaps failing it
+
+New `backend/services/agent/mrwa_reference.py`: Main Roads' published numbers as self-citing
+stdlib data (10 tables + 2 standalone values), imported by `constraints.py` as its one
+documented exception to "stdlib-only" — the module is pure data with no state/COM/session
+coupling, so the rule's actual purpose survives. 4 new warn-tier constraints (registry 96→100):
+Table 5-9's gap-acceptance envelope and the roundabout critical-gap floor on
+`set_priority_rule_gap_headway`, and MRWA-default deviation warnings on `add_detector`'s
+length and setback.
+
+**The finding is the deliverable.** Run read-only against the real Murdoch Drive model:
+**all 20 conflict markers across its 13 priority rules fall outside MRWA's published
+gap-acceptance envelope [4.0s, 5.0s]** — real values are 0.0/1.0/2.5/3.0s, so even the
+model's maximum sits a full second under the floor — and **14 of the 20 sit below 1.5s, the
+most permissive critical-gap minimum MRWA publishes anywhere** (multi-lane roundabout, op
+p.53). This is a compliance gap in the client's own model, surfaced by the pack rather than a
+bug in it. Controller re-measured every number straight from the XML before recording it: the
+executing agent reported 13/20 below the floor, actually 14 (11 markers at 0.0 + 3 at 1.0).
+The same audit falsified a **pre-existing** claim that Queue 3 unit ② had propagated into two
+comment sites and a test — "13/20 markers carry minGapTime=0" is actually **11/20**; 13 is the
+priority-RULE count, transcribed into the wrong denominator twice, a year apart, by two
+different agents. All three sites corrected. `minClear` never reads 0 on that model at all
+(6–23 m), so the "zero is a common real value" argument is attested for gap_time only.
+
+**Citation discipline, extended from 0.7's precedent:** every entry self-cites or says
+literally "page cite pending" — never a guessed page. `TABLE_5_8_RSA_DESIGN_SPEED` ships
+**deliberately empty with `complete=False`**: no radius/speed breakpoints for it exist in any
+material on this machine, and a plausible-looking invented table is worse than a documented
+hole. Tables 5-9/5-10/5-6 are likewise `complete=False` — only the rows actually transcribed
+from the source are encoded, none padded. The detector p.78 cite is inherited from
+`tools_edit.py` **with its own caveat reproduced**, because the local Appendix A extract stops
+at ~p.49 and cannot confirm it. A test greps for page-shaped citations and fails any not on an
+allowlist of independently traceable ones.
+
+**Skipped with reasons, not silently:** conflict-area gap vs Table 5-10 (no front/rear-gap
+attribute exists anywhere in this codebase, COM or XML — verified both surfaces); reduced-speed
+area vs Table 5-8 (no consumer *and* no data); Table 5-6 and the saturation-flow bands (no verb
+exposes anything they could bound — W99 CC0–CC9 are institutionally excluded from every write
+verb already). Those four ship as data awaiting a consumer. Movement type is **not inferable**:
+`affectDrivDir`/`effectDrivDir` are Vissim's FORWARD/REVERSE lane flag, never a turn label —
+controller confirmed all 13 rules and all 20 markers on the real model read FORWARD — so the
+check compares against the whole envelope and the rendered message says so rather than implying
+a movement-specific match. Suite 2189→2224 (+35).

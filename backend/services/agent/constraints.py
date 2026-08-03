@@ -43,7 +43,13 @@ comment.
 
 This module is intentionally stdlib-only, like trace.py, and does not import
 state.py or trace.py — it only consumes the shadow-model dict shape they
-produce/agree on.
+produce/agree on. ONE exception, added in Phase 0.3 (the MRWA constraint/
+defaults pack, docs/product/master-roadmap-2026-07.md item 0.3):
+``services.agent.mrwa_reference`` is itself stdlib-only pure data (no state,
+no side effects, no COM/session dependency — see its own module docstring),
+so importing it does not reintroduce the coupling this rule exists to avoid;
+it exists so the MRWA table numbers a handful of checks below cite live in
+exactly one place, not copy-pasted into this file a second time.
 
 M3.1 CATALOG-GAP convention (docs/phase2/02-ROADMAP.md M3.1): a check that
 depends on a datum the shadow model / ``extra["run_result"]`` cannot supply
@@ -221,6 +227,8 @@ import difflib
 import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
+
+from services.agent import mrwa_reference
 
 Phase = str  # "preflight" | "postwrite" | "postrun" | "dataset"
 # "dataset" (health-check unit, 2026-07-28): a constraint that only ever
@@ -6530,7 +6538,10 @@ register(
 # The CREATION-side counterpart of priority_rule_gap_headway_invalid just
 # above -- same "0 is a legitimate, common real value; only negative/
 # non-finite is refused" semantics QUEUE 3 unit 2 already established
-# (13/20 real Murdoch conflict markers carry minGapTime="0"), extended from
+# (11/20 real Murdoch conflict markers carry minGapTime="0" -- re-measured
+# 2026-08-03 straight from the XML during the Phase 0.3 review; the "13/20"
+# this comment previously carried was the count of priority RULES, 13, not
+# of zero-valued markers), extended from
 # a single (gap_time_s, headway_m) pair to add_priority_rule's own LIST of
 # per-marker pairs -- the shape mismatch (list vs scalar) is why this is a
 # distinct check rather than a widened applies_to on the existing one
@@ -6676,6 +6687,191 @@ register(
         message_ja="指定された値は実際の交通工学パラメータとして異例に大きいです: {flags_text}。"
         "意図した値かご確認ください — 単位の誤り(例: 秒/メートルの代わりに分を入力)でないか確認する"
         "ことをお勧めします。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# priority_rule_gap_time_outside_mrwa_table_5_9_range (warn, preflight) --
+# Phase 0.3 (MRWA constraint/defaults pack, docs/product/master-roadmap-
+# 2026-07.md item 0.3). Consults services.agent.mrwa_reference.
+# TABLE_5_9_GAP_ACCEPTANCE: warns when a proposed gap_time_s falls outside
+# the [min, max] CRITICAL-GAP envelope spanning the two movement types this
+# pack's own task brief transcribed from MRWA op §5 Table 5-9 (left turn
+# 5.0s, crossing 2-lane 4.0s) -> envelope [4.0, 5.0]s.
+#
+# Movement type (left turn / crossing / through / ...) is NOT inferable from
+# today's shadow model: a priority rule's own "affect_driv_dir" and each
+# conflict marker's "effect_driv_dir" are Vissim's fixed FORWARD/REVERSE
+# lane-direction attribute (live-verified, tools_network._parse_priority_
+# rules' own docstring / backend/tools/probe_priority_rules.py -- every real
+# example carries "FORWARD"), not a turn-movement label, and no other
+# shadow-model field on a priority rule carries one either. Per this unit's
+# own task brief ("if not inferable, check against the overall published
+# envelope... and say so in the message"), this check therefore ALWAYS uses
+# the envelope, and the rendered message says so explicitly rather than
+# implying a movement-specific match against the caller's actual geometry.
+#
+# Only gap_time_s is compared. Table 5-9 also publishes a "follow-up
+# headway" (also seconds) per movement, but Vissim's own priority-rule
+# "headway_m" field is a spatial CLEARANCE in METRES despite its name (see
+# priority_rule_gap_headway_invalid's own module comment for the
+# live-verified landmine, and mrwa_reference.TABLE_5_9_GAP_ACCEPTANCE's own
+# per-entry context strings) -- comparing a metres value against a seconds
+# table would be exactly the units mistake this catalog exists to prevent,
+# so headway_m is never touched by this check.
+#
+# Deliberately WARN, never refuse: the guideline is non-prescriptive by its
+# own terms ("비규범적, 대안 방법론 수용", op p.5, per docs/product/
+# tk-requirements-2026-07-31.md's own summary) -- a value outside the
+# published envelope may still be exactly right for the real site, so this
+# only makes the deviation visible, never blocks it.
+# ---------------------------------------------------------------------------
+
+_TABLE_5_9_GAP_LOW_S, _TABLE_5_9_GAP_HIGH_S = mrwa_reference.table_5_9_critical_gap_envelope()
+
+
+def _check_priority_rule_gap_time_outside_mrwa_table_5_9_range(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_priority_rule_gap_headway":
+        return None
+
+    params = action.get("params", {})
+    gap_time_s = _coerce_number(params.get("gap_time_s"))
+    if gap_time_s is None or not math.isfinite(gap_time_s):
+        return None
+    if _TABLE_5_9_GAP_LOW_S <= gap_time_s <= _TABLE_5_9_GAP_HIGH_S:
+        return None
+
+    return Finding(
+        constraint_id="priority_rule_gap_time_outside_mrwa_table_5_9_range",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "priority_rule_gap_time_outside_mrwa_table_5_9_range",
+            gap_time_s=gap_time_s,
+            low=_TABLE_5_9_GAP_LOW_S,
+            high=_TABLE_5_9_GAP_HIGH_S,
+        ),
+        suggested_fix={"published_range_s": [_TABLE_5_9_GAP_LOW_S, _TABLE_5_9_GAP_HIGH_S]},
+        details={"gap_time_s": gap_time_s, "range_s": [_TABLE_5_9_GAP_LOW_S, _TABLE_5_9_GAP_HIGH_S]},
+    )
+
+
+register(
+    Constraint(
+        id="priority_rule_gap_time_outside_mrwa_table_5_9_range",
+        applies_to=["set_priority_rule_gap_headway"],
+        phase="preflight",
+        tier="warn",
+        check=_check_priority_rule_gap_time_outside_mrwa_table_5_9_range,
+        message_ko="gap_time_s={gap_time_s}s는 MRWA op §5 Table 5-9의 임계 간격(critical gap) 범위"
+        "({low}s–{high}s)를 벗어납니다. 이 모델은 이동류(좌회전/횡단 등)를 자동으로 판별할 수 없어 "
+        "Table 5-9가 다루는 두 이동류(좌회전 5.0s, 2차로 횡단 4.0s)를 아우르는 범위와 비교했습니다 "
+        "— 실제 이동류에 맞는 값인지 현장 평가로 확인해 주세요.",
+        message_en="gap_time_s={gap_time_s}s falls outside MRWA op §5 Table 5-9's critical-gap "
+        "range ({low}s-{high}s). This model cannot infer the movement type (left turn / "
+        "crossing / ...) automatically, so the value was checked against the envelope "
+        "spanning the two movement types Table 5-9 covers here (left turn 5.0s, crossing "
+        "2-lane 4.0s) — confirm this matches an on-site assessment for the actual movement.",
+        message_ja="gap_time_s={gap_time_s}秒はMRWA op §5 Table 5-9の臨界間隔(critical gap)範囲"
+        "({low}秒–{high}秒)を外れています。このモデルでは移動流(左折/横断など)を自動判別できないため、"
+        "Table 5-9が扱う2つの移動流(左折5.0秒、2車線横断4.0秒)を包含する範囲と比較しました — 実際の"
+        "移動流に適した値か現地評価でご確認ください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# priority_rule_gap_time_below_mrwa_roundabout_minimum (warn, preflight) --
+# Phase 0.3. Consults mrwa_reference.ROUNDABOUT_CRITICAL_GAP_MINIMUM: the
+# most permissive published MRWA critical-gap minimum this pack carries
+# anywhere is 1.5s (multi-lane roundabout circulating, cited "op p.53" --
+# docs/meeting-brief-tk-mrwa.md §2 proposal ①) -- a proposed gap_time_s
+# below that floor is worth surfacing regardless of whether this particular
+# priority rule actually sits at a roundabout, since no MRWA table this pack
+# encodes publishes anything lower.
+#
+# Node/geometry typing (single- vs multi-lane roundabout, or "is this a
+# roundabout at all") is not in today's shadow model -- tools_network.py's
+# node parsing carries no such field (verified: grep for "roundabout" across
+# services/agent turns up only this constraint's own reasoning and pre-
+# existing example-network filenames, never a parsed attribute) -- so this
+# deliberately does NOT try to pick between the 2.1s (single-lane) and 1.5s
+# (multi-lane) minimums; it uses the more permissive 1.5s floor (fewest false
+# positives) and names BOTH numbers in the rendered message so a human
+# reviewer can apply whichever actually matches the real geometry. This is
+# this unit's documented answer to the task brief's "roundabout minimums
+# where the geometry is identifiable" -- geometry is NOT identifiable here,
+# so the check runs unconditionally against the permissive floor instead of
+# being skipped outright, and says so in its own message.
+#
+# Distinct from priority_rule_gap_time_outside_mrwa_table_5_9_range just
+# above (a different citation, a different claim -- "below every published
+# MRWA minimum this pack has" vs "outside the turning/crossing envelope") --
+# co-firing on the same low value is expected and additive, not redundant,
+# mirroring priority_rule_gap_headway_invalid + _implausible's own
+# established co-existence on this same tool.
+# ---------------------------------------------------------------------------
+
+_ROUNDABOUT_GAP_FLOOR_S = min(e.value for e in mrwa_reference.ROUNDABOUT_CRITICAL_GAP_MINIMUM.entries)
+_ROUNDABOUT_GAP_SINGLE_LANE_S = max(e.value for e in mrwa_reference.ROUNDABOUT_CRITICAL_GAP_MINIMUM.entries)
+
+
+def _check_priority_rule_gap_time_below_mrwa_roundabout_minimum(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "set_priority_rule_gap_headway":
+        return None
+
+    params = action.get("params", {})
+    gap_time_s = _coerce_number(params.get("gap_time_s"))
+    if gap_time_s is None or not math.isfinite(gap_time_s):
+        return None
+    if gap_time_s >= _ROUNDABOUT_GAP_FLOOR_S:
+        return None
+
+    return Finding(
+        constraint_id="priority_rule_gap_time_below_mrwa_roundabout_minimum",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "priority_rule_gap_time_below_mrwa_roundabout_minimum",
+            gap_time_s=gap_time_s,
+            floor=_ROUNDABOUT_GAP_FLOOR_S,
+            single_lane=_ROUNDABOUT_GAP_SINGLE_LANE_S,
+        ),
+        suggested_fix={
+            "roundabout_minimums_s": {
+                "single_lane": _ROUNDABOUT_GAP_SINGLE_LANE_S,
+                "multi_lane": _ROUNDABOUT_GAP_FLOOR_S,
+            }
+        },
+        details={"gap_time_s": gap_time_s, "floor_s": _ROUNDABOUT_GAP_FLOOR_S},
+    )
+
+
+register(
+    Constraint(
+        id="priority_rule_gap_time_below_mrwa_roundabout_minimum",
+        applies_to=["set_priority_rule_gap_headway"],
+        phase="preflight",
+        tier="warn",
+        check=_check_priority_rule_gap_time_below_mrwa_roundabout_minimum,
+        message_ko="gap_time_s={gap_time_s}s는 MRWA가 공표한 회전교차로 임계 간격(critical gap) "
+        "최솟값보다 낮습니다(다차로 순환 {floor}s, 단일차로 순환 {single_lane}s — op p.53). 이 "
+        "우선순위 규칙이 회전교차로인지 이 모델에서 자동 판별할 수 없어 더 관대한 {floor}s를 "
+        "기준으로 확인했습니다 — 실제 기하구조에 맞는 값인지 확인해 주세요.",
+        message_en="gap_time_s={gap_time_s}s is below MRWA's published roundabout critical-gap "
+        "minimum (multi-lane circulating {floor}s, single-lane circulating {single_lane}s — "
+        "op p.53). This model cannot automatically tell whether this priority rule is a "
+        "roundabout, so it was checked against the more permissive {floor}s floor — confirm "
+        "this matches the real geometry.",
+        message_ja="gap_time_s={gap_time_s}秒はMRWAが公表するラウンドアバウトの臨界間隔(critical "
+        "gap)最小値を下回っています(多車線環道{floor}秒、単一車線環道{single_lane}秒 — op p.53)。"
+        "この優先ルールがラウンドアバウトかどうかこのモデルでは自動判別できないため、より緩やかな"
+        "{floor}秒を基準に確認しました — 実際の形状に適した値かご確認ください。",
     )
 )
 
@@ -8842,5 +9038,191 @@ register(
             "Candidates: {candidates}."
         ),
         message_ja="PT路線/停留所/時間分布の対象を確認できません: {reason_ja}。候補: {candidates}。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# add_detector_length_deviates_from_mrwa_default (warn, preflight) --
+# Phase 0.3 (MRWA constraint/defaults pack). add_detector's own
+# ``length_m: float = _MRWA_DETECTOR_LENGTH_M`` (services/agent/
+# tools_edit.py) already makes 4.5 m the silent default when a caller omits
+# the field -- this check makes an EXPLICIT deviation from that default
+# visible with its citation, per this unit's own task brief ("warn when
+# placement deviates materially from 2.0 m/4.5 m -- the verb already cites
+# these as defaults -- this makes deviation visible").
+#
+# Reads ``params.get("length_m")`` directly (never a pydantic-resolved
+# default): ``action["params"]`` here is the orchestrator's pre-dispatch
+# decision.params (services/agent/orchestrator.py, ``action = {"tool":
+# decision.tool, "params": decision.params}``), built and preflight-checked
+# BEFORE AddDetectorParams' own pydantic defaulting ever runs -- so a caller
+# who genuinely omitted length_m reads back as absent here (``None``), not
+# as the resolved 4.5, exactly mirroring priority_rule_gap_headway_invalid's
+# own established "raw is None -> no claim" reading of this same action
+# shape. Only an EXPLICIT, different length_m ever fires this.
+#
+# No tolerance band beyond ordinary float noise: 4.5 m is a precise Appendix
+# A default (mrwa_reference.DETECTOR_LENGTH_M), not a fuzzy plausibility
+# range like priority_rule_gap_headway_implausible's -- real detector
+# lengths legitimately range 1-6 m in the wild (see _MRWA_DETECTOR_LENGTH_M's
+# own comment, backend/tools/probe_signal_heads_detectors.py's static scan),
+# so this check does not claim those values are WRONG, only that they
+# deviate from the cited MRWA default and should be documented -- warn tier,
+# never refuse.
+# ---------------------------------------------------------------------------
+
+_DETECTOR_LENGTH_DEFAULT_M = mrwa_reference.DETECTOR_LENGTH_M.value
+_DETECTOR_FLOAT_TOLERANCE_M = 1e-6
+
+
+def _check_add_detector_length_deviates_from_mrwa_default(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "add_detector":
+        return None
+
+    params = action.get("params", {})
+    length_m = _coerce_number(params.get("length_m"))
+    if length_m is None or not math.isfinite(length_m):
+        return None
+    if abs(length_m - _DETECTOR_LENGTH_DEFAULT_M) <= _DETECTOR_FLOAT_TOLERANCE_M:
+        return None
+
+    return Finding(
+        constraint_id="add_detector_length_deviates_from_mrwa_default",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "add_detector_length_deviates_from_mrwa_default",
+            length_m=length_m,
+            default_m=_DETECTOR_LENGTH_DEFAULT_M,
+        ),
+        suggested_fix={"mrwa_default_length_m": _DETECTOR_LENGTH_DEFAULT_M},
+        details={"length_m": length_m, "default_m": _DETECTOR_LENGTH_DEFAULT_M},
+    )
+
+
+register(
+    Constraint(
+        id="add_detector_length_deviates_from_mrwa_default",
+        applies_to=["add_detector"],
+        phase="preflight",
+        tier="warn",
+        check=_check_add_detector_length_deviates_from_mrwa_default,
+        message_ko="검지기 길이 {length_m}m는 MRWA Appendix A 기본값 {default_m}m와 다릅니다(신호교차로 "
+        "접근로 검지기 기준). 값 자체가 틀린 것은 아니지만(실제 검지기 길이는 1-6m 범위에서 흔히 다양함), "
+        "MRWA 기준과의 편차이므로 근거를 기록해 주세요.",
+        message_en="Detector length {length_m}m differs from the MRWA Appendix A default "
+        "{default_m}m (for a signalized-intersection approach detector). The value is not "
+        "necessarily wrong — real detector lengths commonly range 1-6m — but it is a deviation "
+        "from the cited MRWA default, so please document the reason.",
+        message_ja="検知器の長さ{length_m}mはMRWA附録A規定値{default_m}mと異なります(信号交差点"
+        "アプローチの検知器基準)。値自体が誤りとは限りません(実際の検知器長は1-6mの範囲で様々です)が、"
+        "MRWA規定値からの逸脱のため、理由を記録してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# add_detector_setback_deviates_from_mrwa_default (warn, preflight) --
+# Phase 0.3. Companion to add_detector_length_deviates_from_mrwa_default
+# just above, same task-brief line item, same MRWA Appendix A source
+# (mrwa_reference.DETECTOR_SETBACK_M), but a DIFFERENT param (pos_m vs
+# length_m) and a different derivation shape, hence a separate constraint id
+# rather than one combined check (mirrors this catalog's general preference
+# for per-field ids when the fields have genuinely different preconditions
+# -- e.g. the several des_speed_distribution_points_* checks -- over forcing
+# unrelated preconditions into one Finding).
+#
+# add_detector's own default-pos logic (services/agent/tools_edit.py,
+# add_detector) ONLY computes a setback when pos_m is omitted entirely, by
+# finding the stop-line-proxy signal head on the SAME (link_no, lane_index)
+# and subtracting the MRWA 2.0 m default -- meaning an omitted pos_m can
+# NEVER deviate (it IS the default, by construction) and is silently
+# skipped here. This check only has something to say when the caller gives
+# pos_m EXPLICITLY: it looks for that same stop-line-proxy signal head (the
+# head furthest along the lane, i.e. largest pos -- mirroring add_detector's
+# own "largest pos wins" tie-break exactly) on shadow_model["signal_heads"],
+# computes the ACTUAL setback (head.pos - pos_m), and warns if that deviates
+# from 2.0 m.
+#
+# When no signal head exists on that (link_no, lane_index) at all, there is
+# no MRWA-default baseline to compare against (this is precisely
+# add_detector's own "no stop-line proxy -- pos_m must be given explicitly"
+# case, a normal, common situation for a mid-link detector with nothing to
+# do with a stop line) -- this check stays silent rather than inventing a
+# comparison, per this unit's own "if not cheaply derivable, skip and record
+# why" doctrine (task brief item 3's same doctrine, applied here to item 4).
+# ---------------------------------------------------------------------------
+
+_DETECTOR_SETBACK_DEFAULT_M = mrwa_reference.DETECTOR_SETBACK_M.value
+
+
+def _check_add_detector_setback_deviates_from_mrwa_default(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    if action.get("tool") != "add_detector":
+        return None
+
+    params = action.get("params", {})
+    pos_m = _coerce_number(params.get("pos_m"))
+    if pos_m is None or not math.isfinite(pos_m):
+        return None  # omitted pos_m IS the MRWA default, by construction -- nothing to compare
+
+    link_no = str(params.get("link_no", ""))
+    lane_index = params.get("lane_index")
+    candidate_heads = [
+        head
+        for head in shadow_model.get("signal_heads", [])
+        if str(head.get("link", "")) == link_no and head.get("lane_index") == lane_index
+    ]
+    if not candidate_heads:
+        return None  # no stop-line proxy available -- no baseline, skip (documented above)
+
+    stop_line_head = max(candidate_heads, key=lambda head: head.get("pos") or 0.0)
+    head_pos = _coerce_number(stop_line_head.get("pos"))
+    if head_pos is None:
+        return None
+
+    actual_setback = head_pos - pos_m
+    if abs(actual_setback - _DETECTOR_SETBACK_DEFAULT_M) <= _DETECTOR_FLOAT_TOLERANCE_M:
+        return None
+
+    return Finding(
+        constraint_id="add_detector_setback_deviates_from_mrwa_default",
+        tier="warn",
+        phase="preflight",
+        messages=_render(
+            "add_detector_setback_deviates_from_mrwa_default",
+            actual_setback=round(actual_setback, 3),
+            default_m=_DETECTOR_SETBACK_DEFAULT_M,
+            head_no=stop_line_head.get("no", "?"),
+        ),
+        suggested_fix={"mrwa_default_setback_m": _DETECTOR_SETBACK_DEFAULT_M},
+        details={
+            "actual_setback_m": actual_setback,
+            "default_m": _DETECTOR_SETBACK_DEFAULT_M,
+            "stop_line_head_no": stop_line_head.get("no", "?"),
+        },
+    )
+
+
+register(
+    Constraint(
+        id="add_detector_setback_deviates_from_mrwa_default",
+        applies_to=["add_detector"],
+        phase="preflight",
+        tier="warn",
+        check=_check_add_detector_setback_deviates_from_mrwa_default,
+        message_ko="검지기가 신호 헤드 '{head_no}'로부터 {actual_setback}m 후방에 배치되어, MRWA "
+        "Appendix A 기본값 {default_m}m와 다릅니다. 값 자체가 틀린 것은 아니지만 MRWA 기준과의 "
+        "편차이므로 근거를 기록해 주세요.",
+        message_en="This detector sits {actual_setback}m back from signal head '{head_no}', "
+        "differing from the MRWA Appendix A default {default_m}m. The value is not necessarily "
+        "wrong, but it is a deviation from the cited MRWA default, so please document the reason.",
+        message_ja="この検知器は信号ヘッド '{head_no}' から{actual_setback}m後方に配置されており、"
+        "MRWA附録A規定値{default_m}mと異なります。値自体が誤りとは限りませんが、MRWA規定値からの"
+        "逸脱のため、理由を記録してください。",
     )
 )

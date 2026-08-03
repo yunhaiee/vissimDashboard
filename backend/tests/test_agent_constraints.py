@@ -4436,9 +4436,12 @@ def test_priority_rule_gap_headway_invalid_fires_once_for_both_fields_bad():
 
 @pytest.mark.parametrize("zero_field,other_field", [("gap_time_s", "headway_m"), ("headway_m", "gap_time_s")])
 def test_priority_rule_gap_headway_invalid_silent_for_zero_the_most_common_real_value(zero_field, other_field):
-    # Real data check: 0 is the single most common legitimate value on both
-    # attributes (13/20 conflict markers on the real Murdoch Drive model
-    # carry minGapTime="0") -- refusing it would make this tool unable to
+    # Real data check: 0 is the single most common legitimate gap_time value
+    # (11/20 conflict markers on the real Murdoch Drive model carry
+    # minGapTime="0"; re-measured 2026-08-03 -- the "13/20" this comment
+    # previously carried was the priority-RULE count. minClear on that same
+    # model never reads 0 at all, ranging 6-23 m, so the zero case is
+    # attested for gap_time only) -- refusing it would make this tool unable to
     # even reproduce a network's own existing data. See the constraint's own
     # module comment for the full live-probe evidence.
     shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
@@ -4515,6 +4518,133 @@ def test_priority_rule_gap_headway_implausible_does_not_apply_to_other_tools():
     findings = run_checks("preflight", action, shadow, {})
 
     assert not any(f.constraint_id == "priority_rule_gap_headway_implausible" for f in findings)
+
+
+# --- priority_rule_gap_time_outside_mrwa_table_5_9_range -------------------
+
+
+def test_priority_rule_gap_time_outside_mrwa_table_5_9_range_fires_above_high():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=6.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "priority_rule_gap_time_outside_mrwa_table_5_9_range"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["range_s"] == [4.0, 5.0]
+    _assert_well_formed_messages(matches[0], must_contain_ko="Table 5-9")
+
+
+def test_priority_rule_gap_time_outside_mrwa_table_5_9_range_fires_below_low():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=2.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "priority_rule_gap_time_outside_mrwa_table_5_9_range"]
+    assert len(matches) == 1
+
+
+def test_priority_rule_gap_time_outside_mrwa_table_5_9_range_silent_inside_envelope():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    for value in (4.0, 4.5, 5.0):
+        action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=value)
+        findings = run_checks("preflight", action, shadow, {})
+        assert not any(
+            f.constraint_id == "priority_rule_gap_time_outside_mrwa_table_5_9_range" for f in findings
+        )
+
+
+def test_priority_rule_gap_time_outside_mrwa_table_5_9_range_silent_when_gap_time_s_omitted():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, headway_m=10.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "priority_rule_gap_time_outside_mrwa_table_5_9_range" for f in findings
+    )
+
+
+def test_priority_rule_gap_time_outside_mrwa_table_5_9_range_does_not_apply_to_other_tools():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "priority_rule_gap_time_outside_mrwa_table_5_9_range" for f in findings
+    )
+
+
+# --- priority_rule_gap_time_below_mrwa_roundabout_minimum -------------------
+
+
+def test_priority_rule_gap_time_below_mrwa_roundabout_minimum_fires_below_floor():
+    # Real-model note: 11/20 conflict markers on the real Murdoch Drive
+    # model carry minGapTime="0", and 14/20 sit below this check's 1.5s
+    # floor (11 at 0.0 + 3 at 1.0) -- both re-measured 2026-08-03 straight
+    # from the XML (see priority_rule_gap_headway_invalid's
+    # own module comment) -- 0.0 is exactly the kind of value this check
+    # exists to surface (MRWA-compliance advisory, not a Vissim-mechanical
+    # problem -- 0 stays perfectly legal at the refuse tier).
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=0.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "priority_rule_gap_time_below_mrwa_roundabout_minimum"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["floor_s"] == 1.5
+    _assert_well_formed_messages(matches[0], must_contain_ko="회전교차로")
+
+
+def test_priority_rule_gap_time_below_mrwa_roundabout_minimum_silent_at_or_above_floor():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    for value in (1.5, 2.1, 4.0):
+        action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=value)
+        findings = run_checks("preflight", action, shadow, {})
+        assert not any(
+            f.constraint_id == "priority_rule_gap_time_below_mrwa_roundabout_minimum" for f in findings
+        )
+
+
+def test_priority_rule_gap_time_below_mrwa_roundabout_minimum_silent_when_gap_time_s_omitted():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, headway_m=10.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "priority_rule_gap_time_below_mrwa_roundabout_minimum" for f in findings
+    )
+
+
+def test_priority_rule_gap_time_below_mrwa_roundabout_minimum_co_fires_with_table_5_9_check():
+    # 0.0 is below BOTH the roundabout floor (1.5s) and the Table 5-9
+    # envelope's low end (4.0s) -- both checks fire, additively, per their
+    # own module comments (different citations, different claims).
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_priority_rule_gap_headway", priority_rule_no="4", marker_index=1, gap_time_s=0.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    fired_ids = {f.constraint_id for f in findings}
+    assert "priority_rule_gap_time_below_mrwa_roundabout_minimum" in fired_ids
+    assert "priority_rule_gap_time_outside_mrwa_table_5_9_range" in fired_ids
+
+
+def test_priority_rule_gap_time_below_mrwa_roundabout_minimum_does_not_apply_to_other_tools():
+    shadow = _shadow_model(priority_rules=_PRIORITY_RULE_FIXTURE)
+    action = _action("set_vehicle_input_volume", input_no="1", volume=500.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "priority_rule_gap_time_below_mrwa_roundabout_minimum" for f in findings
+    )
 
 
 def test_priority_rule_object_not_found_fires_for_bogus_rule_no():
@@ -5129,9 +5259,31 @@ def test_registry_size_matches_m3_1_catalog_port():
     # integrity refusal is inline in tools_edit.py (services.inpx_structure.
     # find_id_references), not a new constraint either, mirroring remove_
     # data_collection_point's own precedent)
-    # == 96.
+    # == 96, + 4 (Phase 0.3, MRWA constraint/defaults pack,
+    # docs/product/master-roadmap-2026-07.md item 0.3): priority_rule_gap_
+    # time_outside_mrwa_table_5_9_range / priority_rule_gap_time_below_mrwa_
+    # roundabout_minimum -- both consult the new services.agent.
+    # mrwa_reference data module against set_priority_rule_gap_headway's
+    # gap_time_s (movement type not inferable from the shadow model, so the
+    # first uses Table 5-9's overall two-movement-type envelope [4.0, 5.0]s
+    # and the second uses the more permissive of the two roundabout
+    # minimums, 1.5s, per that check's own comment); add_detector_length_
+    # deviates_from_mrwa_default / add_detector_setback_deviates_from_mrwa_
+    # default -- both make add_detector's own MRWA Appendix A defaults
+    # (length 4.5m, setback 2.0m, already cited by _MRWA_DETECTOR_LENGTH_M/
+    # _MRWA_DETECTOR_SETBACK_M) visible when a caller explicitly overrides
+    # them; set_conflict_area_status vs Table 5-10 front/rear gap and
+    # reduced-speed-area vs Table 5-8 design-speed-by-radius were BOTH
+    # evaluated and deliberately SKIPPED -- conflict areas expose no
+    # front/rear-gap attribute anywhere in this codebase (COM wrapper or
+    # shadow model), and Table 5-8's own radius/speed breakpoints were not
+    # supplied by any source available to this unit (mrwa_reference.
+    # TABLE_5_8_RSA_DESIGN_SPEED ships empty rather than inventing them) --
+    # see mrwa_reference.py's own module docstring and this unit's drafted
+    # DECISIONS.md entry for the full reasoning on both scope cuts.
+    # == 100.
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 96
+    assert len(get_registry()) == 100
 
 
 def test_registry_has_unique_ids():
@@ -6843,6 +6995,164 @@ def test_signal_head_detector_pos_out_of_range_does_not_apply_to_unrelated_tool(
 
     assert not any(
         f.constraint_id == "signal_head_detector_pos_out_of_range" for f in findings
+    )
+
+
+# --- add_detector_length_deviates_from_mrwa_default -------------------------
+
+
+def test_add_detector_length_deviates_from_mrwa_default_fires_for_explicit_override():
+    shadow = _shadow_model()  # link "101", length 280.0
+    action = _action("add_detector", link_no="101", lane_index=1, pos_m=10.0, length_m=6.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "add_detector_length_deviates_from_mrwa_default"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details == {"length_m": 6.0, "default_m": 4.5}
+    _assert_well_formed_messages(matches[0], must_contain_ko="Appendix A")
+
+
+def test_add_detector_length_deviates_from_mrwa_default_silent_at_the_default():
+    shadow = _shadow_model()
+    action = _action("add_detector", link_no="101", lane_index=1, pos_m=10.0, length_m=4.5)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "add_detector_length_deviates_from_mrwa_default" for f in findings
+    )
+
+
+def test_add_detector_length_deviates_from_mrwa_default_silent_when_length_m_omitted():
+    # Omitted length_m means AddDetectorParams' own pydantic default (4.5)
+    # applies later, at dispatch -- constraints.py's preflight action never
+    # sees a resolved value, so this must stay silent, not warn.
+    shadow = _shadow_model()
+    action = _action("add_detector", link_no="101", lane_index=1, pos_m=10.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "add_detector_length_deviates_from_mrwa_default" for f in findings
+    )
+
+
+def test_add_detector_length_deviates_from_mrwa_default_does_not_apply_to_other_tools():
+    shadow = _shadow_model()
+    action = _action("add_signal_head", link_no="101", lane_index=1, pos_m=10.0, sc_no="1", sg_no="1")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "add_detector_length_deviates_from_mrwa_default" for f in findings
+    )
+
+
+# --- add_detector_setback_deviates_from_mrwa_default -------------------------
+
+_STOP_LINE_HEAD_FIXTURE = [
+    {"no": "9", "name": "", "link": "101", "lane_index": 1, "pos": 270.0, "sc": "1", "sg": "1"}
+]
+
+
+def test_add_detector_setback_deviates_from_mrwa_default_fires_for_explicit_deviation():
+    # head at 270.0, pos_m explicitly 250.0 -> actual setback 20.0m, far from
+    # the 2.0m MRWA default.
+    shadow = _shadow_model(signal_heads=_STOP_LINE_HEAD_FIXTURE)
+    action = _action("add_detector", link_no="101", lane_index=1, pos_m=250.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    matches = [f for f in findings if f.constraint_id == "add_detector_setback_deviates_from_mrwa_default"]
+    assert len(matches) == 1
+    assert matches[0].tier == "warn"
+    assert matches[0].details["actual_setback_m"] == 20.0
+    assert matches[0].details["default_m"] == 2.0
+    assert matches[0].details["stop_line_head_no"] == "9"
+    _assert_well_formed_messages(matches[0], must_contain_ko="Appendix A")
+
+
+def test_add_detector_setback_deviates_from_mrwa_default_silent_at_the_default():
+    # head at 270.0, pos_m 268.0 -> actual setback exactly 2.0m.
+    shadow = _shadow_model(signal_heads=_STOP_LINE_HEAD_FIXTURE)
+    action = _action("add_detector", link_no="101", lane_index=1, pos_m=268.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "add_detector_setback_deviates_from_mrwa_default" for f in findings
+    )
+
+
+def test_add_detector_setback_deviates_from_mrwa_default_silent_when_pos_m_omitted():
+    # Omitted pos_m means add_detector's own default-pos logic computes
+    # EXACTLY the 2.0m setback from the stop-line-proxy head -- it can never
+    # deviate by construction, so this stays silent without even needing to
+    # look at signal_heads.
+    shadow = _shadow_model(signal_heads=_STOP_LINE_HEAD_FIXTURE)
+    action = _action("add_detector", link_no="101", lane_index=1)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "add_detector_setback_deviates_from_mrwa_default" for f in findings
+    )
+
+
+def test_add_detector_setback_deviates_from_mrwa_default_silent_when_no_signal_head_on_lane():
+    # No signal head at all on (link, lane) -- no MRWA-default baseline to
+    # compare an explicit pos_m against (a normal mid-link detector case).
+    shadow = _shadow_model()
+    action = _action("add_detector", link_no="101", lane_index=1, pos_m=100.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "add_detector_setback_deviates_from_mrwa_default" for f in findings
+    )
+
+
+def test_add_detector_setback_deviates_from_mrwa_default_silent_when_head_on_different_lane():
+    shadow = _shadow_model(
+        signal_heads=[
+            {"no": "9", "name": "", "link": "101", "lane_index": 2, "pos": 270.0, "sc": "1", "sg": "1"}
+        ]
+    )
+    action = _action("add_detector", link_no="101", lane_index=1, pos_m=250.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "add_detector_setback_deviates_from_mrwa_default" for f in findings
+    )
+
+
+def test_add_detector_setback_deviates_from_mrwa_default_uses_furthest_head_when_several_share_the_lane():
+    shadow = _shadow_model(
+        signal_heads=[
+            {"no": "1", "name": "", "link": "101", "lane_index": 1, "pos": 50.0, "sc": "1", "sg": "1"},
+            {"no": "9", "name": "", "link": "101", "lane_index": 1, "pos": 270.0, "sc": "1", "sg": "1"},
+        ]
+    )
+    action = _action("add_detector", link_no="101", lane_index=1, pos_m=268.0)
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "add_detector_setback_deviates_from_mrwa_default" for f in findings
+    )
+
+
+def test_add_detector_setback_deviates_from_mrwa_default_does_not_apply_to_other_tools():
+    shadow = _shadow_model(signal_heads=_STOP_LINE_HEAD_FIXTURE)
+    action = _action("add_signal_head", link_no="101", lane_index=1, pos_m=10.0, sc_no="1", sg_no="1")
+
+    findings = run_checks("preflight", action, shadow, {})
+
+    assert not any(
+        f.constraint_id == "add_detector_setback_deviates_from_mrwa_default" for f in findings
     )
 
 

@@ -145,7 +145,16 @@ def test_health_check_runner_against_demo_dataset():
     # line_no/stop_no/time_distribution_no params, which a whole-network
     # dataset scan has no equivalent of, so it does not opt into the dataset
     # scan either, same shape as every addition above.
-    assert report["summary"]["edit_time_only_n"] == 82
+    # 86, not 82: Phase 0.3 (MRWA constraint/defaults pack) added four
+    # preflight-only constraints -- priority_rule_gap_time_outside_mrwa_
+    # table_5_9_range / priority_rule_gap_time_below_mrwa_roundabout_minimum
+    # (both need a proposed set_priority_rule_gap_headway action's own
+    # gap_time_s param) and add_detector_length_deviates_from_mrwa_default /
+    # add_detector_setback_deviates_from_mrwa_default (both need a proposed
+    # add_detector action's own length_m/pos_m params) -- none has a
+    # whole-network dataset-scan equivalent, so all four land in
+    # edit_time_only, same shape as every addition above.
+    assert report["summary"]["edit_time_only_n"] == 86
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.
