@@ -318,6 +318,26 @@ def test_remove_link_refuses_when_referenced_by_a_connector(tmp_path: Path):
     assert session.persist_calls == 0
 
 
+@pytest.mark.parametrize("spelling", ["101", "0101", " 101", "+101", "101 "])
+def test_remove_link_sees_every_spelling_of_an_existing_link(tmp_path: Path, spelling: str):
+    """The Q6 (2) canonicalisation fix, pinned for remove_link: before it,
+    a non-canonical spelling missed the raw string pre-lookup and raised
+    not-found -- loud-wrong rather than silent-wrong, but still wrong. Every
+    spelling of a real, referenced link must reach the SAME referrer
+    refusal the canonical spelling gets."""
+    working = _write_working_inpx(tmp_path)
+    session = FakeLinkConnectorSession(working)
+    set_active_edit_session(session)
+
+    envelope = _dispatch("remove_link", no=spelling)
+
+    assert envelope["status"] == "error"
+    assert "still referenced by" in envelope["message"]
+    assert "not found" not in envelope["message"]
+    assert session.calls == []
+    assert session.persist_calls == 0
+
+
 def test_remove_link_refuses_when_a_lane_is_referenced_by_a_reduced_speed_area(tmp_path: Path):
     working = _write_working_inpx(
         tmp_path,

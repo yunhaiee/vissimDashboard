@@ -1388,18 +1388,25 @@ def remove_pt_stop(params: RemovePtStopParams) -> dict[str, Any]:
     # point's own dangling-reference precedent). Check reference integrity
     # ourselves, against the CURRENT working copy XML, via the spine's
     # registry, BEFORE ever calling COM.
+    # The guard and the action must agree on the id's SPELLING: the XML guard
+    # compares strings while _coerce_id normalised for COM, so a raw
+    # ``params.no`` of "0014"/" 14" would miss the referrer lookup and reach
+    # the silent cascade-delete unguarded (remove_parking_lot's own
+    # verifier-measured bypass, Q6 (2); direct dispatch has no preflight
+    # shield).
+    canonical_no = str(no)
     root = ET.parse(session.working_inpx).getroot()
-    referrers = find_id_references(root, "pt_stops", params.no)
+    referrers = find_id_references(root, "pt_stops", canonical_no)
     if referrers:
-        raise ReferenceIntegrityError(f"Cannot remove PT stop {params.no}", referrers)
+        raise ReferenceIntegrityError(f"Cannot remove PT stop {canonical_no}", referrers)
 
     session.remove_pt_stop(no)
     session.persist()
 
-    still_present = _still_present_after_remove(session.working_inpx, "pt_stops", params.no)
-    verification = _remove_verification(params.no, still_present)
+    still_present = _still_present_after_remove(session.working_inpx, "pt_stops", canonical_no)
+    verification = _remove_verification(canonical_no, still_present)
     return {
-        "message": f"PT stop {params.no} removed.",
+        "message": f"PT stop {canonical_no} removed.",
         "verification": verification,
     }
 
@@ -2433,18 +2440,22 @@ def remove_data_collection_point(params: RemoveDataCollectionPointParams) -> dic
     # module comment) -- check reference integrity ourselves, against the
     # CURRENT working copy XML, via the spine's registry, BEFORE ever
     # calling COM.
+    # Guard and action must agree on the id's SPELLING (the Q6 (2)
+    # remove_parking_lot bypass: a raw "0014" misses the string-compared
+    # guard while the coerced action still hits object 14).
+    canonical_no = str(no)
     root = ET.parse(session.working_inpx).getroot()
-    referrers = find_id_references(root, "data_collection_points", params.no)
+    referrers = find_id_references(root, "data_collection_points", canonical_no)
     if referrers:
-        raise ReferenceIntegrityError(f"Cannot remove data collection point {params.no}", referrers)
+        raise ReferenceIntegrityError(f"Cannot remove data collection point {canonical_no}", referrers)
 
     session.remove_data_collection_point(no)
     session.persist()
 
-    still_present = _still_present_after_remove(session.working_inpx, "data_collection_points", params.no)
-    verification = _remove_verification(params.no, still_present)
+    still_present = _still_present_after_remove(session.working_inpx, "data_collection_points", canonical_no)
+    verification = _remove_verification(canonical_no, still_present)
     return {
-        "message": f"Data collection point {params.no} removed.",
+        "message": f"Data collection point {canonical_no} removed.",
         "verification": verification,
     }
 
@@ -3281,33 +3292,38 @@ def remove_link(params: RemoveLinkParams) -> dict[str, Any]:
     """Remove a plain link (COM RemoveLink) on the active edit session's working network -- REFUSES, naming every referrer, when a route/priority-rule/conflict-area/connector still references the link itself OR any of its own lanes (COM's own RemoveLink does NOT enforce this -- live-verified: it silently removed a link whose lane still carried a data-collection point). Refuses a CONNECTOR target outright, pointing at remove_connector instead (that verb's own reference-integrity story is more complete). Will refuse on almost any real, in-use link -- that is correct behavior, not a bug."""
     session = _require_session()
     no = _coerce_id(params.no, "no")
+    # Every XML consult below compares strings, so it must see the SAME
+    # spelling the coerced action uses (the Q6 (2) remove_parking_lot
+    # bypass). Here the raw form merely failed loud -- the pre-lookup missed
+    # "0014" and raised not-found -- but loud-wrong is still wrong.
+    canonical_no = str(no)
 
     root = ET.parse(session.working_inpx).getroot()
-    link_el = next((el for el in root.findall(".//links/link") if el.get("no") == params.no), None)
+    link_el = next((el for el in root.findall(".//links/link") if el.get("no") == canonical_no), None)
     if link_el is None:
-        raise ValueError(f"remove_link: link {params.no} not found")
+        raise ValueError(f"remove_link: link {canonical_no} not found")
     if link_el.find("fromLinkEndPt") is not None or link_el.find("toLinkEndPt") is not None:
         raise ValueError(
-            f"remove_link: {params.no} is a CONNECTOR, not a plain link -- use remove_connector "
+            f"remove_link: {canonical_no} is a CONNECTOR, not a plain link -- use remove_connector "
             "instead (Q4 unit (3); it has its own, more complete reference-integrity story, "
             "including the silent conflict-area cascade that tool's own module comment documents)."
         )
     lanes_el = link_el.find("lanes")
     lane_count = len(lanes_el.findall("lane")) if lanes_el is not None else 0
 
-    referrers = find_id_references(root, "links", params.no)
+    referrers = find_id_references(root, "links", canonical_no)
     for lane_index in range(1, lane_count + 1):
-        referrers.extend(find_lane_token_references(root, params.no, lane_index))
+        referrers.extend(find_lane_token_references(root, canonical_no, lane_index))
     if referrers:
-        raise ReferenceIntegrityError(f"Cannot remove link {params.no}", referrers)
+        raise ReferenceIntegrityError(f"Cannot remove link {canonical_no}", referrers)
 
     session.remove_link(no)
     session.persist()
 
-    still_present = _still_present_after_remove(session.working_inpx, "links", params.no)
-    verification = _remove_verification(params.no, still_present)
+    still_present = _still_present_after_remove(session.working_inpx, "links", canonical_no)
+    verification = _remove_verification(canonical_no, still_present)
     return {
-        "message": f"Link {params.no} removed ({lane_count} lane(s)).",
+        "message": f"Link {canonical_no} removed ({lane_count} lane(s)).",
         "verification": verification,
     }
 

@@ -336,6 +336,34 @@ def test_remove_data_collection_point_refuses_when_referenced_by_a_measurement(t
     assert "intObjectRef" in envelope["message"]
     # Refused BEFORE ever calling COM at all, and before persist().
     assert session.calls == []
+
+
+@pytest.mark.parametrize("spelling", ["7", "07", " 7", "+7", "7 "])
+def test_remove_data_collection_point_refuses_every_spelling_of_a_referenced_id(
+    tmp_path: Path, spelling: str
+):
+    """The Q6 (2) remove_parking_lot bypass, pinned here too: the XML guard
+    compares strings while _coerce_id normalises for COM, so before the
+    canonicalisation fix a non-canonical spelling bypassed the referrer
+    refusal and left the measurement's intObjectRef dangling."""
+    working = _write_working_inpx(
+        tmp_path,
+        extra=(
+            '<dataCollectionPoints><dataCollectionPoint no="7" lane="101 1" pos="10" name=""/>'
+            "</dataCollectionPoints>"
+            '<dataCollectionMeasurements><dataCollectionMeasurement no="1" name="">'
+            '<dataCollectionPoints><intObjectRef key="7"/></dataCollectionPoints>'
+            "</dataCollectionMeasurement></dataCollectionMeasurements>"
+        ),
+    )
+    session = FakeMeasurementInfraSession(working)
+    set_active_edit_session(session)
+
+    envelope = _dispatch("remove_data_collection_point", no=spelling)
+
+    assert envelope["status"] == "error"
+    assert "still referenced by" in envelope["message"]
+    assert session.calls == []
     assert session.persist_calls == 0
     # The point is still there -- refused, not silently cascaded.
     root = ET.parse(working).getroot()

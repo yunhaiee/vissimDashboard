@@ -253,6 +253,32 @@ def test_remove_pt_stop_refuses_when_referenced_by_a_pt_line_stop(tmp_path: Path
     assert session.persist_calls == 0
 
 
+@pytest.mark.parametrize("spelling", ["99569", "099569", " 99569", "+99569", "99569 "])
+def test_remove_pt_stop_refuses_every_spelling_of_a_referenced_id(tmp_path: Path, spelling: str):
+    """The Q6 (2) remove_parking_lot bypass, pinned here too: the XML guard
+    compares strings while _coerce_id normalises for COM, so before the
+    canonicalisation fix every non-canonical spelling sailed past the
+    referrer refusal straight into COM's silent cascade-delete."""
+    working = _write_working_inpx(
+        tmp_path,
+        extra=(
+            '<ptStops><ptStop no="99569" name="" lane="101 1" pos="5.0" length="15.0"/></ptStops>'
+            '<ptLines><ptLine no="52004" name="WB"><lineStops>'
+            '<ptLineStop ptStop="99569" dwellTmDistr="20" dwellTmDef="DISTRIBUTION" active="true"/>'
+            "</lineStops></ptLine></ptLines>"
+        ),
+    )
+    session = FakePtStopLineSession(working)
+    set_active_edit_session(session)
+
+    envelope = _dispatch("remove_pt_stop", no=spelling)
+
+    assert envelope["status"] == "error"
+    assert "still referenced by" in envelope["message"]
+    assert session.calls == []
+    assert session.persist_calls == 0
+
+
 def test_remove_pt_stop_refuses_when_referenced_by_a_pt_boarding_detector(tmp_path: Path):
     """The SECOND real referrer site this unit's own corpus-wide scan found
     (a PT-boarding-gate detector's own "ptStop" attribute) -- previously
