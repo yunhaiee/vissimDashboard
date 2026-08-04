@@ -4273,6 +4273,238 @@ class VissimController:
             raise RuntimeError(f"Could not remove parking lot {no}: {exc}") from exc
 
     # -----------------------------------------------------------------
+    # PEDESTRIAN (Viswalk) verbs -- Q6 unit (3)
+    #
+    # Everything below is measured live against Vissim 2026 SP09 by
+    # ``backend/tools/probe_pedestrian.py`` (18 parts, null control,
+    # ``--audit`` re-derivation); that file's docstring is the long form.
+    #
+    # **THE LICENCE VERDICT (asked first, because a refusal would have made
+    # this whole block a read-only representation instead).** This box CAN
+    # create and simulate Viswalk objects. There is NO licence-naming COM
+    # attribute to interrogate -- ``LicenseInfo``/``License``/``Modules``/
+    # ``AddOns`` and four more all raise "Could not find attribute with ID";
+    # the only two that resolve are ``Version`` (``'PTV Vissim Academic 2026
+    # (SP 09)'``) and ``VersionNumber`` (``'260009'``). So the verdict is
+    # BEHAVIOURAL, measured at four levels: a Viswalk-bearing network loads,
+    # all nine pedestrian containers enumerate, ``RunSingleStep`` runs, and
+    # both ``AddPedestrianInput`` and ``AddArea`` create. Recorded so nobody
+    # re-derives it: that was an ACADEMIC licence. A deployment box whose
+    # Vissim licence lacks the Viswalk add-on is NOT covered by this
+    # measurement and its failure mode is unmeasured.
+    #
+    # **Plain ``Add`` works -- no duplicate-then-edit.** Only the second
+    # family (after vehicle inputs) where that is true; contrast driving
+    # behaviours, priority rules and signal controllers, all of which need a
+    # ``Duplicate*``. ``AddPedestrianInput(Key, Area)`` needs a real COM Area
+    # OBJECT, not an int -- the same pywin32 marshalling shape
+    # ``AddVehicleInput``'s ``Link`` has. And there is NO family limitation: a
+    # network with zero areas can mint its first and then its first input on
+    # it (proven on two different networks).
+    #
+    # **A fresh input's defaults, live-read:** ``Name=''``, ``Area`` = the
+    # area passed, ``Volume(1)=0.0``, ``PedComp(1)='1'``,
+    # ``VolType(1)='STOCHASTIC'``, ``Cont(1)=0``, ``X=0.0``, ``Y=0.0``. A
+    # created-and-left-alone input therefore generates NOTHING, which is why
+    # ``volume_pph`` is a REQUIRED parameter of :meth:`add_pedestrian_input`,
+    # not an optional one. Created inputs DO generate real pedestrians: 36
+    # observed in a bounded 60 s window at 2000 ped/h (expected 33.3) against
+    # a null control of 0, with the ambient vehicle count identical (208) in
+    # both arms as the "the run really ran" witness.
+    #
+    # **LANDMINE 1 -- the origin area needs a ROUTING DECISION.** A pedestrian
+    # input whose origin area carries none makes the SAVED network fail
+    # Vissim's own initialisation: ``LoadNet`` succeeds, init dies with "The
+    # simulation could not be continued." Six probe arms isolate the cause to
+    # the AREA: volume 0 fails exactly as volume 750 does, and an area that
+    # SHIPPED with the network fails exactly as a freshly created one does,
+    # while a bare created area with no input on it is harmless. This layer
+    # cannot create routing decisions, so ``tools_edit.add_pedestrian_input``
+    # REFUSES before COM is touched (constraint
+    # ``pedestrian_input_origin_area_has_no_route``).
+    #
+    # **LANDMINE 2 -- ``RemoveArea`` silently cascade-deletes routes with a
+    # GREEN oracle.** Removing Beijing's area 1 moved the persisted counts by
+    # ``{'areas': -1, 'pedestrian_inputs': -1, 'ped_volume_intervals': -1,
+    # 'ped_routing_decisions_static': -1, 'ped_routes_static': -4,
+    # 'ped_route_locations': -4}`` -- a bigger blast radius than its 4 direct
+    # referrers suggest (the routing decision that ORIGINATES there takes its
+    # own 2 routes, and 2 further routes elsewhere that used area 1 as a
+    # DESTINATION go too) -- and ``load_ok``/``init_ok`` were both True
+    # afterwards. Vissim's own oracle is green on a network that just lost 4
+    # pedestrian routes. No area-removal verb ships in this unit; see
+    # ``constraints.pedestrian_area_edit_unsupported``.
+    #
+    # **LANDMINE 3 -- intervals belong to the NETWORK.** One input created on
+    # the 14-interval Air Taxi Vertiport network persisted with all 14
+    # intervals: interval 1 carrying the requested volume, 2..14 at zero. On
+    # 1-interval Beijing the same call adds exactly 1. ``Volume(2)`` on a
+    # 1-interval network raises outright ("Object 2 not found"), so this
+    # module writes interval 1 only and the agent layer WARNS about the rest.
+    #
+    # **Writability, readback-judged:** ``Name``/``Volume(1)``/``VolType(1)``
+    # writable exactly; ``PedComp(1)`` writable (measured on a FOUR-composition
+    # network -- on single-composition Beijing the write is indistinguishable
+    # from a no-op, which is why it was re-measured elsewhere); ``Area`` and
+    # ``No`` both writable (they re-anchor / renumber an existing input, and
+    # neither is wrapped here). ``Cont(1)`` is REFUSED LOUDLY ("Attribute
+    # Continued (0-MAX) cannot be changed"), and so is a bogus composition
+    # number ("Object 1011 of type Pedestrian Composition does not exist") --
+    # nothing in this family fails silently, which is unusual enough to be
+    # worth stating.
+    # -----------------------------------------------------------------
+
+    def available_pedestrian_input_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.PedestrianInputs)
+
+    def available_pedestrian_area_nos(self) -> list[int]:
+        return self._collection_nos(self.vissim.Net.Areas)
+
+    def _pedestrian_input_by_no(self, no: int) -> Any:
+        return self._item_by_key(
+            self.vissim.Net.PedestrianInputs,
+            no,
+            "Pedestrian input",
+            self.available_pedestrian_input_nos(),
+        )
+
+    def _pedestrian_area_by_no(self, no: int) -> Any:
+        return self._item_by_key(
+            self.vissim.Net.Areas, no, "Pedestrian area", self.available_pedestrian_area_nos()
+        )
+
+    def get_pedestrian_input(self, no: int) -> dict[str, Any]:
+        """Read one pedestrian input's identity + interval-1 demand:
+        ``{"no", "name", "area", "volume", "composition_no",
+        "volume_type"}``.
+
+        The paired reader for every pedestrian write below (guardrail
+        doctrine: every setter needs a reader used for post-write
+        verification).
+
+        ``no`` is READ BACK (``str(int(AttValue("No")))``), never echoed.
+        :meth:`add_pedestrian_input` returns this dict for a number it
+        COMPUTED (``max+1``) and the agent layer lifts the new object's id
+        straight out of it -- echoing the argument would make the verb's own
+        identity claim unfalsifiable, which is exactly the defect Q5 unit (2)
+        shipped in ``get_signal_controller``, Q5 unit (3) had to guard
+        against in ``get_vehicle_input``, and Q6 unit (2) found eleven more
+        instances of. ``int()`` mirrors :meth:`_collection_nos`'s own guard so
+        a float-typed ``No`` could never render as "9.0" and miss every
+        shadow-model id keyed "9".
+
+        ``volume``/``composition_no``/``volume_type`` are interval 1's -- the
+        only interval this module writes. A multi-interval network carries
+        more; the caller reports the real interval count from a reparse of
+        the persisted file, since COM exposes no interval-count attribute
+        this method could read (measured: ``Volume(2)`` on a 1-interval
+        network raises rather than returning anything).
+        """
+        try:
+            pedestrian_input = self._pedestrian_input_by_no(no)
+            return {
+                "no": str(int(pedestrian_input.AttValue("No"))),
+                "name": str(pedestrian_input.AttValue("Name") or ""),
+                "area": str(pedestrian_input.AttValue("Area") or ""),
+                "volume": float(pedestrian_input.AttValue("Volume(1)")),
+                "composition_no": str(pedestrian_input.AttValue("PedComp(1)") or ""),
+                "volume_type": str(pedestrian_input.AttValue("VolType(1)") or ""),
+            }
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not read pedestrian input {no}: {exc}") from exc
+
+    def add_pedestrian_input(
+        self,
+        area_no: int,
+        volume_pph: float,
+        name: str = "",
+        composition_no: int | None = None,
+    ) -> dict[str, Any]:
+        """Create a pedestrian input on ``area_no`` carrying ``volume_pph``
+        pedestrians/h in interval 1, auto-assigning the next free number
+        (``max(existing) + 1``, or 1 on a network with none).
+
+        ``volume_pph`` is REQUIRED, not optional: a fresh input's own
+        ``Volume(1)`` default is 0.0 (live-measured), i.e. an input created
+        and left alone generates nothing at all.
+
+        ``composition_no`` is optional; omitted leaves Vissim's own default
+        (``PedComp(1) = '1'``). A bogus number is refused by Vissim itself,
+        loudly, and that refusal is surfaced rather than swallowed.
+
+        Returns :meth:`get_pedestrian_input`'s dict for the NEW input. Raises
+        :class:`VissimObjectNotFoundError` for a bogus ``area_no`` (checked
+        via :meth:`_pedestrian_area_by_no` before the create is attempted, so
+        the error names the real available area numbers).
+
+        CALLER CONTRACT: this method does NOT check whether ``area_no`` has a
+        pedestrian routing decision. It cannot -- COM exposes the routing
+        decisions but the refusal has to happen before any COM session opens
+        to be useful. ``tools_edit.add_pedestrian_input`` performs that check
+        against the working copy's XML (see landmine 1 above).
+        """
+        try:
+            area = self._pedestrian_area_by_no(area_no)
+            existing = self.available_pedestrian_input_nos()
+            new_no = (max(existing) if existing else 0) + 1
+            pedestrian_input = self.vissim.Net.PedestrianInputs.AddPedestrianInput(new_no, area)
+            if name:
+                pedestrian_input.SetAttValue("Name", name)
+            if composition_no is not None:
+                pedestrian_input.SetAttValue("PedComp(1)", composition_no)
+            pedestrian_input.SetAttValue("Volume(1)", float(volume_pph))
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not add a pedestrian input on area {area_no} at "
+                f"{volume_pph} ped/h: {exc}"
+            ) from exc
+        return self.get_pedestrian_input(new_no)
+
+    def set_pedestrian_input_volume(self, no: int, volume_pph: float) -> dict[str, Any]:
+        """Set an existing pedestrian input's interval-1 ``Volume(1)``
+        (ped/h) and return :meth:`get_pedestrian_input`'s dict, read back
+        from Vissim rather than echoed.
+
+        Interval 1 only, deliberately: the interval STRUCTURE belongs to the
+        network (landmine 3), and ``Volume(i)`` for an ``i`` the network does
+        not have raises rather than silently creating one.
+        """
+        try:
+            pedestrian_input = self._pedestrian_input_by_no(no)
+            pedestrian_input.SetAttValue("Volume(1)", float(volume_pph))
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not set pedestrian input {no}'s volume to {volume_pph} ped/h: {exc}"
+            ) from exc
+        return self.get_pedestrian_input(no)
+
+    def remove_pedestrian_input(self, no: int) -> None:
+        """Remove the pedestrian input (COM ``RemovePedestrianInput``).
+
+        Measured CLEAN, unlike its area-side sibling: removing Beijing's
+        input 1 moved the persisted counts by exactly
+        ``{'pedestrian_inputs': -1, 'ped_volume_intervals': -1}`` -- areas
+        16->16, routing decisions 8->8 -- and the load oracle stayed green.
+        Nothing in the corpus references a pedestrian input by id (the
+        static referrer scan finds zero sites), so there is no cascade to
+        guard here; the cascade risk in this family is entirely on
+        ``RemoveArea``, which this module deliberately does not wrap.
+        """
+        try:
+            pedestrian_input = self._pedestrian_input_by_no(no)
+            self.vissim.Net.PedestrianInputs.RemovePedestrianInput(pedestrian_input)
+        except VissimObjectNotFoundError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not remove pedestrian input {no}: {exc}") from exc
+
+    # -----------------------------------------------------------------
     # Vehicle-type reference-assignment verbs -- QUEUE (v2a) unit
     #
     # COM ids/behavior verified EMPIRICALLY live against Vissim 2026

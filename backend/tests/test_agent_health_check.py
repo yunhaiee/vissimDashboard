@@ -197,7 +197,13 @@ def test_health_check_runner_against_demo_dataset():
     # than some hypothetical parking lot" is not a finding, it is just a
     # fact -- so all three land in edit_time_only, same shape as every
     # addition above.
-    assert report["summary"]["edit_time_only_n"] == 96
+    # Q6 unit (3) (pedestrians) adds three more edit-time-only constraints
+    # (96 -> 99), same shape and same reason: all three key off a PROPOSED
+    # action's own params (which area an input is going on, how many intervals
+    # the network turned out to have, which unsupported verb was reached for),
+    # and a whole-network dataset scan has no equivalent of that. Derived from
+    # the registry, not hand-counted.
+    assert report["summary"]["edit_time_only_n"] == 99
     # The demo's <evaluation> gap is genuine (see test_agent_read_tools.py's
     # own pinned shadow["evaluation_config"] == {"present": False}) -- one
     # real finding, not fabricated.

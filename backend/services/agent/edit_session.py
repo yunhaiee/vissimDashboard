@@ -673,6 +673,32 @@ class VissimEditSession:
     def get_vehicle_input(self, input_no: int) -> dict[str, Any]:
         return self._ensure_connected().get_vehicle_input(input_no)
 
+    # Q6 unit (3): pedestrians (Viswalk). See VissimController's own
+    # pedestrian module comment for the licence verdict and the three
+    # landmines (route-less origin area breaks init; RemoveArea silently
+    # cascade-deletes routes with a green oracle; intervals belong to the
+    # network).
+
+    def add_pedestrian_input(
+        self,
+        area_no: int,
+        volume_pph: float,
+        name: str = "",
+        composition_no: int | None = None,
+    ) -> dict[str, Any]:
+        return self._ensure_connected().add_pedestrian_input(
+            area_no, volume_pph, name, composition_no
+        )
+
+    def set_pedestrian_input_volume(self, no: int, volume_pph: float) -> dict[str, Any]:
+        return self._ensure_connected().set_pedestrian_input_volume(no, volume_pph)
+
+    def remove_pedestrian_input(self, no: int) -> None:
+        self._ensure_connected().remove_pedestrian_input(no)
+
+    def get_pedestrian_input(self, no: int) -> dict[str, Any]:
+        return self._ensure_connected().get_pedestrian_input(no)
+
     # -----------------------------------------------------------------
     # Persistence
     # -----------------------------------------------------------------

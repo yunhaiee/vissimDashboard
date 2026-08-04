@@ -67,6 +67,9 @@ EXPECTED_TOOL_NAMES = {
     # parking write verbs below, and the first read tool over an object class
     # this codebase had NO representation of at all before that unit.
     "get_parking_lots",
+    # Q6 unit (3): pedestrians (Viswalk).
+    "get_pedestrian_inputs",
+    "get_pedestrian_areas",
 }
 
 # M2.3's tools_edit.py registers these write-tier tools, and M2.4's
@@ -215,6 +218,10 @@ EXPECTED_WRITE_TOOL_NAMES = {
     "add_parking_lot",
     "set_parking_lot_capacity",
     "remove_parking_lot",
+    # Q6 unit (3): pedestrians (Viswalk).
+    "add_pedestrian_input",
+    "set_pedestrian_input_volume",
+    "remove_pedestrian_input",
 }
 
 # M2.4's run-gate tool, plus v2 unit (3)'s load_check (docs/phase2/02-ROADMAP.md
@@ -2715,6 +2722,10 @@ def test_build_shadow_model_has_exactly_the_contract_keys():
         # instead consulted straight from the XML by
         # inpx_structure.ID_REFERENCE_SITES["parking_lots"].
         "parking_lots",
+        # Q6 unit (3): pedestrians (Viswalk). Two classes, because the
+        # verbs write inputs and the refuse-tier guard reads areas.
+        "pedestrian_inputs",
+        "pedestrian_areas",
     }
     assert len(shadow["links"]) == 16  # 14 real + 2 Phase 3 connectors
     assert len(shadow["nodes"]) == 2

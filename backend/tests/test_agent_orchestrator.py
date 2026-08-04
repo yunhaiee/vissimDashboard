@@ -50,6 +50,9 @@ EXPECTED_READ_TOOLS = {
     # Q6 unit (2) adds get_parking_lots -- the paired reader for the three
     # parking write verbs below.
     "get_parking_lots",
+    # Q6 unit (3): pedestrians (Viswalk).
+    "get_pedestrian_inputs",
+    "get_pedestrian_areas",
 }
 
 # M2.3: tools_edit.py's write tools are now offered to the planner too (see
@@ -163,6 +166,10 @@ EXPECTED_WRITE_TOOLS = {
     "add_parking_lot",
     "set_parking_lot_capacity",
     "remove_parking_lot",
+    # Q6 unit (3): pedestrians (Viswalk).
+    "add_pedestrian_input",
+    "set_pedestrian_input_volume",
+    "remove_pedestrian_input",
 }
 
 # M2.4: the run tool is offered too — same rationale as the write tools
@@ -744,3 +751,105 @@ def test_ask_user_with_empty_question_falls_back_to_ask_user_on_nonempty_history
     assert result.kind == "clarification"
     assert result.answer.strip()
     assert [step["tool"] for step in result.steps] == ["get_network_overview", "ask_user"]
+
+
+# ---------------------------------------------------------------------------
+# Q6 unit (3): a tool name the constraint layer DELIBERATELY refuses must
+# reach the planner as its measured explanation, not as "Unknown tool".
+#
+# These drive the REAL orchestrator loop, not the envelope helper directly --
+# which is the whole point. The first version of this unit registered
+# `pedestrian_area_edit_unsupported` as a preflight constraint and shipped
+# no delivery path at all: preflight only runs for REGISTERED gated tools,
+# these names are registered nowhere, and the explanation was dead code.
+# A helper-level test would have passed against that broken build.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "add_pedestrian_area",
+        "remove_pedestrian_area",
+        "set_pedestrian_area_geometry",
+        "add_pedestrian_routing_decision",
+        "add_pedestrian_route",
+    ],
+)
+def test_a_deliberately_unsupported_tool_reaches_the_planner_as_an_explanation(
+    tmp_path, tool_name
+):
+    provider = FakeStructuredProvider(
+        [
+            _action(tool_name, summary="보행 구역을 편집합니다"),
+            _action("respond", summary="정리했습니다", answer="지원하지 않는 작업입니다."),
+        ]
+    )
+
+    result = run_agent_turn(
+        "보행 구역을 하나 지워줘",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id=f"s-unsupported-{tool_name}",
+        language="ko",
+    )
+
+    observation = result.state.history[0].observation
+    assert observation["status"] == "error"
+    assert observation["error_type"] == "unsupported_tool", (
+        "the deliberate refusal fell through to the generic unknown_tool envelope"
+    )
+    assert tool_name in observation["message"]
+    assert observation["data"]["constraint_id"] == "pedestrian_area_edit_unsupported"
+    assert observation["suggested_fix"]["supported"] == [
+        "add_pedestrian_input",
+        "set_pedestrian_input_volume",
+        "remove_pedestrian_input",
+    ]
+
+    # And it traced as a refusal-with-reason, like every other one.
+    kinds = [record["kind"] for record in read_trace(result.trace_path)]
+    assert "refusal" in kinds
+
+
+def test_the_unsupported_explanation_follows_the_turn_language(tmp_path):
+    provider = FakeStructuredProvider(
+        [
+            _action("remove_pedestrian_area", summary="editing an area"),
+            _action("respond", summary="done", answer="Not supported."),
+        ]
+    )
+
+    result = run_agent_turn(
+        "delete a pedestrian area",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-unsupported-en",
+        language="en",
+    )
+
+    message = result.state.history[0].observation["message"]
+    assert "is not supported" in message
+    assert "SILENTLY deletes" in message
+
+
+def test_a_genuine_typo_still_gets_plain_unknown_tool(tmp_path):
+    """The helper must never dress a misspelling up as a deliberate refusal."""
+    provider = FakeStructuredProvider(
+        [
+            _action("get_pedestrain_inputs", summary="오타를 냅니다"),
+            _action("respond", summary="정리했습니다", answer="도구 이름이 틀렸습니다."),
+        ]
+    )
+
+    result = run_agent_turn(
+        "보행자 입력 보여줘",
+        provider=provider,
+        work_dir=tmp_path,
+        session_id="s-typo",
+        language="ko",
+    )
+
+    observation = result.state.history[0].observation
+    assert observation["status"] == "error"
+    assert observation["error_type"] == "unknown_tool"

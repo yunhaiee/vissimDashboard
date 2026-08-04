@@ -801,6 +801,200 @@ def _parse_parking_lots(root: ET.Element) -> list[dict[str, Any]]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Q6 unit (3): PEDESTRIANS (Viswalk) -- pedestrian inputs and areas.
+#
+# ``backend/tools/probe_pedestrian.py`` (18 parts, null control, ``--audit``
+# re-derivation) is the evidence for everything here; its module docstring is
+# the long form. The short version of what shaped THIS representation:
+#
+# * THE LICENCE QUESTION CAME FIRST and the answer is yes -- this box creates
+#   and simulates Viswalk objects over COM (``Version`` reads ``'PTV Vissim
+#   Academic 2026 (SP 09)'``; no licence/module attribute exists on the Vissim
+#   object at all, so the verdict is behavioural: load, read, run and create
+#   were each measured separately, and part C watched 36 real pedestrians walk
+#   against a null control of 0).
+#
+# * REPRESENTATION HAD TO LAND FIRST. Before this unit the shadow model had no
+#   pedestrian class of any kind, and the probe's parts A/E/G/H/J each recorded
+#   ``shadow diff by class: {}`` for edits that demonstrably moved the
+#   persisted file. Q4 unit (4)'s doctrine applies verbatim: an object class
+#   the diff cannot see makes its own verb unverifiable by construction.
+#
+# * A ``<pedestrianInput>`` carries ONLY ``no`` and ``name`` (46/46 corpus
+#   inputs). Everything that matters is in two children, and both shapes are
+#   perfectly uniform across the corpus -- one ``<location area="N">
+#   <posOnArea x y/></location>`` (46/46, no variants) and one
+#   ``<timeIntPedVols>`` holding ``<timeIntervalPedVolume cont pedComp timeInt
+#   volType volume/>`` rows (72 rows over 46 inputs; 44 inputs carry exactly 1
+#   interval, 2 carry 14). So ``area``/``pos_x``/``pos_y``/``volume``/
+#   ``composition_no`` below are all FLATTENED UP from children -- a caller
+#   never has to know that.
+#
+# * INTERVALS BELONG TO THE NETWORK, not to the verb (Q5 unit (3)'s finding for
+#   vehicle inputs, re-measured here for pedestrians): one input created on the
+#   14-interval Air Taxi Vertiport network persisted with all 14 intervals,
+#   interval 1 carrying the requested volume and 2..14 at zero. Hence
+#   ``interval_count`` + the full ``volumes`` list, never just a scalar.
+#
+# * ``<posOnArea>`` x/y are RELATIVE to the area, not absolute -- a created
+#   input persists at exactly x=0 y=0, and across Beijing's 8 real inputs the
+#   largest ``|posOnArea|`` is 0.5518 against area centroids of magnitude ~566.
+#
+# UNITS -- the split to remember, measured on a FEET network rather than
+# inherited from the link finding: an area's POLYGON coordinates are RAW
+# METRES in both directions (a WKT square of side 4.0 persisted with side
+# exactly 4.000000 on ``UnitLenShort='FEET'``, ratio 1.0), while the SCALAR
+# length attributes on the very same object ARE display-scaled (a fresh area's
+# ``CellSize`` read 0.4921259842519684 on that network = 0.15 m in feet).
+# ``polygon`` below is therefore stored verbatim (already metres); no scalar
+# length attribute is exposed at all, precisely so nobody has to remember
+# which of the two rules a given field follows.
+#
+# NOT parsed as shadow classes (deliberate, recorded): obstacles (530 in
+# corpus), ramps (27), elevators (7), walking behaviours (73), area behaviour
+# types (58), pedestrian types/classes/compositions as editable objects, and
+# pedestrian ROUTING DECISIONS/ROUTES. None is the write target of any verb
+# this unit ships, and an object class no verb writes only grows the
+# nothing-else-moved diff's false-positive surface. The routing decisions are
+# nonetheless load-bearing for reference integrity and for the refuse-tier
+# ``pedestrian_input_origin_area_has_no_route`` constraint, so they are
+# consulted from the XML directly (see :func:`_routed_area_nos`), exactly the
+# way ``remove_parking_lot`` consults parking routes.
+# ---------------------------------------------------------------------------
+
+
+def _parse_pedestrian_inputs(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, area, pos_x, pos_y, volume, composition_no,
+    volume_type, continuous, interval_count, volumes}`` per
+    ``<pedestrianInput>``.
+
+    ``area``/``pos_x``/``pos_y`` are flattened up from the ``<location>``
+    child and ``volume``/``composition_no``/``volume_type``/``continuous``
+    from the FIRST ``<timeIntervalPedVolume>`` -- interval 1, the same
+    interval every verb in this unit writes. ``volumes`` carries every
+    interval in document order so a multi-interval network is never
+    misrepresented by its first row alone (see this section's own comment).
+    """
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//pedestrianInputs/pedestrianInput"):
+        location = el.find("location")
+        pos = location.find("posOnArea") if location is not None else None
+        volumes: list[dict[str, Any]] = []
+        for index, vol in enumerate(
+            el.findall("timeIntPedVols/timeIntervalPedVolume"), start=1
+        ):
+            volumes.append(
+                {
+                    "interval_no": index,
+                    "volume": _coerce_float_or_none(vol.get("volume")),
+                    "composition_no": (vol.get("pedComp") or "").strip(),
+                    "volume_type": (vol.get("volType") or "").strip(),
+                    "continuous": (vol.get("cont") or "").strip().lower() == "true",
+                }
+            )
+        first = volumes[0] if volumes else {}
+        result.append(
+            {
+                "no": el.get("no", ""),
+                "name": el.get("name", "") or "",
+                "area": (location.get("area") or "").strip() if location is not None else "",
+                "pos_x": _coerce_float_or_none(pos.get("x")) if pos is not None else None,
+                "pos_y": _coerce_float_or_none(pos.get("y")) if pos is not None else None,
+                "volume": first.get("volume"),
+                "composition_no": first.get("composition_no", ""),
+                "volume_type": first.get("volume_type", ""),
+                "continuous": first.get("continuous", False),
+                "interval_count": len(volumes),
+                "volumes": volumes,
+            }
+        )
+    return result
+
+
+def _parse_pedestrian_areas(root: ET.Element) -> list[dict[str, Any]]:
+    """FLAT ``{no, name, level, polygon, point_count, is_queue,
+    always_use_as_origin, always_use_as_destination, area_behavior_type_no,
+    time_distribution_no, elevator_group_no}`` per ``<area>``.
+
+    ``polygon`` is ``[[x, y], ...]`` in RAW METRES, verbatim from
+    ``<geometry><points>`` -- see this section's units comment for why no
+    scalar length attribute (``cellSize``/``obstDist``/``thickness``/
+    ``queueSpc``) is exposed here: those follow the OPPOSITE unit rule from
+    the coordinates on the same element, and no verb writes them.
+
+    The three conditional attributes are emitted as ``""`` when absent rather
+    than omitted, so the diff sees a stable key set (corpus: ``areaBehavType``
+    on 81 of 331 areas, ``elevGrp`` on 14, ``tmDistr`` on 10).
+    """
+    routed = _routed_area_nos(root)
+    result: list[dict[str, Any]] = []
+    for el in root.findall(".//areas/area"):
+        polygon = [
+            [_coerce_float_or_none(p.get("x")), _coerce_float_or_none(p.get("y"))]
+            for p in el.findall("geometry/points/point")
+        ]
+        result.append(
+            {
+                "no": el.get("no", ""),
+                # Computed HERE, in the parser, rather than in the read tool:
+                # constraints.py's refuse check needs it and only ever receives
+                # the shadow model, and a second derivation path is exactly how
+                # a guard and its verb come to disagree about which areas
+                # qualify. See _routed_area_nos for the measurement.
+                "has_routing_decision": el.get("no", "") in routed,
+                "name": el.get("name", "") or "",
+                "level": (el.get("level") or "").strip(),
+                "polygon": polygon,
+                "point_count": len(polygon),
+                "is_queue": (el.get("isQueue") or "").strip().lower() == "true",
+                "always_use_as_origin": (el.get("alwUseAsOrig") or "").strip().lower() == "true",
+                "always_use_as_destination": (el.get("alwUseAsDest") or "").strip().lower() == "true",
+                "area_behavior_type_no": (el.get("areaBehavType") or "").strip(),
+                "time_distribution_no": (el.get("tmDistr") or "").strip(),
+                "elevator_group_no": (el.get("elevGrp") or "").strip(),
+            }
+        )
+    return result
+
+
+def _routed_area_nos(root: ET.Element) -> set[str]:
+    """Area numbers that a pedestrian ROUTING DECISION originates on -- i.e.
+    the areas a generated pedestrian can actually walk away from.
+
+    THE measured precondition of this whole unit. A pedestrian input whose
+    origin area carries no routing decision makes the saved network fail
+    Vissim's own initialisation with "The simulation could not be
+    continued." -- loudly, at ``init``, after a perfectly successful
+    ``LoadNet``. Six probe arms isolate it to the AREA rather than to the
+    demand or to the geometry's freshness: volume 0 fails exactly as volume
+    750 does, and an area that SHIPPED with the network (Beijing's area 2)
+    fails exactly as a freshly created one does, while a bare created area
+    with no input on it is harmless.
+
+    **STATIC decisions ONLY, and that scoping is MEASURED, not assumed.**
+    This function first shipped counting ``pedestrianRoutingDecisionPartial``
+    too, on the reasoning that a route is a route -- a permissive inference,
+    i.e. the dangerous direction, since it would wave through an area that
+    then breaks init. Probe parts Q/R settle it as a controlled pair on ONE
+    network (Cableways, the only corpus network with partial decisions at all
+    -- 26 partial against 25 static, and 24 areas routed ONLY partially):
+    an input on partial-only area 142 gives ``init_ok=False``, an input on
+    STATIC-routed area 102 of the SAME network gives ``init_ok=True``. One
+    bit apart, opposite verdicts. Vissim's own error text elsewhere naming the
+    STATIC kind specifically turned out to mean exactly what it said.
+    """
+    routed: set[str] = set()
+    for decision in root.findall(".//pedestrianRoutingDecisionStatic"):
+        location = decision.find("location")
+        if location is None:
+            continue
+        area_no = (location.get("area") or "").strip()
+        if area_no:
+            routed.add(area_no)
+    return routed
+
+
 def _parse_evaluation_config(root: ET.Element) -> dict[str, Any]:
     """{present, net_perf_eval_act, link_eval_act, queue_eval_act,
     ln_chg_eval_act, eval_interval_s} from the .inpx's top-level
@@ -2760,6 +2954,15 @@ def _build_shadow_model_uncached(inpx_path: Path) -> dict[str, Any]:
         # comment for the measured two-species schema and the deliberately
         # unparsed neighbours (zones, parking-lot groups, parking routes).
         "parking_lots": _parse_parking_lots(root),
+        # Q6 unit (3): pedestrians (Viswalk) -- see the _parse_pedestrian_inputs
+        # section comment for the licence verdict, the measured schema, the
+        # units split, and the deliberately unparsed neighbours (obstacles,
+        # ramps, elevators, walking behaviours, routing decisions).
+        # "pedestrian_areas", not "areas": the shadow model already carries
+        # "reduced_speed_areas" and "conflict_areas", and a bare "areas" key
+        # would read as a superset of both to every downstream consumer.
+        "pedestrian_inputs": _parse_pedestrian_inputs(root),
+        "pedestrian_areas": _parse_pedestrian_areas(root),
         "routing_decisions": routing_decisions,
         "routes": _flatten_routes(routing_decisions),
         "vehicle_compositions": vehicle_compositions,
@@ -4120,5 +4323,152 @@ def get_parking_lots(params: GetParkingLotsParams) -> dict[str, Any]:
         result["hint"] = (
             f"Showing {len(capped)} of {total} parking lots. Narrow with parking_lot_no or "
             "link_no to see a specific one instead of the whole list."
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# get_pedestrian_inputs / get_pedestrian_areas -- Q6 unit (3)
+#
+# BOUNDED OUTPUT from day one. The bound matters more on the AREA side: the
+# corpus's largest Viswalk model (3D - Complex Intersection Karlsruhe.DE)
+# carries 147 areas, and an area's own ``polygon`` is the only
+# variable-length field any get_* tool in this module returns -- corpus
+# polygons run 4..226 points. So areas get a tight item cap AND a per-item
+# polygon cap, while the pedestrian-input list (46 across the whole corpus,
+# 26 in the biggest single network) gets a normal one.
+# ---------------------------------------------------------------------------
+
+#: Item cap for an UNFILTERED get_pedestrian_inputs call. The largest real
+#: network carries 26, so 40 shows every corpus network whole.
+_PEDESTRIAN_INPUTS_DEFAULT_CAP = 40
+
+#: Item cap for an UNFILTERED get_pedestrian_areas call, and the per-area
+#: polygon vertex cap. 147 areas x up to 226 vertices x two floats would be a
+#: five-figure character dump on one call; 30 areas and 12 vertices keeps the
+#: shape recognisable (261 of 331 corpus areas are plain 4-point quads, so 12
+#: truncates almost nothing) while naming the real totals.
+_PEDESTRIAN_AREAS_DEFAULT_CAP = 30
+_PEDESTRIAN_AREA_POLYGON_CAP = 12
+
+
+class GetPedestrianInputsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pedestrian_input_no: str | None = Field(
+        default=None,
+        description="Exact pedestrian input 'no' to return (narrows to at most one result).",
+    )
+    area_no: str | None = Field(
+        default=None,
+        description="Only return pedestrian inputs originating on this pedestrian area id.",
+    )
+
+
+@tool(
+    name="get_pedestrian_inputs",
+    tier="read",
+    provider="inspect",
+    params=GetPedestrianInputsParams,
+)
+def get_pedestrian_inputs(params: GetPedestrianInputsParams) -> dict[str, Any]:
+    """Return the network's pedestrian inputs (Viswalk pedestrian demand sources) -- no, name, area (the pedestrian area pedestrians are generated on), pos_x/pos_y (the spawn point RELATIVE to that area, not absolute world coordinates), volume (pedestrians/hour in time interval 1), composition_no, volume_type, continuous, interval_count, and volumes (every time interval in order). A network with no Viswalk pedestrian layer simply returns count 0 -- that is normal data, not an error. Demand belongs to interval 1 unless the network defines more; interval_count tells you how many it really has. Use add_pedestrian_input(area_no, volume_pph) to create one, set_pedestrian_input_volume(pedestrian_input_no, volume_pph) to change its demand, and remove_pedestrian_input(pedestrian_input_no) to delete it. Optionally filter by pedestrian_input_no or area_no -- an unfiltered call returns only the first 40 (with an explicit truncated flag and a hint)."""
+    pedestrian_inputs = _current_shadow_model()["pedestrian_inputs"]
+
+    if params.pedestrian_input_no is not None:
+        pedestrian_inputs = [
+            p for p in pedestrian_inputs if str(p.get("no")) == str(params.pedestrian_input_no)
+        ]
+    if params.area_no is not None:
+        pedestrian_inputs = [
+            p for p in pedestrian_inputs if str(p.get("area")) == str(params.area_no)
+        ]
+
+    total = len(pedestrian_inputs)
+    filtered = params.pedestrian_input_no is not None or params.area_no is not None
+    if filtered:
+        return {"count": total, "pedestrian_inputs": pedestrian_inputs}
+
+    capped = pedestrian_inputs[:_PEDESTRIAN_INPUTS_DEFAULT_CAP]
+    truncated = total > len(capped)
+    result: dict[str, Any] = {
+        "count": total,
+        "pedestrian_inputs": capped,
+        "truncated": truncated,
+    }
+    if truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} pedestrian inputs. Narrow with "
+            "pedestrian_input_no or area_no to see a specific one instead of the whole list."
+        )
+    return result
+
+
+class GetPedestrianAreasParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    area_no: str | None = Field(
+        default=None,
+        description="Exact pedestrian area 'no' to return (narrows to at most one result).",
+    )
+    usable_as_origin_only: bool = Field(
+        default=False,
+        description=(
+            "Only return areas that already carry a pedestrian routing decision, i.e. the "
+            "areas add_pedestrian_input will accept."
+        ),
+    )
+
+
+@tool(
+    name="get_pedestrian_areas",
+    tier="read",
+    provider="inspect",
+    params=GetPedestrianAreasParams,
+)
+def get_pedestrian_areas(params: GetPedestrianAreasParams) -> dict[str, Any]:
+    """Return the network's Viswalk pedestrian areas -- no, name, level, polygon (the outline's [x, y] vertices in metres; raw world coordinates, never display units), point_count, is_queue, always_use_as_origin, always_use_as_destination, area_behavior_type_no, time_distribution_no, elevator_group_no, plus has_routing_decision. THAT LAST FIELD IS THE ONE THAT MATTERS for planning: a pedestrian input can only go on an area that already carries a pedestrian routing decision -- put one anywhere else and the network stops initialising ("The simulation could not be continued"), so add_pedestrian_input refuses those areas by name. This toolkit cannot create pedestrian routing decisions, areas, or routes; pass usable_as_origin_only=true to see just the areas you can actually build demand on. A network with no Viswalk layer returns count 0, which is normal data, not an error. Optionally filter by area_no -- an unfiltered call returns only the first 30 areas and the first 12 vertices of each (with explicit truncated flags and a hint), because a real pedestrian model can carry hundreds of vertices per area."""
+    # has_routing_decision comes from the PARSER (see _parse_pedestrian_areas)
+    # -- not recomputed here, so this tool and the refuse-tier constraint can
+    # never disagree about which areas qualify as an origin.
+    areas = _current_shadow_model()["pedestrian_areas"]
+
+    if params.area_no is not None:
+        areas = [a for a in areas if str(a.get("no")) == str(params.area_no)]
+    if params.usable_as_origin_only:
+        areas = [a for a in areas if a["has_routing_decision"]]
+
+    total = len(areas)
+    usable = sum(1 for a in areas if a["has_routing_decision"])
+    if params.area_no is not None:
+        return {"count": total, "usable_as_origin_count": usable, "pedestrian_areas": areas}
+
+    capped: list[dict[str, Any]] = []
+    polygons_truncated = False
+    for area in areas[:_PEDESTRIAN_AREAS_DEFAULT_CAP]:
+        entry = dict(area)
+        polygon = entry.get("polygon") or []
+        if len(polygon) > _PEDESTRIAN_AREA_POLYGON_CAP:
+            entry["polygon"] = polygon[:_PEDESTRIAN_AREA_POLYGON_CAP]
+            entry["polygon_truncated"] = True
+            polygons_truncated = True
+        capped.append(entry)
+    truncated = total > len(capped)
+    result: dict[str, Any] = {
+        "count": total,
+        "usable_as_origin_count": usable,
+        "pedestrian_areas": capped,
+        "truncated": truncated,
+    }
+    if truncated or polygons_truncated:
+        result["hint"] = (
+            f"Showing {len(capped)} of {total} pedestrian areas"
+            + (
+                f", each clipped to its first {_PEDESTRIAN_AREA_POLYGON_CAP} polygon vertices"
+                if polygons_truncated
+                else ""
+            )
+            + ". Narrow with area_no to see one whole, or usable_as_origin_only=true to see "
+            "just the areas add_pedestrian_input accepts."
         )
     return result

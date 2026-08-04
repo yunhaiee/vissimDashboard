@@ -213,7 +213,15 @@ the PAIRS and distribution-assignment line items).**
   `set_pt_line_stop_dwell` wires dwell distributions — the BusDwell reconnection verb.
   RemovePTStop natively CASCADE-DELETES referencing line-stops silently — we refuse
   first, naming the lines)
-- ⬜ Pedestrian inputs & areas
+- ✅ Pedestrian inputs & areas — shipped (Q6 ③: inputs only —
+  `add/set_volume/remove_pedestrian_input` + reader; license verdict behavioural
+  (academic box: Viswalk network loads, 9 containers enumerate, creation works);
+  THE landmine: an input on an area with no STATIC routing decision stops
+  network init (partial decisions measured NOT to count — Q/R pair), refused
+  preflight; area verbs deliberately unshipped — RemoveArea silently cascades 6
+  object classes with a GREEN load oracle, and a created area is inert without
+  a routing decision no verb can make; named by a refuse explanation delivered
+  through the orchestrator's unsupported-tool path, not silently omitted)
 - ⬜ New intersection construction (composite of the above)
 
 ---

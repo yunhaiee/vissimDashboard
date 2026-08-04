@@ -3449,3 +3449,64 @@ worth knowing before anyone "fixes" it. Envelope messages run to cap+prefix (~57
 recorded. Suite 2371→2479 (+86 unit, +22 fix cycle), 2477 passed / 1 known RAG / 1 skipped;
 live check re-run end-to-end after the COM-layer fixes, all phases PASS, log teed to
 `runtime/parking-lot-live-check/live_check.log`.
+
+## 2026-08-04 — Q6 ③: pedestrian inputs — the guard that was permissive until a measurement said no
+
+Final Q6 unit; **roadmap 1.1 closes**. Representation-first again (the diff was provably blind
+— five probe parts recorded empty diffs before the parser existed): `_parse_pedestrian_inputs`
++ `_parse_pedestrian_areas`, then `add/set_volume/remove_pedestrian_input` + reader + 2 read
+tools. Registry 110→113.
+
+**The license question answered itself behaviourally.** No license-naming COM attribute exists
+(8 candidates raise); the verdict is four measured levels on this box — a Viswalk network
+loads, all 9 pedestrian containers enumerate, `RunSingleStep` runs, `AddPedestrianInput` AND
+`AddArea` create. Scoped honestly: measured on an ACADEMIC license; a Viswalk-less box's
+failure mode is unmeasured. Traffic-generation bar cleared: 36 pedestrians in a bounded 60 s
+window at 2000 ped/h (expected 33.3) vs null control 0, vehicle count 208 in both arms as the
+run-really-ran witness.
+
+**The central landmine is a JOINT condition:** an input whose origin area carries no routing
+decision stops the network INITIALISING — a bare unrouted area is harmless (six probe arms
+isolate it; volume and geometry freshness are both ruled out). Guarded by a preflight refuse
+keyed on exactly that pair. **And the guard's first version was measurably wrong in the
+permissive direction:** it accepted PARTIAL routing decisions as routing, justified only by
+corpus frequency. The review ordered the measurement; the Q/R controlled pair on Cableways
+(the one corpus network with partial decisions: area 142 partial-only → `init_ok False`, area
+102 static-routed → `True`) proved partial does NOT count. `_routed_area_nos` is static-only
+now, the ko/en/ja texts name the static requirement, and the obsolete test is inverted. A
+reviewer caught what no test could have — the inference LOOKED reasonable.
+
+**`RemoveArea` is the new cascade king: it silently deletes 6 object classes with a GREEN
+oracle** — `{areas −1, pedestrian_inputs −1, ped_volume_intervals −1, routing_decisions −1,
+routes −4, route_locations −4}`, `load_ok`/`init_ok` both True. Worse than `RemovePTStop`
+(which at least leaves a loadable network minus the obvious): here the blast radius exceeds
+the direct referrers and nothing anywhere objects. **No area verb ships** — creation works but
+a created area is inert (no routing-decision verb exists to make it live), and removal is the
+above. Named by `pedestrian_area_edit_unsupported` (refuse) — whose first delivery was DEAD
+CODE: its `applies_to` names only unregistered tools, and preflight only runs for registered
+ones, so a planner got a generic "Unknown tool". Now delivered via
+`constraints.explain_unsupported_tool()` consulted by the orchestrator's unrecognized-tool
+branch (`error_type='unsupported_tool'`, rendered ko/en/ja + alternatives), tested through the
+real `run_agent_turn` loop — a helper-level test would have passed against the broken build.
+
+**Units, same-object split (measured, not inherited):** polygon WKT x/y are raw metres in both
+directions even on a FEET network (ratio 1.0), while `CellSize` on the SAME area is
+display-scaled (0.4921 ft = 0.15 m). The probe's own feet-counterfactual prose had the ratio
+INVERTED (3.280840 where the true would-have-been figure is 0.3048) — fixed; conclusion
+unaffected. Intervals belong to the network, third appearance (one input on 14-interval Air
+Taxi persists all 14, demand in interval 1 only).
+
+**Verification (12 agents) also found:** the postwrite `written_value` built from the RAW
+caller string while readback is canonical — 5 of 6 legal spellings of a CORRECT call refused
+at postwrite (the Q6 ② canonicalisation class, one layer deeper; the guard itself was clean);
+a 5-param canonical-id test that survived the full raw-id revert because it asserted only
+"refused", not "refused for the routing reason" — now discriminating; and the audit-coverage
+header overclaiming (extended `--audit` now covers the 14-interval headline and Q/R; two
+honest exceptions remain). Prose drifted in five places, the machine artifacts in zero — five
+units, five for five.
+
+Suite 2494→2602 (+79 unit, +29 fix cycle), 2600 passed / 1 known RAG / 1 skipped. Isolation:
+pedestrian 80, vissim_com_pedestrian 21, orchestrator 20 (the 9 new delivery tests), the rest
+unchanged. Live check re-run end-to-end after every fix: all phases PASS, counterfactuals
+still block with named rows, log teed. `edit_time_only_n` 99, derived. **Q6 complete: the v2b
+catalog's last three bullets are shipped, and 1.1 — "the longest wall" — is done.**

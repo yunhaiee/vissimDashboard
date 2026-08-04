@@ -156,6 +156,17 @@ _SHADOW_OBJECT_ID_FIELDS: dict[str, str] = {
     # signal-head precedent: "an object class the diff cannot see makes the
     # verb unverifiable by construction").
     "parking_lots": "no",
+    # Q6 unit (3): pedestrians (Viswalk). Both classes have a genuine
+    # single-token identity, their own "no" -- no flattening needed. Required
+    # by BOTH postwrite checks for the same reason parking lots were: without
+    # these entries the nothing-else-moved diff is BLIND to pedestrian objects
+    # and a pedestrian verb cannot verify its own write. That blindness was
+    # measured, not assumed -- probe parts A/E/G/H/J each recorded an empty
+    # "shadow diff by class" for edits whose persisted counts demonstrably
+    # moved (Q4 unit (4)'s doctrine: an object class the diff cannot see makes
+    # the verb unverifiable by construction).
+    "pedestrian_inputs": "no",
+    "pedestrian_areas": "no",
 }
 
 # {tool: {object_class, id_param, value_field}} — which shadow-model object
@@ -562,6 +573,20 @@ _WRITE_TARGET_FIELD_SPEC: dict[str, dict[str, str]] = {
         "none_means": "not_persisted",
         "coupled_fields": ("length", "len_per_space"),
     },
+    # Q6 unit (3): the pedestrian-input volume write. Interval 1 only -- the
+    # interval STRUCTURE belongs to the network (Vissim refuses Volume(i) for
+    # an i the network does not have), so unlike set_vehicle_input_volume
+    # there is no interval_param to address. "volumes" is a coupled field for
+    # the same reason it is exempted there: the parser derives the scalar
+    # "volume" FROM volumes[0], so writing one always moves the other and a
+    # correct write would otherwise false-positive as "something else moved".
+    "set_pedestrian_input_volume": {
+        "object_class": "pedestrian_inputs",
+        "id_param": "pedestrian_input_no",
+        "value_field": "volume",
+        "none_means": "not_persisted",
+        "coupled_fields": ("volumes",),
+    },
 }
 
 # v2a unit ⑧: ``set_des_speed_decision`` is the first write tool whose action
@@ -809,6 +834,28 @@ _ALLOWS_NEW_OBJECTS_IN: dict[str, frozenset[str]] = {
     # during a parking write is unexplained drift and must stay loud
     # evidence.
     "add_parking_lot": frozenset({"parking_lots"}),
+    # Q6 unit (3): add_pedestrian_input's own sanctioned action IS making a
+    # "pedestrian_inputs" entry appear. Measured (probe part A, Beijing:
+    # persisted delta {'pedestrian_inputs': 1, 'areas': 1,
+    # 'ped_volume_intervals': 1} for a call that ALSO created an area; part H's
+    # null control proves an untouched load+save moves nothing at all).
+    #
+    # "pedestrian_areas" is deliberately NOT opted in: this verb never creates
+    # an area (it takes an existing area_no), so an area appearing during a
+    # pedestrian-input write is unexplained drift and must stay loud evidence.
+    #
+    # NOR is any composition class, and that absence is measured rather than
+    # assumed. Saving DOES materialise the default pedestrian composition the
+    # fresh input references on a network that has none (part J, Roundabout
+    # Schenectady.US: persisted {'pedestrian_compositions': 1,
+    # 'pedestrian_composition_flows': 1}) -- the exact shape of Q5 unit (3)'s
+    # vehicle-side surprise. It needs no exemption here only because neither
+    # class is in the shadow model at all, so the diff cannot see it; the
+    # counterfactual is RUN, not reasoned about, in
+    # backend/tools/pedestrian_live_check.py (popping this entry turns a
+    # correct call into write_verification_failed; narrowing it to the
+    # composition classes instead does NOT rescue it).
+    "add_pedestrian_input": frozenset({"pedestrian_inputs"}),
 }
 
 # Q4 unit (3): the REMOVAL-side mirror of ``_ALLOWS_NEW_OBJECTS_IN`` above --
@@ -880,6 +927,22 @@ _ALLOWS_REMOVED_OBJECTS_IN: dict[str, frozenset[str]] = {
     # evidence" rule, honoured by refusing earlier rather than by exempting
     # later.
     "remove_parking_lot": frozenset({"parking_lots"}),
+    # Q6 unit (3): remove_pedestrian_input's own sanctioned action IS making a
+    # "pedestrian_inputs" entry disappear -- the removal-side mirror of
+    # add_pedestrian_input's entry above. Measured as exactly one row and
+    # nothing else (probe part E, Beijing input 1: persisted delta
+    # {'pedestrian_inputs': -1, 'ped_volume_intervals': -1}; areas 16->16,
+    # pedestrian routing decisions 8->8, load oracle green).
+    #
+    # Unlike parking lots there is no cascade to refuse first: the static
+    # corpus scan finds ZERO sites where anything references a pedestrian
+    # input by id. The cascade risk in this family sits entirely on RemoveArea
+    # -- which silently deletes routing decisions and routes and leaves
+    # Vissim's own oracle GREEN -- and this unit ships no area-removal verb at
+    # all, precisely so that cascade never has to be exempted here. Q4 unit
+    # (3)'s "a silently dropped object must stay loud evidence" rule, honoured
+    # by not shipping the verb rather than by exempting its damage.
+    "remove_pedestrian_input": frozenset({"pedestrian_inputs"}),
 }
 
 # QUEUE 3 (v2a) unit 3's SECOND regression fix, found live-testing this same

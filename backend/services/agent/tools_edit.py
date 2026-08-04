@@ -135,7 +135,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from services.agent import batch, guardrails, rollback
 from services.agent.edit_session import get_active_edit_session
 from services.agent.toolkit import default_registry, dispatch, tool
-from services.agent.tools_network import build_shadow_model
+from services.agent.tools_network import _routed_area_nos, build_shadow_model
 from services.datasets import get_active_inpx_path
 from services.inpx_structure import (
     ReferenceIntegrityError,
@@ -4112,6 +4112,243 @@ def remove_parking_lot(params: RemoveParkingLotParams) -> dict[str, Any]:
     verification = _remove_verification(canonical_no, still_present)
     return {
         "message": f"Parking lot {canonical_no} removed.",
+        "verification": verification,
+    }
+
+
+# ---------------------------------------------------------------------------
+# PEDESTRIANS (Viswalk) -- Q6 unit (3). Closes roadmap item 1.1.
+#
+# add_pedestrian_input / set_pedestrian_input_volume / remove_pedestrian_input.
+# Evidence: backend/tools/probe_pedestrian.py (18 parts, null control,
+# --audit re-derivation); the long form lives in that file's docstring and in
+# VissimController's own pedestrian module comment.
+#
+# THE LICENCE QUESTION WAS ASKED FIRST, because a refusal would have made this
+# a read-only representation unit instead of a write one. This box CAN create
+# and simulate Viswalk objects (measured behaviourally at four levels -- load,
+# read, run, create -- because no licence/module attribute exists on the COM
+# object to interrogate). Created inputs generate REAL pedestrians: 36 in a
+# bounded 60 s window at 2000 ped/h against a null control of 0.
+#
+# WHY THERE IS NO AREA VERB HERE. Creating an area works and is verifiable,
+# but the two things a planner would want next are not safe to ship:
+# ``RemoveArea`` SILENTLY cascade-deletes pedestrian routes and leaves
+# Vissim's own load/init oracle GREEN (measured: removing one Beijing area
+# took 1 routing decision, 4 routes and 4 route locations with it), and a
+# created area is inert without a pedestrian routing decision -- which this
+# agent cannot create. Shipping "add an area" alone would hand the planner an
+# object it can only make useless or dangerous. Recorded as
+# ``pedestrian_area_edit_unsupported`` rather than silently omitted.
+# ---------------------------------------------------------------------------
+
+
+#: How many routed-area numbers a refusal names before it says "+N more".
+#: Bounded in COUNT here, but the RENDERED LENGTH is what actually matters
+#: against toolkit.dispatch's 300-char cap -- Q6 unit (2)'s lesson exactly
+#: (its VissimObjectNotFoundError was bounded in key COUNT, not LENGTH, and
+#: 8-digit ids blew past the cap anyway). Measured, wrapped in dispatch's own
+#: "Tool ... raised ValueError: " prefix:
+#:
+#:   Beijing's 8 routed areas                      -> 268 chars (32 headroom)
+#:   a 9th two-digit area (still 8 shown + "+1")   -> 278 chars
+#:   40 THREE-digit areas, the pinned worst case   -> 294 chars
+#:
+#: The corpus caps one network at 147 areas, so 3-digit ids ARE the realistic
+#: worst case and 294 is the number to watch. An earlier draft of this comment
+#: claimed 285 chars and "one more area would truncate" -- that was measured
+#: before the bound existed and is wrong in both halves; the pinned test below
+#: asserts the real ceiling.
+_ROUTED_AREA_NAMES_IN_REFUSAL = 8
+
+
+class AddPedestrianInputParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    area_no: str
+    volume_pph: float
+    name: str = ""
+    composition_no: str | None = None
+
+
+@tool(
+    name="add_pedestrian_input",
+    tier="write",
+    provider="edit",
+    params=AddPedestrianInputParams,
+)
+def add_pedestrian_input(params: AddPedestrianInputParams) -> dict[str, Any]:
+    """Create a NEW pedestrian input (a pedestrian demand source) on pedestrian area area_no, carrying volume_pph pedestrians/hour, on the active edit session's working network. Needs the Viswalk pedestrian layer -- use get_pedestrian_areas() first to see which areas exist and which of them can actually be used as an origin. The new input gets the next free number automatically, the name you give it, and Vissim's default pedestrian composition unless composition_no names another. Two things to plan for: (1) the origin area MUST already carry a pedestrian routing decision, otherwise the network stops loading -- this verb refuses such an area outright and names the ones that qualify, because this agent cannot create pedestrian routes. (2) volume_pph applies to TIME INTERVAL 1 only -- on a multi-interval network the rest stay at 0 ped/h; the result message reports how many intervals this network actually has."""
+    session = _require_session()
+    area_no = _coerce_id(params.area_no, "area_no")
+    composition_no = (
+        None
+        if params.composition_no is None
+        else _coerce_id(params.composition_no, "composition_no")
+    )
+
+    # **The CANONICAL id goes to the guard, not the caller's raw string**
+    # (commit 3316e76's pattern, and Q6 unit (2)'s defect 1). ``_coerce_id``
+    # normalised the value for the ACTION on the line above; the routing
+    # guard below consults the XML and must see the SAME spelling, or
+    # "0001"/" 1"/"+1"/"1 " would each miss the routed-area set, sail past
+    # the refusal, and produce a network that will not initialise.
+    canonical_area_no = str(area_no)
+
+    # The measured precondition. Checked against the working copy's CURRENT
+    # XML BEFORE any COM session opens: an input on a route-less origin area
+    # makes the saved network fail Vissim's own init with "The simulation
+    # could not be continued." -- regardless of demand volume, and regardless
+    # of whether the area shipped with the network or was created moments
+    # ago (six probe arms isolate the cause to the area).
+    root = ET.parse(session.working_inpx).getroot()
+    routed = _routed_area_nos(root)
+    if canonical_area_no not in routed:
+        # BOUNDED, because refusals must survive toolkit.dispatch's 300-char
+        # cap WHOLE (Q6 unit (1)'s ReferenceIntegrityError lesson: a 12-name
+        # list measured 613 chars and lost most names mid-word). Measured
+        # live on Beijing: 8 routed areas render this at 268 chars wrapped,
+        # 32 under the cap. The full list always rides on the constraint
+        # Finding's own details.
+        ordered = sorted(routed, key=lambda value: (len(value), value))
+        shown = ordered[:_ROUTED_AREA_NAMES_IN_REFUSAL]
+        available = ", ".join(shown) or "none"
+        if len(ordered) > len(shown):
+            available += f" (+{len(ordered) - len(shown)} more)"
+        raise ValueError(
+            f"Pedestrian area {canonical_area_no} has no pedestrian routing decision, so a "
+            f"pedestrian input placed there would fail to initialise "
+            f"(Vissim: 'The simulation could not be continued'). Areas that already carry one: "
+            f"{available}."
+        )
+
+    result = session.add_pedestrian_input(
+        area_no, params.volume_pph, params.name, composition_no
+    )
+    session.persist()
+
+    # written/readback carry EXACTLY the same key set (constraint #6's
+    # structural compare requires it), and both sides are SCALARS -- Q6 unit
+    # (2) shipped a dict on the written side and every correct call was
+    # refused because a dict can never equal the shadow model's scalar.
+    #
+    # **CANONICAL on BOTH sides, and this was a real shipped defect.** The
+    # written side originally used the RAW ``params.area_no``, so a caller
+    # spelling a legal area as '01'/' 1'/'+1'/'1 '/'0001' passed the routing
+    # guard and the COM action and was then REFUSED at postwrite:
+    # ``_check_write_verification_failed`` compares these two dicts through
+    # ``_values_differ``, whose numeric tolerance does NOT reach inside dict
+    # members, so '01' != '1' blocked 5 of 6 legal spellings. The
+    # set_/remove_ siblings below already used their canonical id; this now
+    # matches them. Same lesson as the guard itself: coerce ONCE, then use
+    # that one spelling everywhere (commit 3316e76's pattern).
+    verification: dict[str, Any] = {
+        "written_value": {"area": canonical_area_no, "volume": float(params.volume_pph)},
+        "readback_value": {"area": result["area"], "volume": float(result["volume"])},
+    }
+
+    # Deliberate reparse: COM exposes no interval-count attribute, and "how
+    # many intervals stayed at zero" is the one thing a caller cannot infer
+    # from the parameters. Measured: one input created on the 14-interval Air
+    # Taxi Vertiport network persisted with all 14 intervals.
+    shadow_model = build_shadow_model(session.working_inpx)
+    persisted = next(
+        (
+            entry
+            for entry in shadow_model.get("pedestrian_inputs", [])
+            if str(entry.get("no")) == str(result["no"])
+        ),
+        None,
+    )
+    interval_count = int((persisted or {}).get("interval_count") or 0)
+    unset_intervals = max(interval_count - 1, 0)
+
+    message = (
+        f"Pedestrian input {result['no']} added on area {canonical_area_no} at "
+        f"{params.volume_pph} ped/h (pedestrian composition "
+        f"{result['composition_no'] or 'default'})."
+    )
+    if unset_intervals:
+        message += (
+            f" This network's pedestrian demand model has {interval_count} time intervals and "
+            f"this volume applies to interval 1 only -- the other {unset_intervals} are still "
+            "0 ped/h."
+        )
+    return {
+        "message": message,
+        "verification": verification,
+        "artifacts": {
+            "new_pedestrian_input_no": result["no"],
+            "pedestrian_input": result,
+            "interval_count": interval_count,
+            "intervals_left_at_zero": unset_intervals,
+        },
+    }
+
+
+class SetPedestrianInputVolumeParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pedestrian_input_no: str
+    volume_pph: float
+
+
+@tool(
+    name="set_pedestrian_input_volume",
+    tier="write",
+    provider="edit",
+    params=SetPedestrianInputVolumeParams,
+)
+def set_pedestrian_input_volume(params: SetPedestrianInputVolumeParams) -> dict[str, Any]:
+    """Set an existing pedestrian input's demand to volume_pph pedestrians/hour on the active edit session's working network. Applies to TIME INTERVAL 1 -- the interval structure belongs to the network, not to this verb, and Vissim refuses a write to an interval the network does not have. Use get_pedestrian_inputs() to see the current numbers, volumes and interval counts."""
+    session = _require_session()
+    no = _coerce_id(params.pedestrian_input_no, "pedestrian_input_no")
+    canonical_no = str(no)
+
+    result = session.set_pedestrian_input_volume(no, params.volume_pph)
+    session.persist()
+
+    verification: dict[str, Any] = {
+        "written_value": float(params.volume_pph),
+        "readback_value": float(result["volume"]),
+    }
+    return {
+        "message": (
+            f"Pedestrian input {canonical_no} now carries {params.volume_pph} ped/h in "
+            "time interval 1."
+        ),
+        "verification": verification,
+        "artifacts": {"pedestrian_input": result},
+    }
+
+
+class RemovePedestrianInputParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pedestrian_input_no: str
+
+
+@tool(
+    name="remove_pedestrian_input",
+    tier="write",
+    provider="edit",
+    params=RemovePedestrianInputParams,
+)
+def remove_pedestrian_input(params: RemovePedestrianInputParams) -> dict[str, Any]:
+    """Remove a pedestrian input (COM RemovePedestrianInput) on the active edit session's working network. Measured clean: the input and its own demand-interval rows go, and nothing else -- areas, pedestrian routing decisions and routes are all untouched, and the network still loads and initialises. Nothing in a Vissim network references a pedestrian input by number, so there is no cascade here (unlike removing a pedestrian AREA, which this agent deliberately does not support)."""
+    session = _require_session()
+    no = _coerce_id(params.pedestrian_input_no, "pedestrian_input_no")
+    canonical_no = str(no)
+
+    session.remove_pedestrian_input(no)
+    session.persist()
+
+    still_present = _still_present_after_remove(
+        session.working_inpx, "pedestrian_inputs", canonical_no
+    )
+    verification = _remove_verification(canonical_no, still_present)
+    return {
+        "message": f"Pedestrian input {canonical_no} removed.",
         "verification": verification,
     }
 

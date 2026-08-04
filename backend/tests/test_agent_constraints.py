@@ -5363,8 +5363,18 @@ def test_registry_size_matches_m3_1_catalog_port():
     # ReferenceIntegrityError, the remove_pt_stop precedent), and each verb's
     # target existence is #1 object_not_found via a _TOOL_TARGET_SPEC entry
     # PLUS an entry in #1's own applies_to list.
+    #
+    # Q6 unit (3) (pedestrians/Viswalk) adds THREE more (110 -> 113):
+    # pedestrian_input_origin_area_has_no_route (refuse -- an input on an area
+    # with no pedestrian routing decision stops the network initialising, and
+    # the demand volume is irrelevant: six probe arms isolate the cause to the
+    # area), pedestrian_input_created_covers_first_interval_only (warn -- the
+    # pedestrian twin of the vehicle-side interval finding, measured on a
+    # 14-interval network), and pedestrian_area_edit_unsupported (refuse --
+    # names the deliberate gap, because RemoveArea silently cascade-deletes
+    # pedestrian routes and leaves Vissim's own load/init oracle GREEN).
     # Regression pin -- bump deliberately, not by accident.
-    assert len(get_registry()) == 110
+    assert len(get_registry()) == 113
 
 
 def test_registry_has_unique_ids():

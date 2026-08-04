@@ -124,6 +124,7 @@ import services.agent.tools_network  # noqa: F401
 import services.agent.tools_run  # noqa: F401
 import services.agent.tools_sweep  # noqa: F401 - Phase 0.1: run_demand_stress_sweep
 from services.agent import approval_focus, complexity, session_store
+from services.agent.constraints import explain_unsupported_tool
 from services.agent.gates import ApprovalRequired, signature
 from services.agent.guardrails import GuardrailEngine, GuardrailReport
 from services.agent.planner import (
@@ -366,8 +367,12 @@ class AgentTurnResult:
 #: this set for the identical reason: a same-turn repeat of a READ-tier call
 #: is refused BEFORE toolkit.dispatch ever runs — see the loop's final
 #: `else` branch below — and that refusal-with-reason must trace the same
-#: way invalid_params/unknown_tool already do.
-_DISPATCH_REFUSAL_ERROR_TYPES = frozenset({"invalid_params", "unknown_tool", "duplicate_call"})
+#: way invalid_params/unknown_tool already do. "unsupported_tool" (Q6 unit (3))
+#: joined for the same reason again: a tool name the constraint layer
+#: DELIBERATELY refuses is a refusal-with-reason, not a crash and not a typo.
+_DISPATCH_REFUSAL_ERROR_TYPES = frozenset(
+    {"invalid_params", "unknown_tool", "duplicate_call", "unsupported_tool"}
+)
 
 
 def _trace_dispatch_refusal(
@@ -442,6 +447,33 @@ def _duplicate_call_envelope(tool_name: str, language: str) -> dict[str, Any]:
         "suggested_fix": None,
         "verification": None,
         "data": None,
+    }
+
+
+def _unsupported_tool_envelope(
+    tool_name: str, language: str, explanation: dict[str, Any]
+) -> dict[str, Any]:
+    """Q6 unit (3): the planner asked for a tool this toolkit DELIBERATELY does
+    not ship, and the constraint layer has a measured reason plus a nearest
+    supported alternative for it.
+
+    Without this branch such a name falls through to the generic
+    ``unknown_tool`` envelope -- which is what actually shipped first and was
+    caught in review: ``pedestrian_area_edit_unsupported``'s whole ko/en/ja
+    explanation was dead code, because preflight only runs for REGISTERED
+    gated tools and an unregistered name never reaches the engine at all.
+    Distinct ``error_type`` so trace/eval consumers can tell a deliberate
+    refusal apart from a typo, and the constraint's own ``suggested_fix``
+    (the verbs that DO ship) rides along.
+    """
+    return {
+        "status": "error",
+        "error_type": "unsupported_tool",
+        "message": explanation["message"],
+        "artifacts": None,
+        "suggested_fix": explanation.get("suggested_fix"),
+        "verification": None,
+        "data": {"tool": tool_name, "constraint_id": explanation["constraint_id"]},
     }
 
 
@@ -1519,7 +1551,20 @@ def run_agent_turn(
             # PreapprovedWriteGate) -- double-gating them here would either
             # be redundant or, worse, block a legitimate approved re-issue.
             call_signature = signature(decision.tool, decision.params)
-            if call_signature in dispatched_read_signatures:
+            # Q6 unit (3): a name the constraint layer explicitly refuses gets
+            # its measured explanation instead of the generic "Unknown tool".
+            # Checked BEFORE the duplicate guard and before dispatch, because
+            # `spec is None` means dispatch can only ever produce
+            # `unknown_tool` for it anyway. `explain_unsupported_tool` returns
+            # None for a genuine typo, so this can never dress a misspelling
+            # up as a deliberate refusal.
+            unsupported = (
+                explain_unsupported_tool(decision.tool, language) if spec is None else None
+            )
+            if unsupported is not None:
+                envelope = _unsupported_tool_envelope(decision.tool, language, unsupported)
+                _trace_dispatch_refusal(tracer, iteration, decision.tool, envelope)
+            elif call_signature in dispatched_read_signatures:
                 envelope = _duplicate_call_envelope(decision.tool, language)
                 _trace_dispatch_refusal(tracer, iteration, decision.tool, envelope)
             else:

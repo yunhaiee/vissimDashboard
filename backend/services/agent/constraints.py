@@ -1000,6 +1000,39 @@ _TOOL_TARGET_SPEC: dict[str, dict[str, str]] = {
         "name_field": "name",
         "param": "no",
     },
+    # Q6 unit (3): pedestrians. add_pedestrian_input's PRIMARY target is the
+    # pedestrian AREA it originates on (the new "pedestrian_areas" shadow-model
+    # list); the two other verbs target the input's own "no". Wired at BIRTH,
+    # in BOTH places -- this table AND object_not_found's applies_to below --
+    # because Q5 unit (3) found TEN already-shipped verbs that had an entry
+    # here but were never named there, so check #1 silently never ran for any
+    # of them.
+    #
+    # Whether the target area can legally ORIGINATE pedestrians (i.e. carries
+    # a routing decision) is deliberately NOT this entry's business: the area
+    # exists either way, so #1 must stay silent, and the dedicated
+    # pedestrian_input_origin_area_has_no_route check below answers it. Same
+    # "existence is generic, appropriateness is dedicated" split as
+    # add_signal_controller's donor-type check and add_vehicle_input's
+    # connector warn.
+    "add_pedestrian_input": {
+        "object_class": "pedestrian_areas",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "area_no",
+    },
+    "set_pedestrian_input_volume": {
+        "object_class": "pedestrian_inputs",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "pedestrian_input_no",
+    },
+    "remove_pedestrian_input": {
+        "object_class": "pedestrian_inputs",
+        "id_field": "no",
+        "name_field": "name",
+        "param": "pedestrian_input_no",
+    },
 }
 
 _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
@@ -1033,6 +1066,9 @@ _OBJECT_CLASS_LABELS: dict[str, dict[str, str]] = {
     "pt_lines": {"ko": "대중교통 노선", "en": "PT line", "ja": "公共交通路線"},
     # Q6 unit (2): parking lots.
     "parking_lots": {"ko": "주차장", "en": "parking lot", "ja": "駐車場"},
+    # Q6 unit (3): pedestrians (Viswalk).
+    "pedestrian_inputs": {"ko": "보행자 입력", "en": "pedestrian input", "ja": "歩行者インプット"},
+    "pedestrian_areas": {"ko": "보행 구역", "en": "pedestrian area", "ja": "歩行者エリア"},
 }
 
 
@@ -1384,6 +1420,12 @@ register(
             "add_parking_lot",
             "set_parking_lot_capacity",
             "remove_parking_lot",
+            # Q6 unit (3): pedestrians (Viswalk). Wired AT BIRTH here, in the
+            # same change that adds their _TOOL_TARGET_SPEC entries -- the
+            # whole point of the gap closure above.
+            "add_pedestrian_input",
+            "set_pedestrian_input_volume",
+            "remove_pedestrian_input",
             # NO deliberate omissions remain: set(_TOOL_TARGET_SPEC) - set(this
             # list) is now EMPTY, pinned by
             # test_object_not_found_applies_to_is_in_lockstep_with_the_spec_table.
@@ -10602,3 +10644,369 @@ register(
         "駐車経路決定を追加してから利用してください。",
     )
 )
+
+
+# ---------------------------------------------------------------------------
+# Q6 unit (3): PEDESTRIANS (Viswalk) -- three constraints, all from measured
+# behaviour. Evidence: backend/tools/probe_pedestrian.py (18 parts, null
+# control, --audit re-derivation).
+#
+# THE LICENCE QUESTION was asked before any of this: this box CAN create and
+# simulate Viswalk objects, so these are guardrails on real write verbs, not a
+# licence-gap refusal. (No licence/module attribute exists on the Vissim COM
+# object to interrogate -- the verdict is behavioural, measured at four
+# levels. It was an ACADEMIC licence; a box whose Vissim licence lacks the
+# Viswalk add-on is NOT covered and its failure mode is unmeasured.)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# pedestrian_input_origin_area_has_no_route (refuse, preflight)
+#
+# THE decisive finding of the unit. A pedestrian input whose origin area
+# carries no pedestrian ROUTING DECISION makes the saved network fail Vissim's
+# own initialisation: LoadNet succeeds, init dies with "The simulation could
+# not be continued."
+#
+# Six probe arms isolate the cause to the AREA, one bit at a time:
+#   A  existing area 1 (routed),   volume 0    -> init_ok True
+#   K  existing area 1 (routed),   volume 750  -> init_ok True
+#   N  a bare NEW area, no input at all        -> init_ok True
+#   O  existing area 2 (UNROUTED), volume 750  -> init_ok False
+#   L  a NEW area      (UNROUTED), volume 750  -> init_ok False
+#   M  a NEW area      (UNROUTED), volume 0    -> init_ok False
+# K vs L says the routing decision is what matters; L vs M says the demand
+# VOLUME is irrelevant (zero fails identically); N says a bare created area is
+# harmless on its own; O vs L says it is not about freshly-minted geometry
+# either -- Beijing's area 2 SHIPPED with the network, is real connected
+# crosswalk polygon, and fails exactly like a brand-new one.
+#
+# It must be a STATIC routing decision, and that scoping is MEASURED too.
+# _routed_area_nos first shipped counting PARTIAL decisions as well (the
+# permissive, i.e. dangerous, direction); probe parts Q/R refuted it as a
+# controlled pair on ONE network -- Cableways, the only corpus network with
+# partial decisions at all: partial-only area 142 -> init_ok False,
+# STATIC-routed area 102 of the SAME network -> init_ok True.
+#
+# REFUSE rather than warn, deliberately: the alternative is handing the user a
+# network they cannot run, and this toolkit ships no verb that creates a
+# pedestrian routing decision, so there is no in-agent fix to offer -- only
+# the honest nearest alternative, which is the list of areas that already
+# qualify. The refusal ALSO lives inline in tools_edit.add_pedestrian_input
+# (it must, so a direct dispatch that never reaches preflight is still
+# guarded); this Finding is what makes it a structured, ko/en/ja, planner-
+# readable refusal in the orchestrated path rather than a bare ValueError.
+# ---------------------------------------------------------------------------
+
+
+def _canonical_pedestrian_id(raw: Any) -> str:
+    """One id spelling for the guard AND the action (commit 3316e76's
+    pattern). ``tools_edit`` normalises through ``int()``; this mirrors it, so
+    "0001", " 1", "+1" and "1 " all resolve to the same area as "1" rather
+    than sliding past a refusal that compares raw strings -- the exact bypass
+    Q6 unit (2)'s verification found in the parking-lot cascade guard.
+    Non-integer input yields "" and every caller stays silent, leaving the
+    complaint to check #1."""
+    if raw is None:
+        return ""
+    try:
+        return str(int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return ""
+
+
+def _check_pedestrian_input_origin_area_has_no_route(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    del extra
+    if action.get("tool") != "add_pedestrian_input":
+        return None
+    # Canonicalise ONCE and use that spelling everywhere the routed-area set is
+    # consulted (commit 3316e76's pattern / Q6 unit (2)'s defect 1): "0001",
+    # " 1", "+1" and "1 " must all resolve to the same area as "1", or this
+    # refusal is bypassable by whitespace.
+    canonical_area_no = _canonical_pedestrian_id(action.get("params", {}).get("area_no"))
+    if not canonical_area_no:
+        return None
+
+    areas = shadow_model.get("pedestrian_areas") or []
+    # Check #1 (object_not_found) owns "does this area exist"; staying silent
+    # on an unknown id keeps the two checks from double-reporting.
+    if not any(str(area.get("no", "")) == canonical_area_no for area in areas):
+        return None
+
+    # has_routing_decision is computed by the PARSER
+    # (tools_network._parse_pedestrian_areas), from the same _routed_area_nos
+    # helper tools_edit.add_pedestrian_input's own inline guard uses -- one
+    # derivation, so the guard and the verb cannot disagree about which areas
+    # qualify.
+    routed = {
+        str(area.get("no", ""))
+        for area in areas
+        if area.get("has_routing_decision")
+    }
+    if canonical_area_no in routed:
+        return None
+
+    candidates = sorted(routed, key=lambda value: (len(value), value))
+    candidate_text = ", ".join(candidates) if candidates else "-"
+    return Finding(
+        constraint_id="pedestrian_input_origin_area_has_no_route",
+        tier="refuse",
+        phase="preflight",
+        messages=_render(
+            "pedestrian_input_origin_area_has_no_route",
+            area_no=canonical_area_no,
+            candidates=candidate_text,
+        ),
+        suggested_fix={"area_no": candidates[:10]},
+        details={
+            "area_no": canonical_area_no,
+            "areas_with_routing_decision": candidates,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="pedestrian_input_origin_area_has_no_route",
+        applies_to=["add_pedestrian_input"],
+        phase="preflight",
+        tier="refuse",
+        check=_check_pedestrian_input_origin_area_has_no_route,
+        message_ko="보행 구역 {area_no}에는 정적(static) 보행자 경로결정이 없어 여기에 보행자 입력을 두면 "
+        "네트워크가 초기화되지 않습니다(Vissim: 'The simulation could not be continued'). "
+        "수요를 0으로 두어도 마찬가지이며, 파일 로드는 성공하고 실행 직전에 실패합니다. "
+        "부분(partial) 경로결정만 있는 구역도 실측상 동일하게 실패합니다. "
+        "이 도구모음은 보행자 경로결정을 만들 수 없습니다. 이미 경로결정이 있는 구역: "
+        "{candidates}. 그중 하나를 쓰거나, Vissim GUI에서 경로결정을 먼저 추가하세요.",
+        message_en="Pedestrian area {area_no} has no STATIC pedestrian routing decision, so a "
+        "pedestrian input placed there stops the network initialising (Vissim: 'The simulation "
+        "could not be continued'). Setting the demand to zero does not help -- the volume is "
+        "irrelevant, and the file still LOADS, failing only at run start. A PARTIAL routing "
+        "decision does not count either (measured). This toolkit cannot "
+        "create pedestrian routing decisions. Areas that already have one: {candidates}. Use one "
+        "of those, or add the routing decision in the Vissim GUI first.",
+        message_ja="歩行者エリア {area_no} には静的(static)歩行者経路決定がないため、ここに歩行者インプットを"
+        "置くとネットワークが初期化できなくなります(Vissim: 'The simulation could not be "
+        "continued')。需要を0にしても同じで、ファイルの読み込みは成功し実行直前に失敗します。"
+        "部分(partial)経路決定だけのエリアも実測上同じく失敗します。"
+        "このツール群は歩行者経路決定を作成できません。すでに経路決定があるエリア: {candidates}。"
+        "そのいずれかを使うか、Vissim GUIで先に経路決定を追加してください。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# pedestrian_input_created_covers_first_interval_only (warn, postwrite)
+#
+# The pedestrian twin of Q5 unit (3)'s
+# vehicle_input_created_covers_first_interval_only, and measured the same way
+# rather than assumed by analogy: ONE input created on the 14-interval Air
+# Taxi Vertiport network persisted with ALL 14 intervals -- interval 1
+# carrying the requested volume, intervals 2..14 all at zero (persisted delta
+# {'pedestrian_inputs': 1, 'ped_volume_intervals': 14}). On 1-interval Beijing
+# the same verb moves ped_volume_intervals by exactly 1, so the warn stays
+# silent there.
+#
+# The interval STRUCTURE belongs to the network, not to the verb: Vissim
+# refuses Volume(2) outright on a 1-interval network ("Object 2 not found"),
+# so there is nothing this layer could have written instead. A warn, not a
+# refusal -- a first-interval-only input is a legitimate partial build, it is
+# just not what a planner who said "2000 ped/h" is likely to have pictured on
+# a network whose demand runs in fourteen slices.
+# ---------------------------------------------------------------------------
+
+
+def _check_pedestrian_input_first_interval_only(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    del shadow_model
+    if action.get("tool") != "add_pedestrian_input":
+        return None
+    artifacts = (extra or {}).get("result", {}).get("artifacts") or {}
+    interval_count = int(artifacts.get("interval_count") or 0)
+    unset = int(artifacts.get("intervals_left_at_zero") or 0)
+    if interval_count <= 1 or unset <= 0:
+        return None
+    return Finding(
+        constraint_id="pedestrian_input_created_covers_first_interval_only",
+        tier="warn",
+        phase="postwrite",
+        messages=_render(
+            "pedestrian_input_created_covers_first_interval_only",
+            input_no=str(artifacts.get("new_pedestrian_input_no", "")),
+            interval_count=interval_count,
+            unset=unset,
+        ),
+        suggested_fix={"intervals_left_at_zero": unset},
+        details={
+            "pedestrian_input_no": str(artifacts.get("new_pedestrian_input_no", "")),
+            "interval_count": interval_count,
+            "intervals_left_at_zero": unset,
+        },
+    )
+
+
+register(
+    Constraint(
+        id="pedestrian_input_created_covers_first_interval_only",
+        applies_to=["add_pedestrian_input"],
+        phase="postwrite",
+        tier="warn",
+        check=_check_pedestrian_input_first_interval_only,
+        message_ko="이 네트워크의 보행 수요는 시간대 {interval_count}개로 나뉘어 있는데, 새로 만든 "
+        "보행자 입력 {input_no}의 수요는 시간대 1에만 적용됩니다. 나머지 {unset}개 시간대는 "
+        "0 명/시 그대로여서, 첫 시간대가 끝나면 이 지점의 보행 수요가 사라집니다. 시간대 구조는 "
+        "네트워크가 정하는 것이라 이 도구가 대신 채울 수 없습니다.",
+        message_en="This network's pedestrian demand is split into {interval_count} time "
+        "intervals, but the new pedestrian input {input_no} only carries demand in interval 1. "
+        "The other {unset} are still 0 ped/h, so pedestrian demand at this point disappears once "
+        "the first interval ends. The interval structure belongs to the network, so this verb "
+        "cannot fill the rest for you.",
+        message_ja="このネットワークの歩行需要は {interval_count} 個の時間帯に分かれていますが、"
+        "新規の歩行者インプット {input_no} の需要は時間帯1にのみ適用されます。残り {unset} 個は "
+        "0 人/時のままで、最初の時間帯が終わるとこの地点の歩行需要は消えます。時間帯の構成は"
+        "ネットワーク側が決めるため、この動詞では埋められません。",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# pedestrian_area_edit_unsupported (refuse, preflight)
+#
+# The refuse-tier constraint that NAMES the gap, so a planner asking for an
+# area edit gets a reason and an alternative instead of "unknown tool".
+#
+# Creating an area over COM works and is verifiable (AddArea(Key, WktPolygon),
+# proven on three networks including two with zero areas). It is not shipped
+# because the two things a planner would need next are unsafe or impossible:
+#
+# 1. REMOVAL SILENTLY CASCADE-DELETES ROUTES, WITH A GREEN ORACLE. Removing
+#    Beijing's area 1 moved the persisted counts by {'areas': -1,
+#    'pedestrian_inputs': -1, 'ped_volume_intervals': -1,
+#    'ped_routing_decisions_static': -1, 'ped_routes_static': -4,
+#    'ped_route_locations': -4} -- and load_ok/init_ok were BOTH True
+#    afterwards. Vissim's own oracle is green on a network that just lost four
+#    pedestrian routes. The blast radius also exceeds the direct referrer
+#    count: area 1 had 4 direct referrers, but the routing decision that
+#    ORIGINATES there takes its own 2 routes with it AND 2 further routes
+#    elsewhere that used area 1 as a DESTINATION go too (attributed by id from
+#    the persisted pair, not reasoned about -- routing decisions 3 and 4 each
+#    keep only route '2' afterwards).
+# 2. A CREATED AREA IS INERT. Pedestrians reach an area only through a
+#    pedestrian routing decision, which this toolkit cannot create -- and an
+#    input placed on such an area breaks initialisation outright (see
+#    pedestrian_input_origin_area_has_no_route). So "add an area" alone hands
+#    the planner an object it can only make useless or dangerous.
+#
+# This is the third face of a cascade this codebase has now measured three
+# times: Q4 unit (3)'s conflict areas, Q6 unit (2)'s parking lots, and now
+# pedestrian areas.
+# ---------------------------------------------------------------------------
+
+#: Tool names a planner might reach for that this unit deliberately does not
+#: ship. Kept as data so the refusal names the right verb back to the caller.
+#:
+#: **DELIVERY PATH, and it is NOT preflight.** None of these names is a
+#: REGISTERED tool, and ``orchestrator``'s loop only runs preflight for
+#: registered gated tools -- so as a preflight constraint this would be dead
+#: code, and a planner reaching for ``add_pedestrian_area`` would get the
+#: generic ``unknown_tool`` envelope instead of the explanation. Measured
+#: end-to-end, not assumed. The rendered message is therefore delivered by
+#: :func:`explain_unsupported_tool`, which the orchestrator's
+#: unrecognized-tool branch consults BEFORE falling through to
+#: ``unknown_tool``. It stays a REGISTERED constraint (so its id, tiers and
+#: ko/en/ja text live with every other constraint and are covered by the
+#: registry-wide template tests) -- only its delivery differs.
+_UNSUPPORTED_PEDESTRIAN_AREA_TOOLS = frozenset(
+    {
+        "add_pedestrian_area",
+        "remove_pedestrian_area",
+        "set_pedestrian_area_geometry",
+        "add_pedestrian_routing_decision",
+        "add_pedestrian_route",
+    }
+)
+
+
+def _check_pedestrian_area_edit_unsupported(
+    action: dict[str, Any], shadow_model: dict[str, Any], extra: dict[str, Any]
+) -> Finding | None:
+    del shadow_model, extra
+    tool_name = str(action.get("tool") or "")
+    if tool_name not in _UNSUPPORTED_PEDESTRIAN_AREA_TOOLS:
+        return None
+    return Finding(
+        constraint_id="pedestrian_area_edit_unsupported",
+        tier="refuse",
+        phase="preflight",
+        messages=_render("pedestrian_area_edit_unsupported", tool=tool_name),
+        suggested_fix={
+            "supported": [
+                "add_pedestrian_input",
+                "set_pedestrian_input_volume",
+                "remove_pedestrian_input",
+            ]
+        },
+        details={"tool": tool_name},
+    )
+
+
+register(
+    Constraint(
+        id="pedestrian_area_edit_unsupported",
+        applies_to=sorted(_UNSUPPORTED_PEDESTRIAN_AREA_TOOLS),
+        phase="preflight",
+        tier="refuse",
+        check=_check_pedestrian_area_edit_unsupported,
+        message_ko="{tool}은(는) 지원하지 않습니다. 보행 구역 삭제는 Vissim에서 그 구역을 쓰는 "
+        "보행자 경로결정과 경로를 조용히 함께 지워버리며, 그러고도 네트워크는 정상 로드·초기화되어 "
+        "오류가 드러나지 않습니다(실측: 구역 1개 삭제로 경로결정 1개·경로 4개·경로지점 4개 소실). "
+        "구역을 새로 만드는 것 자체는 가능하지만, 보행자 경로결정을 만들 수 없어 만들어도 아무 "
+        "효과가 없습니다. 보행 구역과 경로는 Vissim GUI에서 편집하세요. 이 도구모음이 지원하는 "
+        "보행 관련 작업은 보행자 입력의 생성·수요 변경·삭제입니다.",
+        message_en="{tool} is not supported. Removing a pedestrian area SILENTLY deletes the "
+        "pedestrian routing decisions and routes that use it, and the network still loads and "
+        "still initialises afterwards, so nothing looks wrong (measured: removing one area took 1 "
+        "routing decision, 4 routes and 4 route locations with it). Creating an area does work, "
+        "but this toolkit cannot create the pedestrian routing decision that would make it "
+        "useful, so a new area changes nothing. Edit pedestrian areas and routes in the Vissim "
+        "GUI. What this toolkit does support for pedestrians is creating, re-sizing and removing "
+        "pedestrian INPUTS.",
+        message_ja="{tool} はサポートしていません。歩行者エリアを削除すると、そのエリアを使う"
+        "歩行者経路決定と経路が黙って一緒に削除され、それでもネットワークは正常に読み込まれ"
+        "初期化されるため異常が表に出ません(実測: エリア1個の削除で経路決定1個・経路4個・"
+        "経路地点4個が消失)。エリアの新規作成自体は可能ですが、歩行者経路決定を作成できないため"
+        "作っても効果がありません。歩行者エリアと経路は Vissim GUI で編集してください。"
+        "このツール群が対応する歩行者関連の操作は、歩行者インプットの作成・需要変更・削除です。",
+    )
+)
+
+
+
+def explain_unsupported_tool(tool_name: str, language: str = "ko") -> dict[str, Any] | None:
+    """The rendered refusal for a tool name this toolkit DELIBERATELY does not
+    ship, or ``None`` for any other unknown name.
+
+    Exists because ``pedestrian_area_edit_unsupported`` cannot reach a planner
+    through preflight: preflight only runs for REGISTERED gated tools, and
+    these names are registered nowhere (that is the whole point of them). The
+    orchestrator's unrecognized-tool branch calls this first, so a planner
+    asking to edit a pedestrian area gets the measured reason and the nearest
+    supported alternatives instead of a bare "Unknown tool".
+
+    Returns ``{"constraint_id", "message", "suggested_fix"}``; ``message`` is
+    in ``language`` (ko/en/ja, ko as the house default). A genuinely bogus
+    name returns ``None`` so the caller still emits plain ``unknown_tool`` --
+    this helper must never turn a typo into a confident explanation.
+    """
+    finding = _check_pedestrian_area_edit_unsupported({"tool": tool_name, "params": {}}, {}, {})
+    if finding is None:
+        return None
+    messages = finding.messages
+    return {
+        "constraint_id": finding.constraint_id,
+        "message": messages.get(language) or messages["ko"],
+        "suggested_fix": finding.suggested_fix,
+    }
