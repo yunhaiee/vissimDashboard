@@ -71,7 +71,7 @@ Exit: 스윕 데모 가능, 스타일된 리포트 1장, MRWA 인용 경고 실�
 | # | 항목 | Track | 의존 |
 |---|---|---|---|
 | 1.1 | ✅(주말 Q4로 대부분 완료) **v2b 스파인 + 10/13 불릿**: 스파인(inpx_structure.py) + lane/link closure·turn bans·측정 인프라·signal heads/detectors·links/connectors 생성·stop signs/priority rules·PT stops/lines — **composite ✅ 2026-08-03 (Q5 ①: 전 스테이지 green, 프로세스 경계 검증 + 합성 증명)**, **signal controller 생성 ✅ 2026-08-03 (Q5 ②: `add_signal_controller`, duplicate-then-edit 4번째; genesis 갭 ② 종료)**, **vehicle input 생성 ✅ 2026-08-03 (Q5 ③: `add_vehicle_input` + 커넥터/인터벌 warn 2건 + 반쯤 배선된 10개 동사 `object_not_found` 배선 완결; genesis 갭 리스트 전체 종료)**; **link geometry edits ✅ 2026-08-03 (Q6 ①: lane count/centreline·points·curvature 3동사 + refuse/warn 3건, registry 107)**, **parking lots ✅ 2026-08-04 (Q6 ②: representation-first 3동사 + 리더, registry 110)**, **pedestrian inputs ✅ 2026-08-04 (Q6 ③: input 3동사 + 리더, static-routing 게이트 실측, registry 113)** — **1.1 전체 완료 (v2b 카탈로그 잔여 불릿 0)** | G | — |
-| 1.2 | **대전 어댑터 v1** (신호+카운트 → 중립 스키마 → 기존 신호/입력 모델) + R2.5 데이터 품질 게이트 | D | TK 파일 (0.7 계약 선행) |
+| 1.2 | **대전 어댑터 v1** (신호+카운트 → 중립 스키마 → 기존 신호/입력 모델) + R2.5 데이터 품질 게이트 | D | TK 파일 ✅ 도착·인벤토리 완료 2026-08-03 (0f4026d): 카운트측 즉시 착수 가능(U턴 포함 회전교통량·6종 차종·15분·5주); 신호측은 PDF 23건 — TK에 기계가독 export 문의 필요 |
 | 1.3 | **감사추적 export v1** — 액션 레저 → "파라미터 변경 기록+근거" 섹션 (DOCX; 승인 시 사유 1줄 입력) | R | 없음 |
 | 1.4 | **프로젝트 워크스페이스** (P②: 전역 활성 데이터셋 싱글톤 제거 — 접근통제 경계) | P | 없음 |
 | 1.5 | **GEH 파이프라인 단일화** (UX#2: 3개 구현 → 1개 백엔드 유틸) + UX 백로그 high 잔여(#7 방향별 지연, #24 단위) | C/X | 없음 |
@@ -147,7 +147,9 @@ Exit: **대전 데이터 기반 소규모 실지역을 지도에서 생성 → �
    라이선스가 N개로 판명되면 스윕 병렬도와 COM 유닛 병렬도가 함께 풀린다 — **질문 3의
    답이 로드맵 속도를 직접 바꾼다.**
 6. **데이터 게이트**: 1.2(대전 어댑터)만 TK 파일에 묶임. 그래서 0.7(계약)을 먼저 빼서
-   도착 즉시 착수 가능하게 했다. 부록 A/B 수령 완료(2026-07-31, 추출본 docs/product/reference/) — 데이터 게이트는 이제 대전 파일 하나뿐.
+   도착 즉시 착수 가능하게 했다. 부록 A/B 수령 완료(2026-07-31, 추출본 docs/product/reference/).
+   **대전 파일 도착·인벤토리 완료 2026-08-03 (0f4026d)** — 데이터 게이트 해소. 잔여 이슈는
+   신호측 형식뿐(PDF 23건; TK에 기계가독 export 존재 여부 문의, 없으면 PDF 추출이 fallback).
 
 **의존 그래프 (요약):**
 
