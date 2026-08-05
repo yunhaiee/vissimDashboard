@@ -1,0 +1,254 @@
+{
+  "schema": "prism.result_evidence.capability_matrix/1",
+  "measured_on": "2026-08-05",
+  "measured_from": [
+    "runtime/simulations",
+    "runtime/workspaces"
+  ],
+  "total_result_dbs": 136,
+  "contains": "table sets, row counts and provenance only -- no customer content",
+  "simulationrun_signature_note": "Grouping was attempted by SIMULATIONRUN signature first: all 136 result .dbs in this checkout share ONE identical signature, so the signature alone does not discriminate. The families below are therefore keyed by (SIMULATIONRUN signature, table set) -- the table set is what actually varies.",
+  "distinct_simulationrun_signatures": [
+    [
+      "NO",
+      "TIMESTAMP",
+      "RANDSEED",
+      "SIMPERIOD",
+      "STARTTM",
+      "STARTDATE",
+      "SIMEND",
+      "DYNASSIGNCONV",
+      "VISSIMVER",
+      "COMMENT",
+      "FILENAME"
+    ]
+  ],
+  "families": [
+    {
+      "id": "customer-model-noderesults-populated",
+      "db_count": 70,
+      "roots": [
+        "runtime/workspaces"
+      ],
+      "provenance": [
+        "customer-model uploads (this developer's live workspace)"
+      ],
+      "simulationrun_signature": [
+        "NO",
+        "TIMESTAMP",
+        "RANDSEED",
+        "SIMPERIOD",
+        "STARTTM",
+        "STARTDATE",
+        "SIMEND",
+        "DYNASSIGNCONV",
+        "VISSIMVER",
+        "COMMENT",
+        "FILENAME"
+      ],
+      "evidence_states": {
+        "SIMULATIONRUN": "PRESENT",
+        "MOVEMENT_EvaluationTimeInterval": "PRESENT",
+        "MOVEMENT_EvaluationTimeIntervalClass": "PRESENT",
+        "QUEUECOUNTER_EvaluationTimeInterval": "TABLE_ABSENT",
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeInterval": "PRESENT",
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeIntervalClass": "PRESENT",
+        "VEHICLETRAVELTIMEMEASUREMENT_EvaluationTimeIntervalClass": "PRESENT",
+        "DATACOLLECTIONMEASUREMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT",
+        "LINKEVALSEGMENT_EvaluationTimeIntervalClass": "PRESENT"
+      },
+      "row_count_range": {
+        "LINKEVALSEGMENT_EvaluationTimeIntervalClass": {
+          "min": 2243,
+          "max": 13656
+        },
+        "MOVEMENT_EvaluationTimeInterval": {
+          "min": 62,
+          "max": 67
+        },
+        "MOVEMENT_EvaluationTimeIntervalClass": {
+          "min": 63,
+          "max": 402
+        },
+        "SIMULATIONRUN": {
+          "min": 1,
+          "max": 1
+        },
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeInterval": {
+          "min": 1,
+          "max": 1
+        },
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeIntervalClass": {
+          "min": 1,
+          "max": 6
+        },
+        "VEHICLETRAVELTIMEMEASUREMENT_EvaluationTimeIntervalClass": {
+          "min": 13,
+          "max": 108
+        }
+      },
+      "sample_paths": [
+        "runtime/workspaces/bfc69251bd04/uploads/current/Scenarios/S000001/S000001.results/1.db",
+        "runtime/workspaces/bfc69251bd04/uploads/current/Scenarios/S000001/S000001.results/2.db",
+        "runtime/workspaces/bfc69251bd04/uploads/current/Scenarios/S000001/S000001.results/3.db"
+      ]
+    },
+    {
+      "id": "vendor-example-queuecounter-populated-movement-armed-but-empty",
+      "db_count": 48,
+      "roots": [
+        "runtime/simulations"
+      ],
+      "provenance": [
+        "vendor-example runs produced by this repo's own job runner"
+      ],
+      "simulationrun_signature": [
+        "NO",
+        "TIMESTAMP",
+        "RANDSEED",
+        "SIMPERIOD",
+        "STARTTM",
+        "STARTDATE",
+        "SIMEND",
+        "DYNASSIGNCONV",
+        "VISSIMVER",
+        "COMMENT",
+        "FILENAME"
+      ],
+      "evidence_states": {
+        "SIMULATIONRUN": "PRESENT",
+        "MOVEMENT_EvaluationTimeInterval": "ARMED_BUT_EMPTY",
+        "MOVEMENT_EvaluationTimeIntervalClass": "ARMED_BUT_EMPTY",
+        "QUEUECOUNTER_EvaluationTimeInterval": "PRESENT",
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeInterval": "PRESENT",
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeIntervalClass": "PRESENT",
+        "VEHICLETRAVELTIMEMEASUREMENT_EvaluationTimeIntervalClass": "PRESENT",
+        "DATACOLLECTIONMEASUREMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT",
+        "LINKEVALSEGMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT"
+      },
+      "row_count_range": {
+        "QUEUECOUNTER_EvaluationTimeInterval": {
+          "min": 25,
+          "max": 25
+        },
+        "SIMULATIONRUN": {
+          "min": 1,
+          "max": 1
+        },
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeInterval": {
+          "min": 1,
+          "max": 1
+        },
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeIntervalClass": {
+          "min": 1,
+          "max": 1
+        },
+        "VEHICLETRAVELTIMEMEASUREMENT_EvaluationTimeIntervalClass": {
+          "min": 24,
+          "max": 24
+        }
+      },
+      "sample_paths": [
+        "runtime/simulations/0ad259cb/seed_00/working.results/1.db",
+        "runtime/simulations/0ad259cb/seed_01/working.results/1.db",
+        "runtime/simulations/0ad259cb/seed_02/working.results/1.db"
+      ]
+    },
+    {
+      "id": "simulationrun-only",
+      "db_count": 17,
+      "roots": [
+        "runtime/simulations"
+      ],
+      "provenance": [
+        "vendor-example runs produced by this repo's own job runner"
+      ],
+      "simulationrun_signature": [
+        "NO",
+        "TIMESTAMP",
+        "RANDSEED",
+        "SIMPERIOD",
+        "STARTTM",
+        "STARTDATE",
+        "SIMEND",
+        "DYNASSIGNCONV",
+        "VISSIMVER",
+        "COMMENT",
+        "FILENAME"
+      ],
+      "evidence_states": {
+        "SIMULATIONRUN": "PRESENT",
+        "MOVEMENT_EvaluationTimeInterval": "TABLE_ABSENT",
+        "MOVEMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT",
+        "QUEUECOUNTER_EvaluationTimeInterval": "TABLE_ABSENT",
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeInterval": "TABLE_ABSENT",
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT",
+        "VEHICLETRAVELTIMEMEASUREMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT",
+        "DATACOLLECTIONMEASUREMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT",
+        "LINKEVALSEGMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT"
+      },
+      "row_count_range": {
+        "SIMULATIONRUN": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "sample_paths": [
+        "runtime/simulations/11d53253/seed_00/working.results/1.db",
+        "runtime/simulations/160d17d3/seed_00/working.results/1.db",
+        "runtime/simulations/2560755f/seed_00/working.results/1.db"
+      ]
+    },
+    {
+      "id": "vehicle-network-performance-only",
+      "db_count": 1,
+      "roots": [
+        "runtime/simulations"
+      ],
+      "provenance": [
+        "vendor-example runs produced by this repo's own job runner"
+      ],
+      "simulationrun_signature": [
+        "NO",
+        "TIMESTAMP",
+        "RANDSEED",
+        "SIMPERIOD",
+        "STARTTM",
+        "STARTDATE",
+        "SIMEND",
+        "DYNASSIGNCONV",
+        "VISSIMVER",
+        "COMMENT",
+        "FILENAME"
+      ],
+      "evidence_states": {
+        "SIMULATIONRUN": "PRESENT",
+        "MOVEMENT_EvaluationTimeInterval": "TABLE_ABSENT",
+        "MOVEMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT",
+        "QUEUECOUNTER_EvaluationTimeInterval": "TABLE_ABSENT",
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeInterval": "PRESENT",
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeIntervalClass": "PRESENT",
+        "VEHICLETRAVELTIMEMEASUREMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT",
+        "DATACOLLECTIONMEASUREMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT",
+        "LINKEVALSEGMENT_EvaluationTimeIntervalClass": "TABLE_ABSENT"
+      },
+      "row_count_range": {
+        "SIMULATIONRUN": {
+          "min": 1,
+          "max": 1
+        },
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeInterval": {
+          "min": 1,
+          "max": 1
+        },
+        "VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeIntervalClass": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "sample_paths": [
+        "runtime/simulations/e421c076/seed_00/Intersection Beijing.results/1.db"
+      ]
+    }
+  ]
+}

@@ -3183,9 +3183,11 @@ register(
 # Catalog §1 "Demand that never enters the network": excess demand queues
 # OUTSIDE the network as latent demand rather than erroring — the postrun
 # companion to #3 latent_demand_overflow's preflight rough-capacity warning.
-# CATALOG-GAP: tools_run.py's run_result is ``{"tables", "deleted_vehicles"}``
-# only today (no network-wide latent-demand measure); reads
-# run_result["latent_demand_vehicles"] defensively.
+# CATALOG-GAP: unit U1 widened tools_run.py's run_result considerably, but
+# NOT here — there is still no network-wide latent-demand measure in any
+# result .db table (same unobtainability as deleted_vehicles, see
+# tools_run.py's docstring); reads run_result["latent_demand_vehicles"]
+# defensively.
 # ---------------------------------------------------------------------------
 
 
@@ -3239,9 +3241,12 @@ register(
 # Catalog §1 "A gridlocked movement can report the best possible grade" —
 # the "zero-throughput-good-LOS" lie detector: LOS grade A covers BOTH "no
 # delay" and "no volume, as no vehicle is moving, due to a traffic jam."
-# CATALOG-GAP: run_result carries no per-movement LOS/volume breakdown today
-# (only {"tables", "deleted_vehicles"}); reads run_result["los_by_movement"]
-# defensively ([{"movement", "los", "volume"}, ...]).
+# SUPPLIED since unit U1: tools_run.py builds run_result["los_by_movement"]
+# ([{"movement", "los", "volume", "delay_s"}, ...]) from
+# MOVEMENT_EvaluationTimeIntervalClass — VEHS is the volume, VEHDELAY banded
+# through results_evidence.los_band is the grade. Still read defensively: the
+# key is deliberately OMITTED when that table is absent from the result .db
+# (see tools_run._collect_run_evidence's tri-state policy).
 # ---------------------------------------------------------------------------
 
 
@@ -3252,7 +3257,7 @@ def _check_gridlock_reports_los_a(
     if run_result is None:
         return None
 
-    los_by_movement = run_result.get("los_by_movement")  # CATALOG-GAP: not in run_result today
+    los_by_movement = run_result.get("los_by_movement")  # omitted when the table is absent
     if not los_by_movement:
         return None
 
@@ -3359,11 +3364,14 @@ register(
 #
 # Catalog §5 "'Queue length' is not a portable number": what counts as
 # queued depends on configurable speed thresholds and counter placement.
-# CATALOG-GAP: run_result carries no queue-definition provenance today;
-# fires only when queue KPI numbers ARE present (run_result["queue_results"])
-# but their defining parameters are not (run_result["queue_definition"]) —
-# exactly the risk the catalog names ("attach the definition to every queue
-# answer").
+# SUPPLIED since unit U1: run_result["queue_results"] comes from
+# MOVEMENT_EvaluationTimeInterval and run_result["queue_definition"] from the
+# run .inpx's <evaluation queueBeginSpeed/queueEndSpeed/queueMaxClear/
+# queueMaxLength/queueConsiderAdjacentLanes>. Fires only when queue KPI
+# numbers ARE present but their defining parameters are not — exactly the
+# risk the catalog names ("attach the definition to every queue answer").
+# tools_run.py ships the two together or ships neither, so this fires on a
+# genuinely unreadable definition and not on every run.
 # ---------------------------------------------------------------------------
 
 
@@ -3374,7 +3382,7 @@ def _check_queue_length_definition_not_portable(
     if run_result is None:
         return None
 
-    queue_results = run_result.get("queue_results")  # CATALOG-GAP: not in run_result today
+    queue_results = run_result.get("queue_results")  # omitted when the table is absent
     if not queue_results:
         return None
     if run_result.get("queue_definition"):
@@ -3414,10 +3422,12 @@ register(
 #
 # Catalog §5 "Delay is only counted from a fixed distance upstream" (default
 # 100m): when a queue stretches further back than the delay-segment start,
-# the excess delay simply isn't counted. CATALOG-GAP: run_result carries no
-# per-node delay-segment/queue-length pairing today; reads
-# run_result["delay_segments"] defensively
-# ([{"node", "segment_length_m", "observed_queue_m"}, ...]).
+# the excess delay simply isn't counted. SUPPLIED since unit U1:
+# run_result["delay_segments"] ([{"node", "segment_length_m",
+# "observed_queue_m"}, ...]) pairs the .inpx's <evaluation
+# nodesDelaySegmentStart> against each node's worst QLENMAX from
+# MOVEMENT_EvaluationTimeInterval. Still read defensively: the key is
+# omitted when either side is unavailable.
 # ---------------------------------------------------------------------------
 
 
@@ -3428,7 +3438,7 @@ def _check_delay_measurement_truncated_by_queue(
     if run_result is None:
         return None
 
-    segments = run_result.get("delay_segments")  # CATALOG-GAP: not in run_result today
+    segments = run_result.get("delay_segments")  # omitted when either side is unavailable
     if not segments:
         return None
 
@@ -3476,9 +3486,11 @@ register(
 #
 # Catalog §5 "The averaging interval changes the answer" (Washington State
 # subtlety): an averaging interval that's an exact multiple of the signal
-# cycle length samples the same point in the cycle every time. CATALOG-GAP:
-# run_result carries neither today; reads run_result["evaluation_interval_s"]
-# and run_result["signal_cycle_s"] defensively.
+# cycle length samples the same point in the cycle every time.
+# HALF-SUPPLIED since unit U1: run_result["evaluation_interval_s"] is now
+# real (the interval the run was actually armed with). CATALOG-GAP remains on
+# the other half — run_result["signal_cycle_s"] has no producer, so this
+# check still cannot fire. Both are read defensively.
 # ---------------------------------------------------------------------------
 
 
@@ -3489,7 +3501,7 @@ def _check_evaluation_interval_multiple_of_cycle(
     if run_result is None:
         return None
 
-    raw_interval = run_result.get("evaluation_interval_s")  # CATALOG-GAP: not in run_result today
+    raw_interval = run_result.get("evaluation_interval_s")  # supplied since unit U1
     raw_cycle = run_result.get("signal_cycle_s")  # CATALOG-GAP: not in run_result today
     if raw_interval is None or raw_cycle is None:
         return None

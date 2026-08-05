@@ -105,8 +105,11 @@ finding, applies_to=["run_demand_stress_sweep"]) that would close this gap
 properly, deferred here per the hard rule.
 
 **Postrun guardrail reuse for free.** This tool's returned ``run_result``
-(``{"tables", "deleted_vehicles"}``) uses the EXACT SAME shape
-``run_simulation`` returns, so ``constraints.py``'s two ``applies_to=["*"]``
+(``{"tables", "deleted_vehicles"}`` — since unit U1 a SUBSET of what
+``run_simulation`` returns, which additionally carries per-run queue/LOS
+evidence and its tri-state ``evidence`` descriptor; extending this tool to
+match is deliberately out of U1's scope) uses the same key NAMES, so
+``constraints.py``'s two ``applies_to=["*"]``
 postrun checks (``results_missing_kpi_tables``, ``vehicles_deleted_in_run``)
 already fire against a demand-stress sweep with ZERO changes to
 ``constraints.py`` — they key off ``extra["run_result"]`` alone, never the

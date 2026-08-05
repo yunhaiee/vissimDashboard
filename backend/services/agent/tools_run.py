@@ -44,9 +44,9 @@ verifiable artifact, and the guardrail doctrine (docs/phase2/
 00-EXECUTION-GUIDE.md SS4) says verify, not trust.
 
 **Postrun guardrail call site.** This tool does NOT call
-``GuardrailEngine.postrun`` itself — it returns ``run_result`` (``{"tables",
-"deleted_vehicles"}``) inside its envelope's ``data`` key, and
-``orchestrator.py`` calls ``engine.postrun`` after a successful run-tier
+``GuardrailEngine.postrun`` itself — it returns ``run_result`` inside its
+envelope's ``data`` key, and ``orchestrator.py`` calls ``engine.postrun``
+after a successful run-tier
 dispatch, mirroring exactly how it (not ``tools_edit.py``) calls
 ``engine.postwrite`` after a write dispatch. A tool function only ever
 receives its own validated params (``toolkit.dispatch``'s contract) — it has
@@ -55,25 +55,38 @@ and constructing a second, independent engine here would silently bypass the
 ablation flag's single-instance-per-turn semantics. See the drafted
 DECISIONS.md entry in the M2.4 report.
 
+**run_result's contract (unit U1).** Four keys are always present —
+``tables``, ``deleted_vehicles``, ``evaluation_configured``,
+``trajectory_recorded`` — plus ``evidence``, the tri-state descriptor from
+``services/results_evidence.py``. The evidence-bearing keys
+(``queue_results``, ``queue_definition``, ``los_by_movement``,
+``movement_volumes``, ``delay_segments``, ``evaluation_interval_s``) are
+CONDITIONALLY present, and their absence is itself the message: a key is
+OMITTED when the table backing it does not exist in the result .db at all,
+and present-but-empty (an ``EmptyEvidence*`` marker) when the evaluation was
+armed and collected nothing. See :func:`_collect_run_evidence`.
+
 **deleted_vehicles is always None today.** Vissim records ``DiffusTm``-driven
 vehicle removals only in the run's ``.err`` text log
 (docs/reference/vissim-constraints.html), never in any SQLite result table —
 there is no result-.db column to read this from. ``vehicles_deleted_in_run``
 (constraints.py #8) therefore cannot fire yet; ``results_missing_kpi_tables``
 (#7) is the detector this milestone's live acceptance check exercises. See
-the drafted DECISIONS.md entry.
+the drafted DECISIONS.md entry. The same holds for
+``latent_demand_vehicles``.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict
 
-from services import results_reader
+from services import results_evidence, results_reader
 from services.agent.toolkit import tool
 
 logger = logging.getLogger(__name__)
@@ -300,6 +313,276 @@ def _summarize_kpis(work_dir: Path) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
+# Post-run evidence (unit U1) — the run_result keys the postrun catalogue
+# already asks for
+# ---------------------------------------------------------------------------
+#
+# NINE postrun constraints in constraints.py (#21-#29) were written to read
+# run_result fields that nothing produced, so none of them could ever fire on
+# a real run. This section supplies the fields for THREE of them
+# (gridlock_reports_los_a, queue_length_definition_not_portable,
+# delay_measurement_truncated_by_queue) plus half of a fourth
+# (evaluation_interval_multiple_of_cycle still wants signal_cycle_s), from
+# artefacts the run already has on disk: the result .db (via
+# services/results_evidence.py) and the run's own source .inpx. No COM, no
+# new Vissim call, nothing that can fail a completed run. The remaining five
+# keep their CATALOG-GAP markers — see each constraint's own comment for what
+# is genuinely unobtainable (latent_demand_vehicles, deleted_vehicles) versus
+# merely not built yet (vissim_version, error_log_archived,
+# simulation_resolution, evaluation_warmup_starts, signal_cycle_s).
+#
+# The .inpx side matters as much as the .db side. queue_length_definition_
+# not_portable fires exactly when queue NUMBERS are present and their
+# DEFINING PARAMETERS are not — so shipping queue_results without
+# queue_definition would manufacture a permanent false positive on every
+# single run. They travel together or the results stay unshipped.
+
+# Attributes of the .inpx ``<evaluation>`` element that define what Vissim
+# counts as "queued". Verified against real networks in this checkout: the
+# vendor examples carry queueBeginSpeed="3" queueEndSpeed="6"
+# queueMaxClear="10" queueMaxLength="500", the customer model carries
+# queueBeginSpeed="5" queueEndSpeed="12.5" queueMaxClear="20"
+# queueMaxLength="2000" — i.e. two models whose queue numbers are NOT
+# comparable, which is precisely the constraint's point.
+_QUEUE_DEFINITION_ATTRS: dict[str, str] = {
+    "begin_speed": "queueBeginSpeed",
+    "end_speed": "queueEndSpeed",
+    "max_clear": "queueMaxClear",
+    "max_length": "queueMaxLength",
+    "consider_adjacent_lanes": "queueConsiderAdjacentLanes",
+}
+
+# The upstream distance from a node over which Vissim counts delay. Delay
+# from a queue that stretches back further than this simply is not counted,
+# so the most congested intersections are the ones whose delay is most
+# under-reported — delay_measurement_truncated_by_queue's whole subject.
+# Both the vendor examples and the customer model carry the 100 m default.
+_DELAY_SEGMENT_ATTR = "nodesDelaySegmentStart"
+
+
+def _local_name(tag: object) -> str:
+    """XML tag without any ``{namespace}`` prefix."""
+    return str(tag).rsplit("}", 1)[-1]
+
+
+def _as_float(raw: object) -> float | None:
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_bool(raw: object) -> bool | None:
+    text = str(raw).strip().lower() if raw is not None else ""
+    if text in ("true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no"):
+        return False
+    return None
+
+
+def _read_evaluation_element(inpx_path: Path) -> dict[str, Any]:
+    """ONE ElementTree pass over the run's .inpx, stopping at
+    ``</evaluation>``.
+
+    ``iterparse`` rather than ``ET.parse`` deliberately: ``<evaluation>``
+    sits about a fifth of the way into a real network file (measured: byte
+    239188 of 1375367 on the customer model) and the largest .inpx in this
+    checkout is 8.4 MB, so there is no reason to build the whole tree to read
+    one element's attributes.
+
+    Returns ``{}`` — never raises — when the file is missing, unparseable, or
+    simply has no ``<evaluation>`` element. A run that completed must not be
+    turned into a failure by a provenance read.
+    """
+    try:
+        for _event, element in ET.iterparse(str(inpx_path), events=("end",)):
+            if _local_name(element.tag) != "evaluation":
+                continue
+            return _parse_evaluation_element(element)
+    except (ET.ParseError, OSError):
+        logger.exception(
+            "run_simulation: could not read <evaluation> from %s; "
+            "run_result will carry no queue definition",
+            inpx_path,
+        )
+    return {}
+
+
+def _parse_evaluation_element(element: ET.Element) -> dict[str, Any]:
+    queue_definition: dict[str, Any] = {}
+    for field, attribute in _QUEUE_DEFINITION_ATTRS.items():
+        raw = element.get(attribute)
+        if raw is None:
+            continue
+        value = _as_bool(raw) if field == "consider_adjacent_lanes" else _as_float(raw)
+        if value is None:
+            continue
+        queue_definition[field] = value
+
+    node_results_interval_s: float | None = None
+    for child in element:
+        if _local_name(child.tag) != "nodeResults":
+            continue
+        # "Armed" is collectData="true". A dormant <nodeResults> carries a
+        # placeholder interval (999999 on the untouched vendor examples)
+        # that describes nothing the network would actually measure.
+        if _as_bool(child.get("collectData")):
+            node_results_interval_s = _as_float(child.get("interval"))
+        break
+
+    return {
+        # Only when at least one defining parameter was actually found. An
+        # all-None dict would read as "definition attached" to
+        # queue_length_definition_not_portable and silence a check that
+        # SHOULD fire when the definition is genuinely unavailable.
+        "queue_definition": queue_definition or None,
+        "delay_segment_start_m": _as_float(element.get(_DELAY_SEGMENT_ATTR)),
+        "node_results_interval_s": node_results_interval_s,
+    }
+
+
+def _delay_segments(
+    queue_results: dict[str, dict[str, Any]], segment_length_m: float
+) -> list[dict[str, Any]]:
+    """Pair each node's worst observed queue against the delay segment.
+
+    Node id comes from the movement OBJECT_ID's leading token (Vissim writes
+    both per-movement rows like ``1-508-100.779980-510-62.109716`` and a
+    node-level aggregate row like ``1``; both fold onto the same node).
+    """
+    worst_by_node: dict[str, float] = {}
+    for object_id, row in queue_results.items():
+        qlenmax = row.get("qlenmax")
+        if qlenmax is None:
+            continue
+        node = results_evidence.node_token(object_id)
+        worst_by_node[node] = max(worst_by_node.get(node, float(qlenmax)), float(qlenmax))
+
+    return [
+        {
+            "node": node,
+            "segment_length_m": segment_length_m,
+            "observed_queue_m": observed,
+        }
+        for node, observed in sorted(
+            worst_by_node.items(), key=lambda item: (0, int(item[0])) if item[0].isdigit() else (1, item[0])
+        )
+    ]
+
+
+def _collect_run_evidence(
+    work_dir: Path | None,
+    source_inpx: Path,
+    *,
+    duration_s: int,
+    evaluation_configured: bool,
+) -> dict[str, Any]:
+    """The evidence-bearing ``run_result`` keys, plus the ``evidence``
+    descriptor that explains every one of them.
+
+    The tri-state policy, which is the whole point of the descriptor:
+
+    * ``TABLE_ABSENT`` — the key is **omitted**. Not ``None``, not ``[]``:
+      the run has no opinion, and a defaulted value would read as one.
+    * ``ARMED_BUT_EMPTY`` — the key is **present** carrying an empty-with-
+      reason marker, so the system can say "queue evidence was requested and
+      none was collected" instead of silently implying no anomaly.
+    * ``PRESENT(n)`` — the key carries the actual rows.
+
+    Every branch degrades rather than raises: a completed run must never be
+    reported as failed because a provenance read hiccuped.
+    """
+    evidence: dict[str, Any] = {}
+
+    descriptor = (
+        results_evidence.describe_result_dir(work_dir)
+        if work_dir is not None
+        else {table: results_evidence.TABLE_ABSENT for table in results_evidence.EVALUATION_TABLES}
+    )
+    evidence["evidence"] = descriptor
+
+    db_paths = results_evidence.result_db_paths(work_dir) if work_dir is not None else []
+    evaluation = _read_evaluation_element(source_inpx)
+
+    queue_table = results_evidence.MOVEMENT_INTERVAL_TABLE
+    class_table = results_evidence.MOVEMENT_INTERVAL_CLASS_TABLE
+    queue_state = descriptor.get(queue_table, results_evidence.TABLE_ABSENT)
+    class_state = descriptor.get(class_table, results_evidence.TABLE_ABSENT)
+
+    # --- queue_results + its mandatory definition ---------------------------
+    queue_results: dict[str, dict[str, Any]] | None = None
+    if queue_state == results_evidence.ARMED_BUT_EMPTY:
+        evidence["queue_results"] = results_evidence.armed_but_empty_mapping(queue_table)
+    elif results_evidence.is_present(queue_state):
+        queue_results = results_evidence.read_queue_rows(db_paths)
+        evidence["queue_results"] = queue_results
+
+    queue_definition = evaluation.get("queue_definition")
+    if queue_definition:
+        evidence["queue_definition"] = queue_definition
+
+    # --- los_by_movement + movement_volumes --------------------------------
+    if class_state == results_evidence.ARMED_BUT_EMPTY:
+        evidence["los_by_movement"] = results_evidence.armed_but_empty_list(class_table)
+        evidence["movement_volumes"] = results_evidence.armed_but_empty_mapping(class_table)
+    elif results_evidence.is_present(class_state):
+        rows = results_evidence.read_movement_class_rows(db_paths)
+        evidence["los_by_movement"] = [
+            {
+                "movement": object_id,
+                "los": results_evidence.los_band(row.get("vehdelay")),
+                "volume": row.get("vehs"),
+                # Not read by gridlock_reports_los_a, carried because that
+                # constraint's own message is "never report a LOS letter
+                # without the number it came from next to it".
+                "delay_s": row.get("vehdelay"),
+            }
+            for object_id, row in rows.items()
+        ]
+        # The node token is exposed on every entry on purpose: this is the
+        # key that later lets a reality-check compare the RUN against field
+        # observations without re-reading a workbook.
+        evidence["movement_volumes"] = {
+            object_id: {
+                "vehs": row.get("vehs"),
+                "node": results_evidence.node_token(object_id),
+            }
+            for object_id, row in rows.items()
+        }
+
+    # --- delay_segments -----------------------------------------------------
+    # Needs BOTH sides: the queue lengths from the .db and the segment start
+    # from the .inpx. Without the segment there is nothing to compare against,
+    # so the key is omitted rather than invented at Vissim's 100 m default.
+    segment_length_m = evaluation.get("delay_segment_start_m")
+    if segment_length_m is not None:
+        if queue_state == results_evidence.ARMED_BUT_EMPTY:
+            evidence["delay_segments"] = results_evidence.armed_but_empty_list(queue_table)
+        elif queue_results is not None:
+            evidence["delay_segments"] = _delay_segments(queue_results, segment_length_m)
+
+    # --- evaluation_interval_s ---------------------------------------------
+    # DELIBERATELY not read straight off the source .inpx. For an agent run,
+    # routers/simulations.py calls VissimController.
+    # configure_network_performance_evaluation, which overwrites every
+    # evaluation type's interval with `max(int(duration_s), 1)` (one bucket
+    # spanning the whole run) before RunContinuous — so the .inpx's own
+    # <nodeResults interval=...> is NOT the interval this run used, and
+    # reporting it would be a quiet lie. evaluation_configured is exactly the
+    # flag that says whether that re-arming happened; the network's own armed
+    # interval is the honest answer only when it did not.
+    if evaluation_configured:
+        evidence["evaluation_interval_s"] = float(max(int(duration_s), 1))
+    elif evaluation.get("node_results_interval_s") is not None:
+        evidence["evaluation_interval_s"] = evaluation["node_results_interval_s"]
+
+    return evidence
+
+
+# ---------------------------------------------------------------------------
 # run_simulation(duration_s, random_seeds)
 # ---------------------------------------------------------------------------
 
@@ -372,11 +655,34 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
         "trajectory_recorded": trajectory_recorded,
     }
 
-    kpis: dict[str, Any] | None = None
+    work_dir: Path | None = None
     if job_id:
         from services.simulation_runs import job_dir
 
-        kpis = _summarize_kpis(job_dir(job_id))
+        work_dir = job_dir(job_id)
+
+    # Unit U1: the postrun catalogue's evidence. Wrapped because a run that
+    # genuinely completed must never be reported as failed by a read of its
+    # own leftovers — _collect_run_evidence degrades internally too, this is
+    # the outer belt.
+    try:
+        run_result.update(
+            _collect_run_evidence(
+                work_dir,
+                source_inpx,
+                duration_s=params.duration_s,
+                evaluation_configured=evaluation_configured,
+            )
+        )
+    except Exception:
+        logger.exception(
+            "run_simulation: post-run evidence collection failed; run_result carries "
+            "the four base keys only"
+        )
+
+    kpis: dict[str, Any] | None = None
+    if work_dir is not None:
+        kpis = _summarize_kpis(work_dir)
 
     tables_text = ", ".join(run_result["tables"]) or "none"
     eval_text = "configured" if evaluation_configured else "NOT configured (KPIs may be unavailable)"

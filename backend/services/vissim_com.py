@@ -52,8 +52,28 @@ class VissimParkingLotTypeError(ValueError):
 #   internal key                  -> .inpx element  -> result table (via _read_db)
 #   vehicle_network_performance   -> <vehNetPerf>    -> VEHICLENETWORKPERFORMANCEMEASUREMENT_EvaluationTimeIntervalClass
 #   node_results                  -> <nodeResults>   -> MOVEMENT_EvaluationTimeIntervalClass
+#                                                    -> MOVEMENT_EvaluationTimeInterval
 #   vehicle_travel_time           -> <vehTravTms>    -> VEHICLETRAVELTIMEMEASUREMENT_EvaluationTimeIntervalClass
-#   queue_counters                -> <queues>        -> MOVEMENT_EvaluationTimeInterval
+#   queue_counters                -> <queues>        -> QUEUECOUNTER_EvaluationTimeInterval
+#
+# CORRECTION (unit U1, 2026-08-05): the last two rows used to read
+# "queue_counters -> <queues> -> MOVEMENT_EvaluationTimeInterval". That was
+# wrong, and measurably so — 136 real result .dbs in this checkout settle it
+# read-only, no COM needed:
+#   * 70 customer-model .dbs whose network arms <nodeResults collectData="true">
+#     and leaves <queues collectData="false"> carry MOVEMENT_EvaluationTimeInterval
+#     with 62-67 rows and NO QUEUECOUNTER_EvaluationTimeInterval table at all;
+#   * 48 vendor-example .dbs produced by this job runner (which arms all four
+#     types) carry QUEUECOUNTER_EvaluationTimeInterval with 25 rows and
+#     MOVEMENT_EvaluationTimeInterval present but EMPTY — those example
+#     networks define no nodes, so nodeResults creates the table and fills
+#     nothing.
+# MOVEMENT_EvaluationTimeInterval — the per-movement QLEN/QLENMAX table
+# results_reader._read_db reads — is a nodeResults product. Do not "fix"
+# that SQL to point at QUEUECOUNTER_*: it would read zero rows on the only
+# family of networks in this checkout that has queue data at all. The COM
+# attribute ids below are untouched by this correction; they were verified
+# live and only the prose was wrong.
 #
 # The COM id prefix does NOT reliably match the .inpx element name (the
 # whole reason this must be verified live, not assumed): vehNetPerf,
