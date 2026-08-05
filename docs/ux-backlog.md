@@ -12,13 +12,16 @@ re-grep the quoted identifiers rather than trusting line numbers.
 
 ## High severity — residuals after 77b0dc6
 
-- [ ] **#7 residual — on-screen per-direction delay still uses the invented 0.75–1.25 volume factor.**
-  Fixed in 77b0dc6: synthetic "Estimated LOS" letters removed from the exported report; estimation
-  disclaimer made always-visible on DirectionDelayChart. Remaining: the chart itself still weights
-  intersection-average delay by `volumeFactor = 0.75 + (dirVol/maxVol) * 0.5` (search `volumeFactor` in
-  `frontend/app/dashboard/page.tsx`) — now disclosed, but still an invented distribution. Proper fix:
-  read real per-movement delay from node results (movement-level rows exist in the result DBs) or drop
-  the per-direction delay chart entirely and show per-direction *volume* only.
+- [x] **#7 — CLOSED 2026-08-05 (7cfe8eb, unit 1.5).** Per-approach delay is now a VEHS-weighted mean of
+  measured per-movement `VEHDELAY`, not the node average times an invented factor. The factor lived in
+  TWO places — `calculateDirectionDelays` in `frontend/app/dashboard/page.tsx` and a backend mirror,
+  `results_reader._estimate_direction_delays`, that this entry never knew about; both are deleted. Where
+  nothing was measured the chart shows 데이터 없음 and the report prints `-`, never a zero (the guard is
+  null-before-coercion: `toFiniteNumber` is `Number()` + `isFinite` and `Number(null)` is a finite `0`,
+  which briefly turned "not measured" into four bars at LOS A — a source pin now fails if the coercion
+  moves back ahead of the guard). The exported report's claim that Vissim cannot produce per-approach LOS
+  went with the estimate, and the report now carries the measured delay and its LOS. See
+  `docs/phase2/DECISIONS.md`.
 - [ ] **#18 residual — decision content placement.** Fixed in 77b0dc6: busiest intersection auto-seeds
   (`autoSeededNodesRef`), so panels are never empty on load. Remaining: the overall
   narrative/scenario-ranking section is still 5th of 6 and the 520px map is still the first section;
@@ -27,12 +30,17 @@ re-grep the quoted identifiers rather than trusting line numbers.
 - [ ] **#2 residual — sim totals sourced only from `top_congested_nodes`; third GEH pipeline.**
   Fixed in 77b0dc6: "S000001" no longer leaks into user copy (resolved via `resolveBaseScenarioName`).
   Remaining: validation-matrix sim totals come from `summary.top_congested_nodes.find(...)` so nodes
-  outside the top-N render "-"; `/base-model` still has its own `geh()` implementation with no
-  cross-link to the dashboard's — three disjoint GEH pipelines total. Proper fix: a single backend GEH
-  endpoint/util consumed by all surfaces.
-- [ ] **#24 residual — total metrics units.** Fixed in 77b0dc6: "Best" tag suppressed on totals.
-  Remaining: TRAVTMTOT/DELAYTOT still display as raw seconds with "51.5k"-style abbreviation instead of
-  vehicle-hours. Proper fix: convert totals to veh·h with a unit badge.
+  outside the top-N render "-". **The GEH half is CLOSED 2026-08-05 (7cfe8eb, unit 1.5)**: there were
+  FOUR live implementations, not three (the backend carried two disjoint copies, and `report_exports`'
+  returned a passing `0.0` where the statistic is undefined). Now one per runtime —
+  `backend/services/validation.py` and `frontend/lib/geh.ts` — held in step by
+  `shared/geh-conformance.json`, a case table both are tested against. Remaining under this ticket: the
+  sim-totals sourcing from `summary.top_congested_nodes`.
+- [x] **#24 — CLOSED 2026-08-05 (7cfe8eb, unit 1.5).** TRAVTMTOT/DELAYTOT render in vehicle-hours
+  (`displayDivisor`, value and stdev scaled together) instead of raw seconds with a "51.5k" abbreviation;
+  units and labels route through `t()` with ja entries added. `KpiCards.tsx` converted alongside the
+  dashboard. Note the sibling ticket **#28** (hardcoded `sec`/`veh` axis labels elsewhere, hover-only
+  volume values) is a DIFFERENT ticket and stays open — it was deliberately out of 1.5's scope.
 - [x] **#31 — closed in 77b0dc6.** `calculateNodeMaxQueue` no longer falls back to QLEN under the
   "Max Q Length" header; absent QLENMAX now renders honestly empty.
 

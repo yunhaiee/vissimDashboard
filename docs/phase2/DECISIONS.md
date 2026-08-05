@@ -3690,3 +3690,89 @@ of silently showing the demo dataset; a degraded migration now genuinely retries
 call rather than the next process boot. Known cosmetic residue: `_zip_too_large_message()`
 quotes the module constant rather than the active budget limit, visible only in tests that
 inject an explicit budget.
+
+
+---
+
+## 2026-08-05 — GEH unification (1.5): one implementation per runtime, and a fixture that can actually catch drift
+
+**Context:** roadmap row 1.5 said "3 implementations → 1 backend util". Reality measured four
+live copies — `services/validation.py`, `services/report_exports.py`, and a private one in each
+of `app/dashboard/page.tsx` and `app/base-model/page.tsx` — plus two git-tracked `.bak` files
+holding a fifth and sixth. Only one behavioural difference existed across them, and it was the
+dangerous kind: `report_exports._geh` returned a **passing 0.0** where the statistic is
+undefined, so every 0-observed/0-modelled movement scored as a perfect match on a
+customer-facing report.
+
+**Decision:** one implementation per RUNTIME, not one network call per row —
+`backend/services/validation.py` and `frontend/lib/geh.ts` — with `shared/geh-conformance.json`
+as a single table of cases both are tested against. The backend duplicates become import
+aliases onto the shared functions with identity assertions pinning them, which is stronger than
+deletion: a future private copy fails a test rather than passing quietly. Semantics: `None` when
+either input is missing, when `model + observed <= 0`, or when any input or the result is
+non-finite; no rounding at the source; `pass_rate` excludes undefined values from BOTH numerator
+and denominator and reports the excluded count.
+
+**Consequence:** verification proved the first fixture could not do its job. The two runtimes
+already disagreed on non-finite inputs (Python returned `nan` and graded it `poor`; TypeScript
+returned `null`), and JSON cannot encode NaN, so the fixture was structurally blind — stripping
+the guards from either side still passed. String sentinels (`"NaN"`, `"Infinity"`,
+`"-Infinity"`) that both readers decode, plus a reader that raises on an unknown spelling, close
+it; the guard-stripping mutation now fails on both sides. A second divergence surfaced on the
+way: Python raised `OverflowError` where JavaScript returned `Infinity`. **Rule this establishes:
+a cross-language conformance fixture must be checked against the encoding limits of its own
+format, and proven by mutating each runtime — a fixture nobody has tried to defeat is decoration.**
+
+---
+
+## 2026-08-05 — Undefined GEH leaves the denominator, and the published percentages move
+
+**Context:** unit 1.5. Under the old `report_exports._geh`, a 0-observed/0-modelled row scored
+0.0, passed the `< 5` test, and inflated both the numerator and the denominator of every GEH
+percentage in the Flow/GEH `.docx`, its CSV twin, and the executive-summary sentence. The
+pre-existing tests could not catch the change: they pin "CSV equals the source function", so
+both sides move together — and `data/real_counts.xlsx` does not exist in this checkout, so they
+were comparing empty data.
+
+**Decision:** undefined rows leave both numerator and denominator, and the shrunken denominator
+is DISCLOSED rather than hidden — a conditional note in the `.docx`, two new CSV columns
+(`GEH Counts`, `GEH Excluded`), and a summary sentence that names its own denominator.
+Characterization tests were written and run green against the OLD behaviour before the change,
+so every moved number is deliberate and reviewable. On the fixture: AM total GEH 80% → 67%,
+executive summary 75% → 67%. A node whose counts are ALL undefined prints `-` — not the old
+100% (wrongly perfect), and not the 0% the first cut produced (wrongly a total failure) —
+matching how the Count Validation table and the calibration XLSX already rendered that state.
+
+**Consequence:** real client reports will show LOWER GEH pass rates than before, always in the
+direction of correcting an inflation. `No. Counts` and `Flow %` deliberately do NOT change: a
+0/0 row still passes the flow test, and moving a second published number was not this unit's
+job. The CSV gains its two columns on EVERY export, clean dataset or not, so a downstream
+consumer pinned to column order breaks — accepted and pinned by a test, since a silently
+variable column set would be worse. `exporters.py` was aligned in the same pass because it had
+the mirror-image bug (counting undefined rows as failures, deflating instead of inflating).
+
+---
+
+## 2026-08-05 — Per-approach delay is measured, and "not measured" never renders as zero
+
+**Context:** unit 1.5 / UX backlog #7. Per-direction delay was the node-average multiplied by an
+invented `0.75 + (dirVol/maxVol) * 0.5` volume factor. The backlog knew about the dashboard
+copy; a backend mirror in `results_reader._estimate_direction_delays` was never listed. Vissim
+reports `VEHDELAY` per movement, and `_build_node_directions` already classified every movement
+to a compass approach — it kept the volumes and discarded the delay, so the real number had been
+available all along.
+
+**Decision:** a VEHS-weighted mean of measured per-movement `VEHDELAY` per approach, and where
+nothing was measured, emit nothing — `{}` from the backend, 데이터 없음 in the chart, `-` in the
+report. The estimate and its disclaimers are deleted, including the exported report's claim that
+Vissim cannot produce per-approach LOS, which the unit had made false.
+
+**Consequence:** the guard that makes "no data" reachable is null-before-coercion. The first cut
+shipped `toFiniteNumber(measured[direction])`, and since `toFiniteNumber` is `Number()` +
+`isFinite` while `Number(null)` is a finite `0`, a node with no measurement rendered four bars
+reading 0초/대 at LOS A — a fabricated measurement in the very unit built to delete one, with the
+no-data panel unreachable. Caught by adversarial replay of the shipped functions, not by review.
+**Rule: deleting an invented number is not enough; the absence path has to be exercised, because
+a coercion helper will happily invent a new one.** A source pin now fails if the coercion moves
+back ahead of the guard. The same defect remains on the network KPI cards (`_safe_mean` emits
+null, the card should be suppressed, coercion shows 0.0) — filed separately, not fixed here.
