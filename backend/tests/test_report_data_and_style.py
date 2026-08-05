@@ -106,6 +106,60 @@ def test_report_data_flow_geh_matches_source_function(client: TestClient):
             assert float(row["% Diff"]) == pytest.approx(exp["pct_diff"])
 
 
+def test_flow_geh_csv_shape_and_values_are_pinned_for_a_clean_dataset(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Literal pin of the flow-GEH CSV a CLEAN dataset produces.
+
+    Nothing covered this. ``test_report_data_endpoint_returns_expected_columns``
+    only asserts that six names appear SOMEWHERE in the header line -- not the
+    order, not the count -- and
+    ``test_report_data_flow_geh_matches_source_function`` compares the CSV
+    against the very function that generates it, so both sides of that
+    comparison move together. Unit 1.5 added two columns (``GEH Counts``,
+    ``GEH Excluded``) to EVERY export, including clean ones, and no test
+    noticed: a downstream consumer pinned to column order or count would have
+    broken silently. This is that missing pin.
+    """
+    from services import report_exports
+    from services.validation import DirectionCount, NodeRealCounts
+
+    def clean_counts(_path, period=None):
+        return {
+            "1": NodeRealCounts(
+                node_id="1",
+                node_name="Alpha",
+                total_real=1000,
+                total_sim_basam=1020,
+                directions=[DirectionCount(direction="W-E", real=1000, sim_basam=1020)],
+            )
+        }
+
+    clean_counts.cache_clear = lambda: None
+    monkeypatch.setattr(report_exports, "load_real_counts", clean_counts)
+
+    resp = client.get("/api/report/data/flow-geh-validation")
+    assert resp.status_code == 200
+    lines = resp.content.decode("utf-8-sig").splitlines()
+
+    # Column ORDER and COUNT, not just membership.
+    assert lines[0] == (
+        "Period,Node,No. Counts,Observed Flow,Modelled Flow,% Diff,"
+        "Flow %,GEH %,GEH Counts,GEH Excluded (0 obs / 0 model),Row Type"
+    )
+    assert len(lines[0].split(",")) == 11
+
+    # Every value, literally. GEH is 0.63 here, so Flow % and GEH % are both
+    # 100, GEH Counts equals No. Counts, and GEH Excluded is 0 -- a clean
+    # dataset must never show an exclusion or an undefined marker.
+    assert lines[1:] == [
+        "AM Peak,Node 1,1,1000,1020,2.0,100,100,1,0,node",
+        "AM Peak,Total,1,1000,1020,2.0,100,100,1,0,total",
+        "PM Peak,Node 1,1,1000,1020,2.0,100,100,1,0,node",
+        "PM Peak,Total,1,1000,1020,2.0,100,100,1,0,total",
+    ]
+
+
 def test_report_data_travel_time_charts_matches_source_function(client: TestClient):
     expected = travel_chart_specs()
     resp = client.get("/api/report/data/travel-time-charts")

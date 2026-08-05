@@ -16,7 +16,7 @@ from openpyxl.styles import Font
 from services.datasets import get_active_inpx_path, get_active_real_counts_excel
 from services.inpx_parser import parse_network
 from services.results_reader import get_scenario_results, list_scenarios
-from services.validation import geh, load_base_workbook, pct_error
+from services.validation import geh, geh_pass_rate, load_base_workbook, pct_error
 from services import signal_parser
 from services.report_exports import (
     export_los_summary,
@@ -233,25 +233,29 @@ def export_calibration() -> bytes:
     wb = _new_wb()
     ws = _sheet(wb, "Calibration (GEH)", ["Period", "Node", "Movement", "Observed", "Model", "Abs Diff", "% Error", "GEH", "GEH<5"])
     pairs: dict[str, list[tuple[float, float]]] = {}
-    geh_pass: dict[str, list[int]] = {}
+    geh_values: dict[str, list[float | None]] = {}
     for c in counts:
         obs = c.get("observed_volume")
         mod = c.get("model_volume")
         period = c.get("period") or ""
-        g = geh(mod, obs) if (obs is not None and mod is not None) else None
+        g = geh(mod, obs)
         diff = abs(mod - obs) if (obs is not None and mod is not None) else None
         ok = "Y" if (g is not None and g < 5) else ("N" if g is not None else None)
         if obs is not None and mod is not None:
             pairs.setdefault(period, []).append((obs, mod))
-            geh_pass.setdefault(period, []).append(1 if (g is not None and g < 5) else 0)
+            geh_values.setdefault(period, []).append(g)
         ws.append([period, c.get("node_id"), c.get("movement"), obs, mod, _round(diff), _round(pct_error(mod, obs)), _round(g), ok])
 
-    summary = _sheet(wb, "R2 & GEH Summary", ["Period", "N", "R2", "GEH<5 (%)"])
+    # "GEH<5 (%)" is over the rows where GEH is DEFINED (unit 1.5 D1): a row
+    # with 0 observed and 0 modelled used to be counted as a failure here,
+    # which deflated the percentage exactly as report_exports' 0.0 inflated
+    # its own. The excluded count is published beside it rather than hidden.
+    summary = _sheet(wb, "R2 & GEH Summary", ["Period", "N", "R2", "GEH<5 (%)", "GEH undefined (excluded)"])
     for period in sorted(pairs):
         n = len(pairs[period])
-        passes = geh_pass.get(period, [])
-        pct = round(sum(passes) / len(passes) * 100, 1) if passes else None
-        summary.append([period, n, _round(_r_squared(pairs[period]), 4), pct])
+        rate = geh_pass_rate(geh_values.get(period, []))
+        pct = round(rate["rate"], 1) if rate["total"] else None
+        summary.append([period, n, _round(_r_squared(pairs[period]), 4), pct, rate["excluded"]])
     return _finalize(wb)
 
 

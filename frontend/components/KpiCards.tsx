@@ -7,11 +7,18 @@ interface Props {
   results: Record<string, ScenarioResults>;
 }
 
+// Units match app/dashboard/page.tsx's KPI_METRICS (UX #24, unit 1.5 D6).
+// TRAVTMTOT is a whole-network TOTAL: Vissim emits it in seconds, and it is
+// reported in VEHICLE-HOURS, so it carries a display divisor. DELAYAVG and
+// STOPSAVG are per-vehicle AVERAGES and are deliberately NOT converted — only
+// their units are spelled out per-vehicle, as on the main dashboard.
+const SECONDS_PER_HOUR = 3600;
+
 const KPI_DEFS = [
-  { key: "DELAYAVG", label: "평균지연", unit: "초", lower: true },
-  { key: "SPEEDAVG", label: "평균속도", unit: "km/h", lower: false },
-  { key: "STOPSAVG", label: "정지횟수", unit: "회", lower: true },
-  { key: "TRAVTMTOT", label: "총통행시간", unit: "초", lower: true },
+  { key: "DELAYAVG", label: "평균지연", unit: "초/대", lower: true, displayDivisor: 1 },
+  { key: "SPEEDAVG", label: "평균속도", unit: "km/h", lower: false, displayDivisor: 1 },
+  { key: "STOPSAVG", label: "정지횟수", unit: "회/대", lower: true, displayDivisor: 1 },
+  { key: "TRAVTMTOT", label: "총통행시간", unit: "대·시", lower: true, displayDivisor: SECONDS_PER_HOUR },
 ];
 
 export default function KpiCards({ scenarios, selected, results }: Props) {
@@ -25,7 +32,8 @@ export default function KpiCards({ scenarios, selected, results }: Props) {
           <p className="text-xs text-slate-500 font-medium mb-2">{kpi.label}</p>
           <div className="space-y-1.5">
             {active.map((s) => {
-              const val = results[s.id]?.network?.[kpi.key];
+              const raw = results[s.id]?.network?.[kpi.key];
+              const val = raw != null ? raw / kpi.displayDivisor : raw;
               return (
                 <div key={s.id} className="flex items-center justify-between gap-2">
                   <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: s.color }} />

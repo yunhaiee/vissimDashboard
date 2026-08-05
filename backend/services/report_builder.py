@@ -23,14 +23,18 @@ from services.datasets import get_active_dataset, get_active_real_counts_excel
 # styles/fonts (Arial MT body, Trebuchet MS headings, Title) so the output looks
 # the same. Falls back to the python-docx default template if missing.
 _TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates", "report_template.docx")
-from services.validation import load_real_counts
+from services.validation import (
+    geh as _geh,
+    geh_grade as _geh_grade,
+    geh_pass_rate,
+    load_real_counts,
+)
 from services.report_exports import (
     add_los_section,
     add_flow_geh_section,
     travel_chart_specs,
     render_travel_chart,
     _setcell,
-    _geh,
 )
 
 _GRADE_FILL = {"good": "C6E0B4", "fair": "FFFF00", "poor": "ED7D31"}
@@ -93,12 +97,6 @@ def _caption(doc, text):
         run.italic = True
         run.font.size = Pt(9)
     return p
-
-
-def _geh_grade(g):
-    if g is None:
-        return ""
-    return "good" if g < 5 else ("fair" if g < 10 else "poor")
 
 
 # --- cover ------------------------------------------------------------------
@@ -164,7 +162,10 @@ def _geh_validation_rows(period):
         n = rc[nid]
         obs = n.get("total_real")
         mdl = n.get("total_sim_basam")
-        g = _geh(mdl, obs) if (obs is not None and mdl is not None) else None
+        # services.validation.geh handles the None inputs itself and returns
+        # None -- not 0.0 -- when observed and modelled are both zero, so a
+        # 0/0 node no longer prints "0.00 / 양호" (unit 1.5 D3).
+        g = _geh(mdl, obs)
         rows.append((nid, obs, mdl, g))
     return rows
 
@@ -224,22 +225,28 @@ def _add_geh_validation(doc, counter, *, heading="Count Validation (GEH)"):
 
 def _add_overview(doc, *, heading="Overview"):
     _section_heading(doc, heading)
-    total = good = 0
-    for period in ("AM", "PM"):
-        for _nid, obs, mdl, g in _geh_validation_rows(period):
-            if g is None:
-                continue
-            total += 1
-            if g < 5:
-                good += 1
-    geh_pct = (good / total * 100) if total else 0
+    # geh_pass_rate excludes undefined (None) node totals from BOTH the
+    # numerator and the denominator, and reports how many it dropped, so the
+    # headline percentage can state its own denominator (unit 1.5 D3).
+    rate = geh_pass_rate(
+        g
+        for period in ("AM", "PM")
+        for _nid, _obs, _mdl, g in _geh_validation_rows(period)
+    )
+    geh_pct = rate["rate"]
     specs = travel_chart_specs()
     tt_total = len(specs)
     tt_in = sum(1 for s in specs if s["low"] <= s["model"] <= s["high"])
     tt_pct = (tt_in / tt_total * 100) if tt_total else 0
+    excluded_note = (
+        f" (GEH 산정 대상 {rate['total']}개 노드·시간대, 실측·모델 모두 0이어서 GEH 정의 불가인 "
+        f"{rate['excluded']}개는 제외)"
+        if rate["excluded"]
+        else ""
+    )
     _styled(doc,
             f"본 보고서는 VISSIM 미시 시뮬레이션 모델의 교통량(GEH)·통행시간 검증 결과를 정리한 것이다. "
-            f"교통량 검증 결과 노드 총량 GEH<5 비율은 {geh_pct:.0f}% 이며, "
+            f"교통량 검증 결과 노드 총량 GEH<5 비율은 {geh_pct:.0f}%{excluded_note} 이며, "
             f"통행시간은 {tt_total}개 구간 중 {tt_in}개({tt_pct:.0f}%)가 관측 ±15% 허용범위 내에 들었다. "
             f"세부 결과는 이하 표 및 그래프와 같다.",
             "Body Text")

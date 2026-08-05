@@ -387,7 +387,7 @@ def test_selected_intersection_context_reaches_prompt_and_fallback(monkeypatch):
                                     "volume": 90,
                                 }
                             ],
-                            "direction_delay_estimates": {"north": 25.0},
+                            "direction_delay_sec": {"north": 25.0},
                         },
                         {
                             "scenario_id": "S2",
@@ -398,7 +398,7 @@ def test_selected_intersection_context_reaches_prompt_and_fallback(monkeypatch):
                             "max_queue_length": 18,
                             "top_approaches": [{"direction": "north", "volume": 120}],
                             "top_movements": [],
-                            "direction_delay_estimates": {"north": 40.0},
+                            "direction_delay_sec": {"north": 40.0},
                         },
                     ],
                     "comparison": {

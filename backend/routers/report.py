@@ -126,7 +126,13 @@ _DATA_BLOCK_HEADERS: dict[str, list[tuple[str, str]]] = {
     "flow-geh-validation": [
         ("period", "Period"), ("node", "Node"), ("counts", "No. Counts"),
         ("observed", "Observed Flow"), ("modelled", "Modelled Flow"), ("pct_diff", "% Diff"),
-        ("flow_pct", "Flow %"), ("geh_pct", "GEH %"), ("row_type", "Row Type"),
+        # GEH % is over "GEH Counts", NOT "No. Counts": rows with 0 observed
+        # and 0 modelled have an undefined GEH and are excluded from both the
+        # numerator and the denominator (unit 1.5 D3). Both numbers ship so the
+        # reader can see the shrunken denominator.
+        ("flow_pct", "Flow %"), ("geh_pct", "GEH %"),
+        ("geh_counts", "GEH Counts"), ("geh_excluded", "GEH Excluded (0 obs / 0 model)"),
+        ("row_type", "Row Type"),
     ],
     "travel-time-charts": [
         ("name", "Route"), ("period", "Period"), ("dist_km", "Distance (km)"),

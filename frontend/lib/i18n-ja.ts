@@ -554,4 +554,16 @@ export const JA_UI: Record<string, string> = {
   "궤적 데이터를 불러오지 못했습니다. 이 데이터셋에 .fzp 파일이 없을 수 있습니다.":
     "軌跡データを読み込めませんでした。このデータセットに.fzpファイルがない可能性があります。",
   "다시 시도": "再試行",
+
+  // --- unit 1.5: measured per-direction delay (D5) + metric units (D6) ---
+  // pickByLanguage keys ja off the KOREAN string, so every new t(ko, en) call
+  // needs its Korean side here or ja silently renders the English label.
+  "초/대": "秒/台",
+  "km/h": "km/h",
+  "대·시": "台·時",
+  "회/대": "回/台",
+  "이동류별 측정 지체(VEHDELAY)를 접근방향별로 교통량 가중 평균한 실측값입니다.":
+    "移動流ごとの実測遅延(VEHDELAY)を流入方向別に交通量で加重平均した実測値です。",
+  "이 교차로에는 이동류별 측정 지체(VEHDELAY)가 없어 방향별 지체를 표시할 수 없습니다.":
+    "この交差点には移動流ごとの実測遅延(VEHDELAY)がないため、方向別遅延を表示できません。",
 };

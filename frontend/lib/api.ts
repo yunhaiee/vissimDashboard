@@ -640,6 +640,10 @@ export interface ScenarioResults {
     node_name: string;
     incoming: Record<string, number>;
     outgoing: Record<string, number>;
+    /** MEASURED VEHS-weighted VEHDELAY per incoming approach, in seconds
+     * (unit 1.5 D5). NULLABLE ON PURPOSE: null means "not measured" and must
+     * never be rendered as 0 — see DirectionDelayChart's no-data state. */
+    incoming_delay_sec?: Record<string, number | null>;
     incoming_lanes?: Record<string, number>;
     outgoing_lanes?: Record<string, number>;
     lane_flows?: {

@@ -10,6 +10,10 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    // node --test --experimental-strip-types (how tests/*.test.ts run) is a
+    // real ESM runtime: relative imports MUST carry the .ts extension. This
+    // only permits that spelling; nothing under app/ or lib/ uses it.
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",

@@ -11,11 +11,9 @@ from services.datasets import clear_active_real_counts_excel, get_active_real_co
 from services.validation import (
     clear_validation_caches,
     create_base_workbook_template,
-    geh,
     load_base_workbook,
     load_base_workbook_bytes,
     load_real_counts,
-    pct_error,
 )
 
 router = APIRouter(prefix="/api/validation", tags=["validation"])
@@ -235,43 +233,8 @@ def discard_base_workbook_mapping(token: str):
     return Response(status_code=204)
 
 
-@router.get("/compare")
-def get_validation_compare(scenario_totals: str = "", period: str = ""):
-    """Compare scenario simulation totals against real-world counts.
-
-    Query param ``scenario_totals`` is a JSON-encoded mapping
-    ``{scenario_id: {node_id: volume}}`` – built by the frontend from
-    the existing compare-summary response.  Returns per-node GEH and
-    % error for every scenario.
-
-    This endpoint is intentionally thin: heavy aggregation lives in
-    the frontend to avoid tight coupling.
-    """
-    import json
-
-    real = load_real_counts(str(get_active_real_counts_excel()), period.upper() or None)
-
-    try:
-        sim_map: dict[str, dict[str, float]] = json.loads(scenario_totals) if scenario_totals else {}
-    except Exception:
-        sim_map = {}
-
-    rows = []
-    for node_id, node_data in real.items():
-        obs = node_data["total_real"]
-        node_row: dict = {
-            "node_id": node_id,
-            "node_name": node_data["node_name"],
-            "total_real": obs,
-            "scenarios": {},
-        }
-        for sc_id, node_vols in sim_map.items():
-            sim = node_vols.get(node_id)
-            node_row["scenarios"][sc_id] = {
-                "sim": sim,
-                "pct_error": pct_error(sim, obs),
-                "geh": geh(sim, obs) if sim is not None and obs is not None else None,
-            }
-        rows.append(node_row)
-
-    return rows
+# NOTE (unit 1.5 D7): ``GET /api/validation/compare`` was removed here. It had
+# zero callers repo-wide, took scenario sim totals as a JSON query parameter,
+# and applied no GEH banding -- so it could never be "the" GEH endpoint, yet
+# its name invited exactly that adoption. GEH now has ONE backend home:
+# services/validation.py (geh / geh_grade / geh_pass_rate).

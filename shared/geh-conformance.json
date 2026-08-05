@@ -1,0 +1,281 @@
+{
+  "$comment": [
+    "Cross-language conformance table for the GEH statistic (unit 1.5, D2).",
+    "ONE source of truth consumed by BOTH runtimes so the Python and TypeScript",
+    "implementations can never drift silently:",
+    "  Python -> backend/tests/test_geh_conformance.py  (services.validation)",
+    "  TS     -> frontend/tests/geh-conformance.test.ts (frontend/lib/geh.ts)",
+    "Semantics pinned here (D1): null when either input is null; null when",
+    "either input is NON-FINITE; null when model + observed <= 0; null when the",
+    "result overflows to non-finite; otherwise",
+    "sqrt(2*(model-observed)^2/(model+observed)), UNROUNDED at the source.",
+    "grade: good <5, fair <10, poor otherwise, null when geh is null.",
+    "Add a case here before changing either implementation.",
+    "",
+    "NON-FINITE SENTINELS: JSON cannot encode NaN or Infinity, which is why the",
+    "two implementations were able to diverge on exactly those inputs while this",
+    "fixture stayed green. Any numeric slot may therefore carry the STRING",
+    "\"NaN\", \"Infinity\" or \"-Infinity\"; both readers decode those three",
+    "spellings (and only those three -- an unknown string must raise, never be",
+    "silently skipped). Applies to case.model, case.observed, case.geh and every",
+    "entry of pass_rate_cases.values."
+  ],
+  "non_finite_sentinels": [
+    "NaN",
+    "Infinity",
+    "-Infinity"
+  ],
+  "tolerance": 1e-12,
+  "cases": [
+    {
+      "name": "exact match",
+      "model": 500,
+      "observed": 500,
+      "geh": 0.0,
+      "grade": "good"
+    },
+    {
+      "name": "small deviation stays in the good band",
+      "model": 510,
+      "observed": 500,
+      "geh": 0.4449941594899848,
+      "grade": "good"
+    },
+    {
+      "name": "fair band",
+      "model": 1200,
+      "observed": 1000,
+      "geh": 6.030226891555273,
+      "grade": "fair"
+    },
+    {
+      "name": "poor band",
+      "model": 1200,
+      "observed": 800,
+      "geh": 12.649110640673518,
+      "grade": "poor"
+    },
+    {
+      "name": "band edge just under 5",
+      "model": 1104,
+      "observed": 1000,
+      "geh": 3.206457363086679,
+      "grade": "good"
+    },
+    {
+      "name": "zero over zero is undefined, NOT a passing 0.0",
+      "model": 0,
+      "observed": 0,
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "observed zero, model positive",
+      "model": 100,
+      "observed": 0,
+      "geh": 14.142135623730951,
+      "grade": "poor"
+    },
+    {
+      "name": "model zero, observed positive",
+      "model": 0,
+      "observed": 100,
+      "geh": 14.142135623730951,
+      "grade": "poor"
+    },
+    {
+      "name": "negative sum is undefined",
+      "model": -50,
+      "observed": -50,
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "negative model against a larger positive observed",
+      "model": -20,
+      "observed": 100,
+      "geh": 18.973665961010276,
+      "grade": "poor"
+    },
+    {
+      "name": "null model",
+      "model": null,
+      "observed": 500,
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "null observed",
+      "model": 500,
+      "observed": null,
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "both null",
+      "model": null,
+      "observed": null,
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "large values (six figures) keep full double precision",
+      "model": 987654,
+      "observed": 123456,
+      "geh": 1159.443864133695,
+      "grade": "poor"
+    },
+    {
+      "name": "fractional inputs - the digits where a rounded implementation would diverge",
+      "model": 1234.5678,
+      "observed": 1234.4321,
+      "geh": 0.003862195996426809,
+      "grade": "good"
+    },
+    {
+      "name": "tiny total - a rounded-at-source implementation would report 0.0",
+      "model": 0.3,
+      "observed": 0.1,
+      "geh": 0.44721359549995787,
+      "grade": "good"
+    },
+    {
+      "name": "NaN model is UNDEFINED, never a confident 'poor'",
+      "model": "NaN",
+      "observed": 100,
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "NaN observed is UNDEFINED, never a confident 'poor'",
+      "model": 100,
+      "observed": "NaN",
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "both inputs NaN",
+      "model": "NaN",
+      "observed": "NaN",
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "+Infinity model (an upstream divide-by-zero, e.g. volume scaling against a 0 count)",
+      "model": "Infinity",
+      "observed": 100,
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "+Infinity observed",
+      "model": 100,
+      "observed": "Infinity",
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "-Infinity model",
+      "model": "-Infinity",
+      "observed": 100,
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "finite pair whose squared difference OVERFLOWS (Python raised OverflowError, JS returned Infinity)",
+      "model": 1e200,
+      "observed": 1,
+      "geh": null,
+      "grade": null
+    },
+    {
+      "name": "finite pair where only the 2* multiply overflows (no exception on either runtime)",
+      "model": 1e154,
+      "observed": 0,
+      "geh": null,
+      "grade": null
+    }
+  ],
+  "pass_rate_cases": [
+    {
+      "name": "nulls excluded from BOTH numerator and denominator",
+      "values": [
+        1.0,
+        4.9,
+        5.0,
+        null,
+        12.0,
+        null
+      ],
+      "threshold": 5,
+      "passed": 2,
+      "total": 4,
+      "excluded": 2,
+      "rate": 50.0
+    },
+    {
+      "name": "all null - rate is 0 and total is 0, never a division by zero",
+      "values": [
+        null,
+        null
+      ],
+      "threshold": 5,
+      "passed": 0,
+      "total": 0,
+      "excluded": 2,
+      "rate": 0.0
+    },
+    {
+      "name": "empty",
+      "values": [],
+      "threshold": 5,
+      "passed": 0,
+      "total": 0,
+      "excluded": 0,
+      "rate": 0.0
+    },
+    {
+      "name": "threshold 10 (fair band pass rate)",
+      "values": [
+        1.0,
+        6.0,
+        9.999,
+        10.0,
+        null
+      ],
+      "threshold": 10,
+      "passed": 3,
+      "total": 4,
+      "excluded": 1,
+      "rate": 75.0
+    },
+    {
+      "name": "NaN is EXCLUDED, not counted in the denominator with excluded still reading 0",
+      "values": [
+        1.0,
+        "NaN",
+        12.0
+      ],
+      "threshold": 5,
+      "passed": 1,
+      "total": 2,
+      "excluded": 1,
+      "rate": 50.0
+    },
+    {
+      "name": "-Infinity must not score a free PASS and +Infinity must not pad the denominator",
+      "values": [
+        1.0,
+        "Infinity",
+        4.0,
+        "-Infinity",
+        null
+      ],
+      "threshold": 5,
+      "passed": 2,
+      "total": 2,
+      "excluded": 3,
+      "rate": 100.0
+    }
+  ]
+}

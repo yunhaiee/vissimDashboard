@@ -26,7 +26,7 @@ from services.network_selection import (
     resolve_selected_links,
 )
 from services.rag_documents import get_rag_status, search_rag
-from services.validation import geh as compute_geh, load_real_counts
+from services.validation import geh as compute_geh, geh_grade, load_real_counts
 from services.results_reader import get_compare_summary, get_selected_node_details, list_scenarios
 from services.simulation_runs import list_job_records
 from services.vissim_tool import get_vissim_com_capabilities, get_vissim_status
@@ -1223,7 +1223,10 @@ def build_base_validation_summary(limit: int = 12, period: str | None = None) ->
         data = real[node_id]
         observed = data.get("total_real")
         model = data.get("total_sim_basam")
-        total_geh = compute_geh(model, observed) if (model is not None and observed is not None) else None
+        # compute_geh is services.validation.geh: it returns None for missing
+        # inputs itself, and for a 0-observed/0-modelled row (unit 1.5 D1), so
+        # neither the node total nor a movement can fake a good grade here.
+        total_geh = compute_geh(model, observed)
 
         worst: tuple[float, Any, Any, Any] | None = None  # (geh, direction, observed, model)
         for direction in data.get("directions") or []:
@@ -1234,7 +1237,7 @@ def build_base_validation_summary(limit: int = 12, period: str | None = None) ->
                 worst = (value, direction.get("direction"), direction.get("real"), direction.get("sim_basam"))
 
         map_geh = worst[0] if worst is not None else total_geh
-        grade = None if map_geh is None else ("good" if map_geh < 5 else "fair" if map_geh < 10 else "poor")
+        grade = geh_grade(map_geh)
         if grade == "poor":
             red += 1
         worst_movement = None
@@ -1423,7 +1426,7 @@ def build_selected_intersection_answer(tools: dict[str, Any]) -> str:
     if focus_scenario:
         approaches = focus_scenario.get("top_approaches") or []
         movements = focus_scenario.get("top_movements") or []
-        direction_delays = focus_scenario.get("direction_delay_estimates") or {}
+        direction_delays = focus_scenario.get("direction_delay_sec") or {}
         lines.append("\uadfc\uac70:")
         if approaches:
             top_approach = approaches[0]
@@ -1442,7 +1445,9 @@ def build_selected_intersection_answer(tools: dict[str, Any]) -> str:
             worst_direction, worst_value = _worst_direction_delay(direction_delays)
             if worst_direction and worst_value is not None:
                 lines.append(
-                    f"- \ubc29\ud5a5\ubcc4 \uc9c0\uccb4\ub294 \uad50\ud1b5\ub7c9 \uae30\ubc18 \ucd94\uc815\uce58\uc774\uba70, "
+                    # Measured now (unit 1.5 D5): VEHS-weighted VEHDELAY per
+                    # approach, not the old volume-share estimate.
+                    f"- \ubc29\ud5a5\ubcc4 \uc9c0\uccb4\ub294 \uc774\ub3d9\ub958\ubcc4 \uce21\uc815 \uc9c0\uccb4(VEHDELAY)\uc758 \uad50\ud1b5\ub7c9 \uac00\uc911 \ud3c9\uade0\uc774\uba70, "
                     f"{_direction_label(worst_direction)} \uc811\uadfc\uc774 {_format_metric(worst_value, seconds_unit)}\ub85c \uac00\uc7a5 \ubd88\ub9ac\ud569\ub2c8\ub2e4."
                 )
 

@@ -918,7 +918,7 @@ def _build_selected_node_detail(
         row = (summary.get("scenario_rows") or {}).get(scenario_id) or {}
         movement_metrics = _build_node_movement_metrics(result, node_id)
         volume = _directional_volume(row)
-        direction_delays = _estimate_direction_delays(movement_metrics.get("avg_delay_sec"), volume["directions"])
+        direction_delays = _measured_direction_delays(row)
         scenario_details.append(
             {
                 "scenario_id": scenario_id,
@@ -936,8 +936,11 @@ def _build_selected_node_detail(
                 "max_queue_length": _round_metric(movement_metrics.get("max_queue_length")),
                 "stops_total": _round_metric(movement_metrics.get("stops_total")),
                 "movement_count": movement_metrics.get("movement_count", 0),
-                "direction_delay_estimates": direction_delays,
-                "direction_delay_is_estimated": bool(direction_delays),
+                # MEASURED per-approach delay (VEHS-weighted VEHDELAY), unit
+                # 1.5 D5. Empty dict = no measurement at this node/scenario;
+                # the old invented `direction_delay_estimates` /
+                # `direction_delay_is_estimated` pair is gone.
+                "direction_delay_sec": direction_delays,
             }
         )
 
@@ -1005,17 +1008,26 @@ def _directional_volume(row: dict) -> dict:
     return {"source": "outgoing", "directions": outgoing, "total": sum(outgoing.values())}
 
 
-def _estimate_direction_delays(avg_delay: object, direction_volumes: dict[str, float]) -> dict[str, float | None]:
-    delay = _coerce_float(avg_delay)
-    if delay is None:
-        return {}
-    max_volume = max(direction_volumes.values(), default=0.0)
-    if max_volume <= 0:
-        return {direction: _round_metric(delay) for direction in CARDINAL_DIRECTIONS}
-    return {
-        direction: _round_metric(delay * (0.75 + (volume / max_volume) * 0.5)) if volume > 0 else None
-        for direction, volume in direction_volumes.items()
+def _measured_direction_delays(row: dict) -> dict[str, float | None]:
+    """Per-approach delay, MEASURED (unit 1.5 D5).
+
+    Replaces ``_estimate_direction_delays``, which multiplied the node-average
+    delay by an invented ``0.75 + (dirVol/maxVol) * 0.5`` volume factor. Vissim
+    reports VEHDELAY per movement and :func:`_build_node_directions` already
+    classifies every movement to a compass approach, so the real number was
+    available all along.
+
+    Returns ``{}`` -- not zeros, not a guess -- when nothing was measured, so
+    the UI can say "no data" instead of drawing a fabricated bar.
+    """
+    values = {
+        direction: _round_metric(value)
+        for direction, value in (row.get("incoming_delay_sec") or {}).items()
+        if direction in CARDINAL_DIRECTIONS
     }
+    if not any(value is not None for value in values.values()):
+        return {}
+    return {direction: values.get(direction) for direction in CARDINAL_DIRECTIONS}
 
 
 def _build_selected_node_comparison(scenarios: list[dict]) -> dict:
@@ -1159,12 +1171,27 @@ def _normalize_node_direction_row(*, node_id: str, node_name: str, row: dict | N
         "incoming_total": incoming_total,
         "outgoing_total": outgoing_total,
         "total": incoming_total + outgoing_total,
+        # Nullable on purpose (unit 1.5 D5): a missing measured delay must stay
+        # missing all the way to the UI, never be filled with 0.0.
+        "incoming_delay_sec": _normalize_nullable_direction_map((row or {}).get("incoming_delay_sec")),
     }
 
 
 def _normalize_direction_map(values: dict | None) -> dict[str, float]:
     return {
         direction: _coerce_float((values or {}).get(direction)) or 0.0
+        for direction in CARDINAL_DIRECTIONS
+    }
+
+
+def _normalize_nullable_direction_map(values: dict | None) -> dict[str, float | None]:
+    """Like :func:`_normalize_direction_map` but keeps ``None`` as ``None``.
+
+    Used for measured per-approach delay, where "no measurement" and "zero
+    seconds of delay" are different facts and must not be collapsed.
+    """
+    return {
+        direction: _round_metric((values or {}).get(direction))
         for direction in CARDINAL_DIRECTIONS
     }
 
@@ -1385,10 +1412,26 @@ def _build_node_directions(movements: list[dict]) -> list[dict]:
                 "_incoming_lane_tokens": {direction: set() for direction in directions},
                 "_outgoing_lane_tokens": {direction: set() for direction in directions},
                 "_lane_flow_map": {},
+                "_incoming_delay_weighted": {direction: 0.0 for direction in directions},
+                "_incoming_delay_weight": {direction: 0.0 for direction in directions},
             },
         )
         entry["incoming"][incoming_dir] += vehs
         entry["outgoing"][outgoing_dir] += vehs
+
+        # MEASURED per-approach delay (unit 1.5 D5). Vissim already reports
+        # VEHDELAY per movement and this loop already knows each movement's
+        # compass approach -- the delay used to be discarded here and a factor
+        # (0.75 + share*0.5) invented downstream instead. Weighting mirrors
+        # _build_node_movement_metrics exactly: by VEHS, falling back to 1.0
+        # for a movement that carries a delay but no volume, so a measured
+        # delay is never dropped for want of a weight.
+        movement_delay = _coerce_float(_metric_value(movement, "VEHDELAY_MEAN", "VEHDELAY"))
+        if movement_delay is not None:
+            raw_vehs = _coerce_float(_metric_value(movement, "VEHS_MEAN", "VEHS"))
+            weight = raw_vehs if raw_vehs is not None and raw_vehs > 0 else 1.0
+            entry["_incoming_delay_weighted"][incoming_dir] += movement_delay * weight
+            entry["_incoming_delay_weight"][incoming_dir] += weight
 
         from_lane_count = int(meta["link_lanes"].get(from_link_id, 1))
         to_lane_count = int(meta["link_lanes"].get(to_link_id, 1))
@@ -1456,9 +1499,21 @@ def _build_node_directions(movements: list[dict]) -> list[dict]:
             )
         ]
 
+        # Measured VEHS-weighted delay per incoming approach. A direction with
+        # no movement delay at all stays None -- the chart renders an explicit
+        # "no data" state rather than a fabricated bar.
+        weighted = entry["_incoming_delay_weighted"]
+        weights = entry["_incoming_delay_weight"]
+        entry["incoming_delay_sec"] = {
+            direction: (weighted[direction] / weights[direction]) if weights[direction] > 0 else None
+            for direction in directions
+        }
+
         entry.pop("_incoming_lane_tokens", None)
         entry.pop("_outgoing_lane_tokens", None)
         entry.pop("_lane_flow_map", None)
+        entry.pop("_incoming_delay_weighted", None)
+        entry.pop("_incoming_delay_weight", None)
     return result
 
 

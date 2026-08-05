@@ -11,7 +11,6 @@ clear error that the router surfaces as a 500.
 """
 from __future__ import annotations
 
-import math
 import re
 import zipfile
 from io import BytesIO
@@ -28,7 +27,12 @@ from services.results_reader import (
     _load_movement_metadata,
     _classify_link_direction,
 )
-from services.validation import load_base_workbook, load_real_counts
+from services.validation import (
+    geh as _geh,
+    geh_pass_rate,
+    load_base_workbook,
+    load_real_counts,
+)
 
 # --- shared helpers ---------------------------------------------------------
 
@@ -334,11 +338,6 @@ def export_los_summary() -> bytes:
 
 # --- 2. Flow / GEH validation (.docx) ---------------------------------------
 
-def _geh(m, o):
-    s = m + o
-    return math.sqrt(2 * (m - o) ** 2 / s) if s > 0 else 0.0
-
-
 def _flow_pass(m, o):
     diff = abs(m - o)
     if o < 700:
@@ -352,12 +351,21 @@ def _node_stats(node):
     dirs = [d for d in (node.get("directions") or []) if d.get("real") is not None and d.get("sim_basam") is not None]
     obs = node.get("total_real") or sum(d["real"] for d in dirs)
     mdl = node.get("total_sim_basam") or sum(d["sim_basam"] for d in dirs)
+    # GEH gets its OWN denominator: a movement with 0 observed AND 0 modelled
+    # has an undefined GEH (services.validation.geh -> None), so it is excluded
+    # from both the numerator and the denominator rather than scoring a free
+    # 0.0 pass (unit 1.5 D3). ``counts`` keeps its old meaning -- the number of
+    # movement counts compared -- so the Flow % column is untouched; the
+    # difference is published as ``geh_excluded``.
+    rate = geh_pass_rate(_geh(d["sim_basam"], d["real"]) for d in dirs)
     return {
         "counts": len(dirs),
         "obs": obs,
         "mdl": mdl,
         "flow_ok": sum(1 for d in dirs if _flow_pass(d["sim_basam"], d["real"])),
-        "geh_ok": sum(1 for d in dirs if _geh(d["sim_basam"], d["real"]) < 5),
+        "geh_ok": rate["passed"],
+        "geh_counts": rate["total"],
+        "geh_excluded": rate["excluded"],
     }
 
 
@@ -365,7 +373,7 @@ def _collect_flow_geh(period):
     path = str(get_active_real_counts_excel())
     load_real_counts.cache_clear()
     rc = load_real_counts(path, period)
-    rows, tot = [], {"counts": 0, "obs": 0, "mdl": 0, "flow_ok": 0, "geh_ok": 0}
+    rows, tot = [], {"counts": 0, "obs": 0, "mdl": 0, "flow_ok": 0, "geh_ok": 0, "geh_counts": 0, "geh_excluded": 0}
     for nid in sorted(rc, key=lambda x: int(x) if x.isdigit() else 999):
         s = _node_stats(rc[nid])
         rows.append((nid, s))
@@ -387,8 +395,27 @@ def _flow_geh_row(label, node, s):
         "observed": round(s["obs"]), "modelled": round(s["mdl"]),
         "pct_diff": round(_pct_diff(s["mdl"], s["obs"]), 1),
         "flow_pct": round(s["flow_ok"] / s["counts"] * 100) if s["counts"] else 0,
-        "geh_pct": round(s["geh_ok"] / s["counts"] * 100) if s["counts"] else 0,
+        # GEH % is over ``geh_counts`` (rows with a DEFINED GEH), not ``counts``
+        # -- see _node_stats. ``geh_excluded`` publishes the difference so the
+        # shrunken denominator is disclosed rather than hidden.
+        #
+        # ``None`` -- NOT 0 -- when every count at this node is undefined. A
+        # node with nothing to measure published "0%" here, which a client reads
+        # as total failure; the previous 0.0-GEH behaviour published "100%",
+        # which reads as a perfect pass. Both are inventions. The other two
+        # surfaces already render this state as "not a number"
+        # (``report_builder`` prints "-", ``exporters`` leaves the cell blank),
+        # so this one says so too -- rendered "-" in the .docx and blank in the
+        # CSV (``routers/report.py`` maps None -> "").
+        "geh_pct": round(s["geh_ok"] / s["geh_counts"] * 100) if s["geh_counts"] else None,
+        "geh_counts": s["geh_counts"],
+        "geh_excluded": s["geh_excluded"],
     }
+
+
+def _pct_cell(value) -> str:
+    """Percent cell for the .docx: ``-`` when the statistic is undefined."""
+    return "-" if value is None else f"{value:.0f}%"
 
 
 def flow_geh_csv_rows() -> list[dict]:
@@ -415,14 +442,11 @@ def add_flow_geh_section(doc, *, level: int = 1, heading: str = "Traffic Flow Va
     note = doc.add_paragraph().add_run(
         f"Source: {ds}. Observed = surveyed counts; Modelled = base-model volumes. "
         "Flow = % of movement counts meeting the DMRB flow criterion (<700: +/-100 veh; 700-2700: +/-15%; >2700: +/-400 veh). "
-        "GEH = % of counts with GEH < 5. Target: >85% on both."
+        "GEH = % of counts with GEH < 5, over the counts where GEH is defined. Target: >85% on both."
     )
     note.font.size = Pt(8)
 
     head = ["", "No. Counts", "Observed Flow", "Modelled Flow", "% Diff", "Flow", "GEH"]
-
-    def pct_diff(m, o):
-        return _pct_diff(m, o)
 
     def build(title, rows, tot):
         doc.add_heading(title, level=2)
@@ -434,28 +458,45 @@ def add_flow_geh_section(doc, *, level: int = 1, heading: str = "Traffic Flow Va
         for i, h in enumerate(t.rows[0].cells):
             _setcell(h, head[i], bold=True, align=("left" if i == 0 else "center"))
             _set_border(h, "bottom", sz=18, color="E69138")
+        # Cells render from _flow_geh_row -- the SAME dict the CSV export emits
+        # -- so a table cell and its CSV value can never be two computations.
         for rio, (nid, s) in enumerate(rows, start=1):
+            r = _flow_geh_row(title, f"Node {nid}", s)
             c = t.rows[rio].cells
-            _setcell(c[0], f"Node {nid}", align="left")
-            _setcell(c[1], s["counts"])
-            _setcell(c[2], f"{round(s['obs']):,}")
-            _setcell(c[3], f"{round(s['mdl']):,}")
-            _setcell(c[4], f"{pct_diff(s['mdl'], s['obs']):+.1f}%")
-            _setcell(c[5], f"{(s['flow_ok'] / s['counts'] * 100 if s['counts'] else 0):.0f}%")
-            _setcell(c[6], f"{(s['geh_ok'] / s['counts'] * 100 if s['counts'] else 0):.0f}%")
+            _setcell(c[0], r["node"], align="left")
+            _setcell(c[1], r["counts"])
+            _setcell(c[2], f"{r['observed']:,}")
+            _setcell(c[3], f"{r['modelled']:,}")
+            _setcell(c[4], f"{r['pct_diff']:+.1f}%")
+            _setcell(c[5], _pct_cell(r["flow_pct"]))
+            _setcell(c[6], _pct_cell(r["geh_pct"]))
             if rio <= 2:
                 for cell in c:
                     _set_border(cell, "bottom", sz=12, color="E69138")
+        r = _flow_geh_row(title, "Total", tot)
         c = t.rows[-1].cells
         _setcell(c[0], "Total", bold=True, align="left")
-        _setcell(c[1], tot["counts"], bold=True)
-        _setcell(c[2], f"{round(tot['obs']):,}", bold=True)
-        _setcell(c[3], f"{round(tot['mdl']):,}", bold=True)
-        _setcell(c[4], f"{pct_diff(tot['mdl'], tot['obs']):+.1f}%", bold=True)
-        _setcell(c[5], f"{(tot['flow_ok'] / tot['counts'] * 100 if tot['counts'] else 0):.0f}%", bold=True)
-        _setcell(c[6], f"{(tot['geh_ok'] / tot['counts'] * 100 if tot['counts'] else 0):.0f}%", bold=True)
+        _setcell(c[1], r["counts"], bold=True)
+        _setcell(c[2], f"{r['observed']:,}", bold=True)
+        _setcell(c[3], f"{r['modelled']:,}", bold=True)
+        _setcell(c[4], f"{r['pct_diff']:+.1f}%", bold=True)
+        _setcell(c[5], _pct_cell(r["flow_pct"]), bold=True)
+        _setcell(c[6], _pct_cell(r["geh_pct"]), bold=True)
         for cell in c:
             _set_border(cell, "top", sz=12, color="999999")
+        # DISCLOSURE (unit 1.5 D3): the GEH % denominator is smaller than
+        # "No. Counts" whenever a movement has 0 observed AND 0 modelled
+        # vehicles. Saying so beats letting the reader assume the two columns
+        # share a denominator.
+        if r["geh_excluded"]:
+            excl = doc.add_paragraph().add_run(
+                f"GEH % is calculated over {r['geh_counts']} of {r['counts']} counts: "
+                f"{r['geh_excluded']} count(s) excluded because GEH is undefined "
+                "(0 observed and 0 modelled vehicles). A row showing \"-\" in the GEH "
+                "column has NO count with a defined GEH, so no percentage exists for "
+                "it -- that is not a 0% result."
+            )
+            excl.font.size = Pt(8)
 
     for period, label in (("AM", "AM Peak"), ("PM", "PM Peak")):
         rows, tot = _collect_flow_geh(period)

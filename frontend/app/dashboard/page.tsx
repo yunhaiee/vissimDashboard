@@ -29,7 +29,10 @@ import {
   type ScenarioMeta,
   type ScenarioResults,
 } from "@/lib/api";
-import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, objectBelongsToNode, resolveLosGrade, type LosGrade } from "@/lib/los";
+// calculateNodeAverageDelay is no longer imported here: per-direction delay is
+// measured now (unit 1.5 D5) instead of being derived from the node average.
+// It is still exported from lib/los and used by components/NetworkViewer.tsx.
+import { LOS_COLORS, LOS_GRADE_THRESHOLDS, objectBelongsToNode, resolveLosGrade, type LosGrade } from "@/lib/los";
 import { elementTypeLabel, linkKindLabel, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 import { buildFocusFlash, nextFocusNonce, useFocusPulse, type FocusBbox, type FocusElementRef } from "@/lib/networkFocus";
 import { searchHitDisplayLabel, type SearchHitLabelParts } from "@/lib/networkSearchLabel";
@@ -44,6 +47,9 @@ import {
   toggleItem,
 } from "@/lib/networkSelection";
 import { getScenarioDisplayColor } from "@/lib/scenarioPalette";
+// THE GEH implementation for the frontend (unit 1.5 D2) -- both this page and
+// app/base-model/page.tsx import it instead of each keeping a private copy.
+import { geh as calculateGeh, gehPassRate, type GehPassRate } from "@/lib/geh";
 import { errorTone, gehTone, toneBadgeClass, type ValidationTone } from "@/lib/validationThresholds";
 
 const DashboardMap = dynamic(() => import("@/components/DashboardMap"), { ssr: false });
@@ -51,17 +57,28 @@ const DashboardMap = dynamic(() => import("@/components/DashboardMap"), { ssr: f
 // DOM directly, so it (like DashboardMap/Leaflet) must stay client-only.
 const NetworkViewer = dynamic(() => import("@/components/NetworkViewer"), { ssr: false });
 
+const SECONDS_PER_HOUR = 3600;
+
 const KPI_METRICS = [
   // isTotal metrics (whole-network sums) scale with vehicle count, so their
   // "Best" (typically the lowest) can simply mean fewer vehicles were
   // served, not a better outcome — KpiCard caveats those instead of a bare
   // "Best" tag.
-  { key: "DELAYAVG", label: "Average Delay", unit: "s/veh", higherIsBetter: false, isTotal: false },
-  { key: "SPEEDAVG", label: "Average Speed", unit: "km/h", higherIsBetter: true, isTotal: false },
-  { key: "TRAVTMTOT", label: "Total Travel Time", unit: "s", higherIsBetter: false, isTotal: true },
-  { key: "DELAYTOT", label: "Total Delay", unit: "s", higherIsBetter: false, isTotal: true },
-  { key: "VEHARR", label: "Arrived Vehicles", unit: "veh", higherIsBetter: true, isTotal: false },
-  { key: "STOPSAVG", label: "Average Stops", unit: "stops/veh", higherIsBetter: false, isTotal: false },
+  //
+  // UX #24 (unit 1.5 D6): the two network TOTALS are reported in
+  // VEHICLE-HOURS. Vissim emits them in seconds, which rendered as an
+  // unreadable "51.5k" with no way to tell 51,500 s from 51,500 anything —
+  // 14.3 veh·h is the number a traffic engineer actually reports.
+  // `displayDivisor` is applied to the value AND its standard deviation right
+  // before rendering; the raw seconds are never mutated.
+  // Averages and rates keep their own units and a divisor of 1 — dividing a
+  // per-vehicle average by 3600 would be meaningless.
+  { key: "DELAYAVG", label: "Average Delay", unit: "s/veh", higherIsBetter: false, isTotal: false, displayDivisor: 1 },
+  { key: "SPEEDAVG", label: "Average Speed", unit: "km/h", higherIsBetter: true, isTotal: false, displayDivisor: 1 },
+  { key: "TRAVTMTOT", label: "Total Travel Time", unit: "veh·h", higherIsBetter: false, isTotal: true, displayDivisor: SECONDS_PER_HOUR },
+  { key: "DELAYTOT", label: "Total Delay", unit: "veh·h", higherIsBetter: false, isTotal: true, displayDivisor: SECONDS_PER_HOUR },
+  { key: "VEHARR", label: "Arrived Vehicles", unit: "veh", higherIsBetter: true, isTotal: false, displayDivisor: 1 },
+  { key: "STOPSAVG", label: "Average Stops", unit: "stops/veh", higherIsBetter: false, isTotal: false, displayDivisor: 1 },
 ] as const;
 
 const MAX_SELECTED_NODES = 6;
@@ -1125,16 +1142,41 @@ export default function DashboardPage() {
               <KpiCard
                 key={metric.key}
                 label={translateKpiMetricLabel(metric.key, t)}
-                unit={metric.unit}
+                unit={translateKpiMetricUnit(metric.unit, t)}
                 higherIsBetter={metric.higherIsBetter}
                 isTotal={metric.isTotal}
                 showTechnicalDetail={audience === "expert"}
-                values={activeScenarios.map((scenario) => ({
-                  scenario,
-                  value: results[scenario.id]?.network?.[metric.key] ?? null,
-                  stdev: toFiniteNumber(results[scenario.id]?.network?.[`${metric.key}_STDEV`]),
-                  color: resolveScenarioColor(scenarioColorById, scenario),
-                }))}
+                values={activeScenarios.map((scenario) => {
+                  // `toFiniteNumber` alone is NOT enough here: it coerces first
+                  // and `Number(null) === 0` is finite. The backend emits an
+                  // explicit JSON null for any metric no run reported
+                  // (`_aggregate_db_paths` -> `_safe_mean`), and it omits
+                  // `_STDEV` entirely for a single-run scenario. Coercing first
+                  // turned both into a measured 0 -- "0.0 s/veh Average Delay",
+                  // "±0.0" -- and it made KpiCard's suppression branch
+                  // (`present.length === 0` -> render nothing) unreachable.
+                  // Reject null/undefined BEFORE coercion; a genuine measured 0
+                  // still renders. Same failure as unit 1.5's per-approach
+                  // delay, same guard as `calculateDirectionDelays`.
+                  const network = results[scenario.id]?.network;
+                  const rawValue = network?.[metric.key];
+                  const rawStdev = network?.[`${metric.key}_STDEV`];
+                  return {
+                    scenario,
+                    // UX #24: seconds -> vehicle-hours for the total metrics.
+                    // The stdev shares the divisor so "±" stays in the same unit
+                    // as the number it qualifies.
+                    value: scaleKpiMetricValue(
+                      rawValue == null ? null : toFiniteNumber(rawValue),
+                      metric.displayDivisor,
+                    ),
+                    stdev: scaleKpiMetricValue(
+                      rawStdev == null ? null : toFiniteNumber(rawStdev),
+                      metric.displayDivisor,
+                    ),
+                    color: resolveScenarioColor(scenarioColorById, scenario),
+                  };
+                })}
               />
             ))}
           </div>
@@ -1532,61 +1574,76 @@ function DirectionDelayChart({
 }) {
   const { t } = useLanguage();
   const maxValue = Math.max(...values.map((item) => item.value ?? 0), 1);
+  // Unit 1.5 D5: these are MEASURED values now (VEHS-weighted VEHDELAY per
+  // approach), so the "추정" badge and disclaimer that used to sit here are
+  // gone. When nothing was measured we say so instead of drawing a bar.
+  const hasMeasured = values.some((item) => item.value != null);
+  const delayUnit = t("초/대", "s/veh");
 
   return (
     <div className="min-h-[190px] rounded-xl border border-slate-200 bg-slate-50/70 p-3">
       <div className="flex items-center justify-between gap-2">
         <p className="truncate text-[12px] font-bold text-slate-800">{t("방향별 지체", "Delay by Direction")}</p>
         <span
-          className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700"
+          className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600"
           title={t(
-            "교차로 평균 지체를 방향별 통행량 비율로 배분한 추정값입니다. 실제 방향별 측정값이 아닙니다.",
-            "Estimated by distributing the intersection average delay across directions by volume share — not a per-direction measurement.",
+            "이동류별 측정 지체(VEHDELAY)를 접근방향별로 교통량 가중 평균한 실측값입니다.",
+            "Measured: per-movement VEHDELAY, volume-weighted into each approach.",
           )}
         >
-          {t("추정 · LOS", "Est. · LOS")}
+          {/* Composed from STATIC t() keys: pickByLanguage looks the Korean
+              string up in JA_UI, so a template literal would never match a
+              dictionary entry and would silently fall back to English. */}
+          {`${t("실측", "Measured")} ${delayUnit} · LOS`}
         </span>
       </div>
 
-      <div className="mt-4 grid h-32 grid-cols-4 items-end gap-2 border-b border-slate-200 pb-2">
-        {values.map(({ direction, value, los }) => {
-          const height = value != null ? Math.max(10, (value / maxValue) * 100) : 0;
-          const color = los ? LOS_COLORS[los] : "#45443f";
+      {hasMeasured ? (
+        <>
+          <div className="mt-4 grid h-32 grid-cols-4 items-end gap-2 border-b border-slate-200 pb-2">
+            {values.map(({ direction, value, los }) => {
+              const height = value != null ? Math.max(10, (value / maxValue) * 100) : 0;
+              const color = los ? LOS_COLORS[los] : "#45443f";
 
-          return (
-            <div key={direction} className="flex h-full flex-col items-center justify-end gap-1">
-              <span className="text-[10px] font-bold tabular-nums text-slate-800">
-                {value != null ? formatNumber(value, value < 10 ? 1 : 0) : "-"}
+              return (
+                <div key={direction} className="flex h-full flex-col items-center justify-end gap-1">
+                  <span className="text-[10px] font-bold tabular-nums text-slate-800">
+                    {value != null ? `${formatNumber(value, value < 10 ? 1 : 0)}${delayUnit}` : "-"}
+                  </span>
+                  <div className="flex h-[86px] w-full max-w-[42px] items-end bg-white/[0.04] px-1 py-1">
+                    {value != null && (
+                      <span className="block w-full" style={{ height: `${height}%`, backgroundColor: color }} />
+                    )}
+                  </div>
+                  <span className="text-[10px] font-semibold text-slate-600">
+                    {t(DIRECTION_LABELS[direction].shortKo, DIRECTION_LABELS[direction].shortEn)}
+                    {los ? ` / ${los}` : ""}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-slate-500">
+            {LOS_GRADE_THRESHOLDS.map(({ grade, label }) => (
+              <span key={grade} className="inline-flex items-center gap-1" title={t(`지체 ${label}`, `Delay ${label}`)}>
+                <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: LOS_COLORS[grade] }} />
+                {grade} <span className="text-slate-400">({label})</span>
               </span>
-              <div className="flex h-[86px] w-full max-w-[42px] items-end bg-white/[0.04] px-1 py-1">
-                {value != null && (
-                  <span className="block w-full" style={{ height: `${height}%`, backgroundColor: color }} />
-                )}
-              </div>
-              <span className="text-[10px] font-semibold text-slate-600">
-                {t(DIRECTION_LABELS[direction].shortKo, DIRECTION_LABELS[direction].shortEn)}
-                {los ? ` / ${los}` : ""}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-slate-500">
-        {LOS_GRADE_THRESHOLDS.map(({ grade, label }) => (
-          <span key={grade} className="inline-flex items-center gap-1" title={t(`지체 ${label}`, `Delay ${label}`)}>
-            <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: LOS_COLORS[grade] }} />
-            {grade} <span className="text-slate-400">({label})</span>
-          </span>
-        ))}
-      </div>
-
-      <p className="mt-2 text-[9.5px] leading-snug text-amber-700">
-        {t(
-          "방향별 값은 교차로 평균 지체를 방향별 통행량 비율로 배분한 추정치입니다. 실제 방향별 측정값이 아닙니다.",
-          "Per-direction values estimate the intersection-average delay distributed by volume share — not a per-direction measurement.",
-        )}
-      </p>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="mt-4 flex h-32 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-slate-300 px-2 text-center">
+          <p className="text-[11px] font-bold text-slate-600">{t("데이터 없음", "No data")}</p>
+          <p className="text-[9.5px] leading-snug text-slate-500">
+            {t(
+              "이 교차로에는 이동류별 측정 지체(VEHDELAY)가 없어 방향별 지체를 표시할 수 없습니다.",
+              "No per-movement VEHDELAY was measured at this intersection, so per-direction delay cannot be shown.",
+            )}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1599,7 +1656,8 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
     <div className="rounded-xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-bold text-slate-900">{t("통행량 구성", "Volume Composition")}</h3>
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">veh</span>
+        {/* Sibling unit chip swept with UX #24 -- ko primary like the rest. */}
+        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">{t("대", "veh")}</span>
       </div>
 
       <div className="mt-4 space-y-3">
@@ -2385,6 +2443,35 @@ function translateKpiMetricLabel(
   }
 }
 
+// UX #24 (unit 1.5 D6): unit chips were English-only literals. Korean is the
+// primary language of this product, so they go through t() like every other
+// user-facing string.
+function translateKpiMetricUnit(
+  unit: (typeof KPI_METRICS)[number]["unit"],
+  t: (ko: string, en: string, ja?: string) => string,
+) {
+  switch (unit) {
+    case "s/veh":
+      return t("초/대", "s/veh");
+    case "km/h":
+      return t("km/h", "km/h");
+    case "veh·h":
+      return t("대·시", "veh·h");
+    case "veh":
+      return t("대", "veh");
+    case "stops/veh":
+      return t("회/대", "stops/veh");
+  }
+}
+
+/** Applies a KPI metric's display divisor (UX #24: seconds -> vehicle-hours
+ * for the network totals). Null in, null out — a missing metric must not
+ * become 0. */
+function scaleKpiMetricValue(value: number | null, divisor: number): number | null {
+  if (value == null) return null;
+  return divisor === 1 ? value : value / divisor;
+}
+
 // The scenario the validation scaling is pegged to. Kept as a named constant
 // so the internal id never appears in user-facing copy — resolveBaseScenarioName
 // turns it into the scenario's display name where the scenario is loaded.
@@ -2629,6 +2716,17 @@ function findNodeDirectionRow(result: ScenarioResults, nodeId: string): NodeDire
   return result.node_directions?.find((row) => String(row.node_id) === String(nodeId)) ?? null;
 }
 
+// MEASURED per-approach delay (unit 1.5 D5).
+//
+// This used to spread the node-average delay across the approaches with an
+// invented `0.75 + (dirVol / maxVol) * 0.5` factor and label the result
+// "추정". Vissim reports VEHDELAY per movement, and the backend already
+// classifies every movement to a compass approach, so `incoming_delay_sec`
+// now carries the real VEHS-weighted mean per direction.
+//
+// A direction with no measurement stays null all the way to the chart, which
+// renders an explicit "데이터 없음" state. A refusal with a clear reason beats
+// a bar that is wrong.
 function calculateDirectionDelays(
   nodeId: string,
   scenarios: ScenarioMeta[],
@@ -2645,34 +2743,22 @@ function calculateDirectionDelays(
     const result = results[scenario.id];
     if (!result) continue;
 
-    const averageDelay = calculateNodeAverageDelay(result, nodeId);
-    if (averageDelay == null) continue;
-
     const row = findNodeDirectionRow(result, nodeId);
-    if (!row) {
-      for (const direction of DIRECTION_ORDER) {
-        buckets[direction].sum += averageDelay;
-        buckets[direction].count += 1;
-      }
-      continue;
-    }
+    const measured = row?.incoming_delay_sec;
+    if (!measured) continue;
 
-    const volume = calculateDirectionalVolume(row);
-    if (volume.total <= 0) {
-      for (const direction of DIRECTION_ORDER) {
-        buckets[direction].sum += averageDelay;
-        buckets[direction].count += 1;
-      }
-      continue;
-    }
-
-    const maxDirectionVolume = Math.max(...DIRECTION_ORDER.map((direction) => volume.directions[direction]), 1);
     for (const direction of DIRECTION_ORDER) {
-      const directionVolume = volume.directions[direction];
-      if (directionVolume <= 0) continue;
-
-      const volumeFactor = 0.75 + (directionVolume / maxDirectionVolume) * 0.5;
-      buckets[direction].sum += averageDelay * volumeFactor;
+      // `toFiniteNumber` alone is NOT enough here: it is `Number(value)` +
+      // `Number.isFinite`, and `Number(null) === 0`, which is finite. The
+      // backend sends explicit JSON nulls for every unmeasured approach, so
+      // coercing first would turn "not measured" into a measured 0 s/veh at
+      // LOS A -- a fabricated number on a customer-facing screen, and the exact
+      // failure unit 1.5 exists to remove. Reject null/undefined BEFORE
+      // coercion; a genuine measured 0.0 still passes through as a bar.
+      const raw = measured[direction];
+      const value = raw == null ? null : toFiniteNumber(raw);
+      if (value == null) continue;
+      buckets[direction].sum += value;
       buckets[direction].count += 1;
     }
   }
@@ -3080,12 +3166,12 @@ function buildCalibrationReportMarkdown({
   lines.push("#### Selected Intersection Direction Summary");
   lines.push("");
   lines.push(markdownTable(
-    ["Intersection", "Direction", "Scenario", "Inbound Volume"],
+    ["Intersection", "Direction", "Scenario", "Inbound Volume", "Approach Delay", "LOS"],
     buildDirectionReportRows(intersectionCards, scenarios, results),
   ));
   lines.push("");
   lines.push(
-    "_Per-approach Level of Service is not reported here: VISSIM outputs delay at the intersection level, not per approach, so any per-direction LOS would be an estimate rather than a measured value._",
+    "_Approach Delay is a measured VISSIM output, not an estimate: VISSIM reports VEHDELAY per movement, and each movement is classified to its compass approach, so the value shown is the volume-weighted (VEHS-weighted) mean of the measured per-movement delays entering that approach. LOS is the standard delay band applied to that measured value. Where a movement carried no VEHDELAY measurement, the approach is reported as \"-\" and no delay or LOS is stated for it -- an unmeasured approach is never reported as 0._",
   );
   lines.push("");
 
@@ -3258,20 +3344,29 @@ function buildDirectionReportRows(
       const volume = nodeRow ? calculateDirectionalVolume(nodeRow) : null;
       for (const direction of DIRECTION_ORDER) {
         const directionLabel = DIRECTION_LABELS[direction].en;
-        // Inbound volume is a real per-direction measurement; per-approach LOS
-        // is NOT (it would be synthesized from intersection-average delay), so
-        // it is deliberately omitted from the formal report.
+        // Both columns are real per-direction MEASUREMENTS now (unit 1.5 D5):
+        // inbound volume from VEHS, approach delay from the VEHS-weighted mean
+        // of the per-movement VEHDELAY the backend already classifies to a
+        // compass approach. `incoming_delay_sec` is nullable ON PURPOSE -- a
+        // JSON null means "not measured", so it must be tested BEFORE any
+        // numeric coercion (`Number(null) === 0` is finite) and printed as "-".
+        // A synthesized per-approach delay is exactly what this unit removed;
+        // never fill the gap with the intersection average.
+        const rawDelay = nodeRow?.incoming_delay_sec?.[direction];
+        const delay = rawDelay == null ? null : toFiniteNumber(rawDelay);
         rows.push([
           card.nodeName,
           directionLabel,
           scenario.name,
           formatReportNumber(volume?.directions[direction]),
+          delay == null ? "-" : `${delay.toFixed(1)} sec`,
+          delay == null ? "-" : resolveLosGrade(delay),
         ]);
       }
     }
   }
 
-  return rows.length > 0 ? rows : [["N/A", "N/A", "N/A", "N/A"]];
+  return rows.length > 0 ? rows : [["N/A", "N/A", "N/A", "N/A", "N/A", "N/A"]];
 }
 
 function calculateScenarioNodeVolume(result: ScenarioResults | undefined, nodeId: string): number | null {
@@ -3468,31 +3563,24 @@ function escapeMarkdownCell(value: string): string {
   return value.replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
 }
 
-function calculateGeh(modelled: number | null, observed: number | null): number | null {
-  if (modelled == null || observed == null) return null;
-  const denom = modelled + observed;
-  if (denom <= 0) return null;
-  return Math.sqrt((2 * (modelled - observed) ** 2) / denom);
-}
-
+// GEH itself lives in lib/geh.ts (unit 1.5 D2) -- this page used to carry its
+// own copy of the formula. calculateGehPassRate is a thin row-shaped adapter
+// over the shared gehPassRate so the exclusion rule stays in one place.
 function calculatePercentError(modelled: number | null, observed: number | null): number | null {
   if (modelled == null || observed == null || observed === 0) return null;
   return ((modelled - observed) / observed) * 100;
 }
 
-function calculateGehPassRate(rows: Array<{ geh: number | null }>, threshold: number): { passed: number; total: number; rate: number } {
-  const valid = rows.filter((row) => row.geh != null);
-  const passed = valid.filter((row) => (row.geh ?? Infinity) < threshold).length;
-  return {
-    passed,
-    total: valid.length,
-    rate: valid.length > 0 ? (passed / valid.length) * 100 : 0,
-  };
+function calculateGehPassRate(rows: Array<{ geh: number | null }>, threshold: number): GehPassRate {
+  return gehPassRate(rows.map((row) => row.geh), threshold);
 }
 
-function formatPassRate(result: { passed: number; total: number; rate: number }): string {
+function formatPassRate(result: GehPassRate): string {
   if (result.total === 0) return "No observed comparison rows available";
-  return `${result.passed}/${result.total} (${result.rate.toFixed(1)}%)`;
+  // The excluded count is surfaced, not swallowed: `total` is already the
+  // shrunken denominator, so saying only "3/4" would hide the dropped rows.
+  const excluded = result.excluded > 0 ? ` — ${result.excluded} excluded (GEH undefined)` : "";
+  return `${result.passed}/${result.total} (${result.rate.toFixed(1)}%)${excluded}`;
 }
 
 function formatReportNumber(value: number | null | undefined): string {
@@ -3541,6 +3629,12 @@ function formatNumber(value: number, digits = 1): string {
   });
 }
 
+// CAUTION: this coerces first, and `Number(null) === 0` / `Number("") === 0`
+// are both finite, so `null` in => `0` out. Every caller here wants that
+// (a missing count/volume row is genuinely 0 vehicles). A caller where "no
+// measurement" must stay distinct from a measured zero -- per-approach delay
+// in `calculateDirectionDelays`, the network KPI cards' value/stdev -- MUST
+// test for null before calling.
 function toFiniteNumber(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;

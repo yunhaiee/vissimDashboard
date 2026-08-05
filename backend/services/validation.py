@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+from collections.abc import Iterable
 from io import BytesIO
 import math
 import re
@@ -470,12 +471,90 @@ def clear_validation_caches() -> None:
     load_base_workbook.cache_clear()
 
 
-def geh(sim: float, obs: float) -> float | None:
-    """GEH statistic – standard traffic model validation metric."""
-    denom = sim + obs
+# GEH bands (MRWA/DMRB): <5 good, 5-10 fair, >=10 poor. One spelling, shared.
+GEH_GOOD_LT: float = 5.0
+GEH_FAIR_LT: float = 10.0
+
+
+def geh(model: float | None, observed: float | None) -> float | None:
+    """GEH statistic – standard traffic model validation metric.
+
+    THE single backend implementation (unit 1.5 D1/D2). Every backend caller
+    imports this one; ``report_exports``/``report_builder`` no longer carry
+    their own copy.
+
+    Returns ``None`` – never a number – when the statistic is undefined:
+      * either input missing, or
+      * either input NON-FINITE (NaN / ±Infinity), or
+      * ``model + observed <= 0`` (a 0-observed/0-modelled row carries no
+        information, and the old ``report_exports`` copy's ``0.0`` there was a
+        silent *passing* grade on a customer-facing report), or
+      * the result itself overflows to non-finite.
+
+    Deliberately unrounded: each render site rounds to its own display
+    precision, so no caller inherits another's.
+    """
+    if model is None or observed is None:
+        return None
+    # NON-FINITE GUARD — must match frontend/lib/geh.ts exactly.
+    # A NaN or ±Infinity input means an upstream divide-by-zero or a bad parse,
+    # not a measurement, so the statistic is UNDEFINED. Without this guard NaN
+    # flowed straight through: ``geh_grade(nan)`` failed both ``<`` comparisons
+    # and fell out as ``"poor"`` — a confident bad grade invented from nothing —
+    # and ``geh_pass_rate`` counted NaN in the DENOMINATOR while reporting
+    # ``excluded: 0``. "Undefined" beats "poor".
+    if not math.isfinite(model) or not math.isfinite(observed):
+        return None
+    denom = model + observed
     if denom <= 0:
         return None
-    return math.sqrt(2.0 * (sim - obs) ** 2 / denom)
+    try:
+        value = math.sqrt(2.0 * (model - observed) ** 2 / denom)
+    except OverflowError:
+        # Python raises here where JS silently yields Infinity (e.g. model=1e200,
+        # observed=1). Both runtimes must answer None, not two different wrongs.
+        return None
+    # ``2.0 * x`` does NOT raise on overflow — it returns inf — so the result
+    # needs its own guard on top of the try/except.
+    return value if math.isfinite(value) else None
+
+
+def geh_grade(value: float | None) -> str | None:
+    """``good`` / ``fair`` / ``poor`` for a GEH value; ``None`` when undefined.
+
+    Bands are the ones already used everywhere (<5 / <10 / else); this just
+    stops each consumer re-spelling them. Non-finite values are undefined, NOT
+    ``poor``: NaN fails both ``<`` comparisons, so without the guard it fell
+    through to the final ``return "poor"``.
+    """
+    if value is None or not math.isfinite(value):
+        return None
+    if value < GEH_GOOD_LT:
+        return "good"
+    if value < GEH_FAIR_LT:
+        return "fair"
+    return "poor"
+
+
+def geh_pass_rate(values: Iterable[float | None], threshold: float = GEH_GOOD_LT) -> dict:
+    """Aggregate GEH values into ``{passed, total, excluded, rate}``.
+
+    ``None`` **and non-finite** values (undefined GEH – see :func:`geh`) are
+    excluded from BOTH the numerator and the denominator, and counted in
+    ``excluded`` so a caller can disclose the shrunken denominator instead of
+    hiding it. Matches ``gehPassRate`` in frontend/lib/geh.ts: without the
+    non-finite half, ``-inf < threshold`` scored a free PASS and ``nan``
+    inflated the denominator while ``excluded`` still read 0.
+    """
+    materialized = list(values)
+    usable = [value for value in materialized if value is not None and math.isfinite(value)]
+    passed = sum(1 for value in usable if value < threshold)
+    return {
+        "passed": passed,
+        "total": len(usable),
+        "excluded": len(materialized) - len(usable),
+        "rate": (passed / len(usable) * 100.0) if usable else 0.0,
+    }
 
 
 def pct_error(sim: float | None, obs: float | None) -> float | None:

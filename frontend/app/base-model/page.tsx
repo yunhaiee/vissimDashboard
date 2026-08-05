@@ -20,6 +20,9 @@ import {
 } from "recharts";
 
 import { useLanguage } from "@/components/LanguageProvider";
+// THE GEH implementation for the frontend (unit 1.5 D2) -- shared with
+// app/dashboard/page.tsx; this page used to carry its own copy of the formula.
+import { geh } from "@/lib/geh";
 import {
   errorTone,
   gehTone,
@@ -2230,12 +2233,6 @@ function analysisPanelClass(
     return "border-emerald-200 bg-emerald-50 text-emerald-800";
   }
   return "border-rose-200 bg-rose-50 text-rose-800";
-}
-
-function geh(sim: number, obs: number): number | null {
-  const denom = sim + obs;
-  if (denom <= 0) return null;
-  return Math.sqrt((2 * (sim - obs) ** 2) / denom);
 }
 
 function pct(value: number, total: number): number {
