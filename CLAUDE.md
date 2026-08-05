@@ -35,9 +35,12 @@ MRWA guideline mapping (client authority numbers): `docs/meeting-brief-tk-mrwa.m
 ## Working conventions
 
 - `frontend/tests/dashboard-contract.test.ts` regex-pins raw source — co-edit it when moving
-  pinned code. Two known-failing tests are environmental/pre-existing, don't "fix" in passing:
-  `test_rag_retrieval_quality` (needs the full RAG corpus we don't have) and the base-model
-  layout contract test.
+  pinned code. Pins go through `contractTest`/`pin.match`, which reports EVERY stale pin in a
+  test instead of aborting at the first: plain `assert` let one stale base-model layout pin
+  hide 2 broken + 53 healthy pins from the source import until 2026-08-05. Keep tests
+  single-concern and keep layout/style pins in their own test. Suite is fully green — a
+  failure here is real. (`test_rag_retrieval_quality` on the backend is still known-failing
+  and environmental: it needs the full RAG corpus we don't have. Don't "fix" it in passing.)
 - Verify before claiming done: backend `pytest` (from `backend/`, use the venv), frontend
   `npm run typecheck` + `npm run test:dashboard-contract`, plus the milestone's named
   acceptance check. Non-COM code must work against synthetic demo data
