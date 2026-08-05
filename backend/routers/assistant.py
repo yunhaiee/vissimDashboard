@@ -29,6 +29,7 @@ from services.agent.orchestrator import run_agent_turn
 from services.agent.planner import pick_language_text
 from services.agent.state import ArtifactManager
 from services.agent.toolkit import default_registry
+from services.agent.trace import TraceWriter
 import services.agent.tools_network as tools_network
 import services.agent.tools_run as tools_run
 from services.assistant_router import (
@@ -59,6 +60,13 @@ from services.vissim_tool import get_vissim_status
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
 assistant_router = VissimAssistantRouter()
+
+#: Phase 1.3: hard cap on the approval rationale a client may send. A "one-line
+#: reason" is what the roadmap row asks for and what fits a report table cell
+#: (services/audit_trail.py elides past its own, smaller, render-time cap);
+#: rejecting anything longer at the pydantic boundary keeps an unbounded blob
+#: out of the append-only ledger in the first place.
+MAX_APPROVAL_REASON_CHARS = 300
 
 
 def _kill_stale_qwen_workers() -> None:
@@ -236,6 +244,14 @@ class AgentApproveRequest(BaseModel):
     session_id: str = Field(min_length=1)
     approval_id: str = Field(min_length=1)
     approved: bool
+    # Phase 1.3 (audit-trail export): the reviewer's one-line rationale for
+    # this decision, recorded into the session's action ledger so the
+    # "파라미터 변경 기록 + 근거" report section can print WHY a change was
+    # allowed, not just that it was. Optional and additive — every client
+    # that predates this field (and the frontend today) simply omits it, and
+    # the ledger entry then carries no rationale, exactly as before.
+    # Length-capped because it goes straight into a report table cell.
+    reason: str | None = Field(default=None, max_length=MAX_APPROVAL_REASON_CHARS)
 
 
 class CurateRequest(_SelectionFieldsMixin):
@@ -454,6 +470,44 @@ def _read_pending_approval(work_dir: Path) -> dict[str, Any] | None:
 
 def _delete_pending_approval(work_dir: Path) -> None:
     _pending_approval_path(work_dir).unlink(missing_ok=True)
+
+
+def _record_approval_decision(
+    work_dir: Path, session_id: str, pending: dict[str, Any], *, approved: bool, reason: str | None
+) -> None:
+    """Phase 1.3: append the human's approve/decline decision — and their
+    one-line rationale, when given — to the session's action ledger.
+
+    Written as a ``user_confirm`` record (the kind ``orchestrator.py`` already
+    uses for ``stage="requested"`` when it pauses for approval), with
+    ``stage="approved"``/``"declined"`` plus the tool/params the decision
+    covers, so ``services/audit_trail.py`` can attach the rationale to the
+    write that follows it. This is the ONLY new thing the approval path
+    writes: it does not touch the pending file, the artifact manager, the
+    gate, or the re-run itself.
+
+    Best-effort by design. A ledger append that fails (an unwritable work dir,
+    a session id the trace layer rejects) is logged and swallowed — an audit
+    nicety must never be able to block a user's approved edit from running.
+    """
+    try:
+        actions = pending.get("actions") or []
+        action = actions[0] if isinstance(actions, list) and actions else {}
+        if not isinstance(action, dict):
+            action = {}
+        TraceWriter(work_dir, session_id).write(
+            "user_confirm",
+            {
+                "stage": "approved" if approved else "declined",
+                "approval_id": pending.get("approval_id"),
+                "tool": action.get("tool"),
+                "params": action.get("params") or {},
+                "summary": action.get("summary") or "",
+                "reason": reason or None,
+            },
+        )
+    except Exception:  # noqa: BLE001 - see the docstring: never block the edit
+        logger.warning("Could not record the approval decision in the action ledger", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1174,6 +1228,18 @@ def approve_agent_action(payload: AgentApproveRequest, request: Request):
 
     # Single-use: consumed the moment it is validated, regardless of outcome.
     _delete_pending_approval(work_dir)
+
+    # Phase 1.3: the decision (and its one-line rationale, if the reviewer gave
+    # one) lands in the ledger BEFORE the approved re-run appends its own
+    # plan/action records, which is what lets the audit export attach the
+    # rationale to the write that follows it.
+    _record_approval_decision(
+        work_dir,
+        payload.session_id,
+        pending,
+        approved=payload.approved,
+        reason=(payload.reason or "").strip() or None,
+    )
 
     language = str(pending.get("language") or "ko")
 

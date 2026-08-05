@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from routers import assistant, datasets, network, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_downloads, health
+from routers import assistant, datasets, network, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health
 from services.agent.sessions import sweep_stale_sessions
 from services.license_guard import license_required, license_status
 
@@ -143,6 +143,10 @@ app.include_router(exports.router)
 app.include_router(report.router)
 app.include_router(trajectories.router)
 app.include_router(agent_downloads.router)
+# Phase 1.3: /api/agent/audit — the action ledger as a .docx report section.
+# Distinct prefix from agent_downloads' /api/agent/downloads, so registration
+# order does not affect matching.
+app.include_router(agent_audit.router)
 app.include_router(health.router)
 
 
