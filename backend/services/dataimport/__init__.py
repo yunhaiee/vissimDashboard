@@ -10,12 +10,13 @@ Layering, strictly one-directional::
     base.py       adapter protocol + ImportResult/ImportIssue transport
         ^
     quality.py    MRWA collection-standard checks over neutral records (R2.5)
+    fixed_time.py MRWA Appendix-A A.2/A.3 SCATS→fixed-time conversion (1.6)
     demand.py     neutral counts -> vehicle-input / composition params (R1.4)
         ^
     adapters/     one module per region; the ONLY place a file format appears
 
-``quality.py`` and ``demand.py`` are siblings, not a stack: both read only
-the neutral model. (``demand.py`` imports one predicate
+``quality.py``, ``fixed_time.py`` and ``demand.py`` are siblings, not a stack:
+all three read only the neutral model. (``demand.py`` imports one predicate
 from ``quality.py`` — ``is_all_class_total`` — so that "which records are a sum
 of other records" has exactly one definition.)
 
@@ -45,6 +46,12 @@ from .base import (
     unregister_adapter,
 )
 from .demand import DemandSeeding, build_demand_seeding, seedable_counts
+from .fixed_time import (
+    ConversionSettings,
+    FixedTimePlan,
+    PhaseDerivation,
+    convert_to_fixed_time,
+)
 from .quality import QualityThresholds, apply_quality_gate, run_quality_gate
 
 # Explicit registration, guarded so a module reload cannot raise.
@@ -56,19 +63,23 @@ if get_adapter("daejeon_smart_intersection") is None:
 __all__ = [
     "AdapterError",
     "AdapterInfo",
+    "ConversionSettings",
     "DaejeonCountAdapter",
     "DataAdapter",
     "DemandSeeding",
     "FieldMapping",
+    "FixedTimePlan",
     "ImportIssue",
     "ImportResult",
     "IssueSeverity",
+    "PhaseDerivation",
     "QualityThresholds",
     "SCATSWAAdapter",
     "SniffResult",
     "apply_quality_gate",
     "build_demand_seeding",
     "check_adapter_conformance",
+    "convert_to_fixed_time",
     "get_adapter",
     "list_adapters",
     "register_adapter",
