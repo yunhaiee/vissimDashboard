@@ -113,3 +113,11 @@ re-grep the quoted identifiers rather than trusting line numbers.
   `GET /api/agent/audit/{session}/summary` returns counts (use it to decide whether to show the
   button). Frontend work: reason field on the approval card, a download action, and
   `AgentApproveRequest` in `frontend/lib/api.ts` gains `reason?: string`. ko primary, en/ja via `t()`.
+
+- [ ] **2026-08-05 - workspace scoping cannot reach two surfaces.** Unit 1.4 (56f7f5c) scopes every
+  request by an `X-Workspace-Id` header, which two callers cannot send: the browser `WebSocket` API
+  (`/api/simulations/ws/{job_id}` — progress percentages only, for a job id the caller already holds)
+  and a plain `<a href>` download (`healthCheckDownloadUrl()` in `app/health/page.tsx`, so that JSON
+  always resolves to the default project; the on-page report itself is correctly scoped). Both close
+  when scoping moves into the path or query string with P③/P④. Until then, do not add new
+  workspace-sensitive data to either surface.

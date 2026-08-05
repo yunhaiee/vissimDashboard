@@ -3591,3 +3591,102 @@ not claimed (python-docx zip timestamps).
 puts the write envelope's verification (written/readback values) into `action_end` — at that
 point the chaining becomes a fallback, not the source. A new run-tier tool without a `run_`
 prefix must be added to `_RUN_TIER_TOOLS`; the drift risk is documented at the constant.
+
+
+---
+
+## 2026-08-05 — Project workspaces (1.4): physical isolation for uploads, logical isolation for runs and sessions
+
+**Context:** roadmap P② (`docs/ROADMAP.md`) defines project workspaces as an ACCESS-CONTROL
+boundary, not organisation: "the moment two users share a server, the global active dataset is
+a client-confidentiality leak." The measured singleton was not an object but a set of
+module-level `Path` constants under `runtime/uploads/current/` with `.exists()` as the
+active-flag, read through six accessors at ~50 call sites in 24 modules.
+
+**Decision:** `runtime/workspaces/<id>/uploads/…` containers with a registry; the six accessors
+derive per call from the request's workspace. Request scoping is an `X-Workspace-Id` header →
+`ContextVar`, set by a raw-ASGI middleware registered innermost (inside CORS, so a workspace
+404 still carries CORS headers) — `BaseHTTPMiddleware` was rejected because it dispatches in a
+separate anyio task, where a ContextVar set in `dispatch` is not reliably visible to the
+endpoint, least of all a sync endpoint hopped to the threadpool. Ids are `uuid4().hex[:12]`
+validated by `^[0-9a-f]{8,32}$` **plus** `resolve()` + `relative_to`, the reviewed pattern from
+`routers/network.py`. Absent header resolves to an auto-created default workspace, so every
+pre-existing client keeps working; a lazy migration moves the legacy layout under it on first
+touch.
+
+**Scope split (deliberate):** uploads are isolated PHYSICALLY (they are the confidentiality
+surface); `runtime/simulations/` and `runtime/agent_sessions/` stay physically global this unit
+and are isolated LOGICALLY — every record carries `workspace_id`, every session-scoped endpoint
+checks it, and records without one resolve to the default workspace as the documented pre-1.4
+upgrade path. Moving those trees belongs with P③ (SQLite), where the registry that indexes them
+lands.
+
+**Consequence:** two known holes, both disclosed rather than papered over. (1) The
+`/api/simulations/ws/{job_id}` websocket cannot be workspace-filtered — a browser `WebSocket`
+cannot send custom headers — and exposes progress percentages for a job id the caller already
+holds. (2) `healthCheckDownloadUrl()` is a plain `<a href>`, so that one JSON download always
+resolves to the default workspace (the on-page report is correctly scoped). Both close when
+scoping moves into the path/query in P③/P④. Freezing a job's source *path* also does not
+protect against an in-place replacement at the same path; `dataset_revision` on the record is
+what detects that, and a per-job source snapshot belongs with P③.
+
+---
+
+## 2026-08-05 — Session ownership fails CLOSED, and pre-1.4 sessions are backfilled explicitly
+
+**Context:** unit 1.4's first implementation resolved a session's owning workspace from a
+`session_meta.json` sidecar and substituted the default workspace whenever the sidecar was
+missing or unparseable. Adversarial verification measured the consequence: a session created by
+workspace B with no readable sidecar is owned by the DEFAULT workspace — a caller with no
+header had B's working network parsed and served
+(`GET /api/network?session_id=` → `view=working`) while B itself was locked out, and the
+response was a positive existence oracle no ghost session could produce. Reachable without disk
+damage: the sidecar write was wrapped in `try/except OSError` that only logged.
+
+**Decision:** fail closed. Pre-1.4 sessions are backfilled with an explicit default-workspace
+sidecar (making the documented upgrade path a written fact instead of an implicit fallback);
+after that, a missing or corrupt sidecar denies EVERYONE, including the default workspace; and
+a sidecar that cannot be written aborts session creation — an unowned session must never exist.
+The rule is that an access-control predicate may never treat "I don't know who owns this" as
+"the caller owns this".
+
+**Consequence:** a session whose sidecar is damaged becomes unreachable rather than
+world-readable, which is the correct direction for a confidentiality boundary; recovering one
+is a manual operation. The same predicate backs agent downloads, the audit endpoints, approve,
+and the query stream, so all five inherit the fix.
+
+---
+
+## 2026-08-05 — Upload becomes transactional; five hardening fixes ride with 1.4 deliberately
+
+**Context:** the pre-existing upload path did `rmtree(uploads/current)` then wrote, so any
+failure after the rmtree left the user with NO dataset. Verification of 1.4's replacement found
+the first cut still leaked: a failure of the FIRST rename left an orphaned staging directory
+(reproduced with no monkeypatching three ways on Windows — an ordinary open handle on
+`current.inpx`, a Vissim-style no-delete-share handle, and a process CWD inside the folder; the
+app itself opens that file), nothing ever swept the orphans, storage failures surfaced as 500s,
+a non-`OSError` from the second rename skipped the restore and lost the dataset outright, and
+concurrent uploads into one workspace raced.
+
+**Decision:** stage-then-promote with the promote INSIDE the cleanup guard, a restore path that
+catches `BaseException`, bounded sweeping of `incoming-*`/`retired-*` leftovers (never sweeping
+`retired-*` while `current` is absent — that is the only-copy signature after a doubly-failed
+promote), a per-workspace upload lock spanning the whole call including the read-back (the
+revision walk's directory enumeration is itself what makes a concurrent rename fail on
+Windows), and storage failures mapped to 409 with a message naming the likely cause.
+
+**Decision (scope):** four further fixes that are NOT workspace scoping shipped in the same
+commit, because they rewrite the same functions and because workspaces multiply each one: the
+zip-bomb guard (declared member/total caps + a streaming per-member cap), the 250 MB body cap
+and 413, `clear_validation_caches()` on all four dataset mutators (an `lru_cache` keyed on a
+path string that was never invalidated — dataset B served dataset A's counts, a live bug at
+HEAD), and `simulation_network_builder`'s `Path(__file__)` root replaced by the
+`SIMULATION_ROOT` seam. They are enumerated in the commit body rather than folded silently into
+"workspaces".
+
+**Consequence:** `get_active_dataset()` gains a `warnings` key ONLY when the legacy migration is
+degraded (payload byte-identical otherwise), so a partially-failed migration is visible instead
+of silently showing the demo dataset; a degraded migration now genuinely retries on the next
+call rather than the next process boot. Known cosmetic residue: `_zip_too_large_message()`
+quotes the module constant rather than the active budget limit, visible only in tests that
+inject an explicit budget.
