@@ -104,3 +104,12 @@ re-grep the quoted identifiers rather than trusting line numbers.
 - **Rank 8 was never verified** — its gap-check verifier hit a structured-output retry cap. Re-check it
   against the original audit ([ux-audit-2026-07-22.json](ux-audit-2026-07-22.json)) whenever the next
   UX pass happens.
+
+## Added after the audit
+
+- [ ] **2026-08-05 - approval card: optional one-line 근거 input + 감사추적 download action.** Backend
+  shipped in c40ee0d: `POST /api/assistant/agent/approve` accepts optional `reason` (<=300 chars,
+  recorded to the trace ledger); `GET /api/agent/audit/{session}/export.docx` serves the DOCX and
+  `GET /api/agent/audit/{session}/summary` returns counts (use it to decide whether to show the
+  button). Frontend work: reason field on the approval card, a download action, and
+  `AgentApproveRequest` in `frontend/lib/api.ts` gains `reason?: string`. ko primary, en/ja via `t()`.

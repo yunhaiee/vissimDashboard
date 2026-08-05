@@ -205,6 +205,12 @@ class DataAdapter(ABC):
   inputs are not present. This includes: substituting a site id from a file name;
   computing yellow/all-red from Austroads formulae without speed and grade; assuming
   15-minute bins because most sources use them; assuming vehicles when the unit is unstated.
+  (The site-id clause is SCATS-conditional: a SCATS drop carries a TCS number a file name
+  would *override*. Where a source verifiably states no identifier anywhere — the Daejeon
+  drop — the sanctioned fallback is file-name id + provenance + WARN
+  `daejeon_site_id_from_file_name` + a `site_ids` override, with
+  `site_id_from_file_name=False` restoring strict refusal. Recorded in
+  `docs/phase2/DECISIONS.md`, 2026-08-05.)
 - Raise for a data problem. `AdapterError` is for genuinely unreadable inputs and bugs
   only. (A Pydantic `ValidationError` escaping `parse()` is the same violation wearing a
   different hat — catch it and report a `REFUSE`. `scats_wa.py` does exactly this where a
@@ -283,6 +289,7 @@ Two distinct uses of REFUSE coexist and are compatible:
 | `neutral_day` | WARN + INFO | survey outside Tue–Thu; INFO that holiday/school-term status is unverifiable | MRWA collection minimums † |
 | `minimum_observations` | WARN | a movement series thinner than 3 h at 15 min (12 intervals) | MRWA collection minimums † |
 | `approach_total_consistency` | REFUSE + WARN | stated approach total ≠ sum of its movements (REFUSE beyond tolerance, WARN inside) | — |
+| `class_total_consistency` | REFUSE + WARN | stated all-class total (합계) ≠ sum of its per-class parts in the same movement/interval bucket — the class-axis complement of `approach_total_consistency` (REFUSE beyond max(2 veh, 2%), WARN inside; silent when only a total or only parts exist) | — |
 | `class_coverage` | WARN + INFO | totals-only counts cannot seed composition; unmapped class codes reported, not guessed | op p.19 |
 | `volume_sanity` | WARN | flow rate above a deliberately generous band (decimal-point / unit slips) | — |
 | `detector_count_intervals` | REFUSE + WARN | same overlap/gap rules for loop series | op p.59; meso p.62 |
@@ -398,11 +405,20 @@ prediction, and each one is a *contract* question rather than a parsing question
    real export. If Daejeon's classes do not match it, add a member — do **not** reuse
    `AUSTROADS` codes. Whether any Korean class maps onto `CanonicalVehicleClass` is a
    question for whoever holds the file, and `None` is the correct answer until then.
+   **Answered 2026-08-05 (Daejeon adapter):** the real drop is a **6**-class scheme —
+   new member `KOREA_SMART_INTERSECTION_6`, kept separate from `KOREA_12_CLASS` (their
+   correspondence stays open question 4 to the client); 대형/중형→HEAVY, 버스→BUS,
+   승용→LIGHT, `화물_소형` stays `canonical=None` for the gate to report.
 2. **Turning counts vs approach counts.** 스마트교차로 devices are movement-aware in
    principle. If an export gives approach totals only, `MovementRef.is_approach_total`
    carries it and R1.4's routing will need a separate source — the gate will say so.
+   **Answered 2026-08-05:** the drop is fully movement-aware including U-turns; per-class
+   movements plus a 합계 class total (emitted, gate-checked by `class_total_consistency`)
+   and a 소계 *time* subtotal (cross-checked then discarded at the adapter).
 3. **Interval length.** If Korean data arrives in 5-minute bins, that is a WARN, not an
    error, and re-binning is the *consumer's* explicit decision, never the adapter's.
+   **Answered 2026-08-05:** 15-minute bins throughout; a declared-vs-observed bin-length
+   contradiction is a REFUSE, an inferred length is a WARN.
 4. **Control-type vocabulary.** 정주기 / 감응 / 스마트 map plausibly onto `FIXED_TIME` /
    `VEHICLE_ACTUATED` / (?). The third is genuinely uncertain — `control_type_raw` holds
    the token until someone who knows decides.
@@ -417,9 +433,14 @@ prediction, and each one is a *contract* question rather than a parsing question
    carries none. `SiteMetadata.coordinate_reference` is the single place it goes, and an
    adapter that finds coordinates without a stated CRS must leave the CRS `None` rather
    than assuming.
+   **Answered 2026-08-05:** the count export carries no coordinates and states no CRS —
+   recorded as an absence, CRS stays `None`.
 8. **Time zone and DST.** Interval timestamps are stored as given. If a source's local
    times are ambiguous, `SiteMetadata.timezone` is the only place to say so — and if the
    source does not state one, it stays `None`.
+   **Answered 2026-08-05:** the source states no timezone; it stays `None` with an
+   `absent` reason (`drive_side=RIGHT` *is* declared as a regional constant per the §2.6
+   precedent — the two clauses conflict for timezone and the more conservative one wins).
 9. **Licensing / export restrictions on the source files** (open question 1 in the TK
    requirements). Provenance records file names; if a jurisdiction forbids retaining source
    identifiers, that is a contract change, not an adapter change.

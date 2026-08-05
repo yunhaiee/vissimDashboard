@@ -3510,3 +3510,84 @@ pedestrian 80, vissim_com_pedestrian 21, orchestrator 20 (the 9 new delivery tes
 unchanged. Live check re-run end-to-end after every fix: all phases PASS, counterfactuals
 still block with named rows, log teed. `edit_time_only_n` 99, derived. **Q6 complete: the v2b
 catalog's last three bullets are shipped, and 1.1 — "the longest wall" — is done.**
+
+
+---
+
+## 2026-08-05 — Daejeon adapter (1.2): site id falls back to the file name (contract MUST-NOT deviation)
+
+**Context:** Phase 1 unit 1.2, commit 33eed3e (`backend/services/dataimport/adapters/daejeon.py`).
+The adapter contract forbids "substituting a site id from a file name" — a clause written for
+SCATS drops, which carry an internal TCS number a file name would *override*. Verified reality
+(real drop, read-only, independently re-verified by an adversarial reviewer): none of the 11
+Daejeon workbooks states any internal site identifier anywhere in its sheets; the file name is
+the only identity the drop carries. Strict refusal would make the entire drop unimportable.
+
+**Decision:** fall back to the file-name token, provenance the id to the file name, and emit
+`WARN daejeon_site_id_from_file_name` on every such import; a `site_ids={file: id}` override
+maps files to authoritative ids and silences the warning; `site_id_from_file_name=False`
+restores the contract's strict refusal (`daejeon_site_identity_unavailable`). All three paths
+are tested. The deviation is by necessity (no in-file identifier exists), not convenience.
+The contract's MUST-NOT clause now carries the Daejeon counterexample so adapter #3 authors
+know it is SCATS-conditional.
+
+**Consequence:** Daejeon imports are identified by file name until the client supplies an
+authoritative site-id mapping; every report carries the WARN as a visible caveat. Shipped
+alongside: the data-intake inventory's 소계 description was measured wrong (소계 is a *time*
+aggregate, 합계 a *class* aggregate; neither is the approach-total REFUSE case) — the new
+class-axis gate check `class_total_consistency` covers what the inventory believed was already
+covered, and adapter-contract §4.2's table now lists it. Known real gap, tracked separately:
+full-drop import peaks at ~6.3 GB (measured; the build report's ~810 MB was an estimate) —
+import-path windowing is required before routine five-week imports.
+
+---
+
+## 2026-08-05 — SCATS→fixed-time (1.6): R1.3b subset shipped; LinSig items and yellow-trap check out, by measurement
+
+**Context:** Phase 1 unit 1.6, commit d42e401 (`backend/services/dataimport/fixed_time.py`).
+R1.3b names degree-of-saturation / bonus-green (LinSig Tables 3-3/3-4) alongside the
+Appendix-A conversion; the machine-readable extract on this machine
+(`docs/product/reference/mrwa-appendix-a-extract.md`) covers Appendix A only — the LinSig
+chapter was never received. The §A.4 yellow-trap rule is not computable from the neutral
+model: `schema.TurnType` is geometric and carries no opposed/permissive flag.
+
+**Decision:** ship the verifiable subset (A.2 weighted-average conversion, A.3 clearance
+formulas, A.5 offset interpolation) with 14 extract-cited `CIT_*` constants whose quoted
+fragments are mechanically compared (normalised) to the extract file — a mis-transcribed
+formula fails the suite, proven by counterfactual mutation. The unimplemented remainder is
+loud, not silent: every successful conversion emits `fixed_time_yellow_trap_not_checkable`,
+and saturation/bonus-green make no pretence of existing. Ten load-bearing interpretation
+choices are ASSUMPTION-marked at their bite sites; A1 (integer round-up beats Σt̄ᵢ = c̄) is
+disclosed as a residual on every run and is why the derived plan passes the quality gate's
+cycle-consistency check exactly.
+
+**Consequence:** 3.1 (signal genesis) can consume `FixedTimePlan` now. The LinSig items
+re-enter scope only if TK supplies that chapter. Whoever adds an opposed-turn flag to the
+schema should wire the yellow-trap check and delete the not-checkable emission.
+
+---
+
+## 2026-08-05 — Audit-trail export (1.3): the ledger has no pre-write values, so 변경 전 is chained per-session
+
+**Context:** Phase 1 unit 1.3, commit c40ee0d (`backend/services/audit_trail.py`). The
+roadmap's "파라미터 변경 기록+근거" section implies before→after rows, but the orchestrator's
+trace ledger records no pre-write values (`action_end` carries only `{status, error_type}`;
+guardrail records carry constraint ids, not readbacks).
+
+**Decision:** 변경 전 is derived by chaining from the previous *applied* value of the same
+(tool, target, attribute) within the session; a session's first write of an attribute renders
+`기록 없음`, and a DOCX footnote states the rule. The exporter stays ledger-intrinsic — it
+imports nothing from `services/agent/` and classifies write/run/read from the ledger's own
+record shapes. The one non-derivable fact — the run tier's tool names, needed to keep a
+failed run-tier dispatch out of the change table — is a deliberate frozen snapshot
+(`_RUN_TIER_TOOLS = {run_simulation, run_demand_stress_sweep, load_check}` plus the `run_`
+prefix), not a registry import; `load_check` is the one unprefixed member, counterfactually
+proven necessary. Folding is `plan`-record-delimited and therefore immune to per-turn
+iteration-number collisions (present in 1,018 of 2,190 real ledgers; fixture-tested). DOCX
+output is content-deterministic for a pinned `generated_at`; byte determinism is explicitly
+not claimed (python-docx zip timestamps).
+
+**Consequence:** before-values are best-effort until whoever owns orchestrator trace payloads
+puts the write envelope's verification (written/readback values) into `action_end` — at that
+point the chaining becomes a fallback, not the source. A new run-tier tool without a `run_`
+prefix must be added to `_RUN_TIER_TOOLS`; the drift risk is documented at the constant.
