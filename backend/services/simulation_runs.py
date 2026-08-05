@@ -7,11 +7,39 @@ from pathlib import Path
 from typing import Any
 
 from config import REPO_ROOT
+from services import workspaces
 from services.datasets import get_active_dataset
 
 SIMULATION_ROOT = REPO_ROOT / "runtime" / "simulations"
 REGISTRY_PATH = SIMULATION_ROOT / "simulation_runs.json"
 RUNTIME_SCENARIO_PREFIX = "SIM_"
+
+# Unit 1.4 scopes jobs LOGICALLY, not physically: every record is stamped with
+# the workspace that submitted it and every listing filters on the requesting
+# workspace, but the files still live in one flat ``runtime/simulations/<job_id>``
+# tree. Moving them under ``runtime/workspaces/<id>/simulations/`` is roadmap
+# P③'s job -- doing it here would strand every existing completed run.
+#
+# Records written before this unit carry no ``workspace_id`` at all. They are
+# treated as belonging to the DEFAULT workspace (:func:`record_workspace_id`),
+# which is exactly where their dataset was migrated to -- so a consultant's
+# existing run history stays visible after upgrading instead of silently
+# vanishing from the scenario picker.
+
+
+def record_workspace_id(record: dict[str, Any]) -> str:
+    """The workspace a job record belongs to, resolving legacy records.
+
+    A record written before unit 1.4 has no ``workspace_id`` key; it predates
+    workspaces entirely, so it belongs to the default workspace -- the same one
+    its dataset was migrated into.
+    """
+    value = record.get("workspace_id")
+    return str(value) if value else workspaces.default_workspace_id()
+
+
+def belongs_to_current_workspace(record: dict[str, Any]) -> bool:
+    return record_workspace_id(record) == workspaces.current_workspace_id()
 
 
 def runtime_scenario_id(job_id: str) -> str:
@@ -55,6 +83,11 @@ def create_job_record(job_id: str, params: dict[str, Any]) -> dict[str, Any]:
         "completed_at": None,
         "dataset_revision": dataset.get("revision"),
         "dataset_filename": dataset.get("filename"),
+        # Unit 1.4: which project owns this run. Stamped at CREATION, in the
+        # request handler's workspace scope -- never re-derived later from
+        # whatever workspace happens to be bound when the worker thread
+        # updates progress.
+        "workspace_id": workspaces.current_workspace_id(),
         "total_seeds": total_seeds,
         "completed_seeds": 0,
         "current_seed": None,
@@ -93,8 +126,17 @@ def get_job_record(job_id: str) -> dict[str, Any] | None:
     return _read_registry().get(job_id)
 
 
-def list_job_records() -> list[dict[str, Any]]:
+def list_job_records(*, workspace_scoped: bool = True) -> list[dict[str, Any]]:
+    """Job records newest-first, restricted to the requesting workspace.
+
+    ``workspace_scoped=False`` is for maintenance/diagnostics that genuinely
+    need every job on the box (nothing user-facing does); the default is the
+    isolating one so a new call site cannot leak another project's runs by
+    forgetting a filter.
+    """
     records = list(_read_registry().values())
+    if workspace_scoped:
+        records = [record for record in records if belongs_to_current_workspace(record)]
     return sorted(records, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
@@ -127,6 +169,10 @@ def get_runtime_result_dir_for_scenario(scenario_id: str) -> Path | None:
         return None
     record = get_job_record(job_id)
     if record is None or record.get("status") != "done":
+        return None
+    # Workspace check FIRST: a job from another project must be indistinguishable
+    # from a job that does not exist, regardless of what its dataset revision is.
+    if not belongs_to_current_workspace(record):
         return None
     if record.get("dataset_revision") != get_active_dataset().get("revision"):
         return None

@@ -92,8 +92,10 @@ lowercase tokens, in that tier order, ties broken by object id ascending.
 
 Every tool here is planner-facing and takes NO file paths — the LLM must
 never see or choose a path. ``set_active_inpx`` is the module-level session
-context the M1.3 orchestrator swaps per session (defaulting to
-``config.SIMULATION_INPX_PATH``, the demo network); tests use the same hook.
+context ``routers/assistant.py`` swaps per turn (to that turn's session
+working copy); tests use the same hook. Unit 1.4 removed its demo-network
+default — with no override set, every read tool refuses instead of silently
+answering about a network nobody asked about.
 """
 
 from __future__ import annotations
@@ -107,7 +109,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-import config
 from services.agent.toolkit import tool
 from services.inpx_parser import parse_network, vehicle_composition_names, vehicle_input_composition_fields
 from services import signal_parser
@@ -208,22 +209,40 @@ _active_inpx_override: Path | None = None
 
 
 def set_active_inpx(path: str | Path | None) -> None:
-    """Override the .inpx every tool in this module reads.
+    """Set (or clear) the .inpx every tool in this module reads.
 
-    ``None`` reverts to ``config.SIMULATION_INPX_PATH`` (the demo default) —
-    which is what every session uses today, since neither the M1.3
-    orchestrator nor the M1.4 router calls this. It exists as a test/ops
-    override (tests use it to point at fixtures) until per-session dataset
-    selection lands for the agent.
+    ``routers/assistant.py`` sets this to the turn's session working copy for
+    the duration of the turn and clears it in a ``finally``. ``None`` clears
+    the override; after that, every read tool REFUSES rather than reading
+    anything (see :func:`_active_inpx_path`).
     """
     global _active_inpx_override
     _active_inpx_override = Path(path) if path is not None else None
 
 
 def _active_inpx_path() -> Path:
+    """The .inpx this module's read tools parse.
+
+    Unit 1.4: this used to fall back to ``config.SIMULATION_INPX_PATH`` — the
+    shipped DEMO network — whenever no override was set. That fallback was
+    never the active dataset and, once two projects can exist on one box, a
+    dispatch path that missed ``set_active_inpx`` would answer questions about
+    a network belonging to neither of them, confidently and silently. This
+    project's governing rule is that a refusal with a clear reason beats a
+    completed action with the wrong numbers, so an unset override is now an
+    error: callers (production and tests alike) must say which network they
+    mean.
+
+    Raises:
+        RuntimeError: no active network has been set for this turn/test.
+    """
     if _active_inpx_override is not None:
         return _active_inpx_override
-    return Path(config.SIMULATION_INPX_PATH)
+    raise RuntimeError(
+        "No active network is set for this agent turn. Call "
+        "services.agent.tools_network.set_active_inpx(<path to the .inpx>) first — "
+        "read tools must never guess which network a question is about."
+    )
 
 
 # ---------------------------------------------------------------------------

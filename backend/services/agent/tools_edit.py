@@ -128,12 +128,14 @@ import hashlib
 import math
 import os
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from services.agent import batch, guardrails, rollback
 from services.agent.edit_session import get_active_edit_session
+from services.agent.sessions import read_session_meta_dir
 from services.agent.toolkit import default_registry, dispatch, tool
 from services.agent.tools_network import _routed_area_nos, build_shadow_model
 from services.datasets import get_active_inpx_path
@@ -4509,6 +4511,31 @@ def _cap_message(text: str, max_chars: int = _MESSAGE_MAX_CHARS) -> str:
     return text[: max_chars - 1].rstrip() + "…"
 
 
+def _session_pristine_source(work_dir: Path) -> Path:
+    """The .inpx a rollback-to-version-0 restores this session's working copy
+    from.
+
+    Unit 1.4: this used to be ``get_active_inpx_path()`` — resolved LIVE, at
+    rollback time. Swap the workspace's active dataset mid-session (or, with
+    workspaces, simply have a second project active) and "undo my last edit"
+    silently overwrote the session's working copy with a DIFFERENT network,
+    reporting success. The session's own frozen source (recorded in
+    ``session_meta.json`` when the session was created — see
+    ``routers/assistant.py``'s ``_session_source_inpx``) is the only correct
+    answer: version 0 means "the file this session was cloned from", not
+    "whatever is active now".
+
+    Falls back to live resolution when there is no sidecar, which keeps
+    pre-1.4 sessions and the direct-dispatch live-check scripts/tests (which
+    monkeypatch ``get_active_inpx_path`` on this module) working exactly as
+    before.
+    """
+    recorded = read_session_meta_dir(work_dir).get("source_inpx")
+    if recorded:
+        return Path(str(recorded))
+    return get_active_inpx_path()
+
+
 @tool(name="rollback_last_edit", tier="write", provider="edit", params=RollbackLastEditParams)
 def rollback_last_edit(params: RollbackLastEditParams) -> dict[str, Any]:
     """Undo the most recently applied edit on the active edit session's working network, restoring it byte-for-byte to the state immediately before that edit -- refused with a clear reason when there is nothing to undo, the archived pre-edit snapshot cannot be found, or the immediately preceding action was itself an undo (only one level of rollback is supported at a time; make a new edit before rolling back again). Takes no parameters -- it always targets whichever edit was applied most recently."""
@@ -4525,7 +4552,7 @@ def rollback_last_edit(params: RollbackLastEditParams) -> dict[str, Any]:
     current_model = build_shadow_model(session.working_inpx)
 
     target_path = (
-        get_active_inpx_path()
+        _session_pristine_source(work_dir)
         if plan.target_version == 0
         else rollback.version_path(work_dir, plan.target_version)
     )

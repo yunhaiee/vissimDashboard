@@ -1,4 +1,5 @@
-﻿from pathlib import Path
+import os
+from pathlib import Path
 import sys
 
 import pytest
@@ -7,20 +8,63 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+# Importing ``routers.assistant`` (which the fixture below must do, to patch the
+# sessions-root seam that module binds by name) runs its module-level
+# ``_preload_assistant_model()``. Under test that would spawn a local-LLM warmup
+# thread nothing here uses. Set BEFORE any router import — conftest.py is
+# imported before collection, so this reaches the module-level call. ``setdefault``
+# so a developer who deliberately exports QWEN_PRELOAD still wins.
+os.environ.setdefault("QWEN_PRELOAD", "0")
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_ambient_machine_state(tmp_path_factory: pytest.TempPathFactory):
     """Pin the whole suite to the default ``data/`` demo dataset, regardless of
     this machine's persistent app state.
 
-    ``services.datasets.get_active_*`` switch every reader to
-    ``runtime/uploads/current/`` the moment a dataset has been uploaded through
-    the dashboard UI, and ``services.simulation_runs`` lists completed COM runs
-    from ``runtime/simulations/``. Both survive across sessions on a dev
-    machine — a leftover manual upload (e.g. a live-demo rehearsal) once made
-    every scenario-dependent test fail with empty scenario lists even though
-    ``make_demo_data.py`` had seeded ``data/`` correctly. Redirecting the
-    module constants at the source keeps all tests hermetic.
+    ``services.datasets.get_active_*`` switch every reader to the current
+    WORKSPACE's ``uploads/current/`` the moment a dataset has been uploaded
+    through the dashboard UI, and ``services.simulation_runs`` lists completed
+    COM runs from ``runtime/simulations/``. Both survive across sessions on a
+    dev machine — a leftover manual upload (e.g. a live-demo rehearsal) once
+    made every scenario-dependent test fail with empty scenario lists even
+    though ``make_demo_data.py`` had seeded ``data/`` correctly. Redirecting
+    the roots at the source keeps all tests hermetic.
+
+    Unit 1.4 replaced the seven per-path ``services.datasets`` constants this
+    fixture used to patch with ONE seam: ``services.workspaces.WORKSPACES_ROOT``.
+    Every dataset path is now derived per call from the workspace bound to the
+    request/job, so redirecting the root redirects all of them at once.
+
+    ``LEGACY_UPLOADS_ROOT`` **must** be patched together with it. It is the
+    source side of the one-time pre-workspace migration; leaving it pointed at
+    the real ``runtime/uploads`` would make the first test that touches a
+    workspace MOVE the developer's live dataset into a pytest tmp dir.
+
+    ``SESSIONS_ROOT`` is redirected for the same reason, and it is the one this
+    fixture was MISSING: a full suite run created ~13 agent-session directories
+    (~56 files) inside the developer's real ``runtime/agent_sessions/`` — which
+    has accumulated 2281 of them — because every agent endpoint test mints a
+    real session on disk. Worse in the other direction: ``main.py``'s lifespan
+    calls ``sweep_stale_sessions()``, so every ``with TestClient(main.app)`` in
+    the suite was running the 7-day TTL DELETION sweep over that real
+    directory. Tests must neither add to nor delete from a developer's runtime.
+
+    There is no single sessions-root seam to patch: ``services.agent.sessions``
+    owns the constant, and four modules bind it BY NAME at import
+    (``from services.agent.sessions import SESSIONS_ROOT``), so each of those
+    module attributes is its own independent copy. All five are redirected
+    together, exactly as ``tests/test_workspaces.py`` already does per-test for
+    the subset it exercises. Per-test fixtures that repoint a subset onto their
+    own tmp dirs compose fine — their function-scoped monkeypatch wins for the
+    test, then restores these values.
+
+    A workspace is also BOUND here for the whole session. Production code gets
+    its binding from ``main.WorkspaceScopeMiddleware`` on every request, but a
+    test that calls a service function directly has no request — and
+    ``current_workspace_id()`` deliberately raises rather than guessing. This
+    binds the tmp root's default workspace once, so direct-call tests behave
+    exactly like a request with no ``X-Workspace-Id`` header.
 
     Session-scoped deliberately: module-scoped fixtures (test_api_smoke.py's
     ``client``/``scenarios``) run before any function-scoped autouse patch
@@ -28,30 +72,43 @@ def _isolate_ambient_machine_state(tmp_path_factory: pytest.TempPathFactory):
     attributes onto their own tmp dirs, which composes fine — their
     function-scoped monkeypatch wins for the test, then restores these values.
     """
-    from services import datasets, simulation_runs, workbook_mapping
+    from routers import agent_downloads as agent_downloads_router
+    from routers import assistant as assistant_router_module
+    from routers import network as network_router
+    from services import audit_trail, simulation_runs, workspaces
+    from services.agent import sessions as agent_sessions
 
     mp = pytest.MonkeyPatch()
     ambient_root = tmp_path_factory.mktemp("ambient-state")
 
-    upload_dir = ambient_root / "uploads" / "current"
-    mp.setattr(datasets, "UPLOAD_DIR", upload_dir)
-    mp.setattr(datasets, "ACTIVE_INPX_PATH", upload_dir / "current.inpx")
-    mp.setattr(datasets, "ACTIVE_PROJECT_DB_PATH", upload_dir / "project.vissimpdb")
-    mp.setattr(datasets, "ACTIVE_SCENARIOS_DIR", upload_dir / "Scenarios")
-    mp.setattr(datasets, "ACTIVE_MODIFICATIONS_DIR", upload_dir / "Modifications")
-    mp.setattr(datasets, "ACTIVE_REAL_COUNTS_EXCEL", upload_dir / "real_counts.xlsx")
-    mp.setattr(datasets, "METADATA_PATH", upload_dir / "metadata.json")
+    mp.setattr(workspaces, "WORKSPACES_ROOT", ambient_root / "workspaces")
+    # Source side of the legacy migration -- see the docstring. Pointed at an
+    # empty tmp dir so the migration is a guaranteed no-op under test.
+    mp.setattr(workspaces, "LEGACY_UPLOADS_ROOT", ambient_root / "uploads")
 
     simulation_root = ambient_root / "simulations"
     mp.setattr(simulation_runs, "SIMULATION_ROOT", simulation_root)
     mp.setattr(simulation_runs, "REGISTRY_PATH", simulation_root / "simulation_runs.json")
 
-    # services/workbook_mapping.py stages uploaded workbooks and remembers
-    # confirmed mappings outside of datasets.UPLOAD_DIR -- isolate those too
-    # so a real dev machine's staged files/memory never leak into a test run
-    # (and a test run never leaves stray files under the real runtime/ dir).
-    mp.setattr(workbook_mapping, "STAGING_DIR", ambient_root / "uploads" / "staging")
-    mp.setattr(workbook_mapping, "MAPPING_MEMORY_PATH", ambient_root / "uploads" / "mapping_memory.json")
+    # THE definition plus every by-name copy of it. Missing any one of these
+    # leaks that endpoint's session writes into the real runtime.
+    sessions_root = ambient_root / "agent_sessions"
+    sessions_root.mkdir(parents=True, exist_ok=True)
+    mp.setattr(agent_sessions, "SESSIONS_ROOT", sessions_root)
+    mp.setattr(assistant_router_module, "SESSIONS_ROOT", sessions_root)
+    mp.setattr(network_router, "SESSIONS_ROOT", sessions_root)
+    mp.setattr(agent_downloads_router, "SESSIONS_ROOT", sessions_root)
+    mp.setattr(audit_trail, "SESSIONS_ROOT", sessions_root)
 
-    yield
-    mp.undo()
+    # services/workbook_mapping.py stages uploaded workbooks and remembers
+    # confirmed mappings; since unit 1.4 both live INSIDE the workspace
+    # (``<workspace>/uploads/{staging,mapping_memory.json}``), so the
+    # WORKSPACES_ROOT patch above already isolates them -- no separate seam.
+
+    default_id = workspaces.default_workspace_id()
+    token = workspaces.set_current_workspace_id(default_id)
+    try:
+        yield
+    finally:
+        workspaces.reset_current_workspace_id(token)
+        mp.undo()

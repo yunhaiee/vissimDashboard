@@ -182,7 +182,9 @@ def test_start_agent_simulation_job_submits_a_job_record_and_returns_immediately
 
     started = threading.Event()
 
-    def _fake_runner(job_id, source_inpx, duration_s, random_seeds):
+    # Unit 1.4 adds a trailing workspace_id (the runner re-binds the
+    # submitting request's workspace on its own thread).
+    def _fake_runner(job_id, source_inpx, duration_s, random_seeds, workspace_id=None):
         started.set()
 
     monkeypatch.setattr(simulations_router, "_run_agent_simulation_job", _fake_runner)

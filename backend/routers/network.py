@@ -4,7 +4,8 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from services.agent.sessions import SESSIONS_ROOT
+from services import workspaces
+from services.agent.sessions import SESSIONS_ROOT, session_workspace_matches
 from services.datasets import get_active_inpx_path
 from services.inpx_parser import parse_network, parse_network_root
 from services.scenario_project import build_scenario_tree, can_build_scenario_tree
@@ -49,6 +50,14 @@ def _resolve_working_inpx(session_id: str | None) -> Path | None:
 
     Never raises: the caller's contract is "fall back to the active dataset
     with source.view == 'active'", never a 500, for any bad/missing session.
+
+    Unit 1.4 adds one more "not a usable session" case: a session owned by a
+    DIFFERENT workspace. It is deliberately treated as not-found — i.e. the
+    caller falls back to its OWN workspace's active dataset — rather than
+    404ing, because that is this endpoint's established shape for every bad
+    session, and because falling back can never leak: the fallback renders the
+    requesting workspace's own network. Legacy sessions (no sidecar) resolve
+    to the default workspace.
     """
     if not session_id or not _SESSION_ID_RE.match(session_id):
         return None
@@ -59,6 +68,10 @@ def _resolve_working_inpx(session_id: str | None) -> Path | None:
         session_dir.relative_to(sessions_root)
     except ValueError:
         logger.warning("network: session_id %r resolved outside SESSIONS_ROOT; ignoring", session_id)
+        return None
+
+    if not session_workspace_matches(session_id, workspaces.current_workspace_id(), SESSIONS_ROOT):
+        logger.info("network: session %s belongs to another workspace; showing the active dataset", session_id)
         return None
 
     working_path = session_dir / "working.inpx"

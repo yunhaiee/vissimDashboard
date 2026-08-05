@@ -613,4 +613,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Unit 1.4: dataset paths are resolved from the workspace bound to the
+    # current execution context, and there is no request here to bind one.
+    # A script that means "the default project" has to say so -- see
+    # services/workspaces.py for why an unbound context raises instead of
+    # quietly picking one.
+    from services.workspaces import bind_workspace, default_workspace_id  # noqa: E402
+
+    with bind_workspace(default_workspace_id()):
+        raise SystemExit(main())

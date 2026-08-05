@@ -24,7 +24,8 @@ with a clear reason beats a completed edit with wrong numbers.
 Two-phase flow so the browser never re-uploads the file on every UI tweak:
 
 1. ``inspect_workbook`` -- parses the uploaded bytes once, STAGES them under
-   a random token (``runtime/uploads/staging/<token>/source.xlsx``), and
+   a random token (``<workspace>/uploads/staging/<token>/source.xlsx`` -- see
+   :func:`staging_dir`; unit 1.4 moved this inside the workspace), and
    returns bounded per-sheet previews (header-row guess, headers, a few
    sample rows) plus an alias-based proposed mapping (reusing
    ``services.validation.COUNT_HEADER_ALIASES`` so the shipped template still
@@ -44,10 +45,11 @@ Two-phase flow so the browser never re-uploads the file on every UI tweak:
    template path uses (just given an explicit header mapping instead of
    auto-detecting one).
 
-A confirmed mapping is remembered (``runtime/uploads/mapping_memory.json``,
+A confirmed mapping is remembered (``<workspace>/uploads/mapping_memory.json``,
 keyed by a signature of the sheet's header text) so re-uploading a workbook
 with the same layout later proposes the human-confirmed mapping instead of
-just the alias guess.
+just the alias guess. Per-workspace since unit 1.4 -- a shared memory file
+leaked one client's spreadsheet header signatures into another's session.
 """
 from __future__ import annotations
 
@@ -70,13 +72,28 @@ try:
 except ImportError:  # pragma: no cover - exercised indirectly via _require_openpyxl
     _HAS_OPENPYXL = False
 
-from config import REPO_ROOT
 from services import datasets
 from services import validation as validation_module
 
-STAGING_DIR = REPO_ROOT / "runtime" / "uploads" / "staging"
-MAPPING_MEMORY_PATH = REPO_ROOT / "runtime" / "uploads" / "mapping_memory.json"
 STAGING_TTL_SECONDS = 2 * 60 * 60  # 2 hours -- an abandoned mapping session is cheap to just re-upload.
+
+
+# Unit 1.4: both of these used to be module-level constants under
+# ``runtime/uploads/``, i.e. SHARED across every dataset on the box. That made
+# ``mapping_memory.json`` an inference channel between clients -- confirm a
+# column mapping for one consultancy's spreadsheet and the header signature
+# (and the mapping keyed by it) was visible while working on another's. They
+# are now derived per call from the workspace bound to the request, so both
+# the staged upload and the remembered mapping live inside the workspace that
+# produced them. ``services.datasets.uploads_root()`` is the single derivation
+# point, so there is no second copy of the path layout to drift.
+def staging_dir() -> Path:
+    return datasets.uploads_root() / "staging"
+
+
+def mapping_memory_path() -> Path:
+    return datasets.uploads_root() / "mapping_memory.json"
+
 
 # Bounded output everywhere (this repo has a scar about unbounded list responses).
 MAX_INSPECT_SHEETS = 25
@@ -165,10 +182,10 @@ def stage_workbook(filename: str, content: bytes) -> str:
 
     _purge_stale_staging()
     token = uuid4().hex
-    staging_dir = STAGING_DIR / token
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    (staging_dir / "source.xlsx").write_bytes(content)
-    (staging_dir / "meta.json").write_text(
+    target_dir = staging_dir() / token
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "source.xlsx").write_bytes(content)
+    (target_dir / "meta.json").write_text(
         json.dumps({"filename": Path(filename).name or "upload.xlsx", "staged_at": datetime.datetime.now(timezone.utc).isoformat()}),
         encoding="utf-8",
     )
@@ -178,7 +195,7 @@ def stage_workbook(filename: str, content: bytes) -> str:
 def _staging_path(token: str) -> Path:
     if not re.fullmatch(r"[0-9a-f]{32}", token or ""):
         raise StagedWorkbookNotFoundError("Unknown or expired upload token. Please re-upload the file.")
-    source = STAGING_DIR / token / "source.xlsx"
+    source = staging_dir() / token / "source.xlsx"
     if not source.exists():
         raise StagedWorkbookNotFoundError("Unknown or expired upload token. Please re-upload the file.")
     return source
@@ -194,13 +211,14 @@ def load_staged_workbook(token: str):
 
 
 def discard_staged_workbook(token: str) -> None:
-    staging_dir = STAGING_DIR / re.sub(r"[^0-9a-f]", "", token or "")
-    if staging_dir.exists() and staging_dir.parent == STAGING_DIR:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+    root = staging_dir()
+    target_dir = root / re.sub(r"[^0-9a-f]", "", token or "")
+    if target_dir.exists() and target_dir.parent == root:
+        shutil.rmtree(target_dir, ignore_errors=True)
 
 
 def _staged_filename(token: str) -> str:
-    meta_path = STAGING_DIR / token / "meta.json"
+    meta_path = staging_dir() / token / "meta.json"
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         return meta.get("filename") or "upload.xlsx"
@@ -209,10 +227,11 @@ def _staged_filename(token: str) -> str:
 
 
 def _purge_stale_staging(max_age_seconds: int = STAGING_TTL_SECONDS) -> None:
-    if not STAGING_DIR.exists():
+    root = staging_dir()
+    if not root.exists():
         return
     now = time.time()
-    for child in STAGING_DIR.iterdir():
+    for child in root.iterdir():
         try:
             if not child.is_dir():
                 continue
@@ -515,17 +534,19 @@ def _header_signature(headers: list[str]) -> str:
 
 
 def _load_mapping_memory() -> dict[str, Any]:
-    if not MAPPING_MEMORY_PATH.exists():
+    path = mapping_memory_path()
+    if not path.exists():
         return {}
     try:
-        return json.loads(MAPPING_MEMORY_PATH.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
 
 def _save_mapping_memory(memory: dict[str, Any]) -> None:
-    MAPPING_MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MAPPING_MEMORY_PATH.write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
+    path = mapping_memory_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def remember_mapping(kind: str, headers: list[str], field_to_header_text: dict[str, str]) -> None:

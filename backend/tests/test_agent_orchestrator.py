@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 import pytest
 
+import config
 import services.agent.tools_network as tools_network
 from services.agent.orchestrator import run_agent_turn
 from services.agent.toolkit import ToolRegistry, tool
@@ -188,8 +189,15 @@ EXPECTED_RUN_TOOLS = {"run_simulation", "load_check", "run_demand_stress_sweep"}
 @pytest.fixture(autouse=True)
 def _reset_active_inpx():
     """Every test runs against the real demo default (data/practice.inpx)
-    and restores it after, so no override can leak between tests."""
-    tools_network.set_active_inpx(None)
+    and clears the override after, so none can leak between tests.
+
+    Unit 1.4: the demo network is set EXPLICITLY now. ``set_active_inpx(None)``
+    used to leave ``tools_network`` falling back to
+    ``config.SIMULATION_INPX_PATH`` on its own; that fallback was removed
+    (a read tool that does not know which network it is reading refuses
+    rather than guessing), so "the demo default" has to be stated.
+    """
+    tools_network.set_active_inpx(config.SIMULATION_INPX_PATH)
     yield
     tools_network.set_active_inpx(None)
 

@@ -6,7 +6,7 @@ import openpyxl
 from fastapi.testclient import TestClient
 
 import main
-from services import datasets
+from services import datasets, workspaces
 from services.validation import create_base_workbook_template, load_base_workbook
 
 
@@ -367,21 +367,25 @@ def test_base_workbook_template_endpoint():
 
 
 def test_base_workbook_reset_endpoint_removes_only_uploaded_workbook(tmp_path, monkeypatch):
-    upload_dir = tmp_path / "uploads" / "current"
-    monkeypatch.setattr(datasets, "UPLOAD_DIR", upload_dir)
-    monkeypatch.setattr(datasets, "ACTIVE_REAL_COUNTS_EXCEL", upload_dir / "real_counts.xlsx")
-    monkeypatch.setattr(datasets, "METADATA_PATH", upload_dir / "metadata.json")
+    # Unit 1.4: the seven ``services.datasets`` path constants this test used to
+    # monkeypatch are gone -- every path is derived per call from the workspace
+    # bound to the request. Redirecting ``workspaces.WORKSPACES_ROOT`` (and its
+    # migration source) is now the one seam, and the accessors below read the
+    # same derived paths the endpoint does.
+    monkeypatch.setattr(workspaces, "WORKSPACES_ROOT", tmp_path / "workspaces")
+    monkeypatch.setattr(workspaces, "LEGACY_UPLOADS_ROOT", tmp_path / "legacy-uploads")
     monkeypatch.setattr(datasets, "REAL_COUNTS_EXCEL", tmp_path / "missing_default_real_counts.xlsx")
 
-    with TestClient(main.app) as client:
-        upload_response = client.post(
-            "/api/validation/base-workbook?filename=uploaded.xlsx",
-            content=create_base_workbook_template(),
-        )
-        reset_response = client.delete("/api/validation/base-workbook")
+    with workspaces.bind_workspace(workspaces.default_workspace_id()):
+        with TestClient(main.app) as client:
+            upload_response = client.post(
+                "/api/validation/base-workbook?filename=uploaded.xlsx",
+                content=create_base_workbook_template(),
+            )
+            reset_response = client.delete("/api/validation/base-workbook")
 
-    assert upload_response.status_code == 200
-    assert reset_response.status_code == 200
-    assert reset_response.json()["exists"] is False
-    assert not datasets.ACTIVE_REAL_COUNTS_EXCEL.exists()
-    assert "real_counts_filename" not in datasets.METADATA_PATH.read_text(encoding="utf-8")
+        assert upload_response.status_code == 200
+        assert reset_response.status_code == 200
+        assert reset_response.json()["exists"] is False
+        assert not datasets.active_real_counts_excel().exists()
+        assert "real_counts_filename" not in datasets.metadata_path().read_text(encoding="utf-8")

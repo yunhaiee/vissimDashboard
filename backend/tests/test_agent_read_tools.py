@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+import config
 import services.agent.tools_check as tools_check  # noqa: F401 - import registers tools
 import services.agent.tools_edit as tools_edit  # noqa: F401 - import registers tools
 import services.agent.tools_metrics as tools_metrics  # noqa: F401 - import registers tools
@@ -27,11 +28,35 @@ from services.agent.toolkit import default_registry, dispatch, render_contract
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 KOREAN_FIXTURE_INPX = FIXTURES_DIR / "korean_object_names.inpx"
 
-# The active real client model, used ONLY by the sibling-disambiguation
-# real-dataset regression test (FIX 1, 2026-07-28) -- everything else here is
-# synthetic by design. Same skipif convention as test_agent_constraints.py /
-# test_network_search.py.
-ACTIVE_REAL_INPX = Path(__file__).resolve().parents[2] / "runtime" / "uploads" / "current" / "current.inpx"
+# The active real client model, used ONLY by the sibling-disambiguation real-dataset
+# regression test (FIX 1, 2026-07-28) -- everything else here is synthetic.
+# Resolved through the REAL (unpatched) runtime layout, not
+# ``services.workspaces.WORKSPACES_ROOT`` -- conftest.py redirects that
+# constant at a pytest tmp dir for isolation, which is exactly what this
+# fixture must NOT follow. Unit 1.4 moved the dataset from
+# ``runtime/uploads/current/`` into ``runtime/workspaces/<default id>/uploads/
+# current/``; the legacy path is still checked because the move is LAZY (it
+# happens the first time the backend boots after upgrading), so on a box that
+# has not booted since, the file is still in the old place. Same skipif
+# convention as test_network_search.py.
+_RUNTIME_ROOT = Path(__file__).resolve().parents[2] / "runtime"
+
+
+def _resolve_active_real_inpx() -> Path:
+    registry = _RUNTIME_ROOT / "workspaces" / "registry.json"
+    try:
+        entries = json.loads(registry.read_text(encoding="utf-8"))["workspaces"]
+    except Exception:
+        entries = []
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("is_default") and entry.get("id"):
+            migrated = _RUNTIME_ROOT / "workspaces" / str(entry["id"]) / "uploads" / "current" / "current.inpx"
+            if migrated.is_file():
+                return migrated
+    return _RUNTIME_ROOT / "uploads" / "current" / "current.inpx"
+
+
+ACTIVE_REAL_INPX = _resolve_active_real_inpx()
 _requires_real_dataset = pytest.mark.skipif(
     not ACTIVE_REAL_INPX.is_file(),
     reason=f"real active dataset not present on this machine: {ACTIVE_REAL_INPX}",
@@ -242,9 +267,17 @@ EXPECTED_RUN_TOOL_NAMES = {
 
 @pytest.fixture(autouse=True)
 def _reset_active_inpx():
-    """Every test starts from the real demo default and restores it after,
-    so tests can't leak an override into one another regardless of order."""
-    tools_network.set_active_inpx(None)
+    """Every test starts from the real demo default and clears the override
+    after, so tests can't leak one into one another regardless of order.
+
+    Unit 1.4: the demo network is now set EXPLICITLY. ``set_active_inpx(None)``
+    used to leave ``tools_network`` silently defaulting to
+    ``config.SIMULATION_INPX_PATH``; that fallback was removed (a read tool
+    that does not know which network it is reading must refuse, not guess --
+    with two projects on one box the guess is somebody else's model), so a
+    test that wants the demo network now has to say so.
+    """
+    tools_network.set_active_inpx(config.SIMULATION_INPX_PATH)
     yield
     tools_network.set_active_inpx(None)
 
@@ -599,7 +632,7 @@ def test_real_dataset_resolve_object_typo_miss_carries_names_for_both_shared_nam
         assert all(c["object_type"] == "vehicle_input" for c in candidates)
         assert all(c.get("link") for c in candidates)
     finally:
-        tools_network.set_active_inpx(None)
+        tools_network.set_active_inpx(config.SIMULATION_INPX_PATH)
 
 
 def test_resolve_object_rejects_unknown_object_type():
@@ -1505,7 +1538,7 @@ def test_real_dataset_get_vehicle_inputs_unfiltered_call_surfaces_all_three_link
         assert "307" in shown_nos, "the sibling-disambiguation unit's whole point: 307 must be visible"
         assert {vi["composition_no"] for vi in shown} == {"1", "2", "3"}
     finally:
-        tools_network.set_active_inpx(None)
+        tools_network.set_active_inpx(config.SIMULATION_INPX_PATH)
 
 
 # ---------------------------------------------------------------------------

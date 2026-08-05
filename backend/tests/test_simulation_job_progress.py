@@ -22,6 +22,7 @@ import pytest
 
 import services.simulation_runs as simulation_runs
 import services.vissim_com as vissim_com
+from services import workspaces
 from routers import simulations as simulations_router
 
 
@@ -317,7 +318,12 @@ def test_interactive_single_seed_progress_never_guesses_eta(
     calls = _spy_update_job(monkeypatch)
 
     params = simulations_router.SimParams(name="interactive", sim_duration=60, random_seed=42)
-    simulations_router._run_simulation(job_id, params)
+    # Unit 1.4: the source .inpx is resolved by the REQUEST handler and
+    # handed to the runner frozen (TOCTOU fix), and the runner re-binds the
+    # submitting workspace on its own thread.
+    simulations_router._run_simulation(
+        job_id, params, source, workspaces.current_workspace_id()
+    )
 
     record = simulation_runs.get_job_record(job_id)
     assert record is not None

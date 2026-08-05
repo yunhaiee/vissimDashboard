@@ -16,8 +16,10 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from config import SIMULATION_INPX_PATH
+from services import workspaces
 from services.datasets import get_active_dataset, get_active_inpx_path
 from services.simulation_runs import (
+    belongs_to_current_workspace,
     create_job_record,
     get_job_record,
     job_dir,
@@ -80,10 +82,23 @@ def start_simulation_job(params: SimParams) -> dict:
     if not capabilities["can_run"]:
         raise SimulationUnavailableError(capabilities["reason"] or "Simulation cannot run in the current environment.")
 
+    # TOCTOU fix (unit 1.4): the source .inpx is resolved HERE, on the request
+    # thread, and handed to the worker thread frozen. It used to be resolved
+    # INSIDE _run_simulation, so an upload landing between "job accepted" and
+    # "worker thread starts Vissim" silently ran the NEW dataset while the job
+    # record was already stamped with the OLD dataset_revision -- producing a
+    # finished run that is invisible in the scenario picker (revision mismatch)
+    # and un-replayable, with results that belong to neither dataset's history.
+    # This is exactly the pattern start_agent_simulation_job already used.
+    source_inpx = _simulation_source_inpx()
+    workspace_id = workspaces.current_workspace_id()
+
     job_id = str(uuid.uuid4())[:8]
     record = create_job_record(job_id, params.model_dump())
     _jobs[job_id] = record
-    t = threading.Thread(target=_run_simulation, args=(job_id, params), daemon=True)
+    t = threading.Thread(
+        target=_run_simulation, args=(job_id, params, source_inpx, workspace_id), daemon=True
+    )
     t.start()
     return {
         "id": job_id,
@@ -94,9 +109,20 @@ def start_simulation_job(params: SimParams) -> dict:
 
 @router.get("")
 def list_simulations():
+    """Jobs belonging to THIS request's workspace only.
+
+    Both halves are filtered: the persisted registry (``list_job_records`` is
+    workspace-scoped by default) and the in-memory ``_jobs`` mirror, which
+    holds live progress for jobs running right now regardless of who submitted
+    them.
+    """
     records = {record["id"]: record for record in list_job_records()}
     with _jobs_lock:
-        in_memory_snapshot = {job_id: dict(record) for job_id, record in _jobs.items()}
+        in_memory_snapshot = {
+            job_id: dict(record)
+            for job_id, record in _jobs.items()
+            if belongs_to_current_workspace(record)
+        }
     records.update(in_memory_snapshot)
     return sorted(records.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
@@ -106,9 +132,29 @@ def get_simulation_capabilities():
     return _simulation_capabilities()
 
 
+def _workspace_job_snapshot(job_id: str) -> dict | None:
+    """:func:`_job_snapshot` restricted to the requesting workspace.
+
+    A job belonging to another project is reported as simply not existing --
+    same 404 shape as an unknown id, so the response cannot be used to probe
+    which job ids exist on the box.
+
+    NOT applied to the ``/ws/{job_id}`` progress socket: the browser
+    ``WebSocket`` API cannot attach custom headers, so that route can never
+    receive ``X-Workspace-Id`` and always resolves to the default workspace.
+    Filtering it would break live progress for every non-default project. The
+    hole is recorded rather than papered over; it exposes progress percentages
+    for a job whose 8-hex id the caller already has.
+    """
+    job = _job_snapshot(job_id)
+    if job is None or not belongs_to_current_workspace(job):
+        return None
+    return job
+
+
 @router.get("/{job_id}")
 def get_simulation(job_id: str):
-    job = _job_snapshot(job_id)
+    job = _workspace_job_snapshot(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
@@ -116,7 +162,7 @@ def get_simulation(job_id: str):
 
 @router.get("/{job_id}/results")
 def get_simulation_results(job_id: str):
-    job = _job_snapshot(job_id)
+    job = _workspace_job_snapshot(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["status"] != "done":
@@ -159,7 +205,7 @@ async def simulation_ws(websocket: WebSocket, job_id: str):
         await websocket.close()
 
 
-def _run_simulation(job_id: str, params: SimParams):
+def _run_simulation(job_id: str, params: SimParams, source_inpx: Path, workspace_id: str):
     ctrl = None
 
     # COM requires CoInitialize on every thread that uses it
@@ -172,6 +218,21 @@ def _run_simulation(job_id: str, params: SimParams):
         logger.error("pythoncom not available")
         return
 
+    # A plain threading.Thread does not inherit the request's ContextVars, so
+    # the submitting workspace is re-bound explicitly here -- anything this
+    # thread reaches that resolves a dataset path (the job registry, the
+    # results reader) must see the workspace that SUBMITTED the job, never
+    # raise, and certainly never fall back to somebody else's.
+    with workspaces.bind_workspace(workspace_id):
+        _run_simulation_locked(job_id, params, source_inpx)
+
+
+def _run_simulation_locked(job_id: str, params: SimParams, source_inpx: Path):
+    """The body of :func:`_run_simulation`, running with COM initialized on
+    this thread and the submitting workspace bound."""
+    import pythoncom
+
+    ctrl = None
     try:
         from services.vissim_com import VissimController
         from services.simulation_network_builder import build_simulation_network
@@ -202,7 +263,6 @@ def _run_simulation(job_id: str, params: SimParams):
         # own instance. See docs/phase2/00-EXECUTION-GUIDE.md §1 rule 3.
         ctrl.connect(visible=False, attach_to_running=False)
 
-        source_inpx = _simulation_source_inpx()
         if not source_inpx.exists():
             raise FileNotFoundError(f"Simulation INPX not found: {source_inpx}")
 
@@ -535,6 +595,12 @@ def start_agent_simulation_job(
     if not random_seeds:
         raise SimulationParameterError("random_seeds must contain at least one entry (or None).")
 
+    # Same freeze-at-enqueue discipline as start_simulation_job: the caller
+    # already supplies an explicit source .inpx (this turn's session working
+    # copy), and the workspace is captured here on the SUBMITTING thread so
+    # the runner thread can re-bind it (ContextVars do not cross threads).
+    workspace_id = workspaces.current_workspace_id()
+
     job_id = str(uuid.uuid4())[:8]
     record = create_job_record(
         job_id,
@@ -548,7 +614,7 @@ def start_agent_simulation_job(
     _jobs[job_id] = record
     t = threading.Thread(
         target=_run_agent_simulation_job,
-        args=(job_id, source_inpx, duration_s, random_seeds),
+        args=(job_id, source_inpx, duration_s, random_seeds, workspace_id),
         daemon=True,
     )
     t.start()
@@ -640,7 +706,11 @@ def _read_result_table_names(db_path: Path) -> set[str]:
 
 
 def _run_agent_simulation_job(
-    job_id: str, source_inpx: Path, duration_s: int, random_seeds: list
+    job_id: str,
+    source_inpx: Path,
+    duration_s: int,
+    random_seeds: list,
+    workspace_id: str | None = None,
 ) -> None:
     """M2.4 job runner thread body: RunContinuous once per seed, each seed
     isolated in its own subdirectory so results_reader's existing multi-db
@@ -648,7 +718,24 @@ def _run_agent_simulation_job(
     "done" only after every seed's result database is verified to carry a
     SIMULATIONRUN row (the run-completed artifact — never SimSec, which
     resets to 0 the moment a run ends; see
-    docs/phase2/00-EXECUTION-GUIDE.md SS3.1)."""
+    docs/phase2/00-EXECUTION-GUIDE.md SS3.1).
+
+    ``workspace_id`` re-binds the SUBMITTING request's workspace on this
+    thread (ContextVars do not cross ``threading.Thread`` boundaries) so the
+    job registry writes and any dataset resolution below stay inside the
+    project that asked for the run. Optional only so an existing test that
+    calls this runner directly keeps working; production always passes it.
+    """
+    if workspace_id is not None:
+        with workspaces.bind_workspace(workspace_id):
+            _run_agent_simulation_job_locked(job_id, source_inpx, duration_s, random_seeds)
+        return
+    _run_agent_simulation_job_locked(job_id, source_inpx, duration_s, random_seeds)
+
+
+def _run_agent_simulation_job_locked(
+    job_id: str, source_inpx: Path, duration_s: int, random_seeds: list
+) -> None:
     ctrl = None
     try:
         import pythoncom

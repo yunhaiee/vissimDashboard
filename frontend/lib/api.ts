@@ -103,8 +103,56 @@ function listReadApiBases(currentBase = getApiBase()): string[] {
   return Array.from(new Set(candidates.map(normalizeApiBase)));
 }
 
+// ---------------------------------------------------------------------------
+// Project workspaces (unit 1.4)
+// ---------------------------------------------------------------------------
+//
+// Every backend read and write is scoped to a workspace (UI label: 프로젝트) by
+// an `X-Workspace-Id` request header -- see backend/services/workspaces.py.
+// The selected workspace is module state, persisted in localStorage so a
+// reload stays in the same project; unset means "the backend's default
+// workspace", which is exactly how a pre-workspace client behaves.
+//
+// Injected in `sameOriginRequestInit` and `requestInitForBase` rather than at
+// each call site: those two are the ONLY places every fetch path in this file
+// builds its RequestInit, so a new endpoint binding cannot forget the header.
+// Two paths cannot carry it and are documented at their call sites: the
+// simulation progress WebSocket (the browser WebSocket API cannot set headers)
+// and any plain <a href> download built from `apiUrl`.
+const WORKSPACE_STORAGE_KEY = "vissim-workspace-id";
+const WORKSPACE_HEADER = "X-Workspace-Id";
+
+let workspaceIdOverride: string | null = null;
+
+export function getWorkspaceId(): string | null {
+  if (workspaceIdOverride) return workspaceIdOverride;
+  const stored = readStorageValue(WORKSPACE_STORAGE_KEY);
+  if (stored) {
+    workspaceIdOverride = stored;
+    return stored;
+  }
+  return null;
+}
+
+export function setWorkspaceId(value: string | null): void {
+  workspaceIdOverride = value;
+  if (value) {
+    writeStorageValue(WORKSPACE_STORAGE_KEY, value);
+  } else {
+    removeStorageValue(WORKSPACE_STORAGE_KEY);
+  }
+}
+
+function withWorkspaceHeader(init?: RequestInit): RequestInit {
+  const workspaceId = getWorkspaceId();
+  if (!workspaceId) return { ...(init ?? {}) };
+  const headers = new Headers(init?.headers);
+  headers.set(WORKSPACE_HEADER, workspaceId);
+  return { ...(init ?? {}), headers };
+}
+
 function requestInitForBase(base: string, init?: RequestInit): LocalNetworkRequestInit {
-  const nextInit = { ...(init ?? {}) } as LocalNetworkRequestInit;
+  const nextInit = withWorkspaceHeader(init) as LocalNetworkRequestInit;
   if (isLocalApiBase(base)) {
     nextInit.mode = nextInit.mode ?? "cors";
     nextInit.targetAddressSpace = "local";
@@ -117,7 +165,7 @@ function normalizedApiPath(path: string): string {
 }
 
 function sameOriginRequestInit(init?: RequestInit): RequestInit {
-  return { ...(init ?? {}) };
+  return withWorkspaceHeader(init);
 }
 
 export function apiUrl(path: string): string {
@@ -496,6 +544,8 @@ export interface ActiveDataset {
   has_scenarios?: boolean;
   has_modifications?: boolean;
   has_real_counts?: boolean;
+  // Unit 1.4: which 프로젝트 (workspace) this dataset belongs to.
+  workspace_id?: string;
 }
 
 // 모델 건강검진 (model health-check) — GET /api/health-check's report shape,
@@ -1710,6 +1760,41 @@ export async function fetchActiveDataset(): Promise<ActiveDataset> {
   return r.json();
 }
 
+// --- Project workspaces (프로젝트) -----------------------------------------
+// One workspace owns one uploaded model plus its validation workbook, staged
+// spreadsheets, simulation runs and agent sessions. See getWorkspaceId above
+// for how the selection reaches the backend.
+
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  created_at: string | null;
+  is_default: boolean;
+}
+
+export interface WorkspaceListResponse {
+  workspaces: WorkspaceSummary[];
+  current: string;
+  default: string;
+}
+
+export async function fetchWorkspaces(): Promise<WorkspaceListResponse> {
+  const r = await apiFetch("/api/workspaces", { cache: "no-store" });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+export async function createWorkspace(name: string): Promise<WorkspaceSummary> {
+  const r = await apiMutationFetch("/api/workspaces", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
 export async function uploadInpxDataset(file: File): Promise<ActiveDataset> {
   const filename = encodeURIComponent(file.name);
   const path = `/api/datasets/upload?filename=${filename}`;
@@ -1825,6 +1910,10 @@ export async function detectRunnableSimulationBackend(
   return null;
 }
 
+// NOTE (unit 1.4): the browser WebSocket API cannot attach custom headers, so
+// this progress socket never carries X-Workspace-Id and the backend resolves
+// it to the default workspace. Live progress polling that DOES need workspace
+// scoping goes through fetchSimulationJob (a normal request) instead.
 export function createSimulationWS(jobId: string): WebSocket {
   const wsBase = toWebSocketBase(getApiBase()).replace(/\/+$/, "");
   return new WebSocket(`${wsBase}/api/simulations/ws/${jobId}`);
@@ -1992,7 +2081,12 @@ export async function uploadBaseWorkbook(file: File): Promise<BaseWorkbookRespon
 
   if (typeof window !== "undefined") {
     try {
+      // sameOriginRequestInit (not a bare object literal) so this upload
+      // carries the X-Workspace-Id header like every other request -- it is
+      // the one same-origin path in this file that does not go through
+      // apiFetch/apiMutationFetch/apiDirectMutationFetch.
       const r = await fetch(path, {
+        ...sameOriginRequestInit(),
         method: "POST",
         cache: "no-store",
         body: file,

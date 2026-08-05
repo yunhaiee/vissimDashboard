@@ -6,7 +6,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.datastructures import Headers
 from routers import assistant, datasets, network, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health
+from routers import workspaces as workspaces_router
+from services import workspaces
 from services.agent.sessions import sweep_stale_sessions
 from services.license_guard import license_required, license_status
 
@@ -31,6 +34,72 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="VISSIM Platform API", version="1.0.0", lifespan=lifespan)
+
+
+class WorkspaceScopeMiddleware:
+    """Bind every request to the workspace named by ``X-Workspace-Id``.
+
+    A raw ASGI middleware, NOT ``@app.middleware("http")``: Starlette's
+    ``BaseHTTPMiddleware`` runs the downstream app in a separate anyio task, so
+    a ``ContextVar`` set in its ``dispatch`` is not reliably visible to the
+    endpoint. This class calls the downstream app directly, in the SAME task,
+    which is what makes ``services.workspaces.current_workspace_id()`` work in
+    both async endpoints (same context) and sync endpoints (Starlette's
+    ``run_in_threadpool`` copies the context into the worker thread).
+
+    Registered FIRST so it ends up INNERMOST — inside ``CORSMiddleware`` — so
+    an unknown-workspace 404 still carries CORS headers and the browser can
+    read the error instead of reporting an opaque CORS failure.
+
+    Absent header → the default workspace, which is what keeps every
+    pre-workspace client (and every existing test) working unchanged. A
+    malformed or unregistered id → 404 with ``code:
+    "workspace_not_found"``; never a silent fallback, because a stale id in a
+    client's localStorage resolving to somebody else's project is precisely
+    the leak this boundary exists to prevent.
+
+    WebSockets are bound leniently (unknown id → default) rather than closed:
+    the browser ``WebSocket`` API cannot send custom headers at all, so the
+    only websocket route here (``/api/simulations/ws/{job_id}``, live progress
+    for a job the caller already holds the id of) could never carry one. That
+    limitation is recorded rather than papered over.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        raw = Headers(scope=scope).get("x-workspace-id")
+        try:
+            workspace_id = workspaces.resolve_workspace_id(raw)
+        except workspaces.WorkspaceNotFoundError:
+            if scope["type"] == "websocket":
+                workspace_id = workspaces.default_workspace_id()
+            else:
+                response = JSONResponse(
+                    status_code=404,
+                    content={
+                        "detail": {
+                            "code": "workspace_not_found",
+                            "message": f"Unknown workspace id: {raw!r}",
+                        }
+                    },
+                )
+                await response(scope, receive, send)
+                return
+
+        token = workspaces.set_current_workspace_id(workspace_id)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            workspaces.reset_current_workspace_id(token)
+
+
+app.add_middleware(WorkspaceScopeMiddleware)
 
 
 def _load_cors_origins() -> list[str]:
@@ -134,6 +203,8 @@ app.include_router(network.router)
 # affect matching.
 app.include_router(search.router)
 app.include_router(datasets.router)
+# Unit 1.4: project workspaces — the isolation boundary uploads live inside.
+app.include_router(workspaces_router.router)
 app.include_router(scenarios.router)
 app.include_router(simulations.router)
 app.include_router(geojson.router)

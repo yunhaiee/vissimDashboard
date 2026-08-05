@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, AsyncIterator, Callable, Iterator
@@ -17,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from config import REPO_ROOT
+from services import workspaces
 from services.agent.edit_session import (
     VissimEditSession,
     clear_active_edit_session,
@@ -27,6 +28,13 @@ from services.agent.gates import PreapprovedWriteGate, ProposeWriteGate, signatu
 from services.agent.guardrails import GuardrailEngine
 from services.agent.orchestrator import run_agent_turn
 from services.agent.planner import pick_language_text
+from services.agent.sessions import (
+    SESSIONS_ROOT,
+    read_session_meta_dir,
+    session_work_dir,
+    session_workspace_matches,
+    write_session_meta,
+)
 from services.agent.state import ArtifactManager
 from services.agent.toolkit import default_registry
 from services.agent.trace import TraceWriter
@@ -343,6 +351,11 @@ def stream_assistant(payload: AssistantQueryRequest):
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
+    # Unit 1.4: captured HERE, on the request-handling thread (which the
+    # workspace middleware has scoped), not inside the response generator --
+    # a StreamingResponse body is iterated later, on a different hop.
+    request_workspace_id = workspaces.current_workspace_id()
+
     def generate_events():
         stream_id = uuid.uuid4().hex[:10]
         yield encode_stream_event({"type": "status", "stream_id": stream_id, "phase": "accepted"})
@@ -357,11 +370,16 @@ def stream_assistant(payload: AssistantQueryRequest):
         def on_token(piece: str) -> None:
             token_queue.put(("token", piece))
 
+        # ContextVars do not cross threading.Thread, so the captured request
+        # workspace is re-bound inside the worker -- assistant_router.
+        # _build_context resolves the active dataset and would otherwise raise
+        # WorkspaceScopeError.
         def run() -> None:
             try:
-                holder["response"] = run_assistant_query(
-                    message, payload, stream_id=stream_id, on_token=on_token
-                )
+                with workspaces.bind_workspace(request_workspace_id):
+                    holder["response"] = run_assistant_query(
+                        message, payload, stream_id=stream_id, on_token=on_token
+                    )
             finally:
                 token_queue.put(("end", None))
 
@@ -430,9 +448,101 @@ def stream_assistant(payload: AssistantQueryRequest):
 
 
 def _agent_session_work_dir(session_id: str) -> Path:
-    """Per-session agent scratch dir — mirrors ``simulation_runs.job_dir``'s
-    REPO_ROOT-relative base resolution (``backend/services/simulation_runs.py``)."""
-    return REPO_ROOT / "runtime" / "agent_sessions" / session_id
+    """Per-session agent scratch dir.
+
+    Unit 1.4: delegates to ``services.agent.sessions.session_work_dir`` rather
+    than rebuilding ``runtime/agent_sessions/<id>`` from ``REPO_ROOT`` a second
+    time — that duplicate was carrying an explicit "must stay in sync" caveat
+    in sessions.py's own docstring, which is a bug waiting for whoever moves
+    the root. ``SESSIONS_ROOT`` is imported into this module so tests can
+    monkeypatch it here the same way they already do on
+    ``routers.network``/``routers.agent_downloads``.
+    """
+    return session_work_dir(session_id, SESSIONS_ROOT)
+
+
+def _session_source_inpx(session_id: str, work_dir: Path) -> Path:
+    """The .inpx this session was (or will be) cloned from — frozen at session
+    creation, never re-resolved from the live active dataset.
+
+    Unit 1.4's isolation requirement: an ``ArtifactManager`` built from
+    ``get_active_inpx_path()`` on EVERY request means that swapping the
+    workspace's active dataset mid-session silently repoints the session's
+    ``rollback_to(0)`` (and ``_ensure_working_copy``'s re-sync) at a DIFFERENT
+    network — the user asks to undo one edit and gets somebody else's model
+    written into their working copy. The first request for a session records
+    ``{workspace_id, source_inpx, dataset_revision}`` in
+    ``session_meta.json``; every later request for the same session reads it
+    back.
+
+    A session whose sidecar is missing/unreadable (pre-1.4 sessions, and every
+    test that fabricates a work dir) falls back to live resolution — exactly
+    the old behavior — and gets a sidecar written for next time.
+
+    **The write is fatal.** It used to be logged and swallowed, which quietly
+    created a LIVE session with no recorded owner. Since
+    ``services.agent.sessions.session_workspace_matches`` now fails closed, an
+    unowned session is not merely undocumented, it is unreachable — and worse,
+    before that fix it was reachable by the WRONG project. Refusing the turn is
+    the honest outcome: this project's doctrine is that a refused edit with a
+    clear reason beats a completed edit with wrong ownership.
+    """
+    meta = read_session_meta_dir(work_dir)
+    recorded = meta.get("source_inpx")
+    if recorded:
+        return Path(str(recorded))
+
+    resolved = get_active_inpx_path()
+    try:
+        write_session_meta(
+            work_dir,
+            {
+                "session_id": session_id,
+                "workspace_id": workspaces.current_workspace_id(),
+                "source_inpx": str(resolved),
+                "dataset_revision": _active_dataset_revision(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - see the docstring: an unowned session must not exist
+        logger.error("Could not record session metadata for %s", session_id, exc_info=True)
+        raise HTTPException(
+            status_code=500, detail="Could not start the agent session."
+        ) from exc
+    return resolved
+
+
+def _session_belongs_to_workspace(session_id: str, workspace_id: str) -> bool:
+    """Whether ``session_id`` may be read/resumed from ``workspace_id``.
+
+    Thin delegation to ``services.agent.sessions.session_workspace_matches`` —
+    THE ownership predicate, shared verbatim with ``routers/network.py``,
+    ``routers/agent_downloads.py`` and ``services/audit_trail.py``. This used to
+    be a second, independent copy of the same three lines, which is how it came
+    to keep the fail-open default-workspace substitution after that was
+    identified as a hole: one boundary rule needs exactly one implementation.
+
+    The root is taken from ``_agent_session_work_dir``'s own answer rather than
+    from ``SESSIONS_ROOT`` directly, because THAT function is this module's
+    sessions seam: tests patch the function (``test_agent_audit_endpoint.py``)
+    as well as the constant, and an ownership check that consulted a different
+    root than the one the pending-approval file is read from would be checking
+    a different session than it acts on.
+    """
+    return session_workspace_matches(
+        session_id, workspace_id, _agent_session_work_dir(session_id).parent
+    )
+
+
+def _active_dataset_revision() -> str | None:
+    """Best-effort dataset revision for the session sidecar. Never raises: it
+    is provenance for the audit trail, not a correctness input."""
+    try:
+        from services.datasets import get_active_dataset
+
+        return str(get_active_dataset().get("revision") or "") or None
+    except Exception:  # noqa: BLE001 - provenance only
+        return None
 
 
 # ``/agent/query/stream`` always mints ``session_id`` itself (``uuid.uuid4().
@@ -555,6 +665,37 @@ _session_turn_locks: dict[str, threading.Lock] = {}
 #: legitimately slow (not stuck) prior turn is never mistaken for a deadlock.
 _SESSION_LOCK_TIMEOUT_S = 300.0
 
+# ---------------------------------------------------------------------------
+# Unit 1.4, disclosed interim measure: a PROCESS-WIDE agent-turn mutex
+# ---------------------------------------------------------------------------
+#
+# The per-session lock above only serializes turns sharing a session_id. But
+# an agent turn also installs FOUR process-wide module globals for its
+# duration -- ``tools_network._active_inpx_override``,
+# ``tools_run._active_run_source``, ``tools_run._on_run_started`` and
+# ``edit_session._active_edit_session`` -- which are not session-scoped at all.
+# Two turns from DIFFERENT sessions overlapping therefore clobber each other
+# today: whichever set the globals last wins, and the other turn's read tools
+# silently answer against the wrong working copy. Before workspaces that was a
+# same-dataset annoyance; with two projects on one box it is a cross-client
+# data leak, which this unit is specifically about closing.
+#
+# The correct fix is to plumb the active .inpx / run source / edit session
+# explicitly through ``run_agent_turn`` instead of through module globals, and
+# that is deliberately OUT of scope here (it touches the orchestrator and every
+# tool module). The honest interim measure is this global mutex: agent turns
+# serialize across ALL sessions, so the globals can never be observed by a
+# turn that did not set them. It costs concurrency -- a second user's chat
+# waits for the first user's Vissim write to finish -- and that cost is stated
+# rather than hidden.
+#
+# Lock ORDER is always session-lock then global-lock (never the reverse), so
+# two threads holding different session locks cannot deadlock waiting on each
+# other. Each acquisition keeps the existing _SESSION_LOCK_TIMEOUT_S semantics
+# and raises the same SessionBusyError, so the caller-visible behavior of "a
+# turn that cannot start says so instead of hanging forever" is unchanged.
+_GLOBAL_TURN_LOCK = threading.Lock()
+
 
 class SessionBusyError(RuntimeError):
     """A second turn for the same ``session_id`` could not acquire the
@@ -574,16 +715,29 @@ def _get_session_turn_lock(session_id: str) -> threading.Lock:
 
 @contextmanager
 def _session_turn_scope(session_id: str) -> Iterator[None]:
-    """Serializes ``run_agent_turn`` calls sharing ``session_id`` -- see the
-    module-level rationale above. Raises :class:`SessionBusyError` (never
-    hangs forever) if the prior turn does not release within the timeout."""
+    """Serializes ``run_agent_turn`` calls sharing ``session_id`` (the original
+    Bug 1 fix) AND, since unit 1.4, every agent turn process-wide (see the
+    ``_GLOBAL_TURN_LOCK`` rationale above).
+
+    Raises :class:`SessionBusyError` (never hangs forever) if either lock is
+    not obtained within :data:`_SESSION_LOCK_TIMEOUT_S`.
+    """
     lock = _get_session_turn_lock(session_id)
     if not lock.acquire(timeout=_SESSION_LOCK_TIMEOUT_S):
         raise SessionBusyError(
             f"Timed out waiting for an earlier turn on session {session_id!r} to finish."
         )
     try:
-        yield
+        if not _GLOBAL_TURN_LOCK.acquire(timeout=_SESSION_LOCK_TIMEOUT_S):
+            raise SessionBusyError(
+                "Timed out waiting for another agent turn to finish. Agent turns are "
+                "serialized process-wide while the per-turn module globals are still "
+                "shared state."
+            )
+        try:
+            yield
+        finally:
+            _GLOBAL_TURN_LOCK.release()
     finally:
         lock.release()
 
@@ -776,6 +930,7 @@ async def _stream_agent_turn(
     engine: GuardrailEngine,
     edit_session: "VissimEditSession | None" = None,
     selection: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
 ) -> AsyncIterator[str]:
     """NDJSON event body shared by ``/agent/query/stream`` (a fresh
     proposal, ``ProposeWriteGate``) and ``/agent/approve``'s approved path
@@ -825,7 +980,28 @@ async def _stream_agent_turn(
     def on_run_started(job_id: str) -> None:
         step_queue.put(("run_started", {"job_id": job_id}))
 
+    # Unit 1.4: the turn body runs on a plain threading.Thread, which does NOT
+    # inherit the request's ContextVars — so the workspace this request
+    # resolved to is captured here and re-bound inside the thread. Without it,
+    # every dataset accessor the turn reaches (tools_run.run_simulation ->
+    # create_job_record, tools_edit's rollback source resolution, ...) would
+    # raise WorkspaceScopeError. Falls back to the current scope so a caller
+    # that did not pass one still works inside a request.
+    bound_workspace_id = workspace_id or workspaces.current_workspace_id()
+
     def run() -> None:
+        # The bind itself is inside the try/finally that publishes "end": if it
+        # ever raised (a malformed id), skipping that publish would leave the
+        # NDJSON drain loop below waiting forever instead of streaming an
+        # apologetic `done`.
+        try:
+            with workspaces.bind_workspace(bound_workspace_id):
+                _run_turn_body()
+        except Exception as exc:  # noqa: BLE001 - surfaced as an apologetic `done`
+            holder.setdefault("error", exc)
+            step_queue.put(("end", None))
+
+    def _run_turn_body() -> None:
         try:
             # Bug 1 root-cause fix (see _session_turn_scope's docstring):
             # serialize the ENTIRE ensure-working-copy -> run_agent_turn
@@ -1160,7 +1336,16 @@ def stream_agent_query(payload: AgentQueryRequest, request: Request):
     else:
         session_id = uuid.uuid4().hex[:12]
     work_dir = _agent_session_work_dir(session_id)
-    artifact_manager = ArtifactManager(source_inpx=get_active_inpx_path(), work_dir=work_dir)
+    workspace_id = workspaces.current_workspace_id()
+    # M3.3 resume + unit 1.4 isolation: a client-supplied session_id may name a
+    # session that belongs to ANOTHER project. Refuse it the same way an
+    # unknown pending approval is refused, rather than letting this workspace
+    # keep editing that workspace's working copy.
+    if payload.session_id is not None and not _session_belongs_to_workspace(session_id, workspace_id):
+        raise HTTPException(status_code=404, detail="No matching agent session.")
+    artifact_manager = ArtifactManager(
+        source_inpx=_session_source_inpx(session_id, work_dir), work_dir=work_dir
+    )
     engine = GuardrailEngine()
     gate = ProposeWriteGate()
     # P7: resolved HERE, in the request handler, rather than on the streaming
@@ -1180,6 +1365,7 @@ def stream_agent_query(payload: AgentQueryRequest, request: Request):
             gate=gate,
             engine=engine,
             selection=selection,
+            workspace_id=workspace_id,
         ):
             yield event
 
@@ -1219,6 +1405,14 @@ def approve_agent_action(payload: AgentApproveRequest, request: Request):
     construction), both 404 with no further detail.
     """
     if not _SESSION_ID_RE.match(payload.session_id):
+        raise HTTPException(status_code=404, detail="No matching pending approval.")
+
+    workspace_id = workspaces.current_workspace_id()
+    # Unit 1.4: approving another project's pending write would execute a
+    # Vissim edit against a network this request has no business touching.
+    # Same opaque 404 as an unknown/stale approval — never a distinguishable
+    # "exists but is not yours".
+    if not _session_belongs_to_workspace(payload.session_id, workspace_id):
         raise HTTPException(status_code=404, detail="No matching pending approval.")
 
     work_dir = _agent_session_work_dir(payload.session_id)
@@ -1277,7 +1471,9 @@ def approve_agent_action(payload: AgentApproveRequest, request: Request):
     )
     full_message = original_message + note
 
-    artifact_manager = ArtifactManager(source_inpx=get_active_inpx_path(), work_dir=work_dir)
+    artifact_manager = ArtifactManager(
+        source_inpx=_session_source_inpx(payload.session_id, work_dir), work_dir=work_dir
+    )
     engine = GuardrailEngine()
     gate = PreapprovedWriteGate(set(pending.get("signatures") or []))
     # M2.4: a run-tier approval needs the artifact manager + active-inpx
@@ -1312,6 +1508,7 @@ def approve_agent_action(payload: AgentApproveRequest, request: Request):
             # pending_approval.json (see where it is written) so the approved
             # re-run's planner sees exactly the context the proposal did.
             selection=pending.get("selection") if isinstance(pending.get("selection"), dict) else None,
+            workspace_id=workspace_id,
         ):
             yield event
 

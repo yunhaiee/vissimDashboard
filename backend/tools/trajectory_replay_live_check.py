@@ -340,4 +340,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Unit 1.4: create_job_record and the datasets accessors resolve their
+    # paths from the workspace bound to the current context, and a script has
+    # no request to supply one -- so the default project is bound explicitly
+    # (services/workspaces.py refuses to guess).
+    from services.workspaces import bind_workspace, default_workspace_id  # noqa: E402
+
+    with bind_workspace(default_workspace_id()):
+        main()

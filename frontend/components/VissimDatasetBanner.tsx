@@ -5,10 +5,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { useLanguage } from "@/components/LanguageProvider";
 import {
+  createWorkspace,
   fetchActiveDataset,
+  fetchWorkspaces,
+  getWorkspaceId,
   resetActiveDataset,
+  setWorkspaceId,
   uploadInpxDataset,
   type ActiveDataset,
+  type WorkspaceSummary,
 } from "@/lib/api";
 
 interface Props {
@@ -53,6 +58,20 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
   // is the honest middle ground: it proves the upload is still alive on a
   // large ZIP instead of a static "처리 중" label that never changes.
   const [uploadElapsedSec, setUploadElapsedSec] = useState(0);
+  // 프로젝트 (workspace) picker — every request this app makes is scoped to the
+  // selected one (lib/api.ts injects X-Workspace-Id), so switching projects
+  // re-resolves the model, its validation workbook, its runs and its agent
+  // sessions in one move. `selectedWorkspaceId` is null until the list loads,
+  // at which point it takes the backend's own answer for "which workspace did
+  // this request resolve to" rather than guessing from localStorage.
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  // `undefined` = no dataset has resolved yet; `null` = a dataset resolved but
+  // the backend reported no workspace (a pre-1.4 backend).
+  const lastBroadcastWorkspaceRef = useRef<string | null | undefined>(undefined);
   const hasCustomBackground = /\bbg-/.test(className);
   const hasCustomShadow = /\bshadow/.test(className);
 
@@ -81,6 +100,91 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
   }, []);
 
   useEffect(() => loadActiveDataset(), [loadActiveDataset]);
+
+  const loadWorkspaces = useCallback(() => {
+    let mounted = true;
+    fetchWorkspaces()
+      .then((payload) => {
+        if (!mounted) return;
+        setWorkspaces(payload.workspaces);
+        setSelectedWorkspaceId(payload.current);
+        // A stale id in localStorage (e.g. a workspace created on another
+        // machine) 404s every request; the listing call is the one request
+        // that tells us what the backend actually resolved, so re-sync to it.
+        if (getWorkspaceId() && getWorkspaceId() !== payload.current) {
+          setWorkspaceId(payload.current === payload.default ? null : payload.current);
+        }
+      })
+      .catch(() => {
+        // The banner already surfaces backend-unreachable through the dataset
+        // check; a missing workspace list just hides the picker.
+        if (mounted) setWorkspaces([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => loadWorkspaces(), [loadWorkspaces]);
+
+  const handleSwitchWorkspace = useCallback(
+    (workspaceId: string) => {
+      if (!workspaceId || workspaceId === selectedWorkspaceId) return;
+      const isDefault = workspaces.find((entry) => entry.id === workspaceId)?.is_default ?? false;
+      // Storing null for the default workspace keeps a fresh browser behaving
+      // exactly like a pre-workspace client (no header at all).
+      setWorkspaceId(isDefault ? null : workspaceId);
+      setSelectedWorkspaceId(workspaceId);
+      setError(null);
+      loadActiveDataset();
+    },
+    [loadActiveDataset, selectedWorkspaceId, workspaces],
+  );
+
+  // Switching projects changes what every page's data means, so the existing
+  // dataset-change broadcast is reused to make them refetch -- exactly the
+  // path an upload already takes, so no page needs its own workspace logic.
+  //
+  // Keyed on the workspace the RELOADED dataset reports, not on the picker's
+  // own state: `handleSwitchWorkspace` sets the selection and kicks off a
+  // refetch, and broadcasting before that refetch lands would republish the
+  // PREVIOUS project's dataset. The first resolved dataset is recorded
+  // without broadcasting -- initial mount is not a change, and announcing it
+  // would make every page double-fetch on load.
+  useEffect(() => {
+    if (!activeDataset) return;
+    const workspaceId = activeDataset.workspace_id ?? null;
+    if (lastBroadcastWorkspaceRef.current === undefined) {
+      lastBroadcastWorkspaceRef.current = workspaceId;
+      return;
+    }
+    if (lastBroadcastWorkspaceRef.current === workspaceId) return;
+    lastBroadcastWorkspaceRef.current = workspaceId;
+    publishDatasetChange(activeDataset);
+    onDatasetChange?.(activeDataset);
+  }, [activeDataset, onDatasetChange]);
+
+  const handleCreateWorkspace = useCallback(async () => {
+    const name = newWorkspaceName.trim();
+    if (!name) return;
+    setWorkspaceBusy(true);
+    setError(null);
+    try {
+      const created = await createWorkspace(name);
+      setWorkspaces((previous) => [...previous, created]);
+      setNewWorkspaceName("");
+      setCreatingWorkspace(false);
+      handleSwitchWorkspace(created.id);
+    } catch (createError) {
+      setError(
+        createError instanceof Error
+          ? createError.message
+          : t("프로젝트를 만들지 못했습니다.", "Could not create the project.", "プロジェクトを作成できませんでした。"),
+      );
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }, [handleSwitchWorkspace, newWorkspaceName, t]);
 
   const handleSelectFile = useCallback(() => {
     fileInputRef.current?.click();
@@ -155,6 +259,69 @@ export default function VissimDatasetBanner({ onDatasetChange, className = "", f
           handleFileSelected(event.target.files?.[0]);
         }}
       />
+      {workspaces.length > 0 && (
+        <div className="mb-4 border-b border-slate-200 pb-3.5">
+          <label
+            htmlFor="vissim-workspace-picker"
+            className="text-sm font-semibold text-slate-600"
+          >
+            {t("프로젝트", "Project", "プロジェクト")}
+          </label>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <select
+              id="vissim-workspace-picker"
+              value={selectedWorkspaceId ?? ""}
+              disabled={uploading || workspaceBusy}
+              onChange={(event) => handleSwitchWorkspace(event.target.value)}
+              className="min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {workspaces.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>
+                  {workspace.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setCreatingWorkspace((open) => !open)}
+              disabled={uploading || workspaceBusy}
+              className="ui-button-ghost inline-flex items-center px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("새 프로젝트", "New Project", "新規プロジェクト")}
+            </button>
+          </div>
+          {creatingWorkspace && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={newWorkspaceName}
+                maxLength={120}
+                placeholder={t("프로젝트 이름", "Project name", "プロジェクト名")}
+                onChange={(event) => setNewWorkspaceName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void handleCreateWorkspace();
+                }}
+                className="min-w-0 flex-1 rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700"
+              />
+              <button
+                type="button"
+                onClick={() => void handleCreateWorkspace()}
+                disabled={workspaceBusy || !newWorkspaceName.trim()}
+                className="ui-button-primary inline-flex items-center px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {t("만들기", "Create", "作成")}
+              </button>
+            </div>
+          )}
+          <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+            {t(
+              "프로젝트마다 모델·검증 데이터·시뮬레이션 결과가 분리됩니다.",
+              "Each project keeps its own model, validation data and simulation results.",
+              "プロジェクトごとにモデル・検証データ・シミュレーション結果が分離されます。",
+            )}
+          </p>
+        </div>
+      )}
       <p className="text-sm font-semibold text-slate-600">{t("모델 선택", "Model")}</p>
       <p className="mt-1 truncate text-xs leading-relaxed text-slate-500">
         {activeDataset

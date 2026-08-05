@@ -390,4 +390,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Unit 1.4: a CLI run has no HTTP request to scope it to a project, and
+    # services/workspaces.py refuses to guess one -- so say "the default
+    # project" explicitly before anything resolves a dataset path.
+    from services.workspaces import bind_workspace, default_workspace_id
+
+    with bind_workspace(default_workspace_id()):
+        main()

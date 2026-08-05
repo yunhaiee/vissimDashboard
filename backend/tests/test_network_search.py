@@ -43,7 +43,35 @@ from services import network_search
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEMO_INPX = REPO_ROOT / "data" / "practice.inpx"
-ACTIVE_REAL_INPX = REPO_ROOT / "runtime" / "uploads" / "current" / "current.inpx"
+
+# Resolved through the REAL (unpatched) runtime layout, not
+# ``services.workspaces.WORKSPACES_ROOT`` -- conftest.py redirects that
+# constant at a pytest tmp dir for isolation, which is exactly what these
+# acceptance tests must NOT follow. Unit 1.4 moved the dataset from
+# ``runtime/uploads/current/`` into ``runtime/workspaces/<default id>/uploads/
+# current/``; the legacy path is still checked because the move is LAZY (it
+# happens the first time the backend boots after upgrading), so on a box that
+# has not booted since, the file is still in the old place. Same resolver as
+# test_agent_read_tools.py and test_agent_constraints.py -- keep the three in
+# step, or these tests silently SKIP instead of failing.
+_RUNTIME_ROOT = REPO_ROOT / "runtime"
+
+
+def _resolve_active_real_inpx() -> Path:
+    registry = _RUNTIME_ROOT / "workspaces" / "registry.json"
+    try:
+        entries = json.loads(registry.read_text(encoding="utf-8"))["workspaces"]
+    except Exception:
+        entries = []
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("is_default") and entry.get("id"):
+            migrated = _RUNTIME_ROOT / "workspaces" / str(entry["id"]) / "uploads" / "current" / "current.inpx"
+            if migrated.is_file():
+                return migrated
+    return _RUNTIME_ROOT / "uploads" / "current" / "current.inpx"
+
+
+ACTIVE_REAL_INPX = _resolve_active_real_inpx()
 
 _requires_real_dataset = pytest.mark.skipif(
     not ACTIVE_REAL_INPX.is_file(),

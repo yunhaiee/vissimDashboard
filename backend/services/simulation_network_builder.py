@@ -68,7 +68,14 @@ def build_simulation_network(
     tree = build_scenario_tree(source_inpx, scenario_id)
     root = tree.getroot()
 
-    output_dir = Path(__file__).resolve().parent.parent.parent / "runtime" / "simulations" / job_id
+    # Unit 1.4: derived from services.simulation_runs' own root instead of a
+    # second Path(__file__)-relative copy of "runtime/simulations". The old
+    # hardcode bypassed the SIMULATION_ROOT test seam entirely, so a test that
+    # redirected the job registry to a tmp dir still had THIS function writing
+    # a real interactive INPX into the developer's live runtime/ tree.
+    from services.simulation_runs import job_dir as _job_dir
+
+    output_dir = _job_dir(job_id)
     results_dir = output_dir / "results"
     output_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)

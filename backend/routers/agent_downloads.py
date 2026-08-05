@@ -15,18 +15,16 @@ dir, never writes, deletes, or touches ``ArtifactManager`` (no ``clone()``,
 listing or downloading a session's models can never mutate it or its
 history, and never launches Vissim COM.
 
-**Scope note (session <-> dataset association):** ``AgentState.artifacts``
-is always ``{}`` in production (see ``services/agent/state.py``'s own
-docstring on ``AgentState``) -- no session records which dataset it was
-cloned from. This app has exactly one active dataset slot at a time
-(``services.datasets.get_active_inpx_path``), so for the ordinary case
-"which dataset was this session's model edited from" is simply "whatever is
-active now"; a session outliving a *later* dataset swap would report the
-new dataset's stem in its download filename, not the one it was actually
-cloned from. Documented as a known limitation (drafted docs/phase2/
-DECISIONS.md entry in the P8 report) rather than solved here -- solving it
-properly needs a new persisted field on session state, out of this task's
-"expose what exists, don't build a new versioning store" scope.
+**Scope note (session <-> dataset association):** unit 1.4 added
+``session_meta.json`` (``services/agent/sessions.py``), which DOES record the
+workspace and the exact source .inpx a session was cloned from — and this
+router uses it to hide sessions belonging to another project entirely. What
+it still does not use it for is the download FILENAME: the stem below is
+taken from whatever dataset is active in the requesting workspace right now,
+so a session that outlives a later dataset swap within its own project still
+reports the new dataset's stem. Cosmetic (the session id is in the filename
+too, so nothing is ambiguous), and left alone deliberately — this router's
+scope is "expose what exists", not "rename what P8 shipped".
 """
 from __future__ import annotations
 
@@ -41,7 +39,8 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Response
 
-from services.agent.sessions import SESSIONS_ROOT
+from services import workspaces
+from services.agent.sessions import SESSIONS_ROOT, session_workspace_matches
 from services.agent.state import SIBLING_ASSET_EXTENSIONS
 from services.datasets import get_active_inpx_path
 
@@ -84,7 +83,7 @@ _MAX_LIST_LIMIT = 200
 #: Characters illegal (or awkward) in a Windows/macOS/Linux filename --
 #: applied to the active dataset's stem before it goes into a download's
 #: Content-Disposition filename, since that stem can come from a
-#: user-uploaded filename (services/datasets.py's `_write_metadata` only
+#: user-uploaded filename (services/datasets.py's `_metadata_payload` only
 #: strips directory components via `Path(filename).name`, not illegal
 #: characters).
 _UNSAFE_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -106,7 +105,18 @@ def _resolve_session_dir(session_id: str) -> Path | None:
         logger.warning("agent_downloads: session_id %r resolved outside SESSIONS_ROOT; ignoring", session_id)
         return None
 
-    return session_dir if session_dir.is_dir() else None
+    if not session_dir.is_dir():
+        return None
+
+    # Unit 1.4: a session belonging to another project is reported as simply
+    # not existing -- the edited .inpx it holds IS that project's network, so
+    # serving it here would be a straight cross-client model download. Legacy
+    # sessions (no sidecar) resolve to the default workspace.
+    if not session_workspace_matches(session_id, workspaces.current_workspace_id(), SESSIONS_ROOT):
+        logger.info("agent_downloads: session %s belongs to another workspace; hiding", session_id)
+        return None
+
+    return session_dir
 
 
 def _session_versions(session_dir: Path) -> list[int]:
@@ -266,7 +276,13 @@ def list_downloads(
         return []
 
     entries: list[dict[str, Any]] = []
+    current_workspace = workspaces.current_workspace_id()
     for session_dir in candidates:
+        # Same workspace filter the single-session path applies -- the "browse
+        # every session" listing must not become the way one project enumerates
+        # another's edited models.
+        if not session_workspace_matches(session_dir.name, current_workspace, SESSIONS_ROOT):
+            continue
         versions = _session_versions(session_dir)
         if not versions:
             continue

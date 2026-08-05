@@ -247,7 +247,23 @@ def resolve_session_dir(session_id: str, *, sessions_root: Path | None = None) -
     except ValueError:
         logger.warning("audit_trail: session_id %r resolved outside the sessions root; ignoring", session_id)
         return None
-    return session_dir if session_dir.is_dir() else None
+    if not session_dir.is_dir():
+        return None
+
+    # Unit 1.4: the ledger is a verbatim record of what the agent did to a
+    # specific project's network -- link numbers, parameter values, the
+    # planner's rationale. A session owned by another workspace is reported as
+    # not existing at all (legacy sessions with no sidecar resolve to the
+    # default workspace, so pre-1.4 audit exports keep working).
+    from services import workspaces
+    from services.agent.sessions import session_workspace_matches
+
+    if not session_workspace_matches(
+        session_id, workspaces.current_workspace_id(), sessions_root or SESSIONS_ROOT
+    ):
+        logger.info("audit_trail: session %s belongs to another workspace; hiding", session_id)
+        return None
+    return session_dir
 
 
 def ledger_path(session_dir: Path, session_id: str) -> Path:

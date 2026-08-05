@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException, Query
 from config import DATA_DIR
 from services.datasets import get_active_dataset, get_active_inpx_path
 from services.inpx_parser import parse_network
-from services.simulation_runs import get_job_record
+from services.simulation_runs import belongs_to_current_workspace, get_job_record
 from services.trajectory_reader import parse_fzp, resolve_frames
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,10 @@ def _resolve_job_trajectory_path(job_id: str) -> Path:
     unrelated network's trajectory instead.
     """
     record = get_job_record(job_id)
-    if record is None:
+    # Unit 1.4: a job from another project is indistinguishable from one that
+    # does not exist -- checked FIRST, before any status/revision detail could
+    # confirm the id is real.
+    if record is None or not belongs_to_current_workspace(record):
         raise HTTPException(status_code=404, detail=f"Simulation job '{job_id}' not found")
     if record.get("status") != "done":
         raise HTTPException(
