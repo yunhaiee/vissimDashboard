@@ -15,7 +15,8 @@ rule, applied consistently:
 
   (a) *the data contradicts itself*, so any number computed from it is wrong —
       overlapping intervals double-count, a stated approach total that
-      disagrees with its own movement rows, a signal group pointing at a phase
+      disagrees with its own movement rows, a stated all-class total that
+      disagrees with its own per-class rows, a signal group pointing at a phase
       that does not exist; or
   (b) *it fails an explicit numeric minimum stated by the governing
       authority* — the ≥3 h peak coverage rule being the one we have in hand.
@@ -118,6 +119,14 @@ class QualityThresholds(BaseModel):
     approach_total_tolerance_absolute: float = Field(
         default=2.0, ge=0, description="…or this many vehicles, whichever is larger."
     )
+    class_total_tolerance_fraction: float = Field(
+        default=0.02,
+        ge=0,
+        description="Per-class rows may differ from a stated all-class total by this share…",
+    )
+    class_total_tolerance_absolute: float = Field(
+        default=2.0, ge=0, description="…or this many vehicles, whichever is larger."
+    )
     movement_rate_warn_vph: float = Field(
         default=3000.0, gt=0, description="Per-movement flow rate above which we flag a typo."
     )
@@ -163,14 +172,34 @@ class QualityCheck:
 SeriesKey = tuple[str, str, str, str]
 
 
-def series_key(count: TurningCountData) -> SeriesKey:
+def movement_key(count: TurningCountData) -> str:
+    """The movement half of :func:`series_key`, on its own.
+
+    Shared with :func:`check_class_total_consistency`, which buckets along the
+    *class* axis and therefore needs everything-but-the-class as its key."""
     if count.movement.is_approach_total:
-        movement = "TOTAL"
-    else:
-        turn = count.movement.turn.value if count.movement.turn else (count.movement.turn_raw or "?")
-        movement = f"{turn}->{count.movement.to_leg_id or ''}"
+        return "TOTAL"
+    turn = count.movement.turn.value if count.movement.turn else (count.movement.turn_raw or "?")
+    return f"{turn}->{count.movement.to_leg_id or ''}"
+
+
+def is_all_class_total(count: TurningCountData) -> bool:
+    """True when this record is the source's own *all classes* figure.
+
+    Two spellings mean the same thing and both occur in real exports: an
+    explicitly unclassified scheme (a file that only gives one undifferentiated
+    number), and a classified scheme whose row is the stated total across its
+    own classes (the Daejeon export's 합계 column). Either way the record is a
+    *sum of the others*, so no consumer may add it to them."""
+    return (
+        count.vehicle_class.scheme is ClassificationScheme.UNCLASSIFIED
+        or count.vehicle_class.canonical is CanonicalVehicleClass.ALL_VEHICLES
+    )
+
+
+def series_key(count: TurningCountData) -> SeriesKey:
     klass = f"{count.vehicle_class.scheme.value}:{count.vehicle_class.code}"
-    return (count.site_id, count.approach.leg_id, movement, klass)
+    return (count.site_id, count.approach.leg_id, movement_key(count), klass)
 
 
 def _series_label(key: SeriesKey) -> str:
@@ -531,6 +560,91 @@ def check_approach_total_consistency(
     return issues
 
 
+def check_class_total_consistency(
+    result: ImportResult, thresholds: QualityThresholds
+) -> list[ImportIssue]:
+    """REFUSE on a real mismatch, WARN inside rounding tolerance.
+
+    The class-axis twin of :func:`check_approach_total_consistency`, and it
+    exists because the first real Korean export has one: the Daejeon
+    스마트교차로 workbook states, for every movement in every 15-minute bin,
+    six per-class figures **and** their 합계. That is a self-check the source
+    handed us, on the axis the approach check cannot see — the approach check
+    buckets *by* class, so a class total and its parts never meet there.
+
+    Region-agnostic by construction: the check knows nothing about Korea, only
+    that a record flagged as an all-class total must equal the sum of the
+    classified records sharing its site, approach, movement and interval. A
+    material disagreement means at least one of the two is wrong and nothing
+    downstream can tell which — refuse case (a). Inside tolerance it is the
+    source's own rounding: recorded, not blocking.
+
+    Silent when a bucket has only a total (that is
+    :func:`check_class_coverage`'s "totals only" warning) or only parts
+    (the source stated no total, so there is nothing to check against).
+    """
+    issues: list[ImportIssue] = []
+    ClassBucket = tuple[str, str, str, datetime, datetime]
+    totals: dict[ClassBucket, float] = {}
+    parts: dict[ClassBucket, float] = defaultdict(float)
+    part_codes: dict[ClassBucket, set[str]] = defaultdict(set)
+
+    for count in result.counts:
+        bucket: ClassBucket = (
+            count.site_id,
+            count.approach.leg_id,
+            movement_key(count),
+            count.interval_start,
+            count.interval_end,
+        )
+        if is_all_class_total(count):
+            totals[bucket] = totals.get(bucket, 0.0) + count.volume
+        else:
+            parts[bucket] += count.volume
+            part_codes[bucket].add(count.vehicle_class.code)
+
+    for bucket, stated in sorted(totals.items(), key=lambda item: str(item[0])):
+        if bucket not in parts:
+            continue
+        summed = parts[bucket]
+        difference = abs(stated - summed)
+        if difference == 0:
+            continue
+        tolerance = max(
+            thresholds.class_total_tolerance_absolute,
+            stated * thresholds.class_total_tolerance_fraction,
+        )
+        site, leg, movement, start, _end = bucket
+        subject = f"site {site} / approach {leg} / {movement} / {start.isoformat()}"
+        severity = IssueSeverity.REFUSE if difference > tolerance else IssueSeverity.WARN
+        code = (
+            "class_total_mismatch"
+            if severity is IssueSeverity.REFUSE
+            else "class_total_rounding_difference"
+        )
+        issues.append(
+            ImportIssue(
+                severity=severity,
+                code=code,
+                message=(
+                    f"{subject}: stated all-class total {stated:g} vs the sum of its "
+                    f"{len(part_codes[bucket])} per-class row(s) {summed:g} (difference "
+                    f"{difference:g}, tolerance {tolerance:g})."
+                ),
+                subject=subject,
+                citation=CIT_HEAVY_VEHICLES,
+                context={
+                    "stated_total": stated,
+                    "class_sum": summed,
+                    "difference": difference,
+                    "tolerance": tolerance,
+                    "class_codes": sorted(part_codes[bucket]),
+                },
+            )
+        )
+    return issues
+
+
 def check_class_coverage(result: ImportResult, thresholds: QualityThresholds) -> list[ImportIssue]:
     """WARN on totals-only data; INFO on unmapped class codes.
 
@@ -546,12 +660,7 @@ def check_class_coverage(result: ImportResult, thresholds: QualityThresholds) ->
         per_site[count.site_id].append(count)
 
     for site_id, records in sorted(per_site.items()):
-        classified = [
-            record
-            for record in records
-            if record.vehicle_class.scheme is not ClassificationScheme.UNCLASSIFIED
-            and record.vehicle_class.canonical is not CanonicalVehicleClass.ALL_VEHICLES
-        ]
+        classified = [record for record in records if not is_all_class_total(record)]
         if not classified:
             issues.append(
                 ImportIssue(
@@ -951,6 +1060,13 @@ QUALITY_CHECKS: tuple[QualityCheck, ...] = (
         fn=check_approach_total_consistency,
     ),
     QualityCheck(
+        id="class_total_consistency",
+        title="All-class totals equal their per-class sums",
+        tiers=(IssueSeverity.REFUSE, IssueSeverity.WARN),
+        citation=CIT_HEAVY_VEHICLES,
+        fn=check_class_total_consistency,
+    ),
+    QualityCheck(
         id="class_coverage",
         title="Vehicle-class coverage",
         tiers=(IssueSeverity.WARN, IssueSeverity.INFO),
@@ -1030,6 +1146,8 @@ __all__ = [
     "QualityCheck",
     "QualityThresholds",
     "apply_quality_gate",
+    "is_all_class_total",
+    "movement_key",
     "run_quality_gate",
     "series_key",
 ]

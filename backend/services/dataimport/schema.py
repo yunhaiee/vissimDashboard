@@ -195,10 +195,20 @@ class ClassificationScheme(str, Enum):
     scheme's codes. ``SOURCE_SPECIFIC`` is for a file that invents its own
     buckets; ``UNCLASSIFIED`` is for a file that gives one undifferentiated
     total.
+
+    ``KOREA_SMART_INTERSECTION_6`` was added by roadmap 1.2 when the real
+    Daejeon 스마트교차로 export turned out to break the count into **six**
+    classes (화물 대형/중형/소형, 버스 대형/소형, 승용), not the twelve of the
+    national survey convention ``KOREA_12_CLASS`` was placed for. The adapter
+    contract's §7.1 instruction was followed exactly — *add a member, do not
+    reuse another scheme's codes* — and the two Korean members stay separate
+    because whether the six buckets aggregate the twelve is unverified (it is
+    open question 4 to the client in the data-intake inventory).
     """
 
     AUSTROADS = "austroads"
     KOREA_12_CLASS = "korea_12_class"
+    KOREA_SMART_INTERSECTION_6 = "korea_smart_intersection_6"
     SOURCE_SPECIFIC = "source_specific"
     UNCLASSIFIED = "unclassified"
 

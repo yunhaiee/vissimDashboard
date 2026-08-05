@@ -19,6 +19,7 @@ from services.dataimport.quality import (
     apply_quality_gate,
     check_approach_total_consistency,
     check_class_coverage,
+    check_class_total_consistency,
     check_controller_completeness,
     check_counts_present,
     check_detector_count_intervals,
@@ -303,6 +304,132 @@ def test_a_consistent_approach_total_is_silent():
 def test_movements_without_a_stated_total_are_not_second_guessed():
     counts = [record for record in _total_and_parts(200) if not record.movement.is_approach_total]
     assert _run(check_approach_total_consistency, counts=counts) == []
+
+
+# ---------------------------------------------------------------------------
+# class-total consistency (the class axis of the same argument)
+# ---------------------------------------------------------------------------
+
+HEAVY = VehicleClassRef(
+    scheme=ClassificationScheme.KOREA_SMART_INTERSECTION_6,
+    code="화물_대형",
+    canonical=CanonicalVehicleClass.HEAVY_VEHICLE,
+)
+
+
+def _class_total_and_parts(
+    stated: float, parts: tuple[float, float] = (150, 50)
+) -> list[TurningCountData]:
+    """One movement in one bin: a stated all-class total plus two class rows
+    summing to 200 — or to ``sum(parts)``, which the tolerance-boundary tests
+    below turn down so the absolute limb can bind. The Daejeon 합계 column is
+    exactly this shape."""
+    light, heavy = parts
+    return [
+        _count(WEDNESDAY, volume=stated, vehicle_class=TOTALS),
+        _count(WEDNESDAY, volume=light, vehicle_class=LIGHT),
+        _count(WEDNESDAY, volume=heavy, vehicle_class=HEAVY),
+    ]
+
+
+def test_a_class_total_that_contradicts_its_classes_refuses():
+    issues = _run(check_class_total_consistency, counts=_class_total_and_parts(260))
+    assert _codes(issues) == ["class_total_mismatch"]
+    assert issues[0].severity is IssueSeverity.REFUSE
+    assert issues[0].context["stated_total"] == 260
+    assert issues[0].context["class_sum"] == 200
+    assert issues[0].context["class_codes"] == ["1", "화물_대형"]
+
+
+def test_a_rounding_sized_class_total_difference_only_warns():
+    issues = _run(check_class_total_consistency, counts=_class_total_and_parts(202))
+    assert _codes(issues) == ["class_total_rounding_difference"]
+    assert issues[0].severity is IssueSeverity.WARN
+
+
+def test_a_consistent_class_total_is_silent():
+    assert _run(check_class_total_consistency, counts=_class_total_and_parts(200)) == []
+
+
+def test_classes_without_a_stated_total_are_not_second_guessed():
+    counts = [record for record in _class_total_and_parts(200) if record.vehicle_class is not TOTALS]
+    assert _run(check_class_total_consistency, counts=counts) == []
+
+
+def test_a_total_with_no_classes_is_left_to_the_coverage_check():
+    counts = [_count(WEDNESDAY, volume=200, vehicle_class=TOTALS)]
+    assert _run(check_class_total_consistency, counts=counts) == []
+
+
+def test_class_totals_are_bucketed_per_movement_not_per_approach():
+    """A left-turn total must not be compared against through-movement classes:
+    the two are different sums, and conflating them would refuse clean data."""
+    counts = [
+        _count(WEDNESDAY, volume=200, vehicle_class=TOTALS, movement=MovementRef(turn=TurnType.LEFT)),
+        _count(WEDNESDAY, volume=200, vehicle_class=LIGHT, movement=MovementRef(turn=TurnType.LEFT)),
+        _count(WEDNESDAY, volume=999, vehicle_class=LIGHT, movement=MovementRef(turn=TurnType.THROUGH)),
+    ]
+    assert _run(check_class_total_consistency, counts=counts) == []
+
+
+# --- the tolerance itself: max(2 vehicles, 2 % of the stated total) ---------
+#
+# The five tests above all state 200-odd vehicles, where the fraction limb is
+# the wider of the two and therefore the only one ever consulted. These pin the
+# other limb and the equality edge, because `difference > tolerance` is the one
+# comparison that decides refuse from warn.
+
+
+def test_a_small_total_is_judged_by_the_two_vehicle_floor_not_the_fraction():
+    """53 stated vs 50 counted: 2 % of 53 is 1.06 vehicles, so the absolute
+    limb (2) is the wider one and binds. A 3-vehicle gap is over it."""
+    issues = _run(check_class_total_consistency, counts=_class_total_and_parts(53, parts=(40, 10)))
+    assert _codes(issues) == ["class_total_mismatch"]
+    assert issues[0].severity is IssueSeverity.REFUSE
+    assert issues[0].context["difference"] == 3
+    assert issues[0].context["tolerance"] == THRESHOLDS.class_total_tolerance_absolute
+
+
+def test_a_difference_exactly_on_the_two_vehicle_floor_warns_rather_than_refusing():
+    """52 vs 50: difference == tolerance exactly. The test is ``>``, so the
+    boundary value itself is the source's rounding, not a contradiction."""
+    issues = _run(check_class_total_consistency, counts=_class_total_and_parts(52, parts=(40, 10)))
+    assert _codes(issues) == ["class_total_rounding_difference"]
+    assert issues[0].severity is IssueSeverity.WARN
+    assert issues[0].context["difference"] == 2
+    assert issues[0].context["tolerance"] == THRESHOLDS.class_total_tolerance_absolute
+
+
+def test_where_the_two_tolerance_limbs_meet_the_boundary_still_warns():
+    """100 vs 98: 2 vehicles is simultaneously the absolute floor and 2 % of
+    the stated total, so neither limb dominates — and the equality edge is
+    still a warning on either reading."""
+    issues = _run(check_class_total_consistency, counts=_class_total_and_parts(100, parts=(78, 20)))
+    assert _codes(issues) == ["class_total_rounding_difference"]
+    assert issues[0].severity is IssueSeverity.WARN
+    tolerance = issues[0].context["tolerance"]
+    assert tolerance == THRESHOLDS.class_total_tolerance_absolute
+    assert tolerance == 100 * THRESHOLDS.class_total_tolerance_fraction
+
+
+def test_a_difference_just_inside_the_fraction_limb_only_warns():
+    """204 vs 200: 4 vehicles against a 4.08-vehicle tolerance."""
+    issues = _run(check_class_total_consistency, counts=_class_total_and_parts(204))
+    assert _codes(issues) == ["class_total_rounding_difference"]
+    assert issues[0].severity is IssueSeverity.WARN
+    assert issues[0].context["difference"] == 4
+    assert issues[0].context["tolerance"] == 204 * THRESHOLDS.class_total_tolerance_fraction
+
+
+def test_one_vehicle_further_out_crosses_the_fraction_limb_and_refuses():
+    """205 vs 200: 5 vehicles against a 4.10-vehicle tolerance. Together with
+    the test above this brackets the refuse/warn crossing on the fraction
+    limb, a vehicle either side."""
+    issues = _run(check_class_total_consistency, counts=_class_total_and_parts(205))
+    assert _codes(issues) == ["class_total_mismatch"]
+    assert issues[0].severity is IssueSeverity.REFUSE
+    assert issues[0].context["difference"] == 5
+    assert issues[0].context["tolerance"] == 205 * THRESHOLDS.class_total_tolerance_fraction
 
 
 # ---------------------------------------------------------------------------

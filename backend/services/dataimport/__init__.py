@@ -10,8 +10,14 @@ Layering, strictly one-directional::
     base.py       adapter protocol + ImportResult/ImportIssue transport
         ^
     quality.py    MRWA collection-standard checks over neutral records (R2.5)
+    demand.py     neutral counts -> vehicle-input / composition params (R1.4)
         ^
     adapters/     one module per region; the ONLY place a file format appears
+
+``quality.py`` and ``demand.py`` are siblings, not a stack: both read only
+the neutral model. (``demand.py`` imports one predicate
+from ``quality.py`` — ``is_all_class_total`` — so that "which records are a sum
+of other records" has exactly one definition.)
 
 The contract for whoever writes adapter #3 lives in
 ``docs/product/adapter-contract.md``.
@@ -21,11 +27,12 @@ testable on a laptop with no simulator installed.
 """
 from __future__ import annotations
 
-from .adapters import SCATSWAAdapter
+from .adapters import DaejeonCountAdapter, SCATSWAAdapter
 from .base import (
     AdapterError,
     AdapterInfo,
     DataAdapter,
+    FieldMapping,
     ImportIssue,
     ImportResult,
     IssueSeverity,
@@ -37,16 +44,22 @@ from .base import (
     select_adapter,
     unregister_adapter,
 )
+from .demand import DemandSeeding, build_demand_seeding, seedable_counts
 from .quality import QualityThresholds, apply_quality_gate, run_quality_gate
 
 # Explicit registration, guarded so a module reload cannot raise.
 if get_adapter("scats_wa") is None:
     register_adapter(SCATSWAAdapter())
+if get_adapter("daejeon_smart_intersection") is None:
+    register_adapter(DaejeonCountAdapter())
 
 __all__ = [
     "AdapterError",
     "AdapterInfo",
+    "DaejeonCountAdapter",
     "DataAdapter",
+    "DemandSeeding",
+    "FieldMapping",
     "ImportIssue",
     "ImportResult",
     "IssueSeverity",
@@ -54,11 +67,13 @@ __all__ = [
     "SCATSWAAdapter",
     "SniffResult",
     "apply_quality_gate",
+    "build_demand_seeding",
     "check_adapter_conformance",
     "get_adapter",
     "list_adapters",
     "register_adapter",
     "run_quality_gate",
+    "seedable_counts",
     "select_adapter",
     "unregister_adapter",
 ]

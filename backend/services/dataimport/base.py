@@ -127,6 +127,35 @@ class AdapterInfo(BaseModel):
     description: str | None = None
 
 
+class FieldMapping(BaseModel):
+    """One documented source field and where it lands in the neutral model.
+
+    Lives here rather than in any one adapter because the contract's checklist
+    for adapter #3 makes it a *shared obligation*: "write the field map first,
+    as data, with a dotted neutral path per source field, and a test that
+    resolves every path via ``schema.neutral_field_path_exists``". Adapter #3
+    should import this rather than declare its own.
+
+    ``neutral_path`` is a dotted path into ``schema.py``; ``parsed`` separates
+    "the contract covers this" from "this adapter reads it today", so a
+    deliberate gap is documented instead of forgotten.
+
+    (``adapters/scats_wa.py`` predates this class and keeps a stub-specific
+    variant whose flag is named ``parsed_by_stub``; it is left as-is rather
+    than renamed, because that adapter's tests and its published field map in
+    docs/product/adapter-contract.md §6 both key on the stub vocabulary.)
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_structure: str
+    source_field: str
+    neutral_path: str
+    parsed: bool = True
+    citation: str = ""
+    note: str = ""
+
+
 class SniffResult(BaseModel):
     """An adapter's self-assessment of a file set.
 
@@ -325,6 +354,7 @@ __all__ = [
     "AdapterError",
     "AdapterInfo",
     "DataAdapter",
+    "FieldMapping",
     "ImportIssue",
     "ImportResult",
     "IssueSeverity",
