@@ -238,6 +238,15 @@ ASSUME_INPUT_DRIVES_NODE_TOTAL = "INPUT_DRIVES_NODE_TOTAL"
 #: renormalize siblings on write — verified live, see
 #: ``vissim_com.set_route_relative_flow``).
 ASSUME_SIBLING_ROUTES_UNCHANGED = "SIBLING_ROUTES_UNCHANGED"
+#: The caller's ``decision_movements`` list is the COMPLETE set of movements
+#: the named routing decision governs. It is the denominator the observed
+#: share is taken against, so a short list overstates this route's share and a
+#: long one understates it. Never inferred here: a routing decision's scope is
+#: network knowledge (``get_routing_decisions``), not something the counts
+#: workbook or the run says, and its absence is a refusal (see
+#: :func:`_build_routing_proposal`) rather than a silent fallback to the node
+#: total.
+ASSUME_DECISION_MOVEMENTS_COMPLETE = "DECISION_MOVEMENTS_COMPLETE"
 #: The caller's ``interval_no`` addresses the interval the observed counts
 #: were measured in. Never guessed from a period name here.
 ASSUME_INTERVAL_MATCHES_COUNT_PERIOD = "INTERVAL_MATCHES_COUNT_PERIOD"
@@ -1059,6 +1068,67 @@ def _demand_refusal_note(
     )
 
 
+def _decision_movement_tokens(target: Mapping[str, Any]) -> tuple[str, ...]:
+    """The caller's ``decision_movements``, normalized to non-empty tokens.
+
+    A bare string is read as ONE token rather than as its characters — a
+    single-movement scope is a real (if degenerate) answer, and it lands on
+    the "share is 100%, relFlow cannot express that" refusal below rather than
+    on "you told us nothing".
+    """
+    raw = target.get("decision_movements")
+    if isinstance(raw, str):
+        raw = [raw]
+    if raw is None or isinstance(raw, (bytes, Mapping)) or not isinstance(raw, Sequence):
+        return ()
+    tokens: list[str] = []
+    for item in raw:
+        token = str(item).strip()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tuple(tokens)
+
+
+def _observed_over_decision(
+    node: Mapping[str, Any], tokens: Sequence[str]
+) -> tuple[float, dict[str, float], list[str]]:
+    """``(total, {token: observed}, unresolved)`` for the movements a decision
+    governs.
+
+    A token is matched against each movement's ``id`` and its ``direction``
+    (the workbook writes the same turn token into both, and a run-only
+    movement carries only an OBJECT_ID). A token that matches nothing, or
+    matches a movement with no observed count, is UNRESOLVED and named — its
+    volume cannot be silently treated as zero, because a zero would inflate
+    this route's share against a denominator that is missing part of the
+    decision. Two tokens that resolve to the SAME movement are summed once.
+    """
+    movements = list(node.get("movements") or [])
+    total = 0.0
+    resolved: dict[str, float] = {}
+    unresolved: list[str] = []
+    counted: set[int] = set()
+    for token in tokens:
+        index = next(
+            (
+                position
+                for position, entry in enumerate(movements)
+                if str(entry.get("id") or "") == token
+                or str(entry.get("direction") or "") == token
+            ),
+            None,
+        )
+        observed = None if index is None else _number(movements[index].get("observed"))
+        if index is None or observed is None:
+            unresolved.append(token)
+            continue
+        resolved[token] = observed
+        if index not in counted:
+            counted.add(index)
+            total += observed
+    return total, resolved, unresolved
+
+
 def _build_routing_proposal(
     *,
     node: Mapping[str, Any],
@@ -1079,6 +1149,29 @@ def _build_routing_proposal(
     approval card). So the value that produces the OBSERVED share ``p`` with
     siblings unchanged is ``sibling_total * p / (1 - p)`` — not a scaling of
     the old value, which would land short of the target share.
+
+    WHICH ``p``, and why the caller must say
+    ---------------------------------------
+    ``p`` is this movement's observed share **of the decision that governs
+    it**, never of the node. A routing decision governs the turns off ONE
+    approach as often as it governs the whole intersection, and the two
+    denominators are not close: on the demo network decision 2 governs the E
+    approach's three turns (471 + 100 + 107 = 678 veh), so the E-W movement's
+    share is 471/678 = 69.5% — against the node total of 2542 it would read
+    18.5%, and the closed form would return 43.21 instead of 432.32, an order
+    of magnitude low. A relFlow that low does not "err on the safe side": it
+    silently reassigns the approach's traffic to its siblings.
+
+    Which movements a decision governs is NETWORK knowledge — the caller reads
+    it from ``get_routing_decisions`` and passes it as the target's
+    ``decision_movements`` — so this module does not guess it. Without that
+    list the only denominator available is the node total, which is wrong
+    whenever the decision is narrower than the node, and this builder REFUSES
+    (:data:`EVIDENCE_INSUFFICIENT`) rather than emitting a number derived from
+    it. A decision that genuinely does govern the whole node is expressed by
+    passing every one of its movements, not by a flag; the emitted proposal
+    then carries :data:`ASSUME_DECISION_MOVEMENTS_COMPLETE`, which is the
+    assumption the list encodes.
     """
     key, kind = MOVEMENT_SPLIT_MISS, KEY_VALIDATION
     node_id = str(node.get("node_id") or "")
@@ -1133,18 +1226,17 @@ def _build_routing_proposal(
     interval_no = target.get("interval_no", 1)
     current_rel_flow = _number(target.get("current_rel_flow"))
     sibling_total = _number(target.get("sibling_rel_flow_total"))
+    scope_tokens = _decision_movement_tokens(target)
     base_evidence["target"] = {
         "decision_no": decision_no,
         "route_no": route_no,
         "interval_no": interval_no,
         "current_rel_flow": current_rel_flow,
         "sibling_rel_flow_total": sibling_total,
+        "decision_movements": list(scope_tokens) or None,
     }
 
-    share = None if not observed_total else (observed or 0.0) / observed_total
-    base_evidence["observed_share"] = None if share is None else round(share, 6)
-
-    if decision_no in (None, "") or route_no in (None, "") or sibling_total is None or share is None:
+    if decision_no in (None, "") or route_no in (None, "") or sibling_total is None:
         return _refuse(
             key=key,
             key_kind=kind,
@@ -1152,15 +1244,98 @@ def _build_routing_proposal(
             evidence=base_evidence,
             also_refused=demand_note,
             ko=f"이동류 {movement_id}의 배분 불일치는 확인되었지만(GEH {_round(movement_geh)}), "
-            "경로 결정 번호·경로 번호·형제 경로 relFlow 합계·실측 배분율 중 하나 이상이 없어 "
+            "경로 결정 번호·경로 번호·형제 경로 relFlow 합계 중 하나 이상이 없어 "
             "새 relFlow를 산술적으로 도출할 수 없습니다.",
             en=f"Movement {movement_id}'s split mismatch is established (GEH "
-            f"{_round(movement_geh)}), but the decision number, route number, sibling relFlow "
-            "total, or observed share is missing, so no new relFlow can be derived.",
+            f"{_round(movement_geh)}), but the decision number, the route number, or the sibling "
+            "relFlow total is missing, so no new relFlow can be derived.",
             ja=f"移動 {movement_id} の配分の不一致は確認されました(GEH {_round(movement_geh)})が、"
-            "経路決定番号・経路番号・兄弟経路のrelFlow合計・実測配分率のいずれかが欠けており、"
+            "経路決定番号・経路番号・兄弟経路のrelFlow合計のいずれかが欠けており、"
             "新しいrelFlowを算術的に導出できません。",
         )
+
+    # -- the DENOMINATOR the observed share is taken against ----------------
+    # Without the decision's own movement list there is no defensible one.
+    # The node total is the only other candidate and it is wrong whenever the
+    # decision governs less than the whole node -- which is the normal case --
+    # so this refuses instead of shipping a number that understates the route.
+    if not scope_tokens:
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=EVIDENCE_INSUFFICIENT,
+            evidence=base_evidence,
+            also_refused=demand_note,
+            ko=f"이동류 {movement_id}의 배분 불일치는 확인되었지만(GEH {_round(movement_geh)}), "
+            f"경로 결정 {decision_no}이(가) 어떤 이동류들을 관장하는지 알 수 없습니다 — "
+            "get_routing_decisions에서 얻은 decision_movements를 함께 주십시오. 그 목록이 없으면 "
+            "실측 배분율을 노드 전체 총량에 대해서만 계산할 수 있고, 그러면 이 경로의 배분율이 "
+            "과소평가되어 relFlow가 실제 필요한 값보다 훨씬 작게 산출됩니다.",
+            en=f"Movement {movement_id}'s split mismatch is established (GEH "
+            f"{_round(movement_geh)}), but what is missing is which movements decision "
+            f"{decision_no} governs — supply decision_movements from get_routing_decisions; "
+            "without it the observed share can only be taken against the whole node total, "
+            "which would understate this route's share and yield a relFlow far below the one "
+            "the counts actually support.",
+            ja=f"移動 {movement_id} の配分の不一致は確認されました(GEH {_round(movement_geh)})が、"
+            f"経路決定 {decision_no} がどの移動を管轄しているかが不明です — "
+            "get_routing_decisions から得た decision_movements を渡してください。それがないと"
+            "実測配分率はノード総量に対してしか計算できず、この経路の配分率を過小評価して"
+            "実際に必要な値よりはるかに小さいrelFlowを導いてしまいます。",
+        )
+
+    decision_total, resolved, unresolved = _observed_over_decision(node, scope_tokens)
+    # Rounded ONCE, here, so the evidence's denominator, the arithmetic string
+    # and the proposed value can never disagree (see :func:`_round`).
+    decision_total = _round(decision_total)
+    in_scope = any(
+        str(movement.get("id") or "") == token or str(movement.get("direction") or "") == token
+        for token in scope_tokens
+    )
+    base_evidence["decision_movements"] = list(scope_tokens)
+    base_evidence["observed_by_decision_movement"] = dict(resolved)
+    base_evidence["observed_decision_total"] = decision_total
+    base_evidence["movement_in_decision_scope"] = in_scope
+    base_evidence["unresolved_decision_movements"] = list(unresolved)
+
+    if unresolved or not in_scope or decision_total <= 0 or observed is None:
+        problems: dict[str, list[str]] = {"ko": [], "en": [], "ja": []}
+        if unresolved:
+            named = ", ".join(unresolved)
+            problems["ko"].append(f"실측에서 찾을 수 없는 이동류 토큰: {named}")
+            problems["en"].append(f"movement tokens with no observed count on this node: {named}")
+            problems["ja"].append(f"実測に見つからない移動トークン: {named}")
+        if not in_scope or observed is None:
+            problems["ko"].append(f"이동류 {movement_id}이(가) 그 목록에 없거나 실측값이 없습니다")
+            problems["en"].append(
+                f"movement {movement_id} is not in that list, or carries no observed count"
+            )
+            problems["ja"].append(f"移動 {movement_id} がその一覧にないか、実測値がありません")
+        if decision_total <= 0:
+            problems["ko"].append("그 이동류들의 실측 합계가 0입니다")
+            problems["en"].append("those movements' observed volumes sum to 0")
+            problems["ja"].append("それらの移動の実測合計が0です")
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=EVIDENCE_INSUFFICIENT,
+            evidence=base_evidence,
+            also_refused=demand_note,
+            ko=f"경로 결정 {decision_no}의 관장 이동류 목록(decision_movements)이 이 노드의 실측과 "
+            f"맞지 않아 실측 배분율의 분모를 세울 수 없습니다: {'; '.join(problems['ko'])}. "
+            "분모가 불완전한 채로 계산한 relFlow는 배분율을 왜곡하므로 제안하지 않습니다.",
+            en=f"Decision {decision_no}'s stated scope (decision_movements) does not line up with "
+            f"this node's observed counts, so the observed share has no denominator: "
+            f"{'; '.join(problems['en'])}. A relFlow derived from an incomplete denominator "
+            "distorts the split, so none is proposed.",
+            ja=f"経路決定 {decision_no} の管轄移動一覧(decision_movements)がこのノードの実測と"
+            f"整合しないため、実測配分率の分母を立てられません: {'; '.join(problems['ja'])}。"
+            "分母が不完全なまま算出したrelFlowは配分を歪めるため、提案しません。",
+        )
+
+    share = observed / decision_total
+    base_evidence["observed_share"] = round(share, 6)
+    base_evidence["observed_share_scope"] = "decision_movements"
 
     if not (0.0 < share < 1.0):
         return _refuse(
@@ -1169,15 +1344,19 @@ def _build_routing_proposal(
             reason_code=FIX_CANNOT_HELP,
             evidence=base_evidence,
             also_refused=demand_note,
-            ko=f"실측 배분율이 {round(share * 100, 1)}%입니다. relFlow 가중치로는 0%나 100%를 "
-            "표현할 수 없고(0은 이동류 자체를 제거하는 별개의 결정, 100%는 형제 경로의 제거), "
-            "이는 relFlow 한 값의 조정으로 다룰 문제가 아닙니다.",
-            en=f"The observed share is {round(share * 100, 1)}%. A relFlow weight cannot express "
-            "0% or 100% (0 removes the movement entirely — a different decision — and 100% means "
-            "removing the sibling routes), so this is not a single-relFlow adjustment.",
-            ja=f"実測配分率が {round(share * 100, 1)}% です。relFlowの重みでは0%や100%を表現できず"
-            "(0は移動そのものの削除という別の判断、100%は兄弟経路の削除)、relFlow1値の調整で"
-            "扱う問題ではありません。",
+            ko=f"경로 결정 {decision_no}이(가) 관장하는 이동류 실측 합계 {_fmt(decision_total)}대 "
+            f"기준으로 이 이동류의 실측 배분율이 {round(share * 100, 1)}%입니다. relFlow 가중치로는 "
+            "0%나 100%를 표현할 수 없고(0은 이동류 자체를 제거하는 별개의 결정, 100%는 형제 경로의 "
+            "제거), 이는 relFlow 한 값의 조정으로 다룰 문제가 아닙니다.",
+            en=f"Against decision {decision_no}'s own observed total ({_fmt(decision_total)} veh "
+            f"across the movements it governs) this movement's observed share is "
+            f"{round(share * 100, 1)}%. A relFlow weight cannot express 0% or 100% (0 removes the "
+            "movement entirely — a different decision — and 100% means removing the sibling "
+            "routes), so this is not a single-relFlow adjustment.",
+            ja=f"経路決定 {decision_no} が管轄する移動の実測合計 {_fmt(decision_total)} 台に対し、"
+            f"この移動の実測配分率は {round(share * 100, 1)}% です。relFlowの重みでは0%や100%を"
+            "表現できず(0は移動そのものの削除という別の判断、100%は兄弟経路の削除)、relFlow1値の"
+            "調整で扱う問題ではありません。",
         )
 
     if sibling_total <= 0:
@@ -1201,9 +1380,10 @@ def _build_routing_proposal(
 
     new_rel_flow = _round(sibling_total * share / (1.0 - share))
     arithmetic = (
-        f"{_fmt(sibling_total)} * ({_fmt(observed)}/{_fmt(observed_total)}) / "
-        f"(1 - {_fmt(observed)}/{_fmt(observed_total)}) = {_fmt(new_rel_flow)}"
+        f"{_fmt(sibling_total)} * ({_fmt(observed)}/{_fmt(decision_total)}) / "
+        f"(1 - {_fmt(observed)}/{_fmt(decision_total)}) = {_fmt(new_rel_flow)}"
     )
+    movement_list = ", ".join(scope_tokens)
     evidence = {
         **base_evidence,
         "proposed_rel_flow": new_rel_flow,
@@ -1230,8 +1410,10 @@ def _build_routing_proposal(
         f"GEH {_round(movement_geh)} ≥ {threshold}. 수요가 아니라 회전 배분 문제이므로 경로 결정 "
         f"{decision_no}의 경로 {route_no}(구간 {interval_no}) relFlow를 {_fmt(current_rel_flow)} → "
         f"{new_rel_flow}로 조정할 것을 제안합니다({arithmetic}). relFlow는 백분율이 아니라 원시 "
-        f"가중치이며, 형제 경로가 현재 값을 유지하면 이 경로의 실제 배분은 실측과 같은 "
-        f"{share_pct}%가 됩니다.",
+        f"가중치이며, 형제 경로가 현재 값을 유지하면 이 경로의 실제 배분은 {share_pct}%가 됩니다 — "
+        f"이는 노드 전체가 아니라 경로 결정 {decision_no}이(가) 관장하는 이동류 "
+        f"{movement_list}의 실측 합계 {_fmt(decision_total)}대 중 이 이동류의 {_fmt(observed)}대가 "
+        f"차지하는 비율입니다.",
         en=f"Node {node_id}'s total reconciles with observation (GEH {_round(node_total_geh)} < "
         f"{threshold}) but movement {movement_id}'s split misses: observed {_fmt(observed)} vs "
         f"modelled {_fmt(modelled)}, GEH {_round(movement_geh)} >= {threshold}. This is a "
@@ -1239,16 +1421,24 @@ def _build_routing_proposal(
         f"{decision_no} route {route_no} (interval {interval_no}) relFlow from "
         f"{_fmt(current_rel_flow)} to {new_rel_flow} ({arithmetic}). relFlow is a RAW weight, not "
         f"a percentage: with the sibling routes left at their current values this route's actual "
-        f"share becomes {share_pct}%, the observed one.",
+        f"share becomes {share_pct}% — the share observed WITHIN decision {decision_no}, i.e. "
+        f"{_fmt(observed)} of the {_fmt(decision_total)} vehicles counted across the movements it "
+        f"governs ({movement_list}), not its share of the node total.",
         ja=f"ノード {node_id} の総量は実測と一致していますが(GEH {_round(node_total_geh)} < "
         f"{threshold})、移動 {movement_id} の配分が乖離しています: 実測 {_fmt(observed)} 対 モデル "
         f"{_fmt(modelled)}、GEH {_round(movement_geh)} ≥ {threshold}。需要ではなく回転配分の問題"
         f"のため、経路決定 {decision_no} の経路 {route_no}(区間 {interval_no})のrelFlowを "
         f"{_fmt(current_rel_flow)} → {new_rel_flow} に変更することを提案します({arithmetic})。"
-        f"relFlowは百分率ではなく生の重みであり、兄弟経路が現在値を維持すれば、この経路の実配分は"
-        f"実測と同じ {share_pct}% になります。",
+        f"relFlowは百分率ではなく生の重みであり、兄弟経路が現在値を維持すれば、この経路の実配分は "
+        f"{share_pct}% になります — これはノード全体ではなく、経路決定 {decision_no} が管轄する移動"
+        f"({movement_list})の実測合計 {_fmt(decision_total)} 台に対する、この移動の "
+        f"{_fmt(observed)} 台の比率です。",
         confidence=CONFIDENCE_ARITHMETIC,
-        assumptions=(ASSUME_SIBLING_ROUTES_UNCHANGED, ASSUME_INTERVAL_MATCHES_COUNT_PERIOD),
+        assumptions=(
+            ASSUME_SIBLING_ROUTES_UNCHANGED,
+            ASSUME_DECISION_MOVEMENTS_COMPLETE,
+            ASSUME_INTERVAL_MATCHES_COUNT_PERIOD,
+        ),
         also_refused=demand_note,
         registry=registry,
     )
@@ -1409,11 +1599,21 @@ def map_node_counts(
          "routes": {"<movement id or direction>": {
                         "decision_no": "3", "route_no": "2",
                         "current_rel_flow": 42.0,
-                        "sibling_rel_flow_total": 58.0, "interval_no": 1}}}
+                        "sibling_rel_flow_total": 58.0,
+                        "decision_movements": ["m1", "m2"],
+                        "interval_no": 1}}}
 
     Both come from the caller (the shadow model / routing summary knows them;
     this module does not read a network). Their absence is a refusal, never a
     guess.
+
+    ``decision_movements`` is the routing target's SCOPE: every workbook
+    movement token the named decision governs (``get_routing_decisions``
+    answers it), and the observed share is taken against those movements'
+    counted volumes. A decision that governs the whole node passes every one
+    of the node's movements; a decision that governs one approach passes that
+    approach's turns. Omitting it is a refusal — see
+    :func:`_build_routing_proposal` for the measured reason.
 
     The branch, in order, and each arm is one of the three graded outcomes:
 
@@ -2018,6 +2218,7 @@ def build_fix_report(
 
 __all__ = [
     "ANOMALY_ARMING_DRIFTED",
+    "ASSUME_DECISION_MOVEMENTS_COMPLETE",
     "ASSUME_INPUT_DRIVES_NODE_TOTAL",
     "ASSUME_INTERVAL_MATCHES_COUNT_PERIOD",
     "ASSUME_SIBLING_ROUTES_UNCHANGED",

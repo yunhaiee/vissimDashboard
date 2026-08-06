@@ -1,7 +1,7 @@
 """Tests for unit U4's fix mapping (``services/agent/fixes.py``).
 
 Roadmap row 2.1's chain is anomaly catalogue (U3) → fix mapping (this unit) →
-approval loop → reality check (U5). This file pins the three things that
+approval loop → reality check (U5). This file pins the four things that
 would make this unit a lie if they rotted:
 
 1. **The three-outcome branch is graded on outcome (c).** A node whose total
@@ -25,12 +25,22 @@ would make this unit a lie if they rotted:
    asserted "this key maps to that verb name" would pass against a hardcoded
    dict and would therefore have tested nothing.
 
+4. **A routing proposal's DENOMINATOR is the decision's, or there is no
+   proposal.** The observed share a relFlow is derived from must be taken
+   against the movements the decision actually governs
+   (``decision_movements``), never against the node total — the two differ by
+   an order of magnitude on a decision that governs one approach. The scope
+   is pinned three ways: it changes the emitted number (same node, two
+   scopes, two answers), its absence is a refusal, and the refusal carries no
+   relFlow value anywhere in its payload.
+
 No COM, no live Vissim, no backend boot, no network reads. Every payload here
 is synthetic.
 """
 from __future__ import annotations
 
 import dataclasses
+import json
 from typing import Any
 
 import pytest
@@ -75,12 +85,23 @@ def _node(
 
 
 _VEHICLE_INPUT_TARGET = {"input_no": "7", "current_volume": 800.0, "interval_no": 1}
+#: The routing target, WITH the scope the observed share is taken against.
+#: ``decision_movements`` names every movement decision 3 governs — here both
+#: of the node's movements, i.e. a decision that genuinely governs the whole
+#: node. That is expressed by listing them, not by a "node-wide" flag, and it
+#: is what makes 300/1000 the right denominator in this fixture.
 _ROUTE_TARGET = {
     "decision_no": "3",
     "route_no": "2",
     "current_rel_flow": 42.0,
     "sibling_rel_flow_total": 58.0,
+    "decision_movements": ["m1", "m2"],
     "interval_no": 1,
+}
+#: The same target with its scope withheld — the caller who named a route but
+#: never said what the decision governs.
+_ROUTE_TARGET_NO_SCOPE = {
+    key: value for key, value in _ROUTE_TARGET.items() if key != "decision_movements"
 }
 
 
@@ -200,13 +221,23 @@ def test_outcome_b_split_miss_with_reconciling_total_yields_a_routing_proposal()
         sums agree with the node totals, so nothing is smuggled in.)
 
       relFlow is a RAW weight and siblings are NOT renormalized on write, so
-      the value producing the observed share p = 300/1000 = 0.3 with the
-      siblings left alone is
+      the value producing the observed share p with the siblings left alone is
+      sibling_total * p/(1-p).
+
+      p is the share WITHIN THE DECISION, and the decision's scope is the
+      caller's ``decision_movements`` -- here ["m1", "m2"], i.e. decision 3
+      governs both of this node's movements, so its observed total is
+      300 + 700 = 1000 and p = 300/1000 = 0.3:
         sibling_total * p/(1-p) = 58 * 0.3/0.7 = 58 * 3/7 = 174/7
                                 = 24.857142... -> 24.86,
       and the resulting share is 24.857/(58+24.857) = 30.0% -- the observed
       one. (Scaling the old relFlow by 420/300 instead would give 58.8 and a
       share of 50.3%, which is why the closed form is used.)
+
+      Had decision 3 governed only m1, the same closed form over ITS total
+      (p = 300/300 = 1) could not be expressed as a relFlow at all and the
+      mapping would refuse -- which is the point of taking the denominator
+      from the decision rather than from the node.
     """
     assert validation.geh(1160.0, 1000.0) == pytest.approx(4.8686, abs=5e-4)
     assert validation.geh(420.0, 300.0) == pytest.approx(6.3246, abs=5e-4)
@@ -236,6 +267,20 @@ def test_outcome_b_split_miss_with_reconciling_total_yields_a_routing_proposal()
     assert proposal.evidence["movement_geh"] == 6.32
     assert proposal.evidence["node_total_geh"] == 4.87
     assert fixes.ASSUME_SIBLING_ROUTES_UNCHANGED in proposal.assumptions
+
+    # The DENOMINATOR is the decision's, and it is stated: which movements
+    # were summed, what they summed to, and the share that came out.
+    assert proposal.evidence["decision_movements"] == ["m1", "m2"]
+    assert proposal.evidence["observed_decision_total"] == 1000.0
+    assert proposal.evidence["observed_by_decision_movement"] == {"m1": 300.0, "m2": 700.0}
+    assert proposal.evidence["observed_share"] == 0.3
+    assert proposal.evidence["observed_share_scope"] == "decision_movements"
+    assert proposal.evidence["arithmetic"] == "58 * (300/1000) / (1 - 300/1000) = 24.86"
+    assert fixes.ASSUME_DECISION_MOVEMENTS_COMPLETE in proposal.assumptions
+    # ... and the rationale says whose share 30% is, in all three languages.
+    for language, text in proposal.rationale().items():
+        assert "30.0%" in text, language
+        assert "m1, m2" in text, language
 
 
 def test_outcome_b_must_not_overstate_into_a_demand_change():
@@ -360,6 +405,141 @@ def test_a_split_miss_with_no_named_route_refuses_rather_than_guessing():
     # considered and refused.
     assert proposal.also_refused is not None
     assert proposal.also_refused.reason_code == fixes.NODE_TOTAL_RECONCILES
+
+
+def _keys_anywhere(payload: Any) -> set[str]:
+    """Every mapping key in a nested payload, at any depth."""
+    found: set[str] = set()
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            found.add(str(key))
+            found |= _keys_anywhere(value)
+    elif isinstance(payload, (list, tuple)):
+        for item in payload:
+            found |= _keys_anywhere(item)
+    return found
+
+
+def test_a_route_target_without_its_decision_scope_is_refused_not_scaled_to_the_node():
+    """THE refusal this fix exists for: no ``decision_movements``, no proposal.
+
+    A routing decision usually governs ONE approach, not the whole
+    intersection. Without the caller saying which movements it governs, the
+    only available denominator is the node total — and a share taken against
+    the node total understates the route whenever the decision is narrower,
+    producing a relFlow far below what the counts support. House rule: a
+    refused edit with a clear reason beats a completed edit with wrong
+    numbers.
+    """
+    node = _node(
+        observed_total=1000.0,
+        modelled_total=1160.0,
+        movements=[("m1", 300.0, 420.0), ("m2", 700.0, 740.0)],
+    )
+    proposal = fixes.map_node_counts(
+        node,
+        targets={
+            "vehicle_input": _VEHICLE_INPUT_TARGET,
+            "routes": {"m1": _ROUTE_TARGET_NO_SCOPE},
+        },
+    )
+
+    assert proposal.outcome == fixes.REFUSAL
+    assert proposal.reason_code == fixes.EVIDENCE_INSUFFICIENT
+    assert proposal.verb is None and proposal.params is None
+    # The demand-level refusal still rides along -- the total still reconciles.
+    assert proposal.also_refused is not None
+    assert proposal.also_refused.reason_code == fixes.NODE_TOTAL_RECONCILES
+
+    # The rationale names WHAT is missing and WHERE to get it, in ko/en/ja.
+    for language, text in proposal.rationale().items():
+        assert "decision_movements" in text, language
+        assert "get_routing_decisions" in text, language
+        assert "3" in text, language  # the decision whose scope is unknown
+
+    # COUNTERFACTUAL: no relFlow number reaches the payload. Not a derived
+    # value, not a params dict, not an arithmetic string -- and in particular
+    # not 24.86, the number the node-total denominator would have produced.
+    payload = proposal.to_dict()
+    assert {"rel_flow", "proposed_rel_flow", "arithmetic"} & _keys_anywhere(payload) == set()
+    assert "24.86" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_the_decision_scope_is_the_denominator_and_it_changes_the_number():
+    """The discriminating case: same node, same route, two decision scopes.
+
+    Hand arithmetic (node total observed 1000 / modelled 1160 -> GEH 4.8686 <
+    5, so the total reconciles; m1 observed 300 / modelled 420 -> GEH 6.3246
+    >= 5, the split that misses; m2 400/400 -> GEH 0; m3 observed 300 /
+    modelled 340 -> GEH sqrt(2*40^2/640) = sqrt(5) = 2.2361 < 5):
+
+      * decision governs m1+m2+m3 (the whole node): p = 300/1000 = 0.3,
+        relFlow = 58 * 0.3/0.7 = 24.857... -> 24.86;
+      * decision governs m1+m3 only (one approach): p = 300/600 = 0.5,
+        relFlow = 58 * 0.5/0.5 = 58.0.
+
+    Same evidence, denominators 1000 and 600, answers 24.86 and 58.0. A
+    mapping that quietly used the node total would return 24.86 for both, so
+    this is the assertion that catches it.
+    """
+    node = _node(
+        observed_total=1000.0,
+        modelled_total=1160.0,
+        movements=[("m1", 300.0, 420.0), ("m2", 400.0, 400.0), ("m3", 300.0, 340.0)],
+    )
+    assert validation.geh(340.0, 300.0) == pytest.approx(2.2361, abs=5e-4)
+
+    def _relflow(*scope: str) -> fixes.FixProposal:
+        return fixes.map_node_counts(
+            node,
+            targets={"routes": {"m1": {**_ROUTE_TARGET, "decision_movements": list(scope)}}},
+        )
+
+    node_wide = _relflow("m1", "m2", "m3")
+    one_approach = _relflow("m1", "m3")
+
+    assert node_wide.params["rel_flow"] == 24.86
+    assert node_wide.evidence["observed_decision_total"] == 1000.0
+    assert one_approach.params["rel_flow"] == 58.0
+    assert one_approach.evidence["observed_decision_total"] == 600.0
+    assert one_approach.evidence["resulting_share_pct"] == 50.0
+
+
+def test_a_decision_scope_the_observed_counts_cannot_resolve_is_refused():
+    """A scope naming a movement this node has no count for has an incomplete
+    denominator, and an incomplete denominator inflates the route's share. The
+    unresolvable token is NAMED rather than treated as zero."""
+    node = _node(
+        observed_total=1000.0,
+        modelled_total=1160.0,
+        movements=[("m1", 300.0, 420.0), ("m2", 700.0, 740.0)],
+    )
+    proposal = fixes.map_node_counts(
+        node,
+        targets={"routes": {"m1": {**_ROUTE_TARGET, "decision_movements": ["m1", "m9"]}}},
+    )
+    assert proposal.outcome == fixes.REFUSAL
+    assert proposal.reason_code == fixes.EVIDENCE_INSUFFICIENT
+    assert proposal.evidence["unresolved_decision_movements"] == ["m9"]
+    for language, text in proposal.rationale().items():
+        assert "m9" in text, language
+
+
+def test_a_decision_scope_that_excludes_the_missing_movement_is_refused():
+    """The caller named a decision that does not govern the turn being fixed —
+    its share of that decision is not defined, so nothing is proposed."""
+    node = _node(
+        observed_total=1000.0,
+        modelled_total=1160.0,
+        movements=[("m1", 300.0, 420.0), ("m2", 700.0, 740.0)],
+    )
+    proposal = fixes.map_node_counts(
+        node,
+        targets={"routes": {"m1": {**_ROUTE_TARGET, "decision_movements": ["m2"]}}},
+    )
+    assert proposal.outcome == fixes.REFUSAL
+    assert proposal.reason_code == fixes.EVIDENCE_INSUFFICIENT
+    assert proposal.evidence["movement_in_decision_scope"] is False
 
 
 def test_a_single_route_decision_cannot_be_fixed_with_relflow():
