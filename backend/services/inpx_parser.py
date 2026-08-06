@@ -301,31 +301,29 @@ def _point_in_polygon(point: tuple, polygon: list) -> bool:
 
 
 def _node_link_ids(root: ET.Element) -> dict:
-    """Map each node id to the set of link ids whose polyline enters its polygon.
+    """Map each node id to the set of link ids that belong to it.
 
-    GEOMETRIC, because Vissim gives us nothing else. This helper used to read
-    ``<linkSegment link=… fromPos=… internalToPos=…>`` inside each ``<node>``.
-    The 2026-08-06 live check scanned every Vissim-saved network on this machine
-    — PTV's own Examples Demo included — and found **no** ``<linkSegment>`` and
-    no ``<linkSegs>`` anywhere: Vissim does not write them. So this function
-    returned an empty set for EVERY node of EVERY network, real ones included,
-    and the genesis differ's "0 movements per node" was a parser assumption
-    rather than an emitter gap.
+    Vissim has TWO node-definition modes, and this helper honours both:
 
-    A Vissim node IS its polygon — the links and connectors it contains are
-    whatever the polygon encloses — so membership is computed the same way:
-    a link belongs to a node when any vertex of its polyline lies inside (or on)
-    the node's ``<geometry><points>`` polygon.
+    * **Declared** — ``<linkSegment link=…>`` entries inside the node. The
+      2026-08-06 live check over-generalised "Vissim never writes these" from
+      PTV's Examples Demo and its own SaveNetAs outputs; the consultant's real
+      ``current.inpx`` (authored in Vissim 2026.00-07) carries 139 of them
+      across its 6 nodes, with NO node polygons. Where declarations exist for a
+      node they are the authority and are read verbatim.
+    * **Geometric** — a node whose ``<geometry><points>`` polygon encloses its
+      members and declares nothing (every Examples-Demo network, and every
+      genesis draft). Membership is computed: a link belongs when any vertex of
+      its polyline lies inside (or on) the polygon.
 
-    Deliberate limits, stated rather than hidden:
-
-    * a node with no polygon has no members, and gets an empty set. Nothing is
-      inferred from proximity;
-    * membership is tested at the polyline's VERTICES. A link that crosses a
-      node without placing a vertex inside it is not a member. For the genesis
-      generator this cannot happen — links stop short of the junction and
-      connectors start and end at the node — and for real networks Vissim's own
-      node boxes are drawn around the links they contain.
+    The two are resolved PER NODE — declarations first, polygon fallback — so a
+    mixed network cannot silently lose either kind. A node with neither
+    declarations nor a ≥3-point polygon has no members and gets an empty set;
+    nothing is inferred from proximity. Geometric membership is tested at the
+    polyline's VERTICES: a link that crosses a node without placing a vertex
+    inside it is not a member (impossible for genesis drafts, whose links stop
+    short of the junction; real polygon-mode networks draw their boxes around
+    the links they contain).
     """
     nodes_el = root.find(".//nodes")
     mapping: dict[str, set] = {}
@@ -354,6 +352,16 @@ def _node_link_ids(root: ET.Element) -> dict:
 
     for node in nodes_el.findall("node"):
         nid = node.get("no", "")
+        # Declared membership wins: the consultant-style linkSegment entries
+        # name their links outright, and a node that declares needs no polygon.
+        declared = {
+            seg.get("link", "")
+            for seg in node.findall(".//linkSegment")
+            if seg.get("link")
+        }
+        if declared:
+            mapping[nid] = declared
+            continue
         geom = node.find("geometry")
         pts_el = geom.find("points") if geom is not None else None
         polygon = []

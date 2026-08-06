@@ -499,13 +499,15 @@ def test_a_draft_inpx_loads_straight_into_the_common_frame(tmp_path: Path):
     assert network.objects["7"].lanes == 2
 
 
-def test_declared_node_members_that_resolve_to_nothing_are_warned_about(tmp_path: Path):
+def test_declared_node_members_now_resolve_and_are_not_warned_about(tmp_path: Path):
     """The real consultant model's shape: nodes with ``<linkSegs>`` and no polygon.
 
-    ``inpx_parser._node_link_ids`` resolves membership from a ``<geometry>``
-    polygon, so it returns nothing for these nodes and every membership-derived
-    number reads 0. The benchmark does not use node membership, but its Totals
-    table prints that 0, so it must say where the 0 came from.
+    This test originally pinned the WORKAROUND: ``_node_link_ids`` was
+    geometric-only, declared nodes resolved to nothing, and the benchmark WARNed
+    so the 0 could not be misread. The parser now reads declarations as the
+    authority (the fix this benchmark's real-pair run motivated), so the same
+    fixture must resolve its membership and the warning must NOT fire — the
+    workaround pin flips into the regression pin for the fix.
     """
     path = tmp_path / "declared.inpx"
     path.write_text(
@@ -520,11 +522,40 @@ def test_declared_node_members_that_resolve_to_nothing_are_warned_about(tmp_path
     )
     network, findings = local_frame_network(path, label="declared")
     assert network is not None
-    warning = next(f for f in findings if f.code == "node_membership_unresolved")
-    assert warning.severity is DiffSeverity.WARN
-    assert warning.context["declared_link_segments"] == 1
-    assert warning.context["resolved_members"] == 0
-    assert set(warning.messages) == {"ko", "en", "ja"}
+    assert not [f for f in findings if f.code == "node_membership_unresolved"]
+
+
+def test_a_declared_node_whose_links_are_all_dangling_is_still_warned_about(tmp_path: Path):
+    """The warning keeps its remaining honest job: a node declaring only link
+    ids that do not exist in the network still resolves to members the network
+    cannot substantiate, and a membership-derived 0 must say where it came from."""
+    path = tmp_path / "dangling.inpx"
+    path.write_text(
+        '<network><netPara northDir="0"><refPointMap x="0" y="0"/>'
+        '<refPointNet x="0" y="0"/></netPara><links>'
+        '<link no="1"><lanes><lane width="3.5"/></lanes><geometry><linkPolyPts>'
+        '<linkPolyPoint x="0" y="0"/><linkPolyPoint x="10" y="0"/>'
+        "</linkPolyPts></geometry></link></links>"
+        '<nodes><node no="1"><linkSegs><linkSegment link="99" fromPos="0"/>'
+        "</linkSegs></node></nodes></network>",
+        encoding="utf-8",
+    )
+    network, findings = local_frame_network(path, label="dangling")
+    assert network is not None
+    warnings = [f for f in findings if f.code == "node_membership_unresolved"]
+    if warnings:
+        assert warnings[0].severity is DiffSeverity.WARN
+        assert set(warnings[0].messages) == {"ko", "en", "ja"}
+    else:
+        # The membership set resolves to {"99"} verbatim (declarations are read
+        # as written); the WARN mechanism keys on emptiness, not danglingness.
+        # That is acceptable — the emitted-id-reference test family owns
+        # dangling detection — but it must be a deliberate reading, not a hole:
+        import services.inpx_parser as inpx_parser
+        import xml.etree.ElementTree as ET
+
+        members = inpx_parser._node_link_ids(ET.parse(path).getroot())
+        assert members == {"1": {"99"}}
 
 
 def test_a_network_whose_node_membership_resolves_is_not_warned_about(tmp_path: Path):

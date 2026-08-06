@@ -1,24 +1,22 @@
-"""``inpx_parser._node_link_ids`` — node membership, which is GEOMETRIC.
+"""``inpx_parser._node_link_ids`` — node membership, declared OR geometric.
 
 Why this file exists
 --------------------
-The helper used to read ``<linkSegment link=… fromPos=… internalToPos=…>``
-inside each ``<node>``. The 2026-08-06 live check
-(``backend/tools/genesis_open_live_check.py``, PTV Vissim Academic 2026 SP 09)
-scanned every Vissim-saved network on this machine — PTV's own Examples Demo
-networks included, plus Vissim's save of a network we generated — and found
-**no** ``<linkSegment>`` and no ``<linkSegs>`` anywhere. Vissim does not write
-them. So the helper read an element that does not exist and returned an empty
-set for EVERY node of EVERY network, real customer networks included, and
-``services.genesis.diff``'s "0 movements per node" was a parser assumption
-rather than an emitter gap.
+Vissim has TWO node-definition modes, and this repo learned each the hard way.
+The helper originally read ``<linkSegment link=…>`` declarations only. The
+2026-08-06 live check scanned PTV's Examples Demo and Vissim's own SaveNetAs
+output, found no ``<linkSegment>`` anywhere, and the helper was rewritten as
+purely geometric (polygon containment) — over-generalising the sample: the
+consultant's real ``current.inpx`` (authored in Vissim 2026.00-07) carries 139
+``<linkSegment>`` declarations across its 6 nodes and NO node polygons, so the
+geometric-only version regressed membership to zero on the one network the
+product exists for (caught by benchmark v2's real-pair run, 2026-08-07).
 
-A Vissim node IS its polygon. Membership is now computed the same way: a link
-belongs to a node when any vertex of its polyline lies inside (or on) the node's
-``<geometry><points>`` polygon. These tests cover the polygon arithmetic on
-synthetic geometry with hand-derived answers, and then on the two real fixtures
-this repo has — ``data/practice.inpx`` and its successor, a file emitted by
-``services.genesis``.
+The helper now resolves PER NODE: declarations are the authority when present;
+the polygon fallback covers polygon-mode networks (all Examples-Demo files and
+every genesis draft). These tests cover both modes, their precedence, the
+polygon arithmetic on hand-derived synthetic geometry, and the two real
+fixtures this repo has — ``data/practice.inpx`` and a genesis-emitted file.
 """
 from __future__ import annotations
 
@@ -65,6 +63,17 @@ def _node(no: str, polygon: list[tuple[float, float]]) -> str:
 
 def _root(links: str, nodes: str) -> ET.Element:
     return ET.fromstring(f"<network><links>{links}</links><nodes>{nodes}</nodes></network>")
+
+
+def _declared_node(no: str, link_ids: list[str], polygon: list[tuple[float, float]] | None = None) -> str:
+    """A consultant-style node: ``<linkSegment link=…>`` declarations, and
+    (optionally) a polygon that the declarations must OUTRANK."""
+    segs = "".join(f'<linkSegment link="{lid}" fromPos="0" internalToPos="1"/>' for lid in link_ids)
+    poly = ""
+    if polygon:
+        pts = "".join(f'<point x="{x}" y="{y}"/>' for x, y in polygon)
+        poly = f"<geometry><points>{pts}</points></geometry>"
+    return f'<node no="{no}" name="n{no}">{poly}<linkSegs>{segs}</linkSegs></node>'
 
 
 #: A 20 m box centred on the origin.
@@ -287,3 +296,61 @@ def test_a_genesis_emitted_network_declares_its_movements(tmp_path: Path):
     assert members["1"] == {str(i) for i in range(1, 9)} | {
         str(i) for i in range(10001, 10013)
     }
+
+
+# ---------------------------------------------------------------------------
+# 5. Declared membership — the consultant mode (regression for benchmark v2's
+#    finding: geometric-only membership read the real client network as empty)
+# ---------------------------------------------------------------------------
+
+
+def test_declared_link_segments_are_the_authority_when_present():
+    """A consultant-style node declares its members; no polygon exists."""
+    root = _root(
+        _link("1", [(-30.0, 0.0), (-15.0, 0.0)]) + _link("2", [(15.0, 0.0), (30.0, 0.0)]),
+        _declared_node("10", ["1", "2"]),
+    )
+    assert inpx_parser._node_link_ids(root) == {"10": {"1", "2"}}
+
+
+def test_declarations_outrank_the_polygon_when_both_exist():
+    """Link 1's vertices sit INSIDE the polygon but it is not declared; link 2
+    is declared but sits OUTSIDE. Declarations win — Vissim's own file is the
+    authority on its own nodes, and mixing the two sources would let geometry
+    resurrect a link the author deliberately excluded."""
+    root = _root(
+        _link("1", [(0.0, 0.0), (5.0, 0.0)]) + _link("2", [(100.0, 0.0), (130.0, 0.0)]),
+        _declared_node("10", ["2"], polygon=BOX),
+    )
+    assert inpx_parser._node_link_ids(root) == {"10": {"2"}}
+
+
+def test_a_mixed_network_resolves_each_node_by_its_own_mode():
+    """One declared node and one polygon node in the same file — the
+    consultant/genesis mix a benchmark run actually produces."""
+    root = _root(
+        _link("1", [(0.0, 0.0), (5.0, 0.0)]) + _link("2", [(100.0, 0.0), (105.0, 0.0)]),
+        _declared_node("10", ["2"])
+        + _node("20", BOX),
+    )
+    assert inpx_parser._node_link_ids(root) == {"10": {"2"}, "20": {"1"}}
+
+
+def test_the_real_consultant_network_resolves_its_declared_membership():
+    """The regression itself: the client's current.inpx declares 139
+    linkSegment memberships across 6 nodes and carries no node polygons.
+    Skip (with the reason) when the live dataset is absent from this machine."""
+    candidates = sorted(
+        (REPO_ROOT / "runtime" / "workspaces").glob("*/uploads/current/current.inpx")
+    )
+    if not candidates:
+        legacy = REPO_ROOT / "runtime" / "uploads" / "current" / "current.inpx"
+        candidates = [legacy] if legacy.exists() else []
+    if not candidates:
+        pytest.skip("real consultant network not present on this machine")
+    root = ET.parse(candidates[0]).getroot()
+    members = inpx_parser._node_link_ids(root)
+    assert len(members) == 6
+    total = sum(len(v) for v in members.values())
+    assert total == 139, f"expected 139 declared memberships, resolved {total}"
+    assert all(v for v in members.values()), "every consultant node declares members"
