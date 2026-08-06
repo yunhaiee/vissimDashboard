@@ -3,10 +3,35 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import { DEFAULT_NEXT_PATH, loginHref, safeNextPath } from "../lib/authRedirect.ts";
+
 const rootDir = path.resolve(import.meta.dirname, "..");
 
 function read(relativePath: string) {
   return readFileSync(path.join(rootDir, relativePath), "utf-8");
+}
+
+/**
+ * The source between two markers, or "" when either marker is missing.
+ *
+ * Lets a pin be scoped to ONE function instead of the whole file, which is the
+ * only way to assert that something is ABSENT from a specific place: a
+ * file-wide `doesNotMatch` for `sameOriginRequestInit` would fail on the
+ * unrelated helpers that legitimately use it. Returns "" rather than throwing
+ * so a moved marker surfaces as a named pin failure alongside every other
+ * failure in the run (see contractTest above), not as an aborted test.
+ */
+function sliceBetween(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker);
+  if (start === -1) return "";
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  return end === -1 ? "" : source.slice(start, end);
+}
+
+/** A RegExp matching `text` literally -- Korean UI strings are full of `.`,
+ * `(` and `·`, which a raw `new RegExp(text)` would treat as syntax. */
+function literalPattern(text: string): RegExp {
+  return new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 }
 
 type Pin = {
@@ -526,4 +551,198 @@ contractTest("unit 1.5: unmeasured per-approach delay is rejected BEFORE numeric
     "expected the chart's no-measurement branch to key off a null-preserving value",
   );
   pin.match(dashboardPage, /데이터 없음/, "expected the explicit no-data panel for an unmeasured node");
+});
+
+// --- unit U9: login UI, session state, and the approval card's 401 path ----
+
+contractTest("U9: auth requests are structurally incapable of carrying X-Workspace-Id", (pin) => {
+  const api = read("lib/api.ts");
+  // U7 measured this and wrote it into backend/routers/auth.py's docstring: an
+  // ABSENT X-Workspace-Id resolves to the default workspace, but a header that
+  // is PRESENT and names an unknown workspace 404s inside
+  // main.WorkspaceScopeMiddleware BEFORE routing -- so a browser holding a
+  // stale workspace id would get a workspace error instead of a login screen.
+  // The guarantee therefore has to be structural: the auth calls use their own
+  // init builder, and that builder deletes the header rather than trusting
+  // that no caller ever sets it.
+  const authFetchBody = sliceBetween(api, "async function authFetch(", "/** Exchange credentials");
+  const authBindings = sliceBetween(api, "export async function login(", "export async function uploadInpxDataset(");
+
+  pin.match(authFetchBody, /\S/, "expected an authFetch helper in lib/api.ts (markers moved?)");
+  pin.match(authBindings, /\S/, "expected the login/logout/whoami bindings in lib/api.ts (markers moved?)");
+
+  pin.match(
+    api,
+    /function noWorkspaceRequestInit\(init\?: RequestInit\): RequestInit \{[\s\S]*?headers\.delete\(WORKSPACE_HEADER\);/,
+    "expected the auth init builder to DELETE the workspace header, not merely omit it",
+  );
+  pin.match(authFetchBody, /noWorkspaceRequestInit\(init\)/, "expected authFetch's same-origin leg to use the workspace-free init");
+  pin.match(
+    authFetchBody,
+    /noWorkspaceRequestInitForBase\(base, init\)/,
+    "expected authFetch's direct-base leg to use the workspace-free init too",
+  );
+  pin.doesNotMatch(
+    authFetchBody,
+    /withWorkspaceHeader|sameOriginRequestInit|requestInitForBase\(/,
+    "authFetch must not reach any init helper that injects X-Workspace-Id",
+  );
+  // Cookies: same-origin fetch sends them by default, and the direct
+  // cross-origin leg needs them stated. Neither may be turned off.
+  pin.match(api, /credentials: "include"/, "expected auth requests to send the session cookie");
+  pin.doesNotMatch(api, /credentials: "omit"/, "no request in this client may opt out of cookies");
+
+  pin.match(authBindings, /authFetch\("\/api\/auth\/login"/, "expected login() to POST through authFetch");
+  pin.match(authBindings, /authFetch\("\/api\/auth\/logout"/, "expected logout() to go through authFetch");
+  pin.match(authBindings, /authFetch\("\/api\/auth\/whoami"/, "expected whoami() to go through authFetch");
+  pin.match(authBindings, /method: "POST"/, "expected login to be a POST, never a GET with credentials in the URL");
+  pin.match(
+    authBindings,
+    /if \(r\.status === 401\) return null;/,
+    "expected whoami() to treat 401 as the anonymous ANSWER, not an error",
+  );
+});
+
+contractTest("U9: the login page posts real credentials and validates its own redirect", (pin) => {
+  const page = read("app/login/page.tsx");
+  const layout = read("app/layout.tsx");
+  const provider = read("components/AuthProvider.tsx");
+
+  pin.match(page, /import \{ safeNextPath \} from "@\/lib\/authRedirect";/, "expected the login page to validate `next` with the shared guard");
+  pin.match(page, /const nextPath = safeNextPath\(searchParams\.get\("next"\)\);/, "expected `next` to be validated before it can reach the router");
+  pin.doesNotMatch(page, /router\.replace\(searchParams/, "the raw query parameter must never reach router.replace");
+  pin.match(page, /router\.replace\(nextPath\)/, "expected a successful login to return the user to the validated path");
+  pin.match(page, /<Suspense fallback=\{null\}>/, "expected the useSearchParams tree to sit under a Suspense boundary (Next 16)");
+  pin.match(page, /await login\(username\.trim\(\), password, lang\)/, "expected the login submit to call the session provider's login");
+  pin.match(page, /autoComplete="current-password"/, "expected a real password field");
+  // One message for wrong password, unknown username and disabled account --
+  // the backend refuses to distinguish them, and neither may this page.
+  pin.match(page, /kind: "credentials"/, "expected a single bad-credentials state");
+  pin.match(page, /kind: "network"/, "expected an unreachable-API state distinct from bad credentials");
+  pin.doesNotMatch(page, /No such user|Unknown username/, "the login page must not invent an account-enumeration oracle");
+
+  pin.match(provider, /whoami\(\)/, "expected session state to be populated from whoami()");
+  // Storage USE, not the word: the provider's own docstring explains why it
+  // stores nothing, and that sentence must not be what makes this pin pass.
+  pin.doesNotMatch(
+    provider,
+    /(?:local|session)Storage\.(?:get|set|remove)Item/,
+    "the session cookie is HttpOnly -- no token may be mirrored into JS storage",
+  );
+  pin.match(layout, /<AuthProvider>/, "expected the session provider to wrap the app shell");
+});
+
+contractTest("U9: the login page's Korean strings all exist in the ja dictionary", (pin) => {
+  // pickByLanguage keys ja off the KOREAN string (lib/i18n.ts), so a
+  // two-argument t(ko, en) with no dictionary entry silently renders English
+  // for Japanese users. The login page uses the two-argument form throughout,
+  // which makes this mapping load-bearing rather than decorative.
+  const page = read("app/login/page.tsx");
+  const jaDictionary = read("lib/i18n-ja.ts");
+  const twoArgCalls = [...page.matchAll(/\bt\(\s*"((?:[^"\\]|\\.)+)"\s*,\s*"(?:[^"\\]|\\.)*"\s*,?\s*\)/g)];
+  const koreanStrings = Array.from(new Set(twoArgCalls.map((match) => match[1])));
+
+  pin.match(
+    `count=${koreanStrings.length}`,
+    /count=(1[0-9]|[2-9]\d)/,
+    "expected at least 10 two-argument t() strings on the login page -- a smaller number means this extraction went stale, not that the page shrank",
+  );
+  for (const korean of koreanStrings) {
+    pin.match(
+      jaDictionary,
+      literalPattern(`"${korean}":`),
+      `login page string has no Japanese entry in lib/i18n-ja.ts: ${korean}`,
+    );
+  }
+});
+
+contractTest("U9: the approval card reacts to 401/403 from the server, never to a guessed role", (pin) => {
+  const api = read("lib/api.ts");
+  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const shell = read("components/AppShell.tsx");
+
+  pin.match(
+    api,
+    /const APPROVAL_STATUSES_WITH_OWN_UI = \[401, 403, 404\];/,
+    "expected 401/403 to reach the UI as AgentApprovalError, like the existing 404",
+  );
+  pin.match(
+    floatingAssistant,
+    /const approvalStatus = caught instanceof AgentApprovalError \? caught\.status : null;/,
+    "expected the approve failure path to branch on the server's status",
+  );
+  pin.match(
+    floatingAssistant,
+    /approvalStatus === 401[\s\S]{0,400}?로그인이 필요합니다/,
+    "expected a 401 from approve/decline to say a sign-in is needed",
+  );
+  pin.match(
+    floatingAssistant,
+    /errorLoginHref: approvalStatus === 401 \? loginHref\(pathname\) : undefined/,
+    "expected the 401 state to carry a /login link back to the current page",
+  );
+  pin.match(
+    floatingAssistant,
+    /approvalStatus === 403[\s\S]{0,200}?caught\.message/,
+    "expected the 403 detail (which names the roles) to be surfaced verbatim, not rewritten client-side",
+  );
+  pin.match(
+    floatingAssistant,
+    /href=\{approval\.errorLoginHref\}/,
+    "expected the approval card to render the sign-in link instead of a dead error",
+  );
+  // The server is the authority on who may approve: no role check may gate the
+  // buttons client-side.
+  pin.doesNotMatch(
+    floatingAssistant,
+    /user\?\.role|role === "reviewer"|isReviewer/,
+    "the approval buttons must never be hidden or disabled from a client-side role guess",
+  );
+
+  pin.match(shell, /<AccountAffordance \/>/, "expected the signed-in identity to appear in the shared shell");
+  pin.match(shell, /loginHref\(pathname\)/, "expected the anonymous shell affordance to link to /login with a validated next");
+  pin.match(shell, /roleLabel\(user\.role, t\)/, "expected the shell to show the current role alongside the name");
+  pin.match(shell, /if \(status === "loading"\) return null;/, "expected the shell not to flash a sign-in link before whoami() answers");
+});
+
+// Real behaviour, not a source pin: the open-redirect guard is the one piece of
+// U9 where being wrong is a security bug rather than a cosmetic one.
+test("U9: safeNextPath only ever returns a same-origin path", () => {
+  assert.equal(safeNextPath("/dashboard"), "/dashboard");
+  assert.equal(safeNextPath("/network?x=1#a"), "/network?x=1#a");
+  assert.equal(safeNextPath("  /health  "), "/health");
+
+  // Everything that could leave the origin, or smuggle a scheme past a prefix
+  // check. TAB_PATH/NEWLINE_PATH are built from escapes so the literal control
+  // characters never live in this file.
+  const hostile: Array<string | null | undefined> = [
+    "//evil.example",
+    "///evil.example",
+    "https://evil.example/pay",
+    "http://evil.example",
+    "/\\evil.example",
+    "javascript:alert(1)",
+    "data:text/html,<script>",
+    "\\\\evil.example",
+    "/pa th",
+    `/a${String.fromCharCode(9)}b`,
+    `/a${String.fromCharCode(10)}b`,
+    "",
+    "   ",
+    null,
+    undefined,
+  ];
+  for (const candidate of hostile) {
+    assert.equal(safeNextPath(candidate), DEFAULT_NEXT_PATH, `expected ${JSON.stringify(candidate)} to be refused`);
+  }
+
+  // Bouncing back to the login screen is a loop, not a destination.
+  assert.equal(safeNextPath("/login"), DEFAULT_NEXT_PATH);
+  assert.equal(safeNextPath("/login?next=/x"), DEFAULT_NEXT_PATH);
+
+  // loginHref encodes exactly what safeNextPath accepted, and omits the
+  // parameter entirely when it would only name the default.
+  assert.equal(loginHref("/network"), "/login?next=%2Fnetwork");
+  assert.equal(loginHref("https://evil.example"), "/login");
+  assert.equal(loginHref(DEFAULT_NEXT_PATH), "/login");
 });

@@ -4,7 +4,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import FloatingAssistant from "@/components/FloatingAssistant";
+import { roleLabel, useAuth } from "@/components/AuthProvider";
 import { useLanguage } from "@/components/LanguageProvider";
+import { loginHref } from "@/lib/authRedirect";
 import type { Language } from "@/lib/i18n";
 
 function NavIcon({ name }: { name: "dashboard" | "network" | "validation" | "downloads" | "report" | "health" }) {
@@ -101,6 +103,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="app-side-footer">
+          <AccountAffordance />
           <div className="app-lang-switch" role="group" aria-label={t("Language switch", "Language switch")}>
             <LangButton lang="ko" current={lang} onSelect={setLang} label="Korean" />
             <LangButton lang="en" current={lang} onSelect={setLang} label="English" />
@@ -113,6 +116,44 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <div className="app-content-inner">{children}</div>
       </main>
       <FloatingAssistant />
+    </div>
+  );
+}
+
+// Unit U9. Renders NOTHING while the first whoami() is in flight: showing a
+// 로그인 link to somebody who is already signed in, for the fraction of a
+// second before the answer lands, is a lie the user may act on. Anonymous and
+// signed-in are the only two states that get pixels.
+//
+// The 로그인 link carries the current path as `next` (validated by
+// lib/authRedirect.ts on both ends) so a sign-in returns the user to the page
+// they were reading, not to the dashboard.
+function AccountAffordance() {
+  const { t } = useLanguage();
+  const { user, status, logout } = useAuth();
+  const pathname = usePathname();
+
+  if (status === "loading") return null;
+
+  if (!user) {
+    return (
+      <Link href={loginHref(pathname)} className="app-side-account-action">
+        {t("로그인", "Sign in", "ログイン")}
+      </Link>
+    );
+  }
+
+  return (
+    <div className="app-side-account">
+      {/* display_name is what an operator typed for this person; username is
+          the login id and the fallback when no display name was set. */}
+      <span className="app-side-account-name" title={user.username}>
+        {user.display_name || user.username}
+      </span>
+      <span className="app-side-account-role">{roleLabel(user.role, t)}</span>
+      <button type="button" onClick={() => void logout()} className="app-side-account-action">
+        {t("로그아웃", "Sign out", "ログアウト")}
+      </button>
     </div>
   );
 }

@@ -386,6 +386,54 @@ body {
   color: #0b0b0b;
 }
 
+/* Unit U9: who this browser is signed in as, and the way in or out. It shares
+   the sidebar footer with the language toggle because both describe THIS
+   BROWSER rather than the model -- and because the toggle was already the
+   only "settings"-shaped affordance a user would look near. */
+.app-side-account {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-bottom: 0.6rem;
+  min-width: 0;
+}
+
+.app-side-account-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-side-account-role {
+  font-size: 0.68rem;
+  color: var(--text-faint);
+}
+
+.app-side-account-action {
+  align-self: flex-start;
+  margin-top: 0.3rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.26rem 0.62rem;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+
+.app-side-account-action:hover {
+  color: var(--text-strong);
+  border-color: rgba(245, 243, 236, 0.24);
+}
+
 .app-content {
   flex: 1 1 auto;
   min-width: 0;
@@ -532,6 +580,22 @@ body {
     margin-left: auto;
     padding: 0;
     border-top: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  /* The sidebar becomes a horizontal bar here, so the account block folds
+     into one line beside the language toggle instead of stacking. */
+  .app-side-account {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0;
+  }
+
+  .app-side-account-action {
+    margin-top: 0;
   }
 
   .app-content {

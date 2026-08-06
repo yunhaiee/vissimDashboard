@@ -29,6 +29,7 @@ import {
   type SimulationResultsResponse,
   type VissimComToolStatus,
 } from "@/lib/api";
+import { loginHref } from "@/lib/authRedirect";
 import { elementTypeLabel, linkKindLabel, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 
 // M2.3: lifecycle of a write-approval card attached to an agent-mode
@@ -48,6 +49,11 @@ type AgentApprovalState = {
   assumptions: string[];
   resolution: AgentApprovalResolution;
   errorMessage?: string;
+  /** U9: set only when the resolve call came back 401 -- the card then offers
+   * a way to sign in instead of leaving a dead error. Absent for every other
+   * failure, including 403: a signed-in user with the wrong role has nothing
+   * to gain from a login link, and offering one would imply otherwise. */
+  errorLoginHref?: string;
   /** Approval-card mini-map (v2 UX unit): the map-focus hint from the SAME
    * wire event actions/warnings/assumptions come from -- see
    * AgentApprovalFocus's own doc comment in lib/api.ts. Undefined only for
@@ -966,18 +972,39 @@ export default function FloatingAssistant() {
       } else if (!streamedContent.trim() && !hasAgentSteps) {
         setMessages((prev) => prev.filter((message) => message.id !== assistantMessageId));
       }
-      const is404 = caught instanceof AgentApprovalError && caught.status === 404;
-      const resolutionMessage = is404
-        ? t(
-            "이 승인 요청은 만료되었거나 이미 처리되었습니다. 다시 요청해 주세요.",
-            "This approval request has expired or was already handled. Please ask again.",
-            "この承認リクエストは期限切れか、既に処理済みです。もう一度お試しください。",
-          )
-        : disconnectNotice
-          ? disconnectNotice
-          : isAbortError(caught)
-            ? t("요청을 취소했습니다.", "Request cancelled.")
-            : formatAssistantError(caught, t);
+      // U8/U9: `/agent/approve` now requires a reviewer|admin, so three of the
+      // server's answers each get their own copy -- 404 (stale/consumed
+      // approval), 401 (nobody is signed in) and 403 (signed in, wrong role).
+      // The 403 text is the BACKEND's detail VERBATIM: it names the roles that
+      // may approve and is already localized server-side
+      // (routers/assistant.py's _APPROVAL_ROLE_REQUIRED), so a client-side
+      // rewrite could only be less accurate. Note what is deliberately NOT
+      // done anywhere here: the Run/Cancel buttons are never hidden or
+      // pre-disabled from the cached role -- the server decides, and the card
+      // reacts to what it decided.
+      const approvalStatus = caught instanceof AgentApprovalError ? caught.status : null;
+      const resolutionMessage =
+        approvalStatus === 404
+          ? t(
+              "이 승인 요청은 만료되었거나 이미 처리되었습니다. 다시 요청해 주세요.",
+              "This approval request has expired or was already handled. Please ask again.",
+              "この承認リクエストは期限切れか、既に処理済みです。もう一度お試しください。",
+            )
+          : approvalStatus === 401
+            ? t(
+                "승인·반려하려면 로그인이 필요합니다.",
+                "Signing in is required to approve or decline this.",
+                "承認・却下にはログインが必要です。",
+              )
+            : approvalStatus === 403
+              ? caught instanceof AgentApprovalError && caught.message.trim()
+                ? caught.message
+                : formatAssistantError(caught, t)
+              : disconnectNotice
+                ? disconnectNotice
+                : isAbortError(caught)
+                  ? t("요청을 취소했습니다.", "Request cancelled.")
+                  : formatAssistantError(caught, t);
       // Settles the source message's approval card busy state
       // ("approving"/"declining") to its error resolution on EVERY caught
       // path, including the dead-stream case above -- a busy card must
@@ -985,7 +1012,17 @@ export default function FloatingAssistant() {
       setMessages((prev) =>
         prev.map((message) =>
           message.id === sourceMessageId && message.agentApproval
-            ? { ...message, agentApproval: { ...message.agentApproval, resolution: "error", errorMessage: resolutionMessage } }
+            ? {
+                ...message,
+                agentApproval: {
+                  ...message.agentApproval,
+                  resolution: "error",
+                  errorMessage: resolutionMessage,
+                  // `next` is this page's path, so signing in returns the user
+                  // to the conversation they were in.
+                  errorLoginHref: approvalStatus === 401 ? loginHref(pathname) : undefined,
+                },
+              }
             : message,
         ),
       );
@@ -1801,9 +1838,17 @@ function AgentApprovalCard({
           </button>
         </div>
       ) : approval.resolution === "error" ? (
-        <p className="mt-2.5 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] leading-5 text-rose-700">
-          {approval.errorMessage}
-        </p>
+        <div className="mt-2.5 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] leading-5 text-rose-700">
+          <p>{approval.errorMessage}</p>
+          {approval.errorLoginHref && (
+            <Link
+              href={approval.errorLoginHref}
+              className="mt-1.5 inline-flex items-center font-semibold text-rose-700 underline underline-offset-2"
+            >
+              {t("로그인하러 가기", "Go to sign-in", "ログインへ進む")}
+            </Link>
+          )}
+        </div>
       ) : (
         <p className="mt-2.5 text-[11px] font-semibold text-slate-500">
           {approval.resolution === "approved" ? t("승인됨", "Approved", "承認済み") : t("취소됨", "Cancelled", "キャンセル済み")}

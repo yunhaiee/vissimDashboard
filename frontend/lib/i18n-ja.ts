@@ -566,4 +566,32 @@ export const JA_UI: Record<string, string> = {
     "移動流ごとの実測遅延(VEHDELAY)を流入方向別に交通量で加重平均した実測値です。",
   "이 교차로에는 이동류별 측정 지체(VEHDELAY)가 없어 방향별 지체를 표시할 수 없습니다.":
     "この交差点には移動流ごとの実測遅延(VEHDELAY)がないため、方向別遅延を表示できません。",
+
+  // --- unit U9: the login screen (app/login/page.tsx) ---
+  // That page calls t(ko, en) with TWO arguments only, so these entries are
+  // load-bearing: without them ja renders the English label. A contract pin
+  // (tests/dashboard-contract.test.ts, "U9: ...") extracts every two-argument
+  // t() Korean string from that page and fails if one is missing here, so a
+  // new string cannot quietly degrade Japanese.
+  // (Components that pass an explicit third `ja` argument -- AppShell's
+  // account block, FloatingAssistant's approval card -- need no entry: the
+  // third argument bypasses this dictionary entirely.)
+  "로그인": "ログイン",
+  "로그아웃": "ログアウト",
+  "로그인 중...": "ログイン中...",
+  "아이디": "ユーザーID",
+  "비밀번호": "パスワード",
+  "계속하기": "続ける",
+  "이미 로그인되어 있습니다": "すでにログインしています",
+  "승인·반려 등 기록이 남는 작업에는 로그인이 필요합니다.":
+    "承認・却下など記録が残る操作にはログインが必要です。",
+  "계정은 관리자가 발급합니다. 가입 절차는 없습니다.":
+    "アカウントは管理者が発行します。登録手続きはありません。",
+  // Mirrors backend/routers/auth.py's own _LOGIN_FAILED ja text: this is the
+  // fallback for a 401 whose body carried no readable detail, and the two
+  // saying different things would read as two different failures.
+  "아이디 또는 비밀번호가 올바르지 않습니다.": "ユーザーIDまたはパスワードが正しくありません。",
+  "로그인 처리 중 서버 오류가 발생했습니다.": "ログイン処理中にサーバーエラーが発生しました。",
+  "서버에 연결하지 못했습니다. 백엔드가 실행 중인지 확인한 뒤 다시 시도해 주세요.":
+    "サーバーに接続できませんでした。バックエンドが起動しているか確認して、もう一度お試しください。",
 };

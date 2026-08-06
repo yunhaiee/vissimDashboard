@@ -160,6 +160,43 @@ function requestInitForBase(base: string, init?: RequestInit): LocalNetworkReque
   return nextInit;
 }
 
+// --- The one request family that must NOT carry X-Workspace-Id (unit U9) ---
+//
+// `main.WorkspaceScopeMiddleware` runs on EVERY request, ahead of routing and
+// therefore ahead of auth. An ABSENT header resolves to the default workspace
+// and is fine; a header that is PRESENT but names an unknown workspace 404s
+// there and never reaches `/api/auth/*` at all (measured in U7 --
+// backend/routers/auth.py's module docstring states this explicitly). A
+// browser holding a stale `vissim-workspace-id` in localStorage -- exactly the
+// state a person who cannot log in is likely to be in -- would therefore get a
+// workspace 404 instead of a login screen.
+//
+// So the auth calls get their OWN init builder rather than relying on the
+// header happening to be harmless: the workspace header is deleted here even
+// if a caller passed one, and `authFetch` below is the only fetch path that
+// uses these two functions. That is what makes "the login request cannot
+// receive X-Workspace-Id" a structural property (and what
+// tests/dashboard-contract.test.ts pins), not a convention.
+//
+// `credentials: "include"` covers both legs of the fallback ladder: the
+// same-origin proxy hop would send the cookie anyway (fetch defaults to
+// "same-origin"), and the direct http://127.0.0.1:8001 hop needs it stated --
+// the backend sets `allow_credentials=True` (backend/main.py) for exactly this.
+function noWorkspaceRequestInit(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers);
+  headers.delete(WORKSPACE_HEADER);
+  return { ...(init ?? {}), headers, credentials: "include" };
+}
+
+function noWorkspaceRequestInitForBase(base: string, init?: RequestInit): LocalNetworkRequestInit {
+  const nextInit = noWorkspaceRequestInit(init) as LocalNetworkRequestInit;
+  if (isLocalApiBase(base)) {
+    nextInit.mode = nextInit.mode ?? "cors";
+    nextInit.targetAddressSpace = "local";
+  }
+  return nextInit;
+}
+
 function normalizedApiPath(path: string): string {
   return path.startsWith("/") ? path : `/${path}`;
 }
@@ -1564,6 +1601,12 @@ export async function streamAgentQuery(
 // (English-only, backend-owned) error detail text, so a stale approval can
 // get its own graceful, localized inline message instead of the generic
 // assistant-error copy.
+//
+// Unit U8 added two more statuses this class now carries, for the same reason:
+// 401 (nobody is signed in) and 403 (signed in, but not reviewer/admin). The
+// card reacts to the SERVER's answer -- it never guesses a role client-side --
+// so it needs the status, and for 403 it needs `message`, which is the
+// backend's own role-naming detail and is already localized server-side.
 export class AgentApprovalError extends Error {
   status: number;
 
@@ -1573,6 +1616,10 @@ export class AgentApprovalError extends Error {
     this.status = status;
   }
 }
+
+/** Approve/decline responses the approval card has a dedicated state for.
+ * Listed once so the first attempt and the 5xx retry below cannot drift. */
+const APPROVAL_STATUSES_WITH_OWN_UI = [401, 403, 404];
 
 // Live-bug fix (docs/phase2/DECISIONS.md, 2026-07-24 heartbeat entry):
 // thrown by readAgentEventStream when the NDJSON body ends (or its reader
@@ -1616,15 +1663,18 @@ export async function approveAgentAction(
   if (response.ok) return readAgentEventStream(response, handlers);
 
   const firstError = await readApiError(response);
-  if (response.status === 404) {
-    throw new AgentApprovalError(firstError, 404);
+  // 404 = stale/consumed approval (M2.3); 401/403 = not signed in / wrong role
+  // (U8). All three are answers the card renders differently, so all three
+  // carry their status instead of collapsing into a generic Error.
+  if (APPROVAL_STATUSES_WITH_OWN_UI.includes(response.status)) {
+    throw new AgentApprovalError(firstError, response.status);
   }
   if (response.status >= 500 && !signal?.aborted) {
     await sleepForRetry(700);
     const retry = await apiDirectMutationFetch("/api/assistant/agent/approve", init, { sameOrigin: false });
     if (retry.ok) return readAgentEventStream(retry, handlers);
-    if (retry.status === 404) {
-      throw new AgentApprovalError(await readApiError(retry), 404);
+    if (APPROVAL_STATUSES_WITH_OWN_UI.includes(retry.status)) {
+      throw new AgentApprovalError(await readApiError(retry), retry.status);
     }
     throw new Error(await readApiError(retry));
   }
@@ -1796,6 +1846,117 @@ export async function createWorkspace(name: string): Promise<WorkspaceSummary> {
     body: JSON.stringify({ name }),
   });
   if (!r.ok) throw new Error(await readApiError(r));
+  return r.json();
+}
+
+// --- Auth (unit U7 backend, U9 UI) -----------------------------------------
+// POST /api/auth/login, POST /api/auth/logout, GET /api/auth/whoami --
+// backend/routers/auth.py. The session token lives in an HttpOnly cookie the
+// browser manages; NOTHING here reads or stores it, and there is deliberately
+// no token in JS to steal. `whoami()` is the only way this client learns who
+// it is, and a 401 from it is the normal anonymous answer, not an error.
+
+export type AuthRole = "modeler" | "reviewer" | "admin";
+
+/** `services/auth._public_user` -- the only user shape the backend exposes
+ * (no password hash, by construction). `role` is typed loosely on purpose: a
+ * role added server-side must render as itself rather than crash a build. */
+export interface AuthUser {
+  id: number;
+  username: string;
+  display_name: string;
+  role: AuthRole | string;
+  created_at?: string;
+  disabled?: boolean;
+}
+
+export interface AuthSessionInfo {
+  user: AuthUser;
+  session: { expires_at?: string };
+}
+
+/** Carries the HTTP status so callers can distinguish "wrong credentials"
+ * (401 -- a uniform answer the backend gives for wrong password, unknown
+ * username AND disabled account alike) from a server fault, without
+ * string-matching a localized detail. A network failure never becomes one of
+ * these: it stays a plain Error, which is what makes the login page able to
+ * tell "the backend said no" apart from "the backend did not answer". */
+export class AuthRequestError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "AuthRequestError";
+    this.status = status;
+  }
+}
+
+// Same fallback ladder as apiMutationFetch (same-origin proxy first, then the
+// local API bases) but built on the workspace-free init above. Kept as its own
+// function rather than adding a flag to apiMutationFetch so the no-header
+// property is visible in the call graph instead of depending on an argument.
+//
+// Cookie caveat, stated rather than discovered later: a cookie minted on the
+// same-origin hop belongs to the frontend origin, and one minted on the direct
+// http://127.0.0.1:8001 hop belongs to that origin. The fallback only fires
+// when the same-origin fetch throws (proxy down), so a session normally lives
+// on exactly one of them; if the proxy comes back after a direct login, the
+// next whoami() 401s and the UI simply shows the login link again.
+async function authFetch(path: string, init?: RequestInit): Promise<Response> {
+  const normalizedPath = normalizedApiPath(path);
+  let lastNetworkError: unknown = null;
+
+  if (typeof window !== "undefined") {
+    try {
+      return await fetch(normalizedPath, noWorkspaceRequestInit(init));
+    } catch (error) {
+      if (!shouldRetryApiFetch(error)) throw error;
+      lastNetworkError = error;
+    }
+  }
+
+  for (const base of listMutationApiBases(normalizeApiBase(getApiBase()))) {
+    try {
+      return await fetch(apiUrlForBase(base, normalizedPath), noWorkspaceRequestInitForBase(base, init));
+    } catch (error) {
+      if (!shouldRetryApiFetch(error)) throw error;
+      lastNetworkError = error;
+    }
+  }
+
+  const detail = lastNetworkError instanceof Error ? lastNetworkError.message : String(lastNetworkError ?? "unknown error");
+  throw new Error(`Failed to reach the API for ${normalizedPath}. Last network error: ${detail}`);
+}
+
+/** Exchange credentials for the session cookie. `language` only selects which
+ * of ko/en/ja the backend's own uniform failure detail comes back in -- it can
+ * never change WHETHER the login succeeds. */
+export async function login(username: string, password: string, language?: string): Promise<AuthSessionInfo> {
+  const r = await authFetch("/api/auth/login", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(language ? { username, password, language } : { username, password }),
+  });
+  if (!r.ok) throw new AuthRequestError(await readApiError(r), r.status);
+  return r.json();
+}
+
+/** End the session. The backend always answers 200 (logging out must work for
+ * an already-expired token), so a non-ok here is a real fault. */
+export async function logout(): Promise<void> {
+  const r = await authFetch("/api/auth/logout", { method: "POST", cache: "no-store" });
+  if (!r.ok) throw new AuthRequestError(await readApiError(r), r.status);
+}
+
+/** Who this browser is, or `null` when nobody -- 401 is the ANSWER to that
+ * question, not a failure, so it is not thrown. Anything else (5xx, an
+ * unreachable API) still throws, so "we could not tell" never renders as
+ * "signed out". */
+export async function whoami(): Promise<AuthSessionInfo | null> {
+  const r = await authFetch("/api/auth/whoami", { cache: "no-store" });
+  if (r.status === 401) return null;
+  if (!r.ok) throw new AuthRequestError(await readApiError(r), r.status);
   return r.json();
 }
 
