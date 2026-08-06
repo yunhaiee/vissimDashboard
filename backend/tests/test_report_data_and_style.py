@@ -120,6 +120,19 @@ def test_flow_geh_csv_shape_and_values_are_pinned_for_a_clean_dataset(
     ``GEH Excluded``) to EVERY export, including clean ones, and no test
     noticed: a downstream consumer pinned to column order or count would have
     broken silently. This is that missing pin.
+
+    MOVED 2026-08-06 (section-5 validation pack). Characterized before/after:
+
+      BEFORE  header (11 cols): ...,GEH Excluded (0 obs / 0 model),Row Type
+              4 data rows (node/total x AM/PM)
+      AFTER   header (12 cols): ...,Row Type,Criterion State
+              the SAME 4 data rows, each with one trailing empty cell, plus
+              3 trailing ``criterion`` rows
+
+    Every pre-existing number is byte-for-byte unchanged; the move is purely
+    additive. The three new rows publish the MRWA section 5.6.3 criteria this
+    export could previously not speak to at all -- omitting a criterion reads
+    as a criterion that passed.
     """
     from services import report_exports
     from services.validation import DirectionCount, NodeRealCounts
@@ -145,18 +158,36 @@ def test_flow_geh_csv_shape_and_values_are_pinned_for_a_clean_dataset(
     # Column ORDER and COUNT, not just membership.
     assert lines[0] == (
         "Period,Node,No. Counts,Observed Flow,Modelled Flow,% Diff,"
-        "Flow %,GEH %,GEH Counts,GEH Excluded (0 obs / 0 model),Row Type"
+        "Flow %,GEH %,GEH Counts,GEH Excluded (0 obs / 0 model),Row Type,"
+        "Criterion State"
     )
-    assert len(lines[0].split(",")) == 11
+    assert len(lines[0].split(",")) == 12
 
     # Every value, literally. GEH is 0.63 here, so Flow % and GEH % are both
     # 100, GEH Counts equals No. Counts, and GEH Excluded is 0 -- a clean
-    # dataset must never show an exclusion or an undefined marker.
-    assert lines[1:] == [
-        "AM Peak,Node 1,1,1000,1020,2.0,100,100,1,0,node",
-        "AM Peak,Total,1,1000,1020,2.0,100,100,1,0,total",
-        "PM Peak,Node 1,1,1000,1020,2.0,100,100,1,0,node",
-        "PM Peak,Total,1,1000,1020,2.0,100,100,1,0,total",
+    # dataset must never show an exclusion or an undefined marker. The four
+    # node/total rows below are the pre-existing pin verbatim, plus the one
+    # trailing empty Criterion State cell.
+    assert lines[1:5] == [
+        "AM Peak,Node 1,1,1000,1020,2.0,100,100,1,0,node,",
+        "AM Peak,Total,1,1000,1020,2.0,100,100,1,0,total,",
+        "PM Peak,Node 1,1,1000,1020,2.0,100,100,1,0,node,",
+        "PM Peak,Total,1,1000,1020,2.0,100,100,1,0,total,",
+    ]
+
+    # The three MRWA section 5.6.3 criterion rows. Their numeric cells are
+    # BLANK, never 0: a criterion row has no observed flow, and a 0 would read
+    # as a measurement. Citations name the TABLE and the DOC PAGE (not an
+    # in-text "Figure N" label -- section 5 carries nine such cross-reference
+    # errors).
+    assert lines[5:] == [
+        ',"Critical intersections (5.6.3.1, doc p.213)",,,,,,,,,criterion,'
+        "critical 교차로 미지정 — 검사 미실행 "
+        "(no critical intersection designated: this check did not run)",
+        ',"Signal timing (Table 5-14, doc p.216)",,,,,,,,,criterion,'
+        "관측값 없음 — 평가 불가 (not assessable: no observed data in this project)",
+        ',"Saturation flow (5.6.3.5, doc p.216)",,,,,,,,,criterion,'
+        "관측값 없음 — 평가 불가 (not assessable: no observed data in this project)",
     ]
 
 

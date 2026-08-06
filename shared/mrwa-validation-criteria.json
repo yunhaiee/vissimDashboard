@@ -1,0 +1,148 @@
+{
+  "$comment": [
+    "Cross-language conformance table for the MRWA base-model validation criteria",
+    "(section-5 validation pack). ONE source of truth consumed by BOTH runtimes so",
+    "the Python and TypeScript threshold sets can never drift silently:",
+    "  Python -> backend/services/validation_profiles.py  (LOADS this file; it holds",
+    "            no literal copy of any number)",
+    "  TS     -> frontend/lib/validationProfiles.ts       (literals, pinned to this",
+    "            file by frontend/tests/dashboard-contract.test.ts)",
+    "Same pattern as shared/geh-conformance.json. Add or change a number HERE",
+    "first; both sides fail until they agree.",
+    "",
+    "CITATIONS ARE DOC PAGES -- the number printed as 'Page NNN of 271' in MRWA",
+    "Operational Modelling Guidelines Version 2.0. Doc page = PDF page - 18. The",
+    "page-cited transcription this file was built from is",
+    "docs/product/reference/mrwa-section5-extract.md.",
+    "",
+    "ERRATA GUARD: section 5's in-text figure/table cross-references contain nine",
+    "measured errors (body text says 'Figure N' where the object is 'Table N' --",
+    "5.2.3, 5.2.3.2, 5.2.3.3, 5.2.3.4, 5.2.4, 5.2.5.1, 5.3.5, 5.6.2.2, 5.8.1.2).",
+    "Every citation in this file therefore names the TABLE and the DOC PAGE, never",
+    "an in-text label.",
+    "",
+    "DIRECTION LANDMINE: travel time is 'whichever is GREATER' (5.6.3.2 body text,",
+    "p.215) and signal timing is 'whichever is SMALLER' (Table 5-14, p.216). They",
+    "are opposites. A shared max() helper used for both would silently loosen the",
+    "signal-timing check, so each direction has its own helper on both sides."
+  ],
+  "source": {
+    "document": "Main Roads Western Australia, Operational Modelling Guidelines Version 2.0",
+    "section": "5 Vissim Guidelines",
+    "validation_subsection": "5.6.3 Model Validation Requirement",
+    "page_convention": "doc page (printed 'Page NNN of 271') = PDF page - 18",
+    "extract": "docs/product/reference/mrwa-section5-extract.md"
+  },
+  "categories": {
+    "cat1": {
+      "name_en": "Category 1",
+      "name_ko": "카테고리 1",
+      "geh_under_5_pct": 95,
+      "geh_under_10_pct": 100,
+      "r_squared_min": 0.95,
+      "flow_low_within_pct": 95,
+      "flow_mid_within_pct": 95,
+      "flow_high_within_pct": 95,
+      "travel_within_pct": 100
+    },
+    "cat2": {
+      "name_en": "Category 2",
+      "name_ko": "카테고리 2",
+      "geh_under_5_pct": 85,
+      "geh_under_10_pct": 95,
+      "r_squared_min": 0.95,
+      "flow_low_within_pct": 90,
+      "flow_mid_within_pct": 90,
+      "flow_high_within_pct": 90,
+      "travel_within_pct": 90
+    },
+    "cat3": {
+      "name_en": "Category 3",
+      "name_ko": "카테고리 3",
+      "geh_under_5_pct": 80,
+      "geh_under_10_pct": 90,
+      "r_squared_min": 0.9,
+      "flow_low_within_pct": 85,
+      "flow_mid_within_pct": 85,
+      "flow_high_within_pct": 85,
+      "travel_within_pct": 85
+    }
+  },
+  "flow_bands": {
+    "$citation": "Table 5-12 'Traffic flow validation criteria', 5.6.3.1, doc p.213",
+    "$note": "The three tolerance WIDTHS below do not vary by category; only the pass rates in `categories` do.",
+    "low_max_vph": 700,
+    "low_tolerance_vph": 100,
+    "mid_max_vph": 2700,
+    "mid_tolerance_pct": 15,
+    "high_tolerance_vph": 400
+  },
+  "travel_time": {
+    "$citation": "band in 5.6.3.2 body text, doc p.215; pass rate in Table 5-13, doc p.215 (that table has exactly ONE row)",
+    "tolerance_pct": 15,
+    "tolerance_min_minutes": 1,
+    "direction": "greater",
+    "$direction_note": "'within 15 per cent or one minute (whichever is greater)' -- the OPPOSITE of signal_timing.direction."
+  },
+  "signal_timing": {
+    "$citation": "Table 5-14 'Microsimulation signal timing validation criteria', 5.6.3.4, doc p.216",
+    "$note": "Category-invariant: Table 5-14 gives no pass rate and no Category 1/2/3 split.",
+    "direction": "smaller",
+    "$direction_note": "'whichever is smaller' -- the tighter of the two bounds. NEVER route this through a max() helper.",
+    "cycle_time_seconds": 3,
+    "cycle_time_pct": 5,
+    "green_time_seconds": 3,
+    "green_time_pct": 10,
+    "actuated_call_frequency_tolerance": null,
+    "$actuated_note": "Table 5-14's vehicle-actuated row states a comparison obligation with NO numeric tolerance at all.",
+    "observation_source": "recorded average of SCATS history data for the same one hour period"
+  },
+  "saturation_flow": {
+    "$citation": "5.6.3.5 body text, doc p.216",
+    "$note": "Category-invariant. 'Modelled saturation flow values should be within 10 per cent of observed values.'",
+    "within_pct": 10
+  },
+  "critical_intersection": {
+    "$citation": "5.6.3.1 body text, doc p.213 (immediately after Table 5-12)",
+    "$note": "'Even if the model outputs meet the traffic volume validation criteria for the entire network, the modeller should check and ensure that turning volumes at critical intersection(s) achieve GEH less than 5.' Category-invariant, and STRICTER than every category's network-wide rate -- a network-only report can show PASS on a model MRWA would reject.",
+    "geh_max": 5,
+    "applies_when_network_passes": true
+  },
+  "signal_timing_direction_cases": [
+    {
+      "name": "long cycle: 5 % of 120 s is 6 s, so the 3 s bound is the smaller one",
+      "band": "cycle_time",
+      "observed_seconds": 120,
+      "tolerance_seconds": 3,
+      "max_direction_would_be": 6
+    },
+    {
+      "name": "short cycle: 5 % of 40 s is 2 s, so the percentage is the smaller one",
+      "band": "cycle_time",
+      "observed_seconds": 40,
+      "tolerance_seconds": 2,
+      "max_direction_would_be": 3
+    },
+    {
+      "name": "long green: 10 % of 60 s is 6 s, so the 3 s bound is the smaller one",
+      "band": "green_time",
+      "observed_seconds": 60,
+      "tolerance_seconds": 3,
+      "max_direction_would_be": 6
+    },
+    {
+      "name": "short green: 10 % of 20 s is 2 s, so the percentage is the smaller one",
+      "band": "green_time",
+      "observed_seconds": 20,
+      "tolerance_seconds": 2,
+      "max_direction_would_be": 3
+    },
+    {
+      "name": "boundary: 5 % of 60 s is exactly 3 s, so both directions agree",
+      "band": "cycle_time",
+      "observed_seconds": 60,
+      "tolerance_seconds": 3,
+      "max_direction_would_be": 3
+    }
+  ]
+}

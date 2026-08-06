@@ -4,8 +4,21 @@ import path from "node:path";
 import test from "node:test";
 
 import { DEFAULT_NEXT_PATH, loginHref, safeNextPath } from "../lib/authRedirect.ts";
+import {
+  CRITICAL_INTERSECTION_GEH_MAX,
+  SATURATION_FLOW_WITHIN_PCT,
+  SIGNAL_TIMING_CRITERIA,
+  VALIDATION_PROFILES,
+  evaluateCriticalIntersections,
+  parseCriticalNodeIds,
+  saturationFlowWithinTolerance,
+  signalTimingToleranceSeconds,
+  signalTimingWithinTolerance,
+  type SignalTimingBand,
+} from "../lib/validationProfiles.ts";
 
 const rootDir = path.resolve(import.meta.dirname, "..");
+const repoRoot = path.resolve(rootDir, "..");
 
 function read(relativePath: string) {
   return readFileSync(path.join(rootDir, relativePath), "utf-8");
@@ -238,6 +251,248 @@ contractTest("base model page keeps the Category 1 GEH and travel-time checks", 
   );
   pin.match(page, /getActiveProfile\(category\)/, "expected base-model page to resolve thresholds through the shared validation-profile module");
   pin.match(page, /ValidationCategorySelector/, "expected a Category 1\/2\/3 selector on the base-model validation page");
+});
+
+// --- section-5 validation pack (2026-08-06) ---------------------------------
+//
+// The numbers in lib/validationProfiles.ts were all correct against MRWA OMG
+// v2.0 Tables 5-12/5-13; its CITATIONS were not. It cited PDF pages 231-234
+// where the doc pages are 213 (Table 5-12) and 215 (Table 5-13), titled §5
+// "Model Validation" when §5 is "Vissim Guidelines", and attributed the flow
+// bands to Table 5-13 when they live in Table 5-12 (5-13 has exactly one row,
+// travel time). These pins are what keeps a corrected citation corrected.
+contractTest("validation profiles cite doc pages, the right section title, and the right tables", (pin) => {
+  const profiles = read("lib/validationProfiles.ts");
+
+  pin.match(profiles, /§5 "Vissim Guidelines"/, "expected §5's actual title, not \"Model Validation\"");
+  pin.doesNotMatch(profiles, /§5 "Model Validation"/, "expected the wrong §5 title to be gone");
+  pin.match(profiles, /Table 5-12 "Traffic flow validation criteria"\s*\(§5\.6\.3\.1, doc p\.213\)/, "expected Table 5-12 cited at doc p.213");
+  pin.match(profiles, /Table 5-13 "Travel time validation criteria"\s*\(§5\.6\.3\.2, doc p\.215\)/, "expected Table 5-13 cited at doc p.215");
+  pin.doesNotMatch(profiles, /p\.231|p\.234|231-234/, "expected the PDF page numbers (231-234) to be replaced by doc pages");
+  pin.match(
+    profiles,
+    /flow-band tolerances[\s\S]{0,220}?\*\*Table 5-12\*\*, not\s*\n?\/\/ Table 5-13/,
+    "expected the flow bands to be attributed to Table 5-12, not Table 5-13",
+  );
+  pin.match(
+    profiles,
+    /Table 5-13 has exactly ONE row \(travel time\)/,
+    "expected the one-row nature of Table 5-13 to be stated where the mis-attribution used to be",
+  );
+  // Errata guard: §5's in-text figure/table cross-references carry nine
+  // measured errors, so no citation in this module may name a figure.
+  pin.doesNotMatch(profiles, /refer to Figure 5-|see Figure 5-/, "citations must name the TABLE and page, never an in-text figure label");
+
+  // The per-profile citation string is what the UI actually shows on hover.
+  for (const profile of Object.values(VALIDATION_PROFILES)) {
+    pin.match(profile.citation, /Vissim Guidelines/, `expected ${profile.id} citation to name the Vissim chapter`);
+    pin.match(profile.citation, /Table 5-12 \(p\.213\)/, `expected ${profile.id} citation to cite Table 5-12 at p.213`);
+    pin.match(profile.citation, /Table 5-13 \(p\.215\)/, `expected ${profile.id} citation to cite Table 5-13 at p.215`);
+    pin.doesNotMatch(profile.citation, /231|234/, `expected ${profile.id} citation to drop the PDF page numbers`);
+  }
+});
+
+contractTest("base model page surfaces the three §5.6.3 criteria it could not before", (pin) => {
+  const page = read("app/base-model/page.tsx");
+  const profiles = read("lib/validationProfiles.ts");
+  const jaDictionary = read("lib/i18n-ja.ts");
+
+  // Table 5-14 (doc p.216) had no representation at all.
+  pin.match(profiles, /SIGNAL_TIMING_CRITERIA/, "expected Table 5-14's signal-timing criteria in the shared module");
+  pin.match(profiles, /signalTimingToleranceSeconds/, "expected a dedicated smaller-direction helper for Table 5-14");
+  pin.match(
+    profiles,
+    /return Math\.min\(band\.seconds, relative\)/,
+    "Table 5-14 is \"whichever is SMALLER\" -- a max() here would silently loosen every signal-timing band",
+  );
+  pin.match(profiles, /SATURATION_FLOW_WITHIN_PCT = 10/, "expected §5.6.3.5's 10% saturation-flow criterion");
+  pin.match(profiles, /CRITICAL_INTERSECTION_GEH_MAX = 5/, "expected §5.6.3.1's per-intersection GEH bound");
+  pin.match(profiles, /export function evaluateCriticalIntersections\(/, "expected a criticalIntersection rule shape in the shared module");
+
+  // Consumers: the page evaluates the override for real, and states the two
+  // criteria it CANNOT evaluate rather than omitting them (an omitted
+  // criterion reads as a criterion that passed).
+  pin.match(page, /CriteriaCoverageCard/, "expected a §5.6.3 criteria-coverage card on the base-model page");
+  pin.match(page, /evaluateCriticalIntersections\(/, "expected the base-model page to apply the §5.6.3.1 override");
+  pin.match(page, /criticalNodeIdsInput/, "expected an analyst-supplied critical-intersection input");
+  pin.match(page, /관측값 없음 — 평가 불가/, "expected the explicit not-assessable state for the unmeasurable criteria");
+  pin.match(page, /critical 교차로 미지정/, "expected the page to say the override did not run when nothing is designated");
+  pin.match(
+    page,
+    /const overallPass = countStats\.trafficPass && travelStats\.travelPass && critical\.passed !== false;/,
+    "a failing critical intersection must flip the OVERALL verdict, not sit in a side panel",
+  );
+  pin.match(
+    page,
+    /if \(critical\.passed === false\) \{\s*\n\s*return "border-rose-200/,
+    "expected the result panel to turn red on a critical-intersection failure even when both network legs pass",
+  );
+
+  // Table 5-12's tolerance widths are no longer re-hardcoded in the page's
+  // flow-band summariser -- it reads the active profile.
+  pin.match(page, /pass = diff <= profile\.flowLowToleranceVph;/, "expected the low flow band to read the profile");
+  pin.match(page, /<= profile\.flowMidTolerancePct/, "expected the mid flow band to read the profile");
+  pin.match(page, /pass = diff <= profile\.flowHighToleranceVph;/, "expected the high flow band to read the profile");
+
+  // ja: pickByLanguage keys off the KOREAN string, so a two-argument t(ko, en)
+  // with no entry renders English for Japanese users.
+  for (const korean of [
+    "Critical 교차로 (§5.6.3.1, p.213)",
+    "신호시간 (Table 5-14, p.216)",
+    "포화교통류율 (§5.6.3.5, p.216)",
+    "평가 불가",
+    "지정된 critical 교차로에 비교 가능한 이동류가 없어 관측값 없음 — 평가 불가.",
+  ]) {
+    pin.match(jaDictionary, literalPattern(`"${korean}":`), `criteria-coverage string has no Japanese entry: ${korean}`);
+  }
+});
+
+// Real behaviour, not source pins. These three are where being wrong ships a
+// wrong number to a client rather than a stale comment.
+
+test("section-5: the TS profile literals match shared/mrwa-validation-criteria.json", () => {
+  // ONE source of truth across runtimes: backend/services/validation_profiles.py
+  // LOADS this file, and these literals are pinned to it. Same pattern as
+  // shared/geh-conformance.json.
+  const fixture = JSON.parse(
+    readFileSync(path.join(repoRoot, "shared", "mrwa-validation-criteria.json"), "utf-8"),
+  ) as {
+    categories: Record<string, Record<string, number | string>>;
+    flow_bands: Record<string, number>;
+    travel_time: Record<string, number | string>;
+    signal_timing: Record<string, number | string | null>;
+    saturation_flow: Record<string, number>;
+    critical_intersection: Record<string, number | boolean>;
+  };
+
+  assert.deepEqual(Object.keys(fixture.categories).sort(), ["cat1", "cat2", "cat3"]);
+  for (const [key, raw] of Object.entries(fixture.categories)) {
+    const profile = VALIDATION_PROFILES[key as keyof typeof VALIDATION_PROFILES];
+    assert.ok(profile, `no TS profile for ${key}`);
+    assert.equal(profile.nameEn, raw.name_en, `${key}: nameEn`);
+    assert.equal(profile.nameKo, raw.name_ko, `${key}: nameKo`);
+    assert.equal(profile.gehUnder5Pct, raw.geh_under_5_pct, `${key}: gehUnder5Pct`);
+    assert.equal(profile.gehUnder10Pct, raw.geh_under_10_pct, `${key}: gehUnder10Pct`);
+    assert.equal(profile.rSquaredMin, raw.r_squared_min, `${key}: rSquaredMin`);
+    assert.equal(profile.flowLowWithinPct, raw.flow_low_within_pct, `${key}: flowLowWithinPct`);
+    assert.equal(profile.flowMidWithinPct, raw.flow_mid_within_pct, `${key}: flowMidWithinPct`);
+    assert.equal(profile.flowHighWithinPct, raw.flow_high_within_pct, `${key}: flowHighWithinPct`);
+    assert.equal(profile.travelWithinPct, raw.travel_within_pct, `${key}: travelWithinPct`);
+
+    // Category-invariant widths, carried per-profile so one object is a
+    // complete criteria set.
+    assert.equal(profile.flowLowToleranceVph, fixture.flow_bands.low_tolerance_vph, `${key}: flow low width`);
+    assert.equal(profile.flowMidTolerancePct, fixture.flow_bands.mid_tolerance_pct, `${key}: flow mid width`);
+    assert.equal(profile.flowHighToleranceVph, fixture.flow_bands.high_tolerance_vph, `${key}: flow high width`);
+    assert.equal(profile.travelTolerancePct, fixture.travel_time.tolerance_pct, `${key}: travel width`);
+    assert.equal(profile.travelToleranceMinMinutes, fixture.travel_time.tolerance_min_minutes, `${key}: travel floor`);
+    assert.equal(profile.saturationFlowWithinPct, fixture.saturation_flow.within_pct, `${key}: saturation flow`);
+    assert.equal(profile.criticalIntersectionGehMax, fixture.critical_intersection.geh_max, `${key}: critical GEH`);
+    assert.equal(profile.signalTiming.cycleTime.seconds, fixture.signal_timing.cycle_time_seconds, `${key}: cycle s`);
+    assert.equal(profile.signalTiming.cycleTime.pct, fixture.signal_timing.cycle_time_pct, `${key}: cycle %`);
+    assert.equal(profile.signalTiming.greenTime.seconds, fixture.signal_timing.green_time_seconds, `${key}: green s`);
+    assert.equal(profile.signalTiming.greenTime.pct, fixture.signal_timing.green_time_pct, `${key}: green %`);
+    assert.equal(profile.signalTiming.actuatedCallFrequencyTolerance, null, `${key}: actuated tolerance`);
+  }
+
+  // The two directions are OPPOSITES and the fixture says so out loud.
+  assert.equal(fixture.travel_time.direction, "greater");
+  assert.equal(fixture.signal_timing.direction, "smaller");
+  assert.equal(SATURATION_FLOW_WITHIN_PCT, fixture.saturation_flow.within_pct);
+  assert.equal(CRITICAL_INTERSECTION_GEH_MAX, fixture.critical_intersection.geh_max);
+});
+
+test("section-5: Table 5-14 takes the SMALLER bound -- flipping it to max() must fail", () => {
+  // The wrong direction, spelled out. Travel time (§5.6.3.2, p.215) is
+  // "whichever is greater"; Table 5-14 (p.216) is "whichever is smaller". One
+  // shared max() helper for both would silently widen every signal band.
+  const greaterDirection = (observed: number, band: SignalTimingBand) =>
+    Math.max(band.seconds, (observed * band.pct) / 100);
+
+  const cycle = SIGNAL_TIMING_CRITERIA.cycleTime;
+  const green = SIGNAL_TIMING_CRITERIA.greenTime;
+
+  // Values chosen where smaller !== greater, in BOTH orderings.
+  assert.equal(signalTimingToleranceSeconds(120, cycle), 3); // 5% of 120 = 6 s
+  assert.equal(greaterDirection(120, cycle), 6);
+  assert.equal(signalTimingToleranceSeconds(40, cycle), 2); // 5% of 40 = 2 s
+  assert.equal(greaterDirection(40, cycle), 3);
+  assert.equal(signalTimingToleranceSeconds(60, green), 3); // 10% of 60 = 6 s
+  assert.equal(greaterDirection(60, green), 6);
+  assert.equal(signalTimingToleranceSeconds(20, green), 2); // 10% of 20 = 2 s
+  assert.equal(greaterDirection(20, green), 3);
+  // Boundary: at 60 s the two directions agree, so only the cases above can
+  // catch a flipped implementation.
+  assert.equal(signalTimingToleranceSeconds(60, cycle), 3);
+  assert.equal(greaterDirection(60, cycle), 3);
+
+  // THE counterfactual: a 120 s cycle modelled at 125 s is 5 s out.
+  //   SMALLER (correct): 3 s -> FAIL.   GREATER (wrong): 6 s -> PASS.
+  assert.equal(signalTimingWithinTolerance(120, 125, cycle), false);
+  assert.ok(Math.abs(125 - 120) <= greaterDirection(120, cycle), "the max() answer would have passed this");
+  assert.equal(signalTimingWithinTolerance(60, 65, green), false);
+  assert.ok(Math.abs(65 - 60) <= greaterDirection(60, green), "the max() answer would have passed this too");
+
+  // A missing observation is not assessable -- never a pass, never a failure.
+  assert.equal(signalTimingToleranceSeconds(null, cycle), null);
+  assert.equal(signalTimingToleranceSeconds(Number.NaN, cycle), null);
+  assert.equal(signalTimingToleranceSeconds(-1, cycle), null);
+  assert.equal(signalTimingWithinTolerance(null, 100, cycle), null);
+  assert.equal(signalTimingWithinTolerance(100, null, cycle), null);
+
+  // §5.6.3.5: within 10% of observed, and not assessable when unmeasured.
+  assert.equal(saturationFlowWithinTolerance(1800, 1980), true);
+  assert.equal(saturationFlowWithinTolerance(1800, 1981), false);
+  assert.equal(saturationFlowWithinTolerance(null, 1980), null);
+  assert.equal(saturationFlowWithinTolerance(1800, null), null);
+  assert.equal(saturationFlowWithinTolerance(0, 1980), null);
+});
+
+test("section-5: the critical-intersection override is load-bearing, not decorative", () => {
+  // 19 of 20 movements under GEH 5 = 95%, which MEETS Category 1's
+  // network-wide Table 5-12 requirement (gehUnder5Pct = 95).
+  const nodes = [
+    { nodeId: "9", nodeName: "Critical Cross", gehValues: [...Array(19).fill(1.0), 7.5] },
+    { nodeId: "1", nodeName: "Clean", gehValues: [1.0, 2.0] },
+  ];
+  assert.equal(VALIDATION_PROFILES.cat1.gehUnder5Pct, 95);
+  assert.ok((19 / 20) * 100 >= VALIDATION_PROFILES.cat1.gehUnder5Pct, "network-wide rate must PASS on this data");
+
+  // Same data, no designation -> the check did not run. NEVER a pass.
+  const undesignated = evaluateCriticalIntersections(nodes, []);
+  assert.equal(undesignated.designated, false);
+  assert.equal(undesignated.passed, null);
+  assert.deepEqual(undesignated.nodes, []);
+
+  // Same data, node 9 designated -> FAIL, and the node is named.
+  const designated = evaluateCriticalIntersections(nodes, ["9"]);
+  assert.equal(designated.passed, false);
+  assert.deepEqual(designated.failingNodeIds, ["9"]);
+  assert.equal(designated.nodes[0].nodeName, "Critical Cross");
+  assert.equal(designated.nodes[0].worstGeh, 7.5);
+  assert.equal(designated.nodes[0].failingCount, 1);
+
+  // The override must not fail everything it touches.
+  assert.equal(evaluateCriticalIntersections(nodes, ["1"]).passed, true);
+
+  // "achieve GEH less than 5" -- 5.0 exactly is not less than 5, matching
+  // gehGrade where 5.0 is already "fair".
+  assert.equal(evaluateCriticalIntersections([{ nodeId: "1", gehValues: [4.999] }], ["1"]).passed, true);
+  assert.equal(evaluateCriticalIntersections([{ nodeId: "1", gehValues: [5] }], ["1"]).passed, false);
+
+  // Undefined GEH is excluded from BOTH sides -- never a free pass.
+  const ghost = evaluateCriticalIntersections([{ nodeId: "3", gehValues: [null, null] }], ["3"]);
+  assert.equal(ghost.passed, null);
+  assert.equal(ghost.nodes[0].comparedCount, 0);
+  assert.deepEqual(ghost.notAssessableNodeIds, ["3"]);
+
+  // A designated id that is not in the data is disclosed, not swallowed.
+  assert.deepEqual(evaluateCriticalIntersections(nodes, ["1", "42"]).missingIds, ["42"]);
+
+  assert.deepEqual(parseCriticalNodeIds("12, 15 7"), ["12", "15", "7"]);
+  assert.deepEqual(parseCriticalNodeIds("12,12; 7"), ["12", "7"]);
+  assert.deepEqual(parseCriticalNodeIds("   "), []);
+  assert.deepEqual(parseCriticalNodeIds(null), []);
 });
 
 contractTest("base model page gates scenario selection on an uploaded dataset", (pin) => {

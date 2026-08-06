@@ -133,6 +133,14 @@ _DATA_BLOCK_HEADERS: dict[str, list[tuple[str, str]]] = {
         ("flow_pct", "Flow %"), ("geh_pct", "GEH %"),
         ("geh_counts", "GEH Counts"), ("geh_excluded", "GEH Excluded (0 obs / 0 model)"),
         ("row_type", "Row Type"),
+        # Appended (section-5 validation pack): the trailing
+        # ``row_type="criterion"`` rows carry the MRWA section 5.6.3 criteria
+        # this export cannot evaluate -- signal timing (Table 5-14, doc p.216)
+        # and saturation flow (5.6.3.5, doc p.216) have no observed-side ingest
+        # path, so they publish "not assessable" rather than being omitted (an
+        # omitted criterion reads as a criterion that passed). Node/Total rows
+        # leave this cell blank.
+        ("criterion_state", "Criterion State"),
     ],
     "travel-time-charts": [
         ("name", "Route"), ("period", "Period"), ("dist_km", "Distance (km)"),

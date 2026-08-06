@@ -33,6 +33,12 @@ from services.validation import (
     load_base_workbook,
     load_real_counts,
 )
+from services.validation_profiles import (
+    evaluate_critical_intersections,
+    flow_within_tolerance,
+    get_active_profile,
+    parse_critical_node_ids,
+)
 
 # --- shared helpers ---------------------------------------------------------
 
@@ -339,12 +345,25 @@ def export_los_summary() -> bytes:
 # --- 2. Flow / GEH validation (.docx) ---------------------------------------
 
 def _flow_pass(m, o):
-    diff = abs(m - o)
-    if o < 700:
-        return diff <= 100
-    if o <= 2700:
-        return (diff / o) <= 0.15 if o > 0 else diff == 0
-    return diff <= 400
+    """One movement against its MRWA Table 5-12 flow band.
+
+    The 700 / 100 / 2700 / 15 % / 400 numbers used to be hard-coded right
+    here, with no connection to frontend/lib/validationProfiles.ts -- a
+    guideline revision applied on one side would have shipped a report and a
+    dashboard that disagreed. They now come from
+    ``shared/mrwa-validation-criteria.json`` via
+    ``services.validation_profiles``, the SAME file the frontend module is
+    pinned to.
+
+    Values are unchanged (Table 5-12 "Traffic flow validation criteria",
+    §5.6.3.1, doc p.213 -- doc page, not PDF page). The historical
+    ``if o > 0 else diff == 0`` branch was unreachable: the ``o < 700`` arm
+    above it already catches every non-positive observed value.
+
+    Returns ``None`` (falsy, so the ``sum(1 for ... if _flow_pass(...))``
+    callers below are unaffected) when either side is missing.
+    """
+    return flow_within_tolerance(m, o)
 
 
 def _node_stats(node):
@@ -418,31 +437,279 @@ def _pct_cell(value) -> str:
     return "-" if value is None else f"{value:.0f}%"
 
 
-def flow_geh_csv_rows() -> list[dict]:
+# --- MRWA §5.6.3 criteria coverage -------------------------------------------
+#
+# Three §5.6.3 criteria of the same standing as Table 5-12 had no
+# representation in this export at all. Two of them have NO ingest path in
+# this codebase today (there is nowhere to upload an observed SCATS cycle/
+# green time, and nowhere to upload an observed saturation flow), so they are
+# published as an explicit "not assessable" state rather than being omitted --
+# an omitted criterion reads as a criterion that passed.
+#
+# Citations name the TABLE and the DOC PAGE, never an in-text label: §5's
+# in-text figure/table cross-references carry nine measured errors (see the
+# "Doc defects found" block of docs/product/reference/mrwa-section5-extract.md).
+
+_NOT_ASSESSABLE = "관측값 없음 — 평가 불가 (not assessable: no observed data in this project)"
+_NO_CRITICAL_DESIGNATED = (
+    "critical 교차로 미지정 — 검사 미실행 "
+    "(no critical intersection designated: this check did not run)"
+)
+
+
+def _node_geh_values(node) -> list:
+    """Per-movement GEH at one node, ``None`` where GEH is undefined."""
+    out = []
+    for d in node.get("directions") or []:
+        if d.get("real") is None or d.get("sim_basam") is None:
+            continue
+        out.append(_geh(d["sim_basam"], d["real"]))
+    return out
+
+
+def _critical_inputs_for_period(period: str) -> list[dict]:
+    path = str(get_active_real_counts_excel())
+    load_real_counts.cache_clear()
+    rc = load_real_counts(path, period)
+    return [
+        {
+            "node_id": str(nid),
+            "node_name": rc[nid].get("node_name"),
+            "geh_values": _node_geh_values(rc[nid]),
+        }
+        for nid in sorted(rc, key=lambda x: int(x) if str(x).isdigit() else 999)
+    ]
+
+
+def flow_geh_verdict(critical_node_ids=None, category: str | None = None) -> dict:
+    """Overall traffic-volume verdict, WITH the §5.6.3.1 critical override.
+
+    §5.6.3.1 (body text, doc p.213): "Even if the model outputs meet the
+    traffic volume validation criteria for the entire network, the modeller
+    should check and ensure that turning volumes at critical intersection(s)
+    achieve GEH less than 5."
+
+    So a network-wide PASS is not sufficient. This returns
+    ``{"verdict": "PASS"|"FAIL"|"NOT_ASSESSABLE", ...}`` where a single
+    designated intersection carrying one movement at GEH >= 5 flips the
+    verdict to FAIL and names the node -- even when the network-wide rate
+    clears the category's Table 5-12 threshold.
+
+    Note on scope: this table publishes ONE aggregate "Flow %" over all three
+    Table 5-12 bands rather than the per-band rates the table actually
+    specifies, so the network leg here is evaluated on the GEH < 5 rate only
+    and ``network_note`` says so. Inventing a per-band verdict from an
+    aggregate would be worse than declaring the gap.
+    """
+    profile = get_active_profile(category)
+    requested = parse_critical_node_ids(critical_node_ids)
+
+    periods: dict[str, dict] = {}
+    network_passed: bool | None = None
+    for period, label in (("AM", "AM Peak"), ("PM", "PM Peak")):
+        _rows, tot = _collect_flow_geh(period)
+        geh_pct = round(tot["geh_ok"] / tot["geh_counts"] * 100) if tot["geh_counts"] else None
+        leg = geh_pct is not None and geh_pct >= profile.geh_under_5_pct
+        if geh_pct is not None:
+            network_passed = leg if network_passed is None else (network_passed and leg)
+        periods[label] = {
+            "geh_pct": geh_pct,
+            "geh_counts": tot["geh_counts"],
+            "passed": None if geh_pct is None else leg,
+            "critical": evaluate_critical_intersections(
+                _critical_inputs_for_period(period),
+                requested,
+                profile.critical_intersection_geh_max,
+            ),
+        }
+
+    failing: list[str] = []
+    for label, leg in periods.items():
+        for node in leg["critical"]["nodes"]:
+            if node["passed"] is False:
+                failing.append(
+                    f"{label} {node['node_name'] or 'Node'} (id {node['node_id']}), "
+                    f"worst GEH {node['worst_geh']:.2f}"
+                )
+
+    critical_passed: bool | None
+    if not requested:
+        critical_passed = None
+    elif failing:
+        critical_passed = False
+    elif any(leg["critical"]["passed"] is True for leg in periods.values()):
+        critical_passed = True
+    else:
+        critical_passed = None
+
+    reasons: list[str] = []
+    if critical_passed is False:
+        verdict = "FAIL"
+        reasons.append(
+            "MRWA §5.6.3.1 (doc p.213) critical-intersection override: "
+            + "; ".join(failing)
+            + f" — GEH must be < {profile.critical_intersection_geh_max:g} at every "
+            "designated critical intersection, even when the network-wide "
+            "criteria are met."
+        )
+    elif network_passed is False:
+        verdict = "FAIL"
+        reasons.append(
+            f"Network-wide GEH < 5 rate is below the {profile.name_en} "
+            f"Table 5-12 (doc p.213) threshold of {profile.geh_under_5_pct:g}%."
+        )
+    elif network_passed is True:
+        verdict = "PASS"
+    else:
+        verdict = "NOT_ASSESSABLE"
+        reasons.append("No count comparison with a defined GEH is available.")
+
+    if not requested:
+        reasons.append(_NO_CRITICAL_DESIGNATED)
+
+    return {
+        "category": profile.id,
+        "category_name_en": profile.name_en,
+        "geh_under_5_pct_required": profile.geh_under_5_pct,
+        "network_passed": network_passed,
+        "network_note": (
+            "Evaluated on the GEH < 5 rate only; this table's Flow % aggregates "
+            "all three Table 5-12 bands and is not split per band here."
+        ),
+        "periods": periods,
+        "critical_requested_ids": requested,
+        "critical_passed": critical_passed,
+        "critical_failures": failing,
+        "verdict": verdict,
+        "reasons": reasons,
+    }
+
+
+def criteria_coverage_rows(critical_node_ids=None, category: str | None = None) -> list[dict]:
+    """The three §5.6.3 criteria this export can speak to, and their state.
+
+    One row each, so a reader can see WHICH criteria were evaluated and which
+    could not be. Never a silent pass and never an invented number.
+    """
+    verdict = flow_geh_verdict(critical_node_ids, category)
+    geh_max = get_active_profile(category).critical_intersection_geh_max
+
+    if verdict["critical_passed"] is False:
+        critical_state = "FAIL — " + "; ".join(verdict["critical_failures"])
+    elif verdict["critical_passed"] is True:
+        names = ", ".join(verdict["critical_requested_ids"])
+        critical_state = f"PASS — 지정 교차로 {names} 모두 GEH < {geh_max:g}"
+    elif verdict["critical_requested_ids"]:
+        critical_state = (
+            "관측값 없음 — 평가 불가 (designated critical intersections "
+            + ", ".join(verdict["critical_requested_ids"])
+            + " have no comparable turning movement in this workbook)"
+        )
+    else:
+        critical_state = _NO_CRITICAL_DESIGNATED
+
+    def _row(criterion: str, label: str, state: str) -> dict:
+        # Same KEY SET as _flow_geh_row so every element of flow_geh_csv_rows()
+        # stays uniform -- a consumer that indexes row["pct_diff"] must not
+        # start raising KeyError just because a criterion row joined the list.
+        # The numeric columns are None (rendered blank), never 0: a criterion
+        # row has no observed flow, and 0 would read as a measurement.
+        return {
+            "period": "", "node": label, "counts": None,
+            "observed": None, "modelled": None, "pct_diff": None,
+            "flow_pct": None, "geh_pct": None,
+            "geh_counts": None, "geh_excluded": None,
+            "criterion": criterion,
+            "criterion_state": state,
+            "row_type": "criterion",
+        }
+
+    return [
+        _row(
+            "critical_intersection",
+            "Critical intersections (5.6.3.1, doc p.213)",
+            critical_state,
+        ),
+        # Within 3 s or 5 % (cycle) / 3 s or 10 % (green), whichever is
+        # SMALLER -- the opposite direction from travel time's "greater".
+        # There is no ingest path for an observed SCATS cycle/green time in
+        # this codebase, so there is nothing to compare against.
+        _row("signal_timing", "Signal timing (Table 5-14, doc p.216)", _NOT_ASSESSABLE),
+        # Modelled within 10 % of observed. No ingest path for an observed
+        # saturation flow either.
+        _row("saturation_flow", "Saturation flow (5.6.3.5, doc p.216)", _NOT_ASSESSABLE),
+    ]
+
+
+def flow_geh_csv_rows(critical_node_ids=None, category: str | None = None) -> list[dict]:
     """Flat (period, node, ...) rows for CSV export -- built from the exact
     same :func:`_collect_flow_geh` the .docx table renders from (including the
-    same ``_pct_diff``/flow%/GEH% formulas), plus a 'Total' row per period."""
+    same ``_pct_diff``/flow%/GEH% formulas), plus a 'Total' row per period.
+
+    Trailing ``row_type="criterion"`` rows publish the §5.6.3 criteria this
+    export cannot evaluate (see :func:`criteria_coverage_rows`), the same way
+    ``los_summary_csv_rows`` appends its ``weighted_overall`` rows. They carry
+    no numeric columns -- only ``node`` (the citation) and ``criterion_state``.
+    """
     rows: list[dict] = []
     for period, label in (("AM", "AM Peak"), ("PM", "PM Peak")):
         node_rows, tot = _collect_flow_geh(period)
         for nid, s in node_rows:
             rows.append({**_flow_geh_row(label, f"Node {nid}", s), "row_type": "node"})
         rows.append({**_flow_geh_row(label, "Total", tot), "row_type": "total"})
+    rows.extend(criteria_coverage_rows(critical_node_ids, category))
     return rows
 
 
-def add_flow_geh_section(doc, *, level: int = 1, heading: str = "Traffic Flow Validation Summary", with_heading: bool = True) -> None:
-    """Append the Flow/GEH validation tables (AM & PM) to an existing Document."""
+def add_flow_geh_section(
+    doc,
+    *,
+    level: int = 1,
+    heading: str = "Traffic Flow Validation Summary",
+    with_heading: bool = True,
+    critical_node_ids=None,
+    category: str | None = None,
+) -> None:
+    """Append the Flow/GEH validation tables (AM & PM) to an existing Document.
+
+    ``critical_node_ids`` designates the §5.6.3.1 critical intersections
+    (doc p.213). When any of them carries a movement at GEH >= 5 the section's
+    verdict is FAIL and the node is named, even if the network-wide rates
+    clear the category threshold. When nothing is designated the section says
+    so explicitly rather than implying the check ran.
+    """
     from docx.shared import Pt
     from docx.enum.table import WD_TABLE_ALIGNMENT
 
     if with_heading:
         doc.add_heading(heading, level=level)
     ds = get_active_dataset().get("filename") or "active dataset"
+    profile = get_active_profile(category)
+    # Corrected 2026-08-06. This note used to attribute the bands to "the DMRB
+    # flow criterion" and to state a flat "Target: >85% on both", which is not
+    # any MRWA row: the bands are Table 5-12 (§5.6.3.1, doc p.213) and the
+    # required pass rates are per category (GEH<5: 95/85/80 %, flow bands:
+    # 95/90/85 %) -- 85 % is Category 3's GEH<5 rate only, and stating it as a
+    # universal target silently relaxed Category 1 by ten points.
+    band_rates = (
+        profile.flow_low_within_pct,
+        profile.flow_mid_within_pct,
+        profile.flow_high_within_pct,
+    )
+    band_target = (
+        f"{band_rates[0]:g}%"
+        if len(set(band_rates)) == 1
+        else "/".join(f"{r:g}%" for r in band_rates)
+    )
     note = doc.add_paragraph().add_run(
         f"Source: {ds}. Observed = surveyed counts; Modelled = base-model volumes. "
-        "Flow = % of movement counts meeting the DMRB flow criterion (<700: +/-100 veh; 700-2700: +/-15%; >2700: +/-400 veh). "
-        "GEH = % of counts with GEH < 5, over the counts where GEH is defined. Target: >85% on both."
+        "Flow = % of movement counts meeting the MRWA OMG v2.0 Table 5-12 flow bands "
+        "(<700 veh/h: +/-100 veh/h; 700-2700 veh/h: +/-15%; >2700 veh/h: +/-400 veh/h; "
+        "Table 5-12, section 5.6.3.1, doc p.213). "
+        "GEH = % of counts with GEH < 5, over the counts where GEH is defined. "
+        f"Target for {profile.name_en}: GEH < 5 on >= {profile.geh_under_5_pct:g}% of counts, "
+        f"GEH < 10 on >= {profile.geh_under_10_pct:g}%, each flow band met on "
+        f">= {band_target} of its counts."
     )
     note.font.size = Pt(8)
 
@@ -503,11 +770,54 @@ def add_flow_geh_section(doc, *, level: int = 1, heading: str = "Traffic Flow Va
         build(label, rows, tot)
         doc.add_paragraph("")
 
+    _add_criteria_coverage(doc, critical_node_ids=critical_node_ids, category=category)
 
-def export_flow_geh_validation() -> bytes:
+
+def _add_criteria_coverage(doc, *, critical_node_ids=None, category: str | None = None) -> None:
+    """The §5.6.3 criteria-coverage block and the overall verdict.
+
+    Three criteria of the same standing as Table 5-12 were absent from this
+    export entirely. Two of them have no observed-side ingest path in this
+    codebase, so they publish an explicit "not assessable" state -- an omitted
+    criterion reads as a criterion that passed. The third, the §5.6.3.1
+    critical-intersection override, IS implementable and is applied here.
+    """
+    from docx.shared import Pt
+
+    verdict = flow_geh_verdict(critical_node_ids, category)
+    rows = criteria_coverage_rows(critical_node_ids, category)
+
+    doc.add_paragraph("")
+    head = doc.add_paragraph().add_run(
+        "MRWA OMG v2.0 section 5.6.3 criteria coverage"
+    )
+    head.bold = True
+    head.font.size = Pt(9)
+
+    t = doc.add_table(rows=1 + len(rows), cols=2)
+    for i, label in enumerate(("Criterion", "State")):
+        _setcell(t.rows[0].cells[i], label, bold=True, fill="D9D9D9", size=8,
+                 align=("left" if i == 0 else "left"))
+        _set_border(t.rows[0].cells[i], "bottom", sz=18, color="E69138")
+    for ri, row in enumerate(rows, start=1):
+        _setcell(t.rows[ri].cells[0], row["node"], size=8, align="left")
+        _setcell(t.rows[ri].cells[1], row["criterion_state"], size=8, align="left")
+
+    verdict_run = doc.add_paragraph().add_run(
+        f"Traffic volume verdict ({verdict['category_name_en']}): {verdict['verdict']}."
+        + ("" if not verdict["reasons"] else " " + " ".join(verdict["reasons"]))
+    )
+    verdict_run.bold = verdict["verdict"] == "FAIL"
+    verdict_run.font.size = Pt(8)
+
+    note = doc.add_paragraph().add_run(verdict["network_note"])
+    note.font.size = Pt(8)
+
+
+def export_flow_geh_validation(critical_node_ids=None, category: str | None = None) -> bytes:
     from docx import Document
     doc = Document()
-    add_flow_geh_section(doc)
+    add_flow_geh_section(doc, critical_node_ids=critical_node_ids, category=category)
     out = BytesIO(); doc.save(out); return out.getvalue()
 
 

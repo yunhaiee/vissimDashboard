@@ -40,8 +40,11 @@ import {
 } from "@/lib/validationCategoryStorage";
 import {
   DEFAULT_VALIDATION_CATEGORY,
+  evaluateCriticalIntersections,
   getActiveProfile,
+  parseCriticalNodeIds,
   VALIDATION_CATEGORY_ORDER,
+  type CriticalIntersectionEvaluation,
   type ValidationCategory,
   type ValidationProfile,
 } from "@/lib/validationProfiles";
@@ -214,6 +217,14 @@ export default function BaseModelPage() {
   // (same convention the dashboard page follows for its own stored
   // selection -- see readStoredScenarioSelection in app/dashboard/page.tsx).
   const [category, setCategory] = useState<ValidationCategory>(DEFAULT_VALIDATION_CATEGORY);
+  // MRWA §5.6.3.1 (doc p.213) critical intersections, as designated by the
+  // analyst: "Even if the model outputs meet the traffic volume validation
+  // criteria for the entire network, the modeller should check and ensure
+  // that turning volumes at critical intersection(s) achieve GEH less than
+  // 5." Which intersections are critical is a SCOPE-MEETING decision, not
+  // something this app can derive, so it is a free-text input -- and when it
+  // is empty the page says the check did not run rather than implying it did.
+  const [criticalNodeIdsInput, setCriticalNodeIdsInput] = useState("");
   const requestSerial = useRef(0);
 
   useEffect(() => {
@@ -385,7 +396,30 @@ export default function BaseModelPage() {
     [countStats],
   );
 
-  const flowBandStats = useMemo(() => summarizeFlowBands(countComparisons), [countComparisons]);
+  const criticalNodeIds = useMemo(() => parseCriticalNodeIds(criticalNodeIdsInput), [criticalNodeIdsInput]);
+  // The §5.6.3.1 override is applied against the SAME per-movement GEH values
+  // the network-wide rates are computed from -- it is a different rule over
+  // the same data, never a second pipeline. `profile.gehUnder5Pct` does NOT
+  // satisfy it: Cat 1 tolerates 5% of movements at GEH >= 5 network-wide,
+  // this rule tolerates none of them at a designated intersection.
+  const criticalEvaluation = useMemo(
+    () =>
+      evaluateCriticalIntersections(
+        countGroups.map((group) => ({
+          nodeId: group.nodeId,
+          nodeName: group.nodeName,
+          gehValues: group.rows.map((row) => row.geh),
+        })),
+        criticalNodeIds,
+        activeProfile.criticalIntersectionGehMax,
+      ),
+    [countGroups, criticalNodeIds, activeProfile],
+  );
+
+  const flowBandStats = useMemo(
+    () => summarizeFlowBands(countComparisons, activeProfile),
+    [countComparisons, activeProfile],
+  );
   const rSquaredData = useMemo(() => computeRSquared(countComparisons), [countComparisons]);
   // Per-row tolerance widths (±100 veh/h / ±15% / ±400 veh/h) are
   // category-invariant per Table 5-13 -- only the required aggregate pass
@@ -927,9 +961,16 @@ export default function BaseModelPage() {
           title={t("3. 결과 분석", "3. Result Analysis")}
           subtitle={t("교통량, GEH, 통행시간 검증 결과를 종합합니다.", "Summarize traffic volume, GEH, and travel time validation outcomes.")}
         />
-        <div className={`mt-4 rounded-xl border px-5 py-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)] ${analysisPanelClass(countStats, travelStats)}`}>
+        <CriteriaCoverageCard
+          profile={activeProfile}
+          criticalNodeIdsInput={criticalNodeIdsInput}
+          onCriticalNodeIdsChange={setCriticalNodeIdsInput}
+          evaluation={criticalEvaluation}
+          t={t}
+        />
+        <div className={`mt-4 rounded-xl border px-5 py-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)] ${analysisPanelClass(countStats, travelStats, criticalEvaluation)}`}>
           <p className="text-sm leading-relaxed">
-            {buildAnalysisText({ countStats, travelStats, profile: activeProfile, t })}
+            {buildAnalysisText({ countStats, travelStats, profile: activeProfile, critical: criticalEvaluation, t })}
           </p>
         </div>
       </section>
@@ -1000,6 +1041,199 @@ function ValidationCategorySelector({
       </div>
     </div>
   );
+}
+
+// MRWA §5.6.3 criteria coverage.
+//
+// Three §5.6.3 criteria of the same standing as Table 5-12 had no
+// representation on this page at all. Two of them have NO observed-side
+// ingest path in this codebase today -- there is nowhere to upload an
+// observed SCATS cycle/green time, and nowhere to upload an observed
+// saturation flow -- so they render an explicit "관측값 없음 — 평가 불가"
+// state. An omitted criterion reads as a criterion that passed, and a
+// green badge on an unmeasured criterion would be an invented number.
+//
+// The §5.6.3.1 critical-intersection override IS implementable from the
+// counts already loaded, so it is evaluated for real -- but only once the
+// analyst names the critical intersections, which is a scope-meeting
+// decision this app cannot derive. Until then the card says
+// "critical 교차로 미지정", not "PASS".
+//
+// Citations name the TABLE and the DOC PAGE, never an in-text label: §5's
+// in-text figure/table cross-references carry nine measured errors (see the
+// "Doc defects found" block of docs/product/reference/mrwa-section5-extract.md).
+function CriteriaCoverageCard({
+  profile,
+  criticalNodeIdsInput,
+  onCriticalNodeIdsChange,
+  evaluation,
+  t,
+}: {
+  profile: ValidationProfile;
+  criticalNodeIdsInput: string;
+  onCriticalNodeIdsChange: (next: string) => void;
+  evaluation: CriticalIntersectionEvaluation;
+  t: (ko: string, en: string, ja?: string) => string;
+}) {
+  const notAssessable = t("관측값 없음 — 평가 불가", "Not assessable — no observed data", "観測値なし — 評価不可");
+
+  return (
+    <div className="mt-4 rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold text-slate-800">
+            {t("MRWA §5.6.3 검증 항목 커버리지", "MRWA §5.6.3 criteria coverage", "MRWA §5.6.3 検証項目カバレッジ")}
+          </p>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            {t(
+              "이 페이지가 실제로 평가한 항목과 평가할 수 없는 항목을 구분해 표시합니다.",
+              "Which criteria this page actually evaluated, and which it cannot.",
+              "このページが実際に評価した項目と評価できない項目を区別して表示します。",
+            )}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-semibold text-slate-600">
+            {t("Critical 교차로 노드 ID (§5.6.3.1, p.213)", "Critical intersection node IDs (§5.6.3.1, p.213)", "Critical 交差点ノードID (§5.6.3.1, p.213)")}
+          </span>
+          <input
+            type="text"
+            className="ui-select w-full"
+            value={criticalNodeIdsInput}
+            onChange={(event) => onCriticalNodeIdsChange(event.target.value)}
+            placeholder={t("예: 12, 15, 7 (쉼표 또는 공백으로 구분)", "e.g. 12, 15, 7 (comma or space separated)", "例: 12, 15, 7 (カンマまたはスペース区切り)")}
+          />
+        </label>
+        <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+          {t(
+            `네트워크 전체 기준(${profile.nameKo})을 만족하더라도, 지정한 critical 교차로는 개별적으로 GEH < ${profile.criticalIntersectionGehMax} 를 만족해야 합니다. 통과율 ${profile.gehUnder5Pct}% 로는 이 조건이 충족되지 않습니다.`,
+            `Even when the network-wide ${profile.nameEn} criteria are met, each designated critical intersection must individually achieve GEH < ${profile.criticalIntersectionGehMax}. The ${profile.gehUnder5Pct}% pass rate does not satisfy this.`,
+          )}
+        </p>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        <CriterionCoverageRow
+          label={t("Critical 교차로 (§5.6.3.1, p.213)", "Critical intersections (§5.6.3.1, p.213)")}
+          state={criticalCoverageState(evaluation, t)}
+          tone={evaluation.passed === false ? "fail" : evaluation.passed === true ? "pass" : "unknown"}
+          t={t}
+        />
+        <CriterionCoverageRow
+          label={t("신호시간 (Table 5-14, p.216)", "Signal timing (Table 5-14, p.216)")}
+          // "3초 또는 5%/10% 중 더 작은 값" -- the OPPOSITE direction from
+          // travel time's "whichever is greater" (§5.6.3.2, p.215).
+          detail={t(
+            `주기: ${profile.signalTiming.cycleTime.seconds}초 또는 ${profile.signalTiming.cycleTime.pct}% 중 작은 값 / 녹색: ${profile.signalTiming.greenTime.seconds}초 또는 ${profile.signalTiming.greenTime.pct}% 중 작은 값`,
+            `Cycle: within ${profile.signalTiming.cycleTime.seconds} s or ${profile.signalTiming.cycleTime.pct}%, whichever is smaller / Green: within ${profile.signalTiming.greenTime.seconds} s or ${profile.signalTiming.greenTime.pct}%, whichever is smaller`,
+          )}
+          state={notAssessable}
+          tone="unknown"
+          t={t}
+        />
+        <CriterionCoverageRow
+          label={t("포화교통류율 (§5.6.3.5, p.216)", "Saturation flow (§5.6.3.5, p.216)")}
+          detail={t(
+            `관측값 대비 ±${profile.saturationFlowWithinPct}% 이내`,
+            `Modelled within ±${profile.saturationFlowWithinPct}% of observed`,
+          )}
+          state={notAssessable}
+          tone="unknown"
+          t={t}
+        />
+      </div>
+    </div>
+  );
+}
+
+function CriterionCoverageRow({
+  label,
+  detail,
+  state,
+  tone,
+  t,
+}: {
+  label: string;
+  detail?: string;
+  state: string;
+  tone: "pass" | "fail" | "unknown";
+  t: (ko: string, en: string, ja?: string) => string;
+}) {
+  const badge =
+    tone === "pass"
+      ? "bg-emerald-100 text-emerald-700"
+      : tone === "fail"
+        ? "bg-rose-100 text-rose-700"
+        : "bg-slate-100 text-slate-500";
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold text-slate-800">{label}</div>
+          {detail && <div className="mt-0.5 text-[11px] text-slate-500">{detail}</div>}
+        </div>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${badge}`}>
+          {tone === "pass" ? t("통과", "PASS") : tone === "fail" ? t("실패", "FAIL") : t("평가 불가", "N/A")}
+        </span>
+      </div>
+      <p className="mt-1.5 text-[11px] leading-relaxed text-slate-600">{state}</p>
+    </div>
+  );
+}
+
+/** The sentence the critical-intersection row renders. Never a silent pass. */
+function criticalCoverageState(
+  evaluation: CriticalIntersectionEvaluation,
+  t: (ko: string, en: string, ja?: string) => string,
+): string {
+  if (!evaluation.designated) {
+    return t(
+      "critical 교차로 미지정 — 이 검사는 실행되지 않았습니다.",
+      "No critical intersection designated — this check did not run.",
+      "critical 交差点が未指定 — この検査は実行されていません。",
+    );
+  }
+
+  const parts: string[] = [];
+  const failing = evaluation.nodes.filter((node) => node.passed === false);
+  if (failing.length > 0) {
+    const named = failing
+      .map((node) => `${node.nodeName ?? t("노드", "Node")} (${node.nodeId}, GEH ${formatNumber(node.worstGeh, 2)})`)
+      .join(", ");
+    parts.push(
+      t(
+        `GEH ${evaluation.gehMax} 미만 조건 미충족: ${named}`,
+        `Does not meet GEH < ${evaluation.gehMax}: ${named}`,
+      ),
+    );
+  } else if (evaluation.passed === true) {
+    parts.push(
+      t(
+        `지정 교차로 ${evaluation.nodes.filter((node) => node.passed === true).length}개 모두 GEH < ${evaluation.gehMax} 충족`,
+        `All ${evaluation.nodes.filter((node) => node.passed === true).length} designated intersection(s) meet GEH < ${evaluation.gehMax}`,
+      ),
+    );
+  }
+  if (evaluation.notAssessableNodeIds.length > 0) {
+    parts.push(
+      t(
+        `관측값 없음 — 평가 불가: ${evaluation.notAssessableNodeIds.join(", ")}`,
+        `Not assessable — no comparable movement: ${evaluation.notAssessableNodeIds.join(", ")}`,
+      ),
+    );
+  }
+  if (evaluation.missingIds.length > 0) {
+    parts.push(
+      t(
+        `데이터에 없는 노드 ID: ${evaluation.missingIds.join(", ")}`,
+        `Designated node id(s) absent from the loaded counts: ${evaluation.missingIds.join(", ")}`,
+      ),
+    );
+  }
+  return parts.join(" · ");
 }
 
 function GehFormulaExplanation({ t }: { t: (ko: string, en: string, ja?: string) => string }) {
@@ -2059,7 +2293,14 @@ function computeRSquared(rows: CountComparisonRow[]): {
   return { points, slope, r2, axisMax };
 }
 
-function summarizeFlowBands(rows: CountComparisonRow[]) {
+// Table 5-12 band edges (§5.6.3.1, doc p.213). The two band BOUNDARIES
+// (700 / 2700 veh/h) are the table's row labels rather than tolerances, so
+// they are not per-category fields on the profile; the three tolerance
+// WIDTHS are, and are read from it below rather than re-hardcoded here.
+const FLOW_BAND_LOW_MAX_VPH = 700;
+const FLOW_BAND_MID_MAX_VPH = 2700;
+
+function summarizeFlowBands(rows: CountComparisonRow[], profile: ValidationProfile) {
   const buckets = {
     low: { pass: 0, fail: 0, total: 0 },
     mid: { pass: 0, fail: 0, total: 0 },
@@ -2071,15 +2312,17 @@ function summarizeFlowBands(rows: CountComparisonRow[]) {
     const diff = Math.abs(row.model - observed);
     let band: "low" | "mid" | "high";
     let pass: boolean;
-    if (observed < 700) {
+    if (observed < FLOW_BAND_LOW_MAX_VPH) {
       band = "low";
-      pass = diff <= 100;
-    } else if (observed <= 2700) {
+      pass = diff <= profile.flowLowToleranceVph;
+    } else if (observed <= FLOW_BAND_MID_MAX_VPH) {
       band = "mid";
-      pass = observed > 0 ? (diff / observed) * 100 <= 15 : diff <= 100;
+      // `observed >= 700` in this branch, so the `observed > 0` guard was
+      // unreachable; kept verbatim so this stays a pure re-point.
+      pass = observed > 0 ? (diff / observed) * 100 <= profile.flowMidTolerancePct : diff <= profile.flowLowToleranceVph;
     } else {
       band = "high";
-      pass = diff <= 400;
+      pass = diff <= profile.flowHighToleranceVph;
     }
     buckets[band].total += 1;
     if (pass) buckets[band].pass += 1;
@@ -2187,15 +2430,57 @@ function secondsToMinutes(value: number): number {
   return value / SECONDS_PER_MINUTE;
 }
 
+/**
+ * The MRWA §5.6.3.1 override (doc p.213) as one sentence, and the coverage
+ * disclosure when it did not run. Kept separate from `buildAnalysisText` so
+ * the "which criteria were actually checked" statement is a single string
+ * both the verdict paragraph and the coverage card can be read against.
+ */
+function criticalOverrideSentence(
+  critical: CriticalIntersectionEvaluation,
+  t: (ko: string, en: string, ja?: string) => string,
+): string {
+  if (!critical.designated) {
+    // NOT a pass, and not silence either -- state that the check did not run.
+    return t(
+      "critical 교차로 미지정 — MRWA §5.6.3.1(p.213) 개별 교차로 GEH<5 검사는 실행되지 않았다.",
+      "No critical intersection designated — the MRWA §5.6.3.1 (p.213) per-intersection GEH<5 check did not run.",
+      "critical 交差点が未指定 — MRWA §5.6.3.1(p.213) の個別交差点 GEH<5 検査は実行されていない。",
+    );
+  }
+  const failing = critical.nodes.filter((node) => node.passed === false);
+  if (failing.length > 0) {
+    const named = failing
+      .map((node) => `${node.nodeName ?? t("노드", "Node")}(${node.nodeId}, GEH ${formatNumber(node.worstGeh, 2)})`)
+      .join(", ");
+    return t(
+      `다만 MRWA §5.6.3.1(p.213)에 따라 지정된 critical 교차로는 개별적으로 GEH < ${critical.gehMax} 를 만족해야 하며, ${named}이(가) 이를 만족하지 못한다.`,
+      `However, MRWA §5.6.3.1 (p.213) requires each designated critical intersection to individually achieve GEH < ${critical.gehMax}, and ${named} does not.`,
+    );
+  }
+  if (critical.passed === true) {
+    return t(
+      `지정된 critical 교차로는 모두 개별적으로 GEH < ${critical.gehMax} 를 만족한다 (MRWA §5.6.3.1, p.213).`,
+      `Every designated critical intersection individually achieves GEH < ${critical.gehMax} (MRWA §5.6.3.1, p.213).`,
+    );
+  }
+  return t(
+    "지정된 critical 교차로에 비교 가능한 이동류가 없어 관측값 없음 — 평가 불가.",
+    "The designated critical intersection(s) have no comparable movement — not assessable.",
+  );
+}
+
 function buildAnalysisText({
   countStats,
   travelStats,
   profile,
+  critical,
   t,
 }: {
   countStats: ReturnType<typeof summarizeCounts>;
   travelStats: ReturnType<typeof summarizeTravelTimes>;
   profile: ValidationProfile;
+  critical: CriticalIntersectionEvaluation;
   t: (ko: string, en: string, ja?: string) => string;
 }) {
   if (!countStats.hasData || !travelStats.hasData) {
@@ -2211,23 +2496,33 @@ function buildAnalysisText({
   const travelResult = travelStats.travelPass
     ? t("검증 기준을 만족한다", "satisfies the validation criteria")
     : t("검증 기준을 만족하지 못한다", "does not satisfy the validation criteria");
-  const finalResult = countStats.trafficPass && travelStats.travelPass
+  // §5.6.3.1: the network-wide rates being met is NOT sufficient. A single
+  // designated critical intersection failing GEH<5 flips the whole verdict.
+  const overallPass = countStats.trafficPass && travelStats.travelPass && critical.passed !== false;
+  const finalResult = overallPass
     ? t("따라서 이 기본 모델은 검증 기준을 만족하여 시나리오 테스트에 적합하다.", "Therefore, this base model satisfies the validation criteria and is suitable for scenario testing.")
     : t("따라서 이 기본 모델은 시나리오 테스트 전 추가 보정이 필요하다.", "Therefore, this base model requires additional calibration before scenario testing.");
+  const override = criticalOverrideSentence(critical, t);
 
   return t(
-    `[${profile.nameKo} 기준] 교통량 비교분석 결과 GEH값 5 미만인 지점이 ${formatPct(countStats.under5Pct)}, 5~10 사이인 지점이 ${formatPct(countStats.betweenPct)}로 ${trafficResult}. 통행시간 분석결과 통행시간 축 ${formatPct(travelStats.inBandPct)} 관측 허용범위 내로 ${travelResult}. ${finalResult}`,
-    `[${profile.nameEn} criteria] Traffic volume comparison shows ${formatPct(countStats.under5Pct)} of points with GEH < 5 and ${formatPct(countStats.betweenPct)} between 5 and 10, which ${trafficResult}. Travel time validation shows ${formatPct(travelStats.inBandPct)} within the observed tolerance band, which ${travelResult}. ${finalResult}`,
-    `交通量比較分析の結果、GEH 5未満の地点が ${formatPct(countStats.under5Pct)}、5〜10の地点が ${formatPct(countStats.betweenPct)} で、${trafficResult}。旅行時間分析の結果、旅行時間で ${formatPct(travelStats.inBandPct)} が観測許容範囲内であり、${travelResult}。${finalResult}`,
+    `[${profile.nameKo} 기준] 교통량 비교분석 결과 GEH값 5 미만인 지점이 ${formatPct(countStats.under5Pct)}, 5~10 사이인 지점이 ${formatPct(countStats.betweenPct)}로 ${trafficResult}. 통행시간 분석결과 통행시간 축 ${formatPct(travelStats.inBandPct)} 관측 허용범위 내로 ${travelResult}. ${override} ${finalResult}`,
+    `[${profile.nameEn} criteria] Traffic volume comparison shows ${formatPct(countStats.under5Pct)} of points with GEH < 5 and ${formatPct(countStats.betweenPct)} between 5 and 10, which ${trafficResult}. Travel time validation shows ${formatPct(travelStats.inBandPct)} within the observed tolerance band, which ${travelResult}. ${override} ${finalResult}`,
+    `交通量比較分析の結果、GEH 5未満の地点が ${formatPct(countStats.under5Pct)}、5〜10の地点が ${formatPct(countStats.betweenPct)} で、${trafficResult}。旅行時間分析の結果、旅行時間で ${formatPct(travelStats.inBandPct)} が観測許容範囲内であり、${travelResult}。${override} ${finalResult}`,
   );
 }
 
 function analysisPanelClass(
   countStats: ReturnType<typeof summarizeCounts>,
   travelStats: ReturnType<typeof summarizeTravelTimes>,
+  critical: CriticalIntersectionEvaluation,
 ): string {
   if (!countStats.hasData || !travelStats.hasData) {
     return "border-amber-200 bg-amber-50 text-amber-800";
+  }
+  // A failing critical intersection is a FAIL even when both network-wide
+  // legs pass (MRWA §5.6.3.1, doc p.213).
+  if (critical.passed === false) {
+    return "border-rose-200 bg-rose-50 text-rose-800";
   }
   if (countStats.trafficPass && travelStats.travelPass) {
     return "border-emerald-200 bg-emerald-50 text-emerald-800";

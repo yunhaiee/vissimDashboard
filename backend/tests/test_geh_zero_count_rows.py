@@ -108,7 +108,17 @@ def test_flow_geh_percentages_exclude_zero_over_zero_rows(zero_row_counts):
     row still aggregates over every node -- an undefined node contributes 0 to
     both ``geh_ok`` and ``geh_counts``, so AM Total stays 2/3 = 67%.
     """
-    rows = {(row["period"], row["node"]): row for row in report_exports.flow_geh_csv_rows()}
+    # Only the measurement rows. The section-5 validation pack (2026-08-06)
+    # appended three ``row_type="criterion"`` rows carrying the MRWA section
+    # 5.6.3 criteria coverage; they have no counts at all (every numeric cell
+    # is None, deliberately not 0) and are pinned by
+    # test_report_data_and_style.py. Every number below is unchanged by that
+    # addition -- the filter is what keeps this pin about the thing it names.
+    rows = {
+        (row["period"], row["node"]): row
+        for row in report_exports.flow_geh_csv_rows()
+        if row["row_type"] in ("node", "total")
+    }
     observed = {
         key: (row["counts"], row["flow_pct"], row["geh_pct"], row["geh_counts"], row["geh_excluded"])
         for key, row in rows.items()

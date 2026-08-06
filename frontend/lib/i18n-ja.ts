@@ -594,4 +594,23 @@ export const JA_UI: Record<string, string> = {
   "로그인 처리 중 서버 오류가 발생했습니다.": "ログイン処理中にサーバーエラーが発生しました。",
   "서버에 연결하지 못했습니다. 백엔드가 실행 중인지 확인한 뒤 다시 시도해 주세요.":
     "サーバーに接続できませんでした。バックエンドが起動しているか確認して、もう一度お試しください。",
+
+  // --- MRWA section 5.6.3 criteria coverage (base-model page) ---------------
+  // pickByLanguage keys ja off the KOREAN string, so a two-argument t(ko, en)
+  // with no entry here silently renders English for Japanese users. Every
+  // two-argument call added by the section-5 validation pack is listed below;
+  // the template-literal ones (which carry a node id or a percentage) cannot
+  // be dictionary keys and fall back to English by design, exactly as the
+  // pre-existing analysis paragraph does.
+  //
+  // Citations keep their TABLE/DOC-PAGE form untranslated on purpose -- a
+  // reader checking the guideline needs the printed label, and section 5's
+  // in-text figure/table cross-references carry nine measured errors, so the
+  // table + page is the only safe way to point at these rows.
+  "Critical 교차로 (§5.6.3.1, p.213)": "Critical 交差点 (§5.6.3.1, p.213)",
+  "신호시간 (Table 5-14, p.216)": "信号時間 (Table 5-14, p.216)",
+  "포화교통류율 (§5.6.3.5, p.216)": "飽和交通流率 (§5.6.3.5, p.216)",
+  "평가 불가": "評価不可",
+  "지정된 critical 교차로에 비교 가능한 이동류가 없어 관측값 없음 — 평가 불가.":
+    "指定された critical 交差点に比較可能な移動流がないため、観測値なし — 評価不可。",
 };
