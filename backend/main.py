@@ -7,7 +7,7 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.datastructures import Headers
-from routers import assistant, datasets, network, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health
+from routers import assistant, datasets, network, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health, observations
 from routers import auth as auth_router
 from routers import workspaces as workspaces_router
 from services import workspaces
@@ -223,6 +223,10 @@ app.include_router(agent_audit.router)
 # three new routes under a prefix nothing else claims, and no existing endpoint
 # gains a dependency in this unit. Enforcement is U8's change.
 app.include_router(auth_router.router)
+# Phase 2 unit U10 (roadmap 2.1): /api/observations — the per-workspace store
+# of ingested field counts that feeds the reality check's observed side.
+# Purely ADDITIVE: a prefix nothing else claims, and no existing route changes.
+app.include_router(observations.router)
 app.include_router(health.router)
 
 

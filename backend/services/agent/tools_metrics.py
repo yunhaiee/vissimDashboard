@@ -19,6 +19,15 @@ what lives HERE is the registry contract and the resolution of "which run" —
 the two things that are this layer's job. It is read-tier and applies
 nothing: the proposals it returns go to the human through the existing
 approval loop, exactly like any other proposal.
+
+Unit U10 added a second thing to resolve, of exactly the same kind: "which
+OBSERVED counts". With ``observation_set_id`` the observed side is a stored
+observation set (``services/observations.py``) instead of the base workbook,
+and the site-id ↔ node-id map that makes such a set joinable is a tool
+PARAMETER — survey site ids are not Vissim node ids, so pairing them is the
+caller's knowledge, like ``movement_object_id`` and ``decision_movements``
+already are. Resolution and translation live here; the comparison itself did
+not change.
 """
 
 from __future__ import annotations
@@ -29,7 +38,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from services import datasets, results_evidence, results_reader, simulation_runs, validation
+from services import (
+    datasets,
+    observations,
+    results_evidence,
+    results_reader,
+    simulation_runs,
+    validation,
+)
 from services.agent import reality_check
 from services.agent.toolkit import tool
 
@@ -236,6 +252,23 @@ class RealityCheckNodeTarget(BaseModel):
     )
 
 
+class ObservationSiteNode(BaseModel):
+    """One ``observation site id -> Vissim node id`` pair (unit U10).
+
+    Supplied by the CALLER for exactly the reason ``movement_object_id`` is: an
+    observation site id is a survey label — the Daejeon set's are intersection
+    names read out of the file names, roadmap 1.2's documented deviation — and
+    it does not match a Vissim node number. Pairing them by position, ordering
+    or string similarity would produce a confidently wrong comparison, so an
+    absent map is a refusal that names the sites still needing one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    site_id: str = Field(description="The site id as the observation set stores it.")
+    node_id: str = Field(description="The Vissim node id that site was counted at.")
+
+
 class RunRealityCheckParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -249,7 +282,8 @@ class RunRealityCheckParams(BaseModel):
         default=None,
         description=(
             "Which counts period to compare against. Omitted = the workbook's AM rows if it has "
-            "any, else its first period."
+            "any, else its first period. Ignored when observation_set_id is given — a stored "
+            "set's windows are named by the modeller, so use observation_period there."
         ),
     )
     targets: list[RealityCheckNodeTarget] | None = Field(
@@ -257,6 +291,28 @@ class RunRealityCheckParams(BaseModel):
         description=(
             "Per-node edit targets. Without them every miss still comes back — as a refusal "
             "naming what was missing."
+        ),
+    )
+    observation_set_id: str | None = Field(
+        default=None,
+        description=(
+            "Compare against a STORED observation set (unit U10) instead of the base counts "
+            "workbook. Requires site_nodes; the set's own periods are named by the modeller at "
+            "ingest, so pick one with observation_period."
+        ),
+    )
+    observation_period: str | None = Field(
+        default=None,
+        description=(
+            "Which of the observation set's declared periods to compare against. Optional only "
+            "when the set declares exactly one; otherwise the check refuses rather than picking."
+        ),
+    )
+    site_nodes: list[ObservationSiteNode] | None = Field(
+        default=None,
+        description=(
+            "The observation-site -> Vissim-node map. Required with observation_set_id: survey "
+            "site ids are not node ids and are never matched by guesswork."
         ),
     )
 
@@ -335,13 +391,111 @@ def _reality_check_targets(
     return targets, movement_ids
 
 
+#: ``services.observations``' neutral problem codes -> this layer's report
+#: reasons. The store must not import ``services.agent`` (it is consumed by the
+#: non-agent import layer too), and ``reality_check`` owns the reason
+#: vocabulary, so the translation lives here — in the layer whose job is
+#: already "resolve which run and which counts", one dict, greppable from both
+#: sides.
+_OBSERVATION_PROBLEM_REASONS = {
+    observations.SET_NOT_FOUND: reality_check.OBSERVATION_SET_NOT_FOUND,
+    observations.PERIOD_ABSENT: reality_check.OBSERVATION_SET_PERIOD_ABSENT,
+    observations.SITE_NODE_MAP_MISSING: reality_check.OBSERVATION_SITE_NODE_MAP_MISSING,
+    observations.NO_MAPPED_SITES: reality_check.OBSERVATION_NO_MAPPED_SITES,
+}
+
+
+def _observed_source_label(set_id: str, period: str | None) -> str:
+    return (
+        f"services.observations set {set_id!r} period {period or '-'!r} "
+        "-> aggregated turning counts (unit U10, ingested through the dataimport adapter + "
+        "quality gate)"
+    )
+
+
+def _bounded_names(names: Any, limit: int = 12) -> str:
+    """A comma-joined, BOUNDED name list for a refusal message.
+
+    Bounded because a refusal's sentence is rendered straight into a chat
+    bubble and the list it names tracks SITE count; "-" rather than an empty
+    string so the sentence never reads as if the list were absent.
+    """
+    items = [str(item) for item in (names or [])]
+    if not items:
+        return "-"
+    if len(items) <= limit:
+        return ", ".join(items)
+    return ", ".join(items[:limit]) + f", ... +{len(items) - limit} more"
+
+
+def _observed_from_store(
+    set_id: str,
+    *,
+    observation_period: str | None,
+    site_nodes: list[ObservationSiteNode] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """``({node_id: NodeRealCounts}, site coverage)`` from a stored set.
+
+    Returns ``(None, ...)`` when the observed side is unusable; the caller then
+    builds a NOT_CHECKABLE report from the coverage's ``report`` entry. Every
+    site that failed to join is NAMED in the coverage either way — it is built
+    before any node is emitted, so a happy path cannot skip it.
+    """
+    mapping = {entry.site_id: entry.node_id for entry in (site_nodes or [])}
+    side = observations.observed_side(set_id, period=observation_period, site_nodes=mapping)
+    coverage = {
+        "observation_set_id": set_id,
+        "observation_period": side["period"],
+        "observation_periods_available": side["periods"],
+        **side["coverage"],
+    }
+    problem = side["problem"]
+    if problem is None:
+        return side["nodes"], coverage
+
+    reason = _OBSERVATION_PROBLEM_REASONS.get(problem, reality_check.OBSERVATION_SET_NOT_FOUND)
+    report = reality_check.not_checkable(
+        reason,
+        detail={"observation_set_id": set_id, "observation_period": observation_period},
+        observation_set_id=set_id,
+        period=side["period"] or observation_period or "-",
+        periods=_bounded_names(side["periods"]),
+        sites=_bounded_names(side["coverage"]["sites_without_node_mapping"])
+        if side["coverage"]["sites_without_node_mapping"]
+        else _bounded_names(side["coverage"]["observation_sites"]),
+        unmapped=_bounded_names(side["coverage"]["sites_without_node_mapping"]),
+        absent=_bounded_names(side["coverage"]["mapped_sites_absent_from_observations"]),
+    )
+    report["period"] = side["period"] or observation_period
+    # Private helper, read-only, same package -- the one-way reuse
+    # reality_check's own docstring describes (it borrows anomalies' private
+    # state helpers for the same reason): one spelling of the provenance block
+    # beats a second copy of it here that could drift.
+    report["sources"] = reality_check._sources(
+        _observed_source_label(set_id, side["period"] or observation_period)
+    )
+    report["coverage"]["observation_sites"] = coverage
+    coverage["report"] = report
+    return None, coverage
+
+
 def build_reality_check_report(
     scenario_id: str,
     *,
     period: str | None = None,
     targets: list[RealityCheckNodeTarget] | None = None,
+    observation_set_id: str | None = None,
+    observation_period: str | None = None,
+    site_nodes: list[ObservationSiteNode] | None = None,
 ) -> dict[str, Any]:
-    """Resolve the run, load the counts, run the check. No COM, no writes."""
+    """Resolve the run, load the counts, run the check. No COM, no writes.
+
+    ``observation_set_id`` swaps the OBSERVED side from the base counts
+    workbook to a stored observation set (unit U10). Everything else is
+    unchanged: the modelled side still comes from THIS run's
+    ``movement_volumes``, the grading is still U4's, and the site-level join is
+    still reported in both directions rather than inner-joined away.
+    """
     result_dir = _resolve_result_dir(scenario_id)
     db_paths = results_evidence.result_db_paths(result_dir) if result_dir is not None else []
     if not db_paths:
@@ -384,7 +538,33 @@ def build_reality_check_report(
         duration_s=1,
         evaluation_configured=False,
     )
-    observed = validation.load_base_workbook(str(datasets.get_active_real_counts_excel()))
+    site_coverage: dict[str, Any] | None = None
+    observed_source: str | None = None
+    if observation_set_id:
+        observed, site_coverage = _observed_from_store(
+            observation_set_id,
+            observation_period=observation_period,
+            site_nodes=site_nodes,
+        )
+        if observed is None:
+            report = site_coverage.pop("report")
+            report["detail"] = {
+                **report["detail"],
+                "scenario_id": scenario_id,
+                "result_db_count": 1,
+            }
+            return report
+        observed_source = _observed_source_label(
+            observation_set_id, site_coverage["observation_period"]
+        )
+        # The stored aggregates ARE a {node_id: NodeRealCounts} mapping, which
+        # observed_nodes takes as-is and for which the period argument means
+        # nothing (the window was already applied at ingest). Passing the
+        # OBSERVATION period keeps report["period"] naming the window actually
+        # compared instead of an AM/PM label that had no part in it.
+        period = site_coverage["observation_period"]
+    else:
+        observed = validation.load_base_workbook(str(datasets.get_active_real_counts_excel()))
     target_map, movement_ids = _reality_check_targets(targets)
 
     report = reality_check.check_run_against_counts(
@@ -393,8 +573,15 @@ def build_reality_check_report(
         period=period,
         targets=target_map,
         movement_ids=movement_ids,
+        observed_source=observed_source,
     )
     report["workbook_warnings"] = _planner_safe_warnings(report["workbook_warnings"])
+    if site_coverage is not None:
+        # The site-level join, carried into the same coverage block the node
+        # join lives in. reality_check joins on NODE ids and cannot see sites;
+        # dropping the site names here would leave "which count site never made
+        # it into the comparison" answerable only by re-deriving it.
+        report["coverage"]["observation_sites"] = site_coverage
     report["detail"] = {**report["detail"], "scenario_id": scenario_id, "result_db_count": 1}
     return report
 
@@ -406,9 +593,14 @@ def build_reality_check_report(
     params=RunRealityCheckParams,
 )
 def run_reality_check(params: RunRealityCheckParams) -> dict[str, Any]:
-    """Compare a completed run against the observed counts workbook node by node (GEH) and return, per node, either a concrete fix proposal or an evidenced refusal -- the modelled side is read from the RUN's own movement volumes, never from the workbook's pasted model column, and every node id that fails to join is named rather than dropped. Read-only: it applies nothing, and any proposal it returns still goes through the normal approval loop. Supply targets (the vehicle input / routing decision per node, from get_vehicle_inputs and get_routing_decisions) to get concrete proposals; without them a real miss still comes back, as a refusal naming what was missing."""
+    """Compare a completed run against the observed counts node by node (GEH) and return, per node, either a concrete fix proposal or an evidenced refusal -- the modelled side is read from the RUN's own movement volumes, never from the workbook's pasted model column, and every node id that fails to join is named rather than dropped. The observed side is the base counts workbook by default, or a stored observation set when observation_set_id is given (that path also needs site_nodes, because survey site ids are not Vissim node ids and are never matched by guesswork). Read-only: it applies nothing, and any proposal it returns still goes through the normal approval loop. Supply targets (the vehicle input / routing decision per node, from get_vehicle_inputs and get_routing_decisions) to get concrete proposals; without them a real miss still comes back, as a refusal naming what was missing."""
     report = build_reality_check_report(
-        params.scenario_id, period=params.period, targets=params.targets
+        params.scenario_id,
+        period=params.period,
+        targets=params.targets,
+        observation_set_id=params.observation_set_id,
+        observation_period=params.observation_period,
+        site_nodes=params.site_nodes,
     )
     # The envelope message is the planner-facing one, so it is English like
     # every other tool's; the ko/en/ja triple rides in the report itself

@@ -36,6 +36,18 @@ Everything else is borrowed, deliberately
   ``validation._real_counts_from_count_rows``, the same call
   ``load_real_counts`` makes.
 
+Unit U10 gave the observed side a SECOND origin without giving this module a
+second shape: ``services/observations.py`` stores per-workspace aggregates of
+counts ingested through the 1.2 adapter and hands them over as the very
+``{node_id: NodeRealCounts}`` mapping :func:`observed_nodes` has always
+accepted. What changes here is honesty book-keeping, not comparison logic —
+four reason codes for the ways a stored set can be unusable, and an
+``observed_source`` override so the report's ``sources`` block names the origin
+that was actually read. The site-id ↔ node-id join for a stored set is CALLER
+knowledge for the same reason ``movement_ids`` is: a Daejeon site id is an
+intersection name lifted from a file name (roadmap 1.2's documented
+deviation), and it does not match a Vissim node id.
+
 The join, and why it is reported instead of assumed
 ---------------------------------------------------
 U1 puts the node token on every ``movement_volumes`` entry (the leading
@@ -127,6 +139,28 @@ RUN_EVIDENCE_EMPTY = f"RUN_EVIDENCE_{anomalies.EMPTY}"
 MULTI_SEED_VOLUMES_NOT_COMPARABLE = "MULTI_SEED_VOLUMES_NOT_COMPARABLE"
 #: The tool could not resolve the run the caller named.
 RUN_NOT_FOUND = "RUN_NOT_FOUND"
+
+# -- unit U10: the observed side came from the observation store -------------
+#
+# Four more ways the observed side can be unusable, all of them specific to a
+# STORED set rather than to the base workbook. They live here, beside the other
+# reason codes, because a report carries exactly one reason code and this
+# module owns that vocabulary; the store itself (services/observations.py)
+# emits its own neutral codes and ``tools_metrics`` maps them across, so the
+# non-agent import layer never has to depend on services.agent.
+
+#: The caller named an observation set this workspace does not hold.
+OBSERVATION_SET_NOT_FOUND = "OBSERVATION_SET_NOT_FOUND"
+#: The set exists but carries no aggregates for the named period — or carries
+#: several and none was named, which is not something to pick for the caller.
+OBSERVATION_SET_PERIOD_ABSENT = "OBSERVATION_SET_PERIOD_ABSENT"
+#: No site -> node mapping was supplied. Observation site ids are survey
+#: labels (Daejeon's come from file names, roadmap 1.2's documented deviation)
+#: and do NOT match Vissim node ids, so the join is caller knowledge exactly
+#: like ``movement_ids`` and ``decision_movements`` are.
+OBSERVATION_SITE_NODE_MAP_MISSING = "OBSERVATION_SITE_NODE_MAP_MISSING"
+#: A map was supplied and not one of its entries produced a usable node.
+OBSERVATION_NO_MAPPED_SITES = "OBSERVATION_NO_MAPPED_SITES"
 
 #: U3 evidence state -> this module's reason code.
 _STATE_REASONS = {
@@ -227,6 +261,41 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "as a comparison against a run that does not exist.",
         "ja": "'{scenario_id}'に対応する実行結果が見つかりません。存在しない実行と対照したとは"
         "報告しません。",
+    },
+    OBSERVATION_SET_NOT_FOUND: {
+        "ko": "이 프로젝트에 '{observation_set_id}' 관측 세트가 없습니다. 다른 세트로 대신 "
+        "비교하지 않고 확인 불가로 보고합니다.",
+        "en": "This project holds no observation set '{observation_set_id}'. Reported as not "
+        "checkable rather than silently comparing against a different set.",
+        "ja": "このプロジェクトに観測セット '{observation_set_id}' がありません。別のセットで"
+        "代用せず、確認不可として報告します。",
+    },
+    OBSERVATION_SET_PERIOD_ABSENT: {
+        "ko": "관측 세트에 '{period}' 시간대 집계가 없습니다(있는 시간대: {periods}). 어느 "
+        "시간대를 모델과 비교할지는 모델러의 결정이므로 임의로 고르지 않습니다.",
+        "en": "The observation set carries no '{period}' aggregate (it has: {periods}). Which "
+        "window the run is compared against is the modeller's decision, so none was picked here.",
+        "ja": "観測セットに「{period}」時間帯の集計がありません(存在する時間帯: {periods})。"
+        "どの時間帯と比較するかはモデラーの決定であり、ここでは選びません。",
+    },
+    OBSERVATION_SITE_NODE_MAP_MISSING: {
+        "ko": "관측 지점과 Vissim 노드를 잇는 대응표(site_nodes)가 없습니다. 관측 지점 id는 "
+        "조사 자료의 교차로 이름(대전 자료는 파일명에서 읽은 값)이고 노드 번호와 일치하지 "
+        "않으므로, 추측으로 짝지어 비교하지 않습니다. 대응이 필요한 지점: {sites}",
+        "en": "No site-to-node map (site_nodes) was supplied. Observation site ids are survey "
+        "labels — the Daejeon set's come from the file names — and do not match Vissim node "
+        "numbers, so nothing is paired by guesswork. Sites needing a mapping: {sites}",
+        "ja": "観測地点とVissimノードを結ぶ対応表(site_nodes)がありません。観測地点idは調査"
+        "資料の交差点名(大田の資料はファイル名から読んだ値)であり、ノード番号とは一致しない"
+        "ため、推測で対応付けはしません。対応が必要な地点: {sites}",
+    },
+    OBSERVATION_NO_MAPPED_SITES: {
+        "ko": "대응표가 있지만 사용할 수 있는 노드가 하나도 만들어지지 않았습니다. 대응되지 "
+        "않은 관측 지점: {unmapped}. 대응표에 있으나 세트에 없는 지점: {absent}.",
+        "en": "A site-to-node map was supplied but produced no usable node. Observation sites "
+        "left unmapped: {unmapped}. Mapped sites absent from the set: {absent}.",
+        "ja": "対応表はありますが、使用可能なノードが一つも作られませんでした。対応されなかった"
+        "観測地点: {unmapped}。対応表にあるがセットに無い地点: {absent}。",
     },
 }
 
@@ -491,6 +560,21 @@ _SOURCES = {
 }
 
 
+def _sources(observed_source: str | None = None) -> dict[str, Any]:
+    """The report's provenance block, with the OBSERVED line overridable.
+
+    Unit U10 gave the observed side a second origin (a stored observation set
+    ingested through the 1.2 adapter). ``sources`` is what a reader — and the
+    report builder — uses to say where a number came from, so it must name the
+    origin that was actually used; leaving the base-workbook sentence in place
+    while reading a stored set would be a provenance lie in the one block whose
+    entire job is provenance.
+    """
+    if not observed_source:
+        return dict(_SOURCES)
+    return {**_SOURCES, "observed": observed_source}
+
+
 def _empty_coverage() -> dict[str, Any]:
     return {
         "nodes_compared": [],
@@ -518,6 +602,7 @@ def check_run_against_counts(
     movement_ids: Mapping[str, Mapping[str, str]] | None = None,
     geh_threshold: float = validation.GEH_GOOD_LT,
     registry: ToolRegistry | None = None,
+    observed_source: str | None = None,
 ) -> dict[str, Any]:
     """RUN evidence vs OBSERVED counts, per node → proposals and refusals.
 
@@ -545,6 +630,11 @@ def check_run_against_counts(
     """
     targets = targets or {}
     movement_ids = movement_ids or {}
+    # ``observed_source``, when given, names where the observed side actually
+    # came from (unit U10's observation store). Every return path below carries
+    # it, including the refusals -- a NOT_CHECKABLE report that misattributed
+    # its observed side would send the reader to the wrong file.
+    sources = _sources(observed_source)
 
     observed_side = observed_nodes(observed, period=period)
     warnings = observed_side["warnings"]
@@ -557,6 +647,7 @@ def check_run_against_counts(
         )
         report["workbook_warnings"] = warnings
         report["period"] = period
+        report["sources"] = sources
         return report
 
     evidence_state = run_evidence_state(run_result)
@@ -575,6 +666,7 @@ def check_run_against_counts(
         report["run_evidence"] = evidence_state
         report["workbook_warnings"] = warnings
         report["period"] = period
+        report["sources"] = sources
         report["coverage"]["counts"]["observed_nodes"] = len(observed_side["nodes"])
         report["coverage"]["observed_nodes_absent_from_run"] = sorted(
             observed_side["nodes"], key=_node_sort_key
@@ -616,6 +708,7 @@ def check_run_against_counts(
         report["coverage"] = coverage
         report["workbook_warnings"] = warnings
         report["period"] = period
+        report["sources"] = sources
         return report
 
     nodes: list[dict[str, Any]] = []
@@ -683,7 +776,7 @@ def check_run_against_counts(
         ),
         "geh_threshold": geh_threshold,
         "period": period,
-        "sources": _SOURCES,
+        "sources": sources,
         "run_evidence": evidence_state,
         "coverage": coverage,
         "nodes": nodes,
@@ -702,6 +795,10 @@ __all__ = [
     "NO_JOINABLE_NODES",
     "NO_OBSERVED_COUNTS",
     "NO_RUN_RESULT",
+    "OBSERVATION_NO_MAPPED_SITES",
+    "OBSERVATION_SET_NOT_FOUND",
+    "OBSERVATION_SET_PERIOD_ABSENT",
+    "OBSERVATION_SITE_NODE_MAP_MISSING",
     "OBSERVED_PERIOD_ABSENT",
     "OBSERVED_WORKBOOK_UNREADABLE",
     "RUN_EVIDENCE_ARMED_BUT_EMPTY",
