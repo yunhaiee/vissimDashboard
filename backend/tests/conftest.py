@@ -75,7 +75,7 @@ def _isolate_ambient_machine_state(tmp_path_factory: pytest.TempPathFactory):
     from routers import agent_downloads as agent_downloads_router
     from routers import assistant as assistant_router_module
     from routers import network as network_router
-    from services import audit_trail, simulation_runs, workspaces
+    from services import audit_trail, db, simulation_runs, workspaces
     from services.agent import sessions as agent_sessions
 
     mp = pytest.MonkeyPatch()
@@ -99,6 +99,15 @@ def _isolate_ambient_machine_state(tmp_path_factory: pytest.TempPathFactory):
     mp.setattr(network_router, "SESSIONS_ROOT", sessions_root)
     mp.setattr(agent_downloads_router, "SESSIONS_ROOT", sessions_root)
     mp.setattr(audit_trail, "SESSIONS_ROOT", sessions_root)
+
+    # Unit U7 adds a THIRD root outside the workspace tree: the SQLite
+    # metadata/auth database. It is deliberately NOT under WORKSPACES_ROOT
+    # (auth is global, not per-project -- services/db.py), so the patch above
+    # does not reach it and it needs its own line. Without this, any test that
+    # touched a user or a session would create/modify the developer's real
+    # ``runtime/db/app.db`` -- and once U8 puts approver names in it, a test
+    # run could silently add accounts to a live install.
+    mp.setattr(db, "DB_PATH", ambient_root / "db" / "app.db")
 
     # services/workbook_mapping.py stages uploaded workbooks and remembers
     # confirmed mappings; since unit 1.4 both live INSIDE the workspace

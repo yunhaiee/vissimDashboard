@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.datastructures import Headers
 from routers import assistant, datasets, network, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health
+from routers import auth as auth_router
 from routers import workspaces as workspaces_router
 from services import workspaces
 from services.agent.sessions import sweep_stale_sessions
@@ -218,6 +219,10 @@ app.include_router(agent_downloads.router)
 # Distinct prefix from agent_downloads' /api/agent/downloads, so registration
 # order does not affect matching.
 app.include_router(agent_audit.router)
+# Unit U7 (roadmap 2.5): /api/auth — login, logout, whoami. Purely ADDITIVE:
+# three new routes under a prefix nothing else claims, and no existing endpoint
+# gains a dependency in this unit. Enforcement is U8's change.
+app.include_router(auth_router.router)
 app.include_router(health.router)
 
 
