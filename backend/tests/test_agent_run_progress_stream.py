@@ -200,7 +200,7 @@ def _stream_events(response) -> list[dict[str, Any]]:
 
 
 def test_approve_run_action_streams_run_started_with_job_id_before_done(
-    client, monkeypatch: pytest.MonkeyPatch
+    client, monkeypatch: pytest.MonkeyPatch, approver_headers
 ):
     provider = FakeStructuredProvider(
         [
@@ -252,6 +252,7 @@ def test_approve_run_action_streams_run_started_with_job_id_before_done(
     approve_response = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": approval_id, "approved": True},
+        headers=approver_headers,
     )
     assert approve_response.status_code == 200
     events = _stream_events(approve_response)

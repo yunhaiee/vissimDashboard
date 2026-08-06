@@ -206,7 +206,7 @@ def _propose(client, monkeypatch, provider) -> tuple[Any, list[dict[str, Any]]]:
 # ---------------------------------------------------------------------------
 
 
-def test_full_propose_pending_file_approve_dispatch_verified_answer(client, monkeypatch):
+def test_full_propose_pending_file_approve_dispatch_verified_answer(client, monkeypatch, approver_headers):
     provider = FakeStructuredProvider(
         [
             _action(
@@ -271,6 +271,7 @@ def test_full_propose_pending_file_approve_dispatch_verified_answer(client, monk
     approve_response = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": approval_id, "approved": True},
+        headers=approver_headers,
     )
     assert approve_response.status_code == 200
     approve_events = _stream_events(approve_response)
@@ -314,7 +315,7 @@ def test_full_propose_pending_file_approve_dispatch_verified_answer(client, monk
 # ---------------------------------------------------------------------------
 
 
-def test_decline_deletes_pending_and_leaves_network_untouched(client, monkeypatch):
+def test_decline_deletes_pending_and_leaves_network_untouched(client, monkeypatch, approver_headers):
     provider = FakeStructuredProvider(
         [
             _action(
@@ -338,6 +339,7 @@ def test_decline_deletes_pending_and_leaves_network_untouched(client, monkeypatc
     decline_response = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": approval_id, "approved": False},
+        headers=approver_headers,
     )
     assert decline_response.status_code == 200
     decline_events = _stream_events(decline_response)
@@ -364,7 +366,7 @@ def test_decline_deletes_pending_and_leaves_network_untouched(client, monkeypatc
 # ---------------------------------------------------------------------------
 
 
-def test_stale_approval_id_returns_404(client, monkeypatch):
+def test_stale_approval_id_returns_404(client, monkeypatch, approver_headers):
     provider = FakeStructuredProvider(
         [_action("set_vehicle_input_volume", summary="제안", input_no="1", volume=600)]
     )
@@ -374,30 +376,33 @@ def test_stale_approval_id_returns_404(client, monkeypatch):
     response = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": "not-the-real-approval-id", "approved": True},
+        headers=approver_headers,
     )
 
     assert response.status_code == 404
 
 
-def test_unknown_session_id_returns_404(client):
+def test_unknown_session_id_returns_404(client, approver_headers):
     response = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": "0123456789ab", "approval_id": "whatever", "approved": True},
+        headers=approver_headers,
     )
 
     assert response.status_code == 404
 
 
-def test_malformed_session_id_returns_404_not_a_path_traversal(client):
+def test_malformed_session_id_returns_404_not_a_path_traversal(client, approver_headers):
     response = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": "../../etc", "approval_id": "whatever", "approved": True},
+        headers=approver_headers,
     )
 
     assert response.status_code == 404
 
 
-def test_approving_twice_the_second_call_404s(client, monkeypatch):
+def test_approving_twice_the_second_call_404s(client, monkeypatch, approver_headers):
     provider = FakeStructuredProvider(
         [
             _action("set_vehicle_input_volume", summary="제안", input_no="1", volume=600),
@@ -417,12 +422,14 @@ def test_approving_twice_the_second_call_404s(client, monkeypatch):
     first = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": approval_id, "approved": True},
+        headers=approver_headers,
     )
     assert first.status_code == 200
 
     second = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": approval_id, "approved": True},
+        headers=approver_headers,
     )
     assert second.status_code == 404
 
@@ -434,7 +441,7 @@ def test_approving_twice_the_second_call_404s(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_turn_after_approve_resumes_history_and_written_value_not_fresh(client, monkeypatch):
+def test_turn_after_approve_resumes_history_and_written_value_not_fresh(client, monkeypatch, approver_headers):
     """Full propose -> approve -> THIRD turn, carrying the id from approve's
     own ``done.response.session_id`` (exactly what a real client would
     thread forward, per the router's own docstring for
@@ -474,6 +481,7 @@ def test_turn_after_approve_resumes_history_and_written_value_not_fresh(client, 
     approve_response = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": approval_id, "approved": True},
+        headers=approver_headers,
     )
     assert approve_response.status_code == 200
     approve_events = _stream_events(approve_response)
@@ -566,7 +574,7 @@ def test_turn_after_approve_resumes_history_and_written_value_not_fresh(client, 
 # ---------------------------------------------------------------------------
 
 
-def test_concurrent_turn_after_approve_does_not_lose_state_or_working_copy(client, monkeypatch):
+def test_concurrent_turn_after_approve_does_not_lose_state_or_working_copy(client, monkeypatch, approver_headers):
     provider = FakeStructuredProvider(
         [
             _action(
@@ -598,6 +606,7 @@ def test_concurrent_turn_after_approve_does_not_lose_state_or_working_copy(clien
         approve_result["response"] = client.post(
             "/api/assistant/agent/approve",
             json={"session_id": session_id, "approval_id": approval_id, "approved": True},
+            headers=approver_headers,
         )
 
     approve_thread = threading.Thread(target=do_approve)

@@ -12,9 +12,10 @@ are specifically about cost parameters. That is safe here precisely because the
 parameters live inside the hash string: the production value is exercised by
 ``test_password_hash_uses_shipped_cost_by_default``.
 
-The last test in this file is a scope guard: U7 must protect NOTHING. It fails
-loudly the moment an existing route grows an auth dependency, which is U8's
-change to make deliberately, not this unit's to make by accident.
+The last test in this file is a scope guard pinning the EXACT set of
+authenticated routes. It fails loudly the moment a route grows an auth
+dependency, so widening the set is always a deliberate edit: U7 protected
+nothing, U8 added ``POST /api/assistant/agent/approve`` and nothing else.
 """
 from __future__ import annotations
 
@@ -634,7 +635,7 @@ def test_two_threads_can_log_in_and_validate_against_one_wal_database():
 
 
 # ---------------------------------------------------------------------------
-# Scope guard — U7 protects NOTHING
+# Scope guard — the ledger of what is authenticated, and when it became so
 # ---------------------------------------------------------------------------
 
 def _dependency_callables(dependant) -> set:
@@ -644,14 +645,28 @@ def _dependency_callables(dependant) -> set:
     return found
 
 
-def test_no_existing_endpoint_is_protected_by_this_unit():
-    """U7 delivers the machinery and wires it NOWHERE. The only route in the
-    real app that depends on ``current_user`` is ``/api/auth/whoami``, which is
-    the machinery itself.
+def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
+    """The exact set of authenticated routes, updated deliberately per unit.
 
-    When U8 legitimately starts protecting endpoints, UPDATE this test with the
-    routes it protects — do not delete it. The list is the record of what
-    became authenticated and when.
+    (Renamed from ``test_no_existing_endpoint_is_protected_by_this_unit`` by
+    U8, which is the first unit to protect one: the old name asserted "none",
+    and a guard whose NAME is false is a guard nobody trusts. Same test, same
+    mechanism, one more route.)
+
+    U7 delivered the machinery and wired it NOWHERE: the only route that
+    depended on ``current_user`` was ``/api/auth/whoami``, the machinery
+    itself.
+
+    **U8 (roadmap 2.5) adds exactly one: POST /api/assistant/agent/approve.**
+    That is the whole unit — the approval gate demands a signed-in
+    ``reviewer``/``admin`` (``routers/assistant.require_approver``) so the
+    audit DOCX can name who approved a change. Nothing else was widened; in
+    particular the audit EXPORT endpoints stay open, because reading the
+    record of a decision is not making one.
+
+    When a later unit legitimately protects more, UPDATE this set — do not
+    delete the test. The list is the record of what became authenticated and
+    when.
     """
     guarded = set()
     for route in main.app.routes:
@@ -662,4 +677,4 @@ def test_no_existing_endpoint_is_protected_by_this_unit():
         if auth_router.current_user in calls or auth_router.optional_current_user in calls:
             guarded.add(getattr(route, "path", str(route)))
 
-    assert guarded == {"/api/auth/whoami"}
+    assert guarded == {"/api/auth/whoami", "/api/assistant/agent/approve"}

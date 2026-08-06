@@ -48,6 +48,26 @@ An approval's reason is attached to the next matching action of that tool
 existed simply have no such record, and their rationale cell reads "-": this
 module is fully backward-compatible with reason-less history.
 
+**Approver ("승인자", unit U8).** The same ``user_confirm`` record now also
+carries an ``actor`` object -- ``{user_id, username, display_name, role}`` --
+copied from the AUTHENTICATED session that resolved the approval
+(``routers/assistant.py``, gated by ``routers/auth.require_role``). It travels
+exactly where the rationale travels: onto the change the approval authorized
+(Table 1) and onto the decision the human made (Table 2). Two rules, both
+deliberate:
+
+* **Fail closed on provenance.** :func:`normalize_actor` accepts ONLY the
+  complete U8 shape with a known role. A ledger carrying anything else -- a
+  half-written object, a hand-edited trace, a future schema this build does
+  not understand -- renders the "기록 없음(인증 이전)" fallback rather than
+  whatever string it found. This document's whole value is that a name in the
+  approver column was authenticated by this system; printing an unverified one
+  would be worse than printing none.
+* **Records predating authentication print the fallback**, not a blank and
+  never a guess (approved policy, roadmap row 2.5). Reason-less AND actor-less
+  legacy ledgers keep folding byte-identically -- the field is purely
+  additive.
+
 **Determinism.** Given the same ledger, the rendered CONTENT (every paragraph
 and every table cell) is identical run to run; the only wall-clock value in
 the body is the explicit "생성 시각" line, which callers can pin via
@@ -133,10 +153,72 @@ _NON_ACTION_PARAMS = frozenset({"summary"})
 #: alone would file a failed load check as a parameter change.
 _RUN_TIER_TOOLS = frozenset({"run_simulation", "run_demand_stress_sweep", "load_check"})
 
+#: The roles an ``actor`` may name, with their rendered label. A DELIBERATE
+#: local snapshot of ``services/auth.ROLES`` rather than an import — the same
+#: rule the run-tier snapshot above follows (this module classifies from the
+#: ledger alone and never imports the live system), plus one reason specific to
+#: U8: a role name this build does not know is a role whose meaning it cannot
+#: render, and the approver column must never print an unverifiable string. An
+#: unknown role therefore fails :func:`normalize_actor` and prints the
+#: "not recorded" fallback. Adding a role to ``services/auth.ROLES`` means
+#: adding it here too — that is intended to be a conscious, reviewed edit to
+#: an audit document's vocabulary.
+_ROLE_LABEL: dict[str, dict[str, str]] = {
+    "modeler": {"ko": "모델러", "en": "modeler", "ja": "モデラー"},
+    "reviewer": {"ko": "검토자", "en": "reviewer", "ja": "査読者"},
+    "admin": {"ko": "관리자", "en": "administrator", "ja": "管理者"},
+}
+
 
 # ---------------------------------------------------------------------------
 # Ledger data model
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Approver:
+    """The authenticated human a ``user_confirm`` record names (unit U8).
+
+    Only ever built by :func:`normalize_actor`, so an instance of this class is
+    itself the statement "this ledger carried a complete, well-formed U8 actor"
+    — the renderer never has to re-validate, and nothing else can smuggle a
+    half-shaped dict into the approver column.
+    """
+
+    user_id: int
+    username: str
+    display_name: str
+    role: str
+
+
+def normalize_actor(value: Any) -> Approver | None:
+    """The ledger's ``actor`` object as an :class:`Approver`, or ``None``.
+
+    Fail closed (see the module docstring): every field must be present, of the
+    right type, non-blank, and the role must be one this build knows. Anything
+    else — including ``None``, a bare username, or a shape from some later
+    schema — is reported as "no authenticated approver" so the caller renders
+    the fallback instead of an unverified name. Unknown EXTRA keys are ignored
+    rather than rejected: they cannot put a name in the column, so refusing
+    them would only make a future additive field break old exports.
+    """
+    if not isinstance(value, dict):
+        return None
+    user_id = value.get("user_id")
+    # ``bool`` is an ``int`` subclass in Python; True must not become user 1.
+    if not isinstance(user_id, int) or isinstance(user_id, bool) or user_id <= 0:
+        return None
+    role = value.get("role")
+    if not isinstance(role, str) or role not in _ROLE_LABEL:
+        return None
+    username = value.get("username")
+    display_name = value.get("display_name")
+    if not isinstance(username, str) or not isinstance(display_name, str):
+        return None
+    username, display_name = username.strip(), display_name.strip()
+    if not username or not display_name:
+        return None
+    return Approver(user_id=user_id, username=username, display_name=display_name, role=role)
 
 
 @dataclass(frozen=True)
@@ -168,6 +250,10 @@ class ChangeEntry:
     warnings: tuple[str, ...]
     error_type: str | None
     message: str | None
+    #: U8: the authenticated human whose approval authorized this change, when
+    #: the ledger recorded one. ``None`` for every pre-authentication record —
+    #: and for every change that was never gated behind an approval at all.
+    approver: Approver | None = None
 
     @property
     def when(self) -> str:
@@ -198,6 +284,10 @@ class RefusalEntry:
     target: str
     summary: str
     reason: str | None
+    #: U8: for a ``"declined"`` row, the authenticated human who declined it;
+    #: for the other phases, the approver of the approval this refusal consumed
+    #: (a rolled-back write carries the same approver as its change row).
+    approver: Approver | None = None
 
     @property
     def when(self) -> str:
@@ -392,6 +482,7 @@ def build_ledger(
                     {
                         "tool": payload.get("tool"),
                         "reason": _clean_reason(payload.get("reason")),
+                        "approver": normalize_actor(payload.get("actor")),
                         "consumed": False,
                     }
                 )
@@ -407,6 +498,7 @@ def build_ledger(
                         target=_target_of(_clean_params(payload.get("params"))),
                         summary=str(payload.get("summary") or ""),
                         reason=_clean_reason(payload.get("reason")),
+                        approver=normalize_actor(payload.get("actor")),
                     )
                 )
             elif stage == "requested" and current is not None:
@@ -483,6 +575,7 @@ def _emit(
         if not it.refusals:
             return
         blocking = it.refusals[0]
+        refused_reason, refused_approver = _take_approval(approvals, it.tool)
         refusals.append(
             RefusalEntry(
                 seq=0,
@@ -493,7 +586,8 @@ def _emit(
                 message=str(blocking.get("message") or ""),
                 target=target,
                 summary=it.summary,
-                reason=_take_reason(approvals, it.tool),
+                reason=refused_reason,
+                approver=refused_approver,
             )
         )
         return
@@ -506,7 +600,7 @@ def _emit(
         # heuristic for run verbs added after that snapshot was taken.
         return
 
-    reason = _take_reason(approvals, it.tool)
+    reason, approver = _take_approval(approvals, it.tool)
     postwrite = it.postwrite or {}
     postwrite_blocking = bool(postwrite.get("blocking"))
     dispatch_refusal = next((r for r in it.refusals if r.get("phase") == "dispatch"), None)
@@ -544,6 +638,7 @@ def _emit(
             warnings=tuple(it.warnings),
             error_type=error_type,
             message=message,
+            approver=approver,
         )
     )
 
@@ -559,22 +654,26 @@ def _emit(
                 target=target,
                 summary=it.summary,
                 reason=reason,
+                approver=approver,
             )
         )
 
 
-def _take_reason(approvals: list[dict[str, Any]], tool: str) -> str | None:
+def _take_approval(approvals: list[dict[str, Any]], tool: str) -> tuple[str | None, Approver | None]:
     """Consume the earliest unconsumed approval for ``tool`` and return its
-    reason. One approval authorizes exactly one dispatch — the same rule
-    ``gates.PreapprovedWriteGate`` enforces on the live path."""
+    ``(reason, approver)``. One approval authorizes exactly one dispatch — the
+    same rule ``gates.PreapprovedWriteGate`` enforces on the live path — so the
+    rationale and the approver are taken together, from the SAME record: they
+    are two halves of one human decision and must never end up describing
+    different ones."""
     for approval in approvals:
         if approval["consumed"]:
             continue
         if approval.get("tool") and approval["tool"] != tool:
             continue
         approval["consumed"] = True
-        return approval.get("reason")
-    return None
+        return approval.get("reason"), approval.get("approver")
+    return None, None
 
 
 def _chain_before_values(changes: list[ChangeEntry]) -> list[ChangeEntry]:
@@ -736,15 +835,25 @@ _TABLE2_CAPTION = {
     "en": "Table {n} - Refused, rolled back and declined changes",
     "ja": "表 {n} - 拒否・ロールバック・却下の記録",
 }
+#: U8 puts "승인자" immediately BEFORE "근거" in both tables, on purpose: the
+#: two cells come from the same ``user_confirm`` record and answer "who allowed
+#: this / on what grounds" as one thought. Keeping the rationale last also
+#: leaves it the widest-reading trailing column it already was.
 _TABLE1_HEAD = {
-    "ko": ["#", "시각(UTC)", "대상", "항목", "변경 전 → 변경 후", "도구", "검증", "근거"],
-    "en": ["#", "Time (UTC)", "Target", "Attribute", "Before → After", "Tool", "Verification", "Rationale"],
-    "ja": ["#", "時刻(UTC)", "対象", "項目", "変更前 → 変更後", "ツール", "検証", "根拠"],
+    "ko": ["#", "시각(UTC)", "대상", "항목", "변경 전 → 변경 후", "도구", "검증", "승인자", "근거"],
+    "en": [
+        "#", "Time (UTC)", "Target", "Attribute", "Before → After", "Tool", "Verification",
+        "Approver", "Rationale",
+    ],
+    "ja": ["#", "時刻(UTC)", "対象", "項目", "変更前 → 変更後", "ツール", "検証", "承認者", "根拠"],
 }
 _TABLE2_HEAD = {
-    "ko": ["#", "시각(UTC)", "도구", "대상", "단계", "사유", "근거"],
-    "en": ["#", "Time (UTC)", "Tool", "Target", "Phase", "Reason given by the system", "Rationale"],
-    "ja": ["#", "時刻(UTC)", "ツール", "対象", "段階", "理由", "根拠"],
+    "ko": ["#", "시각(UTC)", "도구", "대상", "단계", "사유", "승인자", "근거"],
+    "en": [
+        "#", "Time (UTC)", "Tool", "Target", "Phase", "Reason given by the system",
+        "Approver", "Rationale",
+    ],
+    "ja": ["#", "時刻(UTC)", "ツール", "対象", "段階", "理由", "承認者", "根拠"],
 }
 _EMPTY_CHANGES = {
     "ko": "이 세션에는 적용된 파라미터 변경 기록이 없습니다.",
@@ -778,6 +887,15 @@ _FOOTNOTE = {
     ),
 }
 _NOT_RECORDED = {"ko": "기록 없음", "en": "not recorded", "ja": "記録なし"}
+#: U8: what the approver cell says when the ledger names no AUTHENTICATED
+#: approver — every record written before roadmap 2.5's login existed, and any
+#: record whose actor object does not pass :func:`normalize_actor`. It names
+#: the cause so a reader never mistakes it for "nobody approved this".
+_APPROVER_NOT_RECORDED = {
+    "ko": "기록 없음(인증 이전)",
+    "en": "not recorded (pre-authentication)",
+    "ja": "記録なし(認証導入前)",
+}
 _NONE_MARK = {"ko": "-", "en": "-", "ja": "-"}
 _OUTCOME = {
     "applied": {"ko": "검증 통과", "en": "verified", "ja": "検証合格"},
@@ -815,6 +933,18 @@ def _verification_text(entry: ChangeEntry, language: str) -> str:
         # so this cell is the only place the reason it did not land is shown.
         parts.append(_elide(" ".join(entry.message.split())))
     return " · ".join(parts)
+
+
+def _approver_text(approver: Approver | None, language: str) -> str:
+    """"display_name (username · 역할)" for an authenticated approver, else the
+    "기록 없음(인증 이전)" fallback. The username is printed next to the display
+    name because display names are not unique — two 김민수 on one project are a
+    normal Tuesday, and an audit column that cannot tell them apart is not an
+    audit column."""
+    if approver is None:
+        return _t(_APPROVER_NOT_RECORDED, language)
+    role = _t(_ROLE_LABEL[approver.role], language)
+    return _elide(f"{approver.display_name} ({approver.username} · {role})")
 
 
 def _before_after_text(entry: ChangeEntry, language: str) -> str:
@@ -891,7 +1021,8 @@ def add_audit_trail_section(
             _setcell(cells[4], _before_after_text(entry, language), align="left")
             _setcell(cells[5], entry.tool, align="left")
             _setcell(cells[6], _verification_text(entry, language), align="left")
-            _setcell(cells[7], entry.reason or _t(_NONE_MARK, language), align="left")
+            _setcell(cells[7], _approver_text(entry.approver, language), align="left")
+            _setcell(cells[8], entry.reason or _t(_NONE_MARK, language), align="left")
         doc.add_paragraph("")
 
     # --- Table 2: refusals, rollbacks, declines -----------------------------
@@ -915,7 +1046,8 @@ def add_audit_trail_section(
             _setcell(cells[3], entry.target, align="left")
             _setcell(cells[4], phase_label)
             _setcell(cells[5], message, align="left")
-            _setcell(cells[6], entry.reason or _t(_NONE_MARK, language), align="left")
+            _setcell(cells[6], _approver_text(entry.approver, language), align="left")
+            _setcell(cells[7], entry.reason or _t(_NONE_MARK, language), align="left")
         doc.add_paragraph("")
 
     other = sum(1 for e in ledger.changes if e.outcome != "applied")
@@ -951,6 +1083,7 @@ def build_audit_trail_docx(
 
 
 __all__ = [
+    "Approver",
     "AuditLedger",
     "ChangeEntry",
     "RefusalEntry",
@@ -960,6 +1093,7 @@ __all__ = [
     "build_ledger",
     "format_ts",
     "ledger_path",
+    "normalize_actor",
     "read_ledger",
     "read_records",
     "resolve_session_dir",

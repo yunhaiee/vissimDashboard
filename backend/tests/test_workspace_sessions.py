@@ -171,7 +171,12 @@ def _write_pending_approval(work_dir: Path, approval_id: str = "pending-1") -> N
     )
 
 
-def _all_session_surfaces(client: TestClient, session_id: str, headers: dict[str, str]):
+def _all_session_surfaces(
+    client: TestClient,
+    session_id: str,
+    headers: dict[str, str],
+    approver_headers: dict[str, str],
+):
     """Every HTTP surface that resolves a session id, as
     ``{name: response}`` — the full blast radius of the ownership predicate.
 
@@ -179,6 +184,12 @@ def _all_session_surfaces(client: TestClient, session_id: str, headers: dict[str
     ``routers/agent_audit.py`` (summary + export) and
     ``routers/assistant.py``'s ``/agent/approve`` all call the SAME predicate;
     a fix that only closed one of them would be no fix at all.
+
+    Unit U8 authenticated the approve surface (and ONLY that one), so its call
+    carries a real reviewer session on top of the workspace header. That is
+    what keeps these tests measuring the WORKSPACE boundary: without it the
+    request would stop at 401 and the ownership 404 below would never be
+    exercised at all.
     """
     return {
         "network": client.get(f"/api/network?session_id={session_id}", headers=headers),
@@ -198,7 +209,7 @@ def _all_session_surfaces(client: TestClient, session_id: str, headers: dict[str
         "approve": client.post(
             "/api/assistant/agent/approve",
             json={"session_id": session_id, "approval_id": "pending-1", "approved": False},
-            headers=headers,
+            headers={**headers, **approver_headers},
         ),
     }
 
@@ -221,7 +232,7 @@ def _assert_fully_denied(responses: dict[str, Any], session_id: str) -> None:
 
 
 def test_a_sidecar_less_session_created_after_the_upgrade_is_denied_to_everyone(
-    client: TestClient, sessions_root: Path
+    client: TestClient, sessions_root: Path, approver_headers: dict[str, str]
 ):
     """THE fail-open hole, measured end to end.
 
@@ -250,9 +261,9 @@ def test_a_sidecar_less_session_created_after_the_upgrade_is_denied_to_everyone(
     _write_pending_approval(sessions_root / session_id)
     assert not agent_sessions.session_meta_path(sessions_root / session_id).exists()
 
-    _assert_fully_denied(_all_session_surfaces(client, session_id, {}), session_id)
+    _assert_fully_denied(_all_session_surfaces(client, session_id, {}, approver_headers), session_id)
     _assert_fully_denied(
-        _all_session_surfaces(client, session_id, _headers(workspace_b)), session_id
+        _all_session_surfaces(client, session_id, _headers(workspace_b), approver_headers), session_id
     )
 
     # And the resume branch of the streaming endpoint refuses it too.
@@ -295,7 +306,7 @@ def test_a_sidecar_less_session_is_no_longer_an_existence_oracle(
 
 
 def test_a_truncated_sidecar_denies_the_default_workspace_and_the_true_owner(
-    client: TestClient, sessions_root: Path
+    client: TestClient, sessions_root: Path, approver_headers: dict[str, str]
 ):
     """A sidecar torn by a crash mid-write parses as nothing. The old code
     read that as "legacy" and awarded the session to the default workspace.
@@ -315,13 +326,15 @@ def test_a_truncated_sidecar_denies_the_default_workspace_and_the_true_owner(
     )
     _write_pending_approval(work_dir)
 
-    _assert_fully_denied(_all_session_surfaces(client, session_id, {}), session_id)
+    _assert_fully_denied(_all_session_surfaces(client, session_id, {}, approver_headers), session_id)
     _assert_fully_denied(
-        _all_session_surfaces(client, session_id, _headers(workspace_b)), session_id
+        _all_session_surfaces(client, session_id, _headers(workspace_b), approver_headers), session_id
     )
 
 
-def test_a_sidecar_naming_no_workspace_denies_everyone(client: TestClient, sessions_root: Path):
+def test_a_sidecar_naming_no_workspace_denies_everyone(
+    client: TestClient, sessions_root: Path, approver_headers: dict[str, str]
+):
     """Well-formed JSON, blank owner — the shape a partially-migrated or
     hand-edited sidecar takes. ``workspace_id`` present-but-falsy was the
     literal trigger of the old ``if not owner: owner = default`` branch."""
@@ -330,7 +343,7 @@ def test_a_sidecar_naming_no_workspace_denies_everyone(client: TestClient, sessi
     agent_sessions.write_session_meta(work_dir, {"session_id": session_id, "workspace_id": ""})
     _write_pending_approval(work_dir)
 
-    _assert_fully_denied(_all_session_surfaces(client, session_id, {}), session_id)
+    _assert_fully_denied(_all_session_surfaces(client, session_id, {}, approver_headers), session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +352,7 @@ def test_a_sidecar_naming_no_workspace_denies_everyone(client: TestClient, sessi
 
 
 def test_a_pre_upgrade_session_stays_reachable_from_the_default_workspace(
-    client: TestClient, sessions_root: Path
+    client: TestClient, sessions_root: Path, approver_headers: dict[str, str]
 ):
     """The documented legacy path, now explicit instead of implicit.
 
@@ -354,7 +367,7 @@ def test_a_pre_upgrade_session_stays_reachable_from_the_default_workspace(
 
     other_id = client.post("/api/workspaces", json={"name": "other"}).json()["id"]
 
-    owner_view = _all_session_surfaces(client, session_id, {})
+    owner_view = _all_session_surfaces(client, session_id, {}, approver_headers)
     assert owner_view["network"].json()["source"] == {"view": "working", "session_id": session_id}
     assert owner_view["downloads_for_session"].json()
     assert owner_view["download_latest"].status_code == 200
@@ -362,7 +375,7 @@ def test_a_pre_upgrade_session_stays_reachable_from_the_default_workspace(
     assert owner_view["audit_export"].status_code == 200
     assert session_id in {entry["session_id"] for entry in owner_view["downloads_list"].json()}
 
-    _assert_fully_denied(_all_session_surfaces(client, session_id, _headers(other_id)), session_id)
+    _assert_fully_denied(_all_session_surfaces(client, session_id, _headers(other_id), approver_headers), session_id)
 
     # The backfill records ownership AT THE ROOT, never inside the session
     # directory: ``routers/agent_downloads.py``'s module docstring promises a
@@ -452,7 +465,7 @@ def test_a_failed_backfill_denies_rather_than_caching_an_empty_legacy_set(
 
 
 def test_a_healthy_session_serves_its_owner_and_is_indistinguishable_from_a_ghost(
-    client: TestClient, sessions_root: Path
+    client: TestClient, sessions_root: Path, approver_headers: dict[str, str]
 ):
     """No existence oracle: an intruder's response must be byte-identical —
     body AND headers — to the same request for a session id that has never
@@ -465,7 +478,7 @@ def test_a_healthy_session_serves_its_owner_and_is_indistinguishable_from_a_ghos
     work_dir = _make_session(sessions_root, session_id, owner=default_id)
     _write_pending_approval(work_dir)
 
-    owner_view = _all_session_surfaces(client, session_id, {})
+    owner_view = _all_session_surfaces(client, session_id, {}, approver_headers)
     assert owner_view["network"].json()["source"] == {"view": "working", "session_id": session_id}
     assert owner_view["download_latest"].status_code == 200
     assert owner_view["download_latest"].content == INPX_A
@@ -477,10 +490,10 @@ def test_a_healthy_session_serves_its_owner_and_is_indistinguishable_from_a_ghos
     _write_pending_approval(work_dir)
 
     intruder = _headers(intruder_id)
-    denied = _all_session_surfaces(client, session_id, intruder)
+    denied = _all_session_surfaces(client, session_id, intruder, approver_headers)
     _assert_fully_denied(denied, session_id)
 
-    ghost = _all_session_surfaces(client, GHOST_SESSION_ID, intruder)
+    ghost = _all_session_surfaces(client, GHOST_SESSION_ID, intruder, approver_headers)
     for surface in ("network", "downloads_for_session", "download_latest", "audit_summary",
                     "audit_export", "approve"):
         assert denied[surface].status_code == ghost[surface].status_code, surface

@@ -113,7 +113,7 @@ def _propose(client, monkeypatch, provider) -> tuple[Any, list[dict[str, Any]]]:
 # ---------------------------------------------------------------------------
 
 
-def test_full_propose_pending_file_approve_dispatch_run_verified_answer(client, monkeypatch):
+def test_full_propose_pending_file_approve_dispatch_run_verified_answer(client, monkeypatch, approver_headers):
     # 5 seeds: enough to stay clear of constraints.py's (M3.1)
     # single_seed_run_not_statistically_valid, which is not what this test is
     # isolating (it's testing the no-VissimEditSession propose->approve wiring).
@@ -176,6 +176,7 @@ def test_full_propose_pending_file_approve_dispatch_run_verified_answer(client, 
     approve_response = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": approval_id, "approved": True},
+        headers=approver_headers,
     )
     assert approve_response.status_code == 200
     approve_events = _stream_events(approve_response)
@@ -206,7 +207,7 @@ def test_full_propose_pending_file_approve_dispatch_run_verified_answer(client, 
 # ---------------------------------------------------------------------------
 
 
-def test_decline_run_action_never_submits_a_job(client, monkeypatch):
+def test_decline_run_action_never_submits_a_job(client, monkeypatch, approver_headers):
     provider = FakeStructuredProvider(
         [_action("run_simulation", summary="시뮬레이션 실행 제안", duration_s=300)]
     )
@@ -222,6 +223,7 @@ def test_decline_run_action_never_submits_a_job(client, monkeypatch):
     decline_response = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": approval_id, "approved": False},
+        headers=approver_headers,
     )
     assert decline_response.status_code == 200
     decline_done = _stream_events(decline_response)[-1]

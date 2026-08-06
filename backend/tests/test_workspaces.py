@@ -844,7 +844,10 @@ def test_session_source_is_frozen_at_creation_not_re_resolved(
 
 
 def test_session_scoped_endpoints_404_across_workspaces(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    approver_headers: dict[str, str],
 ):
     from routers import agent_downloads as agent_downloads_router
     from routers import network as network_router
@@ -888,10 +891,13 @@ def test_session_scoped_endpoints_404_across_workspaces(
     intruder_network = client.get(f"/api/network?session_id={session_id}", headers=intruder).json()
     assert intruder_network["source"] == {"view": "active"}
 
+    # U8 authenticated this endpoint (and only this one), so the intruder is a
+    # signed-in reviewer here: the 404 below is the WORKSPACE boundary being
+    # measured, not a 401 stopping the request short of it.
     approve = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": "whatever", "approved": True},
-        headers=intruder,
+        headers={**intruder, **approver_headers},
     )
     assert approve.status_code == 404
 

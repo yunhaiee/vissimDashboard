@@ -495,7 +495,7 @@ def test_agent_query_without_a_selection_sends_no_block(
 
 
 def test_approved_rerun_replays_the_proposal_turns_selection(
-    client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, approver_headers
 ):
     """``/agent/approve`` carries no selection of its own (the request only
     identifies a pending approval), so the proposal turn's is persisted in
@@ -546,6 +546,7 @@ def test_approved_rerun_replays_the_proposal_turns_selection(
             "approval_id": approval["approval_id"],
             "approved": True,
         },
+        headers=approver_headers,
     )
 
     assert approve.status_code == 200

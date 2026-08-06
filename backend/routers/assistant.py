@@ -14,10 +14,15 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, AsyncIterator, Callable, Iterator
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# Unit U8 (roadmap 2.5): the approval gate is the ONE place in this router that
+# demands an identity. ``_language`` is imported rather than re-implemented so
+# a single route cannot answer its 401 (raised inside ``current_user``) in one
+# language and its 403 in another.
+from routers.auth import _language as _auth_language, current_user, require_role
 from services import workspaces
 from services.agent.edit_session import (
     VissimEditSession,
@@ -75,6 +80,67 @@ assistant_router = VissimAssistantRouter()
 #: rejecting anything longer at the pydantic boundary keeps an unbounded blob
 #: out of the append-only ledger in the first place.
 MAX_APPROVAL_REASON_CHARS = 300
+
+#: Unit U8: who may resolve a pending write/run approval. Both roles are NAMED
+#: — ``routers/auth.require_role`` grants ``admin`` nothing implicitly, exactly
+#: so that "리뷰어가 로그인해 승인 이력을 자기 이름으로 남김" stays answerable
+#: from the audit document. An admin is listed because a small consultancy's
+#: admin IS often the senior reviewer, not because admin is a superuser.
+APPROVAL_ROLES: tuple[str, ...] = ("reviewer", "admin")
+
+#: The 403 body. It names the required roles (the generic
+#: ``require_role`` message deliberately does not) because the person who hits
+#: this is a modeler who needs to know WHO to ask, not that "something" was
+#: forbidden. ko primary, en/ja through the same ``pick_language_text`` table
+#: lookup every other deterministic string in this router uses.
+_APPROVAL_ROLE_REQUIRED = {
+    "ko": "승인·반려는 {roles} 권한을 가진 사용자만 할 수 있습니다.",
+    "en": "Only a user with the {roles} role may approve or decline this action.",
+    "ja": "承認・却下は {roles} 権限を持つユーザーのみが行えます。",
+}
+
+#: The same enforcement U7 shipped and tested — used as the gate itself, not
+#: re-implemented. Built at import time so a typo'd role name raises there
+#: (``require_role``'s own ValueError) rather than producing a route nobody can
+#: ever call.
+_require_approval_role = require_role(*APPROVAL_ROLES)
+
+
+def require_approver(
+    request: Request, user: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
+    """The authenticated ``reviewer``/``admin`` resolving this approval, or
+    401/403.
+
+    Thin wrapper around U7's ``require_role`` so the CHECK has exactly one
+    implementation: the only thing added here is a 403 detail that names the
+    roles, which a modeler hitting this endpoint needs in order to act.
+    """
+    try:
+        return _require_approval_role(request, user)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        detail = pick_language_text(_APPROVAL_ROLE_REQUIRED, _auth_language(request)).format(
+            roles=", ".join(APPROVAL_ROLES)
+        )
+        raise HTTPException(status_code=403, detail=detail) from exc
+
+
+def _approval_actor(user: dict[str, Any]) -> dict[str, Any]:
+    """The approver fields the ledger records — and ONLY those.
+
+    Copied out of the session's user row rather than out of the request, so the
+    name in the audit document is one this system authenticated. Deliberately
+    excludes ``created_at``/``disabled``: an append-only ledger should carry the
+    identity of the decision, not a snapshot of an account's current state.
+    """
+    return {
+        "user_id": user["id"],
+        "username": user["username"],
+        "display_name": user["display_name"],
+        "role": user["role"],
+    }
 
 
 def _kill_stale_qwen_workers() -> None:
@@ -583,10 +649,17 @@ def _delete_pending_approval(work_dir: Path) -> None:
 
 
 def _record_approval_decision(
-    work_dir: Path, session_id: str, pending: dict[str, Any], *, approved: bool, reason: str | None
+    work_dir: Path,
+    session_id: str,
+    pending: dict[str, Any],
+    *,
+    approved: bool,
+    reason: str | None,
+    actor: dict[str, Any] | None = None,
 ) -> None:
-    """Phase 1.3: append the human's approve/decline decision — and their
-    one-line rationale, when given — to the session's action ledger.
+    """Phase 1.3: append the human's approve/decline decision — their one-line
+    rationale, when given, and (U8) WHO they are — to the session's action
+    ledger.
 
     Written as a ``user_confirm`` record (the kind ``orchestrator.py`` already
     uses for ``stage="requested"`` when it pauses for approval), with
@@ -595,6 +668,12 @@ def _record_approval_decision(
     write that follows it. This is the ONLY new thing the approval path
     writes: it does not touch the pending file, the artifact manager, the
     gate, or the re-run itself.
+
+    ``actor`` is ``_approval_actor``'s dict for the authenticated approver.
+    It defaults to ``None`` and is written as ``None`` when absent, so this
+    helper keeps its pre-U8 call signature working and a ledger line stays the
+    same shape either way; ``audit_trail.normalize_actor`` renders anything
+    that is not a complete U8 actor as "기록 없음(인증 이전)".
 
     Best-effort by design. A ledger append that fails (an unwritable work dir,
     a session id the trace layer rejects) is logged and swallowed — an audit
@@ -614,6 +693,7 @@ def _record_approval_decision(
                 "params": action.get("params") or {},
                 "summary": action.get("summary") or "",
                 "reason": reason or None,
+                "actor": actor or None,
             },
         )
     except Exception:  # noqa: BLE001 - see the docstring: never block the edit
@@ -1380,7 +1460,11 @@ def stream_agent_query(payload: AgentQueryRequest, request: Request):
 
 
 @router.post("/agent/approve")
-def approve_agent_action(payload: AgentApproveRequest, request: Request):
+def approve_agent_action(
+    payload: AgentApproveRequest,
+    request: Request,
+    approver: dict[str, Any] = Depends(require_approver),
+):
     """M2.3: resolve one pending write approval from an earlier
     ``/agent/query/stream`` turn's ``approval_request`` event.
 
@@ -1403,6 +1487,17 @@ def approve_agent_action(payload: AgentApproveRequest, request: Request):
     ``session_id`` (see ``_SESSION_ID_RE`` — this is the first endpoint
     where a CLIENT-supplied session_id reaches filesystem path
     construction), both 404 with no further detail.
+
+    **U8 (roadmap 2.5): this is the only endpoint outside ``/api/auth`` that
+    requires an identity.** Both legs — approve AND decline — require a signed-in
+    ``reviewer`` or ``admin`` (``require_approver``); a modeler gets 403 and
+    an anonymous caller 401, and in BOTH cases the pending approval survives
+    untouched, because the dependency resolves before this body runs and the
+    file is consumed inside it. The approver's identity is recorded in the
+    ledger, which is where the audit DOCX's "승인자" column comes from.
+    Until U9 ships the login UI the frontend's approval card will receive
+    401 — sequenced deliberately: an approval history that cannot name its
+    approver is the thing this unit exists to end.
     """
     if not _SESSION_ID_RE.match(payload.session_id):
         raise HTTPException(status_code=404, detail="No matching pending approval.")
@@ -1433,6 +1528,15 @@ def approve_agent_action(payload: AgentApproveRequest, request: Request):
         pending,
         approved=payload.approved,
         reason=(payload.reason or "").strip() or None,
+        actor=_approval_actor(approver),
+    )
+    logger.info(
+        "agent approval %s: session %s %s by %s (%s)",
+        payload.approval_id,
+        payload.session_id,
+        "approved" if payload.approved else "declined",
+        approver["username"],
+        approver["role"],
     )
 
     language = str(pending.get("language") or "ko")

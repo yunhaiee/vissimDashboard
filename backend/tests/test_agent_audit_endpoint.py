@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 import main
 from routers import agent_audit
 from routers import assistant as assistant_endpoint
-from services import audit_trail
+from services import audit_trail, auth
 
 SESSION_ID = "abc123def456"
 _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -283,7 +283,7 @@ def _write_pending(work_dir: Path, *, approval_id: str = "pending-1") -> None:
     )
 
 
-def test_decline_with_a_reason_is_recorded_in_the_ledger_and_exported(client, sessions_root):
+def test_decline_with_a_reason_is_recorded_in_the_ledger_and_exported(client, sessions_root, approver_headers):
     work_dir = sessions_root / SESSION_ID
     _write_pending(work_dir)
 
@@ -295,12 +295,19 @@ def test_decline_with_a_reason_is_recorded_in_the_ledger_and_exported(client, se
             "approved": False,
             "reason": "관측 교통량과 불일치하여 반려",
         },
+        headers=approver_headers,
     )
     assert resp.status_code == 200
 
     records = audit_trail.read_records(work_dir / f"trace_{SESSION_ID}.jsonl")
     assert len(records) == 1
     assert records[0]["kind"] == "user_confirm"
+    # U8 added ``actor``: the AUTHENTICATED reviewer who declined, exactly the
+    # four fields ``audit_trail.normalize_actor`` accepts, and carrying the
+    # real account's id rather than anything the request could have supplied.
+    # The whole payload is pinned (not just the new key) so a field can never
+    # quietly appear in the append-only ledger without a test saying so.
+    reviewer = auth.get_user_by_username("suite-reviewer")
     assert records[0]["payload"] == {
         "stage": "declined",
         "approval_id": "pending-1",
@@ -308,14 +315,21 @@ def test_decline_with_a_reason_is_recorded_in_the_ledger_and_exported(client, se
         "params": {"input_no": "1", "volume": 600},
         "summary": "교통량을 600으로 변경 제안",
         "reason": "관측 교통량과 불일치하여 반려",
+        "actor": {
+            "user_id": reviewer["id"],
+            "username": "suite-reviewer",
+            "display_name": "검토 담당자",
+            "role": "reviewer",
+        },
     }
 
     text = _doc_text(client.get(f"/api/agent/audit/{SESSION_ID}/export.docx").content)
     assert "사용자 거절" in text
     assert "관측 교통량과 불일치하여 반려" in text
+    assert "검토 담당자 (suite-reviewer · 검토자)" in text
 
 
-def test_reason_is_optional_and_a_blank_one_is_stored_as_none(client, sessions_root):
+def test_reason_is_optional_and_a_blank_one_is_stored_as_none(client, sessions_root, approver_headers):
     work_dir = sessions_root / SESSION_ID
     _write_pending(work_dir)
 
@@ -323,6 +337,7 @@ def test_reason_is_optional_and_a_blank_one_is_stored_as_none(client, sessions_r
     resp = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": SESSION_ID, "approval_id": "pending-1", "approved": False},
+        headers=approver_headers,
     )
     assert resp.status_code == 200
 
@@ -333,12 +348,13 @@ def test_reason_is_optional_and_a_blank_one_is_stored_as_none(client, sessions_r
     client.post(
         "/api/assistant/agent/approve",
         json={"session_id": SESSION_ID, "approval_id": "pending-2", "approved": False, "reason": "   "},
+        headers=approver_headers,
     )
     records = audit_trail.read_records(work_dir / f"trace_{SESSION_ID}.jsonl")
     assert records[-1]["payload"]["reason"] is None
 
 
-def test_an_over_long_reason_is_rejected_at_the_request_boundary(client, sessions_root):
+def test_an_over_long_reason_is_rejected_at_the_request_boundary(client, sessions_root, approver_headers):
     work_dir = sessions_root / SESSION_ID
     _write_pending(work_dir)
 
@@ -350,6 +366,7 @@ def test_an_over_long_reason_is_rejected_at_the_request_boundary(client, session
             "approved": False,
             "reason": "가" * (assistant_endpoint.MAX_APPROVAL_REASON_CHARS + 1),
         },
+        headers=approver_headers,
     )
 
     assert resp.status_code == 422
@@ -358,13 +375,14 @@ def test_an_over_long_reason_is_rejected_at_the_request_boundary(client, session
     assert not (work_dir / f"trace_{SESSION_ID}.jsonl").exists()
 
 
-def test_a_stale_approval_id_404s_without_touching_the_ledger(client, sessions_root):
+def test_a_stale_approval_id_404s_without_touching_the_ledger(client, sessions_root, approver_headers):
     work_dir = sessions_root / SESSION_ID
     _write_pending(work_dir)
 
     resp = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": SESSION_ID, "approval_id": "wrong", "approved": False, "reason": "x"},
+        headers=approver_headers,
     )
 
     assert resp.status_code == 404
@@ -403,7 +421,7 @@ def test_recorded_approval_reason_attaches_to_the_write_that_follows_it(sessions
     ]
 
 
-def test_a_failed_ledger_append_never_blocks_the_approval(client, sessions_root, monkeypatch):
+def test_a_failed_ledger_append_never_blocks_the_approval(client, sessions_root, monkeypatch, approver_headers):
     """The ledger write is best-effort: an unwritable trace must not turn a
     user's decision into a 500."""
     work_dir = sessions_root / SESSION_ID
@@ -417,6 +435,7 @@ def test_a_failed_ledger_append_never_blocks_the_approval(client, sessions_root,
     resp = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": SESSION_ID, "approval_id": "pending-1", "approved": False, "reason": "x"},
+        headers=approver_headers,
     )
 
     assert resp.status_code == 200

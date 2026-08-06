@@ -27,6 +27,18 @@ from services import audit_trail
 BASE_TS = datetime(2026, 8, 4, 9, 0, 0, tzinfo=timezone.utc).timestamp()
 PINNED_GENERATED_AT = datetime(2026, 8, 4, 10, 30, 0, tzinfo=timezone.utc)
 
+#: Unit U8: exactly the ``actor`` object ``routers/assistant._approval_actor``
+#: writes for an authenticated reviewer. Nothing here goes near the database --
+#: this file folds synthetic records, and the live end-to-end wiring (real
+#: login -> real approve -> this shape on disk) is proven in
+#: tests/test_agent_approval_authz.py.
+REVIEWER_ACTOR = {
+    "user_id": 7,
+    "username": "yunha",
+    "display_name": "이윤하",
+    "role": "reviewer",
+}
+
 
 class _Ledger:
     """Builds a trace record stream the way the orchestrator does, one step at
@@ -139,16 +151,38 @@ class _Ledger:
             {"stage": "requested", "iteration": self._iteration, "tool": tool, "params": params, "warnings": []},
         )
 
-    def approved(self, tool: str, params: dict, reason: str | None) -> "_Ledger":
+    def approved(
+        self, tool: str, params: dict, reason: str | None, actor: dict | None = None
+    ) -> "_Ledger":
         return self._write(
             "user_confirm",
-            {"stage": "approved", "approval_id": "aid", "tool": tool, "params": params, "summary": "", "reason": reason},
+            {
+                "stage": "approved",
+                "approval_id": "aid",
+                "tool": tool,
+                "params": params,
+                "summary": "",
+                "reason": reason,
+                # U8's field. Defaults to None so every fixture written before
+                # it existed still produces a pre-authentication record.
+                "actor": actor,
+            },
         )
 
-    def declined(self, tool: str, params: dict, reason: str | None) -> "_Ledger":
+    def declined(
+        self, tool: str, params: dict, reason: str | None, actor: dict | None = None
+    ) -> "_Ledger":
         return self._write(
             "user_confirm",
-            {"stage": "declined", "approval_id": "aid", "tool": tool, "params": params, "summary": "", "reason": reason},
+            {
+                "stage": "declined",
+                "approval_id": "aid",
+                "tool": tool,
+                "params": params,
+                "summary": "",
+                "reason": reason,
+                "actor": actor,
+            },
         )
 
     # -- composites --------------------------------------------------------
@@ -160,15 +194,17 @@ class _Ledger:
         *,
         summary: str = "",
         reason: str | None = None,
+        actor: dict | None = None,
         with_approval: bool = True,
         warnings: list[str] | None = None,
     ) -> "_Ledger":
         """The full real-world shape of an approved write: the proposal turn
-        pauses, the human approves (recorded with their reason), the approve
-        turn replays the same plan and dispatches it."""
+        pauses, the human approves (recorded with their reason and, since U8,
+        their authenticated identity), the approve turn replays the same plan
+        and dispatches it."""
         if with_approval:
             self.plan(tool, params, summary).preflight(tool).approval_requested(tool, params)
-            self.approved(tool, params, reason)
+            self.approved(tool, params, reason, actor)
         self.plan(tool, params, summary).preflight(tool)
         if warnings:
             self.warning(tool, "preflight", warnings)
@@ -375,7 +411,11 @@ def test_colliding_iteration_numbers_across_turns_neither_merge_rows_nor_break_c
 def test_legacy_ledger_without_any_approval_records_still_exports():
     """Ledgers written before the reason field existed have no
     ``stage="approved"`` records at all — every rationale cell is simply
-    empty, and nothing else degrades."""
+    empty, and nothing else degrades.
+
+    U8 extends the same statement to the approver: no approval record means no
+    approver either, and the cell says so in words rather than going blank.
+    """
     ledger = (
         _Ledger()
         .applied_write("set_signal_offset", {"sc_no": "2", "offset": 12}, with_approval=False)
@@ -384,11 +424,175 @@ def test_legacy_ledger_without_any_approval_records_still_exports():
     )
     assert len(ledger.changes) == 2
     assert [e.reason for e in ledger.changes] == [None, None]
+    assert [e.approver for e in ledger.changes] == [None, None]
     assert ledger.reasoned_count == 0
 
     rows = _table_rows(_doc_from(ledger).tables[0])
     assert rows[1][-1] == "-"
     assert rows[2][-1] == "-"
+    assert rows[1][-2] == rows[2][-2] == "기록 없음(인증 이전)"
+
+
+def test_a_reason_less_actor_less_legacy_ledger_folds_byte_identically():
+    """U8 is additive, measured rather than asserted: the ledger a pre-U8
+    session left on disk folds to exactly the entries it did before, field for
+    field, with ``approver`` simply ``None``."""
+    records = (
+        _Ledger()
+        .applied_write("set_signal_cycle", {"sc_no": "3", "cycle": 120}, with_approval=False)
+        .plan("set_signal_offset", {"sc_no": "3", "offset": 900}, "오프셋")
+        .preflight("set_signal_offset", blocking=True, findings=["offset_out_of_range"])
+        .refusal(
+            "set_signal_offset",
+            phase="preflight",
+            error_type="guardrail_refused",
+            message="주기보다 큰 오프셋",
+        )
+        .records
+    )
+    # A pre-U8 trace has no `actor` KEY at all, not a null one -- strip it so
+    # this fixture is the real historical shape.
+    for record in records:
+        record["payload"].pop("actor", None)
+
+    built = audit_trail.build_ledger("abc123def456", records)
+
+    assert [(e.tool, e.outcome, e.reason, e.approver) for e in built.changes] == [
+        ("set_signal_cycle", "applied", None, None)
+    ]
+    assert [(r.phase, r.reason, r.approver) for r in built.refusals] == [("preflight", None, None)]
+
+
+# ---------------------------------------------------------------------------
+# 1b. The approver column (unit U8)
+# ---------------------------------------------------------------------------
+
+
+def test_an_authenticated_approval_names_its_approver_on_the_change_it_authorized():
+    ledger = _Ledger().applied_write(
+        "set_vehicle_input_volume",
+        {"input_no": "1", "volume": 600.0},
+        reason="TIA 시나리오 B 수요",
+        actor=REVIEWER_ACTOR,
+    ).build()
+
+    entry = ledger.changes[0]
+    assert entry.approver == audit_trail.Approver(
+        user_id=7, username="yunha", display_name="이윤하", role="reviewer"
+    )
+    # Rendered "이름 (아이디 · 역할)" — the username is there because display
+    # names are not unique.
+    assert _table_rows(_doc_from(ledger).tables[0])[1][7] == "이윤하 (yunha · 검토자)"
+
+
+def test_a_declined_decision_names_the_human_who_declined_it():
+    ledger = _Ledger()
+    ledger.plan("set_vehicle_input_volume", {"input_no": "1", "volume": 600.0}, "제안")
+    ledger.preflight("set_vehicle_input_volume")
+    ledger.approval_requested("set_vehicle_input_volume", {"input_no": "1", "volume": 600.0})
+    ledger.declined(
+        "set_vehicle_input_volume",
+        {"input_no": "1", "volume": 600.0},
+        "관측 자료와 불일치",
+        {**REVIEWER_ACTOR, "role": "admin", "username": "boss", "display_name": "관리자 김"},
+    )
+    built = ledger.build()
+
+    assert built.refusals[0].approver.username == "boss"
+    # A declined proposal changes nothing, so the empty change table renders as
+    # a sentence and the refusal table is the document's only table.
+    doc = _doc_from(built)
+    assert len(doc.tables) == 1
+    row = _table_rows(doc.tables[0])[1]
+    assert row[6] == "관리자 김 (boss · 관리자)"
+    assert row[7] == "관측 자료와 불일치"
+
+
+def test_a_rolled_back_write_carries_the_same_approver_on_both_of_its_rows():
+    """One decision, two rows: the change that was applied-then-reverted and
+    the refusal that reverted it must not disagree about who authorized it."""
+    ledger = _Ledger()
+    ledger.plan("set_vehicle_input_volume", {"input_no": "1", "volume": 600.0}, "제안")
+    ledger.preflight("set_vehicle_input_volume")
+    ledger.approval_requested("set_vehicle_input_volume", {"input_no": "1", "volume": 600.0})
+    ledger.approved("set_vehicle_input_volume", {"input_no": "1", "volume": 600.0}, "근거", REVIEWER_ACTOR)
+    ledger.plan("set_vehicle_input_volume", {"input_no": "1", "volume": 600.0}, "적용")
+    ledger.preflight("set_vehicle_input_volume")
+    ledger.action("set_vehicle_input_volume", {"input_no": "1", "volume": 600.0})
+    ledger.postwrite("set_vehicle_input_volume", blocking=True, findings=["write_verification_failed"])
+    ledger.refusal(
+        "set_vehicle_input_volume",
+        phase="postwrite",
+        error_type="guardrail_refused",
+        message="기록된 값과 판독 값이 다릅니다.",
+    )
+    built = ledger.build()
+
+    assert built.changes[0].outcome == "rolled_back"
+    assert built.changes[0].approver == built.refusals[0].approver == audit_trail.Approver(
+        user_id=7, username="yunha", display_name="이윤하", role="reviewer"
+    )
+
+
+def test_one_approval_names_one_change_not_every_later_one():
+    """The approver travels with the rationale, under the same
+    one-approval-one-dispatch rule — a second, unapproved write of the same
+    tool must not inherit the first one's approver."""
+    ledger = _Ledger()
+    ledger.applied_write(
+        "set_signal_cycle", {"sc_no": "3", "cycle": 100}, reason="1차", actor=REVIEWER_ACTOR
+    )
+    ledger.applied_write("set_signal_cycle", {"sc_no": "3", "cycle": 110}, with_approval=False)
+    built = ledger.build()
+
+    assert [e.reason for e in built.changes] == ["1차", None]
+    assert [e.approver for e in built.changes] == [built.changes[0].approver, None]
+    assert built.changes[0].approver is not None
+
+
+@pytest.mark.parametrize(
+    "actor",
+    [
+        None,
+        {},
+        "yunha",                                                    # a bare name
+        ["yunha"],
+        {**REVIEWER_ACTOR, "role": "superuser"},                    # role this build cannot render
+        {**REVIEWER_ACTOR, "role": None},
+        {k: v for k, v in REVIEWER_ACTOR.items() if k != "username"},
+        {k: v for k, v in REVIEWER_ACTOR.items() if k != "display_name"},
+        {k: v for k, v in REVIEWER_ACTOR.items() if k != "user_id"},
+        {**REVIEWER_ACTOR, "username": "   "},
+        {**REVIEWER_ACTOR, "display_name": ""},
+        {**REVIEWER_ACTOR, "user_id": "7"},                         # id as a string
+        {**REVIEWER_ACTOR, "user_id": True},                        # bool is an int subclass
+        {**REVIEWER_ACTOR, "user_id": 0},
+    ],
+)
+def test_an_actor_that_is_not_u8_shaped_renders_the_fallback_never_the_strange_value(actor):
+    """Fail closed on provenance. The approver column's entire value is that a
+    name printed there was authenticated by THIS system; a half-shaped or
+    unknown-schema actor prints "기록 없음(인증 이전)" and its contents appear
+    nowhere in the document."""
+    assert audit_trail.normalize_actor(actor) is None
+
+    ledger = _Ledger().applied_write(
+        "set_signal_cycle", {"sc_no": "3", "cycle": 120}, reason="근거", actor=actor
+    ).build()
+
+    assert ledger.changes[0].approver is None
+    text = _all_text(_doc_from(ledger))
+    assert "기록 없음(인증 이전)" in text
+    assert "yunha" not in text and "이윤하" not in text
+
+
+def test_an_actor_with_unknown_extra_fields_is_still_accepted():
+    """The other direction of the same rule: extra keys cannot put a name in
+    the column, so a later additive field must not break old exports."""
+    approver = audit_trail.normalize_actor({**REVIEWER_ACTOR, "session_id": "abc", "mfa": True})
+    assert approver == audit_trail.Approver(
+        user_id=7, username="yunha", display_name="이윤하", role="reviewer"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -646,6 +850,10 @@ def test_read_ledger_returns_none_when_the_session_has_no_trace_file(tmp_path: P
 
 
 def test_docx_section_has_both_tables_with_the_documented_columns():
+    """The column-set pin. Unit U8 inserted "승인자" immediately BEFORE "근거"
+    in BOTH tables (audit_trail.py's ``_TABLE1_HEAD``/``_TABLE2_HEAD`` carry the
+    reasoning); this ledger's approval records carry no actor, so both approver
+    cells read the pre-authentication fallback."""
     ledger = _Ledger()
     ledger.applied_write("set_vehicle_input_volume", {"input_no": "1", "volume": 600.0}, reason="수요 반영")
     ledger.plan("set_signal_cycle", {"sc_no": "3", "cycle": 400}, "주기 400")
@@ -657,7 +865,9 @@ def test_docx_section_has_both_tables_with_the_documented_columns():
 
     assert len(doc.tables) == 2
     changes, refusals = _table_rows(doc.tables[0]), _table_rows(doc.tables[1])
-    assert changes[0] == ["#", "시각(UTC)", "대상", "항목", "변경 전 → 변경 후", "도구", "검증", "근거"]
+    assert changes[0] == [
+        "#", "시각(UTC)", "대상", "항목", "변경 전 → 변경 후", "도구", "검증", "승인자", "근거",
+    ]
     assert changes[1] == [
         "1",
         "2026-08-04 09:00:07Z",
@@ -666,10 +876,12 @@ def test_docx_section_has_both_tables_with_the_documented_columns():
         "기록 없음 → 600.0 veh/h",
         "set_vehicle_input_volume",
         "검증 통과 · 검사 1건",
+        "기록 없음(인증 이전)",
         "수요 반영",
     ]
-    assert refusals[0] == ["#", "시각(UTC)", "도구", "대상", "단계", "사유", "근거"]
+    assert refusals[0] == ["#", "시각(UTC)", "도구", "대상", "단계", "사유", "승인자", "근거"]
     assert refusals[1][2:6] == ["set_signal_cycle", "sc_no=3", "사전 검사", "허용 범위를 벗어납니다."]
+    assert refusals[1][6] == "기록 없음(인증 이전)"
 
 
 def test_docx_carries_the_section_heading_meta_summary_and_before_value_footnote():
@@ -724,6 +936,30 @@ def test_docx_renders_en_and_ja_through_the_same_language_tables():
 
     # An unknown code falls back to Korean (pick_language_text's contract).
     assert "파라미터 변경 기록 및 근거" in _all_text(_doc_from(ledger, "de"))
+
+
+def test_the_approver_column_header_role_and_fallback_are_localized():
+    """ko primary, en/ja through the same ``pick_language_text`` tables as
+    every other string in this module — including the ROLE label, which is what
+    makes the cell readable to a non-Korean reviewer."""
+    named = _Ledger().applied_write(
+        "set_signal_cycle", {"sc_no": "3", "cycle": 120}, actor=REVIEWER_ACTOR
+    ).build()
+    anonymous = _Ledger().applied_write(
+        "set_signal_cycle", {"sc_no": "3", "cycle": 120}, with_approval=False
+    ).build()
+
+    for language, header, rendered, fallback in [
+        ("ko", "승인자", "이윤하 (yunha · 검토자)", "기록 없음(인증 이전)"),
+        ("en", "Approver", "이윤하 (yunha · reviewer)", "not recorded (pre-authentication)"),
+        ("ja", "承認者", "이윤하 (yunha · 査読者)", "記録なし(認証導入前)"),
+        # An unknown code falls back to Korean, like every other string here.
+        ("de", "승인자", "이윤하 (yunha · 검토자)", "기록 없음(인증 이전)"),
+    ]:
+        rows = _table_rows(_doc_from(named, language).tables[0])
+        assert rows[0][7] == header, language
+        assert rows[1][7] == rendered, language
+        assert _table_rows(_doc_from(anonymous, language).tables[0])[1][7] == fallback, language
 
 
 def test_docx_content_is_deterministic_for_the_same_ledger():

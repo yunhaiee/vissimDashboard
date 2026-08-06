@@ -121,3 +121,58 @@ def _isolate_ambient_machine_state(tmp_path_factory: pytest.TempPathFactory):
     finally:
         workspaces.reset_current_workspace_id(token)
         mp.undo()
+
+
+# ---------------------------------------------------------------------------
+# Unit U8: authenticating as a role, for the ONE endpoint that now requires it
+# ---------------------------------------------------------------------------
+
+#: Every account these helpers mint uses it. Above ``auth.MIN_PASSWORD_CHARS``
+#: and obviously fake — it exists only inside the session-scoped tmp database
+#: the fixture above points ``services.db.DB_PATH`` at.
+TEST_PASSWORD = "prism-test-password"
+
+
+def bearer_headers(
+    username: str, role: str, *, display_name: str | None = None
+) -> dict[str, str]:
+    """``Authorization`` headers for a user of ``role``, created on demand.
+
+    ONE shared helper rather than a copy per test file: U8 gates
+    ``POST /api/assistant/agent/approve`` behind ``reviewer``/``admin``, and
+    seven existing test modules call that endpoint. The bearer channel is used
+    rather than the cookie because it needs no cookie jar and is the same
+    session token either way (routers/auth.py's module docstring).
+
+    The account is REUSED when it already exists: ``services.db.DB_PATH`` is
+    redirected once per pytest session, so a fixed username would otherwise
+    collide with the previous test's account. The role is asserted rather than
+    silently accepted, so two tests cannot quietly share one username under
+    different roles and produce a green run for the wrong reason.
+    """
+    from services import auth
+
+    user = auth.get_user_by_username(username)
+    if user is None:
+        user = auth.create_user(username, TEST_PASSWORD, role, display_name=display_name)
+    elif user["role"] != role:
+        raise AssertionError(
+            f"test user {username!r} already exists with role {user['role']!r}, not {role!r}"
+        )
+    token, _session = auth.create_session(user["id"])
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
+def auth_headers():
+    """The :func:`bearer_headers` factory, injected — so a test never has to
+    import this conftest by name. ``auth_headers("someone", "modeler")``."""
+    return bearer_headers
+
+
+@pytest.fixture()
+def approver_headers() -> dict[str, str]:
+    """Headers for an authenticated REVIEWER — the role U8's approval gate
+    exists for. Use this in any test that drives ``/agent/approve`` and is not
+    itself about authorization."""
+    return bearer_headers("suite-reviewer", "reviewer", display_name="검토 담당자")
