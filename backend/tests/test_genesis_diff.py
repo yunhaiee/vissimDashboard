@@ -60,8 +60,35 @@ def _real_inpx() -> Path | None:
 # ---------------------------------------------------------------------------
 
 
+# Node membership is GEOMETRIC — updated 2026-08-06, after the live check
+# measured that no Vissim-saved network anywhere contains the ``<linkSegment>``
+# element these fixtures used to declare membership with. Vissim never writes
+# one, so ``inpx_parser._node_link_ids`` read an element that does not exist and
+# returned an empty set for every node of every network; it now computes
+# membership by testing each link's polyline against the node's polygon.
+#
+# These builders keep the SAME declarative API — ``_node("10", ["9"])`` still
+# says "node 10 contains link 9" — and realise it in geometry instead:
+#
+# * every link and connector gets one identifying vertex at ``(slot, 0)``,
+#   where ``slot`` is derived from its id and is unique; its remaining vertices
+#   sit far below (``y = -100``) where no node polygon reaches;
+# * a node's polygon is a COMB — a base bar under the whole slot range at
+#   ``y ∈ [-2, -1]`` with a tooth rising to ``y = +1`` over each member's slot.
+#   A comb is a simple polygon, and it contains exactly the identifying
+#   vertices of the members and no others, for ANY subset — including the empty
+#   one, which is the bare bar and contains nothing.
+_SLOT_SPACING = 10.0
+_TOOTH_HALF_WIDTH = 1.0
+
+
+def _slot(no: str) -> float:
+    return int(no) * _SLOT_SPACING
+
+
 def _link(no: str, *, lanes: int = 1, points: str | None = None) -> str:
-    pts = points or '<linkPolyPoint x="0" y="0"/><linkPolyPoint x="100" y="0"/>'
+    x = _slot(no)
+    pts = points or f'<linkPolyPoint x="{x}" y="0"/><linkPolyPoint x="{x}" y="-100"/>'
     lane_xml = "".join('<lane width="3.5"/>' for _ in range(lanes))
     return (
         f'<link no="{no}" name="link {no}">'
@@ -72,23 +99,43 @@ def _link(no: str, *, lanes: int = 1, points: str | None = None) -> str:
 
 
 def _connector(no: str, from_link: str, to_link: str, *, lanes: int = 1) -> str:
+    x = _slot(no)
     lane_xml = "".join('<lane width="3.5"/>' for _ in range(lanes))
     return (
         f'<link no="{no}" name="conn {no}">'
         f'<fromLinkEndPt link="{from_link}" pos="90"/>'
         f'<toLinkEndPt link="{to_link}" pos="0"/>'
-        f'<geometry><linkPolyPts><linkPolyPoint x="100" y="0"/>'
-        f'<linkPolyPoint x="110" y="0"/></linkPolyPts></geometry>'
+        f'<geometry><linkPolyPts><linkPolyPoint x="{x}" y="0"/>'
+        f'<linkPolyPoint x="{x}" y="-50"/></linkPolyPts></geometry>'
         f"<lanes>{lane_xml}</lanes>"
         f"</link>"
     )
 
 
 def _node(no: str, member_links: list[str]) -> str:
-    segs = "".join(
-        f'<linkSegment link="{lid}" fromPos="0" internalToPos="10"/>' for lid in member_links
+    """A node whose polygon contains exactly ``member_links`` and nothing else."""
+    slots = sorted(_slot(lid) for lid in member_links)
+    left = (slots[0] if slots else 0.0) - 5.0
+    right = (slots[-1] if slots else 0.0) + 5.0
+    # Anticlockwise: along the bottom of the bar, then back along the top
+    # deviating up over each member's slot.
+    corners: list[tuple[float, float]] = [(left, -2.0), (right, -2.0)]
+    for x in reversed(slots):
+        corners.extend(
+            [
+                (x + _TOOTH_HALF_WIDTH, -1.0),
+                (x + _TOOTH_HALF_WIDTH, 1.0),
+                (x - _TOOTH_HALF_WIDTH, 1.0),
+                (x - _TOOTH_HALF_WIDTH, -1.0),
+            ]
+        )
+    corners.append((left, -1.0))
+    points = "".join(f'<point x="{x}" y="{y}"/>' for x, y in corners)
+    return (
+        f'<node no="{no}" name="node {no}">'
+        f"<geometry><points>{points}</points></geometry>"
+        f"</node>"
     )
-    return f'<node no="{no}" name="node {no}"><linkSegs>{segs}</linkSegs></node>'
 
 
 def _signal_head(no: str, link: str, lane: int = 1, pos: float = 80.0) -> str:
@@ -380,11 +427,16 @@ def test_position_is_never_reported_and_the_scope_is_stated():
 
 
 def test_geometry_only_change_is_zero_structural_changes_plus_a_stated_warn_band():
+    # Move link 1's FAR vertex only. Its identifying vertex at (slot, 0) — the
+    # one node membership is read from — stays put, so this is a pure geometry
+    # change with the topology, including node membership, untouched.
     moved = BASE_XML.replace(
-        '<linkPolyPoint x="100" y="0"/></linkPolyPts></geometry><lanes><lane width="3.5"/>'
-        '<lane width="3.5"/></lanes>',
-        '<linkPolyPoint x="140" y="25"/></linkPolyPts></geometry><lanes><lane width="3.5"/>'
-        '<lane width="3.5"/></lanes>',
+        _link("1", lanes=2),
+        _link(
+            "1",
+            lanes=2,
+            points=f'<linkPolyPoint x="{_slot("1")}" y="0"/><linkPolyPoint x="140" y="-75"/>',
+        ),
     )
     assert moved != BASE_XML  # the replace actually bit
 

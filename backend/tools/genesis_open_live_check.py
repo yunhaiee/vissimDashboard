@@ -85,6 +85,23 @@ Usage (from ``backend/``, with the venv python)::
     python tools/genesis_open_live_check.py --only diagnose    # why Q1 failed
     python tools/genesis_open_live_check.py --only all
 
+EMITTER v2 ACCEPTANCE RE-RUN (2026-08-06)
+-----------------------------------------
+The fix list above landed as ``services/genesis/schema.py`` + emitter v2, and
+this probe is the acceptance gate for it. Two changes, both minimal and both
+about WHERE the inputs come from rather than what is done to them:
+
+* ``DEFAULT_MURDOCH`` now points at the v2 regeneration (``murdoch-gen-v2``);
+* ``--label-suffix`` appends to the run label and its ``nets/<label>/`` dir, so
+  the acceptance run lands under ``small_v2`` / ``murdoch_v2`` and leaves the v1
+  refusal evidence under ``small`` / ``murdoch`` intact to compare against.
+
+The COM envelope is untouched: ``connect(attach_to_running=False)``, temp work
+dirs only, LoadNet → ``.err`` → SaveNetAs → close, no simulation, no edits,
+bounded child processes, and only PIDs this probe started are ever killed.
+
+  python tools/genesis_open_live_check.py --only both --label-suffix _v2
+
 Re-runnable and idempotent: each run recreates its own ``nets/<label>/``
 directory from scratch and merges its results into ``state.json`` under that
 label, so ``--only small`` and ``--only murdoch`` runs accumulate into one
@@ -124,12 +141,15 @@ NETS_ROOT = WORK_ROOT / "nets"
 STATE_PATH = WORK_ROOT / "state.json"
 LOG_PATH = WORK_ROOT / "log.txt"
 
-#: The already-generated real Murdoch draft (unit b07b42a's output). Copied,
-#: never opened in place.
+#: The already-generated real Murdoch draft. Copied, never opened in place.
+#: RE-POINTED 2026-08-06 at the EMITTER v2 regeneration (``murdoch-gen-v2``);
+#: the v1 output next door in ``murdoch-gen`` is the refused file this probe's
+#: first run measured, and is kept so the two are comparable. Override with
+#: ``--murdoch`` to point at either.
 DEFAULT_MURDOCH = Path(
     r"C:\Users\user\AppData\Local\Temp\claude"
     r"\C--Users-user-Documents-GitHub-vissimDashboard"
-    r"\cb830512-81cd-432f-8995-a267871ac006\scratchpad\murdoch-gen\murdoch.inpx"
+    r"\cb830512-81cd-432f-8995-a267871ac006\scratchpad\murdoch-gen-v2\murdoch.inpx"
 )
 
 DEFAULT_SMALL_TIMEOUT_S = 300.0
@@ -813,6 +833,42 @@ def _read_version(vissim: Any) -> dict[str, Any]:
     return info
 
 
+def _link_census(vissim: Any) -> tuple[list[tuple[int, int]], dict[str, Any]]:
+    """``[(link no, IsConn), …]`` plus the connector/plain split, in as few COM calls as
+    possible.
+
+    MEASURED 2026-08-06: the obvious form -- ``GetAll()`` then one ``AttValue``
+    per object, three times over -- is ~15,600 marshalled round trips on the
+    2,069-link Murdoch draft and blew a 900 s wall clock without reaching
+    ``SaveNetAs``. ``GetMultipleAttributes`` returns the same numbers in ONE
+    call per attribute set. The per-object loop is kept as the fallback so a
+    Vissim build without it still answers, just slowly.
+    """
+    links = vissim.Net.Links
+    try:
+        pairs = [
+            (int(row[0]), int(row[1] or 0))
+            for row in links.GetMultipleAttributes(("No", "IsConn"))
+        ]
+        read_via = "GetMultipleAttributes"
+    except Exception as bulk_exc:
+        pairs = [
+            (int(o.AttValue("No")), int(o.AttValue("IsConn") or 0))
+            for o in links.GetAll()
+        ]
+        read_via = (
+            "per-object AttValue "
+            f"(GetMultipleAttributes unavailable: {type(bulk_exc).__name__})"
+        )
+    pairs.sort()
+    counts = {
+        "connectors": sum(1 for _no, is_conn in pairs if is_conn == 1),
+        "plain_links": sum(1 for _no, is_conn in pairs if is_conn == 0),
+        "read_via": read_via,
+    }
+    return pairs, counts
+
+
 def _read_com_topology(controller: Any, max_connectors: int = 12) -> dict[str, Any]:
     """What COM says about the LOADED network -- counts, and for the first few
     connectors the resolved ``from_lanes``/``to_lanes`` (``get_link()``'s
@@ -820,41 +876,33 @@ def _read_com_topology(controller: Any, max_connectors: int = 12) -> dict[str, A
     out: dict[str, Any] = {}
     vissim = controller.vissim
     try:
-        nos = sorted(int(o.AttValue("No")) for o in vissim.Net.Links.GetAll())
+        pairs, census = _link_census(vissim)
     except Exception as exc:
         out["error"] = f"{type(exc).__name__}: {exc}"
         return out
-    out["link_collection_count"] = len(nos)
+    out["link_collection_count"] = len(pairs)
+    out["is_conn_counts"] = census
+
+    # Sampling, not a census: ``get_link()`` is several COM round trips each.
+    # The ids to sample are chosen from the census rather than by walking the
+    # collection in id order -- on Murdoch the connectors all sort AFTER the
+    # 2,069 plain links, so an id-order walk would call ``get_link()`` two
+    # thousand times before reaching the first connector. That is what timed
+    # this probe out on its first v2 Murdoch attempt.
+    wanted = [no for no, is_conn in pairs if is_conn == 0][:max_connectors] + [
+        no for no, is_conn in pairs if is_conn == 1
+    ][:max_connectors]
     links: list[dict[str, Any]] = []
     connectors: list[dict[str, Any]] = []
-    for no in nos:
-        # Sampling, not a census: get_link() is several COM round trips and a
-        # real example network has hundreds of links.
-        if len(links) >= max_connectors and len(connectors) >= max_connectors:
-            break
+    for no in wanted:
         try:
             info = controller.get_link(no)
         except Exception as exc:
             connectors.append({"no": no, "error": f"{type(exc).__name__}: {exc}"})
             continue
-        if info.get("is_connector"):
-            if len(connectors) < max_connectors:
-                connectors.append(info)
-        elif len(links) < max_connectors:
-            links.append(info)
+        (connectors if info.get("is_connector") else links).append(info)
     out["plain_links_sample"] = links
     out["connectors_sample"] = connectors
-    try:
-        out["is_conn_counts"] = {
-            "connectors": sum(
-                1 for o in vissim.Net.Links.GetAll() if int(o.AttValue("IsConn") or 0) == 1
-            ),
-            "plain_links": sum(
-                1 for o in vissim.Net.Links.GetAll() if int(o.AttValue("IsConn") or 0) == 0
-            ),
-        }
-    except Exception as exc:
-        out["is_conn_counts"] = f"<unavailable: {type(exc).__name__}: {exc}>"
     for name, accessor in (("nodes", "Nodes"), ("vehicle_compositions", "VehicleCompositions")):
         try:
             out[f"{name}_count"] = int(getattr(vissim.Net, accessor).Count)
@@ -1645,6 +1693,17 @@ def main(argv: list[str] | None = None) -> int:
         default="both",
     )
     parser.add_argument("--murdoch", default=str(DEFAULT_MURDOCH))
+    parser.add_argument(
+        "--label-suffix",
+        default="",
+        help=(
+            "appended to the run label and its nets/<label>/ directory, e.g. "
+            "'_v2'. Added 2026-08-06 so the emitter-v2 acceptance run does not "
+            "overwrite the v1 refusal evidence this probe's first run recorded "
+            "under 'small' and 'murdoch' -- a measurement is not re-runnable "
+            "if re-running it destroys what it is being compared against."
+        ),
+    )
     parser.add_argument("--small-timeout", type=float, default=DEFAULT_SMALL_TIMEOUT_S)
     parser.add_argument("--murdoch-timeout", type=float, default=DEFAULT_MURDOCH_TIMEOUT_S)
     parser.add_argument("--reference-timeout", type=float, default=DEFAULT_REFERENCE_TIMEOUT_S)
@@ -1676,32 +1735,35 @@ def main(argv: list[str] | None = None) -> int:
 
     NETS_ROOT.mkdir(parents=True, exist_ok=True)
 
+    small_label = f"small{args.label_suffix}"
+    murdoch_label = f"murdoch{args.label_suffix}"
+
     if args.only in ("small", "both", "all"):
-        small_dir = _fresh_dir(NETS_ROOT / "small")
+        small_dir = _fresh_dir(NETS_ROOT / small_label)
         built = _build_small_network(small_dir)
-        _state.setdefault("inputs", {})["small"] = built
+        _state.setdefault("inputs", {})[small_label] = built
         _save_state()
-        _log(f"[small] generated: {built}")
-        _run_label("small", Path(built["inpx"]), args.small_timeout)
+        _log(f"[{small_label}] generated: {built}")
+        _run_label(small_label, Path(built["inpx"]), args.small_timeout)
 
     if args.only in ("murdoch", "both", "all"):
         murdoch_src = Path(args.murdoch)
         if not murdoch_src.is_file():
-            _log(f"[murdoch] SKIPPED: source draft not found at {murdoch_src}")
-            _state.setdefault("inputs", {})["murdoch"] = {"missing": str(murdoch_src)}
+            _log(f"[{murdoch_label}] SKIPPED: source draft not found at {murdoch_src}")
+            _state.setdefault("inputs", {})[murdoch_label] = {"missing": str(murdoch_src)}
             _save_state()
         else:
-            murdoch_dir = _fresh_dir(NETS_ROOT / "murdoch")
+            murdoch_dir = _fresh_dir(NETS_ROOT / murdoch_label)
             copied = murdoch_dir / murdoch_src.name
             shutil.copy2(murdoch_src, copied)
-            _state.setdefault("inputs", {})["murdoch"] = {
+            _state.setdefault("inputs", {})[murdoch_label] = {
                 "source": str(murdoch_src),
                 "copy": str(copied),
                 "bytes": copied.stat().st_size,
             }
             _save_state()
-            _log(f"[murdoch] copied {murdoch_src} -> {copied} ({copied.stat().st_size} bytes)")
-            _run_label("murdoch", copied, args.murdoch_timeout)
+            _log(f"[{murdoch_label}] copied {murdoch_src} -> {copied} ({copied.stat().st_size} bytes)")
+            _run_label(murdoch_label, copied, args.murdoch_timeout)
 
     if args.only in ("reference", "all"):
         for label, folder in REFERENCE_EXAMPLES.items():

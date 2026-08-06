@@ -47,6 +47,7 @@ from services.genesis import draft as draft_module
 from services.genesis import emit as emit_module
 from services.genesis import osm as osm_module
 from services.genesis import project as project_module
+from services.genesis import schema
 from services.genesis.draft import (
     ComplianceState,
     INTERSECTION_SETBACK_M,
@@ -1330,7 +1331,16 @@ def test_removing_one_link_diffs_as_exactly_that_removal(tmp_path: Path, crossro
     assert diff.connectors.added == []
     assert diff.connectors.rewired == []
     assert diff.connectors.lane_count_changed == []
-    assert diff.change_count == 1 + len(orphans)
+    # 1 link + 3 connectors + THE NODE. The node's movement set is the fifth
+    # change, and it only exists because node membership became geometric on
+    # 2026-08-06: before that ``_node_link_ids`` read a ``<linkSegment>``
+    # element Vissim never writes, every node reported zero members, and this
+    # count was 4. Pin moved deliberately — see
+    # ``test_node_membership_is_geometric_because_vissim_declares_none``.
+    assert diff.change_count == 1 + len(orphans) + 1
+    node = _one([n for n in diff.node_movements if n.changed])
+    assert [m.connector_id for m in node.removed] == [str(i) for i in orphans]
+    assert node.added == []
 
 
 def test_changing_one_lane_count_diffs_as_exactly_that_change(tmp_path: Path, crossroads_draft):
@@ -1369,9 +1379,41 @@ def test_the_emission_stays_inside_the_subset_the_parser_understands(emitted):
     """Nothing is written that could not be read back and checked offline: no
     signal heads, no detectors, no vehicle inputs, no routing, no reduced-speed
     areas. The §5 rules governing those are reported ``not_checkable`` instead of
-    approximated."""
+    approximated.
+
+    Emitter v2 adds FIVE containers to v1's three, and not one of them is a
+    modelling choice: every element in them exists because something this file
+    writes names its ``no``, transitively. A real network stripped to
+    ``netPara`` + ``links`` was measured to load with ``load_ok=True`` and ZERO
+    links, and so was v2's first live attempt — an unresolved reference ANYWHERE
+    in the chain makes links vanish silently, with no ``.err``.
+    """
     root = ET.parse(emitted).getroot()
-    assert {child.tag for child in root} == {"netPara", "links", "nodes"}
+    assert {child.tag for child in root} == {
+        "displayTypes",
+        "drivingBehaviors",
+        "laneMarkingTypes",
+        "levels",
+        "linkBehaviorTypes",
+        "links",
+        "netPara",
+        "nodes",
+        "timeDistributions",
+    }
+    # each support container declares exactly the id the links/lanes reference
+    assert [el.get("no") for el in root.findall("./levels/level")] == [schema.LEVEL_NO]
+    assert [el.get("no") for el in root.findall("./displayTypes/displayType")] == [
+        schema.DISPLAY_TYPE_NO
+    ]
+    assert [
+        el.get("no") for el in root.findall("./linkBehaviorTypes/linkBehaviorType")
+    ] == [schema.LINK_BEHAV_TYPE_NO]
+    assert [
+        el.get("no") for el in root.findall("./laneMarkingTypes/laneMarkingType")
+    ] == [schema.LANE_MARKING_TYPE_NO]
+    assert [el.get("no") for el in root.findall("./drivingBehaviors/drivingBehavior")] == [
+        schema.DRIVING_BEHAVIOR_NO
+    ]
     for absent in (
         "signalHeads",
         "signalControllers",
@@ -1385,6 +1427,60 @@ def test_the_emission_stays_inside_the_subset_the_parser_understands(emitted):
     elements = parse_network(str(emitted))["elements"]
     assert elements["signal_heads"] == []
     assert elements["vehicle_inputs"] == []
+
+
+def test_every_id_reference_in_the_file_resolves_inside_the_file(emitted):
+    """The invariant the first v2 live run broke, generalised so it cannot break
+    silently again.
+
+    That run loaded with ``load_ok=True``, wrote no ``.err``, and held ZERO
+    links. Vissim had dropped the whole ``drivingBehaviors`` container because
+    the one driving behaviour referenced two time distributions the file never
+    declared — which made ``linkBehaviorType no="1"`` dangle, which made every
+    link vanish. A dangling reference two hops from a link is still a network
+    with no links in it, and Vissim calls that a successful load.
+
+    So: walk EVERY attribute that names another object by ``no`` and assert the
+    target exists. The map is explicit rather than derived, because guessing
+    which attributes are references is how the first run got here.
+    """
+    root = ET.parse(emitted).getroot()
+
+    def declared(container: str, tag: str) -> set[str]:
+        return {el.get("no") for el in root.findall(f"./{container}/{tag}")}
+
+    levels = declared("levels", "level")
+    display_types = declared("displayTypes", "displayType")
+    behaviour_types = declared("linkBehaviorTypes", "linkBehaviorType")
+    driving_behaviours = declared("drivingBehaviors", "drivingBehavior")
+    marking_types = declared("laneMarkingTypes", "laneMarkingType")
+    time_distributions = declared("timeDistributions", "timeDistribution")
+    link_ids = {el.get("no") for el in root.findall("./links/link")}
+
+    for link in root.findall("./links/link"):
+        where = link.get("no")
+        assert link.get("displayType") in display_types, where
+        assert link.get("linkBehavType") in behaviour_types, where
+        if "level" in link.attrib:
+            assert link.get("level") in levels, where
+        for lane in link.findall("./lanes/lane"):
+            assert lane.get("markingType") in marking_types, where
+            for ref in lane.findall("./fromLanes/objectRef") + lane.findall(
+                "./toLanes/objectRef"
+            ):
+                assert ref.get("key").split()[0] in link_ids, (where, ref.get("key"))
+        for tag in ("fromLinkEndPt", "toLinkEndPt"):
+            endpoint = link.find(tag)
+            if endpoint is not None:
+                assert endpoint.get("link") in link_ids, (where, tag)
+
+    for behaviour_type in root.findall("./linkBehaviorTypes/linkBehaviorType"):
+        assert behaviour_type.get("drivBehavDef") in driving_behaviours
+
+    for behaviour in root.findall("./drivingBehaviors/drivingBehavior"):
+        # the two that were missing, and the reason this test exists
+        assert behaviour.get("w99cc1Distr") in time_distributions
+        assert behaviour.get("zipperOvtTmDistr") in time_distributions
 
 
 def test_no_map_anchor_is_written_anywhere_in_the_file(emitted):
@@ -1403,10 +1499,16 @@ def test_no_map_anchor_is_written_anywhere_in_the_file(emitted):
 def test_the_file_says_what_it_has_and_has_not_been_verified_against(emitted):
     """The honesty travels with the artefact, not only with the report."""
     text = emitted.read_text(encoding="utf-8")
-    assert "NOT opened by a real Vissim" in text
+    assert "Emitter v2" in text
     assert "inpx_parser" in text and "genesis.diff" in text
     assert "no absolute position is claimed" in text
     assert "Projection origin lat=" in text
+    assert "GEOMETRY ONLY" in text
+    # the regime the geometry was built for travels with it too
+    assert f"Traffic regulation {draft_module.TRAFFIC_REGULATION}" in text
+    # the live result is claimed for the SCHEMA and explicitly not for the file
+    assert "LoadNet in PTV Vissim Academic 2026" in text
+    assert "not a certificate for this particular file" in text
 
 
 def test_the_provenance_comment_never_breaks_the_xml(tmp_path: Path):
@@ -1441,20 +1543,410 @@ def test_emitting_a_refused_or_empty_draft_raises_rather_than_writing_a_plausibl
         to_xml_text(empty)
 
 
-def test_node_link_membership_is_a_known_and_stated_gap(emitted):
-    """``inpx_parser._node_link_ids`` reads ``<linkSegment>``; the only .inpx
-    exemplar on this machine has node polygons and no ``<linkSegs>`` at all, so
-    the container's real shape cannot be verified offline and is not guessed.
+def test_node_membership_is_geometric_because_vissim_declares_none(emitted):
+    """PIN MOVED 2026-08-06, replacing ``test_node_link_membership_is_a_known_
+    and_stated_gap``, which asserted ``node_members["1"] == set()``.
 
-    Consequence, asserted here so it is a documented property rather than a
-    surprise: a diff of two genesis drafts reports zero movements per node. The
-    connectors themselves are still compared normally, which
-    ``test_removing_one_link_diffs_as_exactly_that_removal`` shows.
+    That pin recorded a real property of the old code and a WRONG belief about
+    the format: ``_node_link_ids`` read ``<linkSegment link=…>``, and the live
+    check found no such element in ANY Vissim-saved network — PTV's own examples
+    included. Vissim never writes one, so the helper returned an empty set for
+    every node of every network, real ones as well as generated ones, and "0
+    movements per genesis draft" was a parser bug wearing a documented-gap
+    label.
+
+    Membership is geometric now — a node IS its polygon — so the crossroads'
+    single node declares all twelve of its movements, plus the eight approach
+    and exit links whose ends sit inside the 30 m box.
     """
     topology, _findings = diff_module.load_topology(emitted)
     assert set(topology.node_members) == {"1"}
-    assert topology.node_members["1"] == set()
-    assert emit_module.__doc__ is not None and "linkSegs" in emit_module.__doc__
+    assert topology.node_members["1"] == {str(i) for i in range(1, 9)} | {
+        str(i) for i in range(10001, 10013)
+    }
+    # ``movements`` filters to connectors, so the plain links are members
+    # without being movements
+    assert [m["id"] for m in topology.movements("1")] == [
+        str(i) for i in range(10001, 10013)
+    ]
+    assert topology.summary().movement_count == 12
+
+
+# ---------------------------------------------------------------------------
+# 7b. Emitter v2 — the emitted XML against the schema PTV Vissim SAVES
+#
+# The fixtures below are verbatim excerpts of networks Vissim itself wrote,
+# captured by ``backend/tools/genesis_open_live_check.py`` on PTV Vissim
+# Academic 2026 SP 09 and recorded in
+# ``runtime/genesis-open-live-check/state.json``. They are quoted here rather
+# than read from ``runtime/`` (which is git-ignored, so a clean checkout has
+# none of it) — the evidence has to travel with the test, not with the machine.
+# ---------------------------------------------------------------------------
+
+#: Verbatim from ``rt_generated/rt_generated_geometry_saved.inpx`` — Vissim's
+#: OWN save of this generator's crossroads geometry. Attributes only; the
+#: children are asserted separately.
+VISSIM_SAVED_LINK = (
+    '<link alc_v_limit="130" assumSpeedOncom="60" consVehInDynPot="false" costPerKm="0"'
+    ' desSpeedFact="1" direction="ALL" displayType="5" emergStopDist="5" emiCalcAct="true"'
+    ' gradient="0" hasOvtLn="false" isPedArea="false" level="2" linkBehavType="1"'
+    ' linkEvalAct="true" linkEvalSegLen="10" lnChgDist="200" lnChgDistIsPerLn="false"'
+    ' lnChgEvalAct="true" lookAheadDistOvt="250" mesoFollowUpGap="0" mesoSpeed="50"'
+    ' mesoSpeedModel="VEHICLEBASED" name="Main St [FWD] w101s0" netPerfEvalAct="true" no="1"'
+    ' ovtOnlyPT="false" ovtSpeedFact="1.3" rvsPark="false" showClsfValues="true"'
+    ' showLinkBar="true" showVeh="true" surch1="0" surch2="0" thickness="0" vehDynPotG="3"'
+    ' vehRecAct="true"/>'
+)
+
+#: Verbatim from the same file — a CONNECTOR, i.e. the same element WITH
+#: endpoints and WITHOUT ``level``. Its ``<lanes>`` subtree is quoted in full
+#: because the endpoint/lane shape is the thing v1 got wrong.
+VISSIM_SAVED_CONNECTOR = (
+    '<link alc_v_limit="130" assumSpeedOncom="60" consVehInDynPot="false" costPerKm="0"'
+    ' desSpeedFact="1" direction="ALL" displayType="5" emergStopDist="5" emiCalcAct="true"'
+    ' gradient="0" hasOvtLn="false" isPedArea="false" linkBehavType="1" linkEvalAct="true"'
+    ' linkEvalSegLen="10" lnChgDist="200" lnChgDistIsPerLn="false" lnChgEvalAct="true"'
+    ' lookAheadDistOvt="250" mesoFollowUpGap="0" mesoSpeed="50" mesoSpeedModel="VEHICLEBASED"'
+    ' name="Main St [FWD] w101s0 -&gt; Main St [FWD] w101s1 (through)" netPerfEvalAct="true"'
+    ' no="10001" ovtOnlyPT="false" ovtSpeedFact="1.3" rvsPark="false" showClsfValues="true"'
+    ' showLinkBar="true" showVeh="true" surch1="0" surch2="0" thickness="0" vehDynPotG="3"'
+    ' vehRecAct="true">'
+    '<fromLinkEndPt link="1" pos="271.264"/>'
+    '<geometry><linkPolyPts>'
+    '<linkPolyPoint radiusEffect="BRAKE" radiusSrc="CALCULATED" x="-12" y="3.5" zOffset="0"/>'
+    '<linkPolyPoint radiusEffect="BRAKE" radiusSrc="CALCULATED" x="12" y="3.5" zOffset="0"/>'
+    "</linkPolyPts></geometry>"
+    "<lanes>"
+    '<lane markingType="1">'
+    '<fromLanes><objectRef key="1 1"/></fromLanes>'
+    '<toLanes><objectRef key="3 1"/></toLanes>'
+    "</lane>"
+    '<lane markingType="1">'
+    '<fromLanes><objectRef key="1 2"/></fromLanes>'
+    '<toLanes><objectRef key="3 2"/></toLanes>'
+    "</lane>"
+    "</lanes>"
+    '<toLinkEndPt link="3" pos="0"/>'
+    "</link>"
+)
+
+#: Verbatim from ``ref_nodes/3 Roundabouts - Conflict areas_saved.inpx``.
+VISSIM_SAVED_NODE = (
+    '<node allowRecr="false" anmConnNodeNo="0" anmConnZoneNo="0" anmZoneNo="0"'
+    ' hasUserDefOrient="false" mesoPenalMerg="0" name="" no="1" showClsfValues="true"'
+    ' showTurnValVisual="false" turnValVisualSize="70" useForDynAssign="true"'
+    ' useForEval="true" useForMeso="false">'
+    '<geometry><points><point x="-307.521" y="84.051"/></points></geometry>'
+    "</node>"
+)
+
+#: Verbatim from ``ref_lht/Roundabout London_saved.inpx`` — the only left-hand
+#: example Vissim ships, and the source of every ``netPara`` value the emitter
+#: writes.
+VISSIM_SAVED_NETPARA_ATTRS = {
+    "concatMaxLen": "255",
+    "concatSeparator": ",",
+    "drivSimActive": "false",
+    "linkGradBas": "ZCOORDINATES",
+    "northDir": "0",
+    "odrFilePath": "",
+    "pedDefCellSize": "0.15",
+    "pedDefObstDist": "0.5",
+    "pedDirChgAngle": "4",
+    "pedDirChgClip": "true",
+    "pedNbhSearGridSize": "5",
+    "pedQueueOrder": "0.7",
+    "pedQueueStraight": "0.6",
+    "powWghtRatioMax": "30",
+    "powWghtRatioMin": "7",
+    "radExper": "2",
+    "sigHead3DArrowColorRedAmb": "COLOREDARROWONBLACK",
+    "speedLimCurves": "true",
+    "trafReg": "LEFTHANDTRAFFIC",
+    "underScenMngm": "false",
+    "unitAccel": "METERSPERSQUARESECOND",
+    "unitJerk": "METERSPERCUBICSECOND",
+    "unitLenLong": "KILOMETERS",
+    "unitLenShort": "METERS",
+    "unitLenVeryShort": "MILLIMETERS",
+    "unitSpeed": "KILOMETERSPERHOUR",
+    "unitSpeedSmall": "METERSPERSECOND",
+}
+
+
+def _emitted_split(emitted):
+    root = ET.parse(emitted).getroot()
+    links = root.findall("./links/link")
+    return (
+        root,
+        [el for el in links if el.find("fromLinkEndPt") is None],
+        [el for el in links if el.find("fromLinkEndPt") is not None],
+    )
+
+
+def test_the_root_element_is_the_one_vissim_writes(emitted):
+    """v1 wrote ``version="2400"``, copied from ``data/practice.inpx`` — a
+    hand-written exemplar whose version is not a Vissim schema version at all.
+    Every Vissim-saved network measured says 1403."""
+    root = ET.parse(emitted).getroot()
+    assert root.tag == "network"
+    assert root.get("version") == "1403"
+    assert root.get("vissimVersion") == "2026.00-09 [307071]"
+
+
+def test_every_emitted_link_carries_exactly_the_attributes_vissim_writes(emitted):
+    """Attribute-SET equality against a link Vissim saved — not "it parses".
+
+    A real network with its links reduced to ``no``/``name`` (which is all v1
+    wrote) is refused by ``LoadNet`` with the same error the generated files
+    got, so a missing attribute here is a file that will not open.
+    """
+    reference = set(ET.fromstring(VISSIM_SAVED_LINK).attrib)
+    _root, plain, connectors = _emitted_split(emitted)
+    assert plain and connectors
+    for element in plain:
+        assert set(element.attrib) == reference, element.get("no")
+    # a connector is the same element MINUS ``level`` — measured on every
+    # element with endpoints in all three saved references
+    assert reference - {"level"} == set(ET.fromstring(VISSIM_SAVED_CONNECTOR).attrib)
+    for element in connectors:
+        assert set(element.attrib) == reference - {"level"}, element.get("no")
+        assert "level" not in element.attrib
+
+
+def test_link_attribute_values_are_the_reference_defaults_not_invented_ones(emitted):
+    """Every value the generator does not compute equals the saved reference's,
+    character for character."""
+    reference = ET.fromstring(VISSIM_SAVED_LINK).attrib
+    _root, plain, connectors = _emitted_split(emitted)
+    computed = {"no", "name", "displayType", "level", "linkBehavType"}
+    for element in plain + connectors:
+        for key, value in reference.items():
+            if key in computed:
+                continue
+            assert element.get(key) == value, (element.get("no"), key)
+
+
+def test_lane_elements_match_the_saved_shape_for_links_and_for_connectors(emitted):
+    """A link lane carries ``markingType`` + ``width``; a CONNECTOR lane carries
+    ``markingType`` only and the from/to lane references. Vissim writes no width
+    on a connector lane — it inherits the lanes it joins — and the parser's own
+    3.5 m fallback is this generator's width, so nothing is lost."""
+    saved_connector = ET.fromstring(VISSIM_SAVED_CONNECTOR)
+    _root, plain, connectors = _emitted_split(emitted)
+
+    for element in plain:
+        for lane in element.findall("./lanes/lane"):
+            assert set(lane.attrib) == {"markingType", "width"}
+            assert lane.get("markingType") == "1"
+            assert list(lane) == []
+
+    reference_lane = saved_connector.find("./lanes/lane")
+    for element in connectors:
+        for lane in element.findall("./lanes/lane"):
+            assert set(lane.attrib) == set(reference_lane.attrib) == {"markingType"}
+            assert [child.tag for child in lane] == [
+                child.tag for child in reference_lane
+            ] == ["fromLanes", "toLanes"]
+            assert [el.tag for el in lane.find("fromLanes")] == ["objectRef"]
+            assert set(lane.find("fromLanes/objectRef").attrib) == {"key"}
+
+
+def test_connector_endpoints_use_the_link_attribute_and_carry_no_lane_token(emitted):
+    """The shape v1 got wrong. Vissim writes ``<fromLinkEndPt link="32" pos=…/>``
+    — attribute ``link``, no lane — and puts the ``"<link> <lane>"`` token in
+    ``<objectRef key>`` under each connector lane instead."""
+    saved = ET.fromstring(VISSIM_SAVED_CONNECTOR)
+    assert set(saved.find("fromLinkEndPt").attrib) == {"link", "pos"}
+    _root, _plain, connectors = _emitted_split(emitted)
+    for element in connectors:
+        for tag in ("fromLinkEndPt", "toLinkEndPt"):
+            endpoint = element.find(tag)
+            assert set(endpoint.attrib) == {"link", "pos"}, (element.get("no"), tag)
+            assert "lane" not in endpoint.attrib
+        assert [child.tag for child in element] == [
+            child.tag for child in saved
+        ] == ["fromLinkEndPt", "geometry", "lanes", "toLinkEndPt"]
+
+
+def test_geometry_points_match_the_saved_shape_on_links_and_on_nodes(emitted):
+    """A link polyline point carries ``radiusEffect``/``radiusSrc``/``zOffset``
+    besides x and y; a NODE polygon point carries x and y and nothing else. v1
+    wrote ``zOffset`` on node points too — no Vissim-saved node point has one."""
+    saved_point = ET.fromstring(VISSIM_SAVED_CONNECTOR).find(
+        "./geometry/linkPolyPts/linkPolyPoint"
+    )
+    saved_node_point = ET.fromstring(VISSIM_SAVED_NODE).find("./geometry/points/point")
+    root = ET.parse(emitted).getroot()
+
+    for point in root.findall("./links/link/geometry/linkPolyPts/linkPolyPoint"):
+        assert set(point.attrib) == set(saved_point.attrib)
+        assert point.get("radiusEffect") == "BRAKE"
+        assert point.get("radiusSrc") == "CALCULATED"
+    for point in root.findall("./nodes/node/geometry/points/point"):
+        assert set(point.attrib) == set(saved_node_point.attrib) == {"x", "y"}
+
+
+def test_node_elements_carry_exactly_the_attributes_vissim_writes(emitted):
+    reference = set(ET.fromstring(VISSIM_SAVED_NODE).attrib)
+    root = ET.parse(emitted).getroot()
+    nodes = root.findall("./nodes/node")
+    assert nodes
+    for node in nodes:
+        assert set(node.attrib) == reference
+        assert [child.tag for child in node] == ["geometry"]
+
+
+def test_netpara_is_the_saved_left_hand_one_with_the_drafts_own_regulation(emitted):
+    """``trafReg`` is the measured landmine: WITHOUT it a network built with
+    left-hand geometry opens as RIGHT-hand traffic, because the attribute
+    decides the regime and the geometry does not. It comes from the draft, so
+    the file cannot disagree with the offsets."""
+    root = ET.parse(emitted).getroot()
+    netpara = root.find("./netPara")
+    assert netpara.attrib == VISSIM_SAVED_NETPARA_ATTRS
+    assert netpara.get("trafReg") == "LEFTHANDTRAFFIC"
+    assert list(netpara) == []  # no refPoint* anchor, and no dangling defRefs
+
+
+def test_the_regulation_written_is_the_drafts_own_not_a_constant_in_the_emitter(
+    crossroads_draft, tmp_path: Path
+):
+    """A counterfactual: change the draft's declared regime and the file follows.
+    If the emitter hard-coded it, this would still say LEFTHANDTRAFFIC."""
+    mutant = crossroads_draft.model_copy(deep=True)
+    mutant.traffic_regulation = "RIGHTHANDTRAFFIC"
+    root = ET.parse(emit_inpx(mutant, tmp_path / "rht.inpx")).getroot()
+    assert root.find("./netPara").get("trafReg") == "RIGHTHANDTRAFFIC"
+
+
+# ---------------------------------------------------------------------------
+# 7c. Connector lane indices — hand-derived, from a measured convention
+# ---------------------------------------------------------------------------
+
+
+def test_lane_index_one_is_the_rightmost_lane_and_the_code_says_so():
+    """The measurement this whole section rests on: the live check compared each
+    connector-lane endpoint's signed lateral offset from its host link's
+    centreline on two Vissim-SAVED networks — 7 links to 0 on the left-hand
+    London roundabout, 11 to 0 on the right-hand Buehl one, lane 1 at −1.75 m
+    (half a lane RIGHT of centre). Index 1 is the right-most lane in both
+    driving regimes, so under left-hand traffic it is the MEDIAN side."""
+    assert draft_module.LANE_INDEX_1_IS_RIGHTMOST is True
+    assert draft_module.TRAFFIC_REGULATION == "LEFTHANDTRAFFIC"
+
+
+@pytest.mark.parametrize(
+    ("turn", "approach_lanes", "exit_lanes", "expected"),
+    [
+        # Hand derivation, left-hand traffic. Approach lane 1 = right-most =
+        # MEDIAN side; the highest index = left-most = KERB side.
+        #
+        # 2-lane approach into a 1-lane exit, k = 1:
+        #   a near-side (left) turn leaves from the kerb lane ................ 2
+        #   an across-traffic (right) turn leaves from the median lane ....... 1
+        #   a through movement aligns on the median ........................... 1
+        (draft_module.TURN_LEFT, 2, 1, [(2, 1)]),
+        (draft_module.TURN_RIGHT, 2, 1, [(1, 1)]),
+        (draft_module.TURN_THROUGH, 2, 1, [(1, 1)]),
+        # 3-lane approach into a 2-lane exit, k = 2. Connector lane 1 is the
+        # RIGHT-most of the connector, so it takes the right-most of the
+        # selected block on both sides.
+        (draft_module.TURN_LEFT, 3, 2, [(2, 1), (3, 2)]),
+        (draft_module.TURN_RIGHT, 3, 2, [(1, 1), (2, 2)]),
+        (draft_module.TURN_THROUGH, 3, 2, [(1, 1), (2, 2)]),
+        # 1-lane approach into a 3-lane exit, k = 1: a left turn joins the
+        # exit's kerb-most lane, a right turn its median-most.
+        (draft_module.TURN_LEFT, 1, 3, [(1, 3)]),
+        (draft_module.TURN_RIGHT, 1, 3, [(1, 1)]),
+        # equal counts: every lane is used, and the blocks coincide
+        (draft_module.TURN_LEFT, 2, 2, [(1, 1), (2, 2)]),
+        (draft_module.TURN_THROUGH, 2, 2, [(1, 1), (2, 2)]),
+    ],
+)
+def test_connector_lane_pairs_hand_derivation(turn, approach_lanes, exit_lanes, expected):
+    assert draft_module.connector_lane_pairs(turn, approach_lanes, exit_lanes) == expected
+
+
+def test_every_connector_lane_pairing_is_a_bijection_of_contiguous_blocks(
+    crossroads_draft,
+):
+    """Structural invariants, on the drafted network rather than in the
+    abstract: one pair per connector lane, indices inside their link's range,
+    no lane used twice, and both blocks contiguous."""
+    by_id = {link.id: link for link in crossroads_draft.links}
+    for connector in crossroads_draft.connectors:
+        assert len(connector.from_lanes) == len(connector.to_lanes) == connector.lanes
+        assert len(set(connector.from_lanes)) == len(connector.from_lanes)
+        assert len(set(connector.to_lanes)) == len(connector.to_lanes)
+        for index in connector.from_lanes:
+            assert 1 <= index <= by_id[connector.from_link].lanes
+        for index in connector.to_lanes:
+            assert 1 <= index <= by_id[connector.to_link].lanes
+        assert connector.from_lanes == sorted(connector.from_lanes)
+        assert connector.to_lanes == sorted(connector.to_lanes)
+        assert connector.from_lanes[-1] - connector.from_lanes[0] == connector.lanes - 1
+
+
+def test_the_crossroads_left_turns_leave_from_the_kerb_lane_not_lane_one(
+    crossroads_draft, emitted
+):
+    """The v1 bug, in the file. The crossroads' two-lane approaches feed
+    one-lane side roads, so every left turn is a single connector lane — v1
+    wrote ``lane="<link> 1"`` for it, putting the near-side turn on the median
+    lane. It must now leave from lane 2, and the ``objectRef`` in the emitted
+    XML must say so."""
+    by_id = {link.id: link for link in crossroads_draft.links}
+    lefts = [c for c in crossroads_draft.connectors if c.turn == draft_module.TURN_LEFT]
+    assert lefts
+    checked = 0
+    for connector in lefts:
+        approach = by_id[connector.from_link]
+        if approach.lanes < 2:
+            continue
+        checked += 1
+        assert connector.from_lanes == [approach.lanes]
+        assert connector.from_lanes != [1]
+    assert checked, "the fixture must contain a multi-lane left turn to be a test"
+
+    keys = {
+        el.get("no"): [
+            ref.get("key")
+            for ref in el.findall("./lanes/lane/fromLanes/objectRef")
+        ]
+        for el in ET.parse(emitted).getroot().findall("./links/link")
+    }
+    for connector in lefts:
+        approach = by_id[connector.from_link]
+        if approach.lanes < 2:
+            continue
+        assert keys[str(connector.id)] == [f"{connector.from_link} {approach.lanes}"]
+
+
+def test_right_turns_and_through_movements_stay_on_the_median_side(crossroads_draft):
+    for connector in crossroads_draft.connectors:
+        if connector.turn in (draft_module.TURN_RIGHT, draft_module.TURN_THROUGH):
+            assert connector.from_lanes[0] == 1
+            assert connector.to_lanes[0] == 1
+
+
+def test_the_emitted_objectrefs_agree_with_the_draft_lane_mapping(
+    emitted, crossroads_draft
+):
+    """The emission is not allowed to re-derive the mapping — it must write the
+    draft's. One ``<lane>`` per connector lane, one ``objectRef`` per side."""
+    elements = {
+        el.get("no"): el for el in ET.parse(emitted).getroot().findall("./links/link")
+    }
+    for connector in crossroads_draft.connectors:
+        lanes = elements[str(connector.id)].findall("./lanes/lane")
+        assert len(lanes) == connector.lanes
+        assert [
+            lane.find("fromLanes/objectRef").get("key") for lane in lanes
+        ] == [f"{connector.from_link} {index}" for index in connector.from_lanes]
+        assert [
+            lane.find("toLanes/objectRef").get("key") for lane in lanes
+        ] == [f"{connector.to_link} {index}" for index in connector.to_lanes]
 
 
 # ---------------------------------------------------------------------------

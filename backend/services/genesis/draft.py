@@ -236,6 +236,29 @@ TURN_LEFT = "left"
 TURN_RIGHT = "right"
 TURN_U = "u_turn"
 
+#: Which physical lane Vissim's lane index 1 is. MEASURED, not assumed: the
+#: 2026-08-06 live check compared each connector-lane endpoint's signed lateral
+#: offset from its host link's centreline (positive = LEFT of travel) on two
+#: networks Vissim itself saved — 7 links to 0 on the LEFT-hand London
+#: roundabout, 11 to 0 on the right-hand Buehl one, with lane 1 sitting at
+#: −1.75 m (i.e. half a lane to the RIGHT of centre) on the cleanest two-lane
+#: case. Index 1 is the RIGHT-most lane in BOTH driving regimes; indices grow
+#: leftwards.
+#:
+#: v1 wrote lane index 1 for every connector endpoint and said in writing that
+#: it could not know what 1 meant. It means the right-most lane, so under
+#: left-hand traffic — where the kerb is on the LEFT and the median on the
+#: RIGHT — v1 attached every kerb-side (near-side) turn to the MEDIAN lane.
+LANE_INDEX_1_IS_RIGHTMOST = True
+
+#: The traffic regulation this generator builds for, and the value written to
+#: ``netPara trafReg``. §5.2.1.1 is a left-hand-traffic document
+#: (:data:`CIT_S5211_LEFT_HAND`) and every offset in :func:`build_draft` is
+#: derived from it. MEASURED consequence of omitting it: a network with
+#: left-hand geometry opens as RIGHT-hand traffic, because the attribute decides
+#: the regime and the geometry does not.
+TRAFFIC_REGULATION = "LEFTHANDTRAFFIC"
+
 #: Table 5-8 (doc p.197), the two rows whose "Typical example" column names an
 #: ordinary turning movement, keyed by the turn type this generator derives.
 #: Carried as ADVISORY data only — this emission writes no reduced speed areas
@@ -631,6 +654,13 @@ class DraftConnector(BaseModel):
     turn: str
     heading_change_deg: float
     lane_change: str  # "same" | "gain" | "drop"
+    #: Vissim lane indices on the approach and on the exit, one entry per
+    #: connector lane, in connector-lane order. Derived by
+    #: :func:`connector_lane_pairs` from the MEASURED convention that index 1 is
+    #: the right-most lane; see that function for the hand derivation. Both
+    #: lists always have :attr:`lanes` entries.
+    from_lanes: list[int] = Field(default_factory=list)
+    to_lanes: list[int] = Field(default_factory=list)
     table_5_8_advisory: dict | None = None
 
 
@@ -655,6 +685,10 @@ class DraftNetwork(BaseModel):
 
     name: str
     source_osm: str
+    #: The driving regime this draft's geometry was built for, and the value the
+    #: emitter writes to ``netPara trafReg``. The emitter reads it here rather
+    #: than hard-coding it, so the file can never disagree with the geometry.
+    traffic_regulation: str = TRAFFIC_REGULATION
     refused: bool = False
     refusals: list[str] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
@@ -871,6 +905,78 @@ def classify_turn(
     return (TURN_LEFT if angle > 0 else TURN_RIGHT), angle
 
 
+def connector_lane_pairs(
+    turn: str, approach_lanes: int, exit_lanes: int
+) -> list[tuple[int, int]]:
+    """Which approach lane each connector lane leaves, and which exit lane it joins.
+
+    Returns ``[(from_lane, to_lane), …]`` in **connector-lane order**, i.e. the
+    connector's own lane 1 first. Both index spaces are Vissim's, where
+    :data:`LANE_INDEX_1_IS_RIGHTMOST` — index 1 is the right-most lane of its
+    link and indices grow leftwards, in either driving regime.
+
+    The rule, and why it is the rule
+    --------------------------------
+    A connector carries ``k = min(approach, exit)`` lanes. Which ``k`` of each
+    link's lanes it takes is decided by where the movement GOES, which is
+    geometry and therefore regime-independent:
+
+    * a **left** turn leaves to the left, so it is made from the ``k``
+      LEFT-most lanes — the HIGHEST indices — into the exit's left-most lanes;
+    * a **right** turn is the mirror image: the ``k`` RIGHT-most lanes, indices
+      ``1..k``, into the exit's right-most lanes;
+    * a **through** movement has no such tell. It is aligned on the MEDIAN side,
+      because that is the side turn pockets are not added to: under left-hand
+      traffic the median is on the right, so through movements align on indices
+      ``1..k``. This one branch — and only this one — depends on
+      :data:`TRAFFIC_REGULATION`.
+
+    Under left-hand traffic that makes the near-side (kerb) turn — the left turn
+    — attach to the HIGHEST lane index, not to 1. Emitter v1 wrote 1 for
+    everything, which put every left turn on the median lane.
+
+    Hand-derived example (left-hand traffic, the case the crossroads fixture
+    actually produces)
+    -------------------------------------------------------------------------
+    A two-lane approach ``A`` (lane 1 = right-most = median side; lane 2 =
+    left-most = kerb side) meets a one-lane exit ``E``. ``k = min(2, 1) = 1``.
+
+    ======== ================= ============= =========================
+    movement connector lane 1  physical lane meaning under LHT
+    ======== ================= ============= =========================
+    left     ``A 2 → E 1``     kerb-most     near-side turn from the kerb lane
+    right    ``A 1 → E 1``     median-most   across-traffic turn from the median
+    through  ``A 1 → E 1``     median-most   median-aligned
+    ======== ================= ============= =========================
+
+    And with a three-lane approach into a two-lane exit (``k = 2``), a left turn
+    gives ``[(2, 1), (3, 2)]``: connector lane 1 is the right-most of the
+    connector, so it takes the right-most of the selected block on both sides.
+    """
+    count = max(1, min(approach_lanes, exit_lanes))
+    approach_total = max(1, approach_lanes)
+    exit_total = max(1, exit_lanes)
+
+    if turn == TURN_LEFT:
+        keep_left = True
+    elif turn == TURN_RIGHT:
+        keep_left = False
+    else:
+        # The only regime-dependent branch: align on the median side, which is
+        # the right (index 1) under left-hand traffic and the left under
+        # right-hand traffic. Written as a comparison rather than a constant so
+        # that a future right-hand generator flips it by changing the regime.
+        keep_left = TRAFFIC_REGULATION != "LEFTHANDTRAFFIC"
+
+    def block(total: int) -> list[int]:
+        if keep_left:
+            # left-most `count` lanes = the highest indices
+            return list(range(total - count + 1, total + 1))
+        return list(range(1, count + 1))
+
+    return list(zip(block(approach_total), block(exit_total)))
+
+
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
@@ -1033,6 +1139,7 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
                 if turn == TURN_U:
                     continue
                 lanes = min(approach.lanes, exit_link.lanes)
+                lane_pairs = connector_lane_pairs(turn, approach.lanes, exit_link.lanes)
                 if approach.lanes == exit_link.lanes:
                     lane_change = "same"
                 elif exit_link.lanes > approach.lanes:
@@ -1055,6 +1162,8 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
                         turn=turn,
                         heading_change_deg=round(angle, 3),
                         lane_change=lane_change,
+                        from_lanes=[pair[0] for pair in lane_pairs],
+                        to_lanes=[pair[1] for pair in lane_pairs],
                         table_5_8_advisory=TABLE_5_8_TURN_ADVISORY.get(turn),
                     )
                 )

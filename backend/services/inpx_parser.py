@@ -267,15 +267,124 @@ def _polyline_length(points: list) -> float:
     return total
 
 
+def _point_in_polygon(point: tuple, polygon: list) -> bool:
+    """Ray-casting point-in-polygon. Boundary points count as inside.
+
+    Stdlib only, deliberately: node membership is used by the genesis differ on
+    every network the product ever reads, and a geometry dependency for a
+    12-line algorithm is not a trade this module makes.
+    """
+    x, y = point
+    inside = False
+    count = len(polygon)
+    if count < 3:
+        return False
+    j = count - 1
+    for i in range(count):
+        xi, yi = polygon[i][0], polygon[i][1]
+        xj, yj = polygon[j][0], polygon[j][1]
+        # On an edge (within float noise) counts as inside: a link that ends
+        # exactly on the node boundary is a member of that node, and Vissim's
+        # own polygons are drawn to touch the links they contain.
+        if (
+            min(xi, xj) - 1e-9 <= x <= max(xi, xj) + 1e-9
+            and min(yi, yj) - 1e-9 <= y <= max(yi, yj) + 1e-9
+            and abs((xj - xi) * (y - yi) - (yj - yi) * (x - xi)) <= 1e-9
+        ):
+            return True
+        if (yi > y) != (yj > y):
+            x_cross = (xj - xi) * (y - yi) / (yj - yi) + xi
+            if x < x_cross:
+                inside = not inside
+        j = i
+    return inside
+
+
 def _node_link_ids(root: ET.Element) -> dict:
-    """Map each node id to the set of link ids whose segments cross it."""
+    """Map each node id to the set of link ids whose polyline enters its polygon.
+
+    GEOMETRIC, because Vissim gives us nothing else. This helper used to read
+    ``<linkSegment link=… fromPos=… internalToPos=…>`` inside each ``<node>``.
+    The 2026-08-06 live check scanned every Vissim-saved network on this machine
+    — PTV's own Examples Demo included — and found **no** ``<linkSegment>`` and
+    no ``<linkSegs>`` anywhere: Vissim does not write them. So this function
+    returned an empty set for EVERY node of EVERY network, real ones included,
+    and the genesis differ's "0 movements per node" was a parser assumption
+    rather than an emitter gap.
+
+    A Vissim node IS its polygon — the links and connectors it contains are
+    whatever the polygon encloses — so membership is computed the same way:
+    a link belongs to a node when any vertex of its polyline lies inside (or on)
+    the node's ``<geometry><points>`` polygon.
+
+    Deliberate limits, stated rather than hidden:
+
+    * a node with no polygon has no members, and gets an empty set. Nothing is
+      inferred from proximity;
+    * membership is tested at the polyline's VERTICES. A link that crosses a
+      node without placing a vertex inside it is not a member. For the genesis
+      generator this cannot happen — links stop short of the junction and
+      connectors start and end at the node — and for real networks Vissim's own
+      node boxes are drawn around the links they contain.
+    """
     nodes_el = root.find(".//nodes")
     mapping: dict[str, set] = {}
     if nodes_el is None:
         return mapping
+
+    link_points: list[tuple[str, list]] = []
+    links_el = root.find(".//links")
+    if links_el is not None:
+        for link in links_el.findall("link"):
+            link_id = link.get("no", "")
+            if not link_id:
+                continue
+            geom = link.find("geometry")
+            pts_el = geom.find("linkPolyPts") if geom is not None else None
+            if pts_el is None:
+                continue
+            points = []
+            for pt in pts_el.findall("linkPolyPoint"):
+                try:
+                    points.append((float(pt.get("x", 0)), float(pt.get("y", 0))))
+                except (TypeError, ValueError):
+                    continue
+            if points:
+                link_points.append((link_id, points))
+
     for node in nodes_el.findall("node"):
         nid = node.get("no", "")
-        mapping[nid] = {seg.get("link", "") for seg in node.findall(".//linkSegment") if seg.get("link")}
+        geom = node.find("geometry")
+        pts_el = geom.find("points") if geom is not None else None
+        polygon = []
+        if pts_el is not None:
+            for pt in pts_el.findall("point"):
+                try:
+                    polygon.append((float(pt.get("x", 0)), float(pt.get("y", 0))))
+                except (TypeError, ValueError):
+                    continue
+        if len(polygon) < 3:
+            mapping[nid] = set()
+            continue
+        # Bounding-box prefilter. A node box is metres across and a network is
+        # kilometres, so nearly every (link, node) pair is rejected by four
+        # comparisons instead of a full ray cast per vertex — 941 nodes against
+        # the 5,197-link Murdoch draft is 12 s without it. Purely an
+        # optimisation: the box strictly contains the polygon, so it can only
+        # skip points the ray cast would have rejected anyway.
+        min_x = min(p[0] for p in polygon) - 1e-9
+        max_x = max(p[0] for p in polygon) + 1e-9
+        min_y = min(p[1] for p in polygon) - 1e-9
+        max_y = max(p[1] for p in polygon) + 1e-9
+        members: set[str] = set()
+        for link_id, points in link_points:
+            for x, y in points:
+                if not (min_x <= x <= max_x and min_y <= y <= max_y):
+                    continue
+                if _point_in_polygon((x, y), polygon):
+                    members.add(link_id)
+                    break
+        mapping[nid] = members
     return mapping
 
 

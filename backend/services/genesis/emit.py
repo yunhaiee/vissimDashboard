@@ -1,81 +1,118 @@
-"""Draft network → ``.inpx`` XML. Geometry only, and deliberately small.
+"""Draft network → ``.inpx`` XML, written to the schema Vissim itself saves.
 
-Roadmap row 2.3, Genesis (a), last stage.
+Roadmap row 2.3, Genesis (a), last stage. **Emitter v2.**
 
-WHAT THIS EMISSION IS VERIFIED AGAINST — read this before trusting a file
--------------------------------------------------------------------------
-The output of :func:`emit_inpx` is verified, offline, to:
+What changed, and why it had to
+-------------------------------
+v1 was built against ``data/practice.inpx``, the only ``.inpx`` on the machine
+at the time. The 2026-08-06 live check
+(``backend/tools/genesis_open_live_check.py``) measured that that file is a 6 KB
+HAND-WRITTEN exemplar, not Vissim output: its ``version="2400"`` is not a Vissim
+schema version. Every v1 file — the synthetic crossroads and the 2,069-link
+Murdoch draft alike — was refused by ``LoadNet`` with "The network file could
+not be loaded.", and Vissim writes NO ``.err`` for that failure. The probe
+bisected it in both directions: a REAL network stripped to v1's attribute set
+becomes unloadable with the identical error, and v1's own geometry grafted into
+a real skeleton loads.
 
-* parse through **this repository's** ``services.inpx_parser.parse_network``,
-  recovering every link id, lane count and polyline it was given;
-* load through ``services.genesis.diff.load_topology`` and **self-diff empty**;
-* diff against a mutated copy of itself with exactly the mutation, using U2's
-  differ as the oracle rather than any comparison written here;
-* be **byte-identical** across two runs from the same draft.
+v2 emits against networks **PTV Vissim saved**. Every constant lives in
+:mod:`services.genesis.schema`, each one naming the saved file it was copied
+from; nothing in this module invents a value. Concretely v2 adds:
 
-It has **NOT** been opened by a real PTV Vissim. There is no Vissim licence on
-this machine and no COM is touched anywhere in this package, so "Vissim accepts
-this file" is a claim nobody here is in a position to make. Opening a generated
-draft on the licensed box is a **named follow-up** — it is the other half of
-roadmap row 2.3's exit alongside the real-Murdoch benchmark run — and the
-compliance report says so in every language it renders.
+* the real root — ``version="1403"`` plus ``vissimVersion`` — instead of 2400;
+* the ~35 mandatory ``<link>`` attributes (``linkBehavType``, ``displayType``,
+  ``level``, ``lnChgDist``, ``mesoSpeedModel``, …) and ``<lane markingType>``.
+  A real network with its links reduced to ``no``/``name`` is refused, so these
+  are not decoration;
+* the sibling containers that make this file's own references resolve, and the
+  full transitive closure of them: ``displayTypes``, ``levels``,
+  ``linkBehaviorTypes``, ``laneMarkingTypes``, the ``drivingBehaviors`` entry
+  the link behaviour type delegates to, and the two ``timeDistributions`` that
+  driving behaviour in turn names. A real network stripped to ``netPara`` +
+  ``links`` reports load SUCCESS with **zero links**, and so did v2's first
+  live attempt when the last two hops of that chain were missing: unresolved
+  references make links vanish silently, with no ``.err``, which is exactly the
+  failure class this project exists to catch;
+* ``netPara trafReg``, from the draft's own :attr:`~.DraftNetwork.
+  traffic_regulation`. Measured: without it a network with left-hand geometry
+  opens as RIGHT-hand traffic — the attribute decides the regime, the geometry
+  does not;
+* the real connector form. Endpoints are ``<fromLinkEndPt link="32" pos="…"/>``
+  — attribute ``link``, no lane token. The ``"<link> <lane>"`` token lives in
+  ``<objectRef key="32 2"/>`` under each connector lane's ``<fromLanes>`` /
+  ``<toLanes>``: ONE ``<lane>`` per connector lane, each mapping one approach
+  lane to one exit lane. v1 wrote ``lane="<link> 1"`` on the endpoints and
+  nothing per-lane;
+* correct lane indices. Index 1 is the RIGHT-most lane (measured in both
+  driving regimes), so under left-hand traffic it is the MEDIAN side. v1 wrote 1
+  everywhere, putting every kerb-side turn on the median lane; ``draft.py``'s
+  :func:`~.draft.connector_lane_pairs` now derives the block per movement.
 
-Scope: only what the parser can read back
------------------------------------------
-The emitted subset is bounded by ``inpx_parser``, not by what Vissim supports.
-Where the two disagree the SUBSET SHRINKS; the parser is not extended to meet
-the emitter. Concretely this writes:
+What this emission still is, and is not
+---------------------------------------
+Still geometry only: links, connectors and node polygons, plus the minimum
+supporting objects those references need. Still **no** signal heads, detectors,
+vehicle inputs, routing decisions, desired-speed decisions, reduced-speed areas,
+lane closures or conflict areas — every one of those is outside the row's
+"기하 생성" (geometry generation) scope, and the §5 rules that govern them are
+reported ``not_checkable(outside_emitted_subset)`` by ``draft.py`` rather than
+approximated here.
 
-* ``<links><link>`` with ``<geometry><linkPolyPts>`` and ``<lanes><lane width>``
-* connectors — the same ``<link>`` element plus ``<fromLinkEndPt>`` /
-  ``<toLinkEndPt>``, which is exactly how Vissim (and the parser) distinguish
-  them
-* ``<nodes><node>`` with a ``<geometry><points>`` polygon
+Node membership is no longer a stated gap: ``<linkSegment>``/``<linkSegs>`` does
+not exist in ANY Vissim-saved network, so there was never anything to write.
+``services.inpx_parser._node_link_ids`` now derives membership geometrically
+from the node polygon, which is how Vissim itself defines it.
 
-and writes **no** signal heads, detectors, vehicle inputs, routing decisions,
-desired-speed decisions, reduced-speed areas, link behaviour types, lane
-closures or conflict areas. Every one of those is either outside the row's
-"기하 생성" (geometry generation) scope or unverifiable offline; the §5 rules
-that govern them are reported ``not_checkable(outside_emitted_subset)`` by
-``draft.py`` rather than approximated here.
+Verification status
+-------------------
+Offline this file is still round-tripped through ``services.inpx_parser``,
+self-diffed empty and mutation-diffed through ``genesis.diff`` as the oracle,
+and is byte-identical across runs.
 
-Two things are known gaps rather than oversights, and are stated so a later unit
-does not rediscover them as bugs:
+MEASURED LIVE 2026-08-06, PTV Vissim Academic 2026 SP 09, via
+``backend/tools/genesis_open_live_check.py --only both --label-suffix _v2``
+(``attach_to_running=False``, temp work dirs, LoadNet → ``.err`` → SaveNetAs →
+close, no simulation, zero orphaned processes):
 
-1. **No ``<linkSegs>`` on nodes.** ``inpx_parser._node_link_ids`` — which
-   ``genesis.diff`` uses to decide which connectors a node "declares" — reads
-   ``<linkSegment link=… fromPos=… internalToPos=…>``. The only ``.inpx``
-   exemplar on this machine (``data/practice.inpx``) carries node *polygons*
-   and no ``<linkSegs>`` at all, so the container's real element name and
-   attribute set cannot be verified offline. Consequence, stated plainly: a
-   diff of two genesis drafts reports **0 movements per node**, because the
-   nodes declare no members. The connectors themselves are compared normally.
-2. **Connector endpoint lane index is always 1.** Vissim's endpoint attribute is
-   ``lane="<linkNo> <laneNo>"``; the parser only reads the link number. Which
-   physical lane index 1 denotes under left-hand traffic is not verifiable
-   without Vissim, so writing anything else would be a guess dressed as data.
+===================== ========== ========== ==================================
+network               LoadNet    SaveNetAs  round trip (emitted → saved)
+===================== ========== ========== ==================================
+synthetic crossroads  OK 1.59 s  OK 0.06 s  8 links / 12 connectors / 12+14
+                                            lanes / 1 node — all unchanged
+Murdoch (real OSM)    OK 2.28 s  OK 0.36 s  2069 links / 3128 connectors /
+                                            2461+3481 lanes / 14173 polyline
+                                            points / 941 nodes — all unchanged
+===================== ========== ========== ==================================
+
+No ``.err`` was written for either, Vissim dropped no container, ``trafReg``
+came back ``LEFTHANDTRAFFIC``, every connector's lane mapping came back
+identical, and Vissim computed conflict areas over the geometry (40 and 5,518)
+— which it only does for a network it actually built.
+
+That is a statement about the SCHEMA, not a certificate for any particular
+generated file, and :func:`provenance_comment` says so in the file itself.
 
 Determinism
 -----------
 Two runs from the same draft produce byte-identical files: ids are assigned by
-``draft.py`` from sorted OSM ids, elements are written in id order, every number
-goes through one formatter (:func:`_num`, fixed 3 decimals), and nothing —
-no timestamp, no host name, no run id — that varies between runs is written.
-The provenance comment carries the projection origin and the source file name,
-both of which are properties of the input.
+``draft.py`` from sorted OSM ids, elements are written in id order, attributes
+are written in a fixed (sorted) order, every number goes through one formatter
+(:func:`_num`, fixed 3 decimals), and nothing — no timestamp, no host name, no
+run id — that varies between runs is written. The provenance comment carries the
+projection origin and the source file name, both properties of the input.
 """
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from . import schema
 from .draft import DraftConnector, DraftLink, DraftNetwork, DraftNode
 from .project import NOT_GEOREFERENCED_NOTE
 
-#: Copied from ``data/practice.inpx`` — the only ``.inpx`` on this machine. It
-#: is not a claim about which Vissim version will open the file; see the
-#: §5.1.2 item in the compliance report, which is ``not_checkable``.
-NETWORK_VERSION = "2400"
+#: Re-exported so callers that imported it from here keep working. The value is
+#: measured; see :data:`services.genesis.schema.NETWORK_VERSION`.
+NETWORK_VERSION = schema.NETWORK_VERSION
 
 #: Decimal places for every number written. 1 mm — three orders of magnitude
 #: below the projection's own one-metre budget, and fixed so formatting can
@@ -98,48 +135,162 @@ def _num(value: float) -> str:
     return "0.000" if text == "-0.000" else text
 
 
-def _polyline(parent: ET.Element, points: list[tuple[float, float]], *, tag: str, point_tag: str) -> None:
-    container = ET.SubElement(parent, tag)
+def _element(parent: ET.Element, tag: str, attrs: dict) -> ET.Element:
+    """One ``SubElement`` with attributes in a FIXED order.
+
+    ``ElementTree`` preserves insertion order, so sorting here is what makes two
+    runs byte-identical regardless of how the attribute dicts were assembled.
+    Vissim writes its own attributes alphabetically too, which keeps a generated
+    file diffable against one Vissim saved.
+    """
+    return ET.SubElement(parent, tag, {key: attrs[key] for key in sorted(attrs)})
+
+
+def _link_poly_points(parent: ET.Element, points: list[tuple[float, float]]) -> None:
+    container = ET.SubElement(parent, "linkPolyPts")
     for x, y in points:
-        ET.SubElement(container, point_tag, {"x": _num(x), "y": _num(y), "zOffset": "0"})
+        _element(
+            container,
+            "linkPolyPoint",
+            {**schema.LINK_POLY_POINT_ATTRS, "x": _num(x), "y": _num(y)},
+        )
 
 
-def _lanes(parent: ET.Element, count: int, width_m: float) -> None:
+def _link_lanes(parent: ET.Element, count: int, width_m: float) -> None:
+    """A plain link's lanes: ``markingType`` and ``width``, as Vissim writes them."""
     lanes = ET.SubElement(parent, "lanes")
     for _ in range(max(count, 1)):
-        ET.SubElement(lanes, "lane", {"width": _num(width_m)})
+        _element(
+            lanes,
+            "lane",
+            {"markingType": schema.LANE_MARKING_TYPE_NO, "width": _num(width_m)},
+        )
+
+
+def _connector_lanes(parent: ET.Element, connector: DraftConnector) -> None:
+    """A connector's lanes: ``markingType`` only, plus the from/to lane refs.
+
+    Vissim writes NO ``width`` on a connector lane — a connector inherits the
+    width of the lanes it joins — and ``inpx_parser._parse_lane_widths`` falls
+    back to 3.5 m for exactly that case, which is this generator's own width.
+
+    One ``<lane>`` per connector lane, each carrying a single
+    ``<fromLanes><objectRef key="<link> <lane>"/></fromLanes>`` and the matching
+    ``<toLanes>``. That key is where the ``"link lane"`` token lives; the
+    endpoint elements take ``link=`` and no lane.
+    """
+    pairs = list(zip(connector.from_lanes, connector.to_lanes))
+    if not pairs:
+        # A draft built before the lane mapping existed (or hand-assembled in a
+        # test) still emits a well-formed connector rather than a lane-less one.
+        pairs = [(1, 1)] * max(connector.lanes, 1)
+
+    lanes = ET.SubElement(parent, "lanes")
+    for from_lane, to_lane in pairs:
+        lane = _element(lanes, "lane", {"markingType": schema.LANE_MARKING_TYPE_NO})
+        _element(
+            ET.SubElement(lane, "fromLanes"),
+            "objectRef",
+            {"key": f"{connector.from_link} {from_lane}"},
+        )
+        _element(
+            ET.SubElement(lane, "toLanes"),
+            "objectRef",
+            {"key": f"{connector.to_link} {to_lane}"},
+        )
 
 
 def _link_element(parent: ET.Element, link: DraftLink) -> None:
-    element = ET.SubElement(parent, "link", {"no": str(link.id), "name": link.name})
+    element = _element(
+        parent,
+        "link",
+        {
+            **schema.LINK_COMMON_ATTRS,
+            **schema.LINK_ONLY_ATTRS,
+            "displayType": schema.DISPLAY_TYPE_NO,
+            "linkBehavType": schema.LINK_BEHAV_TYPE_NO,
+            "no": str(link.id),
+            "name": link.name,
+        },
+    )
     geometry = ET.SubElement(element, "geometry")
-    _polyline(geometry, link.points, tag="linkPolyPts", point_tag="linkPolyPoint")
-    _lanes(element, link.lanes, link.lane_width_m)
+    _link_poly_points(geometry, link.points)
+    _link_lanes(element, link.lanes, link.lane_width_m)
 
 
 def _connector_element(parent: ET.Element, connector: DraftConnector) -> None:
-    element = ET.SubElement(parent, "link", {"no": str(connector.id), "name": connector.name})
-    geometry = ET.SubElement(element, "geometry")
-    _polyline(geometry, connector.points, tag="linkPolyPts", point_tag="linkPolyPoint")
-    _lanes(element, connector.lanes, connector.lane_width_m)
-    # lane="<linkNo> <laneNo>": the parser reads the link number; the lane index
-    # is always 1 — see the module docstring's known-gap 2.
-    ET.SubElement(
+    """A connector is a ``<link>`` with endpoints — and WITHOUT ``level``.
+
+    Measured on all three saved references: every element carrying
+    ``<fromLinkEndPt>`` lacks ``level``, every element without one has it.
+
+    Child order is Vissim's own: ``fromLinkEndPt``, ``geometry``, ``lanes``,
+    ``toLinkEndPt``.
+    """
+    element = _element(
+        parent,
+        "link",
+        {
+            **schema.LINK_COMMON_ATTRS,
+            "displayType": schema.DISPLAY_TYPE_NO,
+            "linkBehavType": schema.LINK_BEHAV_TYPE_NO,
+            "no": str(connector.id),
+            "name": connector.name,
+        },
+    )
+    _element(
         element,
         "fromLinkEndPt",
-        {"lane": f"{connector.from_link} 1", "pos": _num(connector.from_pos_m)},
+        {"link": str(connector.from_link), "pos": _num(connector.from_pos_m)},
     )
-    ET.SubElement(
+    geometry = ET.SubElement(element, "geometry")
+    _link_poly_points(geometry, connector.points)
+    _connector_lanes(element, connector)
+    _element(
         element,
         "toLinkEndPt",
-        {"lane": f"{connector.to_link} 1", "pos": _num(connector.to_pos_m)},
+        {"link": str(connector.to_link), "pos": _num(connector.to_pos_m)},
     )
 
 
 def _node_element(parent: ET.Element, node: DraftNode) -> None:
-    element = ET.SubElement(parent, "node", {"no": str(node.id), "name": node.name})
+    element = _element(
+        parent, "node", {**schema.NODE_ATTRS, "no": str(node.id), "name": node.name}
+    )
     geometry = ET.SubElement(element, "geometry")
-    _polyline(geometry, node.polygon, tag="points", point_tag="point")
+    points = ET.SubElement(geometry, "points")
+    for x, y in node.polygon:
+        # x and y and nothing else: no Vissim-saved node point carries zOffset.
+        _element(points, "point", {"x": _num(x), "y": _num(y)})
+
+
+def _support_containers() -> dict[str, ET.Element]:
+    """The objects this file's own ``<link>``/``<lane>`` references point at.
+
+    Without them Vissim loads the network, reports success, and holds ZERO links
+    — measured twice: on the diagnose ladder's v5/v6, and again on emitter v2's
+    FIRST live run, where an unresolved ``w99cc1Distr`` two links down the chain
+    took the whole ``drivingBehaviors`` container with it and every link after
+    it. Nothing here is a preference; each element exists because an attribute
+    this file writes names its ``no``.
+
+    Returned unattached so :func:`build_tree` can place each container in
+    Vissim's own top-level order rather than in this table's order.
+    """
+
+    def _node(parent: ET.Element, spec: tuple) -> None:
+        tag, attrs, children = spec
+        element = _element(parent, tag, attrs)
+        for child in children:
+            _node(element, child)
+
+    containers: dict[str, ET.Element] = {}
+    for tag, children in schema.SUPPORT_CONTAINERS:
+        container = ET.Element(tag)
+        for child in children:
+            _node(container, child)
+        containers[tag] = container
+    return containers
 
 
 def _comment_safe(text: str) -> str:
@@ -174,14 +325,19 @@ def provenance_comment(draft: DraftNetwork) -> str:
         f"{Path(draft.source_osm).name}. "
         f"GEOMETRY ONLY: links, connectors and node polygons. No signal heads, detectors, "
         f"vehicle inputs or routing. "
+        f"Traffic regulation {draft.traffic_regulation}. "
         f"{NOT_GEOREFERENCED_NOTE} "
         f"Projection origin lat={projection.get('origin_lat_deg')} "
         f"lon={projection.get('origin_lon_deg')} "
         f"({projection.get('kind')}); validity radius {projection.get('validity_radius_m')} m; "
         f"planimetric error bound {projection.get('planimetric_error_bound_m')} m. "
-        "VERIFIED offline against this repo's inpx_parser and genesis.diff only. "
-        "NOT opened by a real Vissim - that smoke test is a named follow-up on the "
-        "licensed machine. "
+        "Emitter v2: written to the schema PTV Vissim itself saves, every default copied "
+        "from a Vissim-saved network. VERIFIED offline against this repo's inpx_parser and "
+        "genesis.diff. THIS SCHEMA was measured to LoadNet in PTV Vissim Academic 2026 "
+        "(SP 09) on 2026-08-06 - two networks, 20 and 5197 links, both loaded with every "
+        "link, connector, lane and node preserved through a SaveNetAs round trip. That is a "
+        "statement about the schema, not a certificate for this particular file: no Vissim "
+        "has opened THIS file unless someone opened it. "
     )
 
 
@@ -194,24 +350,63 @@ def build_tree(draft: DraftNetwork) -> ET.ElementTree:
     if not draft.links:
         raise EmitRefused(f"{draft.name}: draft has no links; refusing to write an empty network")
 
-    root = ET.Element("network", {"version": NETWORK_VERSION})
+    root = ET.Element(
+        "network",
+        {"version": schema.NETWORK_VERSION, "vissimVersion": schema.VISSIM_VERSION},
+    )
     root.append(ET.Comment(provenance_comment(draft)))
-    # northDir="0" states that +y is north IN THIS FILE'S OWN FRAME, which is
-    # what the projection produces. No refPointMap/refPointNet is written: those
-    # anchor a network to the map, and this file makes no absolute claim.
-    ET.SubElement(root, "netPara", {"northDir": "0"})
 
-    links = ET.SubElement(root, "links")
+    containers = _support_containers()
+
+    links = ET.Element("links")
     for link in sorted(draft.links, key=lambda l: l.id):
         _link_element(links, link)
     for connector in sorted(draft.connectors, key=lambda c: c.id):
         _connector_element(links, connector)
+    containers["links"] = links
 
-    nodes = ET.SubElement(root, "nodes")
+    # ``trafReg`` comes from the draft, never from a constant here, so the file
+    # cannot claim a regime the geometry was not built for. No refPointMap /
+    # refPointNet and no children at all: those anchor a network to the map, and
+    # this file makes no absolute claim. ``northDir="0"`` (in NETPARA_ATTRS)
+    # states only that +y is north IN THIS FILE'S OWN FRAME.
+    net_para = ET.Element("netPara")
+    for key in sorted({**schema.NETPARA_ATTRS, "trafReg": draft.traffic_regulation}):
+        net_para.set(
+            key, {**schema.NETPARA_ATTRS, "trafReg": draft.traffic_regulation}[key]
+        )
+    containers["netPara"] = net_para
+
+    nodes = ET.Element("nodes")
     for node in sorted(draft.nodes, key=lambda n: n.id):
         _node_element(nodes, node)
+    containers["nodes"] = nodes
 
+    # Placed in VISSIM's own top-level order, not in the order this module
+    # happened to build them.
+    for tag in schema.CONTAINER_ORDER:
+        if tag in containers:
+            root.append(containers.pop(tag))
+    if containers:  # pragma: no cover - guard
+        raise AssertionError(f"containers with no place in CONTAINER_ORDER: {sorted(containers)}")
+
+    _assert_container_order(root)
     return ET.ElementTree(root)
+
+
+def _assert_container_order(root: ET.Element) -> None:
+    """Top-level containers must come out in the order Vissim writes them.
+
+    A guard rather than a sort: if a later edit adds a container, this fails
+    loudly here instead of producing a file that differs from a Vissim save in a
+    way nobody notices until the next refusal has to be bisected.
+    """
+    emitted = [child.tag for child in root if isinstance(child.tag, str)]
+    expected = [tag for tag in schema.CONTAINER_ORDER if tag in emitted]
+    if emitted != expected:  # pragma: no cover - guard
+        raise AssertionError(
+            f"container order {emitted} does not match the Vissim order {expected}"
+        )
 
 
 def to_xml_text(draft: DraftNetwork) -> str:
