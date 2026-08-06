@@ -3808,3 +3808,51 @@ validation pack now carries the whole of §5.6.3 with one cross-language source 
 network-passing report to FAIL with the node named, and explicit not-assessable states for
 criteria whose observed side has no ingest path — the honest-gap pattern this project treats
 as the product.
+
+
+---
+
+## 2026-08-06 — Genesis live check: three offline assumptions measured false before anyone shipped them
+
+**Context:** the 2.3 OSM generator (`b07b42a`) was verified offline by round-trip through this
+repo's parser and differ, with the live-Vissim open test named as the follow-up. The user
+authorized live COM on this box; the probe (`backend/tools/genesis_open_live_check.py`, Vissim
+Academic 2026 SP09, `attach_to_running=False`, temp clones, LoadNet→err→SaveNetAs only, six
+sessions, zero orphans) settled the open questions — every one against the offline assumption.
+
+**Measured:**
+1. **Generated `.inpx` files do not load.** Both the synthetic crossroads and the 2,069-link
+   Murdoch draft refuse with "The network file could not be loaded" — and NO `.err` is written
+   (LoadNet failures produce none). Bisected both directions: a REAL network stripped to the
+   emitter's attribute set becomes unloadable with the identical error; the emitter's own
+   geometry grafted into a real skeleton LOADS (Vissim even recomputed conflict areas over it,
+   40→44). Root cause: `data/practice.inpx`, the emitter's sole schema exemplar, is a 6 KB
+   hand-written synthetic file, not Vissim output — its `version="2400"` is not a Vissim schema
+   version. Emitter v2 fix list: real root (`version="1403"` + `vissimVersion`), the ~35
+   mandatory `<link>` attributes + `<lane markingType>`, the real connector endpoint form, the
+   required sibling containers, and `trafReg="LEFTHANDTRAFFIC"` — without which a generated
+   network opens as RIGHT-hand traffic regardless of the left-hand geometry.
+2. **`linkSegment`/`linkSegs` does not exist in Vissim's output.** No Vissim-saved network —
+   including PTV's own examples, all scanned — contains it. `inpx_parser._node_link_ids()`
+   reads an element Vissim never writes, so node membership parses empty for EVERY network,
+   real ones included; the genesis differ's "0 movements per node" was a parser assumption, not
+   an emitter gap. Node membership is geometric (polygon containment) and must be computed.
+3. **Connector lane index 1 is the RIGHT-most lane** — under `LEFTHANDTRAFFIC` that is the
+   MEDIAN side, not the kerb (measured 7–0 on the London roundabout, 11–0 on Buehl; lane 1 at
+   −1.75 m on the cleanest case). The `"link lane"` token lives in `<objectRef key>` under each
+   connector lane's `<fromLanes>/<toLanes>`, one `<lane>` per connector lane; the endpoint
+   elements take `link=`, not `lane=`.
+
+**Also measured:** a real file stripped to netPara+links returns `load_ok=True` with
+`Net.Links.Count == 0` — Vissim reports SUCCESS for an empty load, and `tools_check._load_check`
+would pass such a file on both gates (new entry for the silent-failure taxonomy). The
+save-materialises-a-vehicle-composition landmine did NOT reproduce on 2026 SP09 via SaveNetAs.
+
+**Consequence:** 2.3's generator v1 stands as offline-verified topology with an honest label;
+its emission is NOT Vissim-loadable until emitter v2 lands, and no artifact claims otherwise.
+The Murdoch benchmark diff v1 ran end-to-end on real OSM and carries its own named limit:
+id-based correspondence is invalid across independently-authored networks (the consultant's
+ids collide with the generator's sequential ids, reading different roads as the same object) —
+benchmark v2 needs topological matching. The projection guard fired correctly on the first
+real input (refused the padded bbox at 2,356 m half-extent vs the 2,254 m Perth validity
+radius).
