@@ -3776,3 +3776,35 @@ no-data panel unreachable. Caught by adversarial replay of the shipped functions
 a coercion helper will happily invent a new one.** A source pin now fails if the coercion moves
 back ahead of the guard. The same defect remains on the network KPI cards (`_safe_mean` emits
 null, the card should be suppressed, coercion shows 0.0) — filed separately, not fixed here.
+
+
+---
+
+## 2026-08-06 — LinSig re-entry (1.6 addendum): the module boundary is the regime label
+
+**Context:** `d42e401` deferred degree-of-saturation and bonus-green because the LinSig chapter
+was absent, with the recorded condition "re-enter scope only if TK supplies that chapter". The
+user supplied the full OMG v2.0 PDF on 2026-08-06; the page-cited extracts landed at `58956c4`;
+the re-entry landed at `f63b830`.
+
+**Decision:** a SIBLING module (`dataimport/linsig.py`), not an extension of `fixed_time.py`,
+for three measured reasons: the citation machinery keys one extract file per module; §3.5.15's
+inputs are LinSig model objects the neutral schema deliberately does not carry; and — from the
+§5 extract's own warning — LinSig validates on DoS + queue while Vissim validates on GEH, so
+the module boundary is what keeps a LinSig number from leaking into a Vissim-regime
+comparison. Table 3-3's arithmetic is A.2's own quantities renamed, so the three shared
+functions live once in `fixed_time.py` and `linsig.py` delegates (proven by asserting the
+LinSig entry points raise the Appendix-A functions' error messages); the one genuine
+difference — the averaging period, and the ROUNDING regimes (101 s Vissim plan vs 100 s LinSig
+modelled cycle from the same history) — is kept as tests, not unified. A filtered right turn
+without its opposed/unopposed split REFUSES (`linsig_filtered_turn_not_split`); the doc states
+no numeric queue tolerance for §3.10's queue half, so it is left uncoded rather than invented.
+
+**Consequence:** every LinSig output is regime-labelled; the DoS ≤ 100 % rule is a constant,
+not a setting; assumptions A11–A19 continue 1.6's series (A11: the doc rounds three ways in
+three pages, so nothing is re-rounded internally). Related same-day upgrade `25e73ca`: the
+validation pack now carries the whole of §5.6.3 with one cross-language source of truth
+(`shared/mrwa-validation-criteria.json`), the critical-intersection override that flips a
+network-passing report to FAIL with the node named, and explicit not-assessable states for
+criteria whose observed side has no ingest path — the honest-gap pattern this project treats
+as the product.
