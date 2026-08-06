@@ -31,12 +31,18 @@ that gets to decide how a plan lands in a real network.
 
 Deliberately NOT implemented, and why
 -------------------------------------
-* **Degree of saturation, bonus green, LinSig Tables 3-3/3-4.** R1.3b names
-  these, but they live in the Operational Modelling Guidelines' *LinSig
-  chapter*, which is not among the extracts on this machine. The Appendix A
-  extract — this unit's stated formula source — contains no DoS or bonus-green
-  formula, so none is written here. Inventing one would be exactly the
-  0.3-unit failure mode (a plausible-looking number nobody can trace).
+* **Degree of saturation, bonus green, LinSig Tables 3-3/3-4.** Still not
+  here, but no longer unbuilt: they were deferred while the Operational
+  Modelling Guidelines' *LinSig chapter* was not on this machine, and they
+  shipped in the sibling module ``linsig.py`` the day it arrived. They live
+  there rather than here because they answer to a different document and feed
+  a different validation regime — LinSig validates on degree of saturation and
+  queue, this module's plan feeds Vissim — and that boundary is what stops a
+  LinSig number being read as a Vissim one. Three of A.2's own quantities are
+  shared with it as code, because the LinSig chapter states the same three
+  rules under its own names (:func:`average_phase_time_s`,
+  :func:`scats_average_phase_time_s`, :func:`phase_frequency`); see
+  ``linsig.py``'s "A.2 reconciliation".
 * **Yellow-trap refusal** (A.4, p.41-42). The extract's own 1.6 note asks for
   it, but it is *not computable from the neutral model*: the rule turns on an
   opposed **filtering** right turn, and ``schema.TurnType``'s own docstring
@@ -282,6 +288,80 @@ def _require_non_negative(name: str, value: float) -> float:
     if not math.isfinite(value) or value < 0:
         raise ValueError(f"{name} must be finite and >= 0, got {value!r}")
     return value
+
+
+# ---------------------------------------------------------------------------
+# A.2 arithmetic — pure formulas
+#
+# A.2's three per-phase quantities, as functions rather than as divisions
+# scattered through convert_to_fixed_time(). They are extracted for two
+# reasons: the conversion below now has exactly one place each is computed, and
+# ``linsig.py`` states the SAME three rules under the LinSig chapter's names
+# (Table 3-3's "Actual Average"/"Weighted Average"/"Demand Frequencies"
+# columns) and delegates here rather than restating the arithmetic. See that
+# module's "A.2 reconciliation" section: same rule, two authorities, one
+# implementation.
+# ---------------------------------------------------------------------------
+
+
+def average_phase_time_s(total_activation_s: float, complete_cycles: int) -> float:
+    """A.2 bullet 3: ``t̄ᵢ = total activation time of i ÷ n_cycles``.
+    Citation: :data:`CIT_A2_AVG_PHASE`.
+
+    Also A.2 bullet 2's shape (:data:`CIT_A2_AVG_CYCLE`, ``c̄ = total duration
+    ÷ n_cycles``) — the average cycle is this function applied to the whole
+    period instead of to one phase, because Σ(totalᵢ ÷ n) = (Σ totalᵢ) ÷ n.
+    """
+    total_activation_s = _require_non_negative("total_activation_s", total_activation_s)
+    if not isinstance(complete_cycles, int) or isinstance(complete_cycles, bool):
+        raise ValueError(f"complete_cycles must be an int, got {complete_cycles!r}")
+    if complete_cycles <= 0:
+        raise ValueError(
+            "average_phase_time_s: A.2 divides by the number of COMPLETE cycles, so a positive "
+            f"count is required; got {complete_cycles!r}"
+        )
+    return total_activation_s / complete_cycles
+
+
+def scats_average_phase_time_s(total_activation_s: float, occurrences: int) -> float:
+    """A.2 bullet 3's other average: ``SCATS avg phase time = total activation
+    ÷ occurrences`` — what the phase actually gets when it runs, which is not
+    the same thing as its share of an average cycle.
+    Citation: :data:`CIT_A2_AVG_PHASE`.
+
+    The two differ for every phase with fᵢ < 1, and confusing them is the
+    classic error: summing these gives a cycle longer than the site's.
+    """
+    total_activation_s = _require_non_negative("total_activation_s", total_activation_s)
+    if not isinstance(occurrences, int) or isinstance(occurrences, bool):
+        raise ValueError(f"occurrences must be an int, got {occurrences!r}")
+    if occurrences <= 0:
+        raise ValueError(
+            "scats_average_phase_time_s: a phase that never ran has no average of its own; "
+            f"got {occurrences!r} occurrences"
+        )
+    return total_activation_s / occurrences
+
+
+def phase_frequency(occurrences: int, complete_cycles: int) -> float:
+    """A.2 bullet 3: ``fᵢ = occurrences ÷ cycles`` (stretch phase = 1.0).
+    Citation: :data:`CIT_A2_AVG_PHASE`.
+
+    Uncapped: the schema's own note records that A.4's repeat-right-turn
+    phasing runs a phase twice in a cycle, so fᵢ > 1 is representable rather
+    than an error. (:func:`pedestrian_demand_frequency` is A.2 bullet 5's
+    separate ped-demand rule, p.11, and keeps its own refusal message.)
+    """
+    if not isinstance(occurrences, int) or isinstance(occurrences, bool) or occurrences < 0:
+        raise ValueError(f"occurrences must be a non-negative int, got {occurrences!r}")
+    if not isinstance(complete_cycles, int) or isinstance(complete_cycles, bool):
+        raise ValueError(f"complete_cycles must be an int, got {complete_cycles!r}")
+    if complete_cycles <= 0:
+        raise ValueError(
+            "phase_frequency: A.2 defines fᵢ as occurrences ÷ complete cycles, so a positive "
+            f"cycle count is required; got {complete_cycles!r}"
+        )
+    return occurrences / complete_cycles
 
 
 # ---------------------------------------------------------------------------
@@ -981,7 +1061,7 @@ def convert_to_fixed_time(
         # settled above (fixed_time_stretch_occurrence_mismatch) — A.2 pins its
         # frequency at 1.0 by definition, so it is not re-checked here.
         occurrences = phase.observation_count
-        frequency = (occurrences / cycles) if occurrences is not None else None
+        frequency = phase_frequency(occurrences, cycles) if occurrences is not None else None
         if (
             frequency is not None
             and phase.frequency is not None
@@ -1005,8 +1085,8 @@ def convert_to_fixed_time(
             )
             return _bail()
 
-        scats_average = (total / occurrences) if occurrences else None
-        averages.append((phase, total / cycles, frequency, scats_average))
+        scats_average = scats_average_phase_time_s(total, occurrences) if occurrences else None
+        averages.append((phase, average_phase_time_s(total, cycles), frequency, scats_average))
 
     # -- 4. average cycle c̄, cross-checked against any stated value -------
     # A.2: Σ t̄ᵢ = c̄. Computing c̄ as the sum of the per-phase averages rather
@@ -1150,7 +1230,7 @@ def convert_to_fixed_time(
             min_green_s=phase.min_green_s,
             max_green_s=phase.max_green_s,
             is_stretch_phase=bool(phase.is_stretch_phase),
-            frequency=(phase.observation_count / cycles)
+            frequency=phase_frequency(phase.observation_count, cycles)
             if phase.observation_count is not None
             else None,
         )
@@ -1170,7 +1250,9 @@ def convert_to_fixed_time(
 
         if green is not None and phase.min_green_s is not None and green < phase.min_green_s:
             frequency = (
-                phase.observation_count / cycles if phase.observation_count is not None else None
+                phase_frequency(phase.observation_count, cycles)
+                if phase.observation_count is not None
+                else None
             )
             low_frequency = frequency is not None and frequency < 1.0
             issues.append(
@@ -1204,7 +1286,9 @@ def convert_to_fixed_time(
             occurrences=phase.observation_count,
             observed_total_s=phase.observed_total_duration_s or 0.0,
             scats_average_s=(
-                (phase.observed_total_duration_s or 0.0) / phase.observation_count
+                scats_average_phase_time_s(
+                    phase.observed_total_duration_s or 0.0, phase.observation_count
+                )
                 if phase.observation_count
                 else None
             ),
@@ -1452,15 +1536,18 @@ __all__ = [
     "all_red_time_formula_s",
     "all_red_time_s",
     "all_red_time_wa_s",
+    "average_phase_time_s",
     "convert_to_fixed_time",
     "intergreen_time_s",
     "interpolate_offset_s",
     "pedestrian_clearance_1_s",
     "pedestrian_clearance_2_s",
     "pedestrian_demand_frequency",
+    "phase_frequency",
     "protection_time_red_arrow_with_flash_s",
     "protection_time_timed_red_arrow_s",
     "round_up_to_step",
+    "scats_average_phase_time_s",
     "yellow_time_both_approaches_s",
     "yellow_time_s",
 ]
