@@ -66,46 +66,53 @@ AI가 거부한다 ④ 벽 먼저, 탑은 그 위에(v2b 없이 genesis 없음) 
 
 Exit: 스윕 데모 가능, 스타일된 리포트 1장, MRWA 인용 경고 실동작, 목업 TK 송부.
 
-### Phase 1 — Foundation (주 1–3)
+### Phase 1 — Foundation (주 1–3) — ✅ **전 유닛 완료 2026-08-05**
 
-| # | 항목 | Track | 의존 |
-|---|---|---|---|
-| 1.1 | ✅(주말 Q4로 대부분 완료) **v2b 스파인 + 10/13 불릿**: 스파인(inpx_structure.py) + lane/link closure·turn bans·측정 인프라·signal heads/detectors·links/connectors 생성·stop signs/priority rules·PT stops/lines — **composite ✅ 2026-08-03 (Q5 ①: 전 스테이지 green, 프로세스 경계 검증 + 합성 증명)**, **signal controller 생성 ✅ 2026-08-03 (Q5 ②: `add_signal_controller`, duplicate-then-edit 4번째; genesis 갭 ② 종료)**, **vehicle input 생성 ✅ 2026-08-03 (Q5 ③: `add_vehicle_input` + 커넥터/인터벌 warn 2건 + 반쯤 배선된 10개 동사 `object_not_found` 배선 완결; genesis 갭 리스트 전체 종료)**; **link geometry edits ✅ 2026-08-03 (Q6 ①: lane count/centreline·points·curvature 3동사 + refuse/warn 3건, registry 107)**, **parking lots ✅ 2026-08-04 (Q6 ②: representation-first 3동사 + 리더, registry 110)**, **pedestrian inputs ✅ 2026-08-04 (Q6 ③: input 3동사 + 리더, static-routing 게이트 실측, registry 113)** — **1.1 전체 완료 (v2b 카탈로그 잔여 불릿 0)** | G | — |
-| 1.2 | ✅(카운트측 완료 2026-08-05, 33eed3e — 어댑터+`class_total_consistency` 게이트+demand 시딩(R1.4 카운트측); 실드롭 11개 워크북 0 REFUSE; 신호측은 TK 기계가독 export 답변 대기로 열림) **대전 어댑터 v1** (신호+카운트 → 중립 스키마 → 기존 신호/입력 모델) + R2.5 데이터 품질 게이트 | D | TK 파일 ✅ 도착·인벤토리 완료 2026-08-03 (0f4026d): 카운트측 즉시 착수 가능(U턴 포함 회전교통량·6종 차종·15분·5주); 신호측은 PDF 23건 — TK에 기계가독 export 문의 필요 |
-| 1.3 | ✅(2026-08-05, c40ee0d — DOCX export(ko/en/ja) + `/summary` + 승인 사유 1줄 백엔드; 승인 카드의 사유 입력·다운로드 버튼은 UX 백로그로) **감사추적 export v1** — 액션 레저 → "파라미터 변경 기록+근거" 섹션 (DOCX; 승인 시 사유 1줄 입력) | R | 없음 |
-| 1.4 | ✅(2026-08-05, 56f7f5c — runtime/workspaces/&lt;id&gt;/uploads/ + X-Workspace-Id 스코핑, 세션 소유권 fail-closed, 업로드 트랜잭션화(스테이지→프로모트)·zip-bomb·413·캐시 무효화; 런/세션 트리는 논리 격리만 — 물리 이전은 P③. 알려진 구멍 2건(websocket, health &lt;a href&gt;)은 DECISIONS 기록) **프로젝트 워크스페이스** (P②: 전역 활성 데이터셋 싱글톤 제거 — 접근통제 경계) | P | 없음 |
-| 1.5 | ✅(2026-08-05, 7cfe8eb — 실측 4개 구현(문서상 3개)→런타임당 1개 + `shared/geh-conformance.json` 교차언어 고정; 미정의 GEH는 분모에서 제외되어 **고객 리포트 수치가 내려감**(AM 합계 80%→67%) — 근거·전후표는 DECISIONS; #7은 실측 VEHDELAY 가중평균으로 대체(미측정은 데이터 없음), #24는 대·시 환산 완료. #28은 별건으로 유지) **GEH 파이프라인 단일화** (UX#2: 3개 구현 → 1개 백엔드 유틸) + UX 백로그 high 잔여(#7 방향별 지연, #24 단위) | C/X | 없음 |
-| 1.6 | ✅(2026-08-05, d42e401 — A.2 가중평균+A.3 클리어런스+A.5 오프셋 전체, 인용 상수 기계 대조; LinSig 항목·yellow-trap은 측정상 불가로 제외, DECISIONS 참조) **SCATS→고정시간 변환 모듈** (R1.3b — 가중평균 phase/demand frequency; 부록 A 수령·정독 완료(2026-07-31) — 알고리즘 명세 확보: docs/product/reference/mrwa-appendix-a-extract.md) | D | 없음(수식 확보) |
+| # | 상태 | 항목 | Track | 의존 |
+|---|---|---|---|---|
+| 1.1 | ✅ | (주말 Q4로 대부분 완료) **v2b 스파인 + 10/13 불릿**: 스파인(inpx_structure.py) + lane/link closure·turn bans·측정 인프라·signal heads/detectors·links/connectors 생성·stop signs/priority rules·PT stops/lines — **composite ✅ 2026-08-03 (Q5 ①: 전 스테이지 green, 프로세스 경계 검증 + 합성 증명)**, **signal controller 생성 ✅ 2026-08-03 (Q5 ②: `add_signal_controller`, duplicate-then-edit 4번째; genesis 갭 ② 종료)**, **vehicle input 생성 ✅ 2026-08-03 (Q5 ③: `add_vehicle_input` + 커넥터/인터벌 warn 2건 + 반쯤 배선된 10개 동사 `object_not_found` 배선 완결; genesis 갭 리스트 전체 종료)**; **link geometry edits ✅ 2026-08-03 (Q6 ①: lane count/centreline·points·curvature 3동사 + refuse/warn 3건, registry 107)**, **parking lots ✅ 2026-08-04 (Q6 ②: representation-first 3동사 + 리더, registry 110)**, **pedestrian inputs ✅ 2026-08-04 (Q6 ③: input 3동사 + 리더, static-routing 게이트 실측, registry 113)** — **1.1 전체 완료 (v2b 카탈로그 잔여 불릿 0)** | G | — |
+| 1.2 | ✅ | (카운트측 완료 2026-08-05, 33eed3e — 어댑터+`class_total_consistency` 게이트+demand 시딩(R1.4 카운트측); 실드롭 11개 워크북 0 REFUSE; 신호측은 TK 기계가독 export 답변 대기로 열림) **대전 어댑터 v1** (신호+카운트 → 중립 스키마 → 기존 신호/입력 모델) + R2.5 데이터 품질 게이트 | D | TK 파일 ✅ 도착·인벤토리 완료 2026-08-03 (0f4026d): 카운트측 즉시 착수 가능(U턴 포함 회전교통량·6종 차종·15분·5주); 신호측은 PDF 23건 — TK에 기계가독 export 문의 필요 |
+| 1.3 | ✅ | (2026-08-05, c40ee0d — DOCX export(ko/en/ja) + `/summary` + 승인 사유 1줄 백엔드; 승인 카드의 사유 입력·다운로드 버튼은 UX 백로그로) **감사추적 export v1** — 액션 레저 → "파라미터 변경 기록+근거" 섹션 (DOCX; 승인 시 사유 1줄 입력) | R | 없음 |
+| 1.4 | ✅ | (2026-08-05, 56f7f5c — runtime/workspaces/&lt;id&gt;/uploads/ + X-Workspace-Id 스코핑, 세션 소유권 fail-closed, 업로드 트랜잭션화(스테이지→프로모트)·zip-bomb·413·캐시 무효화; 런/세션 트리는 논리 격리만 — 물리 이전은 P③. 알려진 구멍 2건(websocket, health &lt;a href&gt;)은 DECISIONS 기록) **프로젝트 워크스페이스** (P②: 전역 활성 데이터셋 싱글톤 제거 — 접근통제 경계) | P | 없음 |
+| 1.5 | ✅ | (2026-08-05, 7cfe8eb — 실측 4개 구현(문서상 3개)→런타임당 1개 + `shared/geh-conformance.json` 교차언어 고정; 미정의 GEH는 분모에서 제외되어 **고객 리포트 수치가 내려감**(AM 합계 80%→67%) — 근거·전후표는 DECISIONS; #7은 실측 VEHDELAY 가중평균으로 대체(미측정은 데이터 없음), #24는 대·시 환산 완료. #28은 별건으로 유지) **GEH 파이프라인 단일화** (UX#2: 3개 구현 → 1개 백엔드 유틸) + UX 백로그 high 잔여(#7 방향별 지연, #24 단위) | C/X | 없음 |
+| 1.6 | ✅ | (2026-08-05, d42e401 — A.2 가중평균+A.3 클리어런스+A.5 오프셋 전체, 인용 상수 기계 대조; LinSig 항목·yellow-trap은 측정상 불가로 제외, DECISIONS 참조) **SCATS→고정시간 변환 모듈** (R1.3b — 가중평균 phase/demand frequency; 부록 A 수령·정독 완료(2026-07-31) — 알고리즘 명세 확보: docs/product/reference/mrwa-appendix-a-extract.md) | D | 없음(수식 확보) |
 
 Exit: v2b로 "링크 폐쇄"가 승인·검증·롤백을 통과, 대전 데이터가 중립 스키마로 읽힘,
 변경이력 DOCX가 실제 레저에서 생성됨, 업로드가 워크스페이스에 격리됨.
 
 ### Phase 2 — Intelligence (주 3–7)
 
-| # | 항목 | Track | 의존 |
-|---|---|---|---|
-| 2.1 | **보정 루프 v1**: anomaly 카탈로그(유령 대기열·차단 커넥터·기아 링크·diffusion/latent>1%) → fix 매핑 → 승인 루프 → **reality check**(관측 데이터 대조, R2.3) | C | 1.5, 관측 데이터 스토어 |
-| 2.2 | **풀 스윕 + 랭킹 결론** (대안 열거 → 매트릭스 실행 → KPI 랭킹 → 분석 트레일 포함 결론) | S | 0.1 |
-| 2.3 | **Genesis (a) 기하 생성**: OSM → 링크/커넥터/차로 초안(§5 코딩 관행 준수) + **Murdoch 재구축 벤치마크 파이프라인**(R1.6 — 구조 diff 리포트) | G | 1.1 |
-| 2.4 | **Network diff view** (두 버전 나란히, 변경 하이라이트 — MRWA Model Audit View 사상) | X | 없음(artifact 버전 존재) |
-| 2.5 | **SQLite 메타데이터 + 로그인/역할** (P③④: WAL, 파일은 파일로; modeler/reviewer/admin을 승인 게이트에 바인딩) | P | 1.4 |
-| 2.6 | **Style-from-sample v1** (DOCX 팔레트/폰트/로고/헤딩 추출 → 리포트 적용) | R | 0.2 |
-| 2.7 | **온보딩** (샘플 프로젝트 번들 + 가이드 투어) + 데이터 경계 문구 | X | 1.4 |
+실행 계획(2026-08-05 수립, 10-에이전트 스카우트/설계/심사 워크플로): Exit 문장이 곧 채점표이므로
+**2.1 · 2.3 · 2.5가 필수 3종**, 나머지 4행은 Phase 2에서 제외(2.4는 U2 산출물을 그대로 소비하므로
+미루면 오히려 싸짐). 유닛 순서: U1 런 증거 → U2 Murdoch diff → U3 anomaly 카탈로그 → U4 fix 매핑
+→ U4a 합성 카운트 픽스처 → U5 reality check + 수정/거부 한 쌍 → U6 런 레지스트리 원자성 →
+U7 auth 코어 → U8 승인 기록에 actor → U9 로그인 UI. 이후 U10 관측 스토어+대전 ingest, U11 링크
+평가 arming(기아 링크), 그다음 2.3의 OSM 생성기와 P③ 전체.
+
+| # | 상태 | 항목 | Track | 의존 |
+|---|---|---|---|---|
+| 2.1 | 🔄 | **보정 루프 v1**: anomaly 카탈로그(유령 대기열·차단 커넥터·기아 링크·diffusion/latent>1%) → fix 매핑 → 승인 루프 → **reality check**(관측 데이터 대조, R2.3) — U1 ✅ 2026-08-05 `76aa8de`(죽어 있던 postrun 제약 3건을 실제 증거로 기동: 0→3, + `results_evidence.py` 3-상태 서술자), U3 카탈로그 진행 중. **거부 형태는 사용자 승인 대기**(볼륨/GEH 기반만 방어 가능 — 관측 대기열은 대전 드롭에 없음) | C | 1.5 ✅, 관측 데이터 스토어(U10) |
+| 2.2 | ⬜ | **풀 스윕 + 랭킹 결론** (대안 열거 → 매트릭스 실행 → KPI 랭킹 → 분석 트레일 포함 결론) — Phase 2 범위에서 제외 | S | 0.1 ✅ |
+| 2.3 | 🔄 | **Genesis (a) 기하 생성**: OSM → 링크/커넥터/차로 초안(§5 코딩 관행 준수) + **Murdoch 재구축 벤치마크 파이프라인**(R1.6 — 구조 diff 리포트) — **벤치마크 절반 ✅ 2026-08-05 `2db6343`**(위상만, 위치는 원천 거부: 유일한 georeference가 잔차 ~14 m·척도항 1.1782 = Web-Mercator 위도 왜곡 → 차로폭 4개 바닥. 실 네트워크 변이 왕복 정확 복원, 자체 뮤턴트 7종 전멸). OSM 생성기 절반은 **MRWA §5 전사 대기**로 미착수 | G | 1.1 ✅ |
+| 2.4 | ⬜ | **Network diff view** (두 버전 나란히, 변경 하이라이트 — MRWA Model Audit View 사상) — U2가 구조화 payload를 이미 생산하므로 뒤로 미룰수록 싸짐 | X | 없음(artifact 버전 존재) |
+| 2.5 | ⬜ | **SQLite 메타데이터 + 로그인/역할** (P③④: WAL, 파일은 파일로; modeler/reviewer/admin을 승인 게이트에 바인딩) — U6~U9. **auth 부트스트랩 정책 + 승인자 컬럼 규칙은 사용자 승인 대기** | P | 1.4 ✅ |
+| 2.6 | ⬜ | **Style-from-sample v1** (DOCX 팔레트/폰트/로고/헤딩 추출 → 리포트 적용) — Phase 2 범위에서 제외 | R | 0.2 ✅ |
+| 2.7 | ⬜ | **온보딩** (샘플 프로젝트 번들 + 가이드 투어) + 데이터 경계 문구 — Phase 2 범위에서 제외 | X | 1.4 ✅ |
 
 Exit: 보정 루프가 실제 anomaly 1종을 자동 수정하고 1종을 "실제 행동"으로 올바르게 거부,
 Murdoch 벤치마크 diff 리포트 v1 존재, 리뷰어가 로그인해 승인 이력을 자기 이름으로 남김.
 
 ### Phase 3 — Genesis 완성 (주 7–12)
 
-| # | 항목 | Track | 의존 |
-|---|---|---|---|
-| 3.1 | **Genesis (b) 신호**: 대전 어댑터+R1.3b → 컨트롤러/프로그램 생성, signal head/detector 자동 배치(§5 기본값 2.0m/4.5m) | G | 2.3, 1.2, 1.6 |
-| 3.2 | **Genesis (c) 수요**: 카운트 → vehicle inputs(15분 프로파일)+compositions+routing 시딩 | G | 3.1 |
-| 3.3 | **Genesis (d) R1.5 검증 게이트 완결** (V1–V9 전체 자동 실행 — genesis의 출하 게이트) | G | 3.2 |
-| 3.4 | **EPIC 5 phase-plan 편집** (phase 추가/삭제/시퀀스, intergreen 검증; VAP 구조는 §5.4.2.5 참조) | A | 1.6 |
-| 3.5 | **리플레이 업그레이드** (.lsa 신호 재생, 차량 추적, 큐 하이라이트) + 라이브 스텝-스트리밍 | X | 없음 |
-| 3.6 | **배포 서비스화** (Windows 서비스 + 단일 오리진 TLS + 보존정책/디스크 모니터) — 파일럿 준비 | P | 2.5 |
-| 3.7 | **능동 진단** (요청 없이 gridlock/anomaly 플래그 — 2.1의 카탈로그 재사용) | A | 2.1 |
+| # | 상태 | 항목 | Track | 의존 |
+|---|---|---|---|---|
+| 3.1 | ⬜ | **Genesis (b) 신호**: 대전 어댑터+R1.3b → 컨트롤러/프로그램 생성, signal head/detector 자동 배치(§5 기본값 2.0m/4.5m) | G | 2.3, 1.2, 1.6 |
+| 3.2 | ⬜ | **Genesis (c) 수요**: 카운트 → vehicle inputs(15분 프로파일)+compositions+routing 시딩 | G | 3.1 |
+| 3.3 | ⬜ | **Genesis (d) R1.5 검증 게이트 완결** (V1–V9 전체 자동 실행 — genesis의 출하 게이트) | G | 3.2 |
+| 3.4 | ⬜ | **EPIC 5 phase-plan 편집** (phase 추가/삭제/시퀀스, intergreen 검증; VAP 구조는 §5.4.2.5 참조) | A | 1.6 |
+| 3.5 | ⬜ | **리플레이 업그레이드** (.lsa 신호 재생, 차량 추적, 큐 하이라이트) + 라이브 스텝-스트리밍 | X | 없음 |
+| 3.6 | ⬜ | **배포 서비스화** (Windows 서비스 + 단일 오리진 TLS + 보존정책/디스크 모니터) — 파일럿 준비 | P | 2.5 |
+| 3.7 | ⬜ | **능동 진단** (요청 없이 gridlock/anomaly 플래그 — 2.1의 카탈로그 재사용; U3의 스캔 진입점을 그대로 호출하도록 설계됨) | A | 2.1 |
 
 Exit: **대전 데이터 기반 소규모 실지역을 지도에서 생성 → 게이트 통과 → 시뮬레이션 →
 리포트까지 원 파이프라인 데모.** 파일럿 서버 1대 가동.
