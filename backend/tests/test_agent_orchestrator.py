@@ -45,6 +45,12 @@ EXPECTED_READ_TOOLS = {
     "get_driving_behaviors",
     "get_run_kpis",
     "compare_scenarios",
+    # Phase 2 unit U5 adds run_reality_check (tools_metrics.py): the run's own
+    # movement volumes vs the observed counts workbook, per node, ending in
+    # U4's proposal-or-refusal. Read-tier and applies nothing -- anything it
+    # proposes still goes through this engine's own approval loop, and no
+    # orchestrator/guardrail wiring was added for it.
+    "run_reality_check",
     # Q4 unit (7) adds get_pt_stops + get_pt_lines.
     "get_pt_stops",
     "get_pt_lines",
