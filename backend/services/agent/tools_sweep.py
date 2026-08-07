@@ -118,6 +118,38 @@ tool name (unlike ``single_seed_run_not_statistically_valid``'s
 since ``seed_count``'s own ``Field(ge=5, le=10)`` bound already makes a
 single-seed sweep structurally impossible).
 
+**No row-3.7 diagnostics block here — a STATED exclusion, not an oversight.**
+``run_simulation`` attaches unit U3's anomaly scan to every completed run
+(``tools_run._scan_diagnostics``, roadmap row 3.7 능동 진단). This tool
+deliberately does not, and the reason is the very subsetting the paragraph
+above describes:
+
+* Nothing would be checkable. MEASURED by running
+  ``anomalies.scan_run_result`` over this tool's exact ``run_result``
+  (``{"tables", "deleted_vehicles"}``): all four catalogued anomalies come
+  back ``NOT_CHECKABLE`` — ghost_queue and blocked_connector as
+  ``KEY_OMITTED`` (no ``queue_results``/``los_by_movement``, and no
+  ``evidence`` descriptor is produced here at all), starved_link and
+  latent_demand_diffusion by their catalogue arming — with zero findings
+  attached. A diagnostics block that on every sweep, forever, can only say
+  "nothing was checked" is not a diagnosis; it is the APPEARANCE of coverage,
+  which is the failure this catalogue exists to prevent.
+* Even with evidence, whole-sweep would be the wrong grain. ``tables`` below
+  is the UNION of the base and scaled variants' result tables — two different
+  networks — so a finding derived from it could not be attributed to either.
+  Per-variant scans are the honest form, and they need per-variant U1
+  evidence, which this tool does not collect (unit U1, above: "extending this
+  tool to match is deliberately out of U1's scope"). That collection is the
+  prerequisite unit; until it lands there is nothing honest to scan.
+* It is not a drop-in mechanically either: ``scan_run_result``'s action
+  defaults to ``{"tool": "run_simulation"}``, which would pull
+  ``evaluation_not_configured_before_run``
+  (``applies_to=["run_simulation"]``) into a sweep it was never written for.
+
+``test_agent_tools_sweep.py`` pins the exclusion TOGETHER WITH the measured
+reason for it, so the day this tool starts carrying per-variant evidence the
+pin fails and the decision is revisited rather than quietly inherited.
+
 **Ledger shape.** ``artifacts.runs`` carries one entry per (variant, seed) —
 ``2 * seed_count`` children total — mirroring ``apply_edit_plan``'s own
 "one parent action, per-step children in artifacts" ledger convention exactly.

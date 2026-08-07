@@ -11,6 +11,7 @@ file builds directly via a monkeypatched ``services.simulation_runs.job_dir``.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -639,7 +640,7 @@ def _write_inpx(
     return path
 
 
-def _run_and_get_run_result(
+def _run_and_get_envelope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -666,10 +667,29 @@ def _run_and_get_run_result(
         "run_simulation", {"duration_s": duration_s}, registry=default_registry
     )
     assert envelope["status"] == "ok", envelope
-    return envelope["data"]["run_result"]
+    return envelope
 
 
-def _unhealthy_run_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+def _run_and_get_run_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    job_work_dir: Path,
+    source: Path,
+    tables: list[str],
+    duration_s: int = 3600,
+) -> dict[str, Any]:
+    return _run_and_get_envelope(
+        tmp_path,
+        monkeypatch,
+        job_work_dir=job_work_dir,
+        source=source,
+        tables=tables,
+        duration_s=duration_s,
+    )["data"]["run_result"]
+
+
+def _unhealthy_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """A run whose evidence trips all three newly-firing constraints.
 
     * a zero-throughput movement Vissim graded LOS A (VEHS 0, VEHDELAY 0);
@@ -684,7 +704,7 @@ def _unhealthy_run_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> di
         queues=[(_MOVEMENT_BUSY, 12.0, _QLENMAX_BUSY), (_MOVEMENT_GRIDLOCKED, 30.0, _QLENMAX_GRIDLOCKED)],
     )
     source = _write_inpx(tmp_path / "unhealthy.inpx", queue_definition=False)
-    return _run_and_get_run_result(
+    return _run_and_get_envelope(
         tmp_path,
         monkeypatch,
         job_work_dir=work,
@@ -693,7 +713,11 @@ def _unhealthy_run_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> di
     )
 
 
-def _healthy_run_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+def _unhealthy_run_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    return _unhealthy_envelope(tmp_path, monkeypatch)["data"]["run_result"]
+
+
+def _healthy_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """The same evidence keys, all of them clean: every movement carries
     throughput, the queue definition IS attached, and no queue outruns the
     delay-measurement segment."""
@@ -705,7 +729,28 @@ def _healthy_run_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict
         queues=[(_MOVEMENT_BUSY, 12.0, 41.5), (_MOVEMENT_GRIDLOCKED, 8.0, 22.25)],
     )
     source = _write_inpx(tmp_path / "healthy.inpx", queue_definition=True)
-    return _run_and_get_run_result(
+    return _run_and_get_envelope(
+        tmp_path,
+        monkeypatch,
+        job_work_dir=work,
+        source=source,
+        tables=_TABLES_WITH_NODE_RESULTS,
+    )
+
+
+def _healthy_run_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    return _healthy_envelope(tmp_path, monkeypatch)["data"]["run_result"]
+
+
+def _armed_but_empty_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Both MOVEMENT tables exist and are EMPTY — collection was armed and
+    returned nothing. The shape 48 real vendor result .dbs in this checkout
+    have, and the one U3's blind-spot rule is about."""
+    work = tmp_path / "job-armed-empty-envelope"
+    work.mkdir()
+    _write_full_results_db(work / "run_001.db")  # tables created, zero rows
+    source = _write_inpx(tmp_path / "armed-empty-envelope.inpx", queue_definition=True)
+    return _run_and_get_envelope(
         tmp_path,
         monkeypatch,
         job_work_dir=work,
@@ -1030,8 +1075,17 @@ def test_run_result_four_pre_existing_keys_are_unchanged_by_unit_u1(
     Re-affirmed 2026-08-07 when ``result_db_count`` was added: it is another
     ADDED key, collected by ``_collect_run_evidence`` and therefore appended
     by the same ``run_result.update(...)`` call, so the four base keys keep
-    both their values and their leading positions."""
-    run_result = _unhealthy_run_result(tmp_path, monkeypatch)
+    both their values and their leading positions.
+
+    Re-affirmed AGAIN for roadmap row 3.7 (능동 진단), and this time the pin
+    grew a clause rather than just an assurance: row 3.7 adds NOTHING to
+    ``run_result`` at all. Its diagnostics ride BESIDE it under the
+    envelope's ``data`` key, because ``run_result`` is the postrun catalog's
+    INPUT — writing a scan of that input back into it would feed the next
+    scan its own output. The two assertions at the end of this test are what
+    make that structural rather than a promise."""
+    envelope = _unhealthy_envelope(tmp_path, monkeypatch)
+    run_result = envelope["data"]["run_result"]
 
     assert {key: run_result[key] for key in _BASE_RUN_RESULT_KEYS} == {
         "tables": sorted(_TABLES_WITH_NODE_RESULTS),
@@ -1043,6 +1097,10 @@ def test_run_result_four_pre_existing_keys_are_unchanged_by_unit_u1(
     # Additive, and after the four -- never interleaved with them.
     assert run_result["result_db_count"] == 1
     assert "result_db_count" in list(run_result)[4:]
+
+    # Row 3.7: beside run_result, never inside it.
+    assert "diagnostics" not in run_result
+    assert envelope["data"]["diagnostics"]["status"] == tools_run.DIAGNOSTICS_OK
 
 
 # ---------------------------------------------------------------------------
@@ -1364,3 +1422,274 @@ def test_queue_definition_is_omitted_rather_than_filled_with_nones(tmp_path: Pat
     source = _write_inpx(tmp_path / "no-queue-attrs.inpx", queue_definition=False)
 
     assert tools_run._read_evaluation_element(source)["queue_definition"] is None
+
+
+# ===========================================================================
+# Roadmap row 3.7 (능동 진단) — every completed run carries its own scan
+# ===========================================================================
+#
+# The row is "flag gridlock/anomalies WITHOUT being asked", so every test in
+# this section dispatches a plain `run_simulation` with NO extra argument, no
+# orchestrator, no agent turn, and asserts on what came back anyway. If a test
+# here ever needs to ASK for diagnostics, the row is not implemented.
+
+_LANGS = ("ko", "en", "ja")
+
+
+def _diagnostics(envelope: dict[str, Any]) -> dict[str, Any]:
+    return envelope["data"]["diagnostics"]
+
+
+def _entries(envelope: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {entry["id"]: entry for entry in _diagnostics(envelope)["anomalies"]}
+
+
+def test_a_run_with_a_detectable_anomaly_names_it_unprompted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The row, in one test. The fixture's evidence carries both catalogued
+    detectable shapes — a queue that outruns the delay segment, and a
+    movement graded LOS A on zero throughput — and the envelope names them
+    without anyone asking a question."""
+    envelope = _unhealthy_envelope(tmp_path, monkeypatch)
+    diagnostics = _diagnostics(envelope)
+    entries = _entries(envelope)
+
+    assert diagnostics["status"] == tools_run.DIAGNOSTICS_OK
+    assert diagnostics["summary"]["detected_ids"] == ["ghost_queue", "blocked_connector"]
+
+    ghost = entries["ghost_queue"]
+    assert ghost["outcome"] == "DETECTED"
+    assert sorted(f["constraint_id"] for f in ghost["findings"]) == [
+        "delay_measurement_truncated_by_queue",
+        "queue_length_definition_not_portable",
+    ]
+
+    blocked = entries["blocked_connector"]
+    assert blocked["outcome"] == "DETECTED"
+    # The finding names the actual zero-throughput movement, not a summary --
+    # a flag a user cannot act on is not a diagnosis.
+    assert blocked["findings"][0]["details"]["movements"] == [_MOVEMENT_GRIDLOCKED]
+
+
+def test_the_headline_names_the_detected_anomalies_in_all_three_languages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """ko primary, en/ja alongside — the same rule U3's own messages follow,
+    applied to the one line this wrapper adds on top of them. The NAMES come
+    from the catalogue's per-language labels, so the ko sentence says 유령
+    대기열 and the ja one says 幽霊待ち行列, never the English label in three
+    different sentences."""
+    headline = _diagnostics(_unhealthy_envelope(tmp_path, monkeypatch))["headline"]
+
+    assert set(headline) == set(_LANGS)
+    assert all(headline[lang].strip() for lang in _LANGS)
+    assert "유령 대기열" in headline["ko"] and "차단된 커넥터" in headline["ko"]
+    assert "Ghost queue" in headline["en"] and "Blocked connector" in headline["en"]
+    assert "幽霊待ち行列" in headline["ja"] and "遮断されたコネクタ" in headline["ja"]
+    # The counts are the scan's own, not recounted here.
+    assert "2" in headline["en"]
+
+
+def test_a_healthy_run_reports_checked_clean_rather_than_silence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The half that makes the other half worth reading. "We looked and found
+    nothing" and "we said nothing" are different claims, and only the first
+    one is evidence."""
+    envelope = _healthy_envelope(tmp_path, monkeypatch)
+    entries = _entries(envelope)
+
+    for anomaly_id in ("ghost_queue", "blocked_connector"):
+        assert entries[anomaly_id]["outcome"] == "CHECKED_CLEAN"
+        assert entries[anomaly_id]["findings"] == []
+    assert _diagnostics(envelope)["summary"]["detected_n"] == 0
+    assert _diagnostics(envelope)["summary"]["checked_clean_ids"] == [
+        "ghost_queue",
+        "blocked_connector",
+    ]
+    # Silence is exactly what this must NOT be: the two anomalies are present
+    # in the payload, carrying a verdict.
+    assert {"ghost_queue", "blocked_connector"} <= set(entries)
+    assert "0 detected" in _diagnostics(envelope)["headline"]["en"]
+
+
+def test_armed_but_empty_evidence_survives_the_wrapping_as_not_checkable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """U3's blind-spot rule, asserted through the ENVELOPE rather than
+    through the scan function: "queue collection was armed and returned
+    nothing" must not arrive at the agent as "no anomalies". This is the one
+    that must never be softened — the projection drops U3's per-check
+    breakdown, so if it also dropped the `why` this rule would hold inside
+    anomalies.py and quietly fail at the boundary that matters."""
+    envelope = _armed_but_empty_envelope(tmp_path, monkeypatch)
+    run_result = envelope["data"]["run_result"]
+
+    # Precondition: this really is the armed-but-empty shape, not absence.
+    assert (
+        run_result["evidence"][results_evidence.MOVEMENT_INTERVAL_TABLE]
+        == results_evidence.ARMED_BUT_EMPTY
+    )
+
+    entries = _entries(envelope)
+    for anomaly_id in ("ghost_queue", "blocked_connector"):
+        entry = entries[anomaly_id]
+        assert entry["outcome"] == "NOT_CHECKABLE"
+        assert entry["outcome"] != "CHECKED_CLEAN"
+        assert entry["findings"] == []
+        # ...and it says WHY, in all three languages.
+        assert "zero rows" in entry["why"]["en"]
+        assert all(entry["why"][lang].strip() for lang in _LANGS)
+        assert "0행" in entry["why"]["ko"]
+    assert _diagnostics(envelope)["summary"]["checked_clean_ids"] == []
+
+
+def test_the_two_unarmed_anomalies_report_not_checkable_with_their_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The catalogue's own blind spots reach the envelope too: a run that
+    reported only what it CAN detect would imply the four names are all
+    covered."""
+    entries = _entries(_healthy_envelope(tmp_path, monkeypatch))
+
+    starved = entries["starved_link"]
+    assert (starved["arming"], starved["outcome"]) == ("NOT_YET_ARMED", "NOT_CHECKABLE")
+    assert "scheduled work" in starved["why"]["en"]
+
+    latent = entries["latent_demand_diffusion"]
+    assert (latent["arming"], latent["outcome"]) == ("NOT_MEASURABLE", "NOT_CHECKABLE")
+    assert "Not observable at all" in latent["why"]["en"]
+    assert starved["why"] != latent["why"]
+
+
+def test_uncatalogued_postrun_findings_are_counted_and_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A SIMULATIONRUN-only run fires ``results_missing_kpi_tables``, which no
+    anomaly in the catalogue indexes. The count says the catalogue did not
+    cover everything this run found; the id says what."""
+    work = tmp_path / "job-uncatalogued"
+    work.mkdir()
+    _write_simulationrun_only_db(work / "run_001.db")
+    source = _write_inpx(tmp_path / "uncatalogued.inpx")
+
+    envelope = _run_and_get_envelope(
+        tmp_path, monkeypatch, job_work_dir=work, source=source, tables=["SIMULATIONRUN"]
+    )
+    diagnostics = _diagnostics(envelope)
+
+    assert diagnostics["uncatalogued_findings_n"] == 1
+    assert diagnostics["uncatalogued_finding_ids"] == ["results_missing_kpi_tables"]
+    assert "1 uncatalogued finding(s)" in diagnostics["headline"]["en"]
+
+
+def test_a_scan_crash_degrades_to_diagnostics_unavailable_and_never_fails_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Injected failure, the property that matters most: the run already
+    happened — real result databases, a verified SIMULATIONRUN row — and
+    nothing that goes wrong while INTERPRETING it may turn it into a failure.
+    A diagnostic layer that can kill the run it diagnoses is worse than no
+    diagnostic layer."""
+    import services.agent.anomalies as anomalies
+
+    def _boom(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise ZeroDivisionError("synthetic scan failure")
+
+    monkeypatch.setattr(anomalies, "scan_run_result", _boom)
+
+    envelope = _unhealthy_envelope(tmp_path, monkeypatch)
+    diagnostics = _diagnostics(envelope)
+
+    assert diagnostics["status"] == tools_run.DIAGNOSTICS_UNAVAILABLE
+    # The CLASS, so a reader can tell a blown-up scan from a quiet one
+    # without going to the logs. Never the message: a raised exception's text
+    # is arbitrary and unsanitised on this (success) path.
+    assert diagnostics["error_class"] == "ZeroDivisionError"
+    assert "synthetic scan failure" not in json.dumps(diagnostics, ensure_ascii=False)
+    for lang in _LANGS:
+        assert diagnostics["headline"][lang].strip()
+        assert "ZeroDivisionError" in diagnostics["headline"][lang]
+    # No anomalies key at all: an empty list would read as "four anomalies,
+    # nothing wrong" when the truth is "nothing was checked".
+    assert "anomalies" not in diagnostics
+    assert "summary" not in diagnostics
+
+    # The run envelope is otherwise INTACT.
+    assert envelope["status"] == "ok"
+    assert envelope["error_type"] is None
+    assert envelope["verification"]["simulationrun_verified"] is True
+    assert envelope["data"]["run_result"]["queue_results"]
+    assert envelope["data"]["kpis"]["metrics"]["avg_delay_s"] == 32.4
+
+
+def test_diagnostics_are_a_projection_of_the_scan_never_a_second_opinion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """No detection logic lives in tools_run.py. Every verdict in the
+    envelope is compared against what ``anomalies.scan_run_result`` says
+    about the very same payload, and the per-entry key set is pinned to
+    exactly "U3's keys minus the named omissions" — so a key U3 adds later
+    rides along automatically, and a key someone drops has to be named in
+    ``_DIAGNOSTICS_OMITTED_ANOMALY_KEYS`` to disappear."""
+    import services.agent.anomalies as anomalies
+
+    envelope = _unhealthy_envelope(tmp_path, monkeypatch)
+    direct = anomalies.scan_run_result(envelope["data"]["run_result"])
+    direct_entries = {entry["id"]: entry for entry in direct["anomalies"]}
+    projected = _entries(envelope)
+
+    assert list(projected) == list(direct_entries)
+    for anomaly_id, entry in projected.items():
+        source_entry = direct_entries[anomaly_id]
+        assert set(entry) == set(source_entry) - tools_run._DIAGNOSTICS_OMITTED_ANOMALY_KEYS
+        for key in entry:
+            assert entry[key] == source_entry[key], (anomaly_id, key)
+    assert _diagnostics(envelope)["summary"] == direct["summary"]
+    assert _diagnostics(envelope)["uncatalogued_findings_n"] == len(
+        direct["uncatalogued_findings"]
+    )
+
+
+def test_the_diagnostics_block_is_json_serialisable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """It crosses the NDJSON stream and the planner's own history renderer."""
+    envelope = _unhealthy_envelope(tmp_path, monkeypatch)
+
+    assert json.loads(json.dumps(_diagnostics(envelope), ensure_ascii=False))
+
+
+def test_the_guardrail_ablation_arm_gets_no_diagnostics_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """These findings ARE constraints.py output. The no-validation ablation
+    arm (docs/phase2/02-ROADMAP.md M5.3) receives nothing guardrail-shaped
+    from the orchestrator's postrun step, and it must not receive the same
+    findings through this side door instead — that would make the arm not an
+    ablation. ABSENT, not present-and-null: a "diagnostics: null" key is
+    itself a signal the arm should not get."""
+    monkeypatch.setenv("AGENT_GUARDRAILS_DISABLED", "1")
+
+    envelope = _unhealthy_envelope(tmp_path, monkeypatch)
+
+    assert "diagnostics" not in envelope["data"]
+    # Everything else about the run is untouched.
+    assert envelope["status"] == "ok"
+    assert envelope["data"]["run_result"]["queue_results"]
+    assert envelope["data"]["kpis"]["metrics"]["avg_delay_s"] == 32.4
+
+
+def test_diagnostics_are_attached_by_the_tool_not_by_the_orchestrator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Stated as a test because it is the whole reason orchestrator.py and
+    guardrails.py did not need to change: the envelope this assertion reads
+    came out of a bare ``toolkit.dispatch`` call — no orchestrator, no
+    GuardrailEngine, no agent turn — which is exactly the caller U3's
+    ``scan_run_result`` was specified for."""
+    envelope = _unhealthy_envelope(tmp_path, monkeypatch)
+
+    assert _diagnostics(envelope)["summary"]["detected_n"] == 2
+    assert envelope["data"]["diagnostics"]["scanned_at"]

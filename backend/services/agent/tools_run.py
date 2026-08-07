@@ -78,11 +78,39 @@ there is no result-.db column to read this from. ``vehicles_deleted_in_run``
 (#7) is the detector this milestone's live acceptance check exercises. See
 the drafted DECISIONS.md entry. The same holds for
 ``latent_demand_vehicles``.
+
+**diagnostics — roadmap row 3.7 (능동 진단), unprompted.** Every completed run
+additionally carries ``diagnostics``: unit U3's anomaly scan
+(``services/agent/anomalies.scan_run_result``) over this run's OWN
+``run_result``, so gridlock/anomaly flags reach the agent inside the tool
+result it already gets, with nothing extra to invoke and no question asked.
+It rides BESIDE ``run_result`` (both land under the envelope's ``data`` key
+via ``toolkit._build_success_envelope``), never inside it: ``run_result`` is
+the postrun catalog's INPUT and stays byte-identical to what it was before
+this row. Three properties, in order of importance:
+
+* it can never fail a run — a scan crash degrades to ``{"status":
+  "diagnostics_unavailable", "error_class": ...}``, see
+  :func:`_scan_diagnostics`;
+* it is a projection of U3's report, not a fork of it — no detection logic
+  exists here, and :data:`_DIAGNOSTICS_OMITTED_ANOMALY_KEYS` names exactly
+  what the projection leaves behind (measured: the full report is 9457 bytes
+  of JSON on the two-movement unhealthy fixture against ``run_result``'s own
+  1292, and ~3.4 KB of that is per-anomaly catalogue prose identical on
+  every run — carrying it verbatim on every envelope would spend the
+  planner's whole recency budget, ``planner._DEFAULT_RECENT_OBS_BUDGET``, on
+  static text);
+* it honours the guardrail ablation arm — with ``AGENT_GUARDRAILS_DISABLED``
+  set, the key is absent entirely, exactly as the orchestrator's postrun
+  warnings are, because these findings ARE constraint output and the
+  no-validation arm (docs/phase2/02-ROADMAP.md M5.3) must not receive them
+  through a side door.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -606,6 +634,211 @@ def _collect_run_evidence(
 
 
 # ---------------------------------------------------------------------------
+# Roadmap row 3.7 (능동 진단) — the anomaly scan every completed run carries
+# ---------------------------------------------------------------------------
+#
+# Row 3.7 is "flag gridlock/anomalies WITHOUT being asked", and unit U3
+# (services/agent/anomalies.py) was written with this caller already in mind:
+# `scan_run_result(run_result)` takes a bare finished-run payload — no action,
+# no shadow model, no agent turn — precisely so a run can diagnose itself.
+# This section is the wrapper that makes that happen on EVERY run, and it adds
+# no detection logic of its own: the catalogue is consumed verbatim, which is
+# the row's own definition ("reusing 2.1's catalogue"). A test in
+# test_agent_anomalies.py pins that U3's two entry points agree, so the scan
+# attached here is the same answer row 2.1's calibration loop computes.
+
+#: ``diagnostics["status"]`` — the scan ran and this payload is its report.
+DIAGNOSTICS_OK = "ok"
+#: ``diagnostics["status"]`` — the scan raised and was swallowed. The payload
+#: then carries ONLY status/error_class/headline: no ``anomalies`` key at all,
+#: because an empty list would read as "four anomalies, nothing wrong" when
+#: the truth is "nothing was checked". Same absence-honesty rule
+#: ``_collect_run_evidence`` follows for a TABLE_ABSENT evidence key — an
+#: omitted key is the truth, a defaulted value is a claim.
+DIAGNOSTICS_UNAVAILABLE = "diagnostics_unavailable"
+
+#: Per-anomaly keys U3 reports that the ENVELOPE projection leaves behind.
+#: Every one of them is catalogue-static (the same bytes on every run of every
+#: network) or is already summarised by the entry's own trilingual ``why``:
+#:
+#: * ``reason``/``reason_source``/``reason_verbatim`` — WHY an anomaly is
+#:   armed/not-armed at all. A property of the catalogue, not of this run:
+#:   1148 bytes for ``starved_link`` alone, unchanged run to run. Read it from
+#:   ``anomalies.get_anomaly_coverage()``, which is where it lives.
+#: * ``checks`` — the per-check evidence breakdown. Its verdict survives in
+#:   ``why`` (all three languages, naming the key, the backing table, and
+#:   whether it was armed-and-empty or never armed), which is what a reader
+#:   acts on.
+#: * ``evidence_tables``/``roadmap_rows`` — static catalogue metadata.
+#:
+#: Expressed as an omission list, never as an allow-list, on purpose: a key U3
+#: adds LATER rides along automatically instead of being silently dropped by a
+#: projection nobody remembered to update. ``test_agent_tools_run.py`` pins
+#: the exact set difference, so both directions stay visible.
+#:
+#: Measured on the two fixtures below (compact JSON, ensure_ascii=False):
+#: 9457 -> 4180 bytes on the unhealthy run, 7569 -> 2218 on the healthy one.
+_DIAGNOSTICS_OMITTED_ANOMALY_KEYS = frozenset(
+    {"reason", "reason_source", "reason_verbatim", "checks", "evidence_tables", "roadmap_rows"}
+)
+
+# The guardrail ablation arm (docs/phase2/02-ROADMAP.md M5.3): with
+# AGENT_GUARDRAILS_DISABLED set, GuardrailEngine returns a zero-finding report
+# from every phase without ever calling constraints.py, and the orchestrator
+# consequently attaches NOTHING guardrail-shaped to the envelope. The scan
+# below is constraints.py output too — attaching it in that arm would hand the
+# no-validation arm the very findings the arm exists to withhold. The env var
+# name/values are MIRRORED rather than imported: guardrails.py's own reader is
+# private (``_env_says_disabled``), and this codebase's convention is to mirror
+# a sibling's private symbol rather than reach into it (see
+# ``_NETWORK_METRIC_KEYS`` above mirroring tools_metrics.py's). The key is then
+# ABSENT, not present-and-empty, matching what the ablated postrun path does.
+_DIAGNOSTICS_ENV_VAR_DISABLED = "AGENT_GUARDRAILS_DISABLED"
+_DIAGNOSTICS_TRUTHY_ENV_VALUES = frozenset({"1", "true"})
+
+_DIAGNOSTICS_HEADLINE: dict[str, str] = {
+    "ko": "능동 진단(요청 없이 자동 수행): 감지 {detected_n}건{detected_names}, 정상 확인 "
+    "{checked_clean_n}건, 확인 불가 {not_checkable_n}건, 카탈로그 외 발견 {uncatalogued_n}건.",
+    "en": "Active diagnostics (run unprompted): {detected_n} detected{detected_names}, "
+    "{checked_clean_n} checked clean, {not_checkable_n} not checkable, {uncatalogued_n} "
+    "uncatalogued finding(s).",
+    "ja": "能動診断(要求なしで自動実行): 検出{detected_n}件{detected_names}、正常確認"
+    "{checked_clean_n}件、確認不可{not_checkable_n}件、カタログ外の検出{uncatalogued_n}件。",
+}
+
+#: How each language joins and attaches the detected-anomaly name list —
+#: ``(item separator, prefix)``. Japanese lists separate with "、" and take no
+#: space before the parenthesis; ko/en use ", " and a leading space. Kept as
+#: data rather than one shared f-string so a language's own punctuation is a
+#: property of that language, not of whoever wrote the formatter.
+_DIAGNOSTICS_NAME_STYLE: dict[str, tuple[str, str]] = {
+    "ko": (", ", " "),
+    "en": (", ", " "),
+    "ja": ("、", ""),
+}
+
+_DIAGNOSTICS_UNAVAILABLE_HEADLINE: dict[str, str] = {
+    "ko": "능동 진단을 수행하지 못했습니다 ({error_class}) — 이 실행에 대한 이상 징후 판단은 "
+    "없습니다. 없다는 뜻이 아니라 확인하지 못했다는 뜻입니다. 실행 자체는 정상 완료되었습니다.",
+    "en": "The active-diagnostics scan could not be performed ({error_class}) — this run "
+    "carries no anomaly verdict. That is 'not checked', not 'nothing found'. The run itself "
+    "completed normally.",
+    "ja": "能動診断を実行できませんでした ({error_class}) — この実行に対する異常判定はありません。"
+    "「異常なし」ではなく「確認できなかった」という意味です。実行自体は正常に完了しました。",
+}
+
+
+def _diagnostics_suppressed_by_ablation() -> bool:
+    """True when the guardrail ablation arm is active — read fresh from the
+    environment on every call (never cached at import), mirroring
+    ``GuardrailEngine``'s own construction-time read so a test or an eval
+    harness that sets the var mid-process gets the behaviour it asked for."""
+    raw = os.environ.get(_DIAGNOSTICS_ENV_VAR_DISABLED, "")
+    return raw.strip().lower() in _DIAGNOSTICS_TRUTHY_ENV_VALUES
+
+
+def _diagnostics_headline(scan: dict[str, Any], uncatalogued_n: int) -> dict[str, str]:
+    """The one-line ko/en/ja summary of a scan, built from the scan's OWN
+    counts and the catalogue's OWN per-language labels — never re-derived
+    from the findings, so the sentence and the payload beneath it cannot
+    disagree."""
+    summary = scan.get("summary") or {}
+    labels = {
+        entry.get("id"): (entry.get("label") or {}) for entry in (scan.get("anomalies") or [])
+    }
+    detected_ids = list(summary.get("detected_ids") or [])
+
+    headline: dict[str, str] = {}
+    for lang, template in _DIAGNOSTICS_HEADLINE.items():
+        separator, prefix = _DIAGNOSTICS_NAME_STYLE[lang]
+        names = separator.join(
+            (labels.get(anomaly_id) or {}).get(lang) or str(anomaly_id)
+            for anomaly_id in detected_ids
+        )
+        headline[lang] = template.format(
+            detected_n=summary.get("detected_n", 0),
+            detected_names=f"{prefix}({names})" if names else "",
+            checked_clean_n=summary.get("checked_clean_n", 0),
+            not_checkable_n=summary.get("not_checkable_n", 0),
+            uncatalogued_n=uncatalogued_n,
+        )
+    return headline
+
+
+def _scan_diagnostics(run_result: dict[str, Any]) -> dict[str, Any]:
+    """Unit U3's anomaly scan over this run's own payload, projected for the
+    envelope.
+
+    Wrapped in a bare ``except Exception`` deliberately, and this is the one
+    property that matters most here: a diagnostic layer that can kill the run
+    it diagnoses is worse than no diagnostic layer at all. The run has already
+    happened — its KPIs, its result databases and its verified SIMULATIONRUN
+    row are all real — so nothing that goes wrong while INTERPRETING it may
+    turn it into a failure. The degraded payload names the exception CLASS —
+    never its message, which is arbitrary text this codebase only ever
+    sanitises on ``toolkit.dispatch``'s ERROR path
+    (``_sanitize_exception_text``), a path a successful run's envelope never
+    takes. The class is enough to tell "the scan blew up" apart from "the
+    scan found nothing" without going to the logs.
+
+    ``anomalies`` is imported lazily, which is also load-bearing: that module
+    reads THIS module's docstring at ITS import time
+    (``unobtainable_from_result_db_reason``), so a module-level import here
+    would close a cycle. Lazy import keeps the two modules' import order free
+    and, as a bonus, folds an anomalies-import failure into the same
+    degradation path.
+    """
+    try:
+        from services.agent import anomalies
+
+        scan = anomalies.scan_run_result(run_result)
+        uncatalogued = list(scan.get("uncatalogued_findings") or [])
+        return {
+            "status": DIAGNOSTICS_OK,
+            "scanned_at": scan.get("scanned_at"),
+            "headline": _diagnostics_headline(scan, len(uncatalogued)),
+            # Verbatim from U3: detected_n/checked_clean_n/not_checkable_n plus
+            # the id lists behind each count.
+            "summary": scan.get("summary"),
+            "anomalies": [
+                {
+                    key: value
+                    for key, value in entry.items()
+                    if key not in _DIAGNOSTICS_OMITTED_ANOMALY_KEYS
+                }
+                for entry in (scan.get("anomalies") or [])
+            ],
+            # The catalogue's own edge, per run: postrun findings this run
+            # produced that NO anomaly in the catalogue indexes. Count and ids
+            # only, not the finding bodies — all twelve postrun constraints
+            # register at warn tier today, so when this envelope goes through
+            # the orchestrator each of these findings' full trilingual message
+            # is already attached to it as a guardrail warning
+            # (orchestrator._attach_guardrail_warnings). Carrying the bodies
+            # here too would be two copies of one fact, free to drift apart.
+            "uncatalogued_findings_n": len(uncatalogued),
+            "uncatalogued_finding_ids": [
+                finding.get("constraint_id") for finding in uncatalogued
+            ],
+        }
+    except Exception as exc:  # noqa: BLE001 - a scan must never fail the run
+        error_class = type(exc).__name__
+        logger.exception(
+            "run_simulation: active-diagnostics scan raised %s; the run is reported "
+            "normally with diagnostics_unavailable",
+            error_class,
+        )
+        return {
+            "status": DIAGNOSTICS_UNAVAILABLE,
+            "error_class": error_class,
+            "headline": {
+                lang: text.format(error_class=error_class)
+                for lang, text in _DIAGNOSTICS_UNAVAILABLE_HEADLINE.items()
+            },
+        }
+
+
+# ---------------------------------------------------------------------------
 # run_simulation(duration_s, random_seeds)
 # ---------------------------------------------------------------------------
 
@@ -725,7 +958,23 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
     # unknown, stated as one.
     result_db_count = run_result.get("result_db_count")
     db_count_text = "unknown" if result_db_count is None else str(result_db_count)
-    return {
+
+    # Row 3.7 (능동 진단): the run diagnoses itself, unprompted. Computed here
+    # rather than in orchestrator.py on purpose -- the orchestrator's postrun
+    # step is the GUARDRAIL sandwich (preflight/dispatch/postrun, one engine
+    # per turn), and row 3.7 must hold for a run_simulation envelope no matter
+    # who dispatched it, including a direct toolkit.dispatch call with no
+    # orchestrator and no agent turn at all. That is exactly the caller U3's
+    # scan_run_result was specified for, so no orchestrator/guardrails seam is
+    # needed and neither file changes.
+    #
+    # run_result is passed AFTER _collect_run_evidence has finished with it,
+    # so the scan sees every evidence key the run actually produced, and the
+    # result is attached BESIDE run_result (never inside it) so run_result
+    # stays exactly the postrun catalog's input.
+    diagnostics = None if _diagnostics_suppressed_by_ablation() else _scan_diagnostics(run_result)
+
+    payload: dict[str, Any] = {
         "message": (
             f"Simulation ran for {params.duration_s}s across {len(seeds)} seed(s), "
             f"writing {db_count_text} result database(s); "
@@ -745,9 +994,17 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
         "run_result": run_result,
         "kpis": kpis,
     }
+    # Absent, never None, in the ablation arm: a present-but-null diagnostics
+    # key is still a signal the no-validation arm should not receive, and
+    # absence is what the ablated postrun path already produces.
+    if diagnostics is not None:
+        payload["diagnostics"] = diagnostics
+    return payload
 
 
 __all__ = [
+    "DIAGNOSTICS_OK",
+    "DIAGNOSTICS_UNAVAILABLE",
     "NoActiveRunSourceError",
     "RunSimulationParams",
     "clear_active_run_source",

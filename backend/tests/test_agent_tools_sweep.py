@@ -492,8 +492,82 @@ def test_run_result_shape_matches_run_simulation_for_postrun_reuse(
 
 
 # ---------------------------------------------------------------------------
-# Refusal paths
+# Roadmap row 3.7 (능동 진단) -- the STATED exclusion, pinned with its reason
+#
+# run_simulation attaches unit U3's anomaly scan to every completed run. This
+# tool deliberately does not, and both tests below exist so that decision
+# cannot survive silently past the thing that justified it: the first pins the
+# absence, the second pins WHY, by running the scan over this tool's own
+# run_result and showing there is nothing in it to check. The day this tool
+# starts collecting per-variant U1 evidence, the second test fails and the
+# exclusion gets revisited -- which is the entire point of pinning a reason
+# rather than an outcome.
 # ---------------------------------------------------------------------------
+
+
+def test_the_sweep_envelope_carries_no_diagnostics_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Deliberate, per this module's docstring: attaching a scan that can
+    only ever report "nothing was checkable" would manufacture the APPEARANCE
+    of coverage. Absent, not present-and-empty."""
+    _source, _runner, envelope = _source_and_dispatch(
+        tmp_path, monkeypatch, scale_percent=10, duration_s=300, seed_count=5
+    )
+
+    assert envelope["status"] == "ok"
+    assert "diagnostics" not in envelope["data"]
+    assert set(envelope["data"]) == {"run_result", "sweep"}
+
+
+def test_the_reason_for_the_exclusion_is_measured_not_asserted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Run U3's scan over this tool's actual run_result and show the result
+    is empty of content: all four catalogued anomalies NOT_CHECKABLE, the two
+    ARMED ones because the evidence keys they need are not in this payload at
+    all, and zero findings attached anywhere.
+
+    Note the second half, which is the sharper half: the sweep's ``tables`` is
+    the UNION of the base and scaled variants' result tables -- two different
+    networks -- so even once evidence exists here, a whole-sweep scan could
+    not attribute a finding to either variant. Per-variant is the honest
+    grain, and per-variant needs per-variant evidence.
+    """
+    import services.agent.anomalies as anomalies
+
+    _source, _runner, envelope = _source_and_dispatch(
+        tmp_path, monkeypatch, scale_percent=10, duration_s=300, seed_count=5
+    )
+    run_result = envelope["data"]["run_result"]
+
+    scan = anomalies.scan_run_result(
+        run_result, action={"tool": "run_demand_stress_sweep"}
+    )
+    entries = {entry["id"]: entry for entry in scan["anomalies"]}
+
+    assert scan["summary"]["not_checkable_n"] == 4
+    assert scan["summary"]["detected_ids"] == []
+    assert scan["summary"]["checked_clean_ids"] == []
+    assert scan["uncatalogued_findings"] == []
+
+    # The two ARMED anomalies: not "clean", not "detected" -- their evidence
+    # keys are simply not in a sweep's run_result.
+    for anomaly_id in ("ghost_queue", "blocked_connector"):
+        entry = entries[anomaly_id]
+        assert entry["arming"] == anomalies.ARMED
+        assert entry["outcome"] == anomalies.NOT_CHECKABLE
+        for check in entry["checks"]:
+            assert check["checkable"] is False
+            assert all(e["state"] == anomalies.KEY_OMITTED for e in check["evidence"])
+
+    # And the union-of-two-networks problem, stated as data: TWO variant jobs
+    # were submitted, and run_result came back as ONE undifferentiated table
+    # list with no variant label anywhere in it and no evidence descriptor to
+    # explain any of it.
+    assert len(_runner.calls) == 2
+    assert set(run_result) == {"tables", "deleted_vehicles"}
+    assert "evidence" not in run_result
 
 
 def test_unmatched_input_nos_refuses_before_running_anything(
