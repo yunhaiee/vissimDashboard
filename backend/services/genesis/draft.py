@@ -229,6 +229,11 @@ REASON_OUTSIDE_EMITTED_SUBSET = "outside_emitted_subset"
 REASON_REQUIRES_SITE_OBSERVATION = "requires_site_observation"
 REASON_REQUIRES_VISSIM = "requires_vissim"
 REASON_NO_GEOREFERENCE = "no_georeference"
+#: Added by roadmap 3.1 Genesis (b) (``services.genesis.signals``). Distinct
+#: from ``REASON_DATA_ABSENT_FROM_OSM`` because the missing document is not OSM
+#: and never could be: §5.4.2.1's LM plan and §5.4.2.6's operation sheets are
+#: site drawings, and a generated draft has no access to either at any quality.
+REASON_NO_SIGNAL_PLAN = "no_signal_plan"
 
 
 TURN_THROUGH = "through"
@@ -333,6 +338,12 @@ _REASON_LABEL: dict[str, dict[str, str]] = {
         "ko": "실제 Vissim에서 열어야 확인 가능 (이 장비에는 라이선스 없음)",
         "en": "only checkable by opening the file in a real Vissim (no licence on this machine)",
         "ja": "実際のVissimで開かないと確認できない (この端末にライセンスなし)",
+    },
+    REASON_NO_SIGNAL_PLAN: {
+        "ko": "규칙이 현장 신호도면(LM 도면·운영표)을 전제로 함 — 생성 초안에는 없음",
+        "en": "the rule presumes a site signal plan (LM plan / operation sheet), which a "
+        "generated draft does not have",
+        "ja": "規則が現地の信号図面(LM図面・運用表)を前提とする — 生成草案には存在しない",
     },
     REASON_NO_GEOREFERENCE: {
         "ko": "이 초안 좌표에는 측지 기준이 없음 — 상대 기하 전용",
@@ -446,6 +457,59 @@ _RULE_TITLE: dict[str, dict[str, str]] = {
         "ko": "§5.6.1.3 모델 입력 점검 12항목",
         "en": "§5.6.1.3 the 12-item model input check",
         "ja": "§5.6.1.3 モデル入力チェック12項目",
+    },
+    # Roadmap 3.1 Genesis (b) — §5.4.2, produced by ``services.genesis.signals``
+    # and appended to this report. Titles live here so one renderer and one
+    # title table serve the whole draft, signalised or not.
+    "5.4.2-control-type-agreed": {
+        "ko": "§5.4.2 신호 제어 방식은 Main Roads와 협의",
+        "en": "§5.4.2 the signal control type is agreed with Main Roads",
+        "ja": "§5.4.2 信号制御方式は Main Roads と協議",
+    },
+    "5.4.2-generation-warnings": {
+        "ko": "§5.4.2 신호 생성 중 발생한 경고 (명시)",
+        "en": "§5.4.2 warnings raised while generating the signals (named)",
+        "ja": "§5.4.2 信号生成中に発生した警告 (明示)",
+    },
+    "5.4.2.1-signal-groups-match-scats": {
+        "ko": "§5.4.2.1 신호그룹은 LM 도면·SCATS 번호와 일치",
+        "en": "§5.4.2.1 signal groups follow the LM plan and SCATS numbering",
+        "ja": "§5.4.2.1 信号グループは LM図面・SCATS番号と一致",
+    },
+    "5.4.2.1-timings-input-unchanged": {
+        "ko": "§5.4.2.1 최소녹색·황색·전적색을 제어기 값 그대로 입력",
+        "en": "§5.4.2.1 minimum greens and yellow + all reds input unchanged",
+        "ja": "§5.4.2.1 最小緑・黄・全赤を制御機の値のまま入力",
+    },
+    "5.4.2.2-signal-heads-on-links": {
+        "ko": "§5.4.2.2 신호등은 링크(접근로) 위 차로마다 배치",
+        "en": "§5.4.2.2 signal heads on links, one per approach lane",
+        "ja": "§5.4.2.2 信号機はリンク(流入路)上に車線ごとに配置",
+    },
+    "5.4.2.2-partially-controlled-turns": {
+        "ko": "§5.4.2.2 부분 제어 회전은 커넥터 위 신호등",
+        "en": "§5.4.2.2 partially controlled turns take heads on connectors",
+        "ja": "§5.4.2.2 部分制御の回転はコネクタ上に信号機",
+    },
+    "5.4.2.3-fixed-time-from-history": {
+        "ko": "§5.4.2.3 SCATS 이력에서 평균 현시시간 산출 (고정주기)",
+        "en": "§5.4.2.3 average phase lengths from SCATS history (fixed time)",
+        "ja": "§5.4.2.3 SCATS履歴から平均現示時間を算出 (固定時間)",
+    },
+    "5.4.2.3-pedestrian-signals": {
+        "ko": "§5.4.2.3 보행자 신호 (내보내지 않음)",
+        "en": "§5.4.2.3 pedestrian signals (not emitted)",
+        "ja": "§5.4.2.3 歩行者信号 (出力しない)",
+    },
+    "5.4.2.6-detector-fallback-geometry": {
+        "ko": "§5.4.2.6 검지기 대체 기하 (신호등 2.0 m 뒤 · 길이 4.5 m)",
+        "en": "§5.4.2.6 detector fallback geometry (2.0 m back, 4.5 m long)",
+        "ja": "§5.4.2.6 検知器の代替寸法 (信号機の2.0m手前・長さ4.5m)",
+    },
+    "5.4.2.6-detectors-reflect-plans": {
+        "ko": "§5.4.2.6 검지기는 실제/설계 신호도면을 반영",
+        "en": "§5.4.2.6 detectors reflect existing or design signal plans",
+        "ja": "§5.4.2.6 検知器は既存/設計の信号図面を反映",
     },
 }
 

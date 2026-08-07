@@ -15,8 +15,12 @@ Members, in the order row 2.3 runs them:
   geometry; not a georeference.
 * :mod:`services.genesis.draft` — links, connectors and the MRWA §5 compliance
   report (applied / violated / NOT CHECKABLE).
-* :mod:`services.genesis.emit` — draft → ``.inpx``, scoped to what
-  ``services.inpx_parser`` can read back, byte-identical across runs.
+* :mod:`services.genesis.signals` — a 1.6 ``FixedTimePlan`` + a draft node →
+  fixed-time signal controllers, signal groups (one per approach), signal heads
+  and §5.4.2.6-fallback detectors, with §5.4.2 graded in the same three states.
+  Roadmap 3.1 Genesis (b); optional, and additive to the emission.
+* :mod:`services.genesis.emit` — draft (+ optional signals) → ``.inpx``, scoped
+  to what ``services.inpx_parser`` can read back, byte-identical across runs.
 * :mod:`services.genesis.diff` — the structural (topology-only) comparison of
   two parsed ``.inpx`` networks that backs the Murdoch benchmark diff report
   (roadmap R1.6 / row 2.3), and the oracle the emitter's round-trip is tested
@@ -89,9 +93,20 @@ from .draft import (
 from .emit import EmitRefused, emit_inpx, to_xml_text
 from .osm import LaneProvenance, OsmExtract, OsmWay, parse_osm_file
 from .project import ExtentCheck, LocalTangentPlane, origin_for_bounds
+from .signals import (
+    NO_SIGNALS,
+    DetectorPlan,
+    DraftSignals,
+    NodeSignals,
+    SignalGroupPlan,
+    SignalHeadPlan,
+    SignalSettings,
+    generate_node_signals,
+    generate_signals,
+    node_approaches,
+)
 
 __all__ = [
-    "MATCH_TOLERANCE_M",
     "AmbiguousObject",
     "BenchmarkInvariantError",
     "BenchmarkMethods",
@@ -102,12 +117,14 @@ __all__ = [
     "ConnectorDiff",
     "ConnectorRewire",
     "CorridorScope",
+    "DetectorPlan",
     "DiffFinding",
     "DiffSeverity",
     "DraftConnector",
     "DraftLink",
     "DraftNetwork",
     "DraftNode",
+    "DraftSignals",
     "EmitRefused",
     "ExtentCheck",
     "GeneratedScope",
@@ -120,19 +137,25 @@ __all__ = [
     "LinkDiff",
     "LinkReclassification",
     "LocalTangentPlane",
+    "MATCH_TOLERANCE_M",
     "MatchBucket",
     "MatchedPair",
     "MissingObject",
     "MissingReason",
     "MovementRef",
+    "NO_SIGNALS",
     "NetworkSummary",
     "NetworkTopology",
     "NodeMovementDiff",
     "NodeSignalCoverage",
+    "NodeSignals",
     "OsmExtract",
     "OsmWay",
     "PositionScope",
+    "SignalGroupPlan",
+    "SignalHeadPlan",
     "SignalScopeGap",
+    "SignalSettings",
     "StructuralDiff",
     "TopologicalBenchmark",
     "benchmark_network_files",
@@ -141,9 +164,12 @@ __all__ = [
     "diff_network_files",
     "diff_topologies",
     "emit_inpx",
+    "generate_node_signals",
+    "generate_signals",
     "georeferenced_network",
     "load_topology",
     "local_frame_network",
+    "node_approaches",
     "origin_for_bounds",
     "parse_osm_file",
     "render_benchmark_report",

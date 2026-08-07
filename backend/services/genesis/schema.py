@@ -545,6 +545,200 @@ NODE_POINT_ATTRS: tuple[str, ...] = ("x", "y")
 
 
 # ---------------------------------------------------------------------------
+# Signals — <signalController>, <signalGroup>, <signalHead>, <detector>
+#
+# Roadmap 3.1 Genesis (b). Added ADDITIVELY: an unsignalised draft writes none
+# of these containers and its bytes are unchanged (pinned by
+# ``test_genesis_signals.py::test_unsignalised_draft_is_byte_identical_...``).
+#
+# Same discipline as everything above, and for the same reason: emitter v1 died
+# of an attribute set invented from a hand-written exemplar. Every constant here
+# is copied from ``LHT`` — ``ref_lht/Roundabout London_saved.inpx``, which is
+# Vissim's own save of the only LEFT-HAND-TRAFFIC example that ships with
+# Vissim, and which carries 3 ``<signalController>``, 27 ``<signalHead>`` and 2
+# ``<detector>`` elements. LHT is the right authority twice over: it is
+# Vissim-authored, and it is left-hand traffic, which is the regime §5.2.1.1
+# puts this whole generator in.
+#
+# Cross-checked against the CONSULTANT network's signal elements for SHAPE only
+# (element/attribute names and structure — no value, id, name or timing from it
+# is reproduced here or anywhere in this package). Measured agreement:
+#
+#   * its 6 ``<signalController>`` carry the identical 21-attribute set, and all
+#     6 carry ``rampMeterPara`` + ``sgs`` + ``sigTmsTabConfig`` (one also carries
+#     a ``wttFiles`` child, which this emission does not write and does not
+#     reference);
+#   * its 26 ``<signalGroup>`` carry the identical 15-attribute set — the 11
+#     constants below plus the four computed ones (``no``, ``amber``,
+#     ``redAmber``, ``minGreen``). ``minGreen`` living on the outer element,
+#     rather than inside the Vissig blob, is measured on BOTH networks;
+#   * its 39 ``<signalHead>`` carry the identical 17-attribute set bar an
+#     OPTIONAL ``scndSG`` present on 2 of the 39;
+#   * it has no ``<detectors>`` container at all, so LHT is the sole authority
+#     for that element.
+#
+# Two independently-authored networks agreeing on the attribute set is what
+# makes these Vissim's defaults rather than one file's choices.
+# ---------------------------------------------------------------------------
+
+#: Vissim's signal DISPLAY enum, measured from LHT's decoded ``intSupplyData``:
+#: every ``<sg>`` with ``defaultSignalSequence="3"`` carries fixed states
+#: ``display="2" duration="2000"`` and ``display="4" duration="3000"`` while its
+#: ``<signalGroup>`` element carries ``redAmber="2"`` and ``amber="3"`` — which
+#: pins 2=red/amber and 4=amber by the two numbers agreeing. 3=green and 1=red
+#: follow from the ``<cmds>``: every group's two commands are exactly one
+#: ``display="3"`` and one ``display="1"``, and ``services.signal_parser``
+#: (which reads real production networks) reads them as green-start and
+#: red-start respectively.
+DISPLAY_RED = "1"
+DISPLAY_RED_AMBER = "2"
+DISPLAY_GREEN = "3"
+DISPLAY_AMBER = "4"
+
+#: Vissig's ``defaultSignalSequence`` / ``signal_sequence``. Source: LHT — the 8
+#: vehicle groups of controller 24 use ``"3"`` and carry amber + red/amber fixed
+#: states; its 2 remaining groups use ``"4"``, carry NO fixed states, and their
+#: ``<signalGroup>`` elements state ``amber="0" redAmber="0"``. So 3 is the
+#: four-display vehicle sequence and 4 is red/green only. This emission writes 3
+#: for every group: MRWA vehicle signals have an amber (A.3 computes it), and a
+#: red/amber of zero — see :data:`.signals.SignalSettings.red_amber_s` — is how
+#: sequence 3 expresses "no red/amber interval", which is the Australian
+#: practice.
+SIGNAL_SEQUENCE_VEHICLE = "3"
+
+#: Vissig stores every duration in MILLISECONDS. Source: LHT ``<prog
+#: cycletime="100000">`` on a 100 s program whose ``<cmd begin="13000">`` /
+#: ``<cmd begin="67000">`` bracket a green that ``services.signal_parser``
+#: divides by 1000 to report in seconds.
+VISSIG_MS_PER_S = 1000
+
+#: Source: LHT ``<signalController type="FIXEDTIME">`` (nos 24 and 25 —
+#: byte-identical on all 21 attributes bar ``no`` and ``intSupplyData``). The
+#: caller supplies ``no`` and ``intSupplyData``; everything below is verbatim.
+#:
+#: ``cycTm="0"`` with ``cycTmIsVar="true"`` is NOT an oversight and is NOT this
+#: module rounding something off: both of Vissim's own saved FIXEDTIME
+#: controllers write exactly that while their ``<prog>`` carries the real
+#: ``cycletime``. For a Vissig fixed-time controller the outer attribute is not
+#: the authority — the program is — and this emission puts the cycle where
+#: Vissim itself puts it rather than duplicating it into a field Vissim leaves
+#: at zero.
+SIGNAL_CONTROLLER_ATTRS: dict[str, str] = {
+    "active": "true",
+    "cycTm": "0",
+    "cycTmIsVar": "true",
+    "debug": "false",
+    "guiFile": "",
+    "name": "",
+    "offset": "0",
+    "progFile": "",
+    "progNo": "1",
+    "scDetRecLabelDet": "PORTNUMBER",
+    "scDetRecLabelSG": "NUMBER",
+    "scDetRecShortNam": "false",
+    "sigTmsTabAutoConfig": "true",
+    "sigTmsTabLabelDet": "PORTNUMBER",
+    "sigTmsTabLabelSG": "NUMBER",
+    "supplyFile1": "",
+    "supplyFile2": "",
+    "supplyFile3": "",
+    "type": "FIXEDTIME",
+}
+
+#: Source: LHT ``<signalController><rampMeterPara>`` — identical on all three of
+#: its controllers, including the two that have nothing to do with ramp
+#: metering, which is what makes it a default rather than a setting. Written
+#: because Vissim writes it on every controller it saves; this generator emits
+#: no ramp meter and none of these values is read by anything it does emit.
+RAMP_METER_PARA_ATTRS: dict[str, str] = {
+    "metEvalInt": "60",
+    "metRateQDisp": "0.25",
+    "occupDes": "0.25",
+    "occupQDispAct": "0.5",
+    "occupQDispDeact": "0.1",
+    "regPara": "0.019444444444444441",
+}
+
+#: Source: LHT ``<sgs><signalGroup>`` — the 11 attributes this emission does not
+#: compute, identical across all 20 signal groups of LHT's three controllers.
+#: The caller supplies ``no``, ``amber``, ``redAmber`` and ``minGreen``; those
+#: four are the only ones that carry a number derived from the plan.
+#:
+#: ``minGreen`` is NOT here even though LHT writes ``minGreen="0"`` on its
+#: fixed-time groups: the plan may carry a real minimum green from the
+#: controller record, and §5.4.2.1 requires minimum greens to be "directly input
+#: from controller/SCATS information", so it is a computed field.
+SIGNAL_GROUP_ATTRS: dict[str, str] = {
+    "actuationType": "UNDEFINED",
+    "callDetPortNo": "0",
+    "chkOutDetPortNo": "0",
+    "clearTm": "0",
+    "endGreen": "0",
+    "endRed": "0",
+    "greenFlsh": "0",
+    "maxGreen": "0",
+    "minRed": "0",
+    "name": "",
+    "type": "NORMAL",
+}
+
+#: Source: LHT ``<sigTmsTabConfig><signalOutputConfigurationElement>`` — the
+#: signal-times-table row Vissim writes per signal group. Identical on all 18
+#: SIGGRP rows across LHT's controllers bar ``sg`` and ``varNo``, which the
+#: caller supplies.
+SIGNAL_OUTPUT_CONFIG_ATTRS: dict[str, str] = {
+    "configName": "SIGGRP",
+    "detPort": "0",
+    "title": "",
+    "wttFilename": "",
+}
+
+#: Source: LHT ``<signalHeads><signalHead>`` — the 12 attributes this emission
+#: does not compute, identical across all 27 of them. The caller supplies
+#: ``no``, ``localNo``, ``lane`` (``"<link> <lane>"``), ``pos`` and ``sg``
+#: (``"<controller> <group>"``).
+#:
+#: ``type="CIRCULAR"`` is the ordinary vehicle head: all 27 LHT heads are
+#: CIRCULAR. ``anmFlag="false"`` here against ``"true"`` on the detectors below
+#: is measured, not a typo — the two elements genuinely differ.
+SIGNAL_HEAD_ATTRS: dict[str, str] = {
+    "allPedTypes": "true",
+    "allVehTypes": "true",
+    "anmFlag": "false",
+    "complRate": "1",
+    "dischRecAct": "false",
+    "isBlockSig": "false",
+    "name": "",
+    "scndSGTyp": "ORSG",
+    "slowDownDist": "3",
+    "type": "CIRCULAR",
+    "vAmberBlock": "0",
+}
+
+#: Source: LHT ``<detectors><detector>`` — the 9 attributes this emission does
+#: not compute, identical on both. The caller supplies ``no``, ``portNo``,
+#: ``lane``, ``pos``, ``length`` and ``sc``.
+#:
+#: ``length`` and ``pos`` are deliberately NOT taken from LHT (whose detectors
+#: are 1.5 m long): §5.4.2.6 states the length and the setback this generator
+#: must use, so those two numbers come from the guideline and LHT contributes
+#: only the attribute set around them. That split — Vissim owns the defaults,
+#: MRWA owns the engineering numbers — is the rule for this whole block.
+DETECTOR_ATTRS: dict[str, str] = {
+    "allPedTypes": "true",
+    "allVehTypes": "true",
+    "anmFlag": "true",
+    "maxPedSpeed": "3.6",
+    "name": "",
+    "smthFactDecr": "0.25",
+    "smthFactIncr": "0.25",
+    "soundFile": "",
+    "tmBefDep": "0",
+    "type": "STANDARD",
+}
+
+
+# ---------------------------------------------------------------------------
 # Container order
 # ---------------------------------------------------------------------------
 
@@ -553,7 +747,16 @@ NODE_POINT_ATTRS: tuple[str, ...] = ("x", "y")
 #: in LHT and NOD. Vissim's reader does not appear to require it — but a file
 #: whose container order matches its own save is one fewer difference to explain
 #: when the next refusal has to be bisected.
+#:
+#: The three signal containers were placed by the same measurement, not by
+#: guessing that the list is alphabetical: in LHT — the only reference that has
+#: them — ``detectors`` precedes ``displayTypes``, and ``signalControllers`` and
+#: ``signalHeads`` sit between ``netPara`` and ``timeDistributions``, exactly
+#: where they appear below. (Both references' restricted orders do happen to be
+#: alphabetical, and ``_assert_container_order`` re-checks this list against
+#: whatever the emitter produced.)
 CONTAINER_ORDER: tuple[str, ...] = (
+    "detectors",
     "displayTypes",
     "drivingBehaviors",
     "laneMarkingTypes",
@@ -562,5 +765,7 @@ CONTAINER_ORDER: tuple[str, ...] = (
     "links",
     "netPara",
     "nodes",
+    "signalControllers",
+    "signalHeads",
     "timeDistributions",
 )
