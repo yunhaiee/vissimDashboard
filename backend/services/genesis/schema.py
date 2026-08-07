@@ -739,6 +739,155 @@ DETECTOR_ATTRS: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# Demand — <timeIntervalSets>, <vehicleCompositions>, <vehicleInputs>,
+#          <vehicleRoutingDecisionsStatic>
+#
+# Roadmap 3.2 Genesis (c). Added ADDITIVELY: a demand-less draft writes none of
+# these containers and its bytes are unchanged (pinned by
+# ``test_genesis_demand.py::test_demand_less_draft_bytes_are_unchanged``).
+#
+# Authorities are ``LHT`` and ``NOD`` as above — two networks authored
+# INDEPENDENTLY of each other, which is what makes an agreeing attribute set
+# Vissim's default rather than one file's choice. Measured agreement across the
+# four element families below: every one has exactly ONE attribute-set variant
+# per file, and the two files' variants are IDENTICAL (LHT 9 vehicleInputs / 4
+# vehicleCompositions / 14 routing decisions / 31 routes; NOD 8 / 3 / 16 / 95).
+#
+# TWO MEASUREMENTS THAT DECIDE SHAPE
+# ----------------------------------
+# * A volume's time interval is referenced by a TWO-TOKEN key,
+#   ``timeInt="1 0"``, and a route's relative flow by ``relFlow="2 0:210"``.
+#   The second token is the ``<timeInterval start=…>``; the FIRST is the
+#   position of the owning ``<timeIntervalSet>`` in ``<timeIntervalSets>``.
+#   Proof that it is positional: ``VEHICLEINPUT`` is written first in all three
+#   saved files and vehicle-input volumes key on 1, ``VEHICLEROUTESTATIC`` is
+#   written second and route flows key on 2. That is why
+#   :data:`TIME_INTERVAL_SET_ORDER` writes ALL ten sets in Vissim's own order
+#   rather than only the two this emission keys on — the indices are only
+#   meaningful relative to the full list.
+# * **NOT MEASURED ANYWHERE ON THIS MACHINE: a time-interval set with more than
+#   one interval.** All 30 ``<timeIntervalSet>`` elements of the three saved
+#   references (and of Vissim's own save of this generator's crossroads) carry
+#   exactly one ``<timeInterval start="0"/>``. The repetition that would express
+#   a 15-minute demand PROFILE, and the unit of ``start`` (only the value 0
+#   occurs, and 0 is 0 in every unit), are therefore unmeasured — so nothing
+#   here writes them, and ``services.genesis.demand`` refuses a profile rather
+#   than inventing the structure. See that module's "The 15-minute profile gap".
+# ---------------------------------------------------------------------------
+
+#: Source: LHT/NOD ``<timeIntervalSets>`` — the same ten sets, in the same
+#: order, in both, and in Vissim's own save of this generator's crossroads
+#: (``small_v2/cross_saved.inpx``) which was emitted with NO such container at
+#: all. Vissim materialises the full list itself; writing it verbatim means the
+#: emitted file matches what Vissim would have written, and keeps the positional
+#: ``timeInt`` index (above) meaningful.
+TIME_INTERVAL_SET_ORDER: tuple[str, ...] = (
+    "VEHICLEINPUT",
+    "VEHICLEROUTESTATIC",
+    "VEHICLEROUTEPARTIAL",
+    "VEHICLEROUTEPARKING",
+    "PEDESTRIANINPUT",
+    "PEDESTRIANROUTEPARTIAL",
+    "VEHICLEROUTEPARTIALPT",
+    "AREABEHAVIORTYPE",
+    "MANAGEDLANESFACILITY",
+    "PEDESTRIANROUTESTATIC",
+)
+
+#: The only ``<timeInterval>`` any Vissim-saved network on this machine
+#: contains. Written as the sole interval of every set.
+TIME_INTERVAL_START = "0"
+
+#: 1-based positions of the two sets this emission keys on, derived from
+#: :data:`TIME_INTERVAL_SET_ORDER` rather than written twice.
+TIME_INTERVAL_SET_VEHICLE_INPUT = str(TIME_INTERVAL_SET_ORDER.index("VEHICLEINPUT") + 1)
+TIME_INTERVAL_SET_VEHICLE_ROUTE_STATIC = str(
+    TIME_INTERVAL_SET_ORDER.index("VEHICLEROUTESTATIC") + 1
+)
+
+#: The reference to the single emitted vehicle-input interval, as Vissim writes
+#: it: ``"<set index> <interval start>"``. Measured verbatim as ``"1 0"`` on all
+#: 17 ``<timeIntervalVehVolume>`` of LHT and NOD.
+TIME_INT_VEHICLE_INPUT = f"{TIME_INTERVAL_SET_VEHICLE_INPUT} {TIME_INTERVAL_START}"
+
+#: The relFlow key prefix for a static route: ``"<set index> <start>:"`` — the
+#: value follows. Measured verbatim as ``"2 0:"`` on all 124 non-empty
+#: ``relFlow`` attributes of LHT and NOD.
+REL_FLOW_KEY_VEHICLE_ROUTE_STATIC = (
+    f"{TIME_INTERVAL_SET_VEHICLE_ROUTE_STATIC} {TIME_INTERVAL_START}:"
+)
+
+#: Source: LHT/NOD ``<vehicleInput>`` — the two attributes this emission does
+#: not compute, identical on all 17. The caller supplies ``no`` and ``link``.
+#: A vehicle input carries NO position: it feeds the whole link from its start.
+VEHICLE_INPUT_ATTRS: dict[str, str] = {"anmFlag": "false", "name": ""}
+
+#: Source: LHT/NOD ``<timeIntVehVols><timeIntervalVehVolume>`` — ``cont`` is the
+#: only attribute constant across BOTH files (false on all 17). The caller
+#: supplies ``timeInt``, ``vehComp``, ``volume`` and ``volType``.
+#:
+#: ``volType`` is deliberately NOT here even though it is constant within each
+#: file: LHT writes ``STOCHASTIC`` on all 9 and NOD writes ``EXACT`` on all 8,
+#: so it is a MODELLING CHOICE, not a Vissim default. §5.5.4.1 states which
+#: choice MRWA wants, so it comes from ``demand.DemandSettings`` (default
+#: ``EXACT``) with that citation, exactly as ``trafReg`` comes from the draft.
+TIME_INTERVAL_VEH_VOLUME_ATTRS: dict[str, str] = {"cont": "false"}
+
+#: Vissim's two ``volType`` values, both measured (NOD / LHT respectively).
+VOL_TYPE_EXACT = "EXACT"
+VOL_TYPE_STOCHASTIC = "STOCHASTIC"
+
+#: Source: LHT/NOD ``<vehicleComposition>`` — it carries ``name`` and ``no`` and
+#: nothing else on all 7, so there is no constant attribute to spread; the empty
+#: dict is kept for symmetry with every other element built here.
+VEHICLE_COMPOSITION_ATTRS: dict[str, str] = {}
+
+#: Source: LHT/NOD ``<vehCompRelFlows><vehicleCompositionRelativeFlow>`` — three
+#: attributes on all 13, every one of them computed by the caller
+#: (``vehType``, ``desSpeedDistr``, ``relFlow``). Same reason for the empty dict.
+#:
+#: ``vehType`` and ``desSpeedDistr`` are references OUT of this emission — see
+#: ``services.genesis.demand``'s "The one reference this emission does not
+#: declare".
+VEHICLE_COMPOSITION_REL_FLOW_ATTRS: dict[str, str] = {}
+
+#: Source: LHT/NOD ``<vehicleRoutingDecisionStatic>`` — the four attributes
+#: identical across all 30. The caller supplies ``no``, ``link``, ``pos`` and
+#: the two below.
+#:
+#: ``allVehTypes`` is NOT here: NOD writes ``false`` on all 16 and LHT writes
+#: ``true`` on 11 of 14, so both values are Vissim's. It matters structurally —
+#: an ``allVehTypes="false"`` decision carries a ``<vehClasses><intObjectRef>``
+#: child pointing into a ``vehicleClasses`` container (measured: every one of
+#: LHT's three ``false`` decisions has the child, every one of its eleven
+#: ``true`` decisions does not) — so this emission writes ``true`` and declares
+#: no vehicle-class reference it cannot resolve.
+#:
+#: ``combineStaRoutDec`` is false on all 30, but §5.5.4.2 asks for it to be
+#: ACTIVATED, so it too comes from ``demand.DemandSettings`` with that citation.
+VEHICLE_ROUTING_DECISION_STATIC_ATTRS: dict[str, str] = {
+    "anmFlag": "false",
+    "name": "",
+    "routeChoiceMeth": "STATIC",
+}
+
+#: Vissim's own value for a decision that applies to every vehicle type, which
+#: is also the form that carries no ``<vehClasses>`` child. Source: LHT.
+ALL_VEH_TYPES_TRUE = "true"
+
+#: Source: LHT/NOD ``<vehRoutSta><vehicleRouteStatic>`` — the two attributes
+#: identical across all 126. The caller supplies ``no``, ``destLink``,
+#: ``destPos`` and ``relFlow``.
+#:
+#: The ``<linkSeq>`` child is measured as effectively mandatory: 125 of the 126
+#: routes carry one, and the single route without it (LHT route 403) is also the
+#: single route with an EMPTY ``relFlow`` — i.e. the one route that declares no
+#: flow at all. Its ``<intObjectRef key=…>`` entries are link and CONNECTOR ids
+#: naming the path from the decision to ``destLink``.
+VEHICLE_ROUTE_STATIC_ATTRS: dict[str, str] = {"formula": "", "name": ""}
+
+
+# ---------------------------------------------------------------------------
 # Container order
 # ---------------------------------------------------------------------------
 
@@ -755,6 +904,12 @@ DETECTOR_ATTRS: dict[str, str] = {
 #: where they appear below. (Both references' restricted orders do happen to be
 #: alphabetical, and ``_assert_container_order`` re-checks this list against
 #: whatever the emitter produced.)
+#:
+#: The four demand containers (roadmap 3.2) were placed the same way: in LHT and
+#: NOD alike ``timeIntervalSets`` follows ``timeDistributions``, and
+#: ``vehicleCompositions`` → ``vehicleInputs`` → ``vehicleRoutingDecisionsStatic``
+#: follow it in that order (with ``vehicleClasses``, which this emission does
+#: not write, between the two).
 CONTAINER_ORDER: tuple[str, ...] = (
     "detectors",
     "displayTypes",
@@ -768,4 +923,8 @@ CONTAINER_ORDER: tuple[str, ...] = (
     "signalControllers",
     "signalHeads",
     "timeDistributions",
+    "timeIntervalSets",
+    "vehicleCompositions",
+    "vehicleInputs",
+    "vehicleRoutingDecisionsStatic",
 )

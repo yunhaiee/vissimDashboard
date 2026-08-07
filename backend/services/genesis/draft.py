@@ -511,6 +511,65 @@ _RULE_TITLE: dict[str, dict[str, str]] = {
         "en": "§5.4.2.6 detectors reflect existing or design signal plans",
         "ja": "§5.4.2.6 検知器は既存/設計の信号図面を反映",
     },
+    # Roadmap 3.2 Genesis (c) — §5.2.2 / §5.2.3 / §5.5 / §5.6.1.3, produced by
+    # ``services.genesis.demand`` and appended to this report. Same reason the
+    # 3.1 block sits here: one renderer and one title table serve the whole
+    # draft, with or without a demand layer.
+    "5.2.2-time-period-settings": {
+        "ko": "§5.2.2 해석 기간 · 웜업/쿨다운 설정",
+        "en": "§5.2.2 assessment period, warm-up and cool-down settings",
+        "ja": "§5.2.2 解析期間・ウォームアップ/クールダウン設定",
+    },
+    "5.2.3-vehicle-types-declared": {
+        "ko": "§5.2.3 차종 정의 (Austroads 분류)",
+        "en": "§5.2.3 vehicle types defined (Austroads classification)",
+        "ja": "§5.2.3 車種定義 (Austroads 分類)",
+    },
+    "5.5-demand-generation-warnings": {
+        "ko": "§5.5 수요 생성 중 발생한 경고 (명시)",
+        "en": "§5.5 warnings raised while generating the demand (named)",
+        "ja": "§5.5 需要生成中に発生した警告 (明示)",
+    },
+    "5.5.1-composition-from-classified-counts": {
+        "ko": "§5.5.1 차량 구성은 분류 교통량 조사에서 산출",
+        "en": "§5.5.1 vehicle composition determined from classified counts",
+        "ja": "§5.5.1 車両構成は分類済み交通量調査から算出",
+    },
+    "5.5.4.1-hourly-volume-recalculation": {
+        "ko": "§5.5.4.1 15분 집계값을 시간당 교통량으로 환산",
+        "en": "§5.5.4.1 15-minute flows recalculated to hourly volumes",
+        "ja": "§5.5.4.1 15分集計値を時間当たり交通量に換算",
+    },
+    "5.5.4.1-exact-volumes": {
+        "ko": "§5.5.4.1 정확 볼륨(exact) 사용 권고",
+        "en": "§5.5.4.1 exact volumes recommended over stochastic",
+        "ja": "§5.5.4.1 exact ボリュームの使用推奨",
+    },
+    "5.5.4.1-fifteen-minute-profiles": {
+        "ko": "§5.5.4.1 15분 수요 프로파일 (한 구간만 출력)",
+        "en": "§5.5.4.1 15-minute demand profiles (one interval written)",
+        "ja": "§5.5.4.1 15分需要プロファイル (1区間のみ出力)",
+    },
+    "5.5.4.2-routing-decision-position": {
+        "ko": "§5.5.4.2 경로 결정 표지 위치 (차로 변경 시작점)",
+        "en": "§5.5.4.2 routing decision marker position (where lane changes begin)",
+        "ja": "§5.5.4.2 経路決定マーカー位置 (車線変更開始点)",
+    },
+    "5.5.4.2-combine-static-routing-decisions": {
+        "ko": "§5.5.4.2 정적 경로 결정 결합(combine) 활성화",
+        "en": "§5.5.4.2 combine static routing decisions activated",
+        "ja": "§5.5.4.2 静的経路決定の結合(combine)を有効化",
+    },
+    "5.5.4.2-routes-per-vehicle-class": {
+        "ko": "§5.5.4.2 차종별 경로 (전 차종 공통으로 출력)",
+        "en": "§5.5.4.2 routes for individual vehicle classes (written for all types)",
+        "ja": "§5.5.4.2 車種別経路 (全車種共通で出力)",
+    },
+    "5.6.1.3-demand-input-check": {
+        "ko": "§5.6.1.3 입력 점검 — 교통 수요 · 차량 경로",
+        "en": "§5.6.1.3 model input check — traffic demands and vehicle routes",
+        "ja": "§5.6.1.3 入力チェック — 交通需要・車両経路",
+    },
 }
 
 _REPORT_TEXT: dict[str, dict[str, str]] = {

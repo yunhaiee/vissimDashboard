@@ -64,11 +64,21 @@ output is what it was before roadmap 3.1 — same containers, same provenance
 comment, same everything — which is pinned rather than asserted
 (``test_genesis_signals.py::test_unsignalised_draft_bytes_are_unchanged``).
 
-Still **no** vehicle inputs, routing decisions, desired-speed decisions,
-reduced-speed areas, lane closures or conflict areas — every one of those is
-outside the row's "기하 생성" (geometry generation) scope, and the §5 rules that
-govern them are reported ``not_checkable(outside_emitted_subset)`` by
-``draft.py`` rather than approximated here.
+Since roadmap 3.2 Genesis (c) there is a second optional layer on exactly the
+same contract: pass ``demand`` and this module also writes ``timeIntervalSets``,
+``vehicleCompositions``, ``vehicleInputs`` and ``vehicleRoutingDecisionsStatic``.
+Everything about that layer — the join to the observed counts, the volumes, the
+relative flows, §5.2.2/§5.2.3/§5.5's compliance grading, and the two references
+it deliberately does not declare — lives in :mod:`services.genesis.demand`.
+Omit ``demand`` and, again, not one byte changes
+(``test_genesis_demand.py::test_demand_less_draft_bytes_are_unchanged``), and a
+signals-only file is byte-identical to what roadmap 3.1 produced.
+
+Still **no** desired-speed decisions, reduced-speed areas, lane closures,
+conflict areas or OD matrices — every one of those is outside the row's "기하
+생성" (geometry generation) scope, and the §5 rules that govern them are reported
+``not_checkable(outside_emitted_subset)`` by ``draft.py`` rather than
+approximated here.
 
 Node membership is no longer a stated gap: ``<linkSegment>``/``<linkSegs>`` does
 not exist in ANY Vissim-saved network, so there was never anything to write.
@@ -119,6 +129,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from . import schema
+from .demand import DraftDemand, demand_containers, demand_provenance_note
 from .draft import DraftConnector, DraftLink, DraftNetwork, DraftNode
 from .project import NOT_GEOREFERENCED_NOTE
 from .signals import DraftSignals, signal_containers, signal_provenance_note
@@ -320,7 +331,11 @@ def _comment_safe(text: str) -> str:
     return cleaned
 
 
-def provenance_comment(draft: DraftNetwork, signals: DraftSignals | None = None) -> str:
+def provenance_comment(
+    draft: DraftNetwork,
+    signals: DraftSignals | None = None,
+    demand: DraftDemand | None = None,
+) -> str:
     """The honesty statement written into the file itself.
 
     An XML comment, so ``ElementTree`` (and Vissim) ignore it and no consumer
@@ -332,23 +347,38 @@ def provenance_comment(draft: DraftNetwork, signals: DraftSignals | None = None)
     this machine's directory layout, it does not belong in a deliverable, and it
     would make the output's bytes depend on where the input happened to sit.
 
-    With no signals the text is character-for-character what it was before
-    roadmap 3.1 — including the "GEOMETRY ONLY … No signal heads, detectors"
-    sentence, which stays TRUE for that file. With signals that sentence would
-    be a lie, so it is replaced rather than appended to.
+    With no signals and no demand the text is character-for-character what it
+    was before roadmap 3.1 — including the "GEOMETRY ONLY … No signal heads,
+    detectors" sentence, which stays TRUE for that file. With either layer that
+    sentence would be a lie, so it is replaced rather than appended to, and the
+    signals-only branch is byte-for-byte what roadmap 3.1 wrote.
     """
     projection = draft.metadata.get("projection", {})
     signal_note = signal_provenance_note(signals)
-    scope = (
-        "GEOMETRY ONLY: links, connectors and node polygons. No signal heads, detectors, "
-        "vehicle inputs or routing. "
-        if not signal_note
-        else (
+    demand_note = demand_provenance_note(demand)
+    if not signal_note and not demand_note:
+        scope = (
+            "GEOMETRY ONLY: links, connectors and node polygons. No signal heads, detectors, "
+            "vehicle inputs or routing. "
+        )
+    elif signal_note and not demand_note:
+        scope = (
             "GEOMETRY + SIGNALS: links, connectors, node polygons, signal controllers, "
             "signal groups, signal heads and detectors. No vehicle inputs or routing. "
             f"{signal_note}"
         )
-    )
+    elif demand_note and not signal_note:
+        scope = (
+            "GEOMETRY + DEMAND: links, connectors, node polygons, vehicle inputs, vehicle "
+            "compositions and static vehicle routing decisions. No signal heads or detectors. "
+            f"{demand_note}"
+        )
+    else:
+        scope = (
+            "GEOMETRY + SIGNALS + DEMAND: links, connectors, node polygons, signal controllers, "
+            "signal groups, signal heads, detectors, vehicle inputs, vehicle compositions and "
+            f"static vehicle routing decisions. {signal_note}{demand_note}"
+        )
     return _comment_safe(
         " Generated by Prism services.genesis (roadmap 2.3 Genesis (a)) from "
         f"{Path(draft.source_osm).name}. "
@@ -369,15 +399,21 @@ def provenance_comment(draft: DraftNetwork, signals: DraftSignals | None = None)
     )
 
 
-def build_tree(draft: DraftNetwork, signals: DraftSignals | None = None) -> ET.ElementTree:
+def build_tree(
+    draft: DraftNetwork,
+    signals: DraftSignals | None = None,
+    demand: DraftDemand | None = None,
+) -> ET.ElementTree:
     """The ``.inpx`` element tree for a draft. Deterministic given the inputs.
 
-    ``signals`` (roadmap 3.1 Genesis (b)) is OPTIONAL and purely additive. When
-    it is ``None``, :data:`~services.genesis.signals.NO_SIGNALS`, or a set every
-    node of which refused, :func:`~services.genesis.signals.signal_containers`
-    returns no containers, the provenance comment is unchanged, and the emitted
-    bytes are exactly what an unsignalised draft produced before this argument
-    existed — pinned by ``test_genesis_signals.py``.
+    ``signals`` (roadmap 3.1 Genesis (b)) and ``demand`` (roadmap 3.2 Genesis
+    (c)) are OPTIONAL and purely additive. When one is ``None``, its package's
+    empty sentinel (:data:`~services.genesis.signals.NO_SIGNALS`,
+    :data:`~services.genesis.demand.NO_DEMAND`), or a layer that refused, the
+    corresponding ``*_containers`` call returns no containers, the provenance
+    comment is unchanged, and the emitted bytes are exactly what a draft without
+    that layer produced before the argument existed — pinned by
+    ``test_genesis_signals.py`` and ``test_genesis_demand.py``.
     """
     if draft.refused:
         raise EmitRefused(
@@ -390,7 +426,7 @@ def build_tree(draft: DraftNetwork, signals: DraftSignals | None = None) -> ET.E
         "network",
         {"version": schema.NETWORK_VERSION, "vissimVersion": schema.VISSIM_VERSION},
     )
-    root.append(ET.Comment(provenance_comment(draft, signals)))
+    root.append(ET.Comment(provenance_comment(draft, signals, demand)))
 
     containers = _support_containers()
 
@@ -422,6 +458,10 @@ def build_tree(draft: DraftNetwork, signals: DraftSignals | None = None) -> ET.E
     # unsignalised draft, so this line adds no key and changes no byte.
     containers.update(signal_containers(signals))
 
+    # Demand, when asked for. Same contract: ``demand_containers`` returns {}
+    # for a draft with no demand layer, or one that refused.
+    containers.update(demand_containers(demand))
+
     # Placed in VISSIM's own top-level order, not in the order this module
     # happened to build them.
     for tag in schema.CONTAINER_ORDER:
@@ -449,16 +489,23 @@ def _assert_container_order(root: ET.Element) -> None:
         )
 
 
-def to_xml_text(draft: DraftNetwork, signals: DraftSignals | None = None) -> str:
-    """The ``.inpx`` as text. Byte-identical for equal drafts (and equal signals)."""
-    root = build_tree(draft, signals).getroot()
+def to_xml_text(
+    draft: DraftNetwork,
+    signals: DraftSignals | None = None,
+    demand: DraftDemand | None = None,
+) -> str:
+    """The ``.inpx`` as text. Byte-identical for equal inputs (draft, signals, demand)."""
+    root = build_tree(draft, signals, demand).getroot()
     ET.indent(root, space="  ")
     body = ET.tostring(root, encoding="unicode", xml_declaration=False)
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + body + "\n"
 
 
 def emit_inpx(
-    draft: DraftNetwork, path: str | Path, signals: DraftSignals | None = None
+    draft: DraftNetwork,
+    path: str | Path,
+    signals: DraftSignals | None = None,
+    demand: DraftDemand | None = None,
 ) -> Path:
     """Write the draft to ``path`` as UTF-8 with LF newlines, and return it.
 
@@ -470,5 +517,5 @@ def emit_inpx(
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(to_xml_text(draft, signals), encoding="utf-8", newline="")
+    out.write_text(to_xml_text(draft, signals, demand), encoding="utf-8", newline="")
     return out

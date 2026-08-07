@@ -15,6 +15,10 @@ Members, in the order row 2.3 runs them:
   geometry; not a georeference.
 * :mod:`services.genesis.draft` — links, connectors and the MRWA §5 compliance
   report (applied / violated / NOT CHECKABLE).
+* :mod:`services.genesis.demand` — 1.2's neutral counts + a draft → vehicle
+  inputs, vehicle compositions and static routing decisions, joined to the draft
+  through a caller-supplied map, with §5.2.2/§5.2.3/§5.5 graded in the same three
+  states. Roadmap 3.2 Genesis (c); optional, and additive to the emission.
 * :mod:`services.genesis.signals` — a 1.6 ``FixedTimePlan`` + a draft node →
   fixed-time signal controllers, signal groups (one per approach), signal heads
   and §5.4.2.6-fallback detectors, with §5.4.2 graded in the same three states.
@@ -57,6 +61,23 @@ from .benchmark import (
     georeferenced_network,
     local_frame_network,
     render_benchmark_report,
+)
+from .demand import (
+    NO_DEMAND,
+    CompositionFlow,
+    DemandCoverage,
+    DemandInterval,
+    DemandSettings,
+    DraftDemand,
+    RouteSeed,
+    RoutingDecisionSeed,
+    VehicleCompositionPlan,
+    VehicleInputPlan,
+    VehicleTypeRef,
+    entry_links,
+    generate_demand,
+    link_exits,
+    route_share,
 )
 from .diff import (
     ConnectorDiff,
@@ -114,13 +135,18 @@ __all__ = [
     "ComplianceItem",
     "ComplianceReport",
     "ComplianceState",
+    "CompositionFlow",
     "ConnectorDiff",
     "ConnectorRewire",
     "CorridorScope",
+    "DemandCoverage",
+    "DemandInterval",
+    "DemandSettings",
     "DetectorPlan",
     "DiffFinding",
     "DiffSeverity",
     "DraftConnector",
+    "DraftDemand",
     "DraftLink",
     "DraftNetwork",
     "DraftNode",
@@ -143,6 +169,7 @@ __all__ = [
     "MissingObject",
     "MissingReason",
     "MovementRef",
+    "NO_DEMAND",
     "NO_SIGNALS",
     "NetworkSummary",
     "NetworkTopology",
@@ -152,21 +179,29 @@ __all__ = [
     "OsmExtract",
     "OsmWay",
     "PositionScope",
+    "RouteSeed",
+    "RoutingDecisionSeed",
     "SignalGroupPlan",
     "SignalHeadPlan",
     "SignalScopeGap",
     "SignalSettings",
     "StructuralDiff",
     "TopologicalBenchmark",
+    "VehicleCompositionPlan",
+    "VehicleInputPlan",
+    "VehicleTypeRef",
     "benchmark_network_files",
     "benchmark_networks",
     "build_draft",
     "diff_network_files",
     "diff_topologies",
     "emit_inpx",
+    "entry_links",
+    "generate_demand",
     "generate_node_signals",
     "generate_signals",
     "georeferenced_network",
+    "link_exits",
     "load_topology",
     "local_frame_network",
     "node_approaches",
@@ -174,6 +209,7 @@ __all__ = [
     "parse_osm_file",
     "render_benchmark_report",
     "render_diff_report",
+    "route_share",
     "to_xml_text",
     "topology_from_root",
 ]
