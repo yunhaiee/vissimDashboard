@@ -106,7 +106,7 @@ Murdoch 벤치마크 diff 리포트 v1 존재, 리뷰어가 로그인해 승인 
 
 | # | 상태 | 항목 | Track | 의존 |
 |---|---|---|---|---|
-| 3.1 | ⬜ | **Genesis (b) 신호**: 대전 어댑터+R1.3b → 컨트롤러/프로그램 생성, signal head/detector 자동 배치(§5 기본값 2.0m/4.5m) | G | 2.3, 1.2, 1.6 |
+| 3.1 | 🔄 | (SCATS측 ✅ 2026-08-07 `4f38e39` — FixedTimePlan+draft 노드 → 고정시간 컨트롤러/그룹(접근로당 1, 논증)/헤드/검지기(§5.4.2.6 폴백 2.0m/4.5m, 검지기 기본값으로 정정 인용); A.2 합성례 ms 단위 왕복 정확; 거부 12종, 반제어기 없음; approach↔phase 매핑은 필수 인자 — 추측 금지. 잔여: Daejeon측은 TK 신호 export 대기, 신호화 draft 실오픈 테스트(가정 S6 해소), 호출자 배선) **Genesis (b) 신호**: 대전 어댑터+R1.3b → 컨트롤러/프로그램 생성, signal head/detector 자동 배치(§5 기본값 2.0m/4.5m) | G | 2.3, 1.2, 1.6 |
 | 3.2 | ⬜ | **Genesis (c) 수요**: 카운트 → vehicle inputs(15분 프로파일)+compositions+routing 시딩 | G | 3.1 |
 | 3.3 | ⬜ | **Genesis (d) R1.5 검증 게이트 완결** (V1–V9 전체 자동 실행 — genesis의 출하 게이트) | G | 3.2 |
 | 3.4 | ⬜ | **EPIC 5 phase-plan 편집** (phase 추가/삭제/시퀀스, intergreen 검증; VAP 구조는 §5.4.2.5 참조) | A | 1.6 |
