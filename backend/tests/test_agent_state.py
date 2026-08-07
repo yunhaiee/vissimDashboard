@@ -271,6 +271,164 @@ def test_rollback_to_zero_reapplies_scenario_management_normalization(tmp_path: 
     assert restored_text == pristine_working_text
 
 
+# ---------------------------------------------------------------------------
+# ArtifactManager — run-multiplicity normalization (numRuns)
+#
+# MEASURED 2026-08-07 (runtime/calibration-loop-live-check/artifacts/
+# FINDING_agent_run_numRuns_blocker.json): the real consultant export carries
+# <simulation numRuns="5" randSeed="42" randSeedIncr="123">, RunContinuous
+# honours NumRuns, and ONE run_simulation(random_seeds=[42]) dispatch wrote
+# FIVE result databases (seeds 42/165/288/411/534) whose volumes the evidence
+# readers then SUMMED -- so the KPIs were 5x wrong and run_reality_check
+# refused with MULTI_SEED_VOLUMES_NOT_COMPARABLE. clone()/rollback_to(0) must
+# pin numRuns to "1" in the WORKING COPY only -- never source_inpx -- exactly
+# as the interactive path's _make_network_standalone always has.
+# ---------------------------------------------------------------------------
+
+_MULTI_RUN_SIMULATION_TAG = (
+    '<simulation numRuns="5" randSeed="42" randSeedIncr="123" simPeriod="5400"/>'
+)
+
+
+def _multi_run_inpx_bytes(num_runs: str = "5") -> bytes:
+    """DEMO_INPX's own content with the real client file's ``<simulation>``
+    element injected -- a realistic, shadow-model-parseable fixture
+    (DEMO_INPX itself has no ``<simulation>`` element at all, which is why
+    the plain-clone tests above stay byte-identical)."""
+    text = DEMO_INPX.read_text(encoding="utf-8")
+    assert "</netPara><links>" in text, "DEMO_INPX fixture shape changed -- update this helper"
+    tag = _MULTI_RUN_SIMULATION_TAG.replace('numRuns="5"', f'numRuns="{num_runs}"')
+    return text.replace("</netPara><links>", f"</netPara>{tag}<links>").encode("utf-8")
+
+
+def _cloned_simulation_element(manager: ArtifactManager):
+    """The working copy's ``<simulation>`` element, parsed FRESH FROM DISK --
+    the clone's own bytes, not an in-memory tree the normalization might
+    have been applied to separately."""
+    import xml.etree.ElementTree as ET
+
+    return ET.parse(manager.working_path).getroot().find(".//simulation")
+
+
+def test_clone_normalizes_num_runs_in_working_copy_only(tmp_path: Path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_inpx = source_dir / "network.inpx"
+    source_inpx.write_bytes(_multi_run_inpx_bytes())
+    original_source_bytes = source_inpx.read_bytes()
+
+    work_dir = tmp_path / "work"
+    manager = ArtifactManager(source_inpx=source_inpx, work_dir=work_dir)
+
+    manager.clone()
+
+    # source_inpx is untouched (rule 4: never edit the active dataset in place).
+    assert source_inpx.read_bytes() == original_source_bytes
+    assert b'numRuns="5"' in original_source_bytes
+
+    # The WORKING COPY runs exactly once...
+    simulation = _cloned_simulation_element(manager)
+    assert simulation is not None
+    assert simulation.get("numRuns") == "1"
+    # ...and every OTHER simulation parameter is carried through untouched --
+    # this normalization pins the run COUNT, it does not re-parameterize the
+    # simulation (randSeed in particular is the caller's/job's to set).
+    assert simulation.get("randSeed") == "42"
+    assert simulation.get("randSeedIncr") == "123"
+    assert simulation.get("simPeriod") == "5400"
+
+    # ...with every other byte in the file identical to the source.
+    working_text = manager.working_path.read_text(encoding="utf-8")
+    source_text = original_source_bytes.decode("utf-8")
+    assert working_text == source_text.replace('numRuns="5"', 'numRuns="1"')
+
+
+def test_clone_leaves_an_already_single_run_network_byte_identical(tmp_path: Path):
+    """A true no-op, not merely idempotent: a network that already declares
+    numRuns="1" must come out of clone() byte-for-byte unchanged."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_inpx = source_dir / "network.inpx"
+    source_inpx.write_bytes(_multi_run_inpx_bytes(num_runs="1"))
+
+    manager = ArtifactManager(source_inpx=source_inpx, work_dir=tmp_path / "work")
+    manager.clone()
+
+    assert manager.working_path.read_bytes() == source_inpx.read_bytes()
+
+
+def test_clone_normalizes_both_flags_for_the_real_client_shape(tmp_path: Path):
+    """The shape the consultant model actually has: a scenario-management
+    export that ALSO declares numRuns="5". Both normalizations apply to the
+    same working copy, neither undoing the other."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_inpx = source_dir / "network.inpx"
+    source_inpx.write_bytes(
+        _multi_run_inpx_bytes().replace(
+            b'<netPara northDir="0">', b'<netPara northDir="0" underScenMngm="true">'
+        )
+    )
+    original_source_bytes = source_inpx.read_bytes()
+
+    manager = ArtifactManager(source_inpx=source_inpx, work_dir=tmp_path / "work")
+    manager.clone()
+
+    working_text = manager.working_path.read_text(encoding="utf-8")
+    assert 'underScenMngm="false"' in working_text
+    assert 'underScenMngm="true"' not in working_text
+    assert 'numRuns="1"' in working_text
+    assert 'numRuns="5"' not in working_text
+    assert source_inpx.read_bytes() == original_source_bytes
+
+
+def test_clone_leaves_a_num_runs_attribute_outside_the_simulation_tag_alone(tmp_path: Path):
+    """The rewrite is scoped to the ``<simulation>`` start tag, not a
+    document-wide ``numRuns=`` substitution: only Vissim's simulation
+    parameters are ours to normalize."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_inpx = source_dir / "network.inpx"
+    source_inpx.write_bytes(
+        _multi_run_inpx_bytes().replace(
+            b"<links>", b'<someOtherThing numRuns="7"/><links>', 1
+        )
+    )
+
+    manager = ArtifactManager(source_inpx=source_inpx, work_dir=tmp_path / "work")
+    manager.clone()
+
+    working_text = manager.working_path.read_text(encoding="utf-8")
+    assert '<simulation numRuns="1"' in working_text
+    assert '<someOtherThing numRuns="7"/>' in working_text
+
+
+def test_rollback_to_zero_reapplies_num_runs_normalization(tmp_path: Path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_inpx = source_dir / "network.inpx"
+    source_inpx.write_bytes(_multi_run_inpx_bytes())
+
+    manager = ArtifactManager(source_inpx=source_inpx, work_dir=tmp_path / "work")
+    manager.clone()
+    pristine_working_text = manager.working_path.read_text(encoding="utf-8")
+    assert 'numRuns="1"' in pristine_working_text
+
+    # Mutate the working copy (simulating an in-session edit) then roll back:
+    # rollback_to(0) copies straight from source_inpx, so without re-applying
+    # the normalization it would silently restore numRuns="5".
+    manager.working_path.write_text(
+        pristine_working_text.replace('numRuns="1"', 'numRuns="5"'), encoding="utf-8"
+    )
+
+    manager.rollback_to(0)
+
+    restored_text = manager.working_path.read_text(encoding="utf-8")
+    assert 'numRuns="1"' in restored_text
+    assert 'numRuns="5"' not in restored_text
+    assert restored_text == pristine_working_text
+
+
 def test_clone_parses_initial_shadow_model(tmp_path: Path):
     manager = ArtifactManager(source_inpx=DEMO_INPX, work_dir=tmp_path)
 

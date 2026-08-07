@@ -226,6 +226,110 @@ def _disable_scenario_management_flag(working_path: Path) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Run-multiplicity normalization -- WORKING COPY ONLY, never source_inpx.
+#
+# MEASURED 2026-08-07 (runtime/calibration-loop-live-check/artifacts/
+# FINDING_agent_run_numRuns_blocker.json, live against the real consultant
+# model): that export carries ``<simulation numRuns="5" randSeed="42"
+# randSeedIncr="123">``. Vissim's ``RunContinuous`` honours NumRuns, so ONE
+# ``run_simulation(duration_s=900, random_seeds=[42])`` dispatch wrote FIVE
+# result databases into a SINGLE seed directory (seeds 42/165/288/411/534 =
+# randSeed + randSeedIncr), while the tool envelope still reported
+# ``random_seeds: [42]`` and ``simulationrun_verified: true``.
+#
+# That is not "extra runs, more data" -- it is wrong numbers:
+#   * ``results_evidence.read_movement_class_rows`` SUMS VEHS across every .db
+#     under a run dir, so ``movement_volumes`` carried five runs' worth of
+#     vehicles (the evidence descriptor itself said PRESENT(1890) where one
+#     run has 378 rows);
+#   * ``build_reality_check_report`` then refuses outright with
+#     ``MULTI_SEED_VOLUMES_NOT_COMPARABLE`` -- the calibration loop cannot
+#     close against the real client model at all;
+#   * and the seed the caller ASKED for stops being the seed that ran.
+#
+# This is the same asymmetry the scenario-management fix above closed, in the
+# same pair of paths: ``services/simulation_network_builder.py``'s
+# ``_make_network_standalone`` (the INTERACTIVE run path) has set
+# ``numRuns="1"`` on the line immediately after ``underScenMngm="false"`` all
+# along ("interactive runs should finish quickly and produce a single result
+# set"), and the 2026-07-31 agent-path fix copied only the ``underScenMngm``
+# half of it. This closes the other half in the same place, on the same
+# working copy, under the same never-write-the-source guarantee -- so every
+# consumer of the working copy (the run job, ``load_check``, the
+# demand-stress sweep's scaled clone, each ``edit_NNN.inpx`` snapshot) sees a
+# single-run network without any of them re-deriving that.
+#
+# Scoped to the ``<simulation>`` START TAG rather than a document-wide
+# ``numRuns=`` substitution: this is a raw-text rewrite (as above, so nothing
+# else in the document moves), and only Vissim's simulation parameters are
+# ours to normalize. Same text-mode round trip as the sibling above, with the
+# same one caveat inherited from it: a file whose line endings are not the
+# running platform's own is rewritten with the platform's. That is invisible
+# to every XML reader and to Vissim, and it only ever happens on a file this
+# function actually had to change -- a no-op returns without writing at all.
+#
+# An ABSENT ``numRuns`` attribute is deliberately left alone: Vissim's own
+# default is a single run, so there is nothing to correct, and inserting an
+# attribute the file never carried would be a byte change this function has
+# no measurement to justify. The unconditional belt for that case (and for
+# any source .inpx that never passed through this clone at all) is the COM
+# seam in ``routers/simulations.py::_run_agent_simulation_job``, which sets
+# NumRuns=1 with a paired read-back on every agent run regardless of what the
+# XML said -- see its own comment for why BOTH seams exist.
+# ---------------------------------------------------------------------------
+
+_SIMULATION_START_TAG_RE = re.compile(r"<simulation\b[^>]*>")
+_NUM_RUNS_RE = re.compile(r'\bnumRuns="\d+"')
+
+
+def _force_single_run(working_path: Path) -> bool:
+    """Rewrite ``<simulation numRuns="N">`` to ``numRuns="1"`` IN THE WORKING
+    COPY (``working_path`` — never ``source_inpx``) if present, a plain regex
+    scan/rewrite of the raw file scoped to the ``<simulation>`` start tag (not
+    a full XML parse/reserialize, so nothing else in the document is rewritten
+    — no attribute reordering, no re-indentation, no namespace churn, the
+    things a reserialize changes silently — the same shape as
+    :func:`_disable_scenario_management_flag`). See the module-level comment
+    above for the measured root-cause story and its one line-ending caveat.
+
+    A false negative (no ``<simulation>`` element, no ``numRuns`` attribute on
+    it, an already-``"1"`` value, or an unreadable file) is the safe default:
+    the working copy is left exactly as it was. Returns ``True`` iff a
+    rewrite happened (informational only — no caller needs to branch on it)."""
+    try:
+        text = working_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+    rewritten = 0
+
+    def _normalize_tag(match: "re.Match[str]") -> str:
+        nonlocal rewritten
+        tag = match.group(0)
+        new_tag, n = _NUM_RUNS_RE.subn('numRuns="1"', tag)
+        if n and new_tag != tag:
+            rewritten += n
+        return new_tag
+
+    new_text = _SIMULATION_START_TAG_RE.sub(_normalize_tag, text)
+    if rewritten == 0 or new_text == text:
+        return False
+    try:
+        working_path.write_text(new_text, encoding="utf-8")
+    except OSError:
+        logger.warning(
+            "ArtifactManager: could not normalize numRuns in working copy %s",
+            working_path, exc_info=True,
+        )
+        return False
+    logger.info(
+        "ArtifactManager: normalized simulation/@numRuns -> \"1\" in the working copy %s "
+        "(%d occurrence(s)) -- source_inpx untouched", working_path, rewritten,
+    )
+    return True
+
+
 @dataclass
 class StepRecord:
     """One summarized step in an agent session's history.
@@ -466,7 +570,11 @@ class ArtifactManager:
         WORKING COPY only (:func:`_disable_scenario_management_flag` — see
         its module-level comment for why: without this, ``VissimController.
         load_network`` cannot ``LoadNet`` the working copy at all for a
-        dataset placed under PTV Vision scenario management).
+        dataset placed under PTV Vision scenario management), and the
+        network's own ``<simulation numRuns="N">`` to ``"1"`` in that same
+        working copy (:func:`_force_single_run` — without this, a network
+        exported with numRuns > 1 makes ONE requested run produce N result
+        databases, whose volumes are then summed into N-fold-wrong KPIs).
 
         Raises:
             RuntimeError: see ``_guard_against_clobbering_unsaved_work`` —
@@ -478,6 +586,7 @@ class ArtifactManager:
         shutil.copyfile(self.source_inpx, self.working_path)
         _copy_sibling_assets(self.source_inpx, self.work_dir)
         _disable_scenario_management_flag(self.working_path)
+        _force_single_run(self.working_path)
         self._refresh_shadow_model()
         return self.shadow_model
 
@@ -512,9 +621,10 @@ class ArtifactManager:
         ``save_version()`` call). This lets a caller roll back a session's
         very first write — before any ``save_version()`` has ever run — back
         to the untouched clone, not just to a later saved version. Re-applies
-        the same scenario-management normalization ``clone()`` does
-        (:func:`_disable_scenario_management_flag`) so this path can't
-        silently regress a working copy back to an unloadable state.
+        the same normalizations ``clone()`` does
+        (:func:`_disable_scenario_management_flag`,
+        :func:`_force_single_run`) so this path can't silently regress a
+        working copy back to an unloadable — or a multi-run — state.
 
         Raises:
             RuntimeError: ``version=0`` but ``clone()`` has not been called
@@ -527,11 +637,13 @@ class ArtifactManager:
                     "ArtifactManager.clone() must be called before rollback_to(0)"
                 )
             shutil.copyfile(self.source_inpx, self.working_path)
-            # Mirrors clone()'s own normalization -- restoring straight from
+            # Mirrors clone()'s own normalizations -- restoring straight from
             # source_inpx must not silently re-introduce underScenMngm="true"
-            # into the working copy (see _disable_scenario_management_flag's
-            # module-level comment).
+            # (unloadable) or numRuns="N" (N result databases per requested
+            # run) into the working copy. See each helper's own module-level
+            # comment.
             _disable_scenario_management_flag(self.working_path)
+            _force_single_run(self.working_path)
             self._refresh_shadow_model()
             return
 

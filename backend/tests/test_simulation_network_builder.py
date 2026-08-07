@@ -513,3 +513,68 @@ def test_scale_output_path_parent_created_if_missing(vehicle_inputs_inpx: Path, 
     output_path = tmp_path / "nested" / "dir" / "scaled.inpx"
     scale_vehicle_input_volumes(vehicle_inputs_inpx, output_path, scale_percent=5.0)
     assert output_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# _make_network_standalone -- the EXEMPLAR, pinned unchanged.
+#
+# This is the interactive run path's normalization, and it is the reference
+# services/agent/state.py's clone-time normalizations mirror (underScenMngm
+# 2026-07-31, numRuns 2026-08-07 -- the latter after a live run of the real
+# consultant model produced five result databases for one requested seed).
+# The agent-path fix must not have moved anything here: these assertions
+# exist so a future edit that "unifies" the two paths has to say so out loud.
+#
+# Called directly on an in-memory tree: build_simulation_network writes into
+# the repo's real runtime/ tree, and none of this needs a file to exist.
+# ---------------------------------------------------------------------------
+
+_STANDALONE_INPX = """<?xml version="1.0" encoding="UTF-8"?>
+<network version="2400">
+  <netPara northDir="0" underScenMngm="true"/>
+  <simulation numRuns="5" randSeed="42" randSeedIncr="123" simPeriod="5400" simRes="10"/>
+  <evaluation evalOutDir="C:\\somewhere\\else" keepPrevResults="KEEPALL"/>
+  <links><link no="101"><lanes><lane width="3.5"/></lanes></link></links>
+</network>
+"""
+
+
+def test_make_network_standalone_still_pins_num_runs_and_the_rest(tmp_path: Path):
+    from services.simulation_network_builder import _make_network_standalone
+
+    root = ET.fromstring(_STANDALONE_INPX)
+    results_dir = tmp_path / "results"
+
+    _make_network_standalone(root, results_dir)
+
+    simulation = root.find(".//simulation")
+    # The line this whole fix is about: the interactive path has always
+    # produced a single result set, and still does.
+    assert simulation.get("numRuns") == "1"
+    assert simulation.get("simRes") == "2"
+    assert simulation.get("useMaxSimSpeed") == "true"
+    # Untouched simulation parameters stay untouched.
+    assert simulation.get("randSeed") == "42"
+    assert simulation.get("randSeedIncr") == "123"
+    assert simulation.get("simPeriod") == "5400"
+
+    assert root.find(".//netPara").get("underScenMngm") == "false"
+    evaluation = root.find(".//evaluation")
+    assert evaluation.get("evalOutDir") == str(results_dir)
+    assert evaluation.get("keepPrevResults") == "DELETEALL"
+
+
+def test_make_network_standalone_tolerates_a_network_without_a_simulation_element(
+    tmp_path: Path,
+):
+    """Pre-existing behaviour, pinned: the sections are optional and their
+    absence is a no-op, never an AttributeError."""
+    from services.simulation_network_builder import _make_network_standalone
+
+    root = ET.fromstring(_NO_SECTIONS_INPX)
+
+    _make_network_standalone(root, tmp_path / "results")
+
+    assert root.find(".//simulation") is None
+    assert root.find(".//netPara") is None
+    assert root.find(".//evaluation") is None

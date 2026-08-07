@@ -720,6 +720,11 @@ def _run_agent_simulation_job(
     resets to 0 the moment a run ends; see
     docs/phase2/00-EXECUTION-GUIDE.md SS3.1).
 
+    Each seed is pinned to exactly ONE Vissim run: NumRuns is set to 1 and
+    read back before RunContinuous, so "one seed" means one result database
+    no matter what the network's own ``<simulation numRuns=...>`` said (see
+    the measured finding quoted at that call site).
+
     ``workspace_id`` re-binds the SUBMITTING request's workspace on this
     thread (ContextVars do not cross ``threading.Thread`` boundaries) so the
     job registry writes and any dataset resolution below stay inside the
@@ -806,6 +811,54 @@ def _run_agent_simulation_job_locked(
                 ctrl.set_sim_duration(duration_s)
                 if seed is not None:
                     ctrl.set_random_seed(seed)
+
+                # NumRuns=1 -- the third member of the run contract THIS
+                # runner owns, alongside SimPeriod and RandSeed above.
+                #
+                # MEASURED 2026-08-07 (runtime/calibration-loop-live-check/
+                # artifacts/FINDING_agent_run_numRuns_blocker.json): the real
+                # consultant export carries <simulation numRuns="5"
+                # randSeed="42" randSeedIncr="123">, RunContinuous honours
+                # NumRuns, and ONE seed directory came back with FIVE result
+                # databases (seeds 42/165/288/411/534 = randSeed +
+                # randSeedIncr) while the tool envelope still said
+                # random_seeds=[42]. Setting RandSeed on the line above while
+                # leaving NumRuns at 5 does not merely add runs: it makes the
+                # seed this job DECLARES a lie, and the evidence readers sum
+                # volumes across every .db in the run dir, so the KPIs come
+                # back N-fold wrong rather than merely noisier.
+                #
+                # services/agent/state.py's _force_single_run normalizes this
+                # in the working copy at clone time and is the primary seam
+                # (it is offline-verifiable and covers every consumer of the
+                # working copy, not just runs). This is the SECOND,
+                # unconditional seam, kept because this runner accepts ANY
+                # source .inpx -- a raw path from a live-check tool, a future
+                # non-ArtifactManager caller, or a file whose XML omits
+                # numRuns entirely and inherits it from elsewhere -- and is
+                # the last point before RunContinuous.
+                #
+                # Fail-closed on a bad set or read-back, exactly like the
+                # evaluation configuration below and unlike the best-effort
+                # trajectory arming: a run with the wrong NumRuns produces
+                # silently wrong numbers, which docs/phase2/
+                # 00-EXECUTION-GUIDE.md SS4 ranks strictly worse than a
+                # refused run.
+                try:
+                    ctrl.vissim.Simulation.SetAttValue("NumRuns", 1)
+                    num_runs_readback = int(ctrl.vissim.Simulation.AttValue("NumRuns"))
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Could not force NumRuns=1 before running seed "
+                        f"{seed!r} (index {index}): {exc}"
+                    ) from exc
+                if num_runs_readback != 1:
+                    raise RuntimeError(
+                        f"NumRuns read back as {num_runs_readback} after being set to 1 for "
+                        f"seed {seed!r} (index {index}) -- refusing to run: Vissim would write "
+                        f"{num_runs_readback} result databases for this ONE requested run and "
+                        "their volumes would be summed into wrong KPIs."
+                    )
 
                 # Evaluations are not retroactive (docs/phase2/
                 # 00-EXECUTION-GUIDE.md SS3.1) -- must run after load_network,

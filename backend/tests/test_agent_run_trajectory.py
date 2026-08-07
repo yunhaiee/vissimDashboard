@@ -38,6 +38,18 @@ from routers import simulations as simulations_router
 class _FakeSimulation:
     def __init__(self, controller: "_FakeVissimController") -> None:
         self._controller = controller
+        self._att_values: dict[str, Any] = {}
+
+    # The job runner sets (and reads back) NumRuns=1 before every
+    # RunContinuous -- see routers/simulations.py's own comment and
+    # tests/test_agent_run_num_runs.py, which owns that behaviour's
+    # assertions. A plain attribute store keeps this file exercising the
+    # real runner end to end without duplicating those assertions.
+    def SetAttValue(self, name: str, value: Any) -> None:
+        self._att_values[name] = value
+
+    def AttValue(self, name: str) -> Any:
+        return self._att_values.get(name)
 
     def RunContinuous(self) -> None:
         self._controller._run()

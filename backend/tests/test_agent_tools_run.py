@@ -302,6 +302,11 @@ def test_run_simulation_clean_run_returns_ok_envelope_with_kpis(
         "simulationrun_verified": True,
         "duration_s": 3600,
         "random_seeds": [None],
+        # Disclosed alongside random_seeds on purpose (2026-08-07 numRuns
+        # finding): one requested seed, one result database. When those two
+        # numbers disagree, the envelope now says so instead of reporting the
+        # seed list as though it were the run count.
+        "result_db_count": 1,
         "tables": [
             "SIMULATIONRUN",
             "VEHICLENETWORKPERFORMANCEMEASUREMENT_EVALUATIONTIMEINTERVALCLASS",
@@ -1020,7 +1025,12 @@ def test_run_result_four_pre_existing_keys_are_unchanged_by_unit_u1(
 ):
     """U1 is plumbing: it ADDS keys and changes nothing that was already
     there. Pinned literally, on a fixture that exercises every new code path
-    at once."""
+    at once.
+
+    Re-affirmed 2026-08-07 when ``result_db_count`` was added: it is another
+    ADDED key, collected by ``_collect_run_evidence`` and therefore appended
+    by the same ``run_result.update(...)`` call, so the four base keys keep
+    both their values and their leading positions."""
     run_result = _unhealthy_run_result(tmp_path, monkeypatch)
 
     assert {key: run_result[key] for key in _BASE_RUN_RESULT_KEYS} == {
@@ -1030,6 +1040,152 @@ def test_run_result_four_pre_existing_keys_are_unchanged_by_unit_u1(
         "trajectory_recorded": False,
     }
     assert list(run_result)[:4] == list(_BASE_RUN_RESULT_KEYS)
+    # Additive, and after the four -- never interleaved with them.
+    assert run_result["result_db_count"] == 1
+    assert "result_db_count" in list(run_result)[4:]
+
+
+# ---------------------------------------------------------------------------
+# (e2) result_db_count — the run says how many result sets it actually wrote
+#
+# MEASURED 2026-08-07 (runtime/calibration-loop-live-check/artifacts/
+# FINDING_agent_run_numRuns_blocker.json): a single-seed agent run of the real
+# consultant model wrote FIVE result databases into ONE seed directory
+# (<simulation numRuns="5" randSeed="42" randSeedIncr="123"> + RunContinuous),
+# and the envelope still reported random_seeds=[42] / simulationrun_verified=
+# true -- the multiplicity was invisible to the caller while the evidence
+# readers silently summed five runs' volumes. Both causes are fixed (state.py
+# _force_single_run at clone time; routers/simulations.py NumRuns=1 + read-back
+# before RunContinuous); this disclosure exists so a future recurrence by any
+# other route is READ, not inferred.
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_and_get_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    job_work_dir: Path,
+    source: Path,
+    random_seeds: list[int] | None = None,
+    job_id: str | None = "dbcount-job",
+) -> dict[str, Any]:
+    tools_run.set_active_run_source(source)
+    monkeypatch.setattr(simulation_runs, "job_dir", lambda _job_id: job_work_dir)
+    record: dict[str, Any] = {
+        "status": "done",
+        "result_tables": _TABLES_WITH_NODE_RESULTS,
+        "evaluation_configured": True,
+    }
+    if job_id is not None:
+        record["id"] = job_id
+    monkeypatch.setattr(tools_run, "_run_job_and_wait", _FakeJobRunner(record))
+    params: dict[str, Any] = {"duration_s": 3600}
+    if random_seeds is not None:
+        params["random_seeds"] = random_seeds
+    envelope = dispatch("run_simulation", params, registry=default_registry)
+    assert envelope["status"] == "ok", envelope
+    return envelope
+
+
+def test_envelope_discloses_the_real_db_count_when_one_seed_wrote_five(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The measured failure shape, reproduced on disk: ONE requested seed,
+    five result databases in that seed's own results directory.
+
+    The count must appear in run_result, in verification next to the
+    single-entry random_seeds list it contradicts, and in the message -- so
+    the disagreement is legible rather than something a reader has to go
+    count files to discover."""
+    work = tmp_path / "job-five-dbs"
+    results_dir = work / "seed_00" / "working.results"
+    results_dir.mkdir(parents=True)
+    for run_no in range(1, 6):
+        _write_full_results_db(
+            results_dir / f"{run_no}.db",
+            movements=[(_MOVEMENT_BUSY, 378.0, 44.8)],
+            queues=[(_MOVEMENT_BUSY, 12.0, 41.5)],
+        )
+    source = _write_inpx(tmp_path / "five.inpx")
+
+    envelope = _dispatch_and_get_envelope(
+        monkeypatch, job_work_dir=work, source=source, random_seeds=[42]
+    )
+
+    assert envelope["data"]["run_result"]["result_db_count"] == 5
+    assert envelope["verification"]["result_db_count"] == 5
+    assert envelope["verification"]["random_seeds"] == [42]
+    assert "1 seed(s), writing 5 result database(s)" in envelope["message"]
+    # The disclosure is what changed; the summed-volume behaviour it exposes
+    # is unchanged (5 x 378 vehicles) -- stated here so a future reader can
+    # see WHY the count matters rather than taking it on faith.
+    assert envelope["data"]["run_result"]["movement_volumes"][_MOVEMENT_BUSY]["vehs"] == 1890.0
+
+
+def test_envelope_discloses_one_result_db_for_a_normal_single_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The fixed shape: one seed, one result database, and the two numbers
+    in the envelope agree."""
+    work = tmp_path / "job-one-db"
+    results_dir = work / "seed_00" / "working.results"
+    results_dir.mkdir(parents=True)
+    _write_full_results_db(
+        results_dir / "1.db",
+        movements=[(_MOVEMENT_BUSY, 378.0, 44.8)],
+        queues=[(_MOVEMENT_BUSY, 12.0, 41.5)],
+    )
+    source = _write_inpx(tmp_path / "one.inpx")
+
+    envelope = _dispatch_and_get_envelope(
+        monkeypatch, job_work_dir=work, source=source, random_seeds=[42]
+    )
+
+    assert envelope["data"]["run_result"]["result_db_count"] == 1
+    assert envelope["verification"]["result_db_count"] == 1
+    assert "1 seed(s), writing 1 result database(s)" in envelope["message"]
+    assert envelope["data"]["run_result"]["movement_volumes"][_MOVEMENT_BUSY]["vehs"] == 378.0
+
+
+def test_result_db_count_is_unknown_not_zero_when_no_work_dir_was_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A job record with no id resolves no work dir, so there is nothing to
+    count. The key is OMITTED from run_result and reported as None (never 0)
+    in verification -- 0 would be a measurement nobody took, the same
+    absence-honesty rule the tri-state evidence keys follow."""
+    work = tmp_path / "job-unused"
+    work.mkdir()
+    source = _write_inpx(tmp_path / "nowork.inpx")
+
+    envelope = _dispatch_and_get_envelope(
+        monkeypatch, job_work_dir=work, source=source, job_id=None
+    )
+
+    assert "result_db_count" not in envelope["data"]["run_result"]
+    assert envelope["verification"]["result_db_count"] is None
+    assert "writing unknown result database(s)" in envelope["message"]
+
+
+def test_collect_run_evidence_counts_every_db_under_the_work_dir(tmp_path: Path):
+    """At the collector level, without the tool: the count is
+    ``results_evidence.result_db_paths``' own recursive discovery rule (the
+    same list every volume reader sums over), not a per-seed-directory
+    assumption."""
+    work = tmp_path / "job"
+    (work / "seed_00" / "working.results").mkdir(parents=True)
+    (work / "seed_01" / "working.results").mkdir(parents=True)
+    _write_full_results_db(work / "seed_00" / "working.results" / "1.db")
+    _write_full_results_db(work / "seed_00" / "working.results" / "2.db")
+    _write_full_results_db(work / "seed_01" / "working.results" / "1.db")
+    source = _write_inpx(tmp_path / "counted.inpx")
+
+    evidence = tools_run._collect_run_evidence(
+        work, source, duration_s=3600, evaluation_configured=True
+    )
+
+    assert evidence["result_db_count"] == 3
+    assert len(results_evidence.result_db_paths(work)) == 3
 
 
 # ---------------------------------------------------------------------------

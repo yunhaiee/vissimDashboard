@@ -76,6 +76,7 @@ def _spy_update_job(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 class _FakeMultiSeedController:
     def __init__(self) -> None:
         self._dir: Path | None = None
+        self._att_values: dict[str, Any] = {}
 
     def connect(self, **kwargs: Any) -> None:
         pass
@@ -105,6 +106,17 @@ class _FakeMultiSeedController:
     @property
     def Simulation(self):
         return self
+
+    # The job runner sets (and reads back) NumRuns=1 before every
+    # RunContinuous -- see routers/simulations.py's own comment and
+    # tests/test_agent_run_num_runs.py, which owns that behaviour's
+    # assertions. Modelled here as a plain attribute store so this file's
+    # progress tests keep exercising the real runner end to end.
+    def SetAttValue(self, name: str, value: Any) -> None:
+        self._att_values[name] = value
+
+    def AttValue(self, name: str) -> Any:
+        return self._att_values.get(name)
 
     def RunContinuous(self) -> None:
         assert self._dir is not None

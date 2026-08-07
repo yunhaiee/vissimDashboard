@@ -58,7 +58,11 @@ DECISIONS.md entry in the M2.4 report.
 **run_result's contract (unit U1).** Four keys are always present —
 ``tables``, ``deleted_vehicles``, ``evaluation_configured``,
 ``trajectory_recorded`` — plus ``evidence``, the tri-state descriptor from
-``services/results_evidence.py``. The evidence-bearing keys
+``services/results_evidence.py``, and ``result_db_count``, the number of
+result databases the run actually produced (present whenever a work dir was
+resolved; also mirrored into ``verification`` and the message next to the
+seed count — see :func:`_collect_run_evidence` for the measured reason that
+number is disclosed rather than assumed). The evidence-bearing keys
 (``queue_results``, ``queue_definition``, ``los_by_movement``,
 ``movement_volumes``, ``delay_segments``, ``evaluation_interval_s``) are
 CONDITIONALLY present, and their absence is itself the message: a key is
@@ -507,6 +511,25 @@ def _collect_run_evidence(
     db_paths = results_evidence.result_db_paths(work_dir) if work_dir is not None else []
     evaluation = _read_evaluation_element(source_inpx)
 
+    # --- result_db_count ----------------------------------------------------
+    # How many result databases this run ACTUALLY produced, disclosed rather
+    # than assumed. MEASURED 2026-08-07 (runtime/calibration-loop-live-check/
+    # artifacts/FINDING_agent_run_numRuns_blocker.json): a single-seed agent
+    # run of the real consultant model wrote FIVE .dbs, because the network's
+    # own <simulation numRuns="5"> survived into the run and RunContinuous
+    # honours it. Both seams that caused that are fixed now (state.py's
+    # _force_single_run at clone time, routers/simulations.py's NumRuns=1 +
+    # read-back before RunContinuous) -- this key exists so that if the
+    # multiplicity EVER comes back, by a route neither seam covers, it is
+    # visible in the envelope instead of silently N-fold-inflating every
+    # volume the readers below sum across these same db_paths.
+    #
+    # Present only when a work dir was actually resolved: with work_dir None
+    # there is nothing to count, and reporting 0 would be a claim rather than
+    # a measurement (the same absence-honesty rule the tri-state keys follow).
+    if work_dir is not None:
+        evidence["result_db_count"] = len(db_paths)
+
     queue_table = results_evidence.MOVEMENT_INTERVAL_TABLE
     class_table = results_evidence.MOVEMENT_INTERVAL_CLASS_TABLE
     queue_state = descriptor.get(queue_table, results_evidence.TABLE_ABSENT)
@@ -691,9 +714,21 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
         if trajectory_recorded
         else "not recorded"
     )
+    # The result-database count rides in verification and in the message NEXT
+    # TO the seed count it must agree with -- that pairing is the whole point.
+    # The measured failure (see _collect_run_evidence's result_db_count
+    # comment) was an envelope that said random_seeds=[42] and
+    # simulationrun_verified=true while Vissim had written five databases, so
+    # "how many seeds we asked for" and "how many result sets came back" are
+    # now stated side by side and a future divergence is readable at a glance.
+    # None (never 0) when evidence collection produced no count at all -- an
+    # unknown, stated as one.
+    result_db_count = run_result.get("result_db_count")
+    db_count_text = "unknown" if result_db_count is None else str(result_db_count)
     return {
         "message": (
-            f"Simulation ran for {params.duration_s}s across {len(seeds)} seed(s); "
+            f"Simulation ran for {params.duration_s}s across {len(seeds)} seed(s), "
+            f"writing {db_count_text} result database(s); "
             f"result tables: {tables_text}; network-performance evaluation {eval_text}; "
             f"vehicle trajectories {trajectory_text}."
         ),
@@ -702,6 +737,7 @@ def run_simulation(params: RunSimulationParams) -> dict[str, Any]:
             "simulationrun_verified": True,
             "duration_s": params.duration_s,
             "random_seeds": seeds,
+            "result_db_count": result_db_count,
             "tables": run_result["tables"],
             "evaluation_configured": evaluation_configured,
             "trajectory_recorded": trajectory_recorded,
