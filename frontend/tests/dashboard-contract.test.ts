@@ -960,6 +960,153 @@ contractTest("U9: the approval card reacts to 401/403 from the server, never to 
   pin.match(shell, /if \(status === "loading"\) return null;/, "expected the shell not to flash a sign-in link before whoami() answers");
 });
 
+// ---------------------------------------------------------------------------
+// Roadmap row 2.4 — network diff view
+// ---------------------------------------------------------------------------
+
+contractTest("2.4: the diff view reads ONE endpoint, and the backend guards it", (pin) => {
+  const api = read("lib/api.ts");
+  const page = read("app/network-diff/page.tsx");
+  const shell = read("components/AppShell.tsx");
+  // The backend half of the wiring, read across the repo root exactly the way
+  // the shared/mrwa-validation-criteria.json pin above does. The endpoint path
+  // and the ownership call are the two facts this page cannot check from its
+  // own side, and both are load-bearing: without the second, a diff of another
+  // project's network would render perfectly.
+  const backendRouter = readFileSync(
+    path.join(repoRoot, "backend", "routers", "network_diff.py"),
+    "utf-8",
+  );
+  const backendMain = readFileSync(path.join(repoRoot, "backend", "main.py"), "utf-8");
+
+  // --- endpoint path -------------------------------------------------------
+  pin.match(
+    api,
+    /apiFetch\(`\/api\/network\/diff\?\$\{params\.toString\(\)\}`/,
+    "expected the diff binding to call GET /api/network/diff",
+  );
+  pin.match(
+    api,
+    /new URLSearchParams\(\{ session_id: sessionId, base, target \}\)/,
+    "expected session_id + base + target to be the request's whole parameter surface",
+  );
+  pin.match(backendRouter, /prefix="\/api\/network\/diff"/, "expected the backend router to claim that exact path");
+  pin.match(backendMain, /app\.include_router\(network_diff\.router\)/, "expected the diff router to be registered");
+  // The URL lives in lib/api.ts alone -- a page that issued its own request
+  // would drift from the binding's NetworkDiffError handling on the next
+  // change. (The path appears in the page's header COMMENT, which is why this
+  // pins the request machinery rather than the string.)
+  pin.doesNotMatch(page, /\bapiFetch\(|\bfetch\(/, "the page must go through fetchNetworkDiff, never issue its own request");
+  pin.match(page, /fetchNetworkDiff\(sessionId, baseToken, targetToken\)/, "expected the page to call the shared binding");
+
+  // --- the picker reuses the EXISTING artifact enumeration ------------------
+  pin.match(page, /fetchAgentDownloads\(\{ limit: 50 \}\)/, "expected the session list to come from the existing unscoped download listing");
+  pin.match(page, /fetchAgentDownloads\(\{ sessionId \}\)/, "expected the version list to come from the existing per-session download listing");
+
+  // --- ownership -----------------------------------------------------------
+  pin.match(
+    backendRouter,
+    /from services\.audit_trail import resolve_session_dir/,
+    "expected the diff router to resolve sessions through the shared ownership-checking helper",
+  );
+  pin.match(
+    backendRouter,
+    /session_dir = resolve_session_dir\(session_id\)\n\s+if session_dir is None:\n\s+#[\s\S]{0,200}?raise HTTPException\(status_code=404, detail=_NO_SESSION_DETAIL\)/,
+    "expected a foreign/unknown session to 404 through one branch, before any version is resolved",
+  );
+  pin.match(
+    backendRouter,
+    /_NO_SESSION_DETAIL = "No matching session\."/,
+    "expected ONE detail string, so a foreign session cannot be told apart from a missing one",
+  );
+
+  // --- read-only + mtime-keyed cache ---------------------------------------
+  pin.match(
+    backendRouter,
+    /_cache: dict\[tuple\[str, float, str, float\], dict\[str, Any\]\] = \{\}/,
+    "expected the diff cache to be keyed on BOTH paths and BOTH mtimes",
+  );
+  pin.doesNotMatch(
+    backendRouter,
+    /\.write_text\(|\.write_bytes\(|shutil\.|os\.remove|os\.replace|\.mkdir\(|\.unlink\(/,
+    "viewing a diff must never write, move or delete anything",
+  );
+
+  // --- the 404 UX, mirroring the approval card's status branching ----------
+  pin.match(page, /caught instanceof NetworkDiffError \? caught\.status : null/, "expected the page to branch on the server's status, not on message text");
+  pin.match(page, /diffError\.status === 404[\s\S]{0,600}?다른 프로젝트의 세션/, "expected the 404 state to say it means EITHER missing OR another project's");
+  pin.match(page, /diffError\.status === 401[\s\S]{0,300}?loginHref\(pathname\)/, "expected a 401 to offer a sign-in link back to this page");
+
+  // --- honest empty states -------------------------------------------------
+  pin.match(page, /!diff\.refused && !diff\.has_changes[\s\S]{0,400}?차이 없음/, "expected an explicit 차이 없음 state rather than a blank page");
+  pin.match(page, /result\.identical_sources[\s\S]{0,300}?같은 파일을 가리킵니다/, "expected same-file selections to say WHY the diff is empty");
+  pin.match(
+    page,
+    /diff\.refused &&[\s\S]{0,900}?변경 목록이 비어 있는 것이 아니라, 아예 비교되지 않았습니다/,
+    "expected a refusal to be shown as 'no comparison happened', never as an empty diff",
+  );
+  pin.match(page, /versions\.length === 0 && !versionsLoading[\s\S]{0,300}?저장된 편집 버전이 없습니다/, "expected a session with no saved edit versions to say so");
+
+  // --- POSITION: a count and a band, never a distance ----------------------
+  pin.match(page, /result\.diff\.position\.geometry_differs_count/, "expected the position section to render the payload's COUNT");
+  pin.match(page, /세었을 뿐, 재지 않음/, "expected the count to be labelled counted-not-measured");
+  pin.match(page, /WARN/, "expected the position section to carry the payload's WARN band");
+  pin.match(page, /\{result\.diff\.position\.basis\}/, "expected the georeference basis to be shown verbatim, not paraphrased");
+  pin.match(page, /result\.diff\.position\.max_residual_m/, "expected the uncertainty band to come from the payload");
+  // The three ways this section could start claiming positional accuracy.
+  pin.doesNotMatch(
+    page,
+    /geometry_differs_count\s*[*/+-]/,
+    "the geometry count must never be arithmetic'd into a magnitude",
+  );
+  pin.doesNotMatch(
+    page,
+    /max_residual_m\s*[*/]|residual_lane_widths\s*[*/]/,
+    "the uncertainty band must never be scaled into a per-link distance",
+  );
+  pin.doesNotMatch(
+    page,
+    /toFixed|react-leaflet|from "leaflet"|MapViewer|DashboardMap|NetworkViewer/,
+    "no map overlay and no derived precision -- this view has no defensible coordinates to draw",
+  );
+  // PositionScope.reported is false and nothing may flip it.
+  pin.doesNotMatch(backendRouter, /reported\s*=\s*True|"reported":\s*True/, "the backend must never set PositionScope.reported");
+
+  // --- shell ---------------------------------------------------------------
+  pin.match(shell, /href: "\/network-diff"/, "expected the diff view in the top navigation");
+  pin.match(shell, /icon: "network-diff"/, "expected the diff view to carry its own nav icon");
+});
+
+contractTest("2.4: every diff-view string carries its own Japanese", (pin) => {
+  // pickByLanguage keys ja off the KOREAN string (lib/i18n.ts), so a
+  // two-argument t(ko, en) with no entry in the GENERATED lib/i18n-ja.ts
+  // silently renders English for Japanese users -- the same hazard the login
+  // page's pin above covers by checking the dictionary. This page takes the
+  // other road: every call is the three-argument form, so no string on it
+  // depends on a generated file at all. Pinned so a later edit cannot quietly
+  // drop back to two arguments and lose ja.
+  const page = read("app/network-diff/page.tsx");
+
+  pin.doesNotMatch(
+    page,
+    /\bt\(\s*"(?:[^"\\]|\\.)*"\s*,\s*"(?:[^"\\]|\\.)*"\s*,?\s*\)/,
+    "a two-argument t() on this page would fall back to English for ja -- pass the third argument",
+  );
+  pin.doesNotMatch(
+    page,
+    /\bt\(\s*`[^`]*`\s*,\s*`[^`]*`\s*,?\s*\)/,
+    "a two-argument template-literal t() has the same ja gap -- pass the third argument",
+  );
+  // Guards the extraction itself: if the page ever stops using t(), the two
+  // doesNotMatch pins above would pass vacuously.
+  const calls = page.match(/\bt\(/g) ?? [];
+  pin.match(
+    `count=${calls.length}`,
+    /count=([5-9]\d|\d{3,})/,
+    "expected at least 50 t() calls on the diff view -- fewer means this extraction went stale, not that the page shrank",
+  );
+});
+
 // Real behaviour, not a source pin: the open-redirect guard is the one piece of
 // U9 where being wrong is a security bug rather than a cosmetic one.
 test("U9: safeNextPath only ever returns a same-origin path", () => {

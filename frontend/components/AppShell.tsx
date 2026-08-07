@@ -9,7 +9,7 @@ import { useLanguage } from "@/components/LanguageProvider";
 import { loginHref } from "@/lib/authRedirect";
 import type { Language } from "@/lib/i18n";
 
-function NavIcon({ name }: { name: "dashboard" | "network" | "validation" | "downloads" | "report" | "health" }) {
+function NavIcon({ name }: { name: "dashboard" | "network" | "network-diff" | "validation" | "downloads" | "report" | "health" }) {
   const paths: Record<string, React.ReactNode> = {
     dashboard: (
       <>
@@ -25,6 +25,17 @@ function NavIcon({ name }: { name: "dashboard" | "network" | "validation" | "dow
         <path d="M8.1 6.8 15.8 7.9" />
         <path d="M7.2 8.1 8.3 15.7" />
         <path d="M16.4 9.9 10.8 16.3" />
+      </>
+    ),
+    // Two stacked panes with a change marker between them -- the side-by-side
+    // reading the diff view is.
+    "network-diff": (
+      <>
+        <rect x="3" y="4.5" width="7.5" height="15" rx="1.5" />
+        <rect x="13.5" y="4.5" width="7.5" height="15" rx="1.5" />
+        <path d="M5.5 9h2.5" />
+        <path d="M16 9h2.5" />
+        <path d="M16 13.5h2.5" />
       </>
     ),
     validation: (
@@ -69,10 +80,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // Dashboard listed first: it's the landing page (root redirects here) and
   // the page most users need first; the more specialist calibration page
   // follows it instead of leading.
-  const links: Array<{ href: string; label: string; icon: "dashboard" | "network" | "validation" | "downloads" | "report" | "health" }> = [
+  const links: Array<{ href: string; label: string; icon: "dashboard" | "network" | "network-diff" | "validation" | "downloads" | "report" | "health" }> = [
     { href: "/dashboard", label: t("대시보드", "Dashboard", "ダッシュボード"), icon: "dashboard" },
     { href: "/base-model", label: t("베이스모델 검증", "Base Model Validation", "ベースモデル検証"), icon: "validation" },
     { href: "/network", label: t("네트워크", "Network", "ネットワーク"), icon: "network" },
+    // Roadmap 2.4: sits directly under /network -- it reads the same object,
+    // one snapshot pair at a time, and a reviewer reaches for it right after
+    // looking at the network itself.
+    { href: "/network-diff", label: t("네트워크 변경 비교", "Network Diff", "ネットワーク差分比較"), icon: "network-diff" },
     { href: "/health", label: t("모델 검진", "Model Health Check", "モデル検診"), icon: "health" },
     { href: "/downloads", label: t("데이터 다운로드", "Data Downloads", "データダウンロード"), icon: "downloads" },
     { href: "/report", label: t("보고서 작성", "Report Builder", "レポート作成"), icon: "report" },

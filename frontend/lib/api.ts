@@ -1374,6 +1374,189 @@ export function agentDownloadPath(sessionId: string, version: number | null): st
   return `/api/agent/downloads/${sessionId}/${version === null ? "latest" : version}`;
 }
 
+// ---------------------------------------------------------------------------
+// Roadmap row 2.4 -- network diff view (backend/routers/network_diff.py)
+// ---------------------------------------------------------------------------
+//
+// A snapshot token is `"0"` (the session's pristine source -- what a
+// rollback-to-version-0 restores), a saved version number as a string, the
+// literal `"working"` (working.inpx) or the literal `"active"` (the
+// workspace's current dataset). ONE space rather than two parameter modes:
+// the backend router's docstring records the measurement behind that choice
+// (0 of 1572 session dirs on the dev box hold two `edit_NNN.inpx`, so a
+// version-pair-only picker would be empty for every session that exists).
+export type NetworkDiffToken = string;
+
+export interface NetworkDiffSide {
+  token: NetworkDiffToken;
+  kind: "pristine" | "version" | "working" | "active";
+  /** 0 for the pristine source, N for edit_NNN, null for working/active. */
+  version: number | null;
+  filename: string;
+  /** "session_meta" | "active_dataset_fallback" | "session" | "workspace" --
+   * `active_dataset_fallback` means this session has no sidecar, so its v0 and
+   * the `active` token are the SAME file. */
+  resolved_from: string;
+  /** ISO 8601 UTC, same shape as AgentDownloadEntry.modified_at. */
+  modified_at: string;
+}
+
+/** One structured observation about the comparison. `messages` is the
+ * `{lang: text}` i18n hook -- MEASURED EMPTY: services/genesis/diff.py never
+ * populates it (backend/tests/test_network_diff_endpoint.py pins that), so the
+ * view localizes by `code` and keeps `message` as the verbatim evidence line.
+ * Preferred automatically if diff.py ever starts filling it. */
+export interface NetworkDiffFinding {
+  severity: "refuse" | "warn" | "info";
+  code: string;
+  message: string;
+  messages: Record<string, string>;
+  subject: string | null;
+  context: Record<string, unknown>;
+}
+
+export interface NetworkDiffLaneChange {
+  link_id: string;
+  base_lanes: number;
+  target_lanes: number;
+  delta: number;
+}
+
+export interface NetworkDiffRewire {
+  connector_id: string;
+  base_from_link: string | null;
+  target_from_link: string | null;
+  base_to_link: string | null;
+  target_to_link: string | null;
+  changed_endpoints: string[];
+}
+
+export interface NetworkDiffLinkSection {
+  added: string[];
+  removed: string[];
+  lane_count_changed: NetworkDiffLaneChange[];
+  unchanged_count: number;
+  change_count: number;
+}
+
+export interface NetworkDiffConnectorSection extends NetworkDiffLinkSection {
+  rewired: NetworkDiffRewire[];
+}
+
+export interface NetworkDiffMovementRef {
+  connector_id: string;
+  from_link: string | null;
+  to_link: string | null;
+  label: string;
+}
+
+export interface NetworkDiffNodeMovement {
+  node_id: string;
+  present_in_base: boolean;
+  present_in_target: boolean;
+  base_movement_count: number;
+  target_movement_count: number;
+  added: NetworkDiffMovementRef[];
+  removed: NetworkDiffMovementRef[];
+  rewired: NetworkDiffRewire[];
+  changed: boolean;
+}
+
+export interface NetworkDiffSignalCoverage {
+  node_id: string;
+  base_approaches: string[];
+  base_signalized: string[];
+  target_approaches: string[];
+  target_signalized: string[];
+  newly_signalized: string[];
+  no_longer_signalized: string[];
+  base_coverage: number | null;
+  target_coverage: number | null;
+  changed: boolean;
+}
+
+/** The position scope, verbatim from services/genesis/diff.py's PositionScope.
+ * `reported` is false and there is no backend code path that sets it true;
+ * `geometry_differs_count` is a COUNT of links whose polyline differs, never a
+ * distance. The view must render it as exactly that -- see the module comment
+ * on diff.py for why a positional delta here would inherit a ~14 m floor. */
+export interface NetworkDiffPosition {
+  reported: boolean;
+  max_residual_m: number;
+  residual_lane_widths: number;
+  scale_term: number;
+  basis: string;
+  note: string;
+  geometry_differs_count: number;
+}
+
+export interface NetworkDiffSummary {
+  label: string;
+  source: string | null;
+  link_count: number;
+  plain_link_count: number;
+  connector_count: number;
+  node_count: number;
+  movement_count: number;
+  signal_head_count: number;
+  signalized_link_count: number;
+}
+
+/** Every section is null when `refused` -- deliberately, so a refusal can
+ * never be read as an empty diff (services/genesis/diff.py's central promise).
+ * Check `refused`/`ok` before touching a section. */
+export interface NetworkStructuralDiff {
+  refused: boolean;
+  ok: boolean;
+  change_count: number;
+  has_changes: boolean;
+  base: NetworkDiffSummary | null;
+  target: NetworkDiffSummary | null;
+  links: NetworkDiffLinkSection | null;
+  connectors: NetworkDiffConnectorSection | null;
+  reclassified: Array<{ link_id: string; base_kind: string; target_kind: string }> | null;
+  node_movements: NetworkDiffNodeMovement[] | null;
+  signal_coverage: NetworkDiffSignalCoverage[] | null;
+  position: NetworkDiffPosition;
+  findings: NetworkDiffFinding[];
+}
+
+export interface NetworkDiffResponse {
+  session_id: string;
+  session_id_short: string;
+  base: NetworkDiffSide;
+  target: NetworkDiffSide;
+  /** True when both tokens resolved to the same file. An empty diff then has a
+   * stated reason, which is not the same statement as "nothing changed". */
+  identical_sources: boolean;
+  available: { versions: number[]; has_working: boolean; has_pristine: boolean };
+  diff: NetworkStructuralDiff;
+}
+
+/** Statuses the diff page has a dedicated state for. 404 is BOTH "no such
+ * session" and "another project's session" -- the backend refuses to
+ * distinguish them (no existence oracle), and neither may this client. */
+export class NetworkDiffError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "NetworkDiffError";
+    this.status = status;
+  }
+}
+
+export async function fetchNetworkDiff(
+  sessionId: string,
+  base: NetworkDiffToken,
+  target: NetworkDiffToken,
+): Promise<NetworkDiffResponse> {
+  const params = new URLSearchParams({ session_id: sessionId, base, target });
+  const r = await apiFetch(`/api/network/diff?${params.toString()}`, { cache: "no-store" });
+  if (!r.ok) throw new NetworkDiffError(await readApiError(r), r.status);
+  return r.json();
+}
+
 // The backend names the actual streamed file server-side (dataset stem +
 // short session id + version, zip when sibling assets exist else bare
 // .inpx -- see agent_downloads.py's download_model docstring); read it back

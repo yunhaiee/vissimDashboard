@@ -7,7 +7,7 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.datastructures import Headers
-from routers import assistant, datasets, network, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health, observations
+from routers import assistant, datasets, network, network_diff, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health, observations
 from routers import auth as auth_router
 from routers import workspaces as workspaces_router
 from services import workspaces
@@ -203,6 +203,11 @@ app.include_router(network.router)
 # sub-paths — distinct, fully-specified routes, so registration order does not
 # affect matching.
 app.include_router(search.router)
+# Roadmap row 2.4: /api/network/diff — two snapshots of one agent session's
+# network, compared structurally. Another fully-specified sub-path of the
+# /api/network space (same arrangement as search.router above), and purely
+# ADDITIVE: no existing route changes.
+app.include_router(network_diff.router)
 app.include_router(datasets.router)
 # Unit 1.4: project workspaces — the isolation boundary uploads live inside.
 app.include_router(workspaces_router.router)
