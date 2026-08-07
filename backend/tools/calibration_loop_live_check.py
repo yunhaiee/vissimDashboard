@@ -94,6 +94,20 @@ TWO MEASURED BLOCKERS, BOTH HIT ON THE FIRST LIVE ATTEMPT (2026-08-07)
    closes on the real client model only because of that one prepared
    attribute; without the product-side fix it does not close at all.**
 
+   AMENDED 2026-08-07, after ``cb98a7a`` ("One seed means one run --
+   numRuns normalized at both seams"). The product now owns both halves:
+   ``ArtifactManager.clone()`` -> ``state._force_single_run`` rewrites
+   ``<simulation numRuns="N">`` to ``"1"`` in the WORKING COPY, and
+   ``_run_agent_simulation_job_locked`` sets ``NumRuns=1`` over COM with a
+   paired read-back that FAILS THE JOB before ``RunContinuous`` if the write
+   was ignored. So the stage-0 preparation above is now OFF BY DEFAULT
+   (``--skip-numruns-prep``, on by default; pass ``--no-skip-numruns-prep``
+   to restore the old prepared-copy behaviour for comparison). The demo copy
+   goes in carrying the consultant's own ``numRuns="5"``, and the acceptance
+   is that a single-seed agent run still produces exactly ONE result
+   database. Use ``--label _reproof`` so that re-proof lands beside the
+   original evidence instead of on top of it.
+
 COM SAFETY
 ----------
 Every Vissim session is opened by the house entry points
@@ -159,6 +173,9 @@ WORK_ROOT = REPO_ROOT / "runtime" / "calibration-loop-live-check"
 STATE_PATH = WORK_ROOT / "state.json"
 LOG_PATH = WORK_ROOT / "log.txt"
 ARTIFACT_DIR = WORK_ROOT / "artifacts"
+#: The session working copy stage 1 runs. Suffixed by ``--label`` too, so a
+#: re-proof does not rmtree the directory an earlier run left behind.
+BASELINE_WORK_DIRNAME = "baseline_work"
 
 #: The live consultant dataset. READ ONLY -- copied, never opened in place.
 CONSULTANT_INPX = (
@@ -245,6 +262,23 @@ def _banner(text: str) -> None:
     _log("=" * 78)
     _log(text)
     _log("=" * 78)
+
+
+def _apply_label(label: str) -> None:
+    """Suffix every evidence path and the demo workspace name with ``label``.
+
+    An acceptance RE-RUN must not overwrite the evidence of the run it is
+    re-proving, so ``--label _reproof`` writes ``state_reproof.json``,
+    ``log_reproof.txt``, ``artifacts_reproof/`` and ``baseline_work_reproof/``
+    beside the originals, and creates its own demo workspace rather than
+    resuming the one recorded in the original ``state.json``. Called once,
+    before the first ``_log``."""
+    global STATE_PATH, LOG_PATH, ARTIFACT_DIR, BASELINE_WORK_DIRNAME, DEMO_WORKSPACE_NAME
+    STATE_PATH = WORK_ROOT / f"state{label}.json"
+    LOG_PATH = WORK_ROOT / f"log{label}.txt"
+    ARTIFACT_DIR = WORK_ROOT / f"artifacts{label}"
+    BASELINE_WORK_DIRNAME = f"baseline_work{label}"
+    DEMO_WORKSPACE_NAME = f"{DEMO_WORKSPACE_NAME}{label}"
 
 
 #: The ONE attribute this probe normalizes on the demo copy -- see stage 0.
@@ -439,7 +473,7 @@ def _stream_events(response) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def stage_0_workspace(client) -> None:
+def stage_0_workspace(client, skip_numruns_prep: bool = True) -> None:
     _banner("[STAGE 0] Demo workspace + a COPY of the consultant network")
     entry = _stage("0_workspace")
     entry["started_at"] = _now()
@@ -475,28 +509,63 @@ def stage_0_workspace(client) -> None:
     # uploaded -- it is a property of the dataset a modeller sets, not a
     # behaviour of the product, and it is diffed below so the change is
     # provably one attribute and nothing else.
+    #
+    # AMENDED 2026-08-07 (cb98a7a): the product now normalizes numRuns itself,
+    # at BOTH seams -- ArtifactManager.clone() in the working copy, and the
+    # runner's COM SetAttValue("NumRuns", 1) + read-back before RunContinuous.
+    # So the preparation is OFF by default and this stage uploads the
+    # consultant's own bytes verbatim; the acceptance is that stage 1 still
+    # comes back with exactly ONE result database. --no-skip-numruns-prep
+    # restores the block for a side-by-side comparison.
     source_text = source_bytes.decode("utf-8", errors="strict")
-    prepared_text, n_runs = _NUM_RUNS_RE.subn('numRuns="1"', source_text, count=1)
-    prepared_bytes = prepared_text.encode("utf-8")
-    entry["preparation"] = {
-        "what": 'simulation/@numRuns "5" -> "1" on the DEMO COPY only',
-        "occurrences_replaced": n_runs,
-        "why": (
-            "the agent run path does not normalize numRuns (measured blocker, see "
-            "artifacts/FINDING_agent_run_numRuns_blocker.json); "
-            "simulation_network_builder._make_network_standalone already applies exactly this "
-            "line for the interactive path"
-        ),
-        "diff": _one_line_diff(source_text, prepared_text),
-        "bytes_before": len(source_bytes),
-        "bytes_after": len(prepared_bytes),
-    }
-    _log(f"[0.2] DECLARED DATASET PREPARATION on the copy: numRuns 5 -> 1 "
-         f"({n_runs} occurrence). Diff:")
-    for line in entry["preparation"]["diff"]:
-        _log(f"        {line}")
-    if n_runs != 1:
-        raise SystemExit(f"Expected exactly one numRuns attribute, replaced {n_runs}.")
+    declared_num_runs = _NUM_RUNS_RE.search(source_text)
+    if skip_numruns_prep:
+        prepared_text = source_text
+        prepared_bytes = source_bytes
+        entry["preparation"] = {
+            "what": "NONE -- the demo copy is uploaded byte-identical to the consultant original",
+            "skipped": True,
+            "occurrences_replaced": 0,
+            "num_runs_in_uploaded_bytes": (
+                declared_num_runs.group(0) if declared_num_runs else "<attribute absent>"
+            ),
+            "why": (
+                "cb98a7a normalizes numRuns at two product seams "
+                "(services/agent/state.py::_force_single_run at clone time, and "
+                "routers/simulations.py's COM NumRuns=1 + read-back before RunContinuous), so "
+                "the dataset no longer needs preparing -- this run is the live re-proof of that"
+            ),
+            "diff": _one_line_diff(source_text, prepared_text),
+            "bytes_before": len(source_bytes),
+            "bytes_after": len(prepared_bytes),
+        }
+        _log("[0.2] NO DATASET PREPARATION (--skip-numruns-prep, the default since cb98a7a).")
+        _log(f"      The uploaded copy carries the consultant's own "
+             f"{entry['preparation']['num_runs_in_uploaded_bytes']}.")
+        _log(f"      Byte-identical to the source: {prepared_bytes == source_bytes}")
+    else:
+        prepared_text, n_runs = _NUM_RUNS_RE.subn('numRuns="1"', source_text, count=1)
+        prepared_bytes = prepared_text.encode("utf-8")
+        entry["preparation"] = {
+            "what": 'simulation/@numRuns "5" -> "1" on the DEMO COPY only',
+            "skipped": False,
+            "occurrences_replaced": n_runs,
+            "why": (
+                "the agent run path does not normalize numRuns (measured blocker, see "
+                "artifacts/FINDING_agent_run_numRuns_blocker.json); "
+                "simulation_network_builder._make_network_standalone already applies exactly this "
+                "line for the interactive path"
+            ),
+            "diff": _one_line_diff(source_text, prepared_text),
+            "bytes_before": len(source_bytes),
+            "bytes_after": len(prepared_bytes),
+        }
+        _log(f"[0.2] DECLARED DATASET PREPARATION on the copy: numRuns 5 -> 1 "
+             f"({n_runs} occurrence). Diff:")
+        for line in entry["preparation"]["diff"]:
+            _log(f"        {line}")
+        if n_runs != 1:
+            raise SystemExit(f"Expected exactly one numRuns attribute, replaced {n_runs}.")
 
     workspace_id = _state.get("workspace_id")
     if workspace_id:
@@ -666,7 +735,7 @@ def stage_1_baseline(duration_s: int) -> None:
     # an existing working copy that has no saved version (it would silently
     # discard unsaved edits), which is correct behaviour and not something to
     # work around -- so a re-run gets its own directory rather than reusing one.
-    baseline_work = WORK_ROOT / "baseline_work"
+    baseline_work = WORK_ROOT / BASELINE_WORK_DIRNAME
     if baseline_work.exists():
         shutil.rmtree(baseline_work, ignore_errors=True)
     baseline_work.mkdir(parents=True, exist_ok=True)
@@ -1681,9 +1750,25 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=int, default=DEFAULT_DURATION_S)
     parser.add_argument("--stages", default="0,1,2,3,4,5,6,7")
+    parser.add_argument(
+        "--label",
+        default="",
+        help="suffix for state/log/artifacts/baseline_work and the demo workspace name, "
+        "e.g. --label _reproof, so a re-run lands beside earlier evidence",
+    )
+    parser.add_argument(
+        "--skip-numruns-prep",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="skip stage 0's numRuns 5 -> 1 preparation of the demo copy (DEFAULT since "
+        "cb98a7a, which normalizes numRuns in the product at both seams). "
+        "--no-skip-numruns-prep restores the prepared copy.",
+    )
     args = parser.parse_args()
 
     stages = {int(s) for s in args.stages.split(",") if s.strip()}
+    if args.label:
+        _apply_label(args.label)
 
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1691,6 +1776,8 @@ def main() -> int:
     _log("#" * 78)
     _log(f"# CALIBRATION-LOOP LIVE CHECK  {_now()}")
     _log(f"# duration={args.duration}s seed={RUN_SEED} stages={sorted(stages)}")
+    _log(f"# label={args.label!r} skip_numruns_prep={args.skip_numruns_prep} "
+         f"workspace_name={DEMO_WORKSPACE_NAME!r}")
     _log("#" * 78)
 
     # Bounded runs: never write gigabytes of vehicle records for a probe.
@@ -1701,6 +1788,8 @@ def main() -> int:
     _state["duration_s"] = args.duration
     _state["random_seed"] = RUN_SEED
     _state["stages_requested"] = sorted(stages)
+    _state["label"] = args.label
+    _state["skip_numruns_prep"] = args.skip_numruns_prep
 
     pids_before = _vissim_pids()
     _state["vissim_pids_before_probe"] = sorted(pids_before)
@@ -1716,7 +1805,7 @@ def main() -> int:
 
         with TestClient(app_main.app) as client:
             if 0 in stages:
-                stage_0_workspace(client)
+                stage_0_workspace(client, skip_numruns_prep=args.skip_numruns_prep)
             # Every direct (non-HTTP) service call below must be scoped to the
             # DEMO project: start_agent_simulation_job stamps the submitting
             # thread's workspace onto the job record, and
