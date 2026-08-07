@@ -385,24 +385,30 @@ def test_detectors_use_section_5_4_2_6s_published_numbers(node_signals):
 
 
 def test_the_detector_anchor_assumption_is_declared_not_buried(node_signals):
-    """ASSUMPTION S6 is the one geometry semantic this module could NOT measure
-    offline: whether Vissim's detector ``pos`` anchors the upstream or the
-    downstream end. Emitter v1 died of exactly this kind of unmeasured choice,
-    so the choice must be stated in the module rather than only in the numbers.
+    """ASSUMPTION S6 was the one geometry semantic this module could not
+    measure offline: whether Vissim's detector ``pos`` anchors the upstream or
+    the downstream end. The 2026-08-07 live check settled it — UPSTREAM,
+    proven by Vissim's own "does not fit" refusal (it validates
+    ``pos + length <= link length`` and never ``pos − length >= 0``) plus a
+    census of all 826 PTV-authored detectors. This pin now holds the module to
+    carrying the MEASUREMENT, not the old hedge: emitter v1 died of unmeasured
+    choices, and a resolved assumption still has to say how it was resolved.
 
-    The consequence is bounded and the module says why: for a FIXEDTIME
-    controller the detectors are inert, so the alternative reading changes no
-    vehicle's behaviour in the emitted model.
+    The consequence remains bounded and the module still says why: for a
+    FIXEDTIME controller the detectors are inert.
     """
     source = (
         REPO_ROOT / "backend" / "services" / "genesis" / "signals.py"
     ).read_text(encoding="utf-8")
     assert "S6." in source
     assert "UPSTREAM end" in source
-    assert "live open check" in source
-    # Both candidate positions are named, so a reader can see what was rejected.
-    assert "head − 2.0 − 4.5" in source and "head − 2.0" in source
-    # The chosen one is what the objects actually carry.
+    assert "MEASURED 2026-08-07" in source
+    assert "genesis_signals_live_check" in source
+    # The old hedge must be gone — a measured fact may not read as a guess.
+    assert "NOT measured" not in source
+    # The refusal that proved it is quoted, so a reader can see the evidence.
+    assert "does not fit" in source
+    # The chosen anchor is what the objects actually carry.
     assert {detector.pos_m for detector in node_signals.detectors} == {93.5}
 
 

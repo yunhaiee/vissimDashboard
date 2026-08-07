@@ -204,30 +204,27 @@ S5. **Detectors are emitted for a FIXEDTIME controller even though §5.4.2.6's
     own opening sentence scopes them to SCATSIM/VAP.** They are inert for this
     program and are written so a later SCATSIM/VAP swap has them; every run says
     so via ``signals_detectors_not_required_for_fixed_time``.
-S6. **A detector's ``pos`` is taken as its UPSTREAM end**, so the emitted
-    position is ``stop line − setback − length`` (100 → 93.5 in the worked
-    example). This one is NOT measured, and is flagged rather than buried.
+S6. **A detector's ``pos`` anchors its UPSTREAM end — MEASURED 2026-08-07**
+    (live check, ``backend/tools/genesis_signals_live_check.py``, evidence in
+    ``runtime/genesis-signals-live-check/``). The emitted position
+    ``stop line − setback − length`` (100 → 93.5 in the worked example) is
+    therefore correct as shipped; nothing changed but this paragraph.
 
     §5.4.2.6 fixes the detector's *downstream* end at 2.0 m back from the head.
-    Vissim stores a detector as one ``pos`` plus a ``Length`` (its COM form is
-    ``AddDetector(no, lane, pos)`` then ``SetAttValue("Length", …)``), and the
-    repo's constraint catalogue establishes only that positions are measured
-    from the link's start — not which END of a bodied element ``pos`` anchors.
-    The two readings give ``pos = head − 2.0 − 4.5`` (upstream anchor, chosen)
-    or ``pos = head − 2.0`` (downstream anchor), a 4.5 m difference.
+    Vissim stores one ``pos`` plus a ``Length``, exposes no end-anchor
+    attribute (43-code COM census: no PosEnd/EndPos/StartPos/Pos2), and a
+    saved file is ambiguous — so the proof came from Vissim's own validation:
+    a 4.5 m detector at ``pos = L − 1`` is REFUSED ("does not fit on link …
+    (271.264 m)") while ``pos = 1.0`` is accepted, i.e. Vissim checks
+    ``pos + length ≤ link length`` and never ``pos − length ≥ 0`` — the body
+    runs downstream FROM ``pos``. Corroborated by a census of all 826
+    PTV-authored detectors in the Examples library: 0 would overrun their
+    link's end under the upstream reading, 99 would precede its start under
+    the downstream one.
 
-    Neither reading could be settled offline, and the reference network cannot
-    settle it either: its two detectors sit on links whose lengths do not
-    disambiguate. Choosing without measuring is exactly what emitter v1 did, so
-    the choice is declared here, the arithmetic is pinned by
-    ``test_detectors_use_section_5_4_2_6s_published_numbers``, and resolving it
-    is a named follow-up on the live open check.
-
-    Why it is safe to ship unresolved: for a FIXEDTIME controller the detectors
-    are inert (S5) — nothing in the emitted program reads them, so a 4.5 m
-    misplacement cannot change one vehicle's behaviour in this model. It would
-    begin to matter only after a SCATSIM/VAP swap, which is precisely the point
-    at which §5.4.2.6 says real plans must replace this fallback anyway.
+    The inertness note stands: for a FIXEDTIME controller the detectors are
+    inert (S5), and §5.4.2.6 says real site plans must replace this fallback
+    before any SCATSIM/VAP swap makes them live.
 """
 from __future__ import annotations
 
