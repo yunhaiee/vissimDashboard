@@ -911,7 +911,7 @@ VEHICLE_ROUTE_STATIC_ATTRS: dict[str, str] = {"formula": "", "name": ""}
 #: follow it in that order (with ``vehicleClasses``, which this emission does
 #: not write, between the two).
 #:
-#: The nine fleet containers (§5.2.3 vehicle-type layer,
+#: The thirteen fleet containers (§5.2.3 vehicle-type layer,
 #: ``services.genesis.fleet``) were placed by the SAME measurement of LHT's own
 #: child order: ``colorDistributions`` → ``desAccelerationFunctions`` →
 #: ``desDecelerationFunctions`` all precede ``detectors``;
@@ -919,10 +919,17 @@ VEHICLE_ROUTE_STATIC_ATTRS: dict[str, str] = {"formula": "", "name": ""}
 #: ``model2D3DDistributions`` → ``models2D3D`` sit between ``links`` and
 #: ``netPara``; ``speedDistributions`` follows ``signalHeads`` and precedes
 #: ``timeDistributions``; and ``vehicleTypes`` follows
-#: ``vehicleRoutingDecisionsStatic``. (Both references' restricted orders happen
-#: to be alphabetical, and ``_assert_container_order`` re-checks this list.)
+#: ``vehicleRoutingDecisionsStatic``. The four references a type-with-a-model
+#: needs to instantiate (roadmap 3.2, LIVE-MEASURED required 2026-08-08) were
+#: placed the same way from LHT's child order: ``curvSpeedFuncs`` follows
+#: ``colorDistributions``; ``occupancyDistributions`` → ``powerDistributions``
+#: sit after ``netPara``/``nodes``; and ``weightDistributions`` is LHT's last
+#: top-level container, after ``vehicleTypes``. (Both references' restricted
+#: orders happen to be alphabetical, and ``_assert_container_order`` re-checks
+#: this list.)
 CONTAINER_ORDER: tuple[str, ...] = (
     "colorDistributions",
+    "curvSpeedFuncs",
     "desAccelerationFunctions",
     "desDecelerationFunctions",
     "detectors",
@@ -938,6 +945,8 @@ CONTAINER_ORDER: tuple[str, ...] = (
     "models2D3D",
     "netPara",
     "nodes",
+    "occupancyDistributions",
+    "powerDistributions",
     "signalControllers",
     "signalHeads",
     "speedDistributions",
@@ -947,4 +956,5 @@ CONTAINER_ORDER: tuple[str, ...] = (
     "vehicleInputs",
     "vehicleRoutingDecisionsStatic",
     "vehicleTypes",
+    "weightDistributions",
 )

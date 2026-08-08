@@ -242,12 +242,27 @@ def test_table_5_2_inverted_envelope_is_emitted_verbatim_and_named(fleet):
     ).issue_codes(IssueSeverity.WARN)
 
 
-def test_the_inverted_envelope_reaches_the_xml_unswapped(emitted):
-    """The malformed point is written exactly as Table 5-2 states it — the point
-    of the WARN is that the emission does not quietly repair the source."""
+def test_the_inverted_source_is_preserved_but_the_emit_is_ordered(emitted):
+    """Blocker 1: the source table keeps Table 5-2's inverted values VERBATIM, but
+    the EMITTED point is min/max relabelled so Vissim's ``yMin ≤ y ≤ yMax``
+    contract holds and the network loads (LIVE-MEASURED 2026-08-08,
+    genesis_fullstack_live_check — Vissim refuses the whole load on any inverted
+    point). No value is invented: the emitted triple is the source triple, only
+    the min/max labels are reordered; y is unchanged and still lands inside."""
+    # the source stays inverted, verbatim — TABLE_5_2_HEAVY_DES_ACCEL is untouched
+    row3 = TABLE_5_2_HEAVY_DES_ACCEL[3]
+    i96 = TABLE_5_2_SPEED_KMH.index(96)
+    assert (row3["yMin"][i96], row3["y"][i96], row3["yMax"][i96]) == (0.098, 0.043, 0.031)
+    assert fleet_module.table_5_2_envelope_anomalies(3) == [(96, 0.098, 0.043, 0.031)]
+    # the EMITTED point is ordered: same three values, min/max relabelled, y kept
     fn = emitted.find("desAccelerationFunctions/desAccelerationFunction[@no='503']")  # type 3
     at96 = [p for p in fn.iter("accelerationFunctionDataPoint") if p.get("x") == "96"][0]
-    assert (at96.get("yMin"), at96.get("y"), at96.get("yMax")) == ("0.098", "0.043", "0.031")
+    assert (at96.get("yMin"), at96.get("y"), at96.get("yMax")) == ("0.031", "0.043", "0.098")
+    # the emitted triple is a permutation of the source triple — nothing invented
+    assert {at96.get("yMin"), at96.get("y"), at96.get("yMax")} == {"0.098", "0.043", "0.031"}
+    # and EVERY emitted heavy accel point satisfies yMin ≤ y ≤ yMax
+    for p in fn.iter("accelerationFunctionDataPoint"):
+        assert float(p.get("yMin")) <= float(p.get("y")) <= float(p.get("yMax"))
 
 
 def test_table_5_3_power_weight_values():
@@ -348,8 +363,11 @@ def test_the_composition_resolves_to_types_the_same_file_declares(emitted):
 def test_every_fleet_reference_resolves_in_file(emitted):
     """No dangling reference — the failure class this project exists to catch.
 
-    A vehicleType names five references and each is declared in the same file;
-    the composition names two; the model distribution names a model. All resolve.
+    A vehicleType names nine references — the six accel/decel/colour/model refs
+    plus the four LIVE-MEASURED-required occupancy/power/weight/curve-speed refs
+    (occupDistr, powerDistr, weightDistr, desCurveSpeedFunc) — and each is
+    declared in the same file; the composition names two; the model distribution
+    names a model. All resolve.
     """
     def declared(path):
         return {e.get("no") for e in emitted.findall(path)}
@@ -364,6 +382,10 @@ def test_every_fleet_reference_resolves_in_file(emitted):
         ("vehicleTypes/vehicleType", "desDecelFunc", "desDecelerationFunctions/desDecelerationFunction"),
         ("vehicleTypes/vehicleType", "maxDecelFunc", "maxDecelerationFunctions/maxDecelerationFunction"),
         ("vehicleTypes/vehicleType", "model2D3DDistr", "model2D3DDistributions/model2D3DDistribution"),
+        ("vehicleTypes/vehicleType", "occupDistr", "occupancyDistributions/occupancyDistribution"),
+        ("vehicleTypes/vehicleType", "powerDistr", "powerDistributions/powerDistribution"),
+        ("vehicleTypes/vehicleType", "weightDistr", "weightDistributions/weightDistribution"),
+        ("vehicleTypes/vehicleType", "desCurveSpeedFunc", "curvSpeedFuncs/curvSpeedFunc"),
     ]
     for ref_path, attr, decl_path in checks:
         assert referenced(ref_path, attr) <= declared(decl_path), attr
@@ -373,6 +395,41 @@ def test_every_fleet_reference_resolves_in_file(emitted):
         "model2D3D",
     )
     assert model_refs <= declared("models2D3D/model2D3D")
+
+
+def test_the_type_with_model_closure_is_present_minimal_and_verbatim(emitted):
+    """Blocker 2: a ``<vehicleType>`` with a model2D3D attached refuses to load
+    unless occupancy/power/weight/curve-speed all resolve (LIVE-MEASURED
+    2026-08-08, genesis_fullstack_live_check — all four required TOGETHER;
+    occupancy+curve alone, or power+weight alone, still refuses). A minimal single
+    ``no="1"`` entry per container, copied verbatim from ref_lht, resolves every
+    emitted type's reference."""
+    # minimal closure: exactly one entry each, numbered 1 (the module's discipline)
+    for container, element in (
+        ("occupancyDistributions", "occupancyDistribution"),
+        ("powerDistributions", "powerDistribution"),
+        ("weightDistributions", "weightDistribution"),
+        ("curvSpeedFuncs", "curvSpeedFunc"),
+    ):
+        assert [e.get("no") for e in emitted.findall(f"{container}/{element}")] == ["1"], container
+    # every emitted type references no=1 for all four, so the closure resolves
+    for vt in emitted.findall("vehicleTypes/vehicleType"):
+        assert vt.get("occupDistr") == "1" and vt.get("powerDistr") == "1"
+        assert vt.get("weightDistr") == "1" and vt.get("desCurveSpeedFunc") == "1"
+    # the values are ref_lht's own, verbatim (Roundabout London.inpx no=1 entries)
+    occ = emitted.find("occupancyDistributions/occupancyDistribution[@no='1']")
+    assert occ.get("name") == "Single Occupancy" and occ.get("mean") == "1"
+    power_pts = emitted.findall(
+        "powerDistributions/powerDistribution[@no='1']/distrDataPts/distributionDataPoint"
+    )
+    assert [(p.get("fx"), p.get("x")) for p in power_pts] == [("0", "55"), ("1", "160")]
+    weight_pts = emitted.findall(
+        "weightDistributions/weightDistribution[@no='1']/distrDataPts/distributionDataPoint"
+    )
+    assert [(p.get("fx"), p.get("x")) for p in weight_pts] == [("0", "800"), ("1", "2000")]
+    curv = emitted.find("curvSpeedFuncs/curvSpeedFunc[@no='1']")
+    assert curv.get("name").startswith("Road. Car.")
+    assert len(curv.findall("curvSpeedFuncDataPts/curvSpeedFuncDataPt")) == 13
 
 
 def test_the_demand_disclosure_still_fires_but_the_reference_now_resolves(tee, result, fleet):
@@ -398,9 +455,10 @@ def test_the_emitted_vehicle_type_matches_the_vissim_saved_shape(emitted):
     assert car.get("name") == "Short"
     assert car.get("colorDistr1") == "1"  # Table 5-4 "1 Short" Aqua
     assert car.get("model2D3DDistr") == "10"
-    # the boilerplate Vissim defaults are present, the shrunk attrs are absent
-    assert car.get("desCurveSpeedFunc") is None and car.get("occupDistr") is None
-    assert car.get("powerDistr") is None and car.get("weightDistr") is None
+    # the four references a type-with-a-model needs to instantiate are present
+    # (LIVE-MEASURED required once a model2D3D is attached), each pointing at no=1
+    assert car.get("occupDistr") == "1" and car.get("desCurveSpeedFunc") == "1"
+    assert car.get("powerDistr") == "1" and car.get("weightDistr") == "1"
     assert car.find("parkLotSelPars") is not None
     # the Table 5-4 colour is emitted as ff00ffff at share 1
     colour = emitted.find("colorDistributions/colorDistribution[@no='1']")
@@ -534,7 +592,8 @@ def test_fleet_containers_is_empty_for_every_no_fleet_shape():
 def test_the_containers_sit_in_vissims_own_order(emitted):
     tags = [child.tag for child in emitted if isinstance(child.tag, str)]
     assert tags == [tag for tag in schema.CONTAINER_ORDER if tag in tags]
-    assert "vehicleTypes" in tags and tags[-1] == "vehicleTypes"
+    # weightDistributions is LHT's last top-level container (after vehicleTypes)
+    assert "vehicleTypes" in tags and tags[-1] == "weightDistributions"
 
 
 def test_the_provenance_comment_states_the_install_asset_boundary(tee, demand, fleet):

@@ -77,22 +77,33 @@ resolved by a **minimal** ``model2D3DDistributions`` → ``models2D3D`` closure
 carrying ONE representative model per category, copied verbatim from the
 reference. That model's ``file3D`` names a ``.u3dm``/``.fbx`` asset on the Vissim
 install — the ONE reference no ``.inpx`` can embed and this offline unit cannot
-verify resolves. That boundary is the live open test that is the SEPARATE next
-unit, and it is named in an always-on disclosure, a §5.2.3.1
-``not_checkable(figure_lost)`` item (Figure 5-4, the specific 2D/3D models, is a
-lost figure), and the provenance comment — exactly as demand.py named its own
-undeclared reference.
+verify resolves. That boundary is the live open test, named in an always-on
+disclosure, a §5.2.3.1 ``not_checkable(figure_lost)`` item (Figure 5-4, the
+specific 2D/3D models, is a lost figure), and the provenance comment — exactly as
+demand.py named its own undeclared reference.
 
-Shrunk and named, each because it is optional (a reference vehicleType that
-lacks it exists) AND outside this draft's emitted scope: ``desCurveSpeedFunc``
-(curve-speed is a §5.3.5 reduced-speed-area concern, reported not_checkable by
-draft.py), ``occupDistr`` (occupancy is HOV modelling), the ``powerDistr`` /
-``weightDistr`` pair (Table 5-3's power column is a single kW value, not a Vissim
-distribution range — §5.2.3.3 itself says these are "referenced at the
-calibration stage", so the values are kept as constants and the rule is graded
-not_checkable rather than a range invented), and ``vehicleClasses`` (§5.2.4 —
-nothing this file emits references a vehicle class, so declaring the container
-would copy values no reader checks).
+Also emitted, and NOT optional — the four references a type-with-a-model needs
+to instantiate. A ``<vehicleType>`` also names ``occupDistr``, ``powerDistr``,
+``weightDistr`` and ``desCurveSpeedFunc``. These were once shrunk here on the
+theory that a reference vehicleType lacking them exists — and one does, but only
+for a type with NO 2D/3D model attached. LIVE-MEASURED (2026-08-08,
+``backend/tools/genesis_fullstack_live_check.py``, PTV Vissim 2026 SP09): once a
+``model2D3D`` is attached, a ``<vehicleType>`` that omits ANY of the four makes
+Vissim refuse the WHOLE network load, silently, with no ``.err`` — the exact
+silent-failure class this project exists to catch. The closure probe proved all
+four are required together (occupancy+curve alone, or power+weight alone, still
+refuses; all four loads). So each type references a single entry (``no="1"``) of
+a minimal ``occupancyDistributions`` / ``powerDistributions`` /
+``weightDistributions`` / ``curvSpeedFuncs`` closure, every value copied VERBATIM
+from ref_lht. Those are Vissim's own defaults for loadability, NOT MRWA guideline
+values: Table 5-3's power/weight (§5.2.3.3) is still deferred to the calibration
+stage and graded not_checkable, and curve-speed stays a §5.3.5 reduced-speed-area
+concern — the emitted default distribution only lets the typed model instantiate;
+it does not claim to apply the guideline.
+
+Shrunk and named, because nothing this file emits references it: ``vehicleClasses``
+(§5.2.4 — nothing this file writes references a vehicle class, so declaring the
+container would copy values no reader checks).
 
 What the repo's own readers recover — the named gap
 ---------------------------------------------------
@@ -365,11 +376,15 @@ def table_5_2_envelope_anomalies(type_no: int) -> list[tuple[int, float, float, 
     A Vissim acceleration function's stochastic envelope expects
     ``yMin ≤ y ≤ yMax``. Table 5-2 as transcribed from the extract does NOT hold
     that at 96 km/h for every heavy type (type 3, e.g., reads yMin=0.098 > y=0.043
-    > yMax=0.031 there). The values are MRWA's own and are emitted VERBATIM — this
-    module does not silently swap min/max, which would be inventing — but the
-    anomaly is a finding in the source (or its extraction) to raise with the
-    client, so :func:`build_fleet` warns rather than emit it unremarked. Returns
-    ``(speed_kmh, yMin, y, yMax)`` for each offending point.
+    > yMax=0.031 there). The three values are MRWA's own and are PRESERVED — the
+    source table :data:`TABLE_5_2_HEAVY_DES_ACCEL` keeps them inverted, verbatim,
+    and this function still reports the inversion so :func:`build_fleet` raises it
+    as a guideline finding (WARN). What the emitter WRITES is a min/max LABEL
+    reorder of those same three values (see :func:`_mrwa_heavy_points`): Vissim
+    refuses the whole network load on any point where yMin > yMax (LIVE-MEASURED
+    2026-08-08), so the emitted point is relabelled to satisfy that contract — no
+    value is invented, y is unchanged and still lands inside. Returns
+    ``(speed_kmh, yMin, y, yMax)`` for each offending point in the SOURCE.
     """
     row = TABLE_5_2_HEAVY_DES_ACCEL[type_no]
     out: list[tuple[int, float, float, float]] = []
@@ -483,13 +498,18 @@ DEFAULT_MAX_DECEL_BUS: tuple[tuple[str, str, str, str], ...] = DEFAULT_MAX_DECEL
 #: Source: ref_lht ``occupancyDistribution``/``vehicleType`` boilerplate. The
 #: non-computed vehicleType attributes present on every reference type, split by
 #: category because the PT dwell attrs differ (Bus carries capacity/board/alight
-#: from ref_lht's own Bus type). ``desCurveSpeedFunc``/``occupDistr``/``powerDistr``/
-#: ``weightDistr`` are deliberately absent — see the module docstring's shrinks.
+#: from ref_lht's own Bus type). ``occupDistr``/``powerDistr``/``weightDistr``/
+#: ``desCurveSpeedFunc`` each name a single default distribution/function
+#: (``no="1"``) that :func:`fleet_containers` emits — LIVE-MEASURED required once
+#: a model2D3D is attached (2026-08-08 genesis_fullstack_live_check): a type
+#: omitting any of the four refuses the whole network load. See the module
+#: docstring.
 VT_BOILERPLATE_ROAD: dict[str, str] = {
     "alightTm": "0", "anmFlag": "false", "boardTm": "0", "capExact": "false", "capacity": "0",
-    "clearTmPT": "0", "distCoeffPerMeter": "0", "doorClosDur": "2", "dwellTmIsAdd": "true",
-    "equip": "", "extDriver": "false", "extDriverDLLFile": "", "extDriverParFile": "",
-    "extEmissionDLLFile": "", "linkCostCoeff": "1", "travTmCoeff": "1",
+    "clearTmPT": "0", "desCurveSpeedFunc": "1", "distCoeffPerMeter": "0", "doorClosDur": "2",
+    "dwellTmIsAdd": "true", "equip": "", "extDriver": "false", "extDriverDLLFile": "",
+    "extDriverParFile": "", "extEmissionDLLFile": "", "linkCostCoeff": "1", "occupDistr": "1",
+    "powerDistr": "1", "travTmCoeff": "1", "weightDistr": "1",
 }
 VT_BOILERPLATE_BUS: dict[str, str] = {
     **VT_BOILERPLATE_ROAD,
@@ -617,6 +637,68 @@ MRWA_DES_ACCEL_FUNC_OFFSET = 500
 #: Source: ref_lht ``speedDistributions`` — the two default linear profiles
 #: §5.2.5.3 adopts for limits ≤60 km/h, VERBATIM (no -> (lo, hi) km/h band).
 SPEED_DISTRIBUTIONS_KMH: dict[int, tuple[str, str]] = {50: ("48", "58"), 60: ("58", "68")}
+
+#: Source: ref_lht ``occupancyDistributions``/``powerDistributions``/
+#: ``weightDistributions``/``curvSpeedFuncs`` — the single ``no="1"`` entry of
+#: each, copied VERBATIM (extracted by script from Roundabout London.inpx, not
+#: transcribed). Every emitted vehicleType references these four by ``no="1"``
+#: (see :data:`VT_BOILERPLATE_ROAD`); they are the transitive closure a
+#: type-with-a-model needs to load (module docstring's live measurement). The
+#: values are Vissim's own defaults, named per the emitter-v2 law — NOT MRWA
+#: guideline numbers (Table 5-3's power/weight stays a calibration-stage constant).
+#: Each is a nested (tag, attrs, children) literal rendered through :func:`_node`.
+OCCUPANCY_DISTRIBUTION_DEFAULT: tuple = (
+    "occupancyDistribution",
+    {"mean": "1", "name": "Single Occupancy", "no": "1", "stdDev": "0", "type": "NORMAL"},
+    (),
+)
+POWER_DISTRIBUTION_DEFAULT: tuple = (
+    "powerDistribution",
+    {"name": "", "no": "1"},
+    (
+        ("distrDataPts", {}, (
+            ("distributionDataPoint", {"fx": "0", "x": "55"}, ()),
+            ("distributionDataPoint", {"fx": "1", "x": "160"}, ()),
+        )),
+    ),
+)
+WEIGHT_DISTRIBUTION_DEFAULT: tuple = (
+    "weightDistribution",
+    {"name": "Car", "no": "1"},
+    (
+        ("distrDataPts", {}, (
+            ("distributionDataPoint", {"fx": "0", "x": "800"}, ()),
+            ("distributionDataPoint", {"fx": "1", "x": "2000"}, ()),
+        )),
+    ),
+)
+CURV_SPEED_FUNC_DEFAULT: tuple = (
+    "curvSpeedFunc",
+    {
+        "name": (
+            "Road. Car. Based on Schimmelpfennig & Nackenhorst (1985), Lindenmann & Ranft "
+            "(1978), and German road design guidelines FGSV RASt, RAL & RAA"
+        ),
+        "no": "1",
+    },
+    (
+        ("curvSpeedFuncDataPts", {}, (
+            ("curvSpeedFuncDataPt", {"x": "5", "y": "8.603621", "yMax": "9.7827", "yMin": "6.643041"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "10", "y": "16.407384", "yMax": "18.450547", "yMin": "12.883856"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "30", "y": "38.099541", "yMax": "41.322955", "yMin": "31.94514"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "60", "y": "56.796123", "yMax": "60.002031", "yMin": "50.510204"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "100", "y": "70.836488", "yMax": "73.867618", "yMin": "64.8379"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "150", "y": "82.291103", "yMax": "85.119673", "yMin": "76.694153"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "200", "y": "89.967679", "yMax": "92.669511", "yMin": "84.602588"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "275", "y": "98.035935", "yMax": "100.623351", "yMin": "92.89602"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "350", "y": "104.151354", "yMax": "106.64827", "yMin": "99.196834"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "450", "y": "110.328812", "yMax": "112.740138", "yMin": "105.550202"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "550", "y": "115.08469", "yMax": "117.430115", "yMin": "110.427376"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "750", "y": "123.152003", "yMax": "125.361344", "yMin": "118.780741"}, ()),
+            ("curvSpeedFuncDataPt", {"x": "1000", "y": "129.915386", "yMax": "132.036441", "yMin": "125.726192"}, ()),
+        )),
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1051,19 +1133,25 @@ def build_fleet(
                 IssueSeverity.WARN,
                 "genesis_fleet_table_5_2_envelope_inverted",
                 "Table 5-2's desired-acceleration envelope is inverted (yMin > yMax) at 96 km/h for "
-                f"heavy type(s) {sorted(anomalies)}: the values are MRWA's own and are emitted "
-                "verbatim, not silently swapped, but a Vissim acceleration function expects "
-                "yMin ≤ y ≤ yMax, so this is a finding in the guideline's Table 5-2 (or its "
-                "extraction) to raise with the client, and a point to watch in the live open test.",
+                f"heavy type(s) {sorted(anomalies)}: the source table keeps MRWA's three values "
+                "verbatim and this is recorded as a guideline finding (in Table 5-2 or its "
+                "extraction) to raise with the client. Because Vissim refuses the whole network "
+                "load on any point where yMin > yMax, the emitter writes a min/max relabel of "
+                "those same three values (y unchanged, still inside) so the network loads — no "
+                "value is invented.",
                 messages={
                     "ko": f"Table 5-2의 희망가속도 포락선이 96 km/h에서 역전(yMin > yMax)됩니다"
-                    f"(중차종 {sorted(anomalies)}). MRWA 원값 그대로 내보내며 임의로 바꾸지 않습니다 — "
-                    "출처 표의 문제로 클라이언트에 확인이 필요합니다.",
+                    f"(중차종 {sorted(anomalies)}). 원본 표는 MRWA 3개 값을 그대로 보존하며 지침 "
+                    "소견으로 기록합니다. Vissim은 yMin > yMax 지점에서 전체 네트워크 로드를 거부하므로, "
+                    "파일에는 같은 3개 값의 min/max 라벨만 재정렬해(값은 지어내지 않음) 로드되게 합니다.",
                     "en": f"Table 5-2's acceleration envelope is inverted (yMin > yMax) at 96 km/h "
-                    f"for heavy type(s) {sorted(anomalies)}; emitted verbatim, a source finding to "
-                    "raise with the client.",
+                    f"for heavy type(s) {sorted(anomalies)}; the source keeps MRWA's three values "
+                    "verbatim as a recorded finding, and the emitter relabels min/max (no value "
+                    "invented) so the network loads.",
                     "ja": f"Table 5-2 の希望加速度エンベロープが 96 km/h で反転(yMin > yMax)します"
-                    f"(重車種 {sorted(anomalies)})。MRWA 原値のまま出力し、勝手に入れ替えません。",
+                    f"(重車種 {sorted(anomalies)})。原表は MRWA の3値をそのまま保持し所見として記録します。"
+                    "Vissim は yMin > yMax の点で全体の読み込みを拒否するため、同じ3値の min/max ラベル"
+                    "のみ並べ替えて(値は捏造せず)読み込み可能にします。",
                 },
                 citation=CIT_S5232_HEAVY_ACCEL,
                 context={"inverted_points": {no: pts for no, pts in anomalies.items()}},
@@ -1363,7 +1451,20 @@ def _accel_function(
 
 
 def _mrwa_heavy_points(type_no: int) -> tuple[tuple[str, str, str, str], ...]:
-    """Table 5-2's heavy desired-acceleration row -> (x, y, yMin, yMax) strings."""
+    """Table 5-2's heavy desired-acceleration row -> (x, y, yMin, yMax) strings.
+
+    Table 5-2 as transcribed is inverted (yMin > yMax) at 96 km/h for every heavy
+    type (see :func:`table_5_2_envelope_anomalies`). Vissim refuses the WHOLE
+    network load on any ``desAccelerationFunction`` point where ``yMin > yMax``
+    (LIVE-MEASURED 2026-08-08, ``genesis_fullstack_live_check``), so at EMIT TIME
+    the yMin/yMax LABELS are assigned by ``min()``/``max()`` over the same three
+    MRWA values. No value is invented: ``y`` is unchanged and always lands inside
+    (it is one of the three), so only which value carries the yMin/yMax label is
+    normalised. The inverted source stays verbatim in
+    :data:`TABLE_5_2_HEAVY_DES_ACCEL` and the finding still fires as a WARN — the
+    reorder here is exactly what the live positive control loaded (type 3 @ 96
+    km/h: source yMin=0.098 y=0.043 yMax=0.031 -> emitted yMin=0.031 yMax=0.098).
+    """
     row = TABLE_5_2_HEAVY_DES_ACCEL[type_no]
 
     def _fmt(value: float) -> str:
@@ -1372,10 +1473,12 @@ def _mrwa_heavy_points(type_no: int) -> tuple[tuple[str, str, str, str], ...]:
         text = f"{value:.3f}".rstrip("0").rstrip(".")
         return text or "0"
 
-    return tuple(
-        (str(TABLE_5_2_SPEED_KMH[i]), _fmt(row["y"][i]), _fmt(row["yMin"][i]), _fmt(row["yMax"][i]))
-        for i in range(len(TABLE_5_2_SPEED_KMH))
-    )
+    points: list[tuple[str, str, str, str]] = []
+    for i in range(len(TABLE_5_2_SPEED_KMH)):
+        y_min, y, y_max = row["yMin"][i], row["y"][i], row["yMax"][i]
+        lo, hi = min(y_min, y, y_max), max(y_min, y, y_max)
+        points.append((str(TABLE_5_2_SPEED_KMH[i]), _fmt(y), _fmt(lo), _fmt(hi)))
+    return tuple(points)
 
 
 def _vehicle_type_element(parent: ET.Element, veh: EmittedVehicleType) -> None:
@@ -1483,6 +1586,27 @@ def fleet_containers(fleet: DraftFleet | None) -> dict[str, ET.Element]:
     _element(pts, "speedDistributionDataPoint", {"fx": "1", "x": hi})
     containers["speedDistributions"] = speeds
 
+    # the four references a type-with-a-model needs to instantiate — occupancy,
+    # power, weight and curve-speed. LIVE-MEASURED required once a model2D3D is
+    # attached (module docstring): a minimal single-entry (no=1) closure, every
+    # value copied verbatim from ref_lht. Every emitted vehicleType references
+    # these by no=1 (VT_BOILERPLATE_ROAD).
+    occupancy = ET.Element("occupancyDistributions")
+    _node(occupancy, OCCUPANCY_DISTRIBUTION_DEFAULT)
+    containers["occupancyDistributions"] = occupancy
+
+    power = ET.Element("powerDistributions")
+    _node(power, POWER_DISTRIBUTION_DEFAULT)
+    containers["powerDistributions"] = power
+
+    weight = ET.Element("weightDistributions")
+    _node(weight, WEIGHT_DISTRIBUTION_DEFAULT)
+    containers["weightDistributions"] = weight
+
+    curv = ET.Element("curvSpeedFuncs")
+    _node(curv, CURV_SPEED_FUNC_DEFAULT)
+    containers["curvSpeedFuncs"] = curv
+
     # the vehicle types themselves
     veh_types = ET.Element("vehicleTypes")
     for veh in types:
@@ -1505,11 +1629,15 @@ def fleet_provenance_note(fleet: DraftFleet | None) -> str:
     type_nos = sorted(t.no for t in fleet.types)
     return (
         f"Fleet declares MRWA §5.2.3 vehicle types {type_nos} with Table 5-4 colours and, for "
-        "heavy types, Table 5-2 desired acceleration; other accel/decel attributes adopt Vissim "
+        "heavy types, Table 5-2 desired acceleration (min/max relabelled at emit where the source "
+        "envelope is inverted, so the network loads); other accel/decel attributes adopt Vissim "
         "defaults (§5.2.3.2). EACH TYPE NAMES A 2D/3D MODEL WHOSE file3D IS A VISSIM-INSTALL "
         ".u3dm/.fbx ASSET THIS FILE CANNOT EMBED - opening it needs an install that carries those "
-        "models, which is the live open test. Power/weight (§5.2.3.3) and vehicle classes (§5.2.4) "
-        "are kept as constants but not emitted; see the compliance report. "
+        "models, which is the live open test. Each type also names a default occupancy/power/"
+        "weight/curve-speed distribution (no=1, from ref_lht) that a typed model requires to load; "
+        "these are Vissim defaults for loadability, not guideline values — Table 5-3's power/weight "
+        "(§5.2.3.3) stays a calibration-stage constant and vehicle classes (§5.2.4) are not "
+        "emitted; see the compliance report. "
     )
 
 
