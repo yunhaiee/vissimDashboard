@@ -3856,3 +3856,49 @@ ids collide with the generator's sequential ids, reading different roads as the 
 benchmark v2 needs topological matching. The projection guard fired correctly on the first
 real input (refused the padded bbox at 2,356 m half-extent vs the 2,254 m Perth validity
 radius).
+
+
+---
+
+## 2026-08-08 — The genesis chain loads in Vissim end to end, and only the live check could prove it
+
+**Context:** roadmap 2.3/3.1/3.2 plus the §5.2.3 fleet layer built the four generators — geometry
+(`osm`/`draft`/`emit`, `b07b42a`+`36d0f64`), signals (`signals.py`, `4f38e39`, live-loaded
+`0efaf5d`), demand (`demand.py`, `2971385`), fleet (`fleet.py`, `bb6af41`). Each was
+offline-verified by round-trip through this repo's own parser and differ. The fleet layer's
+offline tests were all green — and it emitted a file **no Vissim can open** (`445477d` fixes it).
+
+**What the live full-stack check found (`genesis_fullstack_live_check.py`, PTV Vissim 2026 SP09):**
+LoadNet refused with NO `.err` — the silent-failure class the whole product exists to catch — and
+a layer-then-container bisection located two independent fleet blockers the offline round-trip
+was structurally blind to:
+1. Vissim rejects the entire network on any `desAccelerationFunction` point where `yMin > yMax`.
+   Table 5-2's heavy rows are inverted at 96 km/h (type 3: yMin 0.098 > y 0.043 > yMax 0.031).
+2. A `<vehicleType>` reduced by the four "optional" attributes (`occupDistr`/`powerDistr`/
+   `weightDistr`/`desCurveSpeedFunc`) cannot instantiate once a `model2D3D` is attached — all
+   four are required together (partial closures still refuse).
+
+**Decision / lesson:** the offline parser round-trip proves a file is SELF-CONSISTENT, never that
+Vissim will LOAD it — the two are different guarantees, and the gap is exactly where this project's
+"Vissim fails silently, the validation layer is the product" thesis lives. A generator layer is not
+done at green offline tests; a live LoadNet is its acceptance. This is emitter-v2's own geometry
+lesson (`a real network reduced to no/name is refused`) recurring twice on the vehicleType and the
+accel envelope. The reduced-element trap now has three instances (link, vehicleType-reduction,
+vehicleType-accel) — treat "we shrank the emission to what the parser round-trips" as a live-test
+trigger, not a shrink that ships.
+
+**The two fixes (`445477d`):** the accel envelope is min/max-**relabelled** at emit over the same
+three MRWA values (`y` unchanged, always inside), so the guideline's numbers are preserved and
+Vissim's `yMin ≤ yMax` contract holds — source table + inversion WARN stay verbatim. The four
+vehicleType references and their minimal transitive containers are emitted, every constant
+script-extracted from `ref_lht`'s Vissim save (emitter-v2 law). Live re-proof: the real emitter's
+full geometry+signals+demand+fleet file LoadNets clean (1.98 s, no `.err`), the three `.u3dm`/`.fbx`
+model refs resolve verbatim, signal windows and demand volumes read back as authored, and SaveNetAs
+round-trips every container.
+
+**Client-facing finding to raise with TK:** MRWA OMG v2.0 **Table 5-2 (doc p.184) is malformed at
+its high-speed tail** — for every heavy vehicle type the `yMin`/`yMax` acceleration-envelope columns
+are inverted (yMin > yMax) at 96 km/h (and the pattern suggests the two columns were transcribed
+swapped there). Prism preserves MRWA's values and reorders only the labels so the network loads,
+and records the anomaly (`genesis_fleet_table_5_2_envelope_inverted`); MRWA may wish to correct the
+source table.
