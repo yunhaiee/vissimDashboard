@@ -525,6 +525,45 @@ _RULE_TITLE: dict[str, dict[str, str]] = {
         "en": "§5.2.3 vehicle types defined (Austroads classification)",
         "ja": "§5.2.3 車種定義 (Austroads 分類)",
     },
+    # The §5.2.3 vehicle-type layer titles are produced by
+    # ``services.genesis.fleet`` and appended to this report — same one-renderer,
+    # one-title-table reason as the demand and signals blocks. ``fleet`` DECLARES
+    # the types the demand layer above only referenced.
+    "5.2.3-vehicle-types-defined": {
+        "ko": "§5.2.3 차종 선언 (Table 5-1 · 참조된 차종을 <vehicleTypes>로)",
+        "en": "§5.2.3 vehicle types declared (Table 5-1, referenced types in <vehicleTypes>)",
+        "ja": "§5.2.3 車種宣言 (Table 5-1 · 参照車種を <vehicleTypes> に)",
+    },
+    "5.2.3.1-2d3d-model": {
+        "ko": "§5.2.3.1 2D/3D 모델 (Figure 5-4 유실 · Vissim 기본 모델 복사)",
+        "en": "§5.2.3.1 2D/3D model (Figure 5-4 lost; a Vissim-default model per category)",
+        "ja": "§5.2.3.1 2D/3D モデル (Figure 5-4 消失 · Vissim 既定モデルを複製)",
+    },
+    "5.2.3.2-heavy-desired-acceleration": {
+        "ko": "§5.2.3.2 중차량 희망가속도 (Table 5-2) · 그 외는 기본값",
+        "en": "§5.2.3.2 heavy desired acceleration (Table 5-2); other attributes default",
+        "ja": "§5.2.3.2 重車両の希望加速度 (Table 5-2) · その他は既定値",
+    },
+    "5.2.3.3-power-weight": {
+        "ko": "§5.2.3.3 출력·중량 분포 (Table 5-3 · 보정 단계로 이연)",
+        "en": "§5.2.3.3 power and weight distributions (Table 5-3; deferred to calibration)",
+        "ja": "§5.2.3.3 出力・重量分布 (Table 5-3 · 校正段階へ)",
+    },
+    "5.2.3.4-colour-distributions": {
+        "ko": "§5.2.3.4 색상 분포 (Table 5-4 · 버스는 초록)",
+        "en": "§5.2.3.4 colour distributions (Table 5-4; buses green)",
+        "ja": "§5.2.3.4 カラー分布 (Table 5-4 · バスは緑)",
+    },
+    "5.2.4-vehicle-classes": {
+        "ko": "§5.2.4 차종 클래스 (Table 5-5 · 미참조로 미출력)",
+        "en": "§5.2.4 vehicle classes (Table 5-5; not referenced, not emitted)",
+        "ja": "§5.2.4 車種クラス (Table 5-5 · 未参照のため未出力)",
+    },
+    "5.2.5.3-desired-speed-profile": {
+        "ko": "§5.2.5.3 희망속도 프로파일 (≤60 km/h 기본 선형)",
+        "en": "§5.2.5.3 desired-speed profile (default linear ≤60 km/h)",
+        "ja": "§5.2.5.3 希望速度プロファイル (≤60 km/h 既定線形)",
+    },
     "5.5-demand-generation-warnings": {
         "ko": "§5.5 수요 생성 중 발생한 경고 (명시)",
         "en": "§5.5 warnings raised while generating the demand (named)",

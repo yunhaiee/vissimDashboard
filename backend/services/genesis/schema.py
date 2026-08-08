@@ -910,7 +910,21 @@ VEHICLE_ROUTE_STATIC_ATTRS: dict[str, str] = {"formula": "", "name": ""}
 #: ``vehicleCompositions`` → ``vehicleInputs`` → ``vehicleRoutingDecisionsStatic``
 #: follow it in that order (with ``vehicleClasses``, which this emission does
 #: not write, between the two).
+#:
+#: The nine fleet containers (§5.2.3 vehicle-type layer,
+#: ``services.genesis.fleet``) were placed by the SAME measurement of LHT's own
+#: child order: ``colorDistributions`` → ``desAccelerationFunctions`` →
+#: ``desDecelerationFunctions`` all precede ``detectors``;
+#: ``maxAccelerationFunctions`` → ``maxDecelerationFunctions`` →
+#: ``model2D3DDistributions`` → ``models2D3D`` sit between ``links`` and
+#: ``netPara``; ``speedDistributions`` follows ``signalHeads`` and precedes
+#: ``timeDistributions``; and ``vehicleTypes`` follows
+#: ``vehicleRoutingDecisionsStatic``. (Both references' restricted orders happen
+#: to be alphabetical, and ``_assert_container_order`` re-checks this list.)
 CONTAINER_ORDER: tuple[str, ...] = (
+    "colorDistributions",
+    "desAccelerationFunctions",
+    "desDecelerationFunctions",
     "detectors",
     "displayTypes",
     "drivingBehaviors",
@@ -918,13 +932,19 @@ CONTAINER_ORDER: tuple[str, ...] = (
     "levels",
     "linkBehaviorTypes",
     "links",
+    "maxAccelerationFunctions",
+    "maxDecelerationFunctions",
+    "model2D3DDistributions",
+    "models2D3D",
     "netPara",
     "nodes",
     "signalControllers",
     "signalHeads",
+    "speedDistributions",
     "timeDistributions",
     "timeIntervalSets",
     "vehicleCompositions",
     "vehicleInputs",
     "vehicleRoutingDecisionsStatic",
+    "vehicleTypes",
 )

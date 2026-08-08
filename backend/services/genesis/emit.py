@@ -131,6 +131,7 @@ from pathlib import Path
 from . import schema
 from .demand import DraftDemand, demand_containers, demand_provenance_note
 from .draft import DraftConnector, DraftLink, DraftNetwork, DraftNode
+from .fleet import DraftFleet, fleet_containers, fleet_provenance_note
 from .project import NOT_GEOREFERENCED_NOTE
 from .signals import DraftSignals, signal_containers, signal_provenance_note
 
@@ -335,6 +336,7 @@ def provenance_comment(
     draft: DraftNetwork,
     signals: DraftSignals | None = None,
     demand: DraftDemand | None = None,
+    fleet: DraftFleet | None = None,
 ) -> str:
     """The honesty statement written into the file itself.
 
@@ -347,38 +349,68 @@ def provenance_comment(
     this machine's directory layout, it does not belong in a deliverable, and it
     would make the output's bytes depend on where the input happened to sit.
 
-    With no signals and no demand the text is character-for-character what it
-    was before roadmap 3.1 — including the "GEOMETRY ONLY … No signal heads,
-    detectors" sentence, which stays TRUE for that file. With either layer that
-    sentence would be a lie, so it is replaced rather than appended to, and the
-    signals-only branch is byte-for-byte what roadmap 3.1 wrote.
+    With no signals, no demand and no fleet the text is character-for-character
+    what it was before roadmap 3.1 — including the "GEOMETRY ONLY … No signal
+    heads, detectors" sentence, which stays TRUE for that file. With any layer
+    that sentence would be a lie, so it is replaced rather than appended to; the
+    fleet-less branches below are byte-for-byte what roadmap 3.1/3.2 wrote.
     """
     projection = draft.metadata.get("projection", {})
     signal_note = signal_provenance_note(signals)
     demand_note = demand_provenance_note(demand)
-    if not signal_note and not demand_note:
-        scope = (
-            "GEOMETRY ONLY: links, connectors and node polygons. No signal heads, detectors, "
-            "vehicle inputs or routing. "
-        )
-    elif signal_note and not demand_note:
-        scope = (
-            "GEOMETRY + SIGNALS: links, connectors, node polygons, signal controllers, "
-            "signal groups, signal heads and detectors. No vehicle inputs or routing. "
-            f"{signal_note}"
-        )
-    elif demand_note and not signal_note:
-        scope = (
-            "GEOMETRY + DEMAND: links, connectors, node polygons, vehicle inputs, vehicle "
-            "compositions and static vehicle routing decisions. No signal heads or detectors. "
-            f"{demand_note}"
-        )
+    fleet_note = fleet_provenance_note(fleet)
+    if not fleet_note:
+        if not signal_note and not demand_note:
+            scope = (
+                "GEOMETRY ONLY: links, connectors and node polygons. No signal heads, detectors, "
+                "vehicle inputs or routing. "
+            )
+        elif signal_note and not demand_note:
+            scope = (
+                "GEOMETRY + SIGNALS: links, connectors, node polygons, signal controllers, "
+                "signal groups, signal heads and detectors. No vehicle inputs or routing. "
+                f"{signal_note}"
+            )
+        elif demand_note and not signal_note:
+            scope = (
+                "GEOMETRY + DEMAND: links, connectors, node polygons, vehicle inputs, vehicle "
+                "compositions and static vehicle routing decisions. No signal heads or detectors. "
+                f"{demand_note}"
+            )
+        else:
+            scope = (
+                "GEOMETRY + SIGNALS + DEMAND: links, connectors, node polygons, signal controllers, "
+                "signal groups, signal heads, detectors, vehicle inputs, vehicle compositions and "
+                f"static vehicle routing decisions. {signal_note}{demand_note}"
+            )
     else:
-        scope = (
-            "GEOMETRY + SIGNALS + DEMAND: links, connectors, node polygons, signal controllers, "
-            "signal groups, signal heads, detectors, vehicle inputs, vehicle compositions and "
-            f"static vehicle routing decisions. {signal_note}{demand_note}"
-        )
+        # The §5.2.3 vehicle-type layer is present. It is purely additive, so the
+        # scope simply names the type layer alongside whatever else is written.
+        suffix = f"{signal_note}{demand_note}{fleet_note}"
+        if signal_note and demand_note:
+            scope = (
+                "GEOMETRY + SIGNALS + DEMAND + TYPES: links, connectors, node polygons, signal "
+                "controllers, signal groups, signal heads, detectors, vehicle inputs, vehicle "
+                "compositions, static vehicle routing decisions and vehicle types. "
+                f"{suffix}"
+            )
+        elif demand_note:
+            scope = (
+                "GEOMETRY + DEMAND + TYPES: links, connectors, node polygons, vehicle inputs, "
+                "vehicle compositions, static vehicle routing decisions and vehicle types. No "
+                f"signal heads or detectors. {suffix}"
+            )
+        elif signal_note:
+            scope = (
+                "GEOMETRY + SIGNALS + TYPES: links, connectors, node polygons, signal controllers, "
+                "signal groups, signal heads, detectors and vehicle types. No vehicle inputs or "
+                f"routing. {suffix}"
+            )
+        else:
+            scope = (
+                "GEOMETRY + TYPES: links, connectors, node polygons and vehicle types. No signal "
+                f"heads, detectors, vehicle inputs or routing. {suffix}"
+            )
     return _comment_safe(
         " Generated by Prism services.genesis (roadmap 2.3 Genesis (a)) from "
         f"{Path(draft.source_osm).name}. "
@@ -403,17 +435,21 @@ def build_tree(
     draft: DraftNetwork,
     signals: DraftSignals | None = None,
     demand: DraftDemand | None = None,
+    fleet: DraftFleet | None = None,
 ) -> ET.ElementTree:
     """The ``.inpx`` element tree for a draft. Deterministic given the inputs.
 
-    ``signals`` (roadmap 3.1 Genesis (b)) and ``demand`` (roadmap 3.2 Genesis
-    (c)) are OPTIONAL and purely additive. When one is ``None``, its package's
-    empty sentinel (:data:`~services.genesis.signals.NO_SIGNALS`,
-    :data:`~services.genesis.demand.NO_DEMAND`), or a layer that refused, the
+    ``signals`` (roadmap 3.1 Genesis (b)), ``demand`` (roadmap 3.2 Genesis (c))
+    and ``fleet`` (the §5.2.3 vehicle-type layer) are OPTIONAL and purely
+    additive. When one is ``None``, its package's empty sentinel
+    (:data:`~services.genesis.signals.NO_SIGNALS`,
+    :data:`~services.genesis.demand.NO_DEMAND`,
+    :data:`~services.genesis.fleet.NO_FLEET`), or a layer that refused, the
     corresponding ``*_containers`` call returns no containers, the provenance
     comment is unchanged, and the emitted bytes are exactly what a draft without
     that layer produced before the argument existed — pinned by
-    ``test_genesis_signals.py`` and ``test_genesis_demand.py``.
+    ``test_genesis_signals.py``, ``test_genesis_demand.py`` and
+    ``test_genesis_fleet.py``.
     """
     if draft.refused:
         raise EmitRefused(
@@ -426,7 +462,7 @@ def build_tree(
         "network",
         {"version": schema.NETWORK_VERSION, "vissimVersion": schema.VISSIM_VERSION},
     )
-    root.append(ET.Comment(provenance_comment(draft, signals, demand)))
+    root.append(ET.Comment(provenance_comment(draft, signals, demand, fleet)))
 
     containers = _support_containers()
 
@@ -462,6 +498,11 @@ def build_tree(
     # for a draft with no demand layer, or one that refused.
     containers.update(demand_containers(demand))
 
+    # Fleet (§5.2.3 vehicle types), when asked for. Same contract:
+    # ``fleet_containers`` returns {} for a draft with no type layer, or one that
+    # refused, so a type-less draft adds no key and changes no byte.
+    containers.update(fleet_containers(fleet))
+
     # Placed in VISSIM's own top-level order, not in the order this module
     # happened to build them.
     for tag in schema.CONTAINER_ORDER:
@@ -493,9 +534,11 @@ def to_xml_text(
     draft: DraftNetwork,
     signals: DraftSignals | None = None,
     demand: DraftDemand | None = None,
+    fleet: DraftFleet | None = None,
 ) -> str:
-    """The ``.inpx`` as text. Byte-identical for equal inputs (draft, signals, demand)."""
-    root = build_tree(draft, signals, demand).getroot()
+    """The ``.inpx`` as text. Byte-identical for equal inputs (draft, signals,
+    demand, fleet)."""
+    root = build_tree(draft, signals, demand, fleet).getroot()
     ET.indent(root, space="  ")
     body = ET.tostring(root, encoding="unicode", xml_declaration=False)
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + body + "\n"
@@ -506,6 +549,7 @@ def emit_inpx(
     path: str | Path,
     signals: DraftSignals | None = None,
     demand: DraftDemand | None = None,
+    fleet: DraftFleet | None = None,
 ) -> Path:
     """Write the draft to ``path`` as UTF-8 with LF newlines, and return it.
 
@@ -517,5 +561,5 @@ def emit_inpx(
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(to_xml_text(draft, signals, demand), encoding="utf-8", newline="")
+    out.write_text(to_xml_text(draft, signals, demand, fleet), encoding="utf-8", newline="")
     return out
