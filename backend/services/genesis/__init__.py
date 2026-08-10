@@ -13,6 +13,11 @@ Members, in the order row 2.3 runs them:
 * :mod:`services.genesis.project` — WGS84 → local tangent-plane metres, with a
   derived error bound and a refusal outside its validity radius. RELATIVE
   geometry; not a georeference.
+* :mod:`services.genesis.connectivity` — which OSM nodes are the same junction,
+  where a road really ends, and what the map's turn restrictions ban. Runs
+  before ``draft`` and decides whether the generated network is DRIVABLE: a link
+  end no connector leaves is a place vehicles silently depart the model.
+  ``backend/tools/genesis_connectivity_probe.py`` measures the result.
 * :mod:`services.genesis.draft` — links, connectors and the MRWA §5 compliance
   report (applied / violated / NOT CHECKABLE).
 * :mod:`services.genesis.demand` — 1.2's neutral counts + a draft → vehicle
@@ -66,6 +71,15 @@ from .benchmark import (
     georeferenced_network,
     local_frame_network,
     render_benchmark_report,
+)
+from .connectivity import (
+    NODE_MERGE_TOLERANCE_M,
+    TOLERANCE_BASIS as NODE_MERGE_TOLERANCE_BASIS,
+    DeadEnd,
+    MergeReport,
+    NodeMerge,
+    dead_ends,
+    merge_junction_nodes,
 )
 from .demand import (
     NO_DEMAND,
@@ -165,6 +179,7 @@ __all__ = [
     "CorridorScope",
     "DaejeonSettings",
     "DaejeonSheet",
+    "DeadEnd",
     "DemandCoverage",
     "DemandInterval",
     "DemandSettings",
@@ -196,15 +211,19 @@ __all__ = [
     "MATCH_TOLERANCE_M",
     "MatchBucket",
     "MatchedPair",
+    "MergeReport",
     "MissingObject",
     "MissingReason",
     "MovementRef",
     "MrwaVehicleType",
+    "NODE_MERGE_TOLERANCE_BASIS",
+    "NODE_MERGE_TOLERANCE_M",
     "NO_DEMAND",
     "NO_FLEET",
     "NO_SIGNALS",
     "NetworkSummary",
     "NetworkTopology",
+    "NodeMerge",
     "NodeMovementDiff",
     "NodeSignalCoverage",
     "NodeSignals",
@@ -227,6 +246,7 @@ __all__ = [
     "build_draft",
     "build_fleet",
     "daejeon_to_fixed_time_plan",
+    "dead_ends",
     "diff_network_files",
     "diff_topologies",
     "emit_inpx",
@@ -239,6 +259,7 @@ __all__ = [
     "link_exits",
     "load_topology",
     "local_frame_network",
+    "merge_junction_nodes",
     "node_approaches",
     "observed_vehicle_classes",
     "origin_for_bounds",

@@ -57,6 +57,22 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .connectivity import (
+    BOUNDARY_BAND_M,
+    DANGLING_ALL_MOVEMENTS_U,
+    DANGLING_NO_EXIT_AT_JUNCTION,
+    DANGLING_RESTRICTED,
+    DANGLING_UNATTRIBUTED,
+    DANGLING_UNMERGED_NEIGHBOUR,
+    DEAD_END_REASON_TO_DANGLING_CAUSE,
+    NODE_MERGE_TOLERANCE_M,
+    TOLERANCE_BASIS as NODE_MERGE_TOLERANCE_BASIS,
+    DeadEnd,
+    MergeReport,
+    dead_ends,
+    merge_junction_nodes,
+    suppressed_by_restriction,
+)
 from .osm import (
     EXTRACT,
     CIT_S5211_LEFT_HAND,
@@ -647,6 +663,43 @@ _REPORT_TEXT: dict[str, dict[str, str]] = {
         "en": "directional links whose lane count came from a generator default, not a tag: {count}",
         "ja": "車線数をタグではなく生成器の既定値で埋めた方向リンク: {count}件",
     },
+    "connectivity": {
+        "ko": "연결성 (같은 교차로 합치기 · 막다른 길 U턴 · 회전 금지)",
+        "en": "Connectivity (junction merge, cul-de-sac U-turns, turn bans)",
+        "ja": "接続性 (同一交差点の統合・行き止まりUターン・右左折禁止)",
+    },
+    "connectivity_dangling": {
+        "ko": (
+            "커넥터가 나가지 않는 링크 끝(차량이 조용히 네트워크를 이탈하는 지점) — "
+            "각 항목은 사유와 함께 genesis.json 에 이름이 남습니다"
+        ),
+        "en": (
+            "link ends no connector leaves (where a vehicle silently departs the network) "
+            "— each one is named with its cause in the genesis.json"
+        ),
+        "ja": (
+            "コネクタが出ていないリンク端(車両が黙ってネットワークを離脱する地点) — "
+            "各項目は理由とともに genesis.json に記録されます"
+        ),
+    },
+    "connectivity_arterial_warning": {
+        "ko": (
+            "간선도로급 way가 막다른 길로 판정되었습니다. U턴이 가능한 경우에는 생성했지만"
+            "(차량이 갇히지 않도록), 간선도로가 막다른 길인 경우는 실제 회차로보다 지도 단절인 "
+            "경우가 많으므로 각 항목의 사유와 함께 검토가 필요합니다"
+        ),
+        "en": (
+            "arterial-class ways were read as dead ends. Where a U-turn was possible it IS "
+            "emitted (so vehicles are not stranded), but an arterial that dead-ends is more "
+            "often a break in the map than a real turning head — review these, each with its "
+            "own reason"
+        ),
+        "ja": (
+            "幹線道路級の way が行き止まりと判定されました。U ターンが可能な場合は生成しています"
+            "(車両が閉じ込められないように)が、幹線道路の行き止まりは実際の回転場所より地図の断絶"
+            "であることが多く、各項目の理由とあわせて確認が必要です"
+        ),
+    },
     "rules": {
         "ko": "§5 규칙",
         "en": "§5 rules",
@@ -920,6 +973,70 @@ class DraftNetwork(BaseModel):
                 f"{assumption.basis}{citation}"
             )
         out.append("")
+        out.append(f"## {pick_text(text['connectivity'], language)}")
+        connectivity = self.metadata.get("connectivity", {})
+        merge = connectivity.get("node_merge", {})
+        out.append(
+            f"- node merge: {len(merge.get('clusters', []))} junction(s) joined from "
+            f"{merge.get('nodes_merged', 0)} OSM node(s), "
+            f"{len(merge.get('refusals', []))} refused"
+        )
+        # BY CODE, not just a count. A refusal a reader cannot find is the same
+        # to them as a silent merge, and "two roads end within one carriageway of
+        # each other and were NOT joined" is a line a reviewer can act on.
+        refusals_by_code: dict[str, int] = {}
+        for refusal in merge.get("refusals", []):
+            code = refusal.get("code", "")
+            refusals_by_code[code] = refusals_by_code.get(code, 0) + 1
+        for code, count in sorted(refusals_by_code.items()):
+            out.append(f"  - refused / {code}: {count}")
+        out.append(f"- tolerance: {merge.get('basis', '')}")
+        for reason, count in sorted(connectivity.get("dead_ends_by_reason", {}).items()):
+            out.append(f"- dead end / {reason}: {count}")
+        out.append(
+            f"- cul-de-sac U-turn connectors emitted: "
+            f"{connectivity.get('u_turn_connectors_emitted', 0)}"
+        )
+        stranded = connectivity.get("stranded_approach_u_turns", [])
+        if stranded:
+            shown = "; ".join(stranded[:6])
+            more = f" (+{len(stranded) - 6})" if len(stranded) > 6 else ""
+            out.append(
+                f"- last-resort U-turns on approaches with no other legal movement: "
+                f"{len(stranded)} — {shown}{more}"
+            )
+        arterials = connectivity.get("arterial_dead_ends_named", [])
+        if arterials:
+            shown = "; ".join(arterials[:12])
+            more = f" (+{len(arterials) - 12})" if len(arterials) > 12 else ""
+            out.append(
+                f"- {pick_text(text['connectivity_arterial_warning'], language)}: "
+                f"{shown}{more}"
+            )
+        dangling_by_cause = connectivity.get("dangling_approaches_by_cause", {})
+        out.append(
+            f"- {pick_text(text['connectivity_dangling'], language)}: "
+            f"{len(connectivity.get('dangling_approaches', []))}"
+        )
+        for cause, count in sorted(dangling_by_cause.items()):
+            out.append(f"  - {cause}: {count}")
+        inert = connectivity.get("osm_turn_restrictions_inert", [])
+        out.append(
+            f"- OSM turn restrictions parsed: "
+            f"{connectivity.get('osm_turn_restrictions_parsed', 0)}, of which ENFORCED "
+            f"(a movement was actually removed): "
+            f"{connectivity.get('osm_turn_restrictions_enforced', 0)}"
+            + (
+                f", inert (parsed, suppressed nothing — relation(s) {inert}): {len(inert)}"
+                if inert
+                else ""
+            )
+            + f"; movements suppressed: "
+            f"{len(connectivity.get('movements_suppressed_by_restriction', []))}; "
+            f"restrictions this generator could not apply: "
+            f"{len(connectivity.get('osm_turn_restrictions_refused', []))}"
+        )
+        out.append("")
         out.append(f"## {pick_text(text['skipped'], language)}")
         if self.skipped_ways:
             counts_by_reason: dict[str, int] = {}
@@ -950,6 +1067,31 @@ def _polyline_length(points: list[tuple[float, float]]) -> float:
     for i in range(1, len(points)):
         total += math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1])
     return total
+
+
+def _segment_skip(way, segment_index: int, length_m: float, *, trimmed: bool) -> dict:
+    """One dropped way-segment, in the same shape as ``osm.SkippedWay``.
+
+    Same keys as every other entry in ``skipped_ways`` so the compliance
+    report's existing group-by-reason rendering picks these up with no special
+    case. The two reasons are kept APART because they mean different things to
+    whoever reads the report: ``too_short`` is a genuinely tiny piece of road,
+    while ``too_short_after_setback`` is a segment the §5.3.1 intersection
+    setback consumed — that one is the generator's own doing, and if it ever
+    grows it means the setback is eating real geometry rather than trimming it.
+    """
+    return {
+        "way_id": way.id,
+        "reason": (
+            "segment_too_short_after_setback_trim" if trimmed else "segment_too_short"
+        ),
+        "highway": getattr(way, "highway", "") or "",
+        "detail": (
+            f"segment {segment_index}: {length_m:.2f} m < MIN_LINK_LENGTH_M "
+            f"{MIN_LINK_LENGTH_M:g} m"
+            + (" (after the intersection setback was trimmed off)" if trimmed else "")
+        ),
+    }
 
 
 def _round_point(point: tuple[float, float]) -> tuple[float, float]:
@@ -1123,6 +1265,16 @@ def connector_lane_pairs(
         keep_left = True
     elif turn == TURN_RIGHT:
         keep_left = False
+    elif turn == TURN_U:
+        # A U-turn crosses the centreline, so it is made from the lane nearest
+        # the centreline and joins the lane nearest the centreline on the other
+        # carriageway. Under left-hand traffic each direction's carriageway sits
+        # to the LEFT of the shared centreline (``osm.left_normal``), so the
+        # lane nearest the centreline is each link's RIGHT-most — index 1 — on
+        # both sides. Stated as its own branch rather than left to fall through
+        # the "through" case it happens to agree with: the two agree by
+        # coincidence under this regime and would not under the other.
+        keep_left = TRAFFIC_REGULATION != "LEFTHANDTRAFFIC"
     else:
         # The only regime-dependent branch: align on the median side, which is
         # the right (index 1) under left-hand traffic and the left under
@@ -1161,13 +1313,31 @@ def _way_segments(way: OsmWay, intersections: set[int]) -> list[tuple[int, ...]]
 
 
 def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
-    """OSM extract → draft network + §5 compliance report. Reports, never raises."""
+    """OSM extract → draft network + §5 compliance report. Reports, never raises.
+
+    The connectivity pass (:mod:`services.genesis.connectivity`) runs FIRST and
+    in one fixed order, because the three questions it answers are not
+    independent:
+
+    1. :func:`~.connectivity.merge_junction_nodes` decides which nodes are the
+       same junction. This can only run before anything else, because it changes
+       what ``intersection_node_ids()`` returns and therefore where links are
+       split and where connectors are built.
+    2. links, nodes and junction connectors are built from the MERGED topology,
+       with any movement an OSM turn restriction bans left out.
+    3. :func:`~.connectivity.dead_ends` then reads the merged topology, so a
+       terminal the merge turned into a junction is no longer a dead end.
+       Running it first would emit a U-turn in the middle of a junction.
+    """
     draft = DraftNetwork(name=name, source_osm=extract.source)
 
     if extract.refused:
         draft.refused = True
         draft.refusals = [f"{r.code}: {r.message}" for r in extract.refusals]
         return draft
+
+    source_extract = extract
+    extract, merge_report = merge_junction_nodes(extract)
 
     bounds = extract.bounds()
     if bounds is None:  # pragma: no cover - a non-refused extract always has nodes
@@ -1192,6 +1362,7 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
         return draft
 
     draft.metadata = _metadata(extract, plane, check, bounds)
+    draft.metadata["source_osm_ways_before_node_merge"] = len(source_extract.ways)
     draft.skipped_ways = [skip.as_dict() for skip in extract.skipped]
     draft.assumptions = _assumptions()
 
@@ -1200,6 +1371,7 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
 
     # --- links -------------------------------------------------------------
     links: list[DraftLink] = []
+    dropped_segments: list[dict] = []
     naive_link_count = 0
     next_link_id = 1
     for way in ways:
@@ -1207,14 +1379,31 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
         for segment_index, segment in enumerate(_way_segments(way, intersections)):
             centreline = [projected[node_id] for node_id in segment]
             base_length = _polyline_length(centreline)
+            # A segment too short to be worth a link is DROPPED — but never
+            # silently. Both of these used to be bare `continue`s, and that cost
+            # real money: the 2026-08-10 connectivity measurement traced 40 of
+            # the network's 225 dangling ends to segments that vanished here,
+            # including Murdoch Drive's roundabout arm, and no report anywhere
+            # said a link had gone missing. The reader of a compliance report
+            # cannot notice an absence; they can notice a named skip. This is
+            # the same doctrine the emitter learned from Vissim itself — silent
+            # success on a network that lost pieces is the failure this product
+            # exists to catch.
             if base_length < MIN_LINK_LENGTH_M:
+                dropped_segments.append(
+                    _segment_skip(way, segment_index, base_length, trimmed=False)
+                )
                 continue
             setback = min(INTERSECTION_SETBACK_M, base_length / 4.0)
             clamped = setback < INTERSECTION_SETBACK_M
             start_cut = setback if segment[0] in intersections else 0.0
             end_cut = setback if segment[-1] in intersections else 0.0
             trimmed = _trim(centreline, start_cut, end_cut)
-            if _polyline_length(trimmed) < MIN_LINK_LENGTH_M:
+            trimmed_length = _polyline_length(trimmed)
+            if trimmed_length < MIN_LINK_LENGTH_M:
+                dropped_segments.append(
+                    _segment_skip(way, segment_index, trimmed_length, trimmed=True)
+                )
                 continue
 
             for direction in sorted(way.directions, key=lambda d: not d.forward):
@@ -1254,6 +1443,10 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
                 )
                 next_link_id += 1
     draft.links = links
+    # Deterministic order: the loop above walks `ways` sorted by id, so these
+    # are already in (way id, segment index) order — sorting again would be a
+    # no-op that hid a future ordering regression rather than catching it.
+    draft.skipped_ways.extend(dropped_segments)
 
     # --- nodes -------------------------------------------------------------
     touched = {link.from_node_osm_id for link in links} | {link.to_node_osm_id for link in links}
@@ -1282,6 +1475,14 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
     # --- connectors --------------------------------------------------------
     connectors: list[DraftConnector] = []
     next_connector_id = 10001
+    restriction_suppressed: list[str] = []
+    #: Relation ids that actually removed a movement. NOT the ids that parsed —
+    #: see ``_connectivity_metadata``.
+    restrictions_enforced: set[int] = set()
+    #: Why each approach lost each of its candidate movements, so a link that
+    #: ends up with none can be attributed without re-deriving the geometry in
+    #: a second tool. Keys are link ids; values are the codes below.
+    suppression_of: dict[int, set[str]] = {}
     for osm_node_id in node_ids:
         approaches = sorted(
             (l for l in links if l.to_node_osm_id == osm_node_id), key=lambda l: l.id
@@ -1295,10 +1496,31 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
                 if approach.segment_key == exit_link.segment_key:
                     # The same carriageway reversed: a U-turn, suppressed under
                     # §5.3.3's "minimise the number of alternative paths".
+                    suppression_of.setdefault(approach.id, set()).add(SUPPRESSED_OWN_CARRIAGEWAY)
                     continue
                 out_dx, out_dy = _heading(exit_link.points, at_end=False)
                 turn, angle = classify_turn(in_dx, in_dy, out_dx, out_dy)
                 if turn == TURN_U:
+                    suppression_of.setdefault(approach.id, set()).add(SUPPRESSED_ANTIPARALLEL)
+                    continue
+                # The map's own movement bans. This can only REMOVE a movement,
+                # never add one, so a misread restriction costs a legal turn
+                # (visible as a routing failure) rather than legalising a banned
+                # one (invisible, and exactly the confident-wrong-number class
+                # this project exists to catch).
+                banned = suppressed_by_restriction(
+                    extract.restrictions,
+                    osm_node_id,
+                    approach.osm_way_id,
+                    exit_link.osm_way_id,
+                )
+                if banned is not None:
+                    restriction_suppressed.append(
+                        f"{approach.name} -> {exit_link.name} "
+                        f"({banned.kind}, relation {banned.id})"
+                    )
+                    restrictions_enforced.add(banned.id)
+                    suppression_of.setdefault(approach.id, set()).add(SUPPRESSED_RESTRICTION)
                     continue
                 lanes = min(approach.lanes, exit_link.lanes)
                 lane_pairs = connector_lane_pairs(turn, approach.lanes, exit_link.lanes)
@@ -1330,10 +1552,357 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
                     )
                 )
                 next_connector_id += 1
+
+    # --- cul-de-sac U-turns ------------------------------------------------
+    ends = dead_ends(extract)
+    u_turns, unbuildable = _cul_de_sac_connectors(
+        links, ends, next_connector_id, node_index
+    )
+    connectors.extend(u_turns)
+    stranded = _stranded_approach_connectors(
+        links, connectors, extract, ends, next_connector_id + len(u_turns), node_index
+    )
+    connectors.extend(stranded)
     draft.connectors = connectors
 
+    # A restriction that banned a U-turn the dead-end pass would otherwise have
+    # emitted is enforced just as much as one that removed a junction movement.
+    restrictions_enforced |= {
+        restriction.id
+        for restriction in extract.restrictions
+        if restriction.kind == "no_u_turn" and restriction.from_way == restriction.to_way
+        and (restriction.from_way, restriction.via_node)
+        in {(end.way_id, end.node_id) for end in ends}
+    }
+
+    dangling = _dangling_approaches(links, connectors, ends, suppression_of)
+    draft.metadata["connectivity"] = _connectivity_metadata(
+        merge_report,
+        ends,
+        u_turns,
+        stranded,
+        unbuildable,
+        restriction_suppressed,
+        restrictions_enforced,
+        dangling,
+        extract,
+    )
     draft.compliance = _compliance(draft, extract, ways, naive_link_count, check)
     return draft
+
+
+#: A dead end whose U-turn could not be built because one of the two
+#: carriageways is not in the draft (its segment was shorter than
+#: :data:`MIN_LINK_LENGTH_M`). Counted, never silently skipped.
+UNBUILDABLE_U_TURN_NO_LINK_PAIR = "carriageway_pair_absent_from_draft"
+
+# Why a candidate movement out of an approach was not built. Recorded per
+# approach so a link that ends up with NO movement can be attributed from what
+# the generator actually decided rather than from a second tool's re-derivation.
+SUPPRESSED_OWN_CARRIAGEWAY = "same_carriageway_reversed"
+SUPPRESSED_ANTIPARALLEL = "classified_u_turn"
+SUPPRESSED_RESTRICTION = "banned_by_osm_restriction"
+
+
+def _cul_de_sac_connectors(
+    links: list[DraftLink],
+    ends: list[DeadEnd],
+    next_id: int,
+    node_index: dict[int, int],
+) -> tuple[list[DraftConnector], list[str]]:
+    """A U-turn at every dead end :mod:`~.connectivity` says needs one.
+
+    Without this a two-way street modelled as a FWD/REV pair is a **trap**: the
+    two carriageways end half a road apart with nothing joining them, so a
+    vehicle that drives to the end of the street cannot drive back out. Vissim
+    does not report that — the vehicle simply leaves the network at the end of
+    the link — so the street's outbound flow silently disappears and every
+    number downstream of it is wrong by an amount nothing measures.
+
+    The pair is found by ``(osm_way_id, segment_index)``: the connector joins
+    the terminal segment's own two directions, never two different roads. The
+    turn is :data:`TURN_U` and the lane mapping comes from
+    :func:`connector_lane_pairs`, whose U-turn branch puts it on the lanes
+    either side of the centreline.
+    """
+    by_end: dict[tuple[int, int], DraftLink] = {}
+    by_start: dict[tuple[int, int], DraftLink] = {}
+    for link in links:
+        by_end[(link.osm_way_id, link.to_node_osm_id)] = link
+        by_start[(link.osm_way_id, link.from_node_osm_id)] = link
+
+    out: list[DraftConnector] = []
+    unbuildable: list[str] = []
+    connector_id = next_id
+    for end in sorted(ends, key=lambda e: (e.way_id, e.node_id)):
+        if not end.emit_u_turn:
+            continue
+        approach = by_end.get((end.way_id, end.node_id))
+        exit_link = by_start.get((end.way_id, end.node_id))
+        if approach is None or exit_link is None or approach.id == exit_link.id:
+            unbuildable.append(
+                f"way {end.way_id} at node {end.node_id}: "
+                f"{UNBUILDABLE_U_TURN_NO_LINK_PAIR}"
+            )
+            continue
+        in_dx, in_dy = _heading(approach.points, at_end=True)
+        out_dx, out_dy = _heading(exit_link.points, at_end=False)
+        _turn, angle = classify_turn(in_dx, in_dy, out_dx, out_dy)
+        lanes = min(approach.lanes, exit_link.lanes)
+        lane_pairs = connector_lane_pairs(TURN_U, approach.lanes, exit_link.lanes)
+        if approach.lanes == exit_link.lanes:
+            lane_change = "same"
+        elif exit_link.lanes > approach.lanes:
+            lane_change = "gain"
+        else:
+            lane_change = "drop"
+        out.append(
+            DraftConnector(
+                id=connector_id,
+                name=f"{approach.name} -> {exit_link.name} ({TURN_U})",
+                node_osm_id=end.node_id,
+                # 0 means "no node object", and it is the RIGHT answer for a
+                # true cul-de-sac: it is not an intersection, no <node> polygon
+                # is written for it, and nothing in the signal layer may treat
+                # this connector as a node movement. It is the wrong answer
+                # anywhere a <node> IS written — a dead end can now be a node
+                # several ways share (every one of them one-way inbound), and
+                # `signals.py`'s two node-scoped checks are keyed on this field,
+                # so a 0 there makes a real movement invisible to them and the
+                # report then states an approach has no onward movement when one
+                # genuinely leaves it.
+                node_id=node_index.get(end.node_id, 0),
+                from_link=approach.id,
+                to_link=exit_link.id,
+                from_pos_m=round(approach.length_m, COORD_DECIMALS),
+                to_pos_m=0.0,
+                lanes=lanes,
+                lane_width_m=LANE_WIDTH_M,
+                points=[approach.points[-1], exit_link.points[0]],
+                turn=TURN_U,
+                heading_change_deg=round(angle, 3),
+                lane_change=lane_change,
+                from_lanes=[pair[0] for pair in lane_pairs],
+                to_lanes=[pair[1] for pair in lane_pairs],
+                table_5_8_advisory=TABLE_5_8_TURN_ADVISORY.get(TURN_U),
+            )
+        )
+        connector_id += 1
+    return out, unbuildable
+
+
+def _stranded_approach_connectors(
+    links: list[DraftLink],
+    connectors: list[DraftConnector],
+    extract: OsmExtract,
+    ends: list[DeadEnd],
+    next_id: int,
+    node_index: dict[int, int],
+) -> list[DraftConnector]:
+    """Last resort: a U-turn for an approach that has NO legal movement at all.
+
+    A link with no outgoing connector is a place vehicles leave the network in
+    silence. Most of those are answered above — the junction merge gives a
+    movement back, the cul-de-sac pass gives a U-turn. What is left is an
+    approach that reaches a node other ways do touch and still has nowhere to
+    go: every way at that node is one-way *inbound*, or every onward movement is
+    antiparallel and was suppressed. On Murdoch this is a handful of service
+    aisles that another aisle only feeds into.
+
+    Turning around is then the ONLY physically available action, which is why
+    this does not conflict with §5.3.3's "minimise the number of alternative
+    paths": where there is no alternative, a U-turn creates none. The rule is
+    deliberately last-resort — it can only ever fire on a link that would
+    otherwise be a trap — and every one it fires on is NAMED in
+    ``metadata['connectivity']['stranded_approach_u_turns']`` so a reviewer sees
+    the list rather than a number that quietly went to zero.
+    """
+    leaving = {connector.from_link for connector in connectors}
+    starts_at: dict[tuple[int, int, int], DraftLink] = {
+        (link.osm_way_id, link.segment_index, link.from_node_osm_id): link
+        for link in links
+    }
+    banned = {
+        (r.from_way, r.via_node)
+        for r in extract.restrictions
+        if r.kind == "no_u_turn" and r.from_way == r.to_way
+    }
+    # Wherever the dead-end pass already REFUSED a U-turn — the model boundary
+    # above all — this last-resort pass must not quietly supply one. Measured:
+    # without this line a boundary link on Hope Road gained a U-turn and the
+    # study edge became a reflecting wall, which is the exact failure the
+    # boundary band exists to prevent.
+    banned |= {(end.way_id, end.node_id) for end in ends if not end.emit_u_turn}
+
+    out: list[DraftConnector] = []
+    connector_id = next_id
+    for approach in sorted(links, key=lambda l: l.id):
+        if approach.id in leaving:
+            continue
+        if (approach.osm_way_id, approach.to_node_osm_id) in banned:
+            continue
+        exit_link = starts_at.get(
+            (approach.osm_way_id, approach.segment_index, approach.to_node_osm_id)
+        )
+        if exit_link is None or exit_link.id == approach.id:
+            continue
+        in_dx, in_dy = _heading(approach.points, at_end=True)
+        out_dx, out_dy = _heading(exit_link.points, at_end=False)
+        _turn, angle = classify_turn(in_dx, in_dy, out_dx, out_dy)
+        lane_pairs = connector_lane_pairs(TURN_U, approach.lanes, exit_link.lanes)
+        out.append(
+            DraftConnector(
+                id=connector_id,
+                name=f"{approach.name} -> {exit_link.name} ({TURN_U})",
+                node_osm_id=approach.to_node_osm_id,
+                # This pass exists for "an approach that reaches a node OTHER
+                # WAYS DO TOUCH", so its node is normally a real DraftNode with
+                # a real polygon — the opposite of the cul-de-sac case the 0
+                # sentinel was copied from. Writing 0 here hid every one of
+                # these connectors from `signals.py`'s node-scoped checks, which
+                # then reported the approach as having no onward movement.
+                node_id=node_index.get(approach.to_node_osm_id, 0),
+                from_link=approach.id,
+                to_link=exit_link.id,
+                from_pos_m=round(approach.length_m, COORD_DECIMALS),
+                to_pos_m=0.0,
+                lanes=min(approach.lanes, exit_link.lanes),
+                lane_width_m=LANE_WIDTH_M,
+                points=[approach.points[-1], exit_link.points[0]],
+                turn=TURN_U,
+                heading_change_deg=round(angle, 3),
+                lane_change=(
+                    "same"
+                    if approach.lanes == exit_link.lanes
+                    else ("gain" if exit_link.lanes > approach.lanes else "drop")
+                ),
+                from_lanes=[pair[0] for pair in lane_pairs],
+                to_lanes=[pair[1] for pair in lane_pairs],
+                table_5_8_advisory=TABLE_5_8_TURN_ADVISORY.get(TURN_U),
+            )
+        )
+        connector_id += 1
+    return out
+
+
+def _dangling_approaches(
+    links: list[DraftLink],
+    connectors: list[DraftConnector],
+    ends: list[DeadEnd],
+    suppression_of: dict[int, set[str]],
+) -> list[dict]:
+    """Every built link no connector leaves, attributed — the generator's own census.
+
+    A link end no connector leaves is where a vehicle departs the network in
+    silence: Vissim writes no error, the demand evaporates, and every number
+    downstream is wrong by an amount nothing measures. Counting them was a
+    separate tool's job, and the split cost exactly what a split costs — the
+    tool re-derived causes the generator had never named, gave them confident
+    names, and 8 of the Murdoch network's approaches were silent traps that
+    appeared in NO generator artifact. The count belongs to whoever built the
+    network, so this is it, and ``genesis_connectivity_probe.py`` reads it.
+
+    Causes come from what the generator DECIDED, never from proximity: the
+    dead-end pass's own reason where there is one, and otherwise the record of
+    which candidate movements were suppressed and why.
+    """
+    reason_at = {(end.way_id, end.node_id): end.reason for end in ends}
+    exits_at: set[int] = {link.from_node_osm_id for link in links}
+    leaving = {connector.from_link for connector in connectors}
+
+    out: list[dict] = []
+    for link in sorted(links, key=lambda l: l.id):
+        if link.id in leaving:
+            continue
+        node = link.to_node_osm_id
+        reason = reason_at.get((link.osm_way_id, node))
+        suppressed = suppression_of.get(link.id, set())
+        if reason is not None:
+            cause = DEAD_END_REASON_TO_DANGLING_CAUSE.get(reason, DANGLING_UNATTRIBUTED)
+        elif node not in exits_at:
+            cause = DANGLING_NO_EXIT_AT_JUNCTION
+        elif SUPPRESSED_ANTIPARALLEL in suppressed:
+            cause = DANGLING_ALL_MOVEMENTS_U
+        elif suppressed == {SUPPRESSED_RESTRICTION}:
+            cause = DANGLING_RESTRICTED
+        elif not suppressed:
+            # Nothing was even considered here, so the node is not a junction
+            # this draft built connectors at.
+            cause = DANGLING_UNMERGED_NEIGHBOUR
+        else:
+            cause = DANGLING_UNATTRIBUTED
+        out.append(
+            {
+                "link_id": link.id,
+                "link": link.name,
+                "node_osm_id": node,
+                "cause": cause,
+                "dead_end_reason": reason,
+            }
+        )
+    return out
+
+
+def _connectivity_metadata(
+    merge_report: MergeReport,
+    ends: list[DeadEnd],
+    u_turns: list[DraftConnector],
+    stranded: list[DraftConnector],
+    unbuildable: list[str],
+    restriction_suppressed: list[str],
+    restrictions_enforced: set[int],
+    dangling: list[dict],
+    extract: OsmExtract,
+) -> dict:
+    """Everything the connectivity pass decided, as data.
+
+    Written into ``draft.metadata`` (and therefore into ``*.genesis.json``) so
+    ``backend/tools/genesis_connectivity_probe.py``, the compliance report and a
+    reviewer all read the same numbers instead of three re-derivations.
+    """
+    by_reason: dict[str, int] = {}
+    for end in ends:
+        by_reason[end.reason] = by_reason.get(end.reason, 0) + 1
+    by_cause: dict[str, int] = {}
+    for entry in dangling:
+        by_cause[entry["cause"]] = by_cause.get(entry["cause"], 0) + 1
+    inert = sorted(
+        {restriction.id for restriction in extract.restrictions} - restrictions_enforced
+    )
+    return {
+        "node_merge": merge_report.as_dict(),
+        "dead_ends_by_reason": dict(sorted(by_reason.items())),
+        # The generator's own dangling-end census. Whoever built the network
+        # counts the places it strands vehicles; a tool that re-derived them
+        # separately would be free to disagree, and did.
+        "dangling_approaches": dangling,
+        "dangling_approaches_by_cause": dict(sorted(by_cause.items())),
+        "u_turn_connectors_emitted": len(u_turns),
+        "u_turns_unbuildable": sorted(unbuildable),
+        "stranded_approach_u_turns": sorted(connector.name for connector in stranded),
+        # One list, and each entry carries its OWN reason: an arterial dead end
+        # that got a U-turn and one that could not are both worth a reviewer's
+        # eye, and collapsing them into an unlabelled list would make the
+        # heading's claim wrong for half its contents.
+        "arterial_dead_ends_named": sorted(
+            f"way {end.way_id} ({end.highway}) at node {end.node_id}: {end.reason}"
+            for end in ends
+            if end.warn_arterial
+        ),
+        # ENFORCED means a movement was actually removed, not that a relation
+        # parsed. The two are different numbers and the difference is the whole
+        # point: a well-formed relation whose via node is not where its from-way
+        # and to-way actually meet suppresses nothing, and reporting it as
+        # "enforced" tells a reader a ban took effect when it did not. Both are
+        # published, and the ones that did nothing are named.
+        "osm_turn_restrictions_parsed": len(extract.restrictions),
+        "osm_turn_restrictions_enforced": len(restrictions_enforced),
+        "osm_turn_restrictions_inert": inert,
+        "osm_turn_restrictions_refused": [
+            refusal.as_dict() for refusal in extract.restriction_refusals
+        ],
+        "movements_suppressed_by_restriction": sorted(restriction_suppressed),
+    }
 
 
 def _link_name(way: OsmWay, segment_index: int, forward: bool) -> str:
@@ -1397,6 +1966,25 @@ def _assumptions() -> list[GeneratorAssumption]:
             basis=(
                 "§5 states no node box size. data/practice.inpx — the only .inpx exemplar on "
                 "this machine — uses a 30 m square, i.e. this half-size."
+            ),
+        ),
+        GeneratorAssumption(
+            id="NODE_MERGE_TOLERANCE_M",
+            value=NODE_MERGE_TOLERANCE_M,
+            basis=NODE_MERGE_TOLERANCE_BASIS,
+            citation=CIT_T57_LANE_WIDTH,
+        ),
+        GeneratorAssumption(
+            id="BOUNDARY_BAND_M",
+            value=BOUNDARY_BAND_M,
+            basis=(
+                "§5 states no model-boundary rule. A way terminal this close to the model's "
+                "edge — the file's declared <bounds> when it has one, otherwise the extent of "
+                "the kept geometry — is treated as a road LEAVING the model rather than a "
+                "cul-de-sac, so no U-turn is emitted there and the study boundary does not "
+                "become a reflecting wall. The band is project.MAX_PLANIMETRIC_ERROR_M, the "
+                "projection's own budget, i.e. the smallest distance distinguishable in this "
+                "frame at all."
             ),
         ),
         GeneratorAssumption(

@@ -4232,3 +4232,208 @@ without it, confirmed by reverting each in turn — including
 `test_write_transaction_re_checks_the_version_after_taking_the_write_lock`, which simulates a
 second process committing a version bump in the narrow gap, and
 `test_schema_version_refuses_a_newer_database_too`.
+
+---
+
+## 2026-08-10 — The generated network was a trap in 225 places, and only one of the four causes was the one we thought
+
+**Context:** the user opened the generated Murdoch network in Vissim and asked whether the visible
+gaps are real. Most are not — the ~12 m intersection setback makes every *correct* junction look
+like a gap — but 225 of 2,069 link ends had **no connector leaving them**. A link end no connector
+leaves is not a cosmetic gap: a vehicle that reaches it departs the network. Vissim reports
+nothing (no error, no warning, no `.err`), the demand evaporates, and every number downstream is
+wrong by an amount nothing measures. Same silent-failure class as the emitter-v2 and fleet
+lessons, one layer up.
+
+**The measurement that scoped the unit was right about the count and wrong about three of the four
+causes.** A proximity classifier — "what other link starts near this dangling end?" — attributed
+75.6 % to missing cul-de-sac U-turns, 13.8 % to node-merge tolerance, 6.2 % to service roads and
+4.4 % to the bbox edge. Re-measured from OSM **topology** instead of from distance
+(`backend/tools/genesis_connectivity_probe.py`, and the scratch diagnostics behind it):
+
+| cause, measured from topology | dangling ends |
+|---|---|
+| way terminal no other kept way touches (the true cul-de-sac family) | 172 |
+| **a neighbouring way-segment was DROPPED for being shorter than its own setback** | 40 |
+| node is a junction whose only exit is the same carriageway reversed | 14 |
+| every movement at the junction classified U-turn and was suppressed | 6 |
+| two one-way ways converge at a node and nothing continues | 13 |
+
+**Murdoch Drive — the flagship case, and the one the proximity classifier got wrong.** It was
+reported as a 9.0 m node-merge failure. It is not. Way 49337140 is the roundabout, and its
+*segment 3* is under 4 m long, so `_trim` cut it below `MIN_LINK_LENGTH_M` and `build_draft`
+dropped it **silently**. The roundabout was severed by the generator's own setback arithmetic, not
+by OSM. Fifty-eight way-segments were being dropped that way. **Lesson: proximity tells you a gap
+exists; only topology tells you why, and the two disagree exactly where the fix differs.**
+
+**What was built** (`services/genesis/connectivity.py`, new; `osm.py` and `draft.py` extended):
+
+1. **Cul-de-sac U-turns.** A way terminal referenced by exactly one kept way, inside the model, on
+   a way that is two-way there, gets a U-turn joining its own FWD and REV carriageways. Detected
+   from topology, never from the 3.5 m proximity of the pair — proximity also matches a mid-block
+   pair whose junction connectors failed, and those two need opposite fixes. The U-turn runs lane
+   1 → lane 1: index 1 is the RIGHT-most lane (measured 2026-08-06), and under left-hand traffic
+   each carriageway sits LEFT of the shared centreline, so index 1 is the lane nearest the
+   centreline on both sides. `connector_lane_pairs` gained an explicit `TURN_U` branch rather than
+   letting it fall through the "through" case it agrees with only under this regime.
+2. **Junction merge, tolerance 7.0 m, derived not chosen.** `NODE_MERGE_TOLERANCE_M =
+   2 × NOMINAL_LANE_WIDTH_M` — one carriageway of the narrowest road this generator models, and
+   3.5 m is the only lane width MRWA §5 prints (Table 5-7, doc p.195). It is an **upper bound on
+   sameness**, not an error budget: two junctions cannot be closer than one carriageway, so two
+   junction nodes closer than that are one junction mapped twice. Strict `<`. Same discipline as
+   the benchmark's 22 m budget, a different kind of number, and the docstring says which. This one
+   rule fixes *both* the ways-that-touch-without-sharing-a-node class and the undiscovered
+   dropped-segment class, because two junction nodes 4 m apart on one way are also one junction.
+3. **Four refusals, each by name.** *(a)* **Neither node is a junction the file declares**
+   (`no_junction_to_reconcile`) — the rule that keeps the derivation in 2 honest, and the one an
+   adversarial review had to put there; see the section below. *(b)* Grade separation
+   (`layer`/`bridge`/`tunnel` disagreement — the Murdoch extract alone carries 59 `layer` and 22
+   `bridge` tags, and merging across one would weld a freeway to the road under it), checked on
+   the candidate pair **and on the whole cluster the union would make**. *(c)* A cluster-diameter
+   cap of 2 × tolerance so a chain of individually-admissible pairs cannot walk across a junction.
+   *(d)* A way whose every node lands in one cluster, dropped as a named
+   `zero_length_after_deduplication` skip because it is not a road *between* junctions, it is part
+   of one (45 such stubs on Murdoch, longest 6.82 m).
+4. **The model boundary is not a cul-de-sac.** A terminal within `MAX_PLANIMETRIC_ERROR_M` of the
+   model's edge — the file's declared `<bounds>` when it has one, the extent of the kept geometry
+   when it does not — gets no U-turn. Without this the study boundary becomes a reflecting wall.
+   Measured during development: a first cut of the last-resort pass supplied one anyway on Hope
+   Road, which is why that pass now also honours every refusal the dead-end pass made.
+5. **OSM turn restrictions are read.** `type=restriction` relations become movement bans that only
+   ever REMOVE connectivity (`no_*` bans the named movement, `only_*` bans the rest). A relation
+   this generator cannot reduce to from-way/via-node/to-way — a via-**way** restriction above all —
+   is recorded in `restriction_refusals` and counted in the report, never dropped: an unread
+   restriction leaves a banned movement legal, and Vissim will happily route traffic through it.
+   **murdoch.osm contains zero relations**, so this half is proved on synthetic fixtures only.
+6. **The service-road policy, stated.** `highway=service` is a carriageway like any other: split,
+   offset, connected, node-merged, U-turned. The reasoning sits in `osm.py` beside the allowlist —
+   the generator has three honest options (model them, exclude them by name, or leave them as
+   roads a vehicle can enter and never leave) and only the third is indefensible.
+   `--exclude-service` / `parse_osm_file(exclude_service=True)` is the opt-in strategic-network
+   path and produces NAMED skips. Never the default: deleting real carriageways silently is the
+   mirror image of inventing them.
+
+A seventh rule earned its place during the work: a **last-resort U-turn** for an approach that has
+no legal movement at all — every onward movement is antiparallel and was suppressed. Where there is
+no alternative path, a U-turn creates none, so this does not fight §5.3.3, and each one it fires on
+is named in the report rather than folded into a count. (Its other original case — "every way at
+this node is one-way inbound" — moved into `dead_ends()` where it belongs, below; on Murdoch that
+took this pass from 4 firings to 1.)
+
+An eighth thing the unit owes the reader: **the generator counts its own dangling ends.** Every
+built link no connector leaves goes into `metadata['connectivity']['dangling_approaches']` with the
+cause the generator itself decided, and `genesis_connectivity_probe.py` reports that list rather
+than classifying anything. Counting used to be the tool's job, and the split cost exactly what a
+split costs — see the review section below.
+
+**Result, measured** (`genesis_connectivity_probe.py`, offline, re-runnable):
+
+| | before | after |
+|---|---|---|
+| dangling link ends | **225** | **21** |
+| cul-de-sac U-turn missing | 172 | 0 |
+| one-way dead end (no second carriageway to turn into) | — | 15 |
+| junction where every movement is antiparallel (§5.3.3 suppression) | — | 4 |
+| model boundary (correct) | 2 | 2 |
+
+plain links 2,069 → 1,979; connectors 3,128 → 3,516; nodes 941 → 804. All 21 survivors are
+refusals with a named reason rather than unfinished work: repairing a one-way dead end would mean
+inventing a reverse carriageway. Every one of the 21 is now attributed by the generator, in
+`murdoch.genesis.json` and in the §5 compliance render — before the review below, 8 of them were
+named only inside the probe.
+
+**Verification:** full backend suite **4003 passed, 1 skipped, 0 failed** with the
+known-environmental `test_rag_retrieval_quality` excluded (it needs a RAG corpus this machine does
+not have; it is the one long-standing failure and is not touched here). 57 tests in
+`tests/test_genesis_connectivity.py`,
+every expected number hand-derived from the fixture's coordinates. Two runs of the Murdoch
+generation are byte-identical (`.inpx` sha256 `3f720fd9…`, `.genesis.json` `b6566f92…`). The core
+assertions were confirmed to FAIL against `HEAD` (extracted read-only with `git archive`): 0
+U-turns, cul-de-sac unreachable, near-touching ways unconnected, `exclude_service` rejected as an
+unknown argument — and every fix in the review section below was confirmed to fail by reverting it
+in the working tree and re-running its own test (16 mutations, 16 caught).
+
+**What an adversarial review of this unit found, and what it changed**
+
+The unit above was held from commit and re-reviewed against its own single hard constraint —
+*never invent connectivity that reality does not have*. It violated it, and 10 further defects came
+with it. All 11 are fixed; the two that mattered are these.
+
+1. **The merge invented junctions, and named none of them.** `_eligible_node_ids()` admitted every
+   way's first and last node unconditionally, so a lone cul-de-sac terminal was exactly as
+   mergeable as a real junction — while the whole derivation of the 7.0 m tolerance ("two junctions
+   cannot be closer than one carriageway") is a statement about *junctions* and says nothing about
+   two roads that merely END near each other. Two unrelated dead-end streets 3.8 m apart fused,
+   `intersection_node_ids()` then read the fused node as an intersection, and `build_draft` emitted
+   ordinary turn connectors between two streets that do not meet. Nothing named it: after the merge
+   `dead_ends()` saw neither terminal, so the fabricated road appeared in no report at all.
+   **Measured on the real Murdoch extract: 2 of the 97 clusters were made entirely of lone
+   terminals of different ways — two roads the generator built that the source data does not
+   contain.** The rule now is: *a merge may only reconcile a junction the source already describes*
+   — at least one node of every merged pair must be referenced by two or more kept ways — and every
+   refused pair is reported by name, because "these two roads end within one carriageway of each
+   other and were NOT joined" is a line a reviewer can act on and an invented road is not. Cost of
+   refusing, measured: 97 clusters → 95, dangling ends **21 → 21** (each freed terminal is a
+   cul-de-sac and gets its U-turn), invented junctions 2 → **0**.
+2. **Grade separation was refused pairwise, so it could be reached transitively.** A node that
+   legitimately carries BOTH signatures — a real ground/bridge transition — intersects either
+   grade, so a purely-ground node could be unioned into a cluster already holding the elevated way
+   while the far pair, being over the tolerance, was never a candidate and never compared. A local
+   street welded to a freeway deck, through the one node entitled to be at both heights. The
+   refusal now holds for the **cluster**: every member must share one common vertical position,
+   which is the pairwise test generalised from two nodes to *n*. Not observed on Murdoch (which
+   records **zero** grade refusals — the check is exercised there only in the sense of never
+   firing), but reachable by construction and now covered by a synthetic three-node fixture.
+   *The stricter reading was measured and rejected.* A rule refusing any merge that newly puts two
+   ways of different vertical signature on one node would fire on **8 of Murdoch's 95 clusters** —
+   and every one of them is the SAME road's ground and structure segments (`service` tunnel ↔
+   `service` ground, `secondary` bridge ↔ `secondary` ground, `unclassified` bridge ↔
+   `unclassified` ground). Those are bridge abutments and tunnel portals, i.e. precisely the
+   junction the merge exists to reconcile; not one is a low-class road meeting a high-class deck.
+   Refusing them would sever 8 real structure transitions to prevent nothing observed, so the
+   boundary sits at the cluster and is stated here with the measurement behind it.
+
+The nine others, in one line each: `dead_ends()` structurally could not see a terminal several ways
+*share* (they all END there, one-way inbound), so 2 Murdoch approaches were traps in no report — it
+sees them now, direction-aware, and the remaining unnamed cases moved into the generator's own
+dangling census; the probe's `--json` was not UTF-8 on Windows and its own output would not
+round-trip through `--baseline-json` across this project's two dev boxes; last-resort and
+cul-de-sac U-turns hard-coded `node_id=0` even at real junctions, which hid them from `signals.py`'s
+two node-scoped checks and made the report state that an approach had no onward movement when one
+genuinely left it; `osm_turn_restrictions_enforced` counted relations that *parsed* rather than bans
+that *fired* (now both numbers, with the inert ones named); and five paths that were defined but
+never exercised by a test — the last-resort pass itself and its boundary guard, the
+non-drivable-continuation dead-end reason (30 firings on Murdoch), three of the four restriction
+refusal codes, `UNBUILDABLE_U_TURN_NO_LINK_PAIR`, and the strict `<` at exact tolerance — now have
+one each.
+
+**Lesson, and it is the same one twice.** Both criticals are the *silent-plausible* failure this
+project exists to catch, one layer up from the emitter's: a number that improved (225 → 21) while
+the mechanism that improved it was quietly inventing the thing it was measuring. The unit's own
+doctrine — "a refused edit with a clear reason beats a completed edit with wrong numbers" — was
+written in its docstring and not enforced in its code. **A count is not evidence that the thing
+counted is real; a repair that no report can name is indistinguishable from a fabrication.** The
+second lesson is narrower and just as reusable: *the thing being measured must own the
+measurement.* A probe that classified for itself was free to disagree with the generator, and did —
+8 Murdoch approaches carried confident probe-side names that existed in no generator artifact.
+
+**Offline-only, and stated as such.** Every claim here is offline: the emitted file round-trips
+through `inpx_parser`, self-diffs empty through `genesis.diff`, and the Murdoch output is
+byte-identical across runs. **No Vissim has opened it.** The 2026-08-08 lesson applies unchanged —
+an offline round-trip proves self-consistency, never that Vissim LOADS the file. The emitter itself
+was NOT changed — the new connectors go through the same `_connector_element` /
+`_connector_lanes` path the 2026-08-06 live check certified — so the residual risk is geometry,
+not structure, and it is one specific thing: **every U-turn connector is 3.50 m long and
+antiparallel** (the two carriageways sit half a lane either side of the shared centreline), which
+is a tighter turn than any connector in either network that live check loaded. Short connectors in
+general are NOT the risk and were measured rather than assumed: the file already live-loaded on
+2026-08-06 carried 3 connectors under 0.5 m and 29 under 2 m, and this one carries **2 and 18** —
+the junction merge reduced that population rather than adding to it (min length 0.430 m → 0.480 m).
+A live LoadNet would also confirm that the 45 dropped stub ways left no dangling
+`<fromLinkEndPt>` reference — offline, `genesis.diff.load_topology` already resolves every
+endpoint with zero findings.
+
+**Client-facing note for TK:** the 21 remaining dangling ends are mostly one-way roads that end
+nowhere in OSM (South Street, Roe Highway, Kwinana Freeway ramps). Those are breaks in the base
+map, not in the generator, and each is named in the probe output — useful input if the client
+wants the map corrected before the model is calibrated on it.

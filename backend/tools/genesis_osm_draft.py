@@ -6,6 +6,11 @@ Usage (run from ``backend/``, with the venv python)::
     python tools/genesis_osm_draft.py --osm murdoch.osm --out-dir ../out/murdoch
     python tools/genesis_osm_draft.py --osm murdoch.osm --out-dir OUT --name murdoch_v1
     python tools/genesis_osm_draft.py --osm murdoch.osm --out-dir OUT --lang en
+    python tools/genesis_osm_draft.py --osm murdoch.osm --out-dir OUT --exclude-service
+
+Measure whether the result is DRIVABLE (dangling link ends, and why)::
+
+    python tools/genesis_connectivity_probe.py --inpx OUT/murdoch.inpx --osm murdoch.osm
 
 Writes three files into ``--out-dir`` (created if missing):
 
@@ -110,6 +115,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("ko", "en", "ja"),
         help="language of the compliance report and console output (ko primary)",
     )
+    parser.add_argument(
+        "--exclude-service",
+        action="store_true",
+        help=(
+            "drop every highway=service way (car-park aisles, driveways, back lanes) "
+            "as a NAMED skip. Default: service ways are modelled and connected like "
+            "any other carriageway — see services.genesis.osm.SERVICE_HIGHWAY for the "
+            "policy and why the default is what it is."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -138,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out_dir)
     name = args.name or osm_path.stem or "genesis_draft"
 
-    extract = parse_osm_file(osm_path)
+    extract = parse_osm_file(osm_path, exclude_service=args.exclude_service)
     draft = build_draft(extract, name=name)
 
     if draft.refused:

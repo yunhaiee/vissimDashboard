@@ -100,6 +100,27 @@ CIT_S5212_UNITS = (
 # every lane count derived from one is flagged ``assumed=True``.
 # ---------------------------------------------------------------------------
 
+#: **The `service` policy, stated.** ``highway=service`` — car-park aisles,
+#: driveways, back lanes — is IN the allowlist below, and that decision now has
+#: a consequence attached rather than being an accident of the table: a service
+#: way is a carriageway like any other. It is split, offset, given connectors,
+#: node-merged and given a cul-de-sac U-turn on exactly the same terms as a
+#: residential street. The reasoning is that this generator has only three
+#: honest options — model them, exclude them by name, or leave them in the file
+#: as carriageways a vehicle can enter and never leave — and the third is the
+#: one state that is indefensible, because a network that strands vehicles
+#: reports confident wrong numbers rather than failing.
+#:
+#: A modeller who wants the strategic network without car-park circulation asks
+#: for it: ``parse_osm_file(path, exclude_service=True)`` (CLI:
+#: ``--exclude-service``) drops every service way as a NAMED skip
+#: (:data:`SKIP_SERVICE_EXCLUDED_BY_POLICY`), so the exclusion is visible in the
+#: compliance report and in ``skipped_summary()``. It is never the default,
+#: because deleting real carriageways silently is the mirror image of inventing
+#: them: MRWA §5.3.3's "minimise the number of links and connectors" is a coding
+#: instruction, not a licence to delete roads the survey did not ask about.
+SERVICE_HIGHWAY = "service"
+
 DRIVABLE_HIGHWAY_DEFAULT_LANES: dict[str, int] = {
     "motorway": 2,
     "motorway_link": 1,
@@ -124,6 +145,39 @@ SKIP_HIGHWAY_NOT_DRIVABLE = "highway_not_drivable"
 SKIP_AREA = "area_not_a_carriageway"
 SKIP_TOO_FEW_NODES = "fewer_than_two_resolvable_nodes"
 SKIP_ZERO_LENGTH = "zero_length_after_deduplication"
+#: Only ever produced by an explicit ``exclude_service=True`` — see
+#: :data:`SERVICE_HIGHWAY`. A policy exclusion is a named skip, never a silence.
+SKIP_SERVICE_EXCLUDED_BY_POLICY = "service_excluded_by_policy"
+
+#: Reason codes for a ``type=restriction`` relation this module could not read.
+#: Recorded rather than ignored: an unread restriction is a movement that stays
+#: legal in the model although the map bans it, which is precisely the silent
+#: over-permission this package exists to surface.
+RESTRICTION_VIA_NOT_A_NODE = "restriction_via_is_not_a_node"
+RESTRICTION_MEMBERS_INCOMPLETE = "restriction_members_incomplete"
+RESTRICTION_KIND_UNKNOWN = "restriction_kind_not_understood"
+RESTRICTION_WAY_NOT_KEPT = "restriction_names_a_way_this_network_does_not_contain"
+
+#: The ``restriction=*`` values this generator enforces. ``no_*`` bans the named
+#: movement; ``only_*`` bans every movement from that approach except the named
+#: one. Both only ever REMOVE connectivity, which is why they are safe to apply
+#: without a survey: the worst case of a misread restriction is a model that
+#: forbids a legal turn, and that shows up as a routing failure rather than as a
+#: plausible wrong number.
+RESTRICTION_KINDS = frozenset(
+    {
+        "no_left_turn",
+        "no_right_turn",
+        "no_straight_on",
+        "no_u_turn",
+        "no_entry",
+        "no_exit",
+        "only_left_turn",
+        "only_right_turn",
+        "only_straight_on",
+        "only_u_turn",
+    }
+)
 
 #: Reason codes for :class:`OsmRefusal`.
 REFUSE_FILE_MISSING = "osm_file_missing"
@@ -239,6 +293,18 @@ class OsmWay:
     directions: tuple[WayDirection, ...]
     bus_lane_keys: tuple[str, ...] = ()
     maxspeed: str = ""
+    #: Vertical position, verbatim from the file. Read for ONE purpose: the
+    #: node merge in :mod:`services.genesis.connectivity` refuses to join two
+    #: nodes whose ways disagree about it, because a freeway passes within
+    #: centimetres of the road under it *in plan* and welding them together
+    #: would connect a network to the one crossing it.
+    layer: str = ""
+    bridge: str = ""
+    tunnel: str = ""
+    #: ``noexit=yes`` — the mapper's own statement that the way dead-ends.
+    #: Corroboration only: the cul-de-sac detector reads TOPOLOGY, because most
+    #: real cul-de-sacs carry no such tag and a tag cannot create a junction.
+    noexit: str = ""
 
     @property
     def is_oneway(self) -> bool:
@@ -285,6 +351,46 @@ class OsmRefusal:
         return {"code": self.code, "message": self.message}
 
 
+@dataclass(frozen=True)
+class TurnRestriction:
+    """One ``type=restriction`` relation, reduced to the movement it bans.
+
+    Only the simple ``from`` way / ``via`` NODE / ``to`` way form is carried.
+    The ``via``-way form (a restriction over a whole link, e.g. across a
+    roundabout) describes a movement this generator's connector model has no
+    single object for, so it is REFUSED by name rather than approximated —
+    approximating it would either ban a legal turn or leave a banned one legal,
+    and neither is visible in a rendering.
+    """
+
+    id: int
+    kind: str
+    from_way: int
+    via_node: int
+    to_way: int
+
+    def as_dict(self) -> dict:
+        return {
+            "relation_id": self.id,
+            "kind": self.kind,
+            "from_way": self.from_way,
+            "via_node": self.via_node,
+            "to_way": self.to_way,
+        }
+
+
+@dataclass(frozen=True)
+class RestrictionRefusal:
+    """A restriction relation this module did not enforce, named with why."""
+
+    id: int
+    reason: str
+    detail: str
+
+    def as_dict(self) -> dict:
+        return {"relation_id": self.id, "reason": self.reason, "detail": self.detail}
+
+
 @dataclass
 class OsmExtract:
     """Everything read out of one ``.osm`` file."""
@@ -295,6 +401,23 @@ class OsmExtract:
     skipped: list[SkippedWay] = field(default_factory=list)
     refusals: list[OsmRefusal] = field(default_factory=list)
     ways_seen: int = 0
+    #: ``(min_lat, min_lon, max_lat, max_lon)`` from the file's own ``<bounds>``
+    #: element, or ``None`` when it has none. This is the DOWNLOAD WINDOW, which
+    #: is a different fact from :meth:`bounds` (the extent of the geometry that
+    #: came back) and is used for a different question: a way terminal outside
+    #: the window is a road leaving the study area, not a cul-de-sac. Overpass
+    #: returns whole ways, so such terminals are normal and common.
+    declared_bounds: tuple[float, float, float, float] | None = None
+    #: ``type=restriction`` relations reduced to bannable movements.
+    restrictions: list[TurnRestriction] = field(default_factory=list)
+    #: The ones that could not be, named. Never empty-by-silence.
+    restriction_refusals: list[RestrictionRefusal] = field(default_factory=list)
+    #: Nodes referenced by ways this generator does NOT model (footway, path,
+    #: cycleway, …). A way terminal that is one of these is a dead end for a
+    #: motor vehicle even though the file shows the corridor continuing — the
+    #: distinction is reported separately by ``connectivity.dead_ends`` so a
+    #: reviewer can disagree with it.
+    non_drivable_node_ids: set[int] = field(default_factory=set)
 
     @property
     def refused(self) -> bool:
@@ -573,13 +696,19 @@ def _dedupe_consecutive(node_ids: list[int]) -> tuple[int, ...]:
 # ---------------------------------------------------------------------------
 
 
-def parse_osm_file(path: str | Path) -> OsmExtract:
+def parse_osm_file(path: str | Path, *, exclude_service: bool = False) -> OsmExtract:
     """Read one local ``.osm`` file. Reports, never raises.
 
     Pass 1 streams ``<way>`` elements (classifying, lane-reading, and recording
-    every skip by name); pass 2 streams ``<node>`` elements and keeps only the
-    ones a kept way references. Both passes clear each element as they go, so
-    peak memory is the kept geometry rather than the whole document.
+    every skip by name), plus the ``<bounds>`` element and the
+    ``type=restriction`` relations; pass 2 streams ``<node>`` elements and keeps
+    only the ones a kept way references. Both passes clear each element as they
+    go, so peak memory is the kept geometry rather than the whole document.
+
+    ``exclude_service`` applies the opt-in half of the service-road policy
+    documented at :data:`SERVICE_HIGHWAY`: every ``highway=service`` way becomes
+    a named skip (:data:`SKIP_SERVICE_EXCLUDED_BY_POLICY`) instead of a
+    carriageway. Default ``False`` — service ways are modelled and connected.
     """
     file_path = Path(path)
     extract = OsmExtract(source=str(file_path))
@@ -594,7 +723,7 @@ def parse_osm_file(path: str | Path) -> OsmExtract:
         return extract
 
     try:
-        needed_nodes = _pass1_ways(file_path, extract)
+        needed_nodes = _pass1_ways(file_path, extract, exclude_service=exclude_service)
     except ET.ParseError as exc:
         extract.refusals.append(
             OsmRefusal(REFUSE_UNPARSEABLE, f"{file_path.name}: not well-formed XML — {exc}")
@@ -625,6 +754,7 @@ def parse_osm_file(path: str | Path) -> OsmExtract:
         return extract
 
     _drop_ways_with_unresolvable_nodes(extract)
+    _drop_restrictions_naming_absent_ways(extract)
     if not extract.ways:
         extract.refusals.append(
             OsmRefusal(
@@ -636,11 +766,21 @@ def parse_osm_file(path: str | Path) -> OsmExtract:
     return extract
 
 
-def _pass1_ways(file_path: Path, extract: OsmExtract) -> set[int]:
+def _pass1_ways(
+    file_path: Path, extract: OsmExtract, *, exclude_service: bool = False
+) -> set[int]:
     needed: set[int] = set()
     for _event, elem in ET.iterparse(str(file_path), events=("end",)):
+        if elem.tag == "bounds":
+            extract.declared_bounds = _declared_bounds(elem)
+            elem.clear()
+            continue
+        if elem.tag == "relation":
+            _read_restriction(elem, extract)
+            elem.clear()
+            continue
         if elem.tag != "way":
-            if elem.tag in {"node", "relation"}:
+            if elem.tag == "node":
                 elem.clear()
             continue
         extract.ways_seen += 1
@@ -655,11 +795,13 @@ def _pass1_ways(file_path: Path, extract: OsmExtract) -> set[int]:
             continue
         highway = tags.get("highway", "").strip()
         if not highway:
+            extract.non_drivable_node_ids.update(node_ids)
             extract.skipped.append(
                 SkippedWay(way_id, SKIP_NO_HIGHWAY_TAG, "", "way carries no highway=* tag")
             )
             continue
         if highway not in DRIVABLE_HIGHWAY_DEFAULT_LANES:
+            extract.non_drivable_node_ids.update(node_ids)
             extract.skipped.append(
                 SkippedWay(
                     way_id,
@@ -667,6 +809,17 @@ def _pass1_ways(file_path: Path, extract: OsmExtract) -> set[int]:
                     highway,
                     f"highway={highway} is not in the drivable allowlist "
                     f"({len(DRIVABLE_HIGHWAY_DEFAULT_LANES)} values)",
+                )
+            )
+            continue
+        if exclude_service and highway == SERVICE_HIGHWAY:
+            extract.skipped.append(
+                SkippedWay(
+                    way_id,
+                    SKIP_SERVICE_EXCLUDED_BY_POLICY,
+                    highway,
+                    "highway=service excluded by an explicit exclude_service=True; the "
+                    "default policy is to model and connect service ways",
                 )
             )
             continue
@@ -698,10 +851,95 @@ def _pass1_ways(file_path: Path, extract: OsmExtract) -> set[int]:
                 directions=_directional_lanes(tags, highway, oneway),
                 bus_lane_keys=tuple(k for k in BUS_LANE_KEYS if k in tags),
                 maxspeed=tags.get("maxspeed", ""),
+                layer=tags.get("layer", "").strip(),
+                bridge=tags.get("bridge", "").strip(),
+                tunnel=tags.get("tunnel", "").strip(),
+                noexit=tags.get("noexit", "").strip(),
             )
         )
         needed.update(node_ids)
     return needed
+
+
+def _declared_bounds(elem: ET.Element) -> tuple[float, float, float, float] | None:
+    values = [
+        _float_attr(elem, name) for name in ("minlat", "minlon", "maxlat", "maxlon")
+    ]
+    if any(value is None for value in values):
+        return None
+    min_lat, min_lon, max_lat, max_lon = values  # type: ignore[misc]
+    if min_lat > max_lat or min_lon > max_lon:
+        return None
+    return min_lat, min_lon, max_lat, max_lon
+
+
+def _read_restriction(elem: ET.Element, extract: OsmExtract) -> None:
+    """One ``<relation>`` → a :class:`TurnRestriction`, or a named refusal.
+
+    Reads only ``type=restriction``; every other relation type is not this
+    module's business and is passed over without comment. A restriction that IS
+    one and cannot be reduced to (from way, via node, to way) is recorded in
+    :attr:`OsmExtract.restriction_refusals` — never dropped — because a
+    restriction that quietly fails to apply leaves a banned movement legal in
+    the model, and Vissim will happily route traffic through it.
+    """
+    tags = _tags(elem)
+    if tags.get("type", "").strip() != "restriction":
+        return
+    relation_id = _int_attr(elem, "id")
+    if relation_id is None:
+        return
+    kind = (tags.get("restriction") or "").strip().lower()
+    members = {"from": [], "via": [], "to": []}  # type: dict[str, list[tuple[str, int]]]
+    for member in elem.findall("member"):
+        role = (member.get("role") or "").strip()
+        if role not in members:
+            continue
+        ref = _int_attr(member, "ref")
+        if ref is None:
+            continue
+        members[role].append(((member.get("type") or "").strip(), ref))
+
+    if kind not in RESTRICTION_KINDS:
+        extract.restriction_refusals.append(
+            RestrictionRefusal(
+                relation_id,
+                RESTRICTION_KIND_UNKNOWN,
+                f"restriction={tags.get('restriction', '')!r} is not one of the "
+                f"{len(RESTRICTION_KINDS)} values this generator enforces",
+            )
+        )
+        return
+    if len(members["from"]) != 1 or len(members["to"]) != 1 or len(members["via"]) != 1:
+        extract.restriction_refusals.append(
+            RestrictionRefusal(
+                relation_id,
+                RESTRICTION_MEMBERS_INCOMPLETE,
+                "expected exactly one from / one via / one to member, got "
+                f"{len(members['from'])}/{len(members['via'])}/{len(members['to'])}",
+            )
+        )
+        return
+    via_type, via_ref = members["via"][0]
+    if via_type != "node":
+        extract.restriction_refusals.append(
+            RestrictionRefusal(
+                relation_id,
+                RESTRICTION_VIA_NOT_A_NODE,
+                f"via member is a {via_type or 'nameless object'}; a via-way restriction "
+                "spans several connectors and is not approximated here",
+            )
+        )
+        return
+    extract.restrictions.append(
+        TurnRestriction(
+            id=relation_id,
+            kind=kind,
+            from_way=members["from"][0][1],
+            via_node=via_ref,
+            to_way=members["to"][0][1],
+        )
+    )
 
 
 def _pass2_nodes(file_path: Path, extract: OsmExtract, needed: set[int]) -> None:
@@ -758,6 +996,36 @@ def _drop_ways_with_unresolvable_nodes(extract: OsmExtract) -> None:
 
     referenced = {nid for way in kept for nid in way.node_ids}
     extract.nodes = {nid: node for nid, node in extract.nodes.items() if nid in referenced}
+
+
+def _drop_restrictions_naming_absent_ways(extract: OsmExtract) -> None:
+    """A restriction over a way this network does not contain cannot be applied.
+
+    That is not automatically an error — a restriction at the edge of an extract
+    routinely names a way outside it — but it IS a movement ban the model does
+    not carry, so it is moved into the refusal list by name rather than being
+    silently dropped from the enforced set.
+    """
+    kept = {way.id for way in extract.ways}
+    applicable: list[TurnRestriction] = []
+    for restriction in extract.restrictions:
+        missing = [
+            way_id
+            for way_id in (restriction.from_way, restriction.to_way)
+            if way_id not in kept
+        ]
+        if missing:
+            extract.restriction_refusals.append(
+                RestrictionRefusal(
+                    restriction.id,
+                    RESTRICTION_WAY_NOT_KEPT,
+                    f"restriction={restriction.kind} names way(s) {missing}, which this "
+                    "network does not contain (outside the extract, or not drivable)",
+                )
+            )
+            continue
+        applicable.append(restriction)
+    extract.restrictions = applicable
 
 
 def _int_attr(elem: ET.Element, name: str) -> int | None:
