@@ -961,6 +961,124 @@ contractTest("U9: the approval card reacts to 401/403 from the server, never to 
 });
 
 // ---------------------------------------------------------------------------
+// Unit P④ — user↔project membership and the admin screen
+// ---------------------------------------------------------------------------
+
+contractTest("P4: the admin API is structurally unable to carry a project id", (pin) => {
+  // The backend puts every non-default project behind membership
+  // (backend/services/membership.py), so a browser holding a stale or
+  // forbidden `vissim-workspace-id` in localStorage gets a 404/403 from
+  // main.WorkspaceScopeMiddleware BEFORE routing. The admin screen is the ONLY
+  // place project access can be repaired -- if its own calls carried that
+  // header, the page for fixing broken project access would be unreachable to
+  // exactly the people whose project access is broken.
+  //
+  // So it is structural, not conventional: the whole admin block goes through
+  // `authFetch`, the one path that DELETES the header (pinned above), via a
+  // single `adminRequest` helper.
+  const api = read("lib/api.ts");
+  const marker = "async function adminRequest";
+  const adminSlice = api.includes(marker) ? api.slice(api.indexOf(marker)) : "";
+
+  pin.match(adminSlice, /\S/, "expected the admin bindings in lib/api.ts (marker moved?)");
+  pin.match(adminSlice, /authFetch\(path, \{ cache: "no-store"/, "expected adminRequest to go through authFetch");
+  pin.doesNotMatch(
+    adminSlice,
+    /apiFetch\(|apiMutationFetch\(|apiDirectMutationFetch\(/,
+    "no admin binding may use a fetch path that injects X-Workspace-Id",
+  );
+  // Every admin binding routes through the one helper, so a new endpoint
+  // cannot pick a different transport by accident.
+  for (const fn of [
+    "fetchAdminUsers",
+    "fetchAdminWorkspaces",
+    "createAdminUser",
+    "setAdminUserPassword",
+    "setAdminUserDisabled",
+    "setAdminUserRole",
+    "fetchWorkspaceMembers",
+    "grantWorkspaceMember",
+    "revokeWorkspaceMember",
+  ]) {
+    pin.match(adminSlice, new RegExp(`export async function ${fn}\\b`), `expected an admin binding named ${fn}`);
+  }
+  pin.match(
+    adminSlice,
+    /throw new AuthRequestError\(await readApiError\(r\), r\.status\)/,
+    "expected admin failures to carry the HTTP status so 401 and 403 stay distinguishable",
+  );
+});
+
+contractTest("P4: the admin page defers to the server and never renders a broken shell", (pin) => {
+  const page = read("app/admin/page.tsx");
+  const shell = read("components/AppShell.tsx");
+
+  // 401 and 403 are different facts. 401 -> the login screen with `next` set
+  // back here; 403 -> an explicit refusal, because auto-routing a signed-in
+  // non-admin to /login lands on "이미 로그인되어 있습니다" and a Continue
+  // button back to the same refusal, which is a loop rather than a destination.
+  pin.match(
+    page,
+    /caught\.status === 401[\s\S]{0,160}?router\.replace\(loginHref\("\/admin"\)\)/,
+    "expected a 401 to route to /login with next=/admin",
+  );
+  pin.match(
+    page,
+    /caught\.status === 403[\s\S]{0,160}?setAccess\("forbidden"\)/,
+    "expected a 403 to become an explicit refusal state",
+  );
+  pin.match(page, /access === "forbidden"/, "expected the refusal state to have its own screen");
+  pin.match(page, /href=\{loginHref\("\/admin"\)\}/, "expected the refusal screen to offer a sign-in link");
+  pin.match(
+    page,
+    /if \(status === "loading" \|\| access === "loading"\)/,
+    "expected the page not to flash a screen before whoami() and the first load settle",
+  );
+
+  // The server decides. The page may not skip the request because the cached
+  // role looks wrong -- that would show an empty console to a user whose role
+  // changed since the last whoami().
+  pin.doesNotMatch(page, /user\?\.role === "admin"/, "the admin page must ask the server, not gate on the cached role");
+  // No generated password anywhere: the operator types it (services/auth.py).
+  pin.doesNotMatch(
+    page,
+    /Math\.random|crypto\.getRandomValues|generatePassword/,
+    "the admin screen must never invent a credential",
+  );
+  pin.match(page, /autoComplete="new-password"/, "expected real password fields on the create/reset forms");
+
+  // The shell link IS gated on the cached role, and that is fine: it hides a
+  // menu item, it does not gate a capability.
+  pin.match(shell, /user\?\.role === "admin"/, "expected the admin nav link to be shown only to admins");
+  pin.match(shell, /href: "\/admin"/, "expected the shell to link to the admin screen");
+});
+
+contractTest("P4: every admin-page string carries its own Japanese", (pin) => {
+  // pickByLanguage keys ja off the KOREAN string (lib/i18n.ts), so a
+  // two-argument t(ko, en) with no dictionary entry silently renders English
+  // for Japanese users -- the same hazard the login page's pin above guards.
+  // This page answers it differently: it uses the THREE-argument form
+  // everywhere, so there is no dictionary to keep in sync at all. The pin is
+  // therefore "no two-argument call exists", which needs no dictionary lookup.
+  const page = read("app/admin/page.tsx");
+  const twoArgCalls = [...page.matchAll(/\bt\(\s*"((?:[^"\\]|\\.)+)"\s*,\s*"(?:[^"\\]|\\.)*"\s*,?\s*\)/g)];
+  const localizedCalls = [...page.matchAll(/\bt\(\s*"/g)];
+
+  pin.match(
+    `count=${twoArgCalls.length}`,
+    /^count=0$/,
+    `the admin page must use t(ko, en, ja) everywhere; two-argument calls found: ${twoArgCalls
+      .map((match) => match[1])
+      .join(" | ")}`,
+  );
+  pin.match(
+    `count=${localizedCalls.length}`,
+    /count=([2-9]\d|\d{3,})/,
+    "expected at least 20 localized strings on the admin page -- fewer means this extraction went stale, not that the page shrank",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Roadmap row 2.4 — network diff view
 // ---------------------------------------------------------------------------
 

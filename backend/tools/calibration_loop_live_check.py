@@ -143,6 +143,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -201,10 +202,18 @@ REFUSAL_NODE = "5"
 TARGET_BEFORE_GEH = 7.5
 
 #: A clearly-named demo account in the real app DB (runtime/db/app.db).
+#:
+#: NO password constant, on purpose. This account lives in the REAL app DB, so
+#: a password readable in source would be exactly the "default credential"
+#: ``services/auth.py`` promises does not exist anywhere. Instead stage 4 mints
+#: a fresh random throwaway each run (held in a local variable only -- NEVER
+#: passed to ``_log``, which tees to a file) and rotates the account onto it
+#: via ``auth.set_password`` (which also revokes the previous run's sessions).
+#: The account itself is KEPT between runs -- the signed DOCX names this
+#: reviewer -- but between runs no credential for it exists anywhere.
 DEMO_REVIEWER_USERNAME = "demo-reviewer-2026-08-07"
 DEMO_REVIEWER_DISPLAY = "데모 검토자"
 DEMO_REVIEWER_ROLE = "reviewer"
-DEMO_REVIEWER_PASSWORD = "demo-live-calibration-2026"  # >= auth.MIN_PASSWORD_CHARS
 
 ALL_STAGES = (0, 1, 2, 3, 4, 5, 6, 7)
 
@@ -473,6 +482,34 @@ def _stream_events(response) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _admin_bearer_headers() -> dict[str, str]:
+    """``Authorization`` headers for an EXISTING enabled admin on this box.
+
+    Unit P④ put non-default workspaces behind membership, so this probe can no
+    longer drive them anonymously. It borrows an account rather than making
+    one: creating an admin here would be a probe script minting the most
+    privileged credential in the product, which is precisely what
+    ``backend/tools/manage_users.py``'s "only an operator, only with a password
+    they typed" policy exists to prevent. If there is no admin, the probe
+    refuses and says which command creates one.
+    """
+    from services import auth
+
+    admin = next(
+        (user for user in auth.list_users() if user["role"] == "admin" and not user["disabled"]),
+        None,
+    )
+    if admin is None:
+        raise SystemExit(
+            "This probe needs an enabled admin account to create its demo project "
+            "(unit P④ put non-default projects behind membership). Create one first:\n"
+            "    python tools/manage_users.py create-admin --username <you>"
+        )
+    token, _session = auth.create_session(admin["id"])
+    _log(f"[0.0] Authenticated as the existing admin {admin['username']!r} for the workspace calls")
+    return {"Authorization": f"Bearer {token}"}
+
+
 def stage_0_workspace(client, skip_numruns_prep: bool = True) -> None:
     _banner("[STAGE 0] Demo workspace + a COPY of the consultant network")
     entry = _stage("0_workspace")
@@ -567,12 +604,21 @@ def stage_0_workspace(client, skip_numruns_prep: bool = True) -> None:
         if n_runs != 1:
             raise SystemExit(f"Expected exactly one numRuns attribute, replaced {n_runs}.")
 
+    # Unit P④: a non-default workspace is now behind membership, and creating
+    # one requires a signed-in user. This probe therefore has to authenticate.
+    # It borrows an EXISTING enabled admin rather than creating an account or
+    # inventing a password -- the "only an operator brings an account into
+    # existence" rule (services/auth.py) is not suspended for a probe.
+    admin_auth = _admin_bearer_headers()
+
     workspace_id = _state.get("workspace_id")
     if workspace_id:
         _log(f"[0.3] Reusing the demo workspace already recorded: {workspace_id}")
         entry["reused_existing_workspace"] = True
     else:
-        created = client.post("/api/workspaces", json={"name": DEMO_WORKSPACE_NAME})
+        created = client.post(
+            "/api/workspaces", json={"name": DEMO_WORKSPACE_NAME}, headers=admin_auth
+        )
         if created.status_code != 200:
             raise SystemExit(f"Workspace creation failed: {created.status_code} {created.text}")
         record = created.json()
@@ -581,7 +627,7 @@ def stage_0_workspace(client, skip_numruns_prep: bool = True) -> None:
         _log(f"[0.3] Created workspace {workspace_id!r} name={record['name']!r}")
     _state["workspace_id"] = workspace_id
 
-    headers = {"X-Workspace-Id": workspace_id}
+    headers = {"X-Workspace-Id": workspace_id, **admin_auth}
     _state["headers"] = headers
     from urllib.parse import quote
 
@@ -1261,20 +1307,37 @@ def stage_4_approval(client) -> None:
     proposal = _state["_proposal"]
 
     # --- the demo reviewer, in the real app DB -----------------------------
+    # One-run throwaway credential: in-memory only, never logged, never saved.
+    # See the DEMO_REVIEWER_* comment block for why there is no constant.
+    reviewer_password = secrets.token_urlsafe(24)
     existing = auth.get_user_by_username(DEMO_REVIEWER_USERNAME)
     if existing is None:
         auth.create_user(
             DEMO_REVIEWER_USERNAME,
-            DEMO_REVIEWER_PASSWORD,
+            reviewer_password,
             DEMO_REVIEWER_ROLE,
             display_name=DEMO_REVIEWER_DISPLAY,
         )
-        _log(f"[4.1] Created demo account {DEMO_REVIEWER_USERNAME!r} role={DEMO_REVIEWER_ROLE}")
+        _log(f"[4.1] Created demo account {DEMO_REVIEWER_USERNAME!r} role={DEMO_REVIEWER_ROLE} "
+             "(one-run throwaway password, not recorded anywhere)")
     else:
-        _log(f"[4.1] Demo account {DEMO_REVIEWER_USERNAME!r} already exists (role={existing['role']})")
+        auth.set_password(DEMO_REVIEWER_USERNAME, reviewer_password)
+        _log(f"[4.1] Demo account {DEMO_REVIEWER_USERNAME!r} already exists (role={existing['role']}) "
+             "-- rotated onto a fresh one-run password; prior sessions revoked")
+
+    # Unit P④: the reviewer's own token replaces the admin's on the approve
+    # call below, and a plain reviewer is not a member of the demo project --
+    # so grant it, or the membership middleware answers 403 before the approval
+    # gate is ever reached.
+    from services import membership as membership_service
+
+    reviewer_record = auth.get_user_by_username(DEMO_REVIEWER_USERNAME)
+    membership_service.grant(_state["workspace_id"], int(reviewer_record["id"]))
+    _log(f"[4.1] Granted {DEMO_REVIEWER_USERNAME!r} membership of the demo project")
+
     login = client.post(
         "/api/auth/login",
-        json={"username": DEMO_REVIEWER_USERNAME, "password": DEMO_REVIEWER_PASSWORD},
+        json={"username": DEMO_REVIEWER_USERNAME, "password": reviewer_password},
         headers=_state["headers"],
     )
     if login.status_code != 200:
@@ -1729,6 +1792,8 @@ def stage_7_teardown(pids_before: set[int]) -> None:
             "role": DEMO_REVIEWER_ROLE,
             "db": str(REPO_ROOT / "runtime" / "db" / "app.db"),
             "disposition": "KEPT -- the DOCX names this reviewer; deleting it would orphan the signature.",
+            "credential": "one-run throwaway, rotated each run, recorded nowhere -- "
+            "no standing login exists for this account between runs.",
         },
         "evidence_dir": str(WORK_ROOT),
         "artifacts": sorted(str(p) for p in ARTIFACT_DIR.glob("*")) if ARTIFACT_DIR.is_dir() else [],

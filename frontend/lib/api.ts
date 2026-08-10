@@ -151,8 +151,17 @@ function withWorkspaceHeader(init?: RequestInit): RequestInit {
   return { ...(init ?? {}), headers };
 }
 
+// `credentials: "include"` for the same reason `noWorkspaceRequestInit` states
+// it: this init builds the DIRECT http://127.0.0.1:8001 leg of the fallback
+// ladder, which is cross-origin, and fetch's default ("same-origin") drops the
+// session cookie there. Before unit P④ an anonymous direct leg merely lost
+// personalisation; now `main.WorkspaceScopeMiddleware` fail-closes a caller it
+// cannot identify, so a cookie-less leg would 403 every read of a non-default
+// 프로젝트 -- a signed-in member watching their own project refuse them the
+// moment the Next proxy hiccups. The backend sets `allow_credentials=True`.
 function requestInitForBase(base: string, init?: RequestInit): LocalNetworkRequestInit {
   const nextInit = withWorkspaceHeader(init) as LocalNetworkRequestInit;
+  nextInit.credentials = nextInit.credentials ?? "include";
   if (isLocalApiBase(base)) {
     nextInit.mode = nextInit.mode ?? "cors";
     nextInit.targetAddressSpace = "local";
@@ -2731,4 +2740,141 @@ export async function fetchTrajectories(params?: {
   });
   if (!r.ok) throw new Error(await readApiError(r));
   return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Admin: accounts and project membership (unit P④ — backend/routers/admin.py)
+// ---------------------------------------------------------------------------
+//
+// Two properties make this block different from every other family above, and
+// both are structural rather than conventional:
+//
+// 1. **These calls go through `authFetch`, not `apiFetch`.** Administration is
+//    GLOBAL, not scoped to a 프로젝트, and `authFetch` is the one path that
+//    DELETES `X-Workspace-Id` (see `noWorkspaceRequestInit`). Without that, a
+//    browser holding a stale or forbidden workspace id in localStorage would
+//    get a workspace 404/403 from `main.WorkspaceScopeMiddleware` before the
+//    admin route was ever reached — i.e. the page for fixing project access
+//    would be unreachable to anyone whose project access is broken.
+// 2. **Failures arrive as `AuthRequestError`, carrying the status.** The admin
+//    page has to tell 401 (sign in) from 403 (signed in, not an admin) from a
+//    server fault, and it must not do that by string-matching a localized
+//    detail — same reasoning as the login page's.
+//
+// Nothing here caches a user list, a role, or anything else that would let the
+// UI pre-judge an answer: the server stays the authority, exactly as
+// components/AuthProvider.tsx states for the session itself.
+
+/** `services/auth._public_user` plus the role vocabulary the server accepts,
+ * so the role picker cannot drift from `services/auth.ROLES`. */
+export interface AdminUserListResponse {
+  users: AuthUser[];
+  roles: string[];
+}
+
+/** One row of `GET /api/admin/workspaces/{id}/members`
+ * (`services/membership._public_member`). `role` is the USER's global role;
+ * `membership_role` is their role INSIDE this project — deliberately separate
+ * fields, because they answer different questions. */
+export interface WorkspaceMember {
+  user_id: number;
+  username: string;
+  display_name: string;
+  role: string;
+  disabled: boolean;
+  membership_role: string;
+  member_since: string;
+}
+
+/** `open_to_everyone` is true for the DEFAULT project, which is readable by
+ * anonymous callers by design (services/membership.py's rule table). The UI
+ * must say so rather than render an empty roster, which would tell the admin
+ * the opposite of the truth.
+ *
+ * Grant and revoke answer with this SAME shape (plus `granted`/`revoked`), so
+ * a mutation never leaves the screen re-deriving a roster from a partial
+ * response. */
+export interface WorkspaceMemberListResponse {
+  workspace: WorkspaceSummary;
+  members: WorkspaceMember[];
+  open_to_everyone: boolean;
+  granted?: unknown;
+  revoked?: boolean;
+}
+
+async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await authFetch(path, { cache: "no-store", ...(init ?? {}) });
+  if (!r.ok) throw new AuthRequestError(await readApiError(r), r.status);
+  return (await r.json()) as T;
+}
+
+function adminJsonInit(method: string, body: unknown): RequestInit {
+  return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+}
+
+export async function fetchAdminUsers(): Promise<AdminUserListResponse> {
+  return adminRequest<AdminUserListResponse>("/api/admin/users");
+}
+
+/** The project list for the ADMIN screen — the same `GET /api/workspaces`,
+ * fetched WITHOUT `X-Workspace-Id`.
+ *
+ * `fetchWorkspaces` above sends the selected project's id, which is right for
+ * the picker and wrong here: the admin screen exists to repair project access,
+ * and a stale or since-deleted id in localStorage would 404 the very request
+ * that lists the projects the admin needs to fix. An absent header resolves to
+ * the default project, which is open to everyone by design, and the response
+ * is still filtered by who the caller is (an admin sees all).
+ *
+ * Typed through `AuthRequestError` (not `Error`) like the rest of this block,
+ * so the page can route a 401 to the login screen. */
+export async function fetchAdminWorkspaces(): Promise<WorkspaceListResponse> {
+  return adminRequest<WorkspaceListResponse>("/api/workspaces");
+}
+
+/** The admin types the password. There is no generated secret and no invite
+ * link anywhere in this product — see backend/services/auth.py's docstring. */
+export async function createAdminUser(payload: {
+  username: string;
+  password: string;
+  role: string;
+  display_name?: string;
+}): Promise<AuthUser> {
+  return adminRequest<AuthUser>("/api/admin/users", adminJsonInit("POST", payload));
+}
+
+export async function setAdminUserPassword(userId: number, password: string): Promise<AuthUser> {
+  return adminRequest<AuthUser>(`/api/admin/users/${userId}/password`, adminJsonInit("POST", { password }));
+}
+
+export async function setAdminUserDisabled(userId: number, disabled: boolean): Promise<AuthUser> {
+  return adminRequest<AuthUser>(`/api/admin/users/${userId}/disabled`, adminJsonInit("POST", { disabled }));
+}
+
+export async function setAdminUserRole(userId: number, role: string): Promise<AuthUser> {
+  return adminRequest<AuthUser>(`/api/admin/users/${userId}/role`, adminJsonInit("POST", { role }));
+}
+
+export async function fetchWorkspaceMembers(workspaceId: string): Promise<WorkspaceMemberListResponse> {
+  return adminRequest<WorkspaceMemberListResponse>(`/api/admin/workspaces/${workspaceId}/members`);
+}
+
+export async function grantWorkspaceMember(
+  workspaceId: string,
+  userId: number,
+): Promise<WorkspaceMemberListResponse> {
+  return adminRequest<WorkspaceMemberListResponse>(
+    `/api/admin/workspaces/${workspaceId}/members`,
+    adminJsonInit("POST", { user_id: userId }),
+  );
+}
+
+export async function revokeWorkspaceMember(
+  workspaceId: string,
+  userId: number,
+): Promise<WorkspaceMemberListResponse> {
+  return adminRequest<WorkspaceMemberListResponse>(
+    `/api/admin/workspaces/${workspaceId}/members/${userId}`,
+    { method: "DELETE" },
+  );
 }

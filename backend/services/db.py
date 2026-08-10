@@ -17,6 +17,18 @@ walk the runs registry through it.
 must not be smuggled in here — a half-migrated registry with two sources of
 truth is strictly worse than the file-only version that works today.
 
+**Unit P④ adds one more (v2): ``workspace_members``** — the many-to-many join
+between a person and a 프로젝트. It belongs here and not in the workspace
+registry JSON for the same reason ``users`` does: it is small, relational,
+concurrently written, and read on the request path of every non-default
+workspace. The workspace registry stays the authority on which workspaces
+EXIST; this table is only the authority on who may see them. Note the
+deliberate asymmetry — ``user_id`` is a real foreign key (deleting a user must
+take their memberships with it), ``workspace_id`` is a plain TEXT column,
+because workspaces live in a JSON registry on disk and SQLite cannot reference
+what it cannot see. ``services/membership.py`` owns the resulting orphan
+question and answers it by filtering every listing through the registry.
+
 **Why a per-call connection, not a thread-local one.** Prism's endpoints are
 mostly plain ``def`` (sync) functions, which Starlette runs in an anyio worker
 threadpool: the OS thread that serves a request is not stable across requests
@@ -51,9 +63,9 @@ editing code. Nothing here writes outside that path's parent directory.
 **Schema versioning.** ``schema_version`` holds one row. Migrations are a
 dict of ``target version -> callable``; :func:`ensure_schema` applies every
 target above the version on disk, in order, each inside its own transaction,
-and records the new version in the same transaction. U7 ships exactly one
-(version 1). The ladder shape is here from the start so U8's "add an
-``approvals`` table" is a dict entry rather than a redesign.
+and records the new version in the same transaction. U7 shipped exactly one
+(version 1) and P④ adds version 2 as one more dict entry — which is the whole
+point of the ladder shape being here from the start.
 """
 from __future__ import annotations
 
@@ -76,7 +88,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(os.getenv("PRISM_DB_PATH", str(REPO_ROOT / "runtime" / "db" / "app.db")))
 
 #: The schema version this build knows how to run against.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: How long a statement waits for a competing writer before it gives up.
 BUSY_TIMEOUT_MS = int(os.getenv("PRISM_DB_BUSY_TIMEOUT_MS", "5000"))
@@ -199,12 +211,59 @@ def _migrate_1_auth_core(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id)")
 
 
+def _migrate_2_workspace_members(conn: sqlite3.Connection) -> None:
+    """v2 — ``workspace_members``: who may see which 프로젝트 (unit P④).
+
+    Before this table, ``users`` and ``runtime/workspaces/registry.json`` knew
+    nothing about each other: every logged-in person saw every workspace in the
+    picker, which for a consultancy means every client's network. The row IS
+    the permission — ``services/membership.user_can_access`` answers from this
+    table and nothing else (plus the two documented exceptions: the default
+    workspace is open, and an admin is allowed everywhere).
+
+    ``PRIMARY KEY (workspace_id, user_id)`` rather than a surrogate id: a
+    person is either a member of a project or not, so a second row for the same
+    pair is meaningless and the constraint says so. Granting an existing
+    membership is therefore an upsert, not a duplicate.
+
+    ``role`` is CHECK-constrained to the ONE value anything actually enforces
+    (``'member'``). A richer set — owner/editor/viewer — would be a column full
+    of values no code branches on, i.e. a permission system that only looks
+    like one. Adding a second role is a v3 migration plus the branch that reads
+    it, in that order.
+
+    ``user_id`` cascades from ``users`` so deleting an account cannot leave a
+    membership pointing at nobody. ``workspace_id`` cannot cascade (workspaces
+    are a JSON registry on disk, not a table), so a deleted workspace leaves
+    rows behind; every read path in ``services/membership.py`` intersects with
+    the registry, so an orphan grants access to nothing.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS workspace_members (
+            workspace_id TEXT    NOT NULL,
+            user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role         TEXT    NOT NULL CHECK (role IN ('member')),
+            created_at   TEXT    NOT NULL,
+            PRIMARY KEY (workspace_id, user_id)
+        )
+        """
+    )
+    # The PK already serves "who is in this workspace"; this one serves the
+    # other direction -- "which projects may this person see" -- which is on
+    # the request path of the 프로젝트 picker.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(user_id)"
+    )
+
+
 #: ``target version -> migration``. Applied in ascending order for every target
 #: greater than the version found on disk. Each callable must be idempotent
 #: (``IF NOT EXISTS``) so a crash between the DDL and the version bump is
 #: recoverable by simply running it again.
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _migrate_1_auth_core,
+    2: _migrate_2_workspace_members,
 }
 
 

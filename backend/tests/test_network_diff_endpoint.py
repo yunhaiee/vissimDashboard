@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from conftest import admin_headers
 from fastapi.testclient import TestClient
 
 import main
@@ -203,7 +204,19 @@ def client(workspace_root: Path, sessions_root: Path, active_dataset: Path) -> T
 
 
 def _headers(workspace_id: str | None) -> dict[str, str]:
-    return {"X-Workspace-Id": workspace_id} if workspace_id else {}
+    """Workspace scoping PLUS the suite admin's session.
+
+    Unit P④ closed the workspace boundary: a NON-default workspace answers 403
+    to any caller who is not a member or an admin, and creating one requires a
+    signed-in user. This file is about the WORKSPACE boundary, not the
+    membership rule, so every request here authenticates and a 404/200 below is
+    still measuring what it always measured. The membership rule itself is
+    tested in ``tests/test_workspace_membership.py``.
+    """
+    headers = dict(admin_headers())
+    if workspace_id:
+        headers["X-Workspace-Id"] = workspace_id
+    return headers
 
 
 def _make_session(
@@ -624,7 +637,7 @@ def test_a_foreign_session_is_byte_identical_to_a_session_that_never_existed(
     byte-identical (body AND headers) lets one project enumerate another's
     session ids — the exact leak unit 1.4 closed everywhere else."""
     owner = workspaces.default_workspace_id()
-    intruder = client.post("/api/workspaces", json={"name": "intruder"}).json()["id"]
+    intruder = client.post("/api/workspaces", json={"name": "intruder"}, headers=_headers(None)).json()["id"]
     _full_session(sessions_root, tmp_path, "0123456789ab", owner)
 
     params = {"session_id": "0123456789ab", "base": 1, "target": 2}
@@ -654,7 +667,7 @@ def test_a_foreign_session_is_refused_before_any_version_is_resolved(
     version on a ghost, the intruder could still probe. Ownership is checked
     first, so both are the plain session 404."""
     owner = workspaces.default_workspace_id()
-    intruder = client.post("/api/workspaces", json={"name": "intruder"}).json()["id"]
+    intruder = client.post("/api/workspaces", json={"name": "intruder"}, headers=_headers(None)).json()["id"]
     _full_session(sessions_root, tmp_path, "0123456789ab", owner)
 
     denied = client.get(
@@ -705,7 +718,7 @@ def test_the_workspace_header_selects_which_project_may_read_the_diff(
     the diff whether it asks by header or by being the bound default, and a
     second real workspace never does."""
     default_id = workspaces.default_workspace_id()
-    other_id = client.post("/api/workspaces", json={"name": "other"}).json()["id"]
+    other_id = client.post("/api/workspaces", json={"name": "other"}, headers=_headers(None)).json()["id"]
     _full_session(sessions_root, tmp_path, "0123456789ab", default_id)
 
     params = {"session_id": "0123456789ab", "base": 1, "target": 2}

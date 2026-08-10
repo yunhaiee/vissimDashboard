@@ -67,6 +67,7 @@ import os
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from starlette.requests import HTTPConnection
 from pydantic import BaseModel, Field
 
 from services import auth
@@ -136,8 +137,21 @@ class LoginRequest(BaseModel):
     language: str | None = None
 
 
-def _token_from_request(request: Request) -> str | None:
-    """The session token this request carries: cookie first, then bearer."""
+def session_token_from_request(request: HTTPConnection) -> str | None:
+    """The session token this request carries: cookie first, then bearer.
+
+    PUBLIC since unit P④: ``main.WorkspaceScopeMiddleware`` has to answer "who
+    is this?" before routing, in order to decide whether the caller may enter
+    the workspace named by ``X-Workspace-Id``. It reads the token through this
+    function rather than re-deriving it, so there is exactly one definition of
+    where a Prism session token may live — a second, drifting copy in the
+    middleware is how a bearer-only client silently stops being recognised.
+
+    Typed ``HTTPConnection`` rather than ``Request`` because the middleware
+    also asks this of WEBSOCKET scopes, which ``Request`` refuses to wrap.
+    ``Request`` is a subclass, so every route dependency below still passes one.
+    Only ``.cookies`` and ``.headers`` are read, and both live on the base.
+    """
     cookie = request.cookies.get(SESSION_COOKIE_NAME)
     if cookie:
         return cookie
@@ -163,7 +177,7 @@ def resolve_request_session(request: Request) -> dict[str, Any] | None:
     cached = getattr(request.state, "prism_auth", ...)
     if cached is not ...:
         return cached
-    resolved = auth.resolve_session(_token_from_request(request))
+    resolved = auth.resolve_session(session_token_from_request(request))
     request.state.prism_auth = resolved
     return resolved
 
@@ -255,7 +269,7 @@ def logout(request: Request, response: Response):
     already expired, and the response must not report whether the token it
     carried was real.
     """
-    revoked = auth.revoke_session(_token_from_request(request))
+    revoked = auth.revoke_session(session_token_from_request(request))
     response.delete_cookie(
         key=SESSION_COOKIE_NAME,
         path="/",

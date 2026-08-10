@@ -3902,3 +3902,98 @@ are inverted (yMin > yMax) at 96 km/h (and the pattern suggests the two columns 
 swapped there). Prism preserves MRWA's values and reorders only the labels so the network loads,
 and records the anomaly (`genesis_fleet_table_5_2_envelope_inverted`); MRWA may wish to correct the
 source table.
+
+---
+
+## 2026-08-10 — P④: the workspace boundary and the login finally meet, and the gate is fail-closed
+
+**Context:** the user found this by using the running app, not by reading code. Signed in, they
+asked "is the project list, belongs to the account right?" It was not. `services/workspaces.py`
+had isolated 프로젝트 into separate directory trees since 1.4, and `services/auth.py` had known
+who a person was since U7 — and **nothing joined the two**. Any caller, signed in or not, could
+put another project's id in `X-Workspace-Id` and read that client's network. The 프로젝트 picker
+listed every project on the box to everyone. There was also no browser path to user
+administration: `tools/manage_users.py` in a terminal was the only way to create an account, which
+is not a thing a traffic consultant will do.
+
+**The rule, enforced in ONE place** (`main.WorkspaceScopeMiddleware`, after id resolution, before
+routing — eighteen routers each remembering a `Depends` is a habit, not a boundary):
+
+| caller | default workspace | non-default workspace |
+|---|---|---|
+| unauthenticated | allowed | **403** `workspace_forbidden` |
+| authenticated member | allowed | allowed |
+| authenticated non-member | allowed | **403** |
+| `admin` | allowed | allowed |
+| any caller, unregistered id | — | 404 `workspace_not_found` (checked first, unchanged) |
+
+**Why the default workspace stays open to anonymous callers.** The rest of the app is not behind
+login — only `/api/auth/whoami` and `/api/assistant/agent/approve` are gated. A naive "membership
+on every request" would have broken the entire unauthenticated app and its suite. The default
+workspace is the demo/dev dataset; every *client* project is a non-default one and is fail-closed.
+The refusal is a 403, never a silent fallback to the default — silently serving one client's
+network to another client is the precise failure the boundary exists to prevent. Gating the whole
+app behind login remains a separate, deliberate decision, not something this unit smuggled in.
+
+**Deviations recorded rather than absorbed:**
+* **`POST /api/workspaces` now requires authentication (401 for anon).** Not asked for. Without a
+  signed-in creator there is nobody to grant membership to, so an anonymous create would return an
+  id whose very next request is 403 — a trap, not a refusal. The creator is granted membership on
+  create. This is the source of the unit's test churn (19 call sites).
+* **Workspaces that predate this unit have zero membership rows and are therefore admin-only until
+  granted.** Survivable *only* because admins see and grant everything and the first admin already
+  exists. Pinned by a test named for exactly that.
+* **Membership role set is exactly `('member')`**, CHECK-constrained. A second role costs a v3
+  migration plus the branch that reads it; a role nobody checks is a lie in a schema.
+* **Self-disable / self-demote refusal lives in `routers/admin.py`**, not the service: it needs the
+  caller's identity and the service layer deliberately has none. The *last enabled admin* invariant
+  does live in `services/auth.py`, so `manage_users.py` inherits it.
+
+**Four defects the adversarial verification pass found in this unit's own work, fixed before it
+landed** (the reviewers ran against the uncommitted diff; each finding was then attacked by a
+refuter, and 4 of 11 were refuted and dropped):
+* **Websockets were exempt from the gate**, on the stated rationale that a websocket "could never
+  carry" `X-Workspace-Id` because the browser `WebSocket` API cannot set one. True of browsers,
+  false of wscat/python-websockets/curl — a browser limitation mistaken for a security property,
+  while the middleware read and honoured the header for websocket scopes anyway. The gate now runs
+  for websocket scopes; since no 403 body is possible pre-handshake, the refusal is of the
+  **binding** (fall back to the default workspace), never of a binding the caller did not earn.
+  Fixing it exposed a second bug in the fix: `_caller_user_id` built a Starlette `Request`, which
+  asserts `scope["type"] == "http"`, so every websocket resolved as anonymous through a blanket
+  `except` — fail-closed, so not a hole, but a genuine member's websocket could never be
+  recognised. Now `HTTPConnection`, the common base carrying `.cookies`/`.headers` for both scopes.
+  Independently, `/api/simulations/ws/{job_id}` still resolves job ids through the GLOBAL registry
+  (recorded at `routers/simulations.py:142-147` since 1.4); this unit does not fix that and does
+  not pretend to.
+* **The frontend's direct-base fallback leg sent no session cookie.** `requestInitForBase` omitted
+  `credentials`, which fetch defaults to `same-origin` — fine cross-origin before P④ (it merely
+  lost personalisation), fatal after it: a signed-in member would watch their own 프로젝트 403 on
+  every read the moment the Next proxy hiccupped. Now `credentials: "include"`, for the same reason
+  `noWorkspaceRequestInit` already stated it.
+* **The admin page cleared the operator's typed password on a REFUSED mutation** — `run` swallowed
+  failures and returned void, so callers ran post-success cleanup unconditionally. `run` now
+  returns whether the mutation succeeded, and the forms keep their contents on refusal.
+* **A project-switch race** could paint project A's member roster under project B's name. On a
+  screen whose entire job is stating who can see which client's data, a confidently wrong roster is
+  the one unacceptable outcome; responses are now dropped unless they match the latest request.
+
+**A test-honesty correction, not a code change:** `test_an_admin_cannot_lock_the_box_or_themselves_out`
+carried a comment claiming its two 409s proved `services/auth.py`'s `LastAdminError`. They do not —
+the caller is targeting themselves, so the router's self-targeting guard answers first, and with a
+single admin "the last admin" and "yourself" are the same account. The service invariant is proved
+where it can be isolated, by direct call in `test_auth_core.py`. The router's `LastAdminError`→409
+mapping is defence in depth, and the comment now says so.
+
+**Known and NOT fixed here** (pre-existing, chipped separately): `services/db.py`'s warm
+`ensure_schema` memo returns the constant `SCHEMA_VERSION` without re-reading the on-disk version,
+so the "database is newer than this build" refusal protects only the first open of a path.
+
+**Verification:** full backend suite **3905 passed, 1 skipped**; `npm run typecheck` clean;
+`npm run test:dashboard-contract` 37/37. The new `tests/test_workspace_membership.py` (25 tests)
+fails without the change — with the router-level `require_role("admin")` deleted and the middleware
+gate short-circuited, 7 of its tests fail. Browser-verified only that `/admin` compiles and routes
+an anonymous visitor to login; the signed-in admin view was not machine-verified, because doing so
+would have meant inventing credentials.
+
+**Still open, deliberately:** the app as a whole is still not behind login (two endpoints are).
+That is the next decision to make, not an oversight of this one.

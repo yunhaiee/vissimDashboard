@@ -7,10 +7,14 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.datastructures import Headers
+from starlette.requests import HTTPConnection as StarletteConnection
 from routers import assistant, datasets, network, network_diff, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health, observations
+from routers import admin as admin_router
 from routers import auth as auth_router
 from routers import workspaces as workspaces_router
-from services import workspaces
+from services import auth as auth_service
+from services import membership, workspaces
+from services.agent.planner import pick_language_text
 from services.agent.sessions import sweep_stale_sessions
 from services.license_guard import license_required, license_status
 
@@ -37,6 +41,59 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="VISSIM Platform API", version="1.0.0", lifespan=lifespan)
 
 
+_SUPPORTED_LANGUAGES = ("ko", "en", "ja")
+
+#: Paths exempt from the workspace MEMBERSHIP check below (never from the
+#: unknown-workspace 404, which predates this unit). Exactly one prefix, and it
+#: is there to prevent a lockout loop rather than as a convenience: a browser
+#: holding a stale non-default ``vissim-workspace-id`` in localStorage is
+#: precisely the state a person who cannot sign in is likely to be in, and
+#: 403-ing their login attempt because they are not a member of a project they
+#: cannot leave would make the fix unreachable from the UI. ``lib/api.ts``
+#: already strips the header from auth calls structurally; this is the
+#: server-side half of the same promise, so the guarantee does not depend on
+#: which client is talking.
+_MEMBERSHIP_EXEMPT_PREFIXES = ("/api/auth/",)
+
+
+def _request_language(headers: Headers) -> str:
+    """ko unless ``Accept-Language`` clearly asks for en/ja.
+
+    The middleware runs before routing, so it cannot use ``routers/auth.py``'s
+    ``_language`` (which also honours a ``?language=`` query parameter on the
+    routes that document one). Header-only is the honest subset here.
+    """
+    primary = (headers.get("accept-language") or "").split(",")[0].split("-")[0].strip().lower()
+    return primary if primary in _SUPPORTED_LANGUAGES else "ko"
+
+
+def _caller_user_id(scope) -> int | None:
+    """The authenticated user's id for this ASGI scope, or ``None``.
+
+    Reads the token through ``routers.auth.session_token_from_request`` so the
+    middleware and the route dependencies agree on where a session token lives.
+    A failure to resolve is ``None`` (anonymous), never an exception: this runs
+    ahead of every route, and an auth-store hiccup must degrade to "we do not
+    know who you are" — which then fails CLOSED at the membership check — not
+    to a 500 on the whole API.
+
+    ``HTTPConnection``, not ``Request``: the latter asserts ``scope["type"] ==
+    "http"`` in its constructor, so it raised on every websocket scope and the
+    blanket ``except`` below quietly turned that into "anonymous". Fail-closed,
+    so not a hole — but it meant a genuine MEMBER's websocket could never be
+    recognised either. ``HTTPConnection`` is the common base that carries
+    ``.cookies`` and ``.headers`` for both scope types, which is all
+    ``session_token_from_request`` reads.
+    """
+    try:
+        request = StarletteConnection(scope)
+        resolved = auth_service.resolve_session(auth_router.session_token_from_request(request))
+    except Exception:  # noqa: BLE001 - see the docstring: never fatal, always anonymous
+        logger.warning("workspace scope: could not resolve the session; treating as anonymous", exc_info=True)
+        return None
+    return int(resolved["user"]["id"]) if resolved else None
+
+
 class WorkspaceScopeMiddleware:
     """Bind every request to the workspace named by ``X-Workspace-Id``.
 
@@ -59,11 +116,46 @@ class WorkspaceScopeMiddleware:
     client's localStorage resolving to somebody else's project is precisely
     the leak this boundary exists to prevent.
 
-    WebSockets are bound leniently (unknown id → default) rather than closed:
-    the browser ``WebSocket`` API cannot send custom headers at all, so the
-    only websocket route here (``/api/simulations/ws/{job_id}``, live progress
-    for a job the caller already holds the id of) could never carry one. That
-    limitation is recorded rather than papered over.
+    **Unit P④ adds the membership gate**, and this is the one place in the app
+    that enforces it. A PRESENT header naming a NON-default workspace now also
+    has to pass ``services.membership.user_can_access``: an anonymous caller,
+    or a signed-in caller who is neither a member nor an admin, gets 403 with
+    ``code: "workspace_forbidden"`` — again never a fallback to the default
+    workspace, for exactly the reason the 404 above is not one. The default
+    workspace itself stays open to anonymous callers; the rest of Prism is not
+    behind a login and this unit does not put it there (the full rule, with the
+    reasoning for each row, is the table in ``services/membership.py``).
+
+    Why HERE and not a ``Depends`` on each router: this class is already the
+    only code that resolves the workspace for every request, so the boundary
+    holds for routes that do not exist yet. Eighteen routers each remembering
+    to add a dependency is not a boundary, it is a habit.
+
+    Cost: one SHA-256 plus one indexed SELECT, and ONLY on requests that
+    actually name a non-default workspace. A request with no header takes the
+    fast path below and does no auth work at all — which is every request the
+    app made before workspaces existed.
+
+    WebSockets are bound leniently (unknown id → default) rather than closed,
+    because a raw-ASGI websocket cannot be answered with a 403 body the way an
+    HTTP request can. What they are NOT is exempt from the membership rule.
+    An earlier draft of this docstring claimed a websocket "could never carry"
+    the header because the browser ``WebSocket`` API cannot set one; that is
+    true of browsers and false of every other client (wscat, python-websockets,
+    curl), so it was a browser limitation mistaken for a security property.
+    A websocket that names a non-default workspace its caller may not enter is
+    therefore bound to the DEFAULT workspace instead of the named one — the
+    handshake still succeeds, but it never gets the binding it asked for.
+
+    Cookies ride the websocket handshake like any other request header, so
+    :meth:`_may_enter` reads the caller's session there exactly as it does over
+    HTTP; no separate code path, and a member's websocket keeps working.
+
+    Independent of this gate, ``/api/simulations/ws/{job_id}`` still resolves
+    job ids through the GLOBAL registry rather than the workspace-scoped one
+    (recorded at ``routers/simulations.py:142-147`` since unit 1.4). Binding
+    that socket to the default workspace does not fix that; it only stops the
+    membership boundary from handing out a binding it never checked.
     """
 
     def __init__(self, app) -> None:
@@ -93,11 +185,53 @@ class WorkspaceScopeMiddleware:
                 await response(scope, receive, send)
                 return
 
+        # The membership gate. `raw` being falsy means "no header at all",
+        # which resolve_workspace_id already turned into the default workspace
+        # -- always open, so there is nothing to check and no reason to touch
+        # the auth database on the app's most common request shape.
+        if raw and not self._may_enter(scope, workspace_id):
+            if scope["type"] == "websocket":
+                # No 403 body is possible before the handshake, so refuse the
+                # BINDING rather than the connection: fall back to the default
+                # workspace, which is what an unauthenticated caller would have
+                # got with no header at all. Never honour a non-default binding
+                # the caller has not earned.
+                workspace_id = workspaces.default_workspace_id()
+            else:
+                headers = Headers(scope=scope)
+                response = JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": {
+                            "code": membership.FORBIDDEN_CODE,
+                            "message": pick_language_text(
+                                membership.FORBIDDEN_TEXT, _request_language(headers)
+                            ),
+                            "workspace_id": workspace_id,
+                        }
+                    },
+                )
+                await response(scope, receive, send)
+                return
+
         token = workspaces.set_current_workspace_id(workspace_id)
         try:
             await self.app(scope, receive, send)
         finally:
             workspaces.reset_current_workspace_id(token)
+
+    @staticmethod
+    def _may_enter(scope, workspace_id: str) -> bool:
+        """Whether this request may be scoped to ``workspace_id``.
+
+        Split out so the exemption list and the predicate are one readable
+        expression each, and so a test can drive the rule without an ASGI
+        round trip.
+        """
+        path = scope.get("path") or ""
+        if any(path.startswith(prefix) for prefix in _MEMBERSHIP_EXEMPT_PREFIXES):
+            return True
+        return membership.user_can_access(_caller_user_id(scope), workspace_id)
 
 
 app.add_middleware(WorkspaceScopeMiddleware)
@@ -228,6 +362,10 @@ app.include_router(agent_audit.router)
 # three new routes under a prefix nothing else claims, and no existing endpoint
 # gains a dependency in this unit. Enforcement is U8's change.
 app.include_router(auth_router.router)
+# Unit P④: /api/admin — user administration and workspace membership, the
+# browser half of backend/tools/manage_users.py. Every route is admin-only via
+# a router-level require_role("admin"); a prefix nothing else claims.
+app.include_router(admin_router.router)
 # Phase 2 unit U10 (roadmap 2.1): /api/observations — the per-workspace store
 # of ingested field counts that feeds the reality check's observed side.
 # Purely ADDITIVE: a prefix nothing else claims, and no existing route changes.

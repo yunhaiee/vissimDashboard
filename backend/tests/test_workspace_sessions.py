@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 import pytest
+from conftest import admin_headers
 from fastapi.testclient import TestClient
 
 import main
@@ -47,7 +48,7 @@ from routers import agent_downloads as agent_downloads_router
 from routers import assistant as assistant_endpoint
 from routers import network as network_router
 from routers import simulations as simulations_router
-from services import audit_trail, workspaces
+from services import audit_trail, auth, membership, workspaces
 from services.agent import sessions as agent_sessions
 
 INPX_A = b'<network fromWorkspace="A"><links/></network>'
@@ -115,7 +116,40 @@ def client(workspace_root: Path, sessions_root: Path) -> TestClient:
 
 
 def _headers(workspace_id: str | None) -> dict[str, str]:
-    return {"X-Workspace-Id": workspace_id} if workspace_id else {}
+    """Workspace scoping PLUS the suite admin's session.
+
+    Unit P④ closed the workspace boundary: a NON-default workspace answers 403
+    to any caller who is not a member or an admin, and creating one requires a
+    signed-in user. This file is about the WORKSPACE boundary, not the
+    membership rule, so every request here authenticates and a 404/200 below is
+    still measuring what it always measured. The membership rule itself is
+    tested in ``tests/test_workspace_membership.py``.
+    """
+    headers = dict(admin_headers())
+    if workspace_id:
+        headers["X-Workspace-Id"] = workspace_id
+    return headers
+
+
+def _new_workspace(client: TestClient, name: str) -> str:
+    """Create a project and let BOTH suite identities into it.
+
+    ``_headers`` authenticates as the suite ADMIN, who is allowed everywhere.
+    But ``_all_session_surfaces`` below replaces that token with the suite
+    REVIEWER's on the approve call (unit U8 gates that endpoint on
+    reviewer/admin), and a plain reviewer is not a member of a project they did
+    not create — so without this grant the P④ membership middleware would
+    answer 403 before routing and the SESSION-ownership 404 these tests exist
+    for would never be reached. Granting it keeps every assertion below
+    measuring the boundary it is named after.
+    """
+    created = client.post("/api/workspaces", json={"name": name}, headers=_headers(None))
+    assert created.status_code == 200, created.text
+    workspace_id = created.json()["id"]
+    reviewer = auth.get_user_by_username("suite-reviewer")
+    if reviewer is not None:
+        membership.grant(workspace_id, int(reviewer["id"]))
+    return workspace_id
 
 
 def _make_session(root: Path, session_id: str, *, owner: str | None) -> Path:
@@ -249,7 +283,7 @@ def test_a_sidecar_less_session_created_after_the_upgrade_is_denied_to_everyone(
     owned", not "old", and it is denied to the default workspace AND to B.
     """
     default_id = workspaces.default_workspace_id()
-    workspace_b = client.post("/api/workspaces", json={"name": "B"}).json()["id"]
+    workspace_b = _new_workspace(client, "B")
 
     # The upgrade happens on a box that has no legacy sessions yet...
     ledger = agent_sessions.backfill_legacy_session_owners(default_id, sessions_root)
@@ -316,7 +350,7 @@ def test_a_truncated_sidecar_denies_the_default_workspace_and_the_true_owner(
     session is the correct direction to fail — the alternative is handing it to
     a project that never owned it.
     """
-    workspace_b = client.post("/api/workspaces", json={"name": "B"}).json()["id"]
+    workspace_b = _new_workspace(client, "B")
 
     session_id = "aabbccddeeff"
     work_dir = _make_session(sessions_root, session_id, owner=workspace_b)
@@ -365,7 +399,7 @@ def test_a_pre_upgrade_session_stays_reachable_from_the_default_workspace(
     work_dir = _make_session(sessions_root, session_id, owner=None)
     before = {path.name: path.read_bytes() for path in work_dir.iterdir()}
 
-    other_id = client.post("/api/workspaces", json={"name": "other"}).json()["id"]
+    other_id = _new_workspace(client, "other")
 
     owner_view = _all_session_surfaces(client, session_id, {}, approver_headers)
     assert owner_view["network"].json()["source"] == {"view": "working", "session_id": session_id}
@@ -416,7 +450,7 @@ def test_the_backfill_never_overwrites_an_existing_sidecar(
     corrupt sidecar, which must keep denying everyone rather than be silently
     re-awarded to the default workspace by a later upgrade pass."""
     default_id = workspaces.default_workspace_id()
-    workspace_b = client.post("/api/workspaces", json={"name": "B"}).json()["id"]
+    workspace_b = _new_workspace(client, "B")
 
     healthy = _make_session(sessions_root, "1111aaaa2222", owner=workspace_b)
     healthy_bytes = agent_sessions.session_meta_path(healthy).read_bytes()
@@ -472,7 +506,7 @@ def test_a_healthy_session_serves_its_owner_and_is_indistinguishable_from_a_ghos
     existed. Anything less lets one project enumerate another's session ids.
     """
     default_id = workspaces.default_workspace_id()
-    intruder_id = client.post("/api/workspaces", json={"name": "intruder"}).json()["id"]
+    intruder_id = _new_workspace(client, "intruder")
 
     session_id = "0123456789ab"
     work_dir = _make_session(sessions_root, session_id, owner=default_id)
@@ -532,7 +566,7 @@ def test_query_stream_refuses_a_session_id_owned_by_another_workspace(
     monkeypatch.setattr(assistant_endpoint, "_stream_agent_turn", _fake_stream_turn)
 
     default_id = workspaces.default_workspace_id()
-    intruder_id = client.post("/api/workspaces", json={"name": "intruder"}).json()["id"]
+    intruder_id = _new_workspace(client, "intruder")
 
     session_id = "0123456789ab"
     _make_session(sessions_root, session_id, owner=default_id)

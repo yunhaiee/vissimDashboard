@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pytest
+from conftest import admin_headers
 from fastapi.testclient import TestClient
 
 import main
@@ -52,7 +53,19 @@ def client(workspace_root: Path):
 
 
 def _headers(workspace_id: str | None) -> dict[str, str]:
-    return {"X-Workspace-Id": workspace_id} if workspace_id else {}
+    """Workspace scoping PLUS the suite admin's session.
+
+    Unit P④ closed the workspace boundary: a NON-default workspace answers 403
+    to any caller who is not a member or an admin, and creating one requires a
+    signed-in user. This file is about the WORKSPACE boundary, not the
+    membership rule, so every request here authenticates and a 404/200 below is
+    still measuring what it always measured. The membership rule itself is
+    tested in ``tests/test_workspace_membership.py``.
+    """
+    headers = dict(admin_headers())
+    if workspace_id:
+        headers["X-Workspace-Id"] = workspace_id
+    return headers
 
 
 def _workbook(root: Path, *, site: str = "가람네거리", hours: int = 3) -> Path:
@@ -276,7 +289,7 @@ def test_a_set_ingested_in_one_workspace_is_invisible_from_another(
     client: TestClient, tmp_path: Path
 ):
     workspace_a = client.get("/api/workspaces").json()["default"]
-    workspace_b = client.post("/api/workspaces", json={"name": "B"}).json()["id"]
+    workspace_b = client.post("/api/workspaces", json={"name": "B"}, headers=_headers(None)).json()["id"]
 
     token = _upload(client, _workbook(tmp_path), workspace=workspace_a)
     created = client.post(
@@ -305,7 +318,7 @@ def test_a_staged_upload_is_not_visible_across_workspaces(client: TestClient, tm
     """Staging lives inside the workspace too — a token minted in A cannot be
     redeemed from B, so an upload cannot be laundered across the boundary."""
     workspace_a = client.get("/api/workspaces").json()["default"]
-    workspace_b = client.post("/api/workspaces", json={"name": "B"}).json()["id"]
+    workspace_b = client.post("/api/workspaces", json={"name": "B"}, headers=_headers(None)).json()["id"]
 
     token = _upload(client, _workbook(tmp_path), workspace=workspace_a)
 

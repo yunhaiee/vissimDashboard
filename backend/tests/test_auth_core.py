@@ -65,16 +65,25 @@ def test_schema_is_created_idempotently(auth_db: Path):
     first = db.ensure_schema()
     second = db.ensure_schema(force=True)  # force skips the process memo
 
-    assert first == second == db.SCHEMA_VERSION == 1
-    assert db.schema_version() == 1
+    # v1 = the auth core (U7), v2 = workspace_members (P④). The number is
+    # asserted rather than merely compared so the ladder cannot silently skip a
+    # step -- adding a migration means updating this line on purpose.
+    assert first == second == db.SCHEMA_VERSION == 2
+    assert db.schema_version() == 2
     with db.connect() as conn:
         rows = conn.execute("SELECT COUNT(*) AS n FROM schema_version").fetchone()
         assert rows["n"] == 1, "the version ledger must hold exactly one row"
 
 
-def test_schema_has_only_the_two_tables_this_unit_owns():
-    """The runs-registry migration is a LATER unit. If a table appears here,
-    somebody smuggled it in."""
+def test_schema_holds_exactly_the_tables_a_unit_declared():
+    """The exact table list, updated deliberately per unit.
+
+    U7 owned two (``users``, ``auth_sessions``); P④ adds exactly one
+    (``workspace_members``). The runs-registry migration is still a LATER unit
+    — if a table appears here that no unit named, somebody smuggled it in, and
+    a half-migrated registry with two sources of truth is strictly worse than
+    the file-only version that works today (``services/db.py``'s docstring).
+    """
     with db.connect() as conn:
         names = {
             row["name"]
@@ -82,7 +91,7 @@ def test_schema_has_only_the_two_tables_this_unit_owns():
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             )
         }
-    assert names == {"schema_version", "users", "auth_sessions"}
+    assert names == {"schema_version", "users", "auth_sessions", "workspace_members"}
 
 
 def test_wal_and_foreign_keys_are_on():
@@ -249,7 +258,10 @@ def test_authenticate_accepts_the_right_password_only():
 
 
 def test_a_disabled_account_cannot_authenticate():
-    _make_user()
+    # A MODELER, not the admin `_make_user` defaults to: P④ refuses to disable
+    # the last enabled admin, and this test is about the disabled FLAG, not
+    # about who is allowed to hold it.
+    _make_user(role="modeler")
     auth.set_disabled("yunha", True)
     assert auth.authenticate("yunha", GOOD_PASSWORD) is None
     auth.set_disabled("yunha", False)
@@ -257,11 +269,66 @@ def test_a_disabled_account_cannot_authenticate():
 
 
 def test_count_admins_ignores_disabled_admins():
+    """``count_admins`` excludes disabled admins — including the 0 case.
+
+    P④ made the 0 case unreachable THROUGH ``set_disabled`` (it refuses to
+    disable the last enabled admin), so the final leg writes the row directly.
+    That state still exists in the world: an install whose only admin was
+    disabled before the guard shipped must still be able to bootstrap with
+    ``manage_users.py create-admin``, and that command's refusal reads this
+    count.
+    """
     _make_user("boss", role="admin")
-    assert auth.count_admins() == 1
+    _make_user("deputy", role="admin")
+    assert auth.count_admins() == 2
+
     auth.set_disabled("boss", True)
+    assert auth.count_admins() == 1
+    assert auth.count_admins(include_disabled=True) == 2
+
+    with db.write_transaction() as conn:
+        conn.execute("UPDATE users SET disabled = 1 WHERE role = 'admin'")
     assert auth.count_admins() == 0, "an operator who disabled the last admin must be able to bootstrap"
-    assert auth.count_admins(include_disabled=True) == 1
+    assert auth.count_admins(include_disabled=True) == 2
+
+
+def test_the_last_enabled_admin_cannot_be_disabled_or_demoted():
+    """P④: the admin UI is the only place membership can be granted, and it is
+    behind the admin role — so an admin who removes the last admin has locked
+    every account and project-access surface behind a role nobody holds. Both
+    doors are guarded, and both open again the moment a second admin exists."""
+    _make_user("boss", role="admin")
+
+    with pytest.raises(auth.LastAdminError):
+        auth.set_disabled("boss", True)
+    with pytest.raises(auth.LastAdminError):
+        auth.set_role("boss", "reviewer")
+    assert auth.get_user_by_username("boss")["role"] == "admin"
+    assert auth.get_user_by_username("boss")["disabled"] is False
+
+    _make_user("deputy", role="admin")
+    assert auth.set_role("boss", "reviewer")["role"] == "reviewer"
+    # ...and now `deputy` is the last one, so it inherits the refusal.
+    with pytest.raises(auth.LastAdminError):
+        auth.set_disabled("deputy", True)
+
+
+def test_set_role_validates_and_leaves_sessions_alive():
+    """A role change takes effect on the next request because
+    ``resolve_session`` re-reads ``users.role`` — so there is nothing to revoke,
+    and revoking would log somebody out of the pages they may still read."""
+    user = _make_user("boss", role="admin")
+    _make_user("deputy", role="admin")
+    token, _ = auth.create_session(user["id"])
+
+    with pytest.raises(auth.InvalidRoleError):
+        auth.set_role("boss", "superuser")
+    with pytest.raises(auth.UnknownUserError):
+        auth.set_role("ghost", "modeler")
+
+    assert auth.set_role("boss", "modeler")["role"] == "modeler"
+    resolved = auth.resolve_session(token)
+    assert resolved is not None and resolved["user"]["role"] == "modeler"
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +383,8 @@ def test_revocation_closes_a_session():
 
 
 def test_disabling_a_user_closes_their_live_sessions():
-    user = _make_user()
+    # Modeler, for the same reason as test_a_disabled_account_cannot_authenticate.
+    user = _make_user(role="modeler")
     token, _ = auth.create_session(user["id"])
     auth.set_disabled("yunha", True)
     assert auth.resolve_session(token) is None
@@ -413,7 +481,9 @@ def test_a_second_login_does_not_kill_the_first(client: TestClient):
 
 def test_unknown_user_and_wrong_password_are_the_same_401(client: TestClient):
     """The account-enumeration oracle test: identical status, identical body."""
-    _make_user()
+    # Modeler: this test disables the account mid-way, and P④ refuses to
+    # disable the last enabled admin.
+    _make_user(role="modeler")
     unknown = client.post("/api/auth/login", json={"username": "ghost", "password": GOOD_PASSWORD})
     wrong = client.post("/api/auth/login", json={"username": "yunha", "password": OTHER_PASSWORD})
     auth.set_disabled("yunha", True)
@@ -664,6 +734,24 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
     particular the audit EXPORT endpoints stay open, because reading the
     record of a decision is not making one.
 
+    **P④ adds the whole ``/api/admin`` router plus ``/api/workspaces``.**
+
+    * every ``/api/admin/*`` route, through ONE router-level
+      ``require_role("admin")`` — user administration and workspace
+      membership, which is the browser replacement for
+      ``backend/tools/manage_users.py``;
+    * ``/api/workspaces``, which is auth-AWARE rather than auth-REQUIRED: the
+      GET takes ``optional_current_user`` so an anonymous caller still gets
+      the default workspace (and only that), while the POST takes
+      ``current_user`` because a project has to be created BY somebody in
+      order to be granted to them.
+
+    Note what is deliberately NOT in this set: the membership 403 on every
+    other data route. That is enforced structurally in
+    ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
+    exactly why it covers routes nobody has written yet.
+    ``tests/test_workspace_membership.py`` is the ledger for that half.
+
     When a later unit legitimately protects more, UPDATE this set — do not
     delete the test. The list is the record of what became authenticated and
     when.
@@ -677,4 +765,14 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         if auth_router.current_user in calls or auth_router.optional_current_user in calls:
             guarded.add(getattr(route, "path", str(route)))
 
-    assert guarded == {"/api/auth/whoami", "/api/assistant/agent/approve"}
+    assert guarded == {
+        "/api/auth/whoami",
+        "/api/assistant/agent/approve",
+        "/api/workspaces",
+        "/api/admin/users",
+        "/api/admin/users/{user_id}/password",
+        "/api/admin/users/{user_id}/disabled",
+        "/api/admin/users/{user_id}/role",
+        "/api/admin/workspaces/{workspace_id}/members",
+        "/api/admin/workspaces/{workspace_id}/members/{user_id}",
+    }

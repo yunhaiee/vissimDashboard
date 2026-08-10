@@ -9,7 +9,7 @@ import { useLanguage } from "@/components/LanguageProvider";
 import { loginHref } from "@/lib/authRedirect";
 import type { Language } from "@/lib/i18n";
 
-function NavIcon({ name }: { name: "dashboard" | "network" | "network-diff" | "validation" | "downloads" | "report" | "health" }) {
+function NavIcon({ name }: { name: "dashboard" | "network" | "network-diff" | "validation" | "downloads" | "report" | "health" | "admin" }) {
   const paths: Record<string, React.ReactNode> = {
     dashboard: (
       <>
@@ -65,6 +65,16 @@ function NavIcon({ name }: { name: "dashboard" | "network" | "network-diff" | "v
         <path d="M6.5 12h2.2l1.3-2.6 2 4.8 1.3-2.2h4.2" />
       </>
     ),
+    // Two people and a key: accounts, and what they are allowed to open.
+    admin: (
+      <>
+        <circle cx="9" cy="7.5" r="2.8" />
+        <path d="M3.5 19.5c0-3 2.5-5 5.5-5s5.5 2 5.5 5" />
+        <circle cx="18" cy="10" r="2" />
+        <path d="M18 12v5.5" />
+        <path d="M18 15.5h2" />
+      </>
+    ),
   };
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -76,11 +86,12 @@ function NavIcon({ name }: { name: "dashboard" | "network" | "network-diff" | "v
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { lang, setLang, t } = useLanguage();
+  const { user } = useAuth();
 
   // Dashboard listed first: it's the landing page (root redirects here) and
   // the page most users need first; the more specialist calibration page
   // follows it instead of leading.
-  const links: Array<{ href: string; label: string; icon: "dashboard" | "network" | "network-diff" | "validation" | "downloads" | "report" | "health" }> = [
+  const links: Array<{ href: string; label: string; icon: "dashboard" | "network" | "network-diff" | "validation" | "downloads" | "report" | "health" | "admin" }> = [
     { href: "/dashboard", label: t("대시보드", "Dashboard", "ダッシュボード"), icon: "dashboard" },
     { href: "/base-model", label: t("베이스모델 검증", "Base Model Validation", "ベースモデル検証"), icon: "validation" },
     { href: "/network", label: t("네트워크", "Network", "ネットワーク"), icon: "network" },
@@ -92,6 +103,21 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/downloads", label: t("데이터 다운로드", "Data Downloads", "データダウンロード"), icon: "downloads" },
     { href: "/report", label: t("보고서 작성", "Report Builder", "レポート作成"), icon: "report" },
   ];
+
+  // Unit P④. COSMETIC ONLY: this hides a link a non-admin has no use for, it
+  // does NOT gate anything. Every /api/admin route is guarded server-side by
+  // one router-level require_role("admin"), and app/admin/page.tsx renders
+  // whatever the server answers -- so a stale cached role here can at worst
+  // show or hide a menu item, never grant or deny a capability. (Contrast the
+  // approval card, where a client-side role guess would hide a BUTTON and is
+  // therefore forbidden outright.)
+  if (user?.role === "admin") {
+    links.push({
+      href: "/admin",
+      label: t("사용자 관리", "Users & Access", "ユーザー管理"),
+      icon: "admin",
+    });
+  }
 
   return (
     <div className="app-frame">

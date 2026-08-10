@@ -163,11 +163,42 @@ def bearer_headers(
     return {"Authorization": f"Bearer {token}"}
 
 
+#: The account every workspace-scoped test in this suite authenticates as.
+#: ``admin`` specifically, because unit P④ closed the workspace boundary: a
+#: NON-default workspace now needs an authenticated member (or an admin), and
+#: an admin is the one identity that works for a workspace the test just
+#: created without every test also having to grant itself membership.
+SUITE_ADMIN_USERNAME = "suite-admin"
+
+
+def admin_headers() -> dict[str, str]:
+    """``Authorization`` headers for the suite's admin account.
+
+    Imported by name (``from conftest import admin_headers``) rather than
+    injected as a fixture because its callers are the module-level
+    ``_headers(workspace_id)`` helpers four test files already build every
+    scoped request through — turning those into fixtures would mean threading
+    an argument through several hundred call sites to express one fact.
+
+    Not memoized: ``tests/test_auth_core.py`` repoints ``services.db.DB_PATH``
+    per test, so a cached token would be a token for a database that is no
+    longer there. Minting a session is a token + a SHA-256 + one INSERT; the
+    scrypt is paid once, when the account is first created.
+    """
+    return bearer_headers(SUITE_ADMIN_USERNAME, "admin", display_name="관리자")
+
+
 @pytest.fixture()
 def auth_headers():
     """The :func:`bearer_headers` factory, injected — so a test never has to
     import this conftest by name. ``auth_headers("someone", "modeler")``."""
     return bearer_headers
+
+
+@pytest.fixture()
+def admin_auth_headers() -> dict[str, str]:
+    """Headers for the suite's admin — the fixture form of :func:`admin_headers`."""
+    return admin_headers()
 
 
 @pytest.fixture()

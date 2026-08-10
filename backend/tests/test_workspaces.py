@@ -19,11 +19,12 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from conftest import admin_headers
 from fastapi.testclient import TestClient
 
 import config
 import main
-from services import datasets, simulation_runs, workspaces
+from services import auth, datasets, membership, simulation_runs, workspaces
 
 INPX_A = b'<network fromMigration="A"><links/></network>'
 INPX_B = b'<network fromMigration="B"><links/><nodes/></network>'
@@ -82,7 +83,19 @@ def _counts_workbook(observed: int) -> bytes:
 
 
 def _headers(workspace_id: str | None) -> dict[str, str]:
-    return {"X-Workspace-Id": workspace_id} if workspace_id else {}
+    """Workspace scoping PLUS the suite admin's session.
+
+    Unit P④ closed the boundary this file measures: a NON-default workspace now
+    answers 403 to anyone who is not a member or an admin, and creating a
+    workspace requires a signed-in user. Every request below therefore
+    authenticates. The default workspace is still open to anonymous callers —
+    the tests that assert THAT (and the ones that assert the 403) are in
+    ``tests/test_workspace_membership.py``, which sends no credentials.
+    """
+    headers = dict(admin_headers())
+    if workspace_id:
+        headers["X-Workspace-Id"] = workspace_id
+    return headers
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +190,7 @@ def test_absent_workspace_header_resolves_to_the_default(client: TestClient):
 
 
 def test_workspaces_router_create_and_current(client: TestClient):
-    created = client.post("/api/workspaces", json={"name": "두 번째 프로젝트"})
+    created = client.post("/api/workspaces", json={"name": "두 번째 프로젝트"}, headers=_headers(None))
     assert created.status_code == 200
     workspace_id = created.json()["id"]
 
@@ -186,7 +199,7 @@ def test_workspaces_router_create_and_current(client: TestClient):
     assert current.json()["workspace"]["name"] == "두 번째 프로젝트"
     assert current.json()["dataset"]["workspace_id"] == workspace_id
 
-    assert client.post("/api/workspaces", json={"name": "   "}).status_code == 422
+    assert client.post("/api/workspaces", json={"name": "   "}, headers=_headers(None)).status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +460,7 @@ def test_upload_sweeps_leftovers_from_an_earlier_crashed_attempt(client: TestCli
 
 
 def test_the_sweep_never_touches_another_workspace(client: TestClient):
-    other = client.post("/api/workspaces", json={"name": "other"}).json()["id"]
+    other = client.post("/api/workspaces", json={"name": "other"}, headers=_headers(None)).json()["id"]
     assert (
         client.post("/api/datasets/upload?filename=b.inpx", content=INPX_B, headers=_headers(other)).status_code
         == 200
@@ -564,7 +577,7 @@ def test_reset_reports_a_locked_dataset_as_a_409(
 
 
 def test_reset_clears_only_the_requesting_workspace(client: TestClient):
-    other = client.post("/api/workspaces", json={"name": "other"}).json()["id"]
+    other = client.post("/api/workspaces", json={"name": "other"}, headers=_headers(None)).json()["id"]
     client.post("/api/datasets/upload?filename=a.inpx", content=INPX_A)
     client.post("/api/datasets/upload?filename=b.inpx", content=INPX_B, headers=_headers(other))
 
@@ -581,7 +594,7 @@ def test_reset_clears_only_the_requesting_workspace(client: TestClient):
 
 def test_upload_in_one_workspace_is_invisible_from_another(client: TestClient):
     workspace_a = client.get("/api/workspaces").json()["default"]
-    workspace_b = client.post("/api/workspaces", json={"name": "B"}).json()["id"]
+    workspace_b = client.post("/api/workspaces", json={"name": "B"}, headers=_headers(None)).json()["id"]
 
     uploaded = client.post(
         "/api/datasets/upload?filename=a.inpx", content=INPX_A, headers=_headers(workspace_a)
@@ -606,7 +619,7 @@ def test_upload_in_one_workspace_is_invisible_from_another(client: TestClient):
 def test_workbook_mapping_memory_is_per_workspace(client: TestClient):
     from services import workbook_mapping
 
-    workspace_b = client.post("/api/workspaces", json={"name": "B"}).json()["id"]
+    workspace_b = client.post("/api/workspaces", json={"name": "B"}, headers=_headers(None)).json()["id"]
     default_id = workspaces.default_workspace_id()
 
     with workspaces.bind_workspace(default_id):
@@ -719,7 +732,7 @@ def test_job_lists_are_filtered_by_workspace_and_legacy_records_are_default(
     monkeypatch.setattr(simulation_runs, "REGISTRY_PATH", registry_root / "simulation_runs.json")
 
     default_id = workspaces.default_workspace_id()
-    other_id = client.post("/api/workspaces", json={"name": "other"}).json()["id"]
+    other_id = client.post("/api/workspaces", json={"name": "other"}, headers=_headers(None)).json()["id"]
 
     with workspaces.bind_workspace(default_id):
         simulation_runs.create_job_record("jobdefault", {"name": "default job"})
@@ -861,7 +874,7 @@ def test_session_scoped_endpoints_404_across_workspaces(
     monkeypatch.setattr(audit_trail, "SESSIONS_ROOT", sessions_root)
 
     owner_id = workspaces.default_workspace_id()
-    intruder_id = client.post("/api/workspaces", json={"name": "intruder"}).json()["id"]
+    intruder_id = client.post("/api/workspaces", json={"name": "intruder"}, headers=_headers(None)).json()["id"]
 
     session_id = "0011223344ff"
     work_dir = sessions_root / session_id
@@ -894,6 +907,15 @@ def test_session_scoped_endpoints_404_across_workspaces(
     # U8 authenticated this endpoint (and only this one), so the intruder is a
     # signed-in reviewer here: the 404 below is the WORKSPACE boundary being
     # measured, not a 401 stopping the request short of it.
+    #
+    # P④ adds a second thing that could stop the request short: the reviewer's
+    # own bearer token replaces the admin one `_headers` supplies, and a plain
+    # reviewer is not a member of `intruder`, so the membership middleware
+    # would answer 403 before routing. Granting the membership removes that
+    # confound, which is the point -- the assertion below must fail for the
+    # SESSION-ownership reason and no other.
+    reviewer = auth.get_user_by_username("suite-reviewer")
+    membership.grant(intruder_id, int(reviewer["id"]))
     approve = client.post(
         "/api/assistant/agent/approve",
         json={"session_id": session_id, "approval_id": "whatever", "approved": True},
@@ -917,7 +939,7 @@ def test_legacy_sessions_without_a_sidecar_belong_to_the_default_workspace(
     work_dir.mkdir(parents=True)
     (work_dir / "edit_001.inpx").write_bytes(INPX_A)
 
-    other_id = client.post("/api/workspaces", json={"name": "other"}).json()["id"]
+    other_id = client.post("/api/workspaces", json={"name": "other"}, headers=_headers(None)).json()["id"]
 
     assert client.get(f"/api/agent/downloads/{session_id}/latest").status_code == 200
     assert (

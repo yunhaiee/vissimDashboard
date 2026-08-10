@@ -133,6 +133,21 @@ class InvalidRoleError(AuthError):
     pass
 
 
+class LastAdminError(AuthError):
+    """The requested change would leave the box with no enabled admin.
+
+    Added by unit P④, which is the first unit that lets a role or an enabled
+    flag be changed from a BROWSER. The CLI has always guarded the other
+    direction (``create-admin`` refuses to run when an admin exists), but
+    nothing guarded the way OUT: an admin who demoted or disabled the last
+    admin account would have locked every account-management surface — the
+    admin UI and the ability to grant workspace membership — behind a role
+    nobody holds, recoverable only by an operator with shell access to the
+    SQLite file. Refusing is the whole doctrine of this project applied to
+    accounts: a clear refusal beats a completed action with a wrong outcome.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Passwords
 # ---------------------------------------------------------------------------
@@ -422,8 +437,30 @@ def set_password(username: str, password: str) -> dict[str, Any]:
     return _public_user(row)
 
 
+def _other_enabled_admins(conn: sqlite3.Connection, user_id: int) -> int:
+    """How many ENABLED admins exist besides ``user_id``.
+
+    Counted on the caller's own connection, INSIDE its ``BEGIN IMMEDIATE``, so
+    the check and the write cannot be separated by another writer: two admins
+    demoting each other concurrently would otherwise both read "one other admin
+    exists" and both succeed, leaving zero. ``db.write_transaction`` takes the
+    write lock up front, which is what makes that impossible here.
+    """
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled = 0 AND id != ?",
+            (int(user_id),),
+        ).fetchone()["n"]
+    )
+
+
 def set_disabled(username: str, disabled: bool) -> dict[str, Any]:
-    """Disable (or re-enable) an account. Disabling also revokes live sessions."""
+    """Disable (or re-enable) an account. Disabling also revokes live sessions.
+
+    Refuses to disable the LAST enabled admin (:class:`LastAdminError`) — see
+    that exception for why. Re-enabling is never refused: it can only ever
+    increase the number of accounts that can administer the box.
+    """
     username = normalize_username(username)
     with db.write_transaction() as conn:
         row = conn.execute(
@@ -431,6 +468,13 @@ def set_disabled(username: str, disabled: bool) -> dict[str, Any]:
         ).fetchone()
         if row is None:
             raise UnknownUserError(f"No such user: {username}")
+        if disabled and row["role"] == "admin" and not bool(row["disabled"]):
+            if _other_enabled_admins(conn, int(row["id"])) == 0:
+                raise LastAdminError(
+                    f"Refusing to disable {row['username']}: it is the only enabled admin "
+                    "account, and disabling it would leave nobody able to manage users or "
+                    "project access."
+                )
         conn.execute(
             "UPDATE users SET disabled = ? WHERE id = ?", (1 if disabled else 0, row["id"])
         )
@@ -440,6 +484,37 @@ def set_disabled(username: str, disabled: bool) -> dict[str, Any]:
                 (_now_iso(), row["id"]),
             )
         updated = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+    return _public_user(updated)
+
+
+def set_role(username: str, role: str) -> dict[str, Any]:
+    """Change an account's role, refusing to demote the last enabled admin.
+
+    Live sessions are deliberately NOT revoked: :func:`resolve_session` joins
+    ``users`` and reads ``role`` fresh on every request, so a demotion takes
+    effect on the demoted person's very next call without logging them out of
+    the pages they are allowed to keep reading. (Contrast :func:`set_password`
+    and :func:`set_disabled`, which DO revoke — there the point is precisely to
+    invalidate what the old credential minted.)
+    """
+    username = normalize_username(username)
+    _validate_role(role)
+    with db.write_transaction() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
+        ).fetchone()
+        if row is None:
+            raise UnknownUserError(f"No such user: {username}")
+        if row["role"] == "admin" and role != "admin" and not bool(row["disabled"]):
+            if _other_enabled_admins(conn, int(row["id"])) == 0:
+                raise LastAdminError(
+                    f"Refusing to change {row['username']} to {role}: it is the only enabled "
+                    "admin account, and demoting it would leave nobody able to manage users "
+                    "or project access."
+                )
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, row["id"]))
+        updated = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+    logger.info("auth: role of %s changed to %s", row["username"], role)
     return _public_user(updated)
 
 
