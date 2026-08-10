@@ -4070,6 +4070,123 @@ That is the next decision to make, not an oversight of this one.
 
 ---
 
+## 2026-08-10 — Real WA SCATS `.xlsx` workbooks exist (the "no real Murdoch data" claim was wrong), and the detector→movement mapping genuinely does not
+
+**Context:** `client-data/Traffic signal data.zip` was checked for the first time against the
+SCATS/WA adapter (`backend/services/dataimport/adapters/scats_wa.py`), which until now was a
+documented **stub**: it read a hand-authored CSV subset in the shapes MRWA Appendix-A describes,
+and its own docstring said reading the real `.xlsx` tabs was deferred to "roadmap Phase 4". The
+zip holds 3 real Main Roads WA SCATS detector-volume workbooks
+(`LM00398`/`LM00972`/`LM00973`.2026-02.xlsx — South St and Murdoch Dr, all three inside the
+Murdoch network bbox), each carrying a `Site` tab (key/value rows: Traffic Signal, Road, Road
+Name, SLK, Latitude, Longitude, Intersection) and `Hourly Volume`/`Quarter Hourly Volume`
+(per-detector, per-interval counts), plus — on some sites — `Hourly Peak`, `Quarter Hourly Peak`,
+`Hourly Site Performance`, `Link and Offset Plans`, `SCATS Phase History` and `Timings` in a REAL
+xlsx layout different from the CSV-subset shapes the rest of the adapter was built against. This
+repo has repeatedly stated "no real Murdoch observed data exists" (most recently in the v2 queue
+memory note); that was wrong, and Table 5-2's earlier finding about MRWA's guideline document
+does not extend to this data drop.
+
+**Decision (what was built):** the adapter's `parse()` now dispatches by suffix — `.xlsx`/`.xlsm`
+go through a new `_parse_xlsx_workbook` path (Site + Hourly/Quarter Hourly Volume only), the
+original CSV-subset role classifier is untouched and moved into `_parse_csv_bundle`. Quarter
+Hourly Volume (MRWA's stated 15-minute profiling interval) is the granularity EMITTED as
+`DetectorCountData`; Hourly Volume is cross-checked against it (each stated hourly figure must
+equal the sum of its four quarter-hour bins — verified 0 mismatches across all 3 real files,
+7,532 hours) and then discarded rather than also emitted, mirroring `adapters/daejeon.py`'s 소계
+point-of-discard pattern exactly (emitting both interval lengths would double-count the same
+vehicles and `quality.check_detector_count_intervals` would correctly REFUSE the overlap). Blank
+detector cells (real, in `LM00973`, the smallest of the three sites) produce no record, never a
+zero. `schema.SiteMetadata` gained `road_ref`/`road_name`/`stationing_km`/`position` — the real
+Site tab states a road code, an SLK and a lat/lon that the CSV subset's hand-authored fixture
+never had fields for; this is the same "the schema was wrong, not the map" correction the
+adapter's own docstring already documents happening three times for the CSV path.
+`SiteMetadata.coordinate_reference` is left `absent` rather than assumed `WGS84` — the workbook
+states plain decimal degrees and never names a CRS.
+
+**The detector→movement mapping — checked and ruled out, not merely assumed absent.** A SCATS
+detector number is local to its site; turning "site LM00972 detector 7" into "link L, movement M"
+needs the LMA/LMB site drawing MRWA Appendix-A documents (`SCATS_FIELD_MAP`'s existing "LMA
+drawing" entries, `parsed_by_stub=False`). Three candidates in `client-data/` were opened and
+checked: `Shpfile_of_Routes_for_TravelTime_Analysis.zip` (travel-time ROUTE geometry, no detector
+reference), `Calc_MurdochDr_BaseTurningMov_JH_edit_20260526.xlsx` (a manual turning-movement
+survey — every cell searched for "detector"/"SCATS"/"TCS"/"LM00…", zero matches), and
+`murdoch.osm` (zero "detector" occurrences). None supplies it. So
+`build_turning_counts_from_detector_map` was added as the caller-supplied-map-or-refuse pattern
+`genesis.signals.generate_node_signals` already uses for `approach_phases`: a required
+`detector_movements` map, every uncovered `(site, detector)` pair named in a REFUSE issue, no
+guessing from detector number or ordering.
+
+**Consequence for the calibration comparison (`services/observations.py`):** before this unit,
+`_Aggregator` only ever summed `TurningCountData`; `ingest_observation_set` parsed
+`result.detector_counts` and threw it away (`result.detector_counts.clear()` with nothing having
+read it first — the clear call already existed, unused, which in hindsight was the seam waiting
+for this). `_Aggregator` gained `add_detector_counts`, which folds a site's loop volumes into a
+PARALLEL `detector_total`/`detectors` breakdown — never into `movements`, since a detector volume
+has no turning movement by construction. `observed_side` now reports a detector-only site's total
+from `detector_total` with `directions: []` and `count_basis: "detector_counts"`, so a caller
+cannot mistake a site-level number for a per-movement one. A site with BOTH bases (no shipped
+adapter produces one today) is excluded and named in
+`coverage["sites_with_mixed_count_basis"]` rather than silently summed — two independent
+measurement methods disagreeing would manufacture a number nobody measured.
+`fixes.map_node_counts`'s existing "node-total GEH ≥ threshold → propose a vehicle-input-volume
+fix" branch (arm (a)) already works unmodified against an empty `movements` list, so this is a
+real, if narrower, calibration path: node-total GEH is possible from a WA SCATS drop today;
+route-level/movement-level GEH (arms (b)/(c)) needs the map above and refuses without it — checked
+by reading `services/agent/reality_check.py` and `fixes.py`, not merely asserted.
+
+**Deliberately NOT built:** the real `.xlsx` forms of `Timings`/`Link and Offset Plans`/`SCATS
+Phase History` (a genuinely different layout — phase-lettered columns, wall-clock rows — from the
+CSV-subset parsers `_parse_timings`/`_parse_link_offset`/`_parse_phase_history`), named per-sheet
+in an INFO issue (`scats_xlsx_sheet_present_not_parsed`) rather than silently skipped or
+misparsed with the wrong layout.
+
+**Verification (as first written, before the post-review fixes below):** `tests/test_dataimport_scats_wa.py`
+(35, unchanged, still green — the CSV path is untouched), new `tests/test_dataimport_scats_wa_xlsx.py`
+(22 — this line originally said 23, an off-by-one the post-review pass below caught and fixed) and
+`tests/test_observations_detector_counts.py` (8). Full scoped run (`test_dataimport_*.py` +
+`test_observations_*.py`): 444 passed. Full backend suite: 3935 passed, 1 skipped, 1
+known-environmental failure (`test_rag_retrieval_quality_cases`, pre-existing per CLAUDE.md, not
+touched). `backend/tools/scats_wa_xlsx_probe.py` (new, matches the `genesis_signals_daejeon_probe.py`
+shape) re-runs the measurement against the real zip and prints aggregates/issue histograms only —
+confirmed manually: 3/3 workbooks parse with zero refusals, 45 detectors, 30,208 detector-count
+records, 0 hourly/quarter-hourly disagreements (7,532 hours cross-checked), 60 blank cells (all in
+`LM00973`).
+
+**Post-review fixes (2026-08-10, same day, before commit).** An adversarial verification pass found
+7 findings against this still-uncommitted work; all 7 fixed. The two that touch this adapter file:
+**[0]** the volume-tab header/data rows were hardcoded 0-indexed constants with no check that the
+row actually looked like a header — REPRODUCED with a synthetic one-extra-metadata-row fixture (the
+'Detector' group-label row got read as the header, fabricating a single detector literally named
+'Detector' while the real header and every real detector's column were silently dropped, `result.ok`
+staying `True`). Fixed by finding the header STRUCTURALLY (a bounded search for the `Day, Date,
+Hour|Qtr Hour` shape) and REFUSING by name (`scats_xlsx_volume_header_not_found`) when no row in the
+window matches, plus refusing a detector column whose header is not a plausible detector id
+(`scats_xlsx_volume_implausible_detector_id`) instead of accepting it. Three new tests in
+`tests/test_dataimport_scats_wa_xlsx.py` (`test_a_shifted_header_row_is_found_structurally_not_lost`,
+`test_no_recognisable_header_in_the_search_window_refuses_by_name`,
+`test_an_implausible_detector_id_in_the_header_refuses_the_tab`) — the file now holds **25** test
+functions. **[5]** `_kv_float`'s docstring quoted two REAL client-measured values (a real SLK and a
+real latitude to 12 decimal places for an actual Murdoch WA site) to illustrate that Site-tab cells
+are strings; replaced with an obviously-fabricated placeholder in the same shape before this file was
+ever committed, so the real value never enters git history.
+
+Re-measured after the fixes, every count in this entry re-checked with `grep -c '^def test_'` AND
+`pytest --collect-only -q` rather than assumed (the exercise finding [6] itself asked for): full
+scoped run (`test_dataimport_*.py` + `test_observations_*.py`, now also covering the [1] fix's new
+test in `test_observations_reality_check.py`) — **448 passed**. Full backend suite — **3946 passed,
+1 skipped, 1 known-environmental failure** (same `test_rag_retrieval_quality_cases`, still untouched).
+The probe was re-run against the real zip after the [0] fix; the numbers above are unchanged, as
+expected — structural header search finds the SAME row the fixed-index code assumed on well-formed
+input, it only changes behaviour on the malformed shape the fix targets.
+
+The other 4 findings from the same pass touch files outside this adapter (`services/agent/tools_metrics.py`,
+`services/agent/fixes.py`, `services/db.py`) and are not duplicated in this entry — see those modules'
+own docstrings/tests (`tests/test_observations_reality_check.py`,
+`tests/test_agent_fixes.py`, `tests/test_auth_core.py`).
+
+---
+
 ## 2026-08-10 — the schema guard stops being a first-open-only guard
 
 **Context:** unit P④'s entry above recorded this as *known and NOT fixed here*. It is fixed now.

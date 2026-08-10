@@ -300,6 +300,48 @@ def test_the_report_names_the_store_as_the_observed_source(
     assert "Vehs(All)" in report["sources"]["modelled_not_used"]
 
 
+def test_the_source_label_names_detector_loop_volumes_not_turning_counts_for_a_scats_set(
+    workspace_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The SCATS/WA adapter emits ONLY ``DetectorCountData`` — it raises its
+    own INFO issue (``scats_no_turning_counts_in_source``) precisely because a
+    detector loop volume carries no turning movement. Before this fix,
+    ``_observed_source_label`` unconditionally said "aggregated turning
+    counts" for every observation-store-sourced report regardless of what the
+    set actually held, so a report built from 100% undifferentiated
+    detector-loop totals claimed movement-level counts in
+    ``report["sources"]["observed"]`` — the most visible provenance field in
+    the response. ``observations.py`` already computes ``count_basis`` per
+    node for exactly this distinction; this proves the label now reads it.
+    """
+    from tests.test_dataimport_scats_wa_xlsx import (
+        SITE_ID as SCATS_SITE_ID,
+        _default_quarter_grid,
+        _write_workbook as _write_scats_workbook,
+    )
+    from tests.test_observations_detector_counts import FULL_PERIOD
+
+    workbook = _write_scats_workbook(tmp_path / "T00001.xlsx", quarter_grid=_default_quarter_grid())
+    record = observations.ingest_observation_set(
+        [workbook], name="SCATS 관측 세트", periods=[FULL_PERIOD], adapter_name="scats_wa"
+    )
+
+    report = _build(
+        record["id"],
+        site_nodes=[{"site_id": SCATS_SITE_ID, "node_id": "1"}],
+        run=_run_result({"1": 100.0}),
+        observation_period="AM",
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+
+    assert report["status"] == reality_check.CHECKED
+    observed_label = report["sources"]["observed"]
+    assert "turning counts" not in observed_label, observed_label
+    assert "detector-loop" in observed_label, observed_label
+    assert "no turning movement in the source" in observed_label
+
+
 def test_the_default_path_still_reads_the_base_workbook(
     workspace_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

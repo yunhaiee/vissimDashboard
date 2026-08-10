@@ -908,6 +908,21 @@ class SiteMetadata(NeutralRecord):
 
     ``drive_side`` is the one place side-of-road is recorded; see
     :class:`TurnType` for why the movement enum stays geometric.
+
+    ``road_ref``/``road_name``/``stationing_km``/``position`` were added by the
+    SCATS/WA adapter's real ``.xlsx`` Site tab (roadmap "real observed counts"
+    unit, 2026-08): the hand-authored CSV subset the stub was built against
+    never carried a road code, an SLK or a lat/lon, so the original field map
+    had nowhere honest to put them. The real workbook's ``Site`` tab states all
+    four (``Road``, ``Road Name``, ``SLK``, ``Latitude``/``Longitude``) as
+    plain key/value rows, so — following the same rule that added
+    :class:`DetectorCountData` when Appendix-A's detector volumes turned out to
+    have no turning movement — the schema grew fields rather than the adapter
+    inventing a place to put real source data. ``position`` reuses
+    :class:`PositionHint` (``x`` = longitude, ``y`` = latitude); the workbook
+    states decimal degrees but never names a CRS, so
+    :attr:`coordinate_reference` is left ``None`` with ``absent`` recording why
+    rather than assuming WGS84.
     """
 
     site_id: str = Field(min_length=1)
@@ -921,6 +936,20 @@ class SiteMetadata(NeutralRecord):
     timezone: str | None = Field(default=None, description="IANA name, when the source states one.")
     coordinate_reference: str | None = Field(
         default=None, description='CRS of any x/y hints, e.g. "EPSG:7850", "EPSG:5186".'
+    )
+    road_ref: str | None = Field(
+        default=None, description='MRWA "Road" field — the road code/number (e.g. "H032").'
+    )
+    road_name: str | None = Field(
+        default=None, description='MRWA "Road Name" field, when distinct from site_name.'
+    )
+    stationing_km: float | None = Field(
+        default=None, description='MRWA "SLK" — straight-line kilometrage along the road.'
+    )
+    position: PositionHint | None = Field(
+        default=None,
+        description="The site's own coordinate hint, when the source states one (e.g. a "
+        "Latitude/Longitude pair). x = longitude, y = latitude.",
     )
     collection_period: TimeWindow | None = None
     source_extracted_at: datetime | None = Field(

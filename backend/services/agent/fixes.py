@@ -660,13 +660,28 @@ _WORKBOOK_FIELDS = ("total_real", "total_sim_basam", "directions", "real", "sim_
 
 
 def node_evidence_from_real_counts(node: Mapping[str, Any]) -> dict[str, Any]:
-    """Normalize one ``services.validation.NodeRealCounts`` row.
+    """Normalize one node-level real-counts row into evidence shape.
 
     ``{node_id, observed_total, modelled_total, movements: [{id, direction,
-    observed, modelled}], sources}``. The workbook is the ONLY source here
-    that carries observed counts; ``modelled`` is its ``sim_basam`` column
-    until :func:`merge_modelled_from_run_result` replaces it with the run's
-    own numbers.
+    observed, modelled}], sources}``. ``modelled`` is the observed side's own
+    ``sim_basam``/``total_sim_basam`` column until
+    :func:`merge_modelled_from_run_result` replaces it with the run's own
+    numbers.
+
+    ``node`` is one of TWO shapes, and this is the only place that tells them
+    apart: ``services.validation.NodeRealCounts`` (the base workbook — no
+    ``count_basis`` key) or ``services.observations.observed_side``'s node
+    dict (a STORED observation set — always carries ``count_basis``, e.g.
+    ``"detector_counts"`` for a SCATS/WA site with no turning movement at
+    all). Hardcoding ``sources.observed = "validation_workbook"`` regardless
+    of which one arrived here was a false origin string on every
+    observation-store-sourced proposal: an approver (or an audit trail read
+    months later) would be told a number came from the base workbook when it
+    actually came from ``services.observations``, with no ``count_basis`` to
+    say the number might be a site-level detector aggregate rather than a
+    movement count. This is an approval-gate provenance field — it must name
+    the real origin and carry ``count_basis`` through, not merely be
+    schema-shaped.
     """
     movements: list[dict[str, Any]] = []
     for direction in node.get("directions") or []:
@@ -679,6 +694,12 @@ def node_evidence_from_real_counts(node: Mapping[str, Any]) -> dict[str, Any]:
                 "modelled": _number(direction.get("sim_basam")),
             }
         )
+    count_basis = node.get("count_basis")
+    observed_source = (
+        f"services.observations (count_basis={count_basis})"
+        if count_basis
+        else "validation_workbook"
+    )
     return {
         "node_id": str(node.get("node_id") or ""),
         "node_name": node.get("node_name"),
@@ -686,10 +707,11 @@ def node_evidence_from_real_counts(node: Mapping[str, Any]) -> dict[str, Any]:
         "modelled_total": _number(node.get("total_sim_basam")),
         "movements": movements,
         "sources": {
-            "observed": "validation_workbook",
+            "observed": observed_source,
             "modelled": "validation_workbook",
             "workbook_fields": list(_WORKBOOK_FIELDS),
             "run_result_keys": [],
+            "count_basis": count_basis,
         },
     }
 

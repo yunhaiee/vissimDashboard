@@ -405,11 +405,49 @@ _OBSERVATION_PROBLEM_REASONS = {
 }
 
 
-def _observed_source_label(set_id: str, period: str | None) -> str:
+#: ``observations.py``'s ``count_basis`` values (see its ~1189-1218) -> the
+#: phrase this label uses to describe what the observed side actually is.
+#: Reading ``count_basis`` here is the whole fix: before this, EVERY
+#: observation-store-sourced report claimed "aggregated turning counts" even
+#: when the source (e.g. the SCATS/WA adapter) emits detector-loop totals
+#: with no turning movement at all — the most visible provenance field in the
+#: response naming a movement-level number the data never carried.
+_COUNT_BASIS_PHRASES = {
+    "turning_counts": "aggregated turning counts",
+    "detector_counts": (
+        "aggregated detector-loop volumes (site totals only — no turning movement in the source)"
+    ),
+}
+
+
+def _count_basis_summary(count_basis_values: Any) -> str:
+    """One or many ``count_basis`` values -> the truthful phrase for the label.
+
+    ``count_basis_values`` may be a single string, an iterable of strings (one
+    per node a report spans), or ``None``/empty when the basis was never
+    resolved (e.g. the join failed before any node was read). A set that
+    mixes both bases must say so — describing it as either alone would be
+    exactly the false-precision this fix exists to remove.
+    """
+    if count_basis_values is None:
+        values: set[str] = set()
+    elif isinstance(count_basis_values, str):
+        values = {count_basis_values}
+    else:
+        values = {v for v in count_basis_values if v}
+    if not values:
+        return "observed counts (basis not resolved)"
+    if len(values) == 1:
+        (only,) = values
+        return _COUNT_BASIS_PHRASES.get(only, f"observed counts (basis: {only})")
+    return "a mix of turning counts and detector-loop volumes across nodes (see each node's count_basis)"
+
+
+def _observed_source_label(set_id: str, period: str | None, count_basis: Any = None) -> str:
     return (
         f"services.observations set {set_id!r} period {period or '-'!r} "
-        "-> aggregated turning counts (unit U10, ingested through the dataimport adapter + "
-        "quality gate)"
+        f"-> {_count_basis_summary(count_basis)} (unit U10, ingested through the dataimport "
+        "adapter + quality gate)"
     )
 
 
@@ -554,8 +592,15 @@ def build_reality_check_report(
                 "result_db_count": 1,
             }
             return report
+        # ``observed`` is {node_id: NodeRealCounts}, and each node already
+        # carries ITS OWN count_basis (observations.observed_side, ~1189-1218)
+        # — read straight from it rather than assuming every node shares one
+        # basis, so a set that mixes turning-count and detector-only sites is
+        # described as mixed instead of silently collapsed to either label.
         observed_source = _observed_source_label(
-            observation_set_id, site_coverage["observation_period"]
+            observation_set_id,
+            site_coverage["observation_period"],
+            count_basis={node.get("count_basis") for node in observed.values()},
         )
         # The stored aggregates ARE a {node_id: NodeRealCounts} mapping, which
         # observed_nodes takes as-is and for which the period argument means

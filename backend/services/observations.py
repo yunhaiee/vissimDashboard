@@ -94,7 +94,7 @@ from services.dataimport import (
     select_adapter,
 )
 from services.dataimport.quality import is_all_class_total
-from services.dataimport.schema import TurningCountData
+from services.dataimport.schema import DetectorCountData, TurningCountData
 
 logger = logging.getLogger(__name__)
 
@@ -473,6 +473,13 @@ class _Aggregator:
         self.records_aggregated = 0
         self.records_excluded_as_totals = 0
         self.records_outside_every_period = 0
+        #: A SCATS-style detector volume (schema.py's ``DetectorCountData``)
+        #: has no turning movement, so it is counted separately from the
+        #: movement-level counters above rather than folded into them — see
+        #: :meth:`add_detector_counts`.
+        self.detector_records_seen = 0
+        self.detector_records_aggregated = 0
+        self.detector_records_outside_every_period = 0
         self.first_interval_start: datetime | None = None
         self.last_interval_end: datetime | None = None
         self.interval_minutes: set[float] = set()
@@ -480,6 +487,25 @@ class _Aggregator:
     def note_site(self, site_id: str, site_name: str | None) -> None:
         if site_name or site_id not in self._site_names:
             self._site_names[site_id] = site_name
+
+    @staticmethod
+    def _new_site_bucket(start: datetime, end: datetime) -> dict[str, Any]:
+        """Every site bucket carries BOTH the turning-count fields and the
+        detector-count fields from creation, regardless of which kind of
+        record created it — so whichever of :meth:`add`/:meth:`add_detector_counts`
+        runs second finds them already there instead of branching on which
+        path got there first."""
+        return {
+            "total": 0.0,
+            "records": 0,
+            "movements": {},
+            "intervals": set(),
+            "first_interval_start": start,
+            "last_interval_end": end,
+            "detector_total": 0.0,
+            "detector_records": 0,
+            "detectors": {},
+        }
 
     def add(self, counts: Iterable[TurningCountData]) -> None:
         for count in counts:
@@ -508,14 +534,7 @@ class _Aggregator:
                 sites = self._by_period[period.name]
                 site = sites.get(count.site_id)
                 if site is None:
-                    site = {
-                        "total": 0.0,
-                        "records": 0,
-                        "movements": {},
-                        "intervals": set(),
-                        "first_interval_start": start,
-                        "last_interval_end": end,
-                    }
+                    site = self._new_site_bucket(start, end)
                     sites[count.site_id] = site
                 site["total"] += count.volume
                 site["records"] += 1
@@ -533,6 +552,64 @@ class _Aggregator:
                     movement["records"] += 1
             if not matched:
                 self.records_outside_every_period += 1
+
+    def add_detector_counts(self, counts: Iterable["DetectorCountData"]) -> None:
+        """Fold per-detector loop volumes into a SITE TOTAL — never a movement.
+
+        A detector volume has no turning movement (``schema.py``'s own reason
+        for giving it a separate record type from ``TurningCountData``), so
+        unlike :meth:`add` this never touches a site's ``movements`` dict.
+        What it DOES add is a parallel ``detector_total``/``detectors``
+        breakdown, so a site fed by loop detectors (the WA/SCATS adapter,
+        which never emits ``TurningCountData`` at all) still gets an honest
+        node-level comparison: :func:`observed_side` reports its total from
+        ``detector_total`` and leaves ``directions`` empty for it — which is
+        exactly correct, not a smaller version of the movement-level case.
+        The ONLY way a movement number could legitimately appear from a SCATS
+        drop is ``adapters/scats_wa.build_turning_counts_from_detector_map``,
+        which requires a caller-supplied detector→movement map and produces
+        real ``TurningCountData`` that :meth:`add` already handles; nothing is
+        guessed here.
+        """
+        for count in counts:
+            self.detector_records_seen += 1
+            start = count.interval_start
+            end = count.interval_end
+            if self.first_interval_start is None or start < self.first_interval_start:
+                self.first_interval_start = start
+            if self.last_interval_end is None or end > self.last_interval_end:
+                self.last_interval_end = end
+            self.interval_minutes.add(round(count.interval_minutes, 6))
+
+            matched = False
+            for period in self._periods:
+                if not (period.start <= start < period.end):
+                    continue
+                matched = True
+                self.detector_records_aggregated += 1
+                sites = self._by_period[period.name]
+                site = sites.get(count.site_id)
+                if site is None:
+                    site = self._new_site_bucket(start, end)
+                    sites[count.site_id] = site
+                site["detector_total"] += count.volume
+                site["detector_records"] += 1
+                site["intervals"].add(start)
+                if start < site["first_interval_start"]:
+                    site["first_interval_start"] = start
+                if end > site["last_interval_end"]:
+                    site["last_interval_end"] = end
+                detector = site["detectors"].get(count.detector_id)
+                if detector is None:
+                    site["detectors"][count.detector_id] = {
+                        "volume": count.volume,
+                        "records": 1,
+                    }
+                else:
+                    detector["volume"] += count.volume
+                    detector["records"] += 1
+            if not matched:
+                self.detector_records_outside_every_period += 1
 
     # -- output ------------------------------------------------------------
 
@@ -559,6 +636,28 @@ class _Aggregator:
                         }
                         for key, value in sorted(entry["movements"].items())
                     },
+                    # Detector-loop side: a PARALLEL total, never summed into
+                    # "total" above (turning counts and detector loops are two
+                    # independent measurement methods; see observed_side()'s
+                    # "mixed count basis" handling for why a site with both is
+                    # excluded rather than silently added together).
+                    "detector_total": (
+                        _round_volume(entry["detector_total"])
+                        if entry.get("detector_records")
+                        else None
+                    ),
+                    "detector_records": entry.get("detector_records", 0),
+                    "detectors": {
+                        key: {
+                            "volume": _round_volume(value["volume"]),
+                            "records": value["records"],
+                        }
+                        for key, value in sorted((entry.get("detectors") or {}).items())
+                    },
+                    "count_basis": sorted(
+                        ({"turning_counts"} if entry["records"] else set())
+                        | ({"detector_counts"} if entry.get("detector_records") else set())
+                    ),
                 }
                 for site_id, entry in sorted(sites.items())
             }
@@ -583,6 +682,15 @@ class _Aggregator:
                         sum(entry["total"] for entry in sites.values())
                     ),
                     "records": sum(entry["records"] for entry in sites.values()),
+                    # Detector-loop side, reported separately from turning
+                    # counts for the same reason ``aggregates()`` never sums
+                    # them into "total_volume"/"records" above.
+                    "detector_total_volume": _round_volume(
+                        sum(entry.get("detector_total", 0.0) for entry in sites.values())
+                    ),
+                    "detector_records": sum(
+                        entry.get("detector_records", 0) for entry in sites.values()
+                    ),
                 }
             )
         return coverage
@@ -600,6 +708,14 @@ class _Aggregator:
             "records_aggregated": self.records_aggregated,
             "records_excluded_as_totals": self.records_excluded_as_totals,
             "records_outside_every_period": self.records_outside_every_period,
+            # Detector-loop side (schema.py's DetectorCountData — a SCATS
+            # site's loop volumes, which carry no turning movement). Kept
+            # separate from the turning-count counters above rather than
+            # folded in, so "how much did we aggregate" always answers
+            # honestly which measurement basis it is talking about.
+            "detector_records_read": self.detector_records_seen,
+            "detector_records_aggregated": self.detector_records_aggregated,
+            "detector_records_outside_every_period": self.detector_records_outside_every_period,
         }
 
 
@@ -692,6 +808,7 @@ def ingest_observation_set(
         for site in result.sites:
             aggregator.note_site(site.site_id, site.site_name)
         aggregator.add(result.counts)
+        aggregator.add_detector_counts(result.detector_counts)
         # Release this workbook's records before the next one is opened. The
         # explicit clear is belt-and-braces (the local is rebound on the next
         # iteration anyway) and makes the intent unmissable to whoever edits
@@ -723,7 +840,7 @@ def ingest_observation_set(
             },
         )
 
-    if not aggregator.records_aggregated:
+    if not aggregator.records_aggregated and not aggregator.detector_records_aggregated:
         raise ObservationRefusal(
             "observation_no_counts_in_declared_periods",
             {
@@ -762,13 +879,14 @@ def ingest_observation_set(
 
     _mutate_registry(store)
     logger.info(
-        "observations: stored set %s (%s) — %d file(s), %d site(s), %d record(s) aggregated, "
-        "gate warn=%d info=%d",
+        "observations: stored set %s (%s) — %d file(s), %d site(s), %d turning-count record(s) + "
+        "%d detector-count record(s) aggregated, gate warn=%d info=%d",
         record["id"],
         cleaned_name,
         len(record["source_files"]),
         record["site_count"],
         aggregator.records_aggregated,
+        aggregator.detector_records_aggregated,
         gate["counts"]["warn"],
         gate["counts"]["info"],
     )
@@ -1049,22 +1167,56 @@ def observed_side(
         if node_id in _RESERVED_NODE_IDS:
             coverage["sites_with_rejected_node_id"].append(f"{site_id}->{node_id}")
             continue
-        nodes[node_id] = {
-            "node_id": node_id,
-            "node_name": entry.get("site_name") or site_id,
-            "total_real": _as_int(entry.get("total")),
-            # The store holds no modelled number at all, by construction: the
-            # modelled side comes from THIS run's movement_volumes (U5's whole
-            # point), and reality_check blanks these slots anyway.
-            "total_sim_basam": None,
-            "directions": [
+
+        # A site's counted volume comes from exactly ONE measurement basis.
+        # Turning counts (movement-aware) and detector loops (site-total-only,
+        # e.g. SCATS/WA) are independent methods that could disagree; summing
+        # them silently would manufacture a number nobody measured. No adapter
+        # in this repo produces both for the same site today, so this branch
+        # is a refusal for a combination that has never been observed, not a
+        # smoothed-over one.
+        has_turning = bool(entry.get("records"))
+        has_detector = bool(entry.get("detector_records"))
+        if has_turning and has_detector:
+            coverage["sites_with_mixed_count_basis"].append(site_id)
+            continue
+
+        if has_detector:
+            # A SCATS-style detector volume carries no turning movement (see
+            # observations._Aggregator.add_detector_counts) — the node's total
+            # IS the observation, and "directions" stays empty rather than
+            # smuggling detector ids in as if they were movements.
+            total_real = _as_int(entry.get("detector_total"))
+            directions: list[dict[str, Any]] = []
+            count_basis = "detector_counts"
+        else:
+            total_real = _as_int(entry.get("total"))
+            directions = [
                 {
                     "direction": mid,
                     "real": _as_int(volume.get("volume")) or 0,
                     "sim_basam": 0,
                 }
                 for mid, volume in sorted((entry.get("movements") or {}).items())
-            ],
+            ]
+            count_basis = "turning_counts"
+
+        nodes[node_id] = {
+            "node_id": node_id,
+            "node_name": entry.get("site_name") or site_id,
+            "total_real": total_real,
+            # The store holds no modelled number at all, by construction: the
+            # modelled side comes from THIS run's movement_volumes (U5's whole
+            # point), and reality_check blanks these slots anyway.
+            "total_sim_basam": None,
+            # What kind of comparison this node can honestly support:
+            # "turning_counts" -> per-movement GEH is possible (directions is
+            # populated); "detector_counts" -> node-TOTAL GEH only, no
+            # per-movement number (directions is always []). A caller must not
+            # read a populated "directions" from a "detector_counts" node —
+            # this field exists so it never has to guess which case it is in.
+            "count_basis": count_basis,
+            "directions": directions,
         }
         coverage["sites_joined"].append(f"{site_id}->{node_id}")
 
@@ -1073,6 +1225,7 @@ def observed_side(
     )
     coverage["sites_with_conflicting_node_mapping"].sort()
     coverage["sites_with_rejected_node_id"].sort()
+    coverage["sites_with_mixed_count_basis"].sort()
     coverage["counts"] = {
         "observation_sites": len(sites),
         "joined": len(nodes),
@@ -1102,6 +1255,7 @@ def _empty_site_coverage() -> dict[str, Any]:
         "sites_without_node_mapping": [],
         "sites_with_conflicting_node_mapping": [],
         "sites_with_rejected_node_id": [],
+        "sites_with_mixed_count_basis": [],
         "mapped_sites_absent_from_observations": [],
         "counts": {"observation_sites": 0, "joined": 0, "unmapped": 0, "conflicting": 0},
     }

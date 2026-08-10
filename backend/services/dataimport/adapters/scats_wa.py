@@ -41,10 +41,11 @@ from __future__ import annotations
 import csv
 import re
 from collections import defaultdict
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import mean
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -58,15 +59,20 @@ from ..base import (
     SniffResult,
 )
 from ..schema import (
+    ApproachRef,
+    CanonicalVehicleClass,
+    ClassificationScheme,
     ControlType,
     CoordinationData,
     CoordinationPoint,
     DetectorCountData,
     DetectorData,
     DriveSide,
+    MovementRef,
     PedestrianPhaseData,
     PedestrianProtectionType,
     PhaseData,
+    PositionHint,
     ProgramSourceKind,
     Provenance,
     SignalControllerData,
@@ -76,6 +82,8 @@ from ..schema import (
     SignalProgramData,
     SiteMetadata,
     TimeWindow,
+    TurningCountData,
+    VehicleClassRef,
     VolumeUnit,
 )
 
@@ -84,6 +92,11 @@ CIT_A2 = "MRWA Appendix A §A.2 — derivation algorithms (stretch phase, avg cy
 CIT_A2_P11 = "MRWA Appendix A §A.2 (p.11) — ped demand frequency = demands met ÷ complete cycles."
 CIT_A3 = "MRWA Appendix A §A.3 — time settings (yellow, all-red, pedestrian, protection types)."
 CIT_A5 = "MRWA Appendix A §A.5 — coordination, subsystems, link/offset plans."
+CIT_A1_XLSX = (
+    "MRWA Appendix A §A.1 — Site tab / Detector Volume Data, read from the REAL .xlsx "
+    "workbook (LM00398/LM00972/LM00973.2026-02.xlsx, the WA drop measured 2026-08-10), not "
+    "the hand-authored CSV subset the rest of this module was built against."
+)
 
 
 class FieldMapping(BaseModel):
@@ -376,6 +389,78 @@ SCATS_FIELD_MAP: tuple[FieldMapping, ...] = (
         parsed_by_stub=True,
         citation=CIT_A1,
     ),
+    # -- Real .xlsx workbook — Site tab (fields the CSV subset never carried) --
+    #
+    # Added 2026-08-10 against the 3 real WA SCATS workbooks: the hand-authored
+    # CSV subset's Site tab never had a road code, an SLK or a lat/lon, so the
+    # original field map had nowhere honest to point these at. Following the
+    # same rule that gave DetectorCountData its own record type, the SCHEMA
+    # grew fields (SiteMetadata.road_ref/road_name/stationing_km/position)
+    # rather than the adapter inventing a place to put real source data.
+    FieldMapping(
+        source_structure="Signal Data spreadsheet / Site tab (real .xlsx)",
+        source_field="Road",
+        neutral_path="SiteMetadata.road_ref",
+        parsed_by_stub=True,
+        citation=CIT_A1,
+    ),
+    FieldMapping(
+        source_structure="Signal Data spreadsheet / Site tab (real .xlsx)",
+        source_field="Road Name",
+        neutral_path="SiteMetadata.road_name",
+        parsed_by_stub=True,
+        citation=CIT_A1,
+    ),
+    FieldMapping(
+        source_structure="Signal Data spreadsheet / Site tab (real .xlsx)",
+        source_field="SLK",
+        neutral_path="SiteMetadata.stationing_km",
+        parsed_by_stub=True,
+        citation=CIT_A1,
+    ),
+    FieldMapping(
+        source_structure="Signal Data spreadsheet / Site tab (real .xlsx)",
+        source_field="Latitude / Longitude",
+        neutral_path="SiteMetadata.position",
+        parsed_by_stub=True,
+        citation=CIT_A1,
+        note=(
+            "x = longitude, y = latitude. The tab states plain decimal degrees, never a CRS "
+            "name, so SiteMetadata.coordinate_reference is left absent rather than assuming "
+            "WGS84."
+        ),
+    ),
+    FieldMapping(
+        source_structure="Signal Data spreadsheet / Site tab (real .xlsx)",
+        source_field="Intersection",
+        neutral_path="SiteMetadata.site_name",
+        parsed_by_stub=True,
+        citation=CIT_A1,
+        note="Preferred over 'Road Name' as site_name: it names the full intersection.",
+    ),
+    # -- Real .xlsx workbook — Hourly / Quarter Hourly Volume tabs -------------
+    FieldMapping(
+        source_structure="Signal Data spreadsheet / Quarter Hourly Volume tab (real .xlsx)",
+        source_field="Per-detector volume, 15-minute bins",
+        neutral_path="DetectorCountData.volume",
+        parsed_by_stub=True,
+        citation=CIT_A1,
+        note="The EMITTED granularity — MRWA's stated profiling interval (15 min).",
+    ),
+    FieldMapping(
+        source_structure="Signal Data spreadsheet / Hourly Volume tab (real .xlsx)",
+        source_field="Per-detector volume, 1-hour bins",
+        neutral_path="DetectorCountData.volume",
+        parsed_by_stub=True,
+        citation=CIT_A1,
+        note=(
+            "Cross-checked against Quarter Hourly Volume (each hourly figure must equal the "
+            "sum of its 4 quarter-hour bins) then DISCARDED rather than also emitted — "
+            "emitting both interval lengths for the same detector would double-count the same "
+            "vehicles and the quality gate would (correctly) refuse it as an overlap. Emitted "
+            "directly, as 1-hour records, only when Quarter Hourly Volume is absent."
+        ),
+    ),
     # -- Sources we deliberately do not machine-read ------------------------
     FieldMapping(
         source_structure="Phase Sequence Chart (.doc)",
@@ -514,6 +599,565 @@ def _parse_dt(raw: str | None) -> datetime | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# The REAL .xlsx workbook — Site + Hourly/Quarter Hourly Volume tabs.
+#
+# Measured 2026-08-10 against the 3 real WA SCATS detector-volume workbooks in
+# ``client-data/Traffic signal data.zip`` (LM00398/LM00972/LM00973.2026-02.xlsx
+# — never committed, never read by a test): each carries a ``Site`` tab of
+# key/value rows (Traffic Signal, Road, Road Name, SLK, Latitude, Longitude,
+# Intersection) and at least one of ``Hourly Volume``/``Quarter Hourly Volume``
+# — 4 metadata rows, a 'Detector' group-label row, a header row naming each
+# detector column by number, then one row per (day, hour|quarter-hour). Real
+# files also carry ``Hourly Peak``, ``Quarter Hourly Peak``, ``Hourly Site
+# Performance`` and — on some sites — ``Link and Offset Plans``, ``SCATS Phase
+# History`` and ``Timings``, all in a REAL xlsx layout that is different from
+# the CSV-subset layout ``_parse_timings``/``_parse_link_offset``/
+# ``_parse_phase_history`` above were built against. Only Site + the two
+# volume tabs are read here (see ``_parse_xlsx_workbook``'s docstring for why
+# the rest is a named gap, not a silent misparse).
+# ---------------------------------------------------------------------------
+
+XLSX_SUFFIXES = (".xlsx", ".xlsm")
+
+SITE_SHEET = "Site"
+HOURLY_VOLUME_SHEET = "Hourly Volume"
+QUARTER_HOURLY_VOLUME_SHEET = "Quarter Hourly Volume"
+
+#: Real .xlsx tabs this unit has SEEN but deliberately does not parse — a
+#: genuinely different layout, not a smaller version of the same one. Naming
+#: them lets ``_parse_xlsx_workbook`` say exactly what it skipped instead of
+#: the gap being invisible.
+XLSX_UNPARSED_SHEETS_OF_INTEREST: tuple[str, ...] = (
+    "Hourly Peak",
+    "Quarter Hourly Peak",
+    "Hourly Site Performance",
+    "Link and Offset Plans",
+    "SCATS Phase History",
+    "Timings",
+)
+
+#: 0-indexed row layout of the volume tabs, verified against all 3 real files:
+#: rows 0-3 = title/site/from/to metadata, row 4 = the 'Detector' group label,
+#: row 5 = ``Day, Date, Hour|Qtr Hour, <detector numbers...>``, row 6+ = data.
+#:
+#: These are the EXPECTED/default position only — kept for readability and as
+#: the anchor the search window below is sized around. The runtime behaviour
+#: never trusts them directly: :func:`_find_volume_header_row` locates the
+#: header by its CONTENT (a structural search), and the data start row is
+#: derived from wherever that search actually found it. An ordinary export
+#: change — one metadata row added or removed — shifts every fixed index
+#: below it; trusting ``_VOLUME_HEADER_ROW`` as a position rather than a
+#: default meant that shift silently fed the 'Detector' group-label row in as
+#: if it were the header (fabricating one detector literally named
+#: 'Detector', dropping every real detector's column with no issue at all —
+#: reproduced with a synthetic one-extra-row fixture, see
+#: tests/test_dataimport_scats_wa_xlsx.py).
+_VOLUME_HEADER_ROW = 5
+_VOLUME_DATA_START_ROW = 6
+_VOLUME_DETECTOR_COL_START = 3
+
+#: How many leading rows :func:`_find_volume_header_row` is willing to search
+#: before giving up. Bounded so a workbook that is not this layout at all
+#: (wrong sheet, corrupt export) fails fast with a named REFUSE instead of
+#: scanning thousands of data rows for a false-positive header match; wide
+#: enough to tolerate several inserted/removed metadata rows around the
+#: nominal position (``_VOLUME_HEADER_ROW`` = 5).
+_VOLUME_HEADER_SEARCH_WINDOW = 20
+
+#: The header row's fixed-position tokens, case/space-insensitive. Column 2
+#: differs between the two volume tabs ('Hour' vs 'Qtr Hour'), so both are
+#: accepted regardless of which tab is being searched — it is the STRUCTURE,
+#: not the interval label, that identifies the row.
+_VOLUME_HEADER_COL0 = "day"
+_VOLUME_HEADER_COL1 = "date"
+_VOLUME_HEADER_COL2_TOKENS = frozenset({"hour", "qtr hour"})
+
+#: A real SCATS detector column header is a bare number (the module docstring:
+#: "a header row naming each detector column by number"). Anything else sat in
+#: a detector-column position — the 'Detector' group-label text itself, a
+#: stray word, a formula-error string — is a sign the header row was
+#: misidentified or the column is not a detector at all, never a detector id
+#: to trust.
+_PLAUSIBLE_DETECTOR_ID_RE = re.compile(r"^\d{1,4}$")
+
+_CLOCK_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def _normalise_header_cell(value: Any) -> str:
+    return str(value).strip().lower() if value is not None else ""
+
+
+def _looks_like_volume_header_row(row: Sequence[Any]) -> bool:
+    """Does ``row`` structurally match ``Day, Date, Hour|Qtr Hour, ...``?
+
+    Checked by CONTENT, not position — this is the whole fix: the same 3
+    tokens are required regardless of which row index they turn up at.
+    """
+    if len(row) < 3:
+        return False
+    return (
+        _normalise_header_cell(row[0]) == _VOLUME_HEADER_COL0
+        and _normalise_header_cell(row[1]) == _VOLUME_HEADER_COL1
+        and _normalise_header_cell(row[2]) in _VOLUME_HEADER_COL2_TOKENS
+    )
+
+
+def _find_volume_header_row(
+    rows: Sequence[tuple[Any, ...]], *, search_window: int = _VOLUME_HEADER_SEARCH_WINDOW
+) -> int | None:
+    """The row index whose first 3 columns read ``Day, Date, Hour|Qtr Hour`` —
+    found by searching a bounded window from the top, never assumed from
+    ``_VOLUME_HEADER_ROW``. ``None`` when no row in the window matches, which
+    the caller turns into a named REFUSE rather than guessing."""
+    limit = min(len(rows), search_window)
+    for index in range(limit):
+        if _looks_like_volume_header_row(rows[index]):
+            return index
+    return None
+
+
+def _open_scats_workbook(path: Path):
+    """Open a workbook read-only, dimensions untouched (callers reset per-sheet).
+
+    Same house pattern as ``adapters/daejeon.py``'s ``_open_worksheet``:
+    unreadable bytes are an :class:`AdapterError` (a programming/input problem,
+    never a data-quality finding), because there is no per-sheet issue to
+    attach a "cannot even open this file" failure to.
+    """
+    try:
+        import openpyxl
+    except ImportError as exc:  # pragma: no cover - openpyxl is a hard dependency
+        raise AdapterError(f"openpyxl is required to read {path.name}: {exc}") from exc
+    try:
+        return openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except OSError as exc:
+        raise AdapterError(f"cannot read {path.name}: {exc}") from exc
+    except Exception as exc:  # a corrupt/non-xlsx byte stream is unreadable input
+        raise AdapterError(f"{path.name} is not a readable .xlsx workbook: {exc}") from exc
+
+
+def _sheet_rows(workbook: Any, name: str) -> list[tuple[Any, ...]] | None:
+    """A sheet's rows as tuples, or ``None`` when the sheet is absent.
+
+    ``reset_dimensions()`` is NOT optional here: every real SCATS workbook
+    measured self-reports the wrong ``<dimension>`` and openpyxl's read-only
+    mode trusts it, silently returning an empty/truncated sheet without this
+    call (the same landmine ``adapters/daejeon.py`` documents for the Daejeon
+    drop).
+    """
+    if name not in workbook.sheetnames:
+        return None
+    worksheet = workbook[name]
+    worksheet.reset_dimensions()
+    return [tuple(row) for row in worksheet.iter_rows(values_only=True)]
+
+
+def _site_sheet_kv(rows: Sequence[tuple[Any, ...]]) -> dict[str, Any]:
+    """The ``Site`` tab's (label, value) rows as a dict.
+
+    Row 0 is a lone title (``'Traffic Signal Data'``) with no value column; it
+    lands as a harmless ``{"Traffic Signal Data": None}`` entry that nothing
+    looks up. Every other real row is exactly one (label, value) pair.
+    """
+    kv: dict[str, Any] = {}
+    for row in rows:
+        if not row:
+            continue
+        key = row[0]
+        if key is None:
+            continue
+        key = str(key).strip()
+        if not key:
+            continue
+        kv[key] = row[1] if len(row) > 1 else None
+    return kv
+
+
+def _kv_str(kv: Mapping[str, Any], key: str) -> str | None:
+    value = kv.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _kv_float(kv: Mapping[str, Any], key: str) -> float | None:
+    """Every value in the real Site tab is a STRING, including numeric-looking
+    ones ('12.34', '-33.123456789012') — a fabricated example in the measured
+    shape (openpyxl reads a numeric-looking cell back as ``str``, not
+    ``float``), not a value copied from any client workbook."""
+    value = kv.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _combine_date_and_clock(date_value: Any, clock_value: Any) -> datetime | None:
+    """``Date`` (a datetime at midnight) + ``Hour``/``Qtr Hour`` ('HH:MM') ->
+    one timestamp, or ``None`` when either half does not parse as expected.
+    Never raises — an unusable row is the caller's problem to count and skip."""
+    if not isinstance(date_value, datetime):
+        return None
+    if not isinstance(clock_value, str):
+        return None
+    match = _CLOCK_RE.match(clock_value.strip())
+    if not match:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return date_value.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+@dataclass
+class _VolumeSheetResult:
+    """One volume tab's parse: what a detector column-header names, per-detector
+    per-interval values (for the hourly/quarter-hourly cross-check), the
+    :class:`DetectorCountData` records this tab is willing to emit, how many
+    cells were blank, and WHERE the header actually was (never assumed to be
+    ``_VOLUME_HEADER_ROW`` — see :func:`_find_volume_header_row`)."""
+
+    sheet: str
+    detector_ids: list[str]
+    values: dict[str, dict[datetime, float]]
+    records: list[DetectorCountData]
+    blank_cells: int
+    rows_read: int
+    header_row: int  # 0-indexed
+
+
+def _parse_volume_sheet(
+    path: Path,
+    rows: Sequence[tuple[Any, ...]],
+    sheet_name: str,
+    interval: timedelta,
+    site_id: str,
+    controller_id: str,
+    result: ImportResult,
+) -> _VolumeSheetResult | None:
+    """One ``Hourly Volume``/``Quarter Hourly Volume`` tab -> per-detector
+    :class:`DetectorCountData`, or ``None`` (with an issue recorded) when the
+    header row cannot be found, a detector column's header is not a plausible
+    detector id, or the header names no detector columns at all.
+
+    The header row is located STRUCTURALLY — by searching a bounded window
+    for the ``Day, Date, Hour|Qtr Hour`` shape (:func:`_find_volume_header_row`)
+    — never trusted at the nominal ``_VOLUME_HEADER_ROW`` offset. An ordinary
+    export change (one metadata row inserted or removed) shifts that offset;
+    trusting it silently read the 'Detector' group-label row as the header in
+    exactly that case, fabricating a single detector literally named
+    'Detector' while dropping every real detector's column with no issue at
+    all (reproduced with a synthetic fixture — see
+    ``tests/test_dataimport_scats_wa_xlsx.py``). A detector column whose
+    header is not a plausible SCATS detector id (bare digits) is the same
+    failure mode one row over, so it refuses the same way rather than being
+    silently accepted as a detector id.
+
+    A blank detector cell produces NO record — never a zero. Measured
+    2026-08-10 on the real drop: LM00973 (9 detectors, the smallest of the
+    three real sites) has genuinely blank cells in both volume tabs; the other
+    two real sites have none. Both are handled the same way here: counted and
+    reported (``scats_xlsx_volume_blank_cells``), never defaulted.
+    """
+    header_row_index = _find_volume_header_row(rows)
+    if header_row_index is None:
+        searched = min(len(rows), _VOLUME_HEADER_SEARCH_WINDOW)
+        result.issues.append(
+            ImportIssue(
+                severity=IssueSeverity.REFUSE,
+                code="scats_xlsx_volume_header_not_found",
+                message=(
+                    f"{path.name}: {sheet_name!r} has no row, in the first {searched} row(s), "
+                    "whose first 3 columns read 'Day, Date, Hour' or 'Day, Date, Qtr Hour' — the "
+                    "header this layout requires. Rather than trust the nominal position "
+                    f"(row {_VOLUME_HEADER_ROW + 1}), which an inserted or removed metadata row "
+                    "can silently shift, no volumes were read from this tab."
+                ),
+                subject=f"{path.name} / {sheet_name}",
+                citation=CIT_A1_XLSX,
+                context={"rows_present": len(rows), "rows_searched": searched},
+            )
+        )
+        return None
+
+    data_start_row = header_row_index + 1
+    header = rows[header_row_index]
+    detector_cols: list[tuple[int, str]] = []
+    implausible: list[tuple[int, str]] = []
+    for col_index in range(_VOLUME_DETECTOR_COL_START, len(header)):
+        raw = header[col_index]
+        if raw is None:
+            continue
+        token = str(raw).strip()
+        if not token:
+            continue
+        if _PLAUSIBLE_DETECTOR_ID_RE.match(token):
+            detector_cols.append((col_index, token))
+        else:
+            implausible.append((col_index, token))
+
+    if implausible:
+        result.issues.append(
+            ImportIssue(
+                severity=IssueSeverity.REFUSE,
+                code="scats_xlsx_volume_implausible_detector_id",
+                message=(
+                    f"{path.name}: {sheet_name!r} row {header_row_index + 1} names "
+                    f"{len(implausible)} detector column(s) whose header cell is not a plausible "
+                    "SCATS detector id (bare digits): "
+                    f"{', '.join(repr(token) for _, token in implausible[:10])}. A cell that does "
+                    "not look like a detector number is not accepted as one — this is the same "
+                    "shape a misidentified header row produces, so the whole tab is refused rather "
+                    "than partly trusted."
+                ),
+                subject=f"{path.name} / {sheet_name}",
+                citation=CIT_A1_XLSX,
+                context={
+                    "header_row": header_row_index + 1,
+                    "implausible_columns": [
+                        {"column": col_index, "value": token}
+                        for col_index, token in implausible[:50]
+                    ],
+                },
+            )
+        )
+        return None
+
+    if not detector_cols:
+        result.issues.append(
+            ImportIssue(
+                severity=IssueSeverity.WARN,
+                code="scats_xlsx_no_detector_columns",
+                message=(
+                    f"{path.name}: {sheet_name!r} row {header_row_index + 1} names no detector "
+                    "columns; no volumes read from this tab."
+                ),
+                subject=f"{path.name} / {sheet_name}",
+                citation=CIT_A1_XLSX,
+            )
+        )
+        return None
+
+    values: dict[str, dict[datetime, float]] = {det_id: {} for _, det_id in detector_cols}
+    records: list[DetectorCountData] = []
+    blank_cells = 0
+    unusable_rows = 0
+    rows_read = 0
+
+    for row_index in range(data_start_row, len(rows)):
+        row = rows[row_index]
+        date_value = row[1] if len(row) > 1 else None
+        clock_value = row[2] if len(row) > 2 else None
+        start = _combine_date_and_clock(date_value, clock_value)
+        if start is None:
+            unusable_rows += 1
+            continue
+        rows_read += 1
+        end = start + interval
+
+        for col_index, det_id in detector_cols:
+            raw = row[col_index] if col_index < len(row) else None
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                blank_cells += 1
+                continue
+            try:
+                volume = float(raw)
+            except (TypeError, ValueError):
+                blank_cells += 1
+                continue
+            values[det_id][start] = volume
+            record = DetectorCountData(
+                provenance=Provenance(
+                    source_file=path.name,
+                    locator=f"{sheet_name}!row {row_index + 1}",
+                    native_id=det_id,
+                ),
+                site_id=site_id,
+                detector_id=det_id,
+                controller_id=controller_id,
+                interval_start=start,
+                interval_end=end,
+                volume=volume,
+                volume_unit=VolumeUnit.VEHICLES,
+            )
+            record.mark_absent(
+                "vehicle_class",
+                "SCATS loop volumes are undifferentiated; no class breakdown exists in this "
+                "source.",
+            )
+            records.append(record)
+
+    if unusable_rows:
+        result.issues.append(
+            ImportIssue(
+                severity=IssueSeverity.WARN,
+                code="scats_xlsx_volume_row_unusable",
+                message=(
+                    f"{path.name}: {sheet_name!r} has {unusable_rows} row(s) whose Date/Hour "
+                    "column did not parse as expected; skipped rather than guessed."
+                ),
+                subject=f"{path.name} / {sheet_name}",
+                citation=CIT_A1_XLSX,
+                context={"rows_skipped": unusable_rows},
+            )
+        )
+    if blank_cells:
+        result.issues.append(
+            ImportIssue(
+                severity=IssueSeverity.INFO,
+                code="scats_xlsx_volume_blank_cells",
+                message=(
+                    f"{path.name}: {sheet_name!r} has {blank_cells} blank/unreadable detector "
+                    f"cell(s) across {len(detector_cols)} detector column(s) and {rows_read} "
+                    "interval row(s). No record was written for those (site, detector, interval) "
+                    "combinations — a blank cell is an unobserved interval, not zero flow."
+                ),
+                subject=f"{path.name} / {sheet_name}",
+                citation=CIT_A1_XLSX,
+                context={"blank_cells": blank_cells, "detector_columns": len(detector_cols)},
+            )
+        )
+
+    return _VolumeSheetResult(
+        sheet=sheet_name,
+        detector_ids=[det_id for _, det_id in detector_cols],
+        values=values,
+        records=records,
+        blank_cells=blank_cells,
+        rows_read=rows_read,
+        header_row=header_row_index,
+    )
+
+
+class DetectorMovement(BaseModel):
+    """One (site, detector) -> movement, supplied ENTIRELY by the caller.
+
+    See :func:`build_turning_counts_from_detector_map`'s docstring for why
+    this adapter never derives one itself.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    approach: ApproachRef
+    movement: MovementRef
+
+
+def build_turning_counts_from_detector_map(
+    detector_counts: Sequence[DetectorCountData],
+    *,
+    detector_movements: Mapping[tuple[str, str], DetectorMovement],
+    mapping_source: str,
+) -> tuple[list[TurningCountData], list[ImportIssue]]:
+    """Lift detector-level counts to movement-level counts — ONLY with a
+    caller-supplied map. This adapter never builds one itself.
+
+    A SCATS detector number is local to its site (SCATS detector "7" at site
+    LM00972 and detector "7" at LM00973 are unrelated loops); turning "site
+    LM00972 detector 7" into "link 1234, movement N→E" needs the LMA/LMB site
+    drawing MRWA Appendix-A documents (``SCATS_FIELD_MAP``'s "LMA drawing"
+    entries, ``parsed_by_stub=False``). MEASURED 2026-08-10: this drop's
+    ``client-data/`` does not contain one. Checked and ruled out —
+
+    * ``Shpfile_of_Routes_for_TravelTime_Analysis.zip`` — travel-time ROUTE
+      geometry (7-30/8-30 and 15-30/16-30 AM/PM runs), no detector or SCATS
+      reference of any kind.
+    * ``Calc_MurdochDr_BaseTurningMov_JH_edit_20260526.xlsx`` — a manual
+      turning-movement survey (26 site sheets). Every cell was searched for
+      "detector"/"SCATS"/"TCS"/"LM00…" — zero matches. It counts the same
+      intersections by a different, uncorrelated method; it does not name
+      which SCATS detector observed which turn.
+    * ``murdoch.osm`` — zero occurrences of "detector" anywhere in the file.
+
+    So the mapping is exactly what the task doctrine calls for: caller-supplied
+    input with an explicit refusal when absent — the same pattern
+    ``genesis.signals.generate_node_signals`` uses for ``approach_phases``.
+    ``detector_movements`` has no default; pass ``{}`` to make the refusal
+    total and explicit rather than accidental. Every (site, detector) pair NOT
+    covered is named in a REFUSE issue rather than silently dropped or
+    guessed from position/ordering.
+
+    ``mapping_source`` must say where the map came from (a person, a drawing,
+    an email) — it becomes every lifted record's ``Provenance.derived_by``, so
+    nothing downstream can mistake a human declaration for something this
+    adapter read out of the workbook.
+
+    Returns ``(lifted_counts, issues)``. ``lifted_counts`` holds only the
+    records that WERE mapped; the unmapped ones are named in ``issues``, never
+    silently omitted.
+    """
+    if not mapping_source or not mapping_source.strip():
+        raise AdapterError(
+            "mapping_source must name where detector_movements came from (a person, a drawing, "
+            "an email) — a caller-supplied mapping with no stated authority is exactly the "
+            "invented provenance this project forbids"
+        )
+
+    counts: list[TurningCountData] = []
+    issues: list[ImportIssue] = []
+    unmapped: dict[tuple[str, str], int] = defaultdict(int)
+
+    for record in detector_counts:
+        key = (record.site_id, record.detector_id)
+        mapped = detector_movements.get(key)
+        if mapped is None:
+            unmapped[key] += 1
+            continue
+        counts.append(
+            TurningCountData(
+                provenance=Provenance(
+                    source_file=record.provenance.source_file,
+                    native_id=record.provenance.native_id,
+                    derived_by=(
+                        f"detector→movement lift using a caller-supplied map ({mapping_source}); "
+                        "no LMA/LMB drawing exists in this drop for the adapter to derive one from"
+                    ),
+                ),
+                site_id=record.site_id,
+                approach=mapped.approach,
+                movement=mapped.movement,
+                vehicle_class=VehicleClassRef(
+                    scheme=ClassificationScheme.UNCLASSIFIED,
+                    code="all",
+                    canonical=CanonicalVehicleClass.ALL_VEHICLES,
+                ),
+                interval_start=record.interval_start,
+                interval_end=record.interval_end,
+                volume=record.volume,
+                volume_unit=record.volume_unit,
+            )
+        )
+
+    if unmapped:
+        total_records = sum(unmapped.values())
+        issues.append(
+            ImportIssue(
+                severity=IssueSeverity.REFUSE,
+                code="scats_detector_movement_mapping_missing",
+                message=(
+                    f"{len(unmapped)} (site, detector) pair(s), {total_records} record(s), have no "
+                    "entry in the supplied detector_movements map. Only the LMA/LMB site drawing "
+                    "(or an equivalent human declaration) can say which movement a SCATS detector "
+                    "counts — none was supplied for these, so they are excluded from the lifted "
+                    "turning counts rather than guessed from detector number or ordering."
+                ),
+                citation=CIT_A1,
+                context={
+                    "unmapped_pairs": [
+                        {"site_id": site_id, "detector_id": detector_id, "records": count}
+                        for (site_id, detector_id), count in sorted(unmapped.items())
+                    ][:50],
+                    "unmapped_pair_count": len(unmapped),
+                    "unmapped_record_count": total_records,
+                },
+            )
+        )
+    return counts, issues
+
+
 class SCATSWAAdapter(DataAdapter):
     """Adapter #2 (WA / SCATS), stub tier. See the module docstring."""
 
@@ -521,16 +1165,35 @@ class SCATSWAAdapter(DataAdapter):
         name="scats_wa",
         region="AU-WA",
         source_system="SCATS",
-        version="0.1.0-stub",
+        version="0.2.0",
         description=(
-            "Maps MRWA Appendix-A structures onto the neutral model. Parses a CSV subset "
-            "only; .xlsx tabs and drawings deferred to roadmap Phase 4."
+            "Maps MRWA Appendix-A structures onto the neutral model. Reads real .xlsx SCATS "
+            "detector-volume workbooks (Site + Hourly/Quarter Hourly Volume tabs) plus a "
+            "hand-authored CSV subset for the signal-timing structures; the xlsx forms of "
+            "Timings/Phase History/Link & Offset Plans and the LMA/LMB drawings remain a "
+            "named gap (see the module and _parse_xlsx_workbook docstrings)."
         ),
     )
 
     # -- sniff -------------------------------------------------------------
 
     def sniff(self, files: Sequence[Path]) -> SniffResult:
+        xlsx_result = self._sniff_xlsx(files)
+        csv_result = self._sniff_csv(files)
+        if xlsx_result is None or xlsx_result.confidence == 0.0:
+            return csv_result
+        if csv_result.confidence == 0.0:
+            return xlsx_result
+        # Both scored something (a mixed file set) — report the stronger one,
+        # naming both so a caller is not left guessing which files won it.
+        winner = xlsx_result if xlsx_result.confidence >= csv_result.confidence else csv_result
+        return SniffResult(
+            confidence=winner.confidence,
+            reason=f"{winner.reason} (xlsx: {xlsx_result.reason}; csv: {csv_result.reason})",
+            matched_files=sorted(set(xlsx_result.matched_files) | set(csv_result.matched_files)),
+        )
+
+    def _sniff_csv(self, files: Sequence[Path]) -> SniffResult:
         try:
             roles = _classify(files)
         except Exception as exc:  # a sniff never raises
@@ -569,12 +1232,462 @@ class SCATSWAAdapter(DataAdapter):
             matched_files=[path.name for path in roles.values()],
         )
 
+    def _sniff_xlsx(self, files: Sequence[Path]) -> SniffResult | None:
+        """Cheap, read-only: open each ``.xlsx``/``.xlsm`` just far enough to
+        read its sheet NAMES (no cell values), score by which of the real
+        workbook's tabs are present. Returns ``None`` when no xlsx/xlsm file is
+        in the set at all, so :meth:`sniff` can fall through to the CSV score
+        without a spurious "0.0, no xlsx" reason cluttering the winner."""
+        candidates = [path for path in files if path.suffix.lower() in XLSX_SUFFIXES]
+        if not candidates:
+            return None
+
+        matched: list[str] = []
+        partial: list[str] = []
+        for path in candidates:
+            try:
+                workbook = _open_scats_workbook(path)
+            except AdapterError:
+                continue
+            try:
+                sheets = set(workbook.sheetnames)
+            finally:
+                workbook.close()
+            has_volume = bool(sheets & {HOURLY_VOLUME_SHEET, QUARTER_HOURLY_VOLUME_SHEET})
+            if SITE_SHEET in sheets and has_volume:
+                matched.append(path.name)
+            elif SITE_SHEET in sheets or has_volume:
+                partial.append(path.name)
+
+        if matched:
+            return SniffResult(
+                confidence=1.0,
+                reason=(
+                    f"{len(matched)} workbook(s) carry a {SITE_SHEET!r} tab plus "
+                    f"{HOURLY_VOLUME_SHEET!r}/{QUARTER_HOURLY_VOLUME_SHEET!r}"
+                ),
+                matched_files=matched,
+            )
+        if partial:
+            return SniffResult(
+                confidence=0.4,
+                reason=(
+                    f"{len(partial)} workbook(s) carry a {SITE_SHEET!r} tab OR a volume tab, "
+                    "not both — below the selection threshold on purpose"
+                ),
+                matched_files=partial,
+            )
+        return SniffResult(
+            confidence=0.0,
+            reason=f"no .xlsx/.xlsm workbook carries a {SITE_SHEET!r} tab or a volume tab",
+        )
+
     # -- parse -------------------------------------------------------------
 
     def parse(self, files: Sequence[Path]) -> ImportResult:
+        """Dispatches by suffix: real ``.xlsx``/``.xlsm`` workbooks go through
+        :meth:`_parse_xlsx_workbook` (one call per workbook, independent —
+        matches ``services.observations.ingest_observation_set``'s "one
+        workbook at a time" streaming contract); everything else goes through
+        the original CSV-subset role classifier. A mixed file set runs both;
+        that combination has never been observed in practice (the real drop is
+        xlsx-only, the fixture drop is csv-only) but nothing here forbids it.
+        """
         result = self.empty_result()
-        roles = _classify(files)
         result.source_files = [path.name for path in files]
+
+        xlsx_paths = [path for path in files if path.suffix.lower() in XLSX_SUFFIXES]
+        csv_paths = [path for path in files if path not in xlsx_paths]
+
+        for path in sorted(xlsx_paths, key=lambda item: item.name):
+            self._parse_xlsx_workbook(path, result)
+
+        if csv_paths:
+            self._parse_csv_bundle(csv_paths, result)
+
+        return result
+
+    # -- xlsx: the real workbook --------------------------------------------
+
+    def _parse_xlsx_workbook(self, path: Path, result: ImportResult) -> None:
+        """One real ``.xlsx`` SCATS detector-volume workbook -> neutral records.
+
+        Reads ``Site`` (site identity + the fields the CSV subset never had:
+        road, road name, SLK, lat/lon) and ``Hourly Volume``/``Quarter Hourly
+        Volume`` (per-detector, per-interval counts). Every other real tab this
+        unit has seen (``XLSX_UNPARSED_SHEETS_OF_INTEREST``) is named in an
+        INFO issue and left unread — it is a genuinely different xlsx layout
+        (key/value Site-style rows for some, phase-lettered columns for
+        Timings, wall-clock rows for Phase History) from the CSV-subset
+        parsers above, and misreading a different layout with the wrong parser
+        would be a wrong number, not a smaller one.
+
+        Corrupt/unreadable bytes raise :class:`AdapterError` (an input
+        problem); a missing ``Site`` tab or TCS number is a REFUSE issue
+        (an expected data problem) and this workbook contributes nothing
+        further — but does not stop any OTHER workbook in the same ``parse()``
+        call.
+        """
+        workbook = _open_scats_workbook(path)
+        try:
+            parsed_site = self._parse_xlsx_site(path, workbook, result)
+            if parsed_site is None:
+                return
+            site, controller = parsed_site
+            result.sites.append(site)
+            result.controllers.append(controller)
+
+            self._parse_xlsx_detector_volumes(path, workbook, site, controller, result)
+
+            present_unparsed = [
+                name for name in XLSX_UNPARSED_SHEETS_OF_INTEREST if name in workbook.sheetnames
+            ]
+            if present_unparsed:
+                result.issues.append(
+                    ImportIssue(
+                        severity=IssueSeverity.INFO,
+                        code="scats_xlsx_sheet_present_not_parsed",
+                        message=(
+                            f"{path.name}: also carries {', '.join(present_unparsed)} — real xlsx "
+                            "tabs in a layout different from the CSV-subset parsers above (see "
+                            "_parse_xlsx_workbook's docstring). Left unread rather than misparsed."
+                        ),
+                        subject=path.name,
+                        context={"sheets_not_parsed": present_unparsed},
+                    )
+                )
+
+            result.issues.append(
+                ImportIssue(
+                    severity=IssueSeverity.INFO,
+                    code="scats_no_turning_counts_in_source",
+                    message=(
+                        "MRWA Appendix-A supplies detector volumes, not turning counts. "
+                        "Movement-level demand must come from a separate turning-count survey; "
+                        "none was expected here."
+                    ),
+                    subject=path.name,
+                    citation=CIT_A1_XLSX,
+                )
+            )
+        finally:
+            workbook.close()
+
+    def _parse_xlsx_site(
+        self, path: Path, workbook: Any, result: ImportResult
+    ) -> tuple[SiteMetadata, SignalControllerData] | None:
+        """Returns ``None`` (having recorded a REFUSE issue) when the site
+        cannot be identified. Never raises for a data problem."""
+        rows = _sheet_rows(workbook, SITE_SHEET)
+        if rows is None:
+            result.issues.append(
+                ImportIssue(
+                    severity=IssueSeverity.REFUSE,
+                    code="scats_site_identity_unavailable",
+                    message=(
+                        f"{path.name} carries no {SITE_SHEET!r} tab, so no TCS number is available "
+                        "and no record can be attributed to a site. The adapter will not derive a "
+                        "site id from the file name."
+                    ),
+                    subject=path.name,
+                    citation=CIT_A1_XLSX,
+                    context={"sheets_present": list(workbook.sheetnames)},
+                )
+            )
+            return None
+
+        kv = _site_sheet_kv(rows)
+        tcs = _kv_str(kv, "Traffic Signal")
+        if not tcs:
+            result.issues.append(
+                ImportIssue(
+                    severity=IssueSeverity.REFUSE,
+                    code="scats_tcs_number_missing",
+                    message=(
+                        f"{path.name}: the {SITE_SHEET!r} tab states no 'Traffic Signal' value, so "
+                        "no record can be attributed to a site. The adapter will not substitute "
+                        "the file name."
+                    ),
+                    provenance=Provenance(
+                        source_file=path.name, locator=f"{SITE_SHEET}!row 2"
+                    ),
+                    citation=CIT_A1_XLSX,
+                )
+            )
+            return None
+
+        provenance = Provenance(
+            source_file=path.name, locator=f"{SITE_SHEET} tab", native_id=tcs
+        )
+
+        lat = _kv_float(kv, "Latitude")
+        lon = _kv_float(kv, "Longitude")
+        position: PositionHint | None = None
+        if lat is not None or lon is not None:
+            position = PositionHint(x=lon, y=lat, description=_kv_str(kv, "Intersection"))
+
+        road_ref = _kv_str(kv, "Road")
+        road_name = _kv_str(kv, "Road Name")
+        stationing_km = _kv_float(kv, "SLK")
+        site_name = _kv_str(kv, "Intersection") or road_name
+
+        site = SiteMetadata(
+            provenance=provenance,
+            site_id=tcs,
+            site_name=site_name,
+            source_system="SCATS",
+            jurisdiction="WA, Australia",
+            # Regional constant declared BY THE ADAPTER (WA drives on the
+            # left), not a value read from the file — see the CSV _parse_site
+            # for the same note.
+            drive_side=DriveSide.LEFT,
+            road_ref=road_ref,
+            road_name=road_name,
+            stationing_km=stationing_km,
+            position=position,
+        )
+        site.mark_absent(
+            "coordinate_reference",
+            f"{path.name}'s {SITE_SHEET!r} tab states Latitude/Longitude as plain decimal "
+            "degrees but names no coordinate reference system; WGS84 is the common convention "
+            "but is not asserted here without the workbook stating it.",
+        )
+        if position is None:
+            site.mark_absent(
+                "position", f"{path.name}'s {SITE_SHEET!r} tab states no Latitude/Longitude."
+            )
+        if not road_ref:
+            site.mark_absent(
+                "road_ref", f"{path.name}'s {SITE_SHEET!r} tab states no 'Road' value."
+            )
+        if not road_name:
+            site.mark_absent(
+                "road_name", f"{path.name}'s {SITE_SHEET!r} tab states no 'Road Name' value."
+            )
+        if stationing_km is None:
+            site.mark_absent(
+                "stationing_km", f"{path.name}'s {SITE_SHEET!r} tab states no 'SLK' value."
+            )
+        site.mark_absent(
+            "collection_period",
+            f"{path.name}'s {SITE_SHEET!r} tab states no survey period directly; the "
+            "observation window is on the Hourly/Quarter Hourly Volume tabs' own Date column.",
+        )
+
+        controller = SignalControllerData(
+            provenance=provenance,
+            controller_id=tcs,
+            name=site_name,
+            site_id=tcs,
+            control_type=ControlType.ADAPTIVE_SCATS,
+            control_type_raw="SCATS",
+        )
+        controller.mark_absent(
+            "region", f"{path.name}'s {SITE_SHEET!r} tab states no Region value."
+        )
+        controller.mark_absent(
+            "cycle_time_s",
+            "A SCATS site has no single nominal cycle; this unit reads Site + Hourly/Quarter "
+            "Hourly Volume only (see the sheets-not-parsed INFO issue for what else this "
+            "workbook carries).",
+        )
+        return site, controller
+
+    def _parse_xlsx_detector_volumes(
+        self,
+        path: Path,
+        workbook: Any,
+        site: SiteMetadata,
+        controller: SignalControllerData,
+        result: ImportResult,
+    ) -> None:
+        """Quarter Hourly Volume (15-minute, MRWA's stated profiling interval)
+        is the granularity EMITTED as :class:`DetectorCountData`. Hourly
+        Volume is cross-checked against it — each stated hourly total must
+        equal the sum of its four quarter-hour bins — and then discarded
+        rather than also emitted: the same "the finer series is the record,
+        the coarser one is a cross-check" rule ``adapters/daejeon.py`` applies
+        to its 소계 rows, for the identical reason (emitting both would put
+        two different interval lengths for the same detector into
+        ``result.detector_counts``, and ``quality.check_detector_count_intervals``
+        would — correctly — REFUSE it as an overlap: the same vehicles counted
+        twice). When only ``Hourly Volume`` exists, ITS rows are emitted
+        instead — never left unread just because the finer tab is missing.
+        """
+        quarter_rows = _sheet_rows(workbook, QUARTER_HOURLY_VOLUME_SHEET)
+        hourly_rows = _sheet_rows(workbook, HOURLY_VOLUME_SHEET)
+
+        quarter = (
+            _parse_volume_sheet(
+                path, quarter_rows, QUARTER_HOURLY_VOLUME_SHEET, timedelta(minutes=15),
+                site.site_id, controller.controller_id, result,
+            )
+            if quarter_rows is not None
+            else None
+        )
+        hourly = (
+            _parse_volume_sheet(
+                path, hourly_rows, HOURLY_VOLUME_SHEET, timedelta(hours=1),
+                site.site_id, controller.controller_id, result,
+            )
+            if hourly_rows is not None
+            else None
+        )
+
+        if quarter is None and hourly is None:
+            result.issues.append(
+                ImportIssue(
+                    severity=IssueSeverity.WARN,
+                    code="scats_xlsx_no_volume_tab",
+                    message=(
+                        f"{path.name}: neither {HOURLY_VOLUME_SHEET!r} nor "
+                        f"{QUARTER_HOURLY_VOLUME_SHEET!r} is present (or usable), so no detector "
+                        "volumes were read from this workbook."
+                    ),
+                    subject=path.name,
+                    citation=CIT_A1_XLSX,
+                    context={"sheets_present": list(workbook.sheetnames)},
+                )
+            )
+            return
+
+        emitted = quarter if quarter is not None else hourly
+        assert emitted is not None  # narrows for the type checker
+
+        seen_detectors: set[str] = set()
+        for detector_id in emitted.detector_ids:
+            if detector_id in seen_detectors:
+                continue
+            seen_detectors.add(detector_id)
+            detector = DetectorData(
+                provenance=Provenance(
+                    source_file=path.name,
+                    locator=f"{emitted.sheet}!row {emitted.header_row + 1}",
+                    native_id=detector_id,
+                ),
+                detector_id=detector_id,
+                controller_id=controller.controller_id,
+            )
+            detector.mark_absent(
+                "function",
+                "The Hourly/Quarter Hourly Volume tabs state volumes only; detector function "
+                "and placement are on the LMA drawing, which this drop does not include.",
+            )
+            detector.mark_absent(
+                "position", "See function — the LMA drawing is not in this drop."
+            )
+            controller.detectors.append(detector)
+
+        result.detector_counts.extend(emitted.records)
+
+        if quarter is not None and hourly is not None:
+            self._cross_check_hourly_against_quarter(path, hourly, quarter, result)
+        elif hourly is not None:
+            result.issues.append(
+                ImportIssue(
+                    severity=IssueSeverity.INFO,
+                    code="scats_xlsx_hourly_volume_used_no_quarter_hourly",
+                    message=(
+                        f"{path.name}: only {HOURLY_VOLUME_SHEET!r} is present/usable, so its "
+                        "1-hour intervals were emitted directly; no finer-resolution cross-check "
+                        "was possible."
+                    ),
+                    subject=path.name,
+                    citation=CIT_A1_XLSX,
+                )
+            )
+        elif quarter is not None:
+            result.issues.append(
+                ImportIssue(
+                    severity=IssueSeverity.INFO,
+                    code="scats_xlsx_hourly_volume_tab_absent",
+                    message=(
+                        f"{path.name}: {HOURLY_VOLUME_SHEET!r} is absent/unusable, so the "
+                        f"{QUARTER_HOURLY_VOLUME_SHEET!r} 15-minute intervals could not be "
+                        "cross-checked against an independent hourly aggregate."
+                    ),
+                    subject=path.name,
+                    citation=CIT_A1_XLSX,
+                )
+            )
+
+    def _cross_check_hourly_against_quarter(
+        self,
+        path: Path,
+        hourly: _VolumeSheetResult,
+        quarter: _VolumeSheetResult,
+        result: ImportResult,
+    ) -> None:
+        """Judge every Hourly Volume cell against the 4 Quarter Hourly Volume
+        bins it should equal, THEN discard the hourly figures — this is the
+        point-of-discard check: since Hourly Volume never becomes a record,
+        the quality gate can never see it, so a disagreement has to be caught
+        here or not at all. Measured 2026-08-10: 0 mismatches across the 3
+        real workbooks (7,532 hours cross-checked) — this path was exercised
+        against real data before being written, not left theoretical.
+        """
+        mismatches: list[str] = []
+        checked = 0
+        for detector_id, hour_values in hourly.values.items():
+            quarter_values = quarter.values.get(detector_id, {})
+            for hour_start, stated in hour_values.items():
+                bins = [
+                    quarter_values.get(hour_start + timedelta(minutes=15 * i))
+                    for i in range(4)
+                ]
+                if any(value is None for value in bins):
+                    # A blank quarter-hour cell already produced its own INFO
+                    # issue; cross-checking a partial hour would be comparing
+                    # a stated total against a sum we know is incomplete.
+                    continue
+                checked += 1
+                summed = sum(bins)  # type: ignore[arg-type]
+                if abs(stated - summed) > 1e-6:
+                    mismatches.append(
+                        f"detector {detector_id} {hour_start.isoformat()}: Hourly Volume "
+                        f"{stated:g} vs Quarter Hourly Volume sum {summed:g}"
+                    )
+        if mismatches:
+            result.issues.append(
+                ImportIssue(
+                    severity=IssueSeverity.REFUSE,
+                    code="scats_xlsx_hourly_disagrees_with_quarter_hourly",
+                    message=(
+                        f"{path.name}: {len(mismatches)} hour(s) where Hourly Volume disagrees "
+                        "with the sum of its four Quarter Hourly Volume bins. The finer tab is "
+                        "what was emitted; the disagreement means at least one of the two tabs "
+                        "is wrong and nothing downstream could tell which."
+                    ),
+                    subject=path.name,
+                    citation=CIT_A1_XLSX,
+                    context={
+                        "examples": mismatches[:10],
+                        "total_mismatches": len(mismatches),
+                        "hours_checked": checked,
+                    },
+                )
+            )
+        elif checked:
+            result.issues.append(
+                ImportIssue(
+                    severity=IssueSeverity.INFO,
+                    code="scats_xlsx_hourly_corroborates_quarter_hourly",
+                    message=(
+                        f"{path.name}: {checked} hour(s) cross-checked — Hourly Volume equals "
+                        "the sum of its four Quarter Hourly Volume bins in every one."
+                    ),
+                    subject=path.name,
+                )
+            )
+
+    # -- csv subset ----------------------------------------------------------
+
+    def _parse_csv_bundle(self, files: Sequence[Path], result: ImportResult) -> None:
+        """The original CSV-subset path (roadmap 0.7). Unchanged behaviour;
+        moved into its own method so :meth:`parse` could add the xlsx branch
+        without interleaving two unrelated file formats in one function body.
+        """
+        roles = _classify(files)
 
         site_file = roles.get("site")
         if site_file is None:
@@ -591,13 +1704,13 @@ class SCATSWAAdapter(DataAdapter):
                     context={"supplied_roles": sorted(roles)},
                 )
             )
-            return result
+            return
 
         parsed_site = self._parse_site(site_file, result)
         if parsed_site is None:
-            # The refusal is already on the result. Returning it (rather than
+            # The refusal is already on the result. Returning (rather than
             # raising) is the contract: expected data problems are reported.
-            return result
+            return
         site, controller = parsed_site
         result.sites.append(site)
         result.controllers.append(controller)
@@ -628,7 +1741,6 @@ class SCATSWAAdapter(DataAdapter):
                 citation=CIT_A1,
             )
         )
-        return result
 
     # -- per-structure parsers --------------------------------------------
 

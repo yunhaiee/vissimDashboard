@@ -204,6 +204,41 @@ def test_outcome_a_node_total_miss_yields_a_demand_side_proposal():
     assert fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL in proposal.assumptions
 
 
+def test_a_demand_proposal_built_from_an_observation_store_node_carries_the_real_origin():
+    """End-to-end companion to the two ``node_evidence_from_real_counts``
+    unit tests: ``_build_demand_proposal`` folds ``node.get("sources")``
+    VERBATIM into ``evidence["sources"]`` (fixes.py, arm (a)), so the origin
+    string and ``count_basis`` set at the normalization step must survive all
+    the way into the proposal an approver actually reads — not just into the
+    intermediate node dict. Same observed/modelled/movement numbers as
+    ``test_outcome_a_node_total_miss_yields_a_demand_side_proposal`` (GEH
+    5.16, so the total still misses), but built through
+    ``node_evidence_from_real_counts`` with ``count_basis="detector_counts"``
+    instead of the hand-authored ``_node()`` fixture, so the origin actually
+    comes from the code path being tested.
+    """
+    node = fixes.node_evidence_from_real_counts(
+        {
+            "node_id": "1",
+            "node_name": "Test",
+            "total_real": 1000.0,
+            "total_sim_basam": 1170.0,
+            "directions": [
+                {"direction": "m1", "real": 300.0, "sim_basam": 351.0},
+                {"direction": "m2", "real": 700.0, "sim_basam": 819.0},
+            ],
+            "count_basis": "detector_counts",
+        }
+    )
+    proposal = fixes.map_node_counts(node, targets={"vehicle_input": _VEHICLE_INPUT_TARGET})
+
+    assert proposal.outcome == fixes.PROPOSAL
+    assert proposal.key == fixes.NODE_TOTAL_VOLUME_MISS
+    assert proposal.evidence["sources"]["observed"] != "validation_workbook"
+    assert "services.observations" in proposal.evidence["sources"]["observed"]
+    assert proposal.evidence["sources"]["count_basis"] == "detector_counts"
+
+
 def test_outcome_b_split_miss_with_reconciling_total_yields_a_routing_proposal():
     """(b) The total reconciles, one movement's SPLIT misses -> relFlow.
 
@@ -999,6 +1034,34 @@ def test_node_evidence_from_real_counts_normalizes_the_workbook_shape():
     assert node["modelled_total"] == 1160.0
     assert [m["id"] for m in node["movements"]] == ["W-E", "W-N"]
     assert node["sources"]["modelled"] == "validation_workbook"
+    # No count_basis key on this row (the base workbook shape) -> the origin
+    # stays the workbook, never manufactured as something it is not.
+    assert node["sources"]["observed"] == "validation_workbook"
+    assert node["sources"]["count_basis"] is None
+
+
+def test_node_evidence_from_real_counts_names_the_observation_store_when_count_basis_is_present():
+    """A node from ``services.observations.observed_side`` (unit U10) always
+    carries ``count_basis`` — ``services.validation``'s workbook rows never do.
+    Before this fix, ``sources.observed`` was hardcoded to
+    ``"validation_workbook"`` regardless, so a SCATS/WA detector-loop-sourced
+    proposal's audit trail named the wrong origin AND dropped count_basis, so
+    an approver could not tell the number might be a site-level aggregate
+    rather than a movement count.
+    """
+    node = fixes.node_evidence_from_real_counts(
+        {
+            "node_id": "1",
+            "node_name": "Test",
+            "total_real": 100,
+            "total_sim_basam": 120,
+            "directions": [],
+            "count_basis": "detector_counts",
+        }
+    )
+    assert node["sources"]["observed"] != "validation_workbook"
+    assert "services.observations" in node["sources"]["observed"]
+    assert node["sources"]["count_basis"] == "detector_counts"
 
 
 def test_modelled_from_run_result_reads_u1s_movement_volumes_and_drops_the_node_row():
