@@ -55,6 +55,25 @@ diagrams (fragile, and the 0.7 contract's never-invent rule makes a low-confiden
 unusable as authority), or we ask TK for the underlying SIS export. **Ask first** — this is a
 question, not an engineering problem, and TK has already offered a walkthrough.
 
+> ### CORRECTION 2026-08-10 — the paragraph above is wrong, and cost us roadmap 3.1's Korean half
+>
+> The 23 files were never inspected past their extension. Measured: every one is a **single-page
+> text-layer PDF** of the Korean police-standard 교차로 운영 DATABASE form, and `pypdf`'s layout
+> extractor recovers the whole form — header, SIGNAL TABLE (7 rows × 6 phase columns × 2 rings),
+> PLAN TABLE (수준→주기 and ID→연동+시간분할), TOD PLAN 1/2/3, weekly plan, MEMO — as an aligned
+> character grid. **No OCR is involved anywhere.** The only drawing on the sheet is the small
+> 현시도 sketch in the corner.
+>
+> `backend/services/genesis/signals_daejeon.py` parses **22 of the 23** into neutral
+> `SignalControllerData` (120 declared programs); the 23rd is refused with a named reason. Re-run
+> the measurement yourself: `python tools/genesis_signals_daejeon_probe.py --zip "../client-data/218. 대전신호.zip"`.
+>
+> The provenance worry in the original paragraph was aimed at OCR and does not apply: these are
+> exact character reads with a file-and-row locator on every record, and the parse is
+> cross-checked against the documents' own arithmetic (Σ시간분할 must equal the level's 주기 for
+> every scheduled 수준/ID pair). What the sheets genuinely do NOT carry is listed under Question 1
+> below. Full record: `docs/phase2/DECISIONS.md` 2026-08-10.
+
 **The two sets overlap almost perfectly.** All 11 intersections with count data have a matching
 signal PDF (도안중 · 수목토 · 신흥들삼거리 · 옥녀봉네거리 · 옥녀봉삼거리 · 용반 · 용소삼거리 ·
 원신흥 · 유성 · 계룡대교 · 도안2단지삼거리). That is a contiguous 유성구 corridor with **both
@@ -136,8 +155,25 @@ that corresponds to total travel time — and it is also the most conservative h
 His own message offered a walkthrough (*"아무래도 설명이 필요하겠죠? 필요할때 연락줘요"*). The
 four that actually block work:
 
-1. **Daejeon signal data** — is there an SIS export behind those 23 PDFs (phase/split/offset as
-   data)? Parsing the drawings is possible but the numbers would carry far weaker provenance.
+1. **Daejeon signal data** — ~~is there an SIS export behind those 23 PDFs (phase/split/offset as
+   data)? Parsing the drawings is possible but the numbers would carry far weaker provenance.~~
+   **Superseded 2026-08-10** (see the correction under §2): the PDFs are machine-readable and
+   parsed, so no SIS export is needed for cycle, split, offset or TOD. Two narrower questions
+   replace it, and the first one alone unblocks 22 intersections:
+
+   1a. **Does the sheet's `YELLOW(RED)` column hold 황색 only, or 황색+전적색?** The form has one
+   clearance row and no 전적색 row, and Vissim needs the amber as its own display, so neither
+   reading can be assumed and every intersection is held on this one word. (Our evidence leans to
+   황색+전적색: `MIN. GREEN` equals `시간분할 − YELLOW(RED)` for 59 of 94 (sheet, phase) pairs, and
+   `MIN. GREEN` is a green — but leaning is not stating and we do not act on it.)
+
+   1b. **Is the 현시도 available as data, or only as the drawing on the sheet?** Which approach
+   moves in which phase is the remaining input; without it the phase→approach assignment must be
+   supplied by hand per intersection.
+
+   1c. Minor, one intersection: one sheet prints a 시간분할 vector with one more field than its
+   SIGNAL TABLE has populated phase columns (an empty field — stray comma, or a sixth phase not
+   shown in the table?). We refuse it rather than guess.
 2. **Travel time** — which speed definition do Main Roads' own assessments use for the Table
    5-13 comparison? (Recommend harmonic; want it confirmed, not assumed.)
 3. **One day of travel time vs five weeks of counts** — is 2026-03-25 the agreed calibration

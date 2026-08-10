@@ -8,3 +8,8 @@ anthropic
 python-dotenv==310; platform_system == "Windows"
 scikit-learn==1.7.2
 PyYAML>=6.0
+# Text-layer extraction for the 대전 signal sheets
+# (services/genesis/signals_daejeon.py). Imported lazily and only by
+# read_sheet_text(): the parser itself takes text, so the tests and every
+# consumer that already has extracted text run without it.
+pypdf==6.14.2

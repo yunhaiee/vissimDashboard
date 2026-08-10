@@ -1,0 +1,3 @@
+This is a different document entirely.
+It has some numbers 12 34 56 and some Korean 교통량 조사 결과.
+But it is not a 교차로 운영 sheet and has no SIGNAL TABLE.

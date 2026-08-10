@@ -23,6 +23,10 @@ Members, in the order row 2.3 runs them:
   fixed-time signal controllers, signal groups (one per approach), signal heads
   and §5.4.2.6-fallback detectors, with §5.4.2 graded in the same three states.
   Roadmap 3.1 Genesis (b); optional, and additive to the emission.
+* :mod:`services.genesis.signals_daejeon` — roadmap 3.1's Korean half: the 대전
+  ``교차로 운영 DATABASE`` sheet's text layer → neutral ``SignalControllerData``,
+  plus a bridge into the ``FixedTimePlan`` ``signals`` takes. Refuses to invent
+  the yellow/all-red split the sheet does not state.
 * :mod:`services.genesis.emit` — draft (+ optional signals) → ``.inpx``, scoped
   to what ``services.inpx_parser`` can read back, byte-identical across runs.
 * :mod:`services.genesis.diff` — the structural (topology-only) comparison of
@@ -35,7 +39,8 @@ Members, in the order row 2.3 runs them:
   derived from the georeference's own residual).
 
 CLIs: ``backend/tools/genesis_osm_draft.py`` (osm -> draft),
-``backend/tools/genesis_benchmark.py`` (draft vs consultant model).
+``backend/tools/genesis_benchmark.py`` (draft vs consultant model),
+``backend/tools/genesis_signals_daejeon_probe.py`` (대전 signal-sheet coverage).
 """
 from __future__ import annotations
 
@@ -137,6 +142,14 @@ from .signals import (
     generate_signals,
     node_approaches,
 )
+from .signals_daejeon import (
+    DaejeonSettings,
+    DaejeonSheet,
+    parse_pdf as parse_daejeon_signal_pdf,
+    parse_sheet_text as parse_daejeon_signal_sheet,
+    parse_zip as parse_daejeon_signal_zip,
+    to_fixed_time_plan as daejeon_to_fixed_time_plan,
+)
 
 __all__ = [
     "AmbiguousObject",
@@ -150,6 +163,8 @@ __all__ = [
     "ConnectorDiff",
     "ConnectorRewire",
     "CorridorScope",
+    "DaejeonSettings",
+    "DaejeonSheet",
     "DemandCoverage",
     "DemandInterval",
     "DemandSettings",
@@ -211,6 +226,7 @@ __all__ = [
     "benchmark_networks",
     "build_draft",
     "build_fleet",
+    "daejeon_to_fixed_time_plan",
     "diff_network_files",
     "diff_topologies",
     "emit_inpx",
@@ -226,6 +242,9 @@ __all__ = [
     "node_approaches",
     "observed_vehicle_classes",
     "origin_for_bounds",
+    "parse_daejeon_signal_pdf",
+    "parse_daejeon_signal_sheet",
+    "parse_daejeon_signal_zip",
     "parse_osm_file",
     "render_benchmark_report",
     "render_diff_report",

@@ -3905,6 +3905,76 @@ source table.
 
 ---
 
+## 2026-08-10 — the 대전 signal PDFs were never "unparseable"; the gap is one missing column
+
+**Context:** roadmap 3.1's Korean half. Two modules recorded, in writing, that this work was
+blocked: `services/genesis/signals.py` opened with "The Daejeon half — parsing Daejeon signal
+PDFs — is blocked on client data and is not here", and `services/dataimport/adapters/daejeon.py`
+said "The Daejeon signal side arrived as 23 PDF drawings, not a machine-readable export". Both
+claims were repeated forward without being measured.
+
+**What measuring found:** all 23 PDFs in `client-data/218. 대전신호.zip` are single-page,
+text-layer PDFs of the Korean police-standard 교차로 운영 DATABASE form. `pypdf`'s
+`extraction_mode="layout"` recovers the entire form as an aligned character grid — header,
+SIGNAL TABLE (7 rows × 6 phase columns × 2 rings), PLAN TABLE (수준→주기 and ID→연동+시간분할),
+TOD PLAN 1/2/3, the weekly plan and the MEMO. No OCR anywhere. The only drawing is the small
+현시도 sketch in each sheet's corner. `services/genesis/signals_daejeon.py` parses 22 of 23 into
+neutral `SignalControllerData` (120 declared programs); the 23rd is refused with a named,
+actionable reason.
+
+**Decision / lesson:** *"blocked on client data" is a measurement, not a status.* A blocker
+asserted once and never re-tested cost this project a whole roadmap half. Any future claim that
+an input is unusable must cite the probe that established it and the date; a claim with neither
+is a hypothesis. (The user called this out; the codebase had been quoting itself.)
+
+**The gap that IS real, and where it lives.** Two facts a Vissim fixed-time program needs are
+genuinely absent from the documents, and both are refusals rather than assumptions:
+
+1. **The approach→phase mapping is a drawing.** `signals.generate_node_signals` already requires
+   it as caller input (`approach_phases`) and refuses without it. Unchanged; the parser reports
+   the absence (`daejeon_phase_movement_diagram_not_text`) so it is visible early.
+2. **The yellow/all-red split is unstated.** The form has ONE clearance row, labelled
+   `YELLOW(RED)`, and no 전적색 row. Either reading refuses downstream — yellow-only leaves the
+   all-red unknown (`signals_all_red_not_positive`), whole-clearance leaves the amber unknown
+   (`signals_amber_unknown`, and Vissim needs the amber as its own display). MRWA §5.4.2.1
+   requires both to be input from controller information unchanged, so no default is substituted.
+   `to_fixed_time_plan` refuses by default with `daejeon_intergreen_split_unstated` and produces
+   a plan only under an explicit reviewer declaration (`DaejeonSettings.declared_amber_s`), which
+   travels into `Provenance.derived_by`. Measured: 21 of the 22 parsed sheets are blocked by
+   nothing else.
+
+**Client-facing question to raise (one line, answers 22 intersections at once):** *does the
+`YELLOW(RED)` column of the 교차로 운영 DATABASE sheet hold 황색 only, or 황색+전적색?* The
+evidence leans to the second — `MIN. GREEN` equals `시간분할 − YELLOW(RED)` for 59 of 94
+(sheet, phase) pairs, and `MIN. GREEN` is a green, so the subtracted quantity is the whole
+clearance — but leaning is not stating, and the module does not act on it.
+
+**Two shape deviations recorded rather than absorbed:**
+* `PhaseDerivation.observed_total_s` is non-optional and means an observation. A DECLARED plan
+  has none, so the bridge writes `0.0` — the same placeholder `fixed_time.py` itself writes
+  (`phase.observed_total_duration_s or 0.0`) — with `occurrences`/`scats_average_s` left `None`
+  and `source_kind=DECLARED` on the program carrying the real signal. If a future consumer reads
+  `observed_total_s` as evidence, that field needs to become `float | None`.
+* **Location.** Regional format adapters live in `services/dataimport/adapters/`; this parser was
+  placed in `services/genesis/` as the unit specified, because its binding constraint is that its
+  output feed `genesis.signals`. It produces neutral records and takes text, so moving it under
+  `dataimport/adapters/` later is a file move plus a re-export, not a rewrite.
+
+**New runtime dependency:** `pypdf==6.14.2` added to `backend/requirements.txt`. It was already
+present in the venv but undeclared. It is imported **lazily, inside `read_sheet_text()` only** —
+`parse_sheet_text()` takes text, so the tests and any consumer with extracted text need no PDF
+stack.
+
+**Verification:** offline only. `backend/tests/test_genesis_signals_daejeon.py` (35 tests, all
+against synthetic fixtures under `tests/fixtures/daejeon_signal/` — no test reads `client-data/`)
+covers a clean parse, both firmware layout variants, four named refusals, the amber gate in both
+directions, and the bridged plan running through `generate_node_signals` to green windows. Per
+this file's own 2026-08-08 lesson, **an offline round trip proves self-consistency, not that
+Vissim loads it** — no live LoadNet was run for this unit, and none of these numbers has been
+in front of PTV Vissim.
+
+---
+
 ## 2026-08-10 — P④: the workspace boundary and the login finally meet, and the gate is fail-closed
 
 **Context:** the user found this by using the running app, not by reading code. Signed in, they

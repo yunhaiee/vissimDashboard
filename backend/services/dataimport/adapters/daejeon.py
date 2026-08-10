@@ -14,11 +14,16 @@ The header, verbatim from the real drop::
 so every movement is broken into six vehicle classes (화물 대형/중형/소형,
 버스 대형/소형, 승용) plus the movement's own 합계.
 
-**Scope: counts only.** The Daejeon signal side arrived as 23 PDF drawings, not
-a machine-readable export; parsing those is not attempted here (a low-confidence
-read of a drawing cannot carry the provenance this layer promises), and the
-inventory records it as a question to the client rather than an engineering
-task. This adapter therefore produces sites and turning counts, no controllers.
+**Scope: counts only.** The signal side of the same drop is 23 ``교차로 운영
+DATABASE`` sheets, and this adapter does not read them — but not because they
+are unreadable. This docstring used to call them "23 PDF drawings, not a
+machine-readable export", and that was measured to be wrong on 2026-08-10: they
+are text-layer PDFs whose whole form extracts cleanly, and
+``services.genesis.signals_daejeon`` now parses them (22 of 23) into neutral
+``SignalControllerData``. Only the small 현시도 sketch in each sheet's corner is
+a drawing. This adapter still produces sites and turning counts and no
+controllers, because counts and signals are different sources with different
+shapes — not because the signals were out of reach.
 
 What this module has to get right, and why each one is a *contract* decision
 rather than a parsing detail — the four numbered items are the ambiguities the
@@ -308,7 +313,11 @@ DAEJEON_FIELD_MAP: tuple[FieldMapping, ...] = (
         neutral_path="SignalControllerData.controller_id",
         parsed=False,
         citation=CIT_DROP_INVENTORY,
-        note="The Daejeon signal side is 23 PDF drawings; out of scope for this adapter.",
+        note=(
+            "Out of scope for this COUNT adapter. The signal sheets are read by "
+            "services.genesis.signals_daejeon (they are text-layer PDFs, not drawings — "
+            "this note previously said otherwise and was wrong)."
+        ),
     ),
 )
 

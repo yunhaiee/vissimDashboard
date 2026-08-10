@@ -1,7 +1,11 @@
 """Fixed-time signals for a genesis draft — controllers, groups, heads, detectors.
 
-Roadmap 3.1, **Genesis (b) 신호**, the SCATS half. (The Daejeon half — parsing
-Daejeon signal PDFs — is blocked on client data and is not here.)
+Roadmap 3.1, **Genesis (b) 신호**, the SCATS half. (The Daejeon half is
+:mod:`services.genesis.signals_daejeon`, which reads the 대전 ``교차로 운영
+DATABASE`` sheets and hands this module a ``FixedTimePlan``. This file's earlier
+claim that the Daejeon half was "blocked on client data" was wrong: the sheets
+are text-layer PDFs, not drawings, and 22 of 23 parse. What IS still missing
+from those documents is named in that module's docstring.)
 
 What this module is
 -------------------
