@@ -66,6 +66,45 @@ target above the version on disk, in order, each inside its own transaction,
 and records the new version in the same transaction. U7 shipped exactly one
 (version 1) and P④ adds version 2 as one more dict entry — which is the whole
 point of the ladder shape being here from the start.
+
+**Why the memo checks the version anyway.** The ladder is memoized per path so
+a login does not re-run migrations, but the memo used to return the CONSTANT
+:data:`SCHEMA_VERSION` without looking at the file, which meant the
+"database is newer than this build" refusal below protected only the first
+open of a path. A process that memoized at v2 and then had the file taken to
+v3 underneath it — a rolling upgrade, or an operator running newer tooling
+against a running backend — kept inserting rows into a schema it knows nothing
+about, silently. So every connection re-reads the recorded version instead —
+but precisely WHAT that buys differs by entry point, and is worth stating
+exactly rather than as one blanket claim: :func:`write_transaction` re-reads
+it a SECOND time after ``BEGIN IMMEDIATE`` has taken the write lock, which
+makes its guard atomic with the write it protects — nothing can migrate the
+file between that re-check and the commit, because only one writer transaction
+runs at a time and every migration here is itself one. :func:`connect` and
+:func:`schema_version` re-read it once and hand back a connection/integer that
+was current AS OF THAT READ; being autocommit (or a bare read), neither holds
+a lock across anything that happens afterward, so a migration landing in that
+later gap is a race those two do not close. Callers that need the atomic
+guarantee, not merely a recent one, use :func:`write_transaction`.
+
+Measured before changing it, because the memo exists for a performance reason
+and "it is probably cheap" is not a measurement (Windows dev box, SQLite
+3.39, WAL + ``synchronous=FULL``):
+
+* the ``SELECT version`` on a connection that is ALREADY open — 4.9 µs
+  (``PRAGMA user_version`` was 4.4 µs, which does not buy enough to be worth a
+  second source of truth, so the ledger table stays the only authority);
+* a warm ``connect()`` end to end, HEAD vs this version — 1761 µs vs 1743 µs,
+  i.e. the guard disappears into the noise floor. It is free in practice
+  because the check replaced a ``path.exists()`` stat syscall that cost about
+  as much;
+* opening a SECOND connection just to read the version — 626 µs, +36% per
+  ``connect()``. That is the design this rules out, and it is why
+  :func:`connect` and :func:`write_transaction` run the check on the
+  connection they already hold instead of calling :func:`ensure_schema`.
+
+What the memo still buys is skipping the migration LADDER, which is the part
+that actually costs. What it must never buy again is skipping the guard.
 """
 from __future__ import annotations
 
@@ -272,6 +311,38 @@ def _read_version(conn: sqlite3.Connection) -> int:
     return int(row["version"]) if row is not None else 0
 
 
+def _recorded_version(conn: sqlite3.Connection) -> int:
+    """:func:`_read_version`, but 0 rather than an error when there is no ledger.
+
+    The absent-table case is a database this process has never migrated — a
+    fresh file, or one deleted and recreated underneath a live process. Both
+    mean "run the ladder", not "crash three layers down". Every OTHER
+    ``OperationalError`` (locked, corrupt, unreadable) is re-raised: reporting
+    those as "version 0" would answer a question we cannot actually answer, and
+    the ladder would then fail with a message about the wrong problem.
+    """
+    try:
+        return _read_version(conn)
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        return 0
+
+
+def _refuse_if_newer(current: int, path: Path) -> None:
+    """The downgrade guard, in ONE place so no caller can skip it.
+
+    An older build pointed at a newer database. Refusing is the only honest
+    option — the tables it does not know about are the ones it would silently
+    ignore while writing rows that violate them.
+    """
+    if current > SCHEMA_VERSION:
+        raise DatabaseError(
+            f"{path} is at schema version {current}, newer than this build's {SCHEMA_VERSION}. "
+            "Refusing to open it; upgrade Prism or point PRISM_DB_PATH elsewhere."
+        )
+
+
 def _ensure_schema_on(conn: sqlite3.Connection, path: Path) -> int:
     conn.execute(
         """
@@ -283,14 +354,7 @@ def _ensure_schema_on(conn: sqlite3.Connection, path: Path) -> int:
         """
     )
     current = _read_version(conn)
-    if current > SCHEMA_VERSION:
-        # Downgrade: an older build pointed at a newer database. Refusing is
-        # the only honest option — the tables it does not know about are the
-        # ones it would silently ignore while writing rows that violate them.
-        raise DatabaseError(
-            f"{path} is at schema version {current}, newer than this build's {SCHEMA_VERSION}. "
-            "Refusing to open it; upgrade Prism or point PRISM_DB_PATH elsewhere."
-        )
+    _refuse_if_newer(current, path)
 
     for target in sorted(_MIGRATIONS):
         if target <= current:
@@ -314,33 +378,72 @@ def _ensure_schema_on(conn: sqlite3.Connection, path: Path) -> int:
     return current
 
 
+def _ensure_schema_using(conn: sqlite3.Connection, path: Path, *, force: bool = False) -> int:
+    """Bring ``path`` to a known-good schema over an ALREADY-OPEN connection.
+
+    The memo skips the migration ladder, never the guard. On a memo hit this
+    re-reads the recorded version (~4.9 µs) and:
+
+    * ``== SCHEMA_VERSION`` — the common case, return it and do no I/O beyond
+      that one row;
+    * ``> SCHEMA_VERSION`` — refuse. This is the case the old memo could not
+      see: the file moved to a newer schema after this process cached it;
+    * ``< SCHEMA_VERSION`` — the memo is describing a file that no longer
+      exists. Fall through to the ladder, which is idempotent. This subsumes
+      the old ``path.exists()`` special case and additionally covers the file
+      being REPLACED by an older one, which an existence check cannot see.
+    """
+    key = str(path)
+    with _INIT_LOCK:
+        if not force and key in _initialized:
+            current = _recorded_version(conn)
+            _refuse_if_newer(current, path)
+            if current == SCHEMA_VERSION:
+                return current
+            logger.warning(
+                "db: %s is at v%d but this process had memoized it as v%d; re-running migrations.",
+                path,
+                current,
+                SCHEMA_VERSION,
+            )
+        version = _ensure_schema_on(conn, path)
+        _initialized.add(key)
+        return version
+
+
 def ensure_schema(*, force: bool = False) -> int:
     """Create/upgrade the schema if needed and return the version on disk.
 
     Idempotent by construction: calling it twice on the same file is a no-op
     the second time (and cheap the first time it is already current). Pass
-    ``force=True`` to skip this process's "already done" memo — only tests
-    that delete the file underneath us need that.
+    ``force=True`` to skip this process's "already done" memo and re-run the
+    ladder — tests that swap the file underneath us use it, but it is NOT what
+    makes the newer-database refusal fire: that guard runs on the memoized path
+    too.
+
+    Opens its own connection, so prefer :func:`connect` /
+    :func:`write_transaction` on any hot path — they run the same check on the
+    connection they already hold instead of paying for a second one.
     """
     path = database_path()
-    key = str(path)
-    with _INIT_LOCK:
-        if not force and key in _initialized and path.exists():
-            # The ``path.exists()`` half matters: a test (or an operator) that
-            # deletes the file while the process lives must get a rebuilt
-            # schema, not an AttributeError three layers down.
-            return SCHEMA_VERSION
-        conn = _open(path)
-        try:
-            version = _ensure_schema_on(conn, path)
-        finally:
-            conn.close()
-        _initialized.add(key)
-        return version
+    conn = _open(path)
+    try:
+        return _ensure_schema_using(conn, path, force=force)
+    finally:
+        conn.close()
 
 
 def schema_version() -> int:
-    """The version recorded in the database file (0 when it has no ledger)."""
+    """The version recorded in the database file (0 when it has no ledger).
+
+    Runs the SAME newer-than-this-build guard (:func:`_refuse_if_newer`) every
+    other entry point in this module runs. A caller using this as an "is this
+    database safe to open" pre-flight must get the same :class:`DatabaseError`
+    :func:`connect`/:func:`write_transaction`/:func:`ensure_schema` would give
+    it — not a bare integer it would have to know to compare against
+    :data:`SCHEMA_VERSION` itself, which is exactly the kind of guard-skipping
+    this module otherwise refuses to allow.
+    """
     path = database_path()
     if not path.exists():
         return 0
@@ -349,7 +452,9 @@ def schema_version() -> int:
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
         ).fetchone()
-        return _read_version(conn) if row is not None else 0
+        version = _read_version(conn) if row is not None else 0
+        _refuse_if_newer(version, path)
+        return version
     finally:
         conn.close()
 
@@ -361,10 +466,32 @@ def schema_version() -> int:
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
     """A schema-ensured connection, closed on exit. Autocommit — use
-    :func:`write_transaction` when several statements must land together."""
-    ensure_schema()
-    conn = _open(database_path())
+    :func:`write_transaction` when several statements must land together.
+
+    "Schema-ensured" means EVERY connection, not just the first one this
+    process opened against the file, re-reads the recorded version before
+    being handed back: a database that had already moved ahead of this build
+    BY THE TIME THE CHECK RAN raises :class:`DatabaseError` here rather than
+    silently being accepted.
+
+    What this does NOT guarantee: atomicity between that check and whatever
+    the caller does with the connection afterward. This function is
+    autocommit BY DESIGN — no lock is held across the check and the caller's
+    statement(s) — so a second process can still migrate the file to a newer
+    schema in the gap between "the check passed" and "the caller's statement
+    runs", and a write issued in that gap lands against the newer schema
+    unguarded. :func:`write_transaction` closes exactly this window (it
+    re-reads the version a SECOND time, after ``BEGIN IMMEDIATE`` has already
+    taken the write lock, so nothing can migrate underneath it between the
+    re-check and the commit); this function cannot do the same without
+    becoming ``write_transaction`` in a different shape. A caller that needs
+    the atomic guarantee — not merely "the schema looked current a moment
+    ago" — must use :func:`write_transaction`, not this function.
+    """
+    path = database_path()
+    conn = _open(path)
     try:
+        _ensure_schema_using(conn, path)
         yield conn
     finally:
         conn.close()
@@ -380,12 +507,36 @@ def write_transaction() -> Iterator[sqlite3.Connection]:
     ``busy_timeout`` instead of failing at upgrade time — the difference
     between "two logins raced and both worked" and "one login got 500:
     database is locked".
+
+    The version check runs TWICE, and the two calls are not redundant:
+
+    1. BEFORE ``BEGIN IMMEDIATE`` (inside ``_ensure_schema_using``) — cheap,
+       and lets a refusal fire without ever taking the write lock, and lets
+       the migration ladder run (a migration must not execute nested inside
+       the caller's own transaction).
+    2. AFTER ``BEGIN IMMEDIATE`` — this is what makes the guard ATOMIC with
+       the write. ``BEGIN IMMEDIATE`` takes SQLite's write lock, and only one
+       writer holds it at a time; every migration in this module also runs
+       inside its own ``BEGIN IMMEDIATE``/``COMMIT``. So once step 2's read
+       succeeds, no OTHER process can be mid-migration, and none can start
+       one, until this transaction commits or rolls back — the exact window
+       step 1 alone cannot close (a second process migrating the file
+       between step 1 returning and step 2's lock being granted). Re-reading
+       the version here, not merely a comment, is what closes it: a bare
+       ``BEGIN IMMEDIATE`` provides the LOCK, not the CHECK.
     """
-    ensure_schema()
-    conn = _open(database_path())
+    path = database_path()
+    conn = _open(path)
     try:
+        _ensure_schema_using(conn, path)
         conn.execute("BEGIN IMMEDIATE")
         try:
+            # Re-verify INSIDE the write lock (see the docstring above) --
+            # atomic with everything the caller does next, because nothing
+            # can migrate this file out from under an already-open
+            # BEGIN IMMEDIATE transaction.
+            current = _recorded_version(conn)
+            _refuse_if_newer(current, path)
             yield conn
         except Exception:
             conn.execute("ROLLBACK")

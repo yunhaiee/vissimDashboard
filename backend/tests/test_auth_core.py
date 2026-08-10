@@ -102,11 +102,167 @@ def test_wal_and_foreign_keys_are_on():
 
 
 def test_a_newer_database_is_refused_rather_than_opened(auth_db: Path):
+    """The COLD path: the first open of a path this process has never seen."""
     db.ensure_schema()
     with db.connect() as conn:
         conn.execute("UPDATE schema_version SET version = 99 WHERE id = 1")
     with pytest.raises(db.DatabaseError, match="newer than this build"):
         db.ensure_schema(force=True)
+
+
+def test_a_newer_database_is_refused_on_the_warm_path_too(auth_db: Path):
+    """The refusal must survive the process memo — no ``force=`` anywhere.
+
+    The shape this guards is a rolling upgrade: a live backend memoizes the
+    file at v2, newer tooling (or a second backend) takes it to v3, and every
+    later ``connect()`` in the OLD process used to return the cached constant
+    and keep writing into a schema it knows nothing about. Silently: no error,
+    no log, rows landing in a database whose constraints were never checked
+    against them. ``force=True`` made the refusal fire, but nothing on a
+    request path passes ``force=True``, so the guard protected only the very
+    first open of the file.
+    """
+    db.ensure_schema()  # memoize this path at the current version
+    with db.connect() as conn:
+        conn.execute("UPDATE schema_version SET version = 3 WHERE id = 1")
+
+    with pytest.raises(db.DatabaseError, match="newer than this build"):
+        db.ensure_schema()
+
+    with pytest.raises(db.DatabaseError, match="newer than this build"):
+        with db.connect() as conn:
+            conn.execute("SELECT 1")
+
+    with pytest.raises(db.DatabaseError, match="newer than this build"):
+        with db.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO users (username, display_name, role, password_hash, created_at, disabled) "
+                "VALUES ('smuggled', 'smuggled', 'admin', 'x', 'now', 0)"
+            )
+
+    # The refusal is worth nothing if the write got through on the way out.
+    conn = sqlite3.connect(str(auth_db))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_the_memo_still_skips_the_migration_ladder(auth_db: Path, monkeypatch: pytest.MonkeyPatch):
+    """The guard is a version READ, not a migration run.
+
+    The memo exists so a login does not re-run migrations; re-validating the
+    version costs ~4.9 µs on a connection that is already open, and that is the
+    only thing the warm path is allowed to do. If this test starts failing, the
+    guard has grown into a full ladder run on every connect().
+    """
+    db.ensure_schema()
+    ran: list[int] = []
+    real_migration = db._MIGRATIONS[db.SCHEMA_VERSION]
+
+    def spy(conn):
+        ran.append(db.SCHEMA_VERSION)
+        real_migration(conn)
+
+    monkeypatch.setitem(db._MIGRATIONS, db.SCHEMA_VERSION, spy)
+
+    for _ in range(5):
+        with db.connect() as conn:
+            conn.execute("SELECT 1").fetchone()
+        with db.write_transaction() as conn:
+            conn.execute("SELECT 1").fetchone()
+        db.ensure_schema()
+
+    assert ran == [], "the warm path re-ran migrations instead of reading the version"
+
+
+def test_a_database_deleted_underneath_a_live_process_is_rebuilt(auth_db: Path):
+    """The memo must not outlive the file it describes.
+
+    This used to be a ``path.exists()`` check inside ``ensure_schema``; it is
+    now the ``recorded version < SCHEMA_VERSION`` branch, which covers the same
+    case and additionally catches the file being REPLACED by an older one —
+    something an existence check cannot see.
+    """
+    db.ensure_schema()
+    _make_user()
+    for leftover in auth_db.parent.glob("app.db*"):  # the -wal and -shm too
+        leftover.unlink()
+
+    assert db.ensure_schema() == db.SCHEMA_VERSION  # no force=
+
+    with db.connect() as conn:
+        names = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert {"users", "auth_sessions", "workspace_members"} <= names
+        assert conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"] == 0
+
+
+def test_write_transaction_re_checks_the_version_after_taking_the_write_lock(
+    auth_db: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The NARROW race, closed separately from the wide one above.
+
+    ``test_a_newer_database_is_refused_on_the_warm_path_too`` proves the wide
+    version: a migration that already landed and COMMITTED before
+    ``write_transaction()`` is even called is caught by the outer check
+    (``_ensure_schema_using``, which runs before ``BEGIN IMMEDIATE``). That
+    test does not exercise the narrower gap ``write_transaction``'s own
+    docstring names: a migration that lands strictly BETWEEN the outer check
+    returning and ``BEGIN IMMEDIATE`` acquiring the write lock. Before this
+    fix, nothing re-read the version after that point, so a write issued in
+    that gap landed against a schema this build never checked.
+
+    Simulated here by making the outer check's return the trigger for the
+    race: ``_ensure_schema_using`` is wrapped so that the instant it returns
+    (schema confirmed current), a SEPARATE connection commits a version bump
+    to v3 -- exactly the shape of a second process's migration racing this
+    one. The write inside ``write_transaction`` must never land.
+    """
+    db.ensure_schema()
+    real_ensure = db._ensure_schema_using
+
+    def racing_ensure(conn, path, *, force=False):
+        result = real_ensure(conn, path, force=force)
+        other = sqlite3.connect(str(path))
+        try:
+            other.execute("UPDATE schema_version SET version = 3 WHERE id = 1")
+            other.commit()
+        finally:
+            other.close()
+        return result
+
+    monkeypatch.setattr(db, "_ensure_schema_using", racing_ensure)
+
+    with pytest.raises(db.DatabaseError, match="newer than this build"):
+        with db.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO users (username, display_name, role, password_hash, created_at, disabled) "
+                "VALUES ('smuggled', 'smuggled', 'admin', 'x', 'now', 0)"
+            )
+
+    # The refusal is worth nothing if the write got through on the way out.
+    raw = sqlite3.connect(str(auth_db))
+    try:
+        assert raw.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    finally:
+        raw.close()
+
+
+def test_schema_version_refuses_a_newer_database_too(auth_db: Path):
+    """``schema_version()`` is a public entry point (a diagnostic "is this
+    database safe" pre-flight); it must run the SAME newer-than-this-build
+    guard every other entry point in the module runs, not hand back the raw
+    newer integer with no error while ``connect``/``write_transaction``/
+    ``ensure_schema`` would all refuse the identical file."""
+    db.ensure_schema()
+    with db.connect() as conn:
+        conn.execute("UPDATE schema_version SET version = 99 WHERE id = 1")
+
+    with pytest.raises(db.DatabaseError, match="newer than this build"):
+        db.schema_version()
 
 
 def test_role_check_constraint_rejects_an_unknown_role():

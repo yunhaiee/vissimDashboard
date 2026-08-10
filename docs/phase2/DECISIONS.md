@@ -4067,3 +4067,51 @@ would have meant inventing credentials.
 
 **Still open, deliberately:** the app as a whole is still not behind login (two endpoints are).
 That is the next decision to make, not an oversight of this one.
+
+---
+
+## 2026-08-10 — the schema guard stops being a first-open-only guard
+
+**Context:** unit P④'s entry above recorded this as *known and NOT fixed here*. It is fixed now.
+`ensure_schema` memoizes per path so a login does not re-run the migration ladder, but the memo
+returned the CONSTANT `SCHEMA_VERSION` without looking at the file — so the "this database is
+newer than this build" refusal protected only the **first** open of a path. A process that
+memoized at v2 and then had the file taken to v3 underneath it (a rolling upgrade, or an operator
+running newer tooling against a running backend) kept inserting rows into a schema it knew nothing
+about, silently. Reproduced during P④'s verification: after a successful ensure, setting
+`schema_version` to 3 and calling `ensure_schema()` returned 2 instead of raising, while
+`ensure_schema(force=True)` on the same file correctly raised.
+
+**The fix, and its cost, measured rather than assumed:** every connection re-reads the recorded
+version — 4.9 µs on a connection that is already open, against a ~1.7 ms `connect()` and a ~60 ms
+scrypt, i.e. 0.3% of a connect and 1/12000th of one login. Opening a *second* connection just to
+read the version would have cost ~626 µs (+36%), which is why `connect()` and `write_transaction()`
+run the check on the connection they already hold rather than calling `ensure_schema()`. What the
+memo still buys is skipping the migration **ladder** — the part that actually costs; what it must
+never buy again is skipping the **guard**.
+
+**Three corrections the adversarial pass forced on this fix's own first draft** (all confirmed,
+none refuted):
+* **The check was not atomic with the write it guarded.** `_ensure_schema_using` read the version
+  under an in-process-only lock that was released before returning, and `write_transaction` only
+  took `BEGIN IMMEDIATE` *afterwards* — so a second process could migrate the file in the gap and
+  the first would write to a v3 schema believing it was v2. That is the exact rolling-upgrade
+  threat this fix exists for, surviving inside the fix. `write_transaction` now re-reads the
+  version a second time **inside** `BEGIN IMMEDIATE`, where the write lock makes it atomic with
+  the write.
+* **`connect()` cannot close that window** without changing its autocommit contract. Rather than
+  weaken the guard to make the prose true, the docstring was corrected to state precisely what it
+  guarantees (recency, not atomicity). The module docstring had made the same overstatement
+  ("every connection re-reads the recorded version… what it must never buy again is skipping the
+  guard") and was corrected the same way. **A prose claim stronger than the code is a defect**,
+  and is treated as one here.
+* **`schema_version()` skipped the guard entirely** — the one exported entry point that opened a
+  connection and read the version raw, so a caller using it as an "is this database safe to use"
+  pre-flight got the newer integer back with no error while every other entry point in the module
+  would refuse the same file. It now runs `_refuse_if_newer` like the rest.
+
+**Verification:** full backend suite **3946 passed, 1 skipped**. Each fix has a test that fails
+without it, confirmed by reverting each in turn — including
+`test_write_transaction_re_checks_the_version_after_taking_the_write_lock`, which simulates a
+second process committing a version bump in the narrow gap, and
+`test_schema_version_refuses_a_newer_database_too`.
