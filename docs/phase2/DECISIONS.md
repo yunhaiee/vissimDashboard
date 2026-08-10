@@ -4437,3 +4437,95 @@ endpoint with zero findings.
 nowhere in OSM (South Street, Roe Highway, Kwinana Freeway ramps). Those are breaks in the base
 map, not in the generator, and each is named in the probe output — useful input if the client
 wants the map corrected before the model is calibrated on it.
+
+---
+
+## 2026-08-11 — the client answered the 대전 YELLOW(RED) question, and a refusal built on the
+   old ambiguity was wrong
+
+**Context.** The 2026-08-10 entry above left one open question on 21 of the 22 usable 대전 signal
+sheets: does the `YELLOW(RED)` column hold 황색 alone, or 황색+전적색 combined? The client has now
+answered: **황색+전적색 combined** (interpretation "b"). That matches what the parser's own
+corroboration check already suggested — `MIN. GREEN == 시간분할 − YELLOW(RED)` on 59 of 94 (sheet,
+phase) pairs, and `MIN. GREEN` is a green, so the subtracted quantity was always the whole
+clearance.
+
+**The bug the answer exposed.** A probe run with `--declare-amber 3.0` (a reviewer's declared
+amber, not a document value) produced only **10 of 22** plans. **12 intersections refused with
+`daejeon_all_red_not_positive`**, because those sheets' `YELLOW(RED)` is exactly the declared 3.0 s
+amber, which makes `all_red = YELLOW(RED) − amber == 0`, and the old check refused on `all_red <= 0`.
+Under the confirmed reading that is wrong: an intersection with a 3 s amber and no all-red interval
+at all is an ordinary, valid signal design (amber running straight to red), not a gap. Refusing it
+discarded a correct plan.
+
+**The fix.** `services/genesis/signals_daejeon.py`, in `to_fixed_time_plan`: the gate changed from
+`all_red <= 0` to `all_red < 0`. All-red of exactly zero is now accepted and produces a program
+phase with `all_red_s=0.0` (no all-red display). Only a **negative** all-red — the declared amber
+LONGER than the sheet's own `YELLOW(RED)` for that phase — still refuses, renamed
+`daejeon_all_red_negative` (the old name, `daejeon_all_red_not_positive`, became inaccurate once
+zero stopped being a refusal; the rename is a straight swap everywhere the code appeared —
+`BRIDGE_REFUSE_CODES`, the raise site, the one test that named it). That refusal is real: a negative
+all-red means the declaration contradicts what the document states for that specific phase, not
+that the design is unusual, and it is kept as a named refusal per this unit's instructions.
+
+**What did NOT change.** `DaejeonSettings.declared_amber_s` is still `None` by default, and
+`to_fixed_time_plan` still refuses with `daejeon_intergreen_split_unstated` when nobody has
+declared an amber — the client's answer settles WHICH quantity `YELLOW(RED)` is, it does not state
+the amber by itself (the column still prints one combined number), so the amber remains a reviewer
+declaration and is never hardcoded. The module docstring now records 3.0 s as a commonly cited
+Korean police-standard 황색시간 convention a reviewer MAY cite as the basis for a declaration —
+stated plainly as a convention, not measured from any document in this repository, with no
+fabricated citation. The existing provenance machinery already carried the declaration and its
+basis (`amber_declaration_note` → `Provenance.derived_by`, `source_kind=ProgramSourceKind.DECLARED`
+on every DECLARED program and phase) — that was correct before this unit and needed no new
+mechanism, only a docstring fix (`amber_declaration_note`'s field description wrongly said
+`Provenance.note`; it is `Provenance.derived_by`).
+
+**Measured coverage, real zip (`client-data/218. 대전신호.zip`), `--declare-amber 3.0`, 22 parsed
+sheets / 120 scheduled (수준, ID) program-pairs throughout:**
+
+*Sheet level* (>= 1 plan produced counts the sheet as ready):
+
+| | old gate (`all_red <= 0` refuses) | new gate (`all_red < 0` refuses) |
+|---|---|---|
+| sheets with >= 1 plan produced | 10 / 22 | **20 / 22** |
+| sheets blocked, `daejeon_all_red_not_positive` / `_negative` | 12 | **0** |
+
+*Program-pair level, new gate only* (the finer-grained number, since a sheet can mix producing and
+refusing programs):
+
+| | count (of 120) |
+|---|---|
+| plans produced | **110** |
+| refused, `daejeon_all_red_negative` (declared 3.0 s amber genuinely longer than that phase's `YELLOW(RED)`) | 5 |
+| refused, `daejeon_phase_yellow_unknown` (no usable `YELLOW(RED)` on either ring — pre-existing, unrelated) | 5 |
+
+The remaining 2 sheets (10 program-pairs) that still produce no plan are blocked entirely by
+`daejeon_phase_yellow_unknown` — a data gap unrelated to the amber/all-red interpretation and
+outside this unit's scope — plus a residual 5 program-pairs where the 3.0 s declaration genuinely
+does contradict that phase's stated clearance (correctly still refused).
+
+Two distinct "before" states, not to be conflated: **with no amber declared at all** (the
+unchanged, still-correct default) every one of the 120 program-pairs refuses with
+`daejeon_intergreen_split_unstated` — 0 plans, 21 of 22 sheets "blocked ONLY by the unstated
+yellow/all-red split" per the probe's own counter, exactly as on 2026-08-10 and exactly as today
+with the declaration omitted. **With the amber declared at 3.0 s** is where the bug lived: the old
+gate produced only the 10/22 sheets shown above; the fix raises that to 20/22 without changing
+anything about the no-declaration path.
+
+**Offline only, restated.** This is the same 2026-08-08 lesson this file keeps repeating: the probe
+and the test suite prove the bridge's own arithmetic is self-consistent and re-derivable by hand; no
+Vissim has opened any of these plans, and building the actual signal groups still needs the
+현시도 (approach→phase drawing) this module has never had — item 1 in the 2026-08-10 entry's gap
+list, unchanged.
+
+**Verification:** `backend/tests/test_genesis_signals_daejeon.py`, 36 tests (35 + 1 net new; two
+existing tests were rewritten rather than just renamed — the old
+`test_a_declaration_that_contradicts_the_sheet_is_refused` asserted the exact behavior this unit
+fixes, so it became `test_a_declared_amber_that_exactly_matches_yellow_red_produces_a_zero_all_red_plan`
+(must now PRODUCE a plan) plus `test_a_declared_amber_longer_than_yellow_red_is_refused_as_negative`
+(genuine contradiction, must still REFUSE) against the same synthetic `clean_five_phase.txt`
+fixture, using `declared_amber_s == CLEAN_YELLOW_RED_S` and `CLEAN_YELLOW_RED_S + 1.0` respectively
+rather than a new fixture file — the amber gate is a single scalar applied uniformly, so the
+existing fixture already exercises both the boundary and the violation. Full backend suite: 4004
+passed, 1 skipped (`test_rag_retrieval_quality`, pre-existing/environmental, unrelated).

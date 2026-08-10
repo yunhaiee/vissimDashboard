@@ -154,7 +154,20 @@ def _print_coverage(measured: dj.Coverage, declared: bool) -> None:
         _out(
             "      green, so a match says the subtracted quantity is the whole clearance)."
         )
-        _out("      Counted and reported; never acted on. Ask the client.")
+        # Which sentence is true depends on whether a reviewer has declared an
+        # amber. Printing "ask the client" once the client HAS answered — and
+        # once every plan below is being built on that answer — would be the
+        # report contradicting what the run just did.
+        if not declared:
+            _out("      Counted and reported; never acted on. Ask the client.")
+        else:
+            _out(
+                "      The client answered (황색+전적색), which this evidence agrees with,"
+            )
+            _out(
+                "      and the plans below are built on a DECLARED amber — a reviewer's"
+            )
+            _out("      engineering judgement, not a value any sheet states.")
     _out()
     if measured.refusal_reasons:
         _out("  REFUSAL REASONS (distinct findings, not occurrences)")

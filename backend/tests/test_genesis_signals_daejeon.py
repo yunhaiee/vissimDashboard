@@ -351,18 +351,42 @@ def test_a_declared_amber_produces_a_plan_whose_arithmetic_is_re_derivable(clean
     assert "daejeon_coordination_offset_not_applied" in warn
 
 
-def test_a_declaration_that_contradicts_the_sheet_is_refused(clean):
-    """An amber no shorter than the sheet's clearance leaves a zero all-red.
+def test_a_declared_amber_that_exactly_matches_yellow_red_produces_a_zero_all_red_plan(clean):
+    """An amber equal to the sheet's clearance leaves an all-red of exactly zero.
 
-    Either the declaration is wrong or ``YELLOW(RED)`` is the yellow alone — in
-    which case the all-red is genuinely unstated. Both refuse.
+    This is the shape the real 대전 drop's 12 amber-declared-at-3.0s
+    intersections hit: ``YELLOW(RED)`` is exactly the declared amber, so the
+    subtraction is zero. Per the client's answer (``YELLOW(RED)`` is
+    황색+전적색 combined) that is an ordinary design — amber running straight
+    to red — and must PRODUCE a plan, not refuse. Refusing this exact shape
+    was the bug this test guards against.
     """
     settings = dj.DaejeonSettings(declared_amber_s=CLEAN_YELLOW_RED_S)
     plan, issues = dj.to_fixed_time_plan(clean, level_no=1, plan_id=1, settings=settings)
+    assert plan is not None and plan.ok
+    assert {i.code for i in issues if i.severity is IssueSeverity.REFUSE} == set()
+
+    phases = {p.phase_id: p for p in plan.program.phases}
+    assert all(p.amber_s == CLEAN_YELLOW_RED_S for p in phases.values())
+    assert all(p.all_red_s == 0.0 for p in phases.values())
+
+
+def test_a_declared_amber_longer_than_yellow_red_is_refused_as_negative(clean):
+    """An amber LONGER than the sheet's clearance would need a negative all-red.
+
+    Unlike the zero case above, a negative all-red is not physically
+    meaningful: either the declaration is wrong for this phase, or
+    ``YELLOW(RED)`` does not cover the whole clearance here. This stays a
+    named refusal.
+    """
+    settings = dj.DaejeonSettings(declared_amber_s=CLEAN_YELLOW_RED_S + 1.0)
+    plan, issues = dj.to_fixed_time_plan(clean, level_no=1, plan_id=1, settings=settings)
     assert plan is None
     assert {i.code for i in issues if i.severity is IssueSeverity.REFUSE} == {
-        "daejeon_all_red_not_positive"
+        "daejeon_all_red_negative"
     }
+    issue = next(i for i in issues if i.code == "daejeon_all_red_negative")
+    assert issue.context["all_red_s"] < 0
 
 
 def test_rings_running_different_splits_refuse_rather_than_emitting_one_ring():
@@ -566,7 +590,7 @@ def test_every_refusal_carries_ko_en_and_ja(clean):
     bridge_issues = []
     for level_no, plan_id, settings in (
         (1, 1, None),
-        (1, 1, dj.DaejeonSettings(declared_amber_s=CLEAN_YELLOW_RED_S)),
+        (1, 1, dj.DaejeonSettings(declared_amber_s=CLEAN_YELLOW_RED_S + 1.0)),
     ):
         _, issues = dj.to_fixed_time_plan(
             clean, level_no=level_no, plan_id=plan_id, settings=settings

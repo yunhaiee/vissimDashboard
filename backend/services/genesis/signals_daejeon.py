@@ -107,32 +107,43 @@ neither is guessed:
    rather than discovered late.
 
 2. **The yellow/all-red split.** The sheet has ONE clearance row, labelled
-   ``YELLOW(RED)``, and no ``전적색`` row anywhere. Two readings are possible
-   and the sheet does not choose:
+   ``YELLOW(RED)``, and no ``전적색`` row anywhere. Two readings were possible
+   and the sheet alone does not choose between them — but the client has now
+   **answered the question this module raised**: ``YELLOW(RED)`` is
+   ``황색 + 전적색`` combined (the whole clearance), not the yellow alone. This
+   matches the evidence the parser itself surfaced — across the real drop,
+   ``MIN. GREEN`` equals ``시간분할 − YELLOW(RED)`` on 59 of 94 (sheet, phase)
+   pairs, and ``MIN. GREEN`` is a *green*, so the subtracted quantity was
+   always the whole clearance.
 
-   * ``YELLOW(RED)`` is the **yellow alone** → the all-red is unstated, and
-     ``signals.generate_node_signals`` refuses with
-     ``signals_all_red_not_positive``.
-   * ``YELLOW(RED)`` is the **whole clearance** (yellow + all-red) → the green
-     is ``시간분할 − YELLOW(RED)``, but the amber alone is unstated and
-     ``generate_node_signals`` refuses with ``signals_amber_unknown``, because
-     Vissim needs the amber as its own display.
+   That answer settles WHICH quantity ``YELLOW(RED)`` is. It does **not**
+   state the amber by itself — the sheet still prints one number for
+   ``황색 + 전적색`` combined, never the two split apart — so the amber is
+   still a number nobody but a reviewer can supply, and MRWA §5.4.2.1's
+   "input from controller information, not changed" still applies to it.
+   :func:`to_fixed_time_plan` therefore still refuses by default with
+   ``daejeon_intergreen_split_unstated``, and still produces a plan only when
+   a reviewer declares the amber explicitly through
+   :attr:`DaejeonSettings.declared_amber_s` — **no amber is ever hardcoded as
+   a default here**, answered client question or not. That is the guardrail
+   doctrine's third tier applied where it bites: refused unless a human
+   records the decision, never defaulted.
 
-   The evidence leans hard on the second reading — across the real drop,
-   ``MIN. GREEN`` equals ``시간분할 − YELLOW(RED)`` for most non-coordinated
-   phases, and ``MIN. GREEN`` is a *green*, so the subtracted quantity is the
-   whole clearance — but "leans hard" is not "states", and MRWA §5.4.2.1
-   requires yellow and all-red to be **input from controller information and
-   not changed**. So :func:`to_fixed_time_plan` refuses by default with
-   ``daejeon_intergreen_split_unstated``, and produces a plan only when a
-   reviewer declares the amber explicitly through
-   :attr:`DaejeonSettings.declared_amber_s`. That is the guardrail doctrine's
-   third tier applied where it bites: refused unless a human records the
-   decision, never defaulted.
+   Once an amber is declared, ``all_red_i = YELLOW(RED)_i − amber``. **All-red
+   of exactly zero is an ordinary, valid design** — amber runs straight to
+   red with no all-red display, which is common at an intersection with no
+   all-red interval at all — and is accepted, not refused. Only a *negative*
+   all-red (the declared amber longer than the sheet's own ``YELLOW(RED)``)
+   refuses, as ``daejeon_all_red_negative``: that shape means the declaration
+   contradicts what the sheet states, not that the design is unusual.
 
-   The actionable form of this finding is a one-line question to the client:
-   *does the ``YELLOW(RED)`` column hold 황색 only, or 황색+전적색?* Every
-   parsed sheet carries it, so the question is asked once and answered once.
+   A commonly cited convention for 황색시간 at a typical Korean urban
+   approach is **3.0 s** (the police-standard figure practitioners declare
+   when nothing more specific is available). That number is **not measured
+   from any document in this repository** — no citation here claims
+   otherwise — and is offered purely as the basis a reviewer may cite when
+   declaring :attr:`DaejeonSettings.declared_amber_s`; it is never assigned
+   automatically.
 
 3. **The coordination offset's reference point.** ``연동`` is read and carried,
    but the sheet never says what instant it counts from, so the bridge places
@@ -303,7 +314,7 @@ BRIDGE_REFUSE_CODES: frozenset[str] = frozenset(
         "daejeon_intergreen_split_unstated",
         "daejeon_program_not_found",
         "daejeon_phase_yellow_unknown",
-        "daejeon_all_red_not_positive",
+        "daejeon_all_red_negative",
         "daejeon_green_not_positive",
         "daejeon_ring_splits_disagree",
     }
@@ -344,12 +355,23 @@ class DaejeonSettings(BaseModel):
     ``fixed_time.ConversionSettings``.
 
     :attr:`declared_amber_s` is the only field that can turn a refusal into a
-    result, and it exists in exactly that shape on purpose. The sheet's
-    ``YELLOW(RED)`` column does not separate 황색 from 전적색 (see the module
-    docstring), so the bridge refuses by default. A reviewer who has asked the
-    client — or who is applying a written national standard — records the amber
-    here, and the refusal becomes an allowed-with-warning result carrying the
-    declaration in its provenance. It is never defaulted to a number.
+    result, and it exists in exactly that shape on purpose. The client has
+    confirmed the sheet's ``YELLOW(RED)`` column IS 황색+전적색 combined (see the
+    module docstring), but the column still prints that combined number only —
+    never the amber alone — so the amber itself remains a number nobody but a
+    reviewer can supply. A reviewer who has asked the client, or who is
+    applying a written national standard — 3.0 s is the commonly cited
+    Korean police-standard 황색시간 for a typical urban approach, offered here
+    as a basis a reviewer may cite, NOT a value read from any document in this
+    repository and NEVER assigned automatically — records the amber here, and
+    the refusal becomes an allowed-with-warning result carrying the
+    declaration in its provenance. It is never defaulted to a number: no
+    ``declared_amber_s`` means no plan, exactly as before the client answered.
+
+    With an amber declared, ``all_red_i = YELLOW(RED)_i − declared_amber_s``.
+    Exactly zero is accepted (an ordinary design with no all-red display);
+    only a NEGATIVE all-red — the declared amber longer than what the sheet
+    states — refuses, as ``daejeon_all_red_negative``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -359,15 +381,20 @@ class DaejeonSettings(BaseModel):
         gt=0,
         description=(
             "A REVIEWER'S DECLARATION, not a default: the yellow display in seconds, when "
-            "someone has established what the sheet's YELLOW(RED) column contains. None "
-            "(the default) means nobody has, and to_fixed_time_plan refuses."
+            "someone has established what the sheet's YELLOW(RED) column contains and — "
+            "separately — what portion of it is amber. None (the default) means nobody has "
+            "declared an amber, and to_fixed_time_plan refuses regardless of what the "
+            "YELLOW(RED) column is now known to mean. This is never defaulted to 3.0 s or "
+            "any other number by this module, however common a convention it is."
         ),
     )
     amber_declaration_note: str | None = Field(
         default=None,
         description=(
             "Why declared_amber_s is what it is — the client answer, the standard, the "
-            "meeting. Travels into Provenance.note so the decision is auditable later."
+            "meeting. Travels into Provenance.derived_by (on every phase and on the program) "
+            "so the decision is auditable later, and so a DECLARED plan is distinguishable "
+            "from one whose amber was read straight from a source."
         ),
     )
     cycle_sum_tolerance_s: float = Field(
@@ -2009,18 +2036,20 @@ def _build_controller(
             )
             phase.mark_absent(
                 "green_s",
-                f"green = 시간분할({split_s:g} s) − clearance, and the sheet's single "
-                "YELLOW(RED) row does not say whether it is the yellow alone or the whole "
-                "clearance; see to_fixed_time_plan / daejeon_intergreen_split_unstated.",
+                f"green = 시간분할({split_s:g} s) − clearance, and splitting it needs a "
+                "declared amber the sheet's single YELLOW(RED) row (황색+전적색 combined, per "
+                "the client's answer) does not itself provide; see to_fixed_time_plan / "
+                "daejeon_intergreen_split_unstated.",
             )
             phase.mark_absent(
                 "amber_s",
-                "the sheet has one clearance row labelled YELLOW(RED) and no separate 전적색 "
-                "row, so the yellow alone is not stated.",
+                "the sheet has one clearance row labelled YELLOW(RED) — 황색+전적색 combined, "
+                "per the client's answer — and never prints the amber by itself.",
             )
             phase.mark_absent(
                 "all_red_s",
-                "the sheet has no 전적색 row; the all-red is not stated anywhere on the form.",
+                "the sheet has no 전적색 row of its own; the all-red is only derivable once a "
+                "reviewer declares the amber (to_fixed_time_plan).",
             )
             if timing is None or timing.yellow_red_s is None:
                 phase.mark_absent(
@@ -2130,17 +2159,25 @@ def to_fixed_time_plan(
     product" contract the rest of the chain keeps.
 
     **This refuses by default, and that is the finding, not a bug.** Vissim needs
-    the amber as its own display; the sheet states one clearance number and never
-    separates 황색 from 전적색. So unless a reviewer has declared the amber
-    through :attr:`DaejeonSettings.declared_amber_s`, this returns
-    ``daejeon_intergreen_split_unstated`` and no plan. With the declaration, the
-    arithmetic is entirely re-derivable on paper::
+    the amber as its own display; the sheet prints one clearance number
+    (``황색+전적색`` combined, per the client's answer — see the module
+    docstring) and never separates the amber out of it. So unless a reviewer
+    has declared the amber through :attr:`DaejeonSettings.declared_amber_s`,
+    this returns ``daejeon_intergreen_split_unstated`` and no plan. With the
+    declaration, the arithmetic is entirely re-derivable on paper::
 
         intergreen_i = YELLOW(RED)_i          (read from the SIGNAL TABLE)
         amber        = the declared value     (recorded in Provenance.derived_by)
-        all_red_i    = intergreen_i - amber
+        all_red_i    = intergreen_i - amber   (>= 0; exactly 0 is an ordinary design)
         green_i      = 시간분할_i - intergreen_i
         start_i      = Σ 시간분할_1..i-1       (phase 1 at cycle time 0)
+
+    ``all_red_i`` of exactly zero is accepted and produces a program phase
+    with no all-red display — amber running straight to red is an ordinary,
+    valid signal design, not a gap. Only a NEGATIVE ``all_red_i`` — the
+    declared amber longer than the sheet's own ``YELLOW(RED)`` — refuses, as
+    ``daejeon_all_red_negative``: that shape means the declaration
+    contradicts the sheet, not that the intersection is unusual.
 
     ``연동`` is deliberately NOT applied to ``start_i``: the sheet never states
     the instant the offset counts from, and a corridor offset applied against the
@@ -2310,25 +2347,35 @@ def to_fixed_time_plan(
                 IssueSeverity.REFUSE,
                 "daejeon_intergreen_split_unstated",
                 f"{sheet.source_file}: the sheet has ONE clearance row, labelled YELLOW(RED), "
-                "and no 전적색 row anywhere. Vissim needs the amber as its own display and "
-                "§5.4.2.1 requires yellow and all-red to be input from controller information "
-                "unchanged, so neither reading of that column can be assumed: it is either the "
-                "yellow alone (all-red unknown) or the whole clearance (amber unknown). Declare "
-                "the amber via DaejeonSettings.declared_amber_s once the client has answered "
-                "'does YELLOW(RED) hold 황색 only, or 황색+전적색?'. Everything else about this "
-                "program checked out.",
+                "and no 전적색 row anywhere. The client has confirmed YELLOW(RED) is "
+                "황색+전적색 combined, which settles WHICH quantity the column is — but the "
+                "column still prints only the combined number, never the amber by itself. "
+                "Vissim needs the amber as its own display and §5.4.2.1 requires yellow and "
+                "all-red to be input from controller information unchanged, so the amber split "
+                "is still not assumed. Declare it via DaejeonSettings.declared_amber_s (a "
+                "reviewer's engineering declaration, e.g. the 3.0 s Korean police-standard "
+                "convention, or a further client answer) — never a default this module picks. "
+                "Everything else about this program checked out.",
                 messages={
-                    "ko": "시트에는 YELLOW(RED) 한 행만 있고 전적색 행이 없습니다. Vissim은 "
-                    "황색을 독립 표시로 요구하고 §5.4.2.1은 제어기 값을 그대로 입력하도록 "
-                    "하므로, 어느 해석도 가정하지 않습니다. 발주처 확인 후 declared_amber_s로 "
-                    "명시하십시오. 그 외 항목은 모두 통과했습니다.",
-                    "en": "The sheet has one clearance row (YELLOW(RED)) and no 전적색 row; "
-                    "Vissim needs amber as its own display and §5.4.2.1 forbids substituting a "
-                    "default. Declare the amber via declared_amber_s once the client answers. "
-                    "Every other check on this program passed.",
+                    "ko": "시트에는 YELLOW(RED) 한 행만 있고 전적색 행이 없습니다. 발주처는 "
+                    "YELLOW(RED)가 황색+전적색 결합값임을 확인했지만, 그 안에서 황색만 별도로 "
+                    "적힌 곳은 없습니다. Vissim은 황색을 독립 표시로 요구하고 §5.4.2.1은 제어기 "
+                    "값을 그대로 입력하도록 하므로, 황색 분할값을 임의로 가정하지 않습니다. "
+                    "declared_amber_s로 명시하십시오(예: 경찰청 표준 3.0초 관행 또는 추가 발주처 "
+                    "확인). 그 외 항목은 모두 통과했습니다.",
+                    "en": "The sheet has one clearance row (YELLOW(RED)) and no 전적색 row. The "
+                    "client has confirmed YELLOW(RED) is 황색+전적색 combined — that settles "
+                    "WHICH quantity the column is, but the column still prints only the combined "
+                    "number, never the amber alone. Vissim needs amber as its own display and "
+                    "§5.4.2.1 forbids substituting a default for it. Declare the amber via "
+                    "declared_amber_s (a reviewer's engineering declaration, e.g. the 3.0 s "
+                    "Korean police-standard convention, or a further client answer). Every other "
+                    "check on this program passed.",
                     "ja": "シートにはクリアランス行が YELLOW(RED) の1行のみで全赤の行が "
-                    "ありません。既定値を代入せず、発注者の回答後に declared_amber_s で "
-                    "明示してください。他の検査はすべて通過しています。",
+                    "ありません。発注者は YELLOW(RED) が黄色+全赤の合算値であることを確認しました "
+                    "が、その内訳(黄色のみ)を記載した箇所はありません。既定値を代入せず、"
+                    "declared_amber_s で明示してください(例:韓国警察庁標準の3.0秒慣行、または "
+                    "追加の発注者回答)。他の検査はすべて通過しています。",
                 },
                 subject=subject,
                 citation=CIT_S5421_TIMINGS_UNCHANGED,
@@ -2377,26 +2424,41 @@ def to_fixed_time_plan(
             )
         )
     for slot in slots:
+        # all_red == 0 is ACCEPTED: amber running straight to red with no
+        # all-red display is an ordinary, valid signal design, not a gap in
+        # the data (see the module docstring's item 2 and the client's
+        # confirmed YELLOW(RED) = 황색+전적색 reading). Only a NEGATIVE
+        # all-red refuses — that shape means the declared amber is longer
+        # than what the sheet itself states for this phase, which is a
+        # genuine contradiction between the declaration and the document,
+        # not an unusual-but-valid intersection.
         all_red = round(slot.intergreen_s - amber, 6)
-        if all_red <= 0:
+        if all_red < 0:
             issues.append(
                 _issue(
                     IssueSeverity.REFUSE,
-                    "daejeon_all_red_not_positive",
-                    f"Φ{slot.index}: the declared amber ({amber:g} s) is not shorter than the "
-                    f"sheet's YELLOW(RED) ({slot.intergreen_s:g} s), leaving an all-red of "
-                    f"{all_red:g} s. Either the declaration is wrong or YELLOW(RED) is the "
-                    "yellow alone — in which case the all-red is genuinely unstated and no "
-                    "plan can be built.",
+                    "daejeon_all_red_negative",
+                    f"Φ{slot.index}: the declared amber ({amber:g} s) is LONGER than the "
+                    f"sheet's YELLOW(RED) ({slot.intergreen_s:g} s), which would need a "
+                    f"negative all-red of {all_red:g} s. An all-red of exactly zero is an "
+                    "ordinary design and is accepted; a negative one is not physically "
+                    "meaningful, so either the declaration is wrong for this phase or "
+                    "YELLOW(RED) does not cover the whole clearance here.",
                     messages={
                         "ko": f"Φ{slot.index}: 선언한 황색({amber:g}s)이 "
-                        f"YELLOW(RED)({slot.intergreen_s:g}s)보다 짧지 않아 전적색이 "
-                        f"{all_red:g}s입니다. 선언이 틀렸거나 해당 열이 황색만을 의미합니다.",
-                        "en": f"Φ{slot.index}: the declared amber is not shorter than "
-                        f"YELLOW(RED), so the all-red is {all_red:g} s — either the declaration "
-                        "is wrong or that column is the yellow alone.",
-                        "ja": f"Φ{slot.index}: 宣言した黄色が YELLOW(RED) より短くないため全赤が "
-                        f"{all_red:g}s です。宣言が誤っているか、当該列が黄色のみです。",
+                        f"YELLOW(RED)({slot.intergreen_s:g}s)보다 길어 전적색이 "
+                        f"{all_red:g}s(음수)가 됩니다. 전적색이 정확히 0인 것은 정상 설계로 "
+                        "허용하지만, 음수는 물리적으로 불가능하므로 선언이 틀렸거나 이 현시의 "
+                        "YELLOW(RED)가 전체 소거시간을 나타내지 않는 것입니다.",
+                        "en": f"Φ{slot.index}: the declared amber is longer than YELLOW(RED), "
+                        f"so the all-red would be {all_red:g} s (negative). All-red of exactly "
+                        "zero is an ordinary design and is accepted; a negative one is not — "
+                        "either the declaration is wrong for this phase or YELLOW(RED) does not "
+                        "cover the whole clearance here.",
+                        "ja": f"Φ{slot.index}: 宣言した黄色が YELLOW(RED) より長いため、全赤が "
+                        f"{all_red:g}s(負の値)になります。全赤がちょうど0であることは正常な "
+                        "設計として許容しますが、負の値は物理的にあり得ません。宣言が誤っている "
+                        "か、当該現示の YELLOW(RED) が全クリアランスを表していません。",
                     },
                     subject=subject,
                     citation=CIT_S5421_TIMINGS_UNCHANGED,
