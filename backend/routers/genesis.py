@@ -31,6 +31,20 @@ writes into a project's tree and publishes into its dataset slot.
 no request handler ever would (``docs/phase2/00-EXECUTION-GUIDE.md`` §1). That
 is exactly why a fresh generation publishes as ``provisional``: V1 needs a real
 ``LoadNet``, and it arrives later through ``POST /jobs/{id}/live-check``.
+
+**``/region/*`` — roadmap v2 §5.B row B2.** The four routes at the bottom of
+this file put the .osm's ORIGIN inside the product: a region in,
+``services/osm_fetch.py`` asks Overpass for it, and the answer is staged through
+``genesis_jobs.stage_osm`` — the same function ``POST /uploads`` calls, handing
+back the same token. So a fetched region enters generation on the road B1
+already proved; there is deliberately no second way into ``gate_and_publish``.
+
+Two of them are pure arithmetic and stay open (``/region/limits``,
+``/region/preview``): they measure a box against the projection's own validity
+radius so a browser can show the area against the cap BEFORE anything is
+downloaded, and no network call happens in either. ``POST /region/fetches``
+takes ``current_user`` and answers 202 — it is the one path in this backend that
+waits on the public internet, so it can never run on the request thread.
 """
 from __future__ import annotations
 
@@ -44,7 +58,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from routers.auth import current_user
 from routers.datasets import MAX_UPLOAD_BYTES, _TOO_LARGE_DETAIL, _reject_oversized_body
-from services import genesis_jobs
+from services import genesis_jobs, osm_fetch
 from services.datasets import DatasetStorageError
 
 logger = logging.getLogger(__name__)
@@ -348,6 +362,142 @@ def get_gate_report_markdown(job_id: str, request: Request):
             detail=f"The stored gate result could not be read. [{type(exc).__name__}: {exc}]",
         ) from exc
     return PlainTextResponse(payload["report_markdown"], media_type="text/markdown; charset=utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Region → .osm extraction (roadmap v2 §5.B row B2)
+# ---------------------------------------------------------------------------
+
+
+class StartRegionFetchRequest(BaseModel):
+    """A bounding box plus an optional name for the extract.
+
+    ``extra="forbid"``, and the endpoint is NOT in this model on purpose: the
+    Overpass instance is server configuration (``PRISM_OVERPASS_ENDPOINT``), and
+    a caller-supplied URL would turn this route into an SSRF instrument pointed
+    at whatever the server can reach.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    south: float = Field(description="Southern latitude, WGS84 degrees.")
+    west: float = Field(description="Western longitude, WGS84 degrees.")
+    north: float = Field(description="Northern latitude, WGS84 degrees.")
+    east: float = Field(description="Eastern longitude, WGS84 degrees.")
+    name: str | None = Field(
+        default=None,
+        description="Base name for the staged extract. Omitted = derived from the centre.",
+    )
+
+    def bbox(self) -> osm_fetch.BoundingBox:
+        return osm_fetch.BoundingBox(
+            south=self.south, west=self.west, north=self.north, east=self.east
+        )
+
+
+def _region_refusal(exc: osm_fetch.OsmFetchRefused) -> HTTPException:
+    """One 400 shape for every region refusal — the same ``{code, reasons}``
+    body ``stage_osm``'s refusals use, plus the measured numbers that made it a
+    refusal. "Too large" without a number is not actionable."""
+    return HTTPException(
+        status_code=400,
+        detail={"code": exc.code, "reasons": exc.reasons, "measurement": exc.detail},
+    )
+
+
+@router.get("/region/limits")
+def get_region_limits(request: Request):
+    """The caps in force, optionally at a stated latitude. Pure arithmetic.
+
+    Open, like this router's other reads: it computes the projection's validity
+    radius and this app's response-byte cap and makes no network call at all.
+    """
+    def _number(name: str, default: float) -> float:
+        raw = request.query_params.get(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            return float(raw)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"{name}={raw!r} is not a number."
+            ) from exc
+
+    return osm_fetch.region_limits(_number("lat", 0.0), _number("lon", 0.0))
+
+
+@router.get("/region/preview")
+def preview_region(
+    south: float, west: float, north: float, east: float
+):
+    """Measure a region against cap 1 WITHOUT fetching anything.
+
+    This is what lets a browser show the area and the estimated size against the
+    limit before a byte is downloaded. It answers 200 with
+    ``within_region_cap: false`` for a region that is too large rather than
+    400-ing: a preview whose whole job is to describe an over-large box must be
+    able to describe an over-large box.
+    """
+    try:
+        bbox = osm_fetch.BoundingBox(south=south, west=west, north=north, east=east)
+    except osm_fetch.OsmFetchRefused as exc:
+        raise _region_refusal(exc) from exc
+    return osm_fetch.measure_region(bbox).as_dict()
+
+
+@router.post("/region/fetches", status_code=202)
+def start_region_fetch(
+    payload: StartRegionFetchRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Start ONE region fetch. 202: the Overpass call happens on a worker thread.
+
+    Authenticated for the same reason ``POST /uploads`` is — this writes into the
+    project's tree, and it also spends the box's one outbound connection to a
+    third-party service, which is not something an anonymous caller gets to do.
+    Cap 1 is checked HERE, synchronously, so a region that could never be
+    fetched is a 400 the caller sees immediately instead of a job to poll.
+    """
+    try:
+        record = osm_fetch.start_region_fetch(
+            bbox=payload.bbox(),
+            name=payload.name,
+            submitted_by=str(user.get("username") or ""),
+        )
+    except osm_fetch.OsmFetchRefused as exc:
+        raise _region_refusal(exc) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not write the region fetch record. Nothing was started. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    logger.info(
+        "genesis: %s started region fetch %s (%s) in workspace %s",
+        user.get("username"),
+        record["id"],
+        record["name"],
+        record["workspace_id"],
+    )
+    return record
+
+
+@router.get("/region/fetches")
+def list_region_fetches():
+    """This workspace's region fetches, newest first."""
+    return {"fetches": osm_fetch.list_fetches()}
+
+
+@router.get("/region/fetches/{fetch_id}")
+def get_region_fetch(fetch_id: str):
+    try:
+        return osm_fetch.get_fetch(fetch_id)
+    except osm_fetch.OsmFetchNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except osm_fetch.OsmFetchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 __all__ = ["router"]

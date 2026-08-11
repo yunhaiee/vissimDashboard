@@ -927,6 +927,26 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       app-wide-login decision, DECISIONS 2026-08-11); it stops this router
       handing the bytes to someone with no identity at all.
 
+    **B2 (roadmap v2 §5.B) adds exactly ONE: POST /api/genesis/region/fetches.**
+    A region fetch writes a staged ``.osm`` into the project's tree — the same
+    reason ``POST /api/genesis/uploads`` is guarded — and it is additionally the
+    only path in this backend that spends the box's outbound connection to a
+    third-party service (Overpass). Neither is something an anonymous caller
+    gets to do on a project's behalf, and the fetch record names who asked.
+
+    Its three companions stay OPEN, deliberately:
+
+    * ``GET /api/genesis/region/limits`` and ``GET /api/genesis/region/preview``
+      are pure arithmetic over the projection's validity radius. They make no
+      network call, touch no project data and exist so a browser can show the
+      area against the cap BEFORE anything is downloaded — guarding a
+      calculator would only mean a user learns their region is too large after
+      signing in rather than before.
+    * ``GET /api/genesis/region/fetches`` (list and one) is the record of a
+      decision, in the same parity as the job list and the gate verdict above.
+      The extract itself is not served here; it is reached through the
+      generation's authenticated ``artifact/{kind}`` route.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -954,6 +974,7 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/genesis/jobs",
         "/api/genesis/jobs/{job_id}/artifact/{kind}",
         "/api/genesis/jobs/{job_id}/live-check",
+        "/api/genesis/region/fetches",
         "/api/admin/users",
         "/api/admin/users/{user_id}/password",
         "/api/admin/users/{user_id}/disabled",

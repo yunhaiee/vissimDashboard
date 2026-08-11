@@ -15,7 +15,7 @@ from routers import workspaces as workspaces_router
 from services import auth as auth_service
 from services import membership, workspaces
 from services.agent.planner import pick_language_text
-from services import genesis_jobs
+from services import genesis_jobs, osm_fetch
 from services.agent.sessions import sweep_stale_sessions
 from services.license_guard import license_required, license_status
 
@@ -45,6 +45,14 @@ async def lifespan(app: FastAPI):
         genesis_jobs.reconcile_interrupted_jobs()
     except Exception:  # noqa: BLE001 - same rule: bookkeeping never blocks startup
         logger.exception("Genesis job reconciliation failed at startup; continuing.")
+    # A region fetch (roadmap v2 §5.B B2) runs in a worker thread in this same
+    # process and is the one path that waits on the public internet, so it is
+    # the MOST likely thing to have been mid-flight when the process died.
+    # Same honest terminal state, for the same reason.
+    try:
+        osm_fetch.reconcile_interrupted_fetches()
+    except Exception:  # noqa: BLE001 - same rule: bookkeeping never blocks startup
+        logger.exception("Region fetch reconciliation failed at startup; continuing.")
     yield
 
 

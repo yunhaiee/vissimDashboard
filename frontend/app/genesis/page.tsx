@@ -29,6 +29,7 @@
 // only, through the three-argument t() form (explicit ja) so no string here
 // depends on an entry landing in the generated lib/i18n-ja.ts dictionary.
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
@@ -368,6 +369,20 @@ export default function GenesisPage() {
           "ローカルの .osm ファイルを選んでください。ネットワークはジョブキューで作成され、Vissim COM は使いません。",
         )}
       >
+        {/* Roadmap v2 §5.B B2. The region page ENDS at the staging area and
+          * hands its extract to this same flow, so the two entry points differ
+          * only in where the .osm came from -- generation, gating and
+          * publishing are one road. */}
+        <p className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+          {t(
+            ".osm 파일이 없으신가요? 지도 영역을 직접 지정해 OpenStreetMap에서 받아올 수 있습니다 — 받은 추출은 여기 업로드한 파일과 똑같은 경로를 탑니다.",
+            "No .osm file? Name a map region and it is fetched from OpenStreetMap for you — the extract then takes exactly the same road as a file uploaded here.",
+            ".osm ファイルがありませんか？地図の領域を指定して OpenStreetMap から取得できます — 取得した抽出はここでアップロードしたファイルとまったく同じ経路を通ります。",
+          )}{" "}
+          <Link href="/genesis/region" className="font-semibold underline">
+            {t("영역에서 추출하기 →", "Extract a region →", "領域から抽出 →")}
+          </Link>
+        </p>
         <div className="flex flex-col gap-3">
           <input
             ref={fileInputRef}

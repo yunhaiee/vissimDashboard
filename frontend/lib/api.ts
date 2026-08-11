@@ -3011,6 +3011,208 @@ export function genesisArtifactUrl(jobId: string, kind: GenesisArtifactKind): st
 }
 
 // ---------------------------------------------------------------------------
+// Roadmap v2 §5.B B2 -- Region: draw an area, get the .osm the pipeline eats
+// ---------------------------------------------------------------------------
+//
+// This block ENDS where the block above begins. A region fetch's only output is
+// an `upload_token` -- the same token `uploadGenesisOsm` returns -- and the
+// caller then calls `startGenesisJob` with it. There is deliberately no
+// "fetch and generate" call: generation, gating and publishing stay on the one
+// road B1 proved, and a second entry point into the gate is what §5.A A4 exists
+// to prevent.
+//
+// Two of the four are pure arithmetic (`fetchRegionLimits`, `previewRegion`) and
+// make no network call on the server either. They exist so the UI can show the
+// area against the cap BEFORE anything is downloaded -- the caps refuse, they
+// never truncate, so a user has to be able to see the line before crossing it.
+
+/** The measurement `GET /api/genesis/region/preview` answers with — every field
+ * a measured quantity or a derived limit, none of them an opinion.
+ *
+ * `estimated_bytes` is explicitly an ESTIMATE (mean measured OSM density × the
+ * area). The byte cap is enforced against the bytes that actually arrive, never
+ * against this number, and the UI must say so — an estimate presented as a
+ * guarantee is how a "it will fit" turns into a refusal nobody predicted. */
+export interface RegionMeasurement {
+  region: { south: number; west: number; north: number; east: number };
+  centre_lat: number;
+  centre_lon: number;
+  width_m: number;
+  height_m: number;
+  half_extent_m: number;
+  area_km2: number;
+  /** The draft projection's own validity radius at this centre latitude —
+   * `services/genesis/project.py`. Past it the generator refuses outright, so
+   * this is the same line twice, not a second opinion. */
+  validity_radius_m: number;
+  max_area_km2: number;
+  /** Which physics sets the radius: `meridian_convergence` above |φ| = 14.04°,
+   * `tangent_plane_curvature` below it. */
+  binding_term: string;
+  planimetric_error_bound_m: number;
+  within_region_cap: boolean;
+  estimated_bytes: number;
+  max_response_bytes: number;
+  estimate_basis: string;
+}
+
+export interface RegionLimits {
+  centre_lat: number;
+  centre_lon: number;
+  validity_radius_m: number;
+  max_area_km2: number;
+  binding_term: string;
+  planimetric_budget_m: number;
+  max_response_bytes: number;
+  reference_bytes_per_km2: number;
+  peak_bytes_per_km2: number;
+  /** Which Overpass instance the SERVER is configured to use. Read-only on
+   * purpose: a caller-supplied endpoint would make the fetch route an SSRF
+   * instrument pointed at whatever the backend can reach. */
+  endpoint: string;
+  query_timeout_s: number;
+  socket_timeout_s: number;
+}
+
+/** `staged` is the only success state and it means exactly "B1 can take it from
+ * here". `refused` is a NAMED answer (a cap, a rate limit, a region with no
+ * roads); `error` is the unpredicted kind, kept separate so "we said no, and
+ * why" never reads like "we fell over". */
+export type RegionFetchStatus = "queued" | "running" | "staged" | "refused" | "error";
+
+/** Where this extract came from, recorded with it rather than beside it — the
+ * same record is written INTO the `.osm` as a leading XML comment, so it
+ * survives into the generation job's own source document. */
+export interface RegionFetchProvenance {
+  source: string;
+  endpoint: string;
+  query: string;
+  requested_region: { south: number; west: number; north: number; east: number };
+  requested_at: string;
+  fetched_at: string;
+  elapsed_ms: number;
+  attempts: number;
+  bytes: number;
+  sha256: string;
+  overpass_generator: string | null;
+  osm_base: string | null;
+  ways: number;
+  nodes: number;
+  licence: string;
+  /** Measured, not asserted: whether the instance restated the ODbL note. An
+   * absent note is reported as absent rather than replaced with one we wrote. */
+  attribution_note_present: boolean;
+  attribution_note: string | null;
+}
+
+export interface RegionFetch {
+  id: string;
+  workspace_id: string;
+  name: string;
+  status: RegionFetchStatus;
+  phase: string;
+  progress: number;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  submitted_by: string | null;
+  region: { south: number; west: number; north: number; east: number };
+  measurement: RegionMeasurement;
+  endpoint: string;
+  /** The hand-off. Non-null exactly when `status === "staged"`. */
+  upload_token: string | null;
+  filename: string | null;
+  bytes: number | null;
+  provenance: RegionFetchProvenance | null;
+  refusal: { code: string; reasons: string[]; detail: Record<string, unknown> } | null;
+  error: string | null;
+}
+
+/** A `GenesisError` that also carries the MEASUREMENT behind the refusal.
+ *
+ * "This region is too large" without the half-extent, the limit and which term
+ * binds is not an actionable refusal — the user cannot tell whether to shave a
+ * street off or split the job in two. */
+export class RegionFetchError extends GenesisError {
+  measurement: Record<string, unknown>;
+
+  constructor(base: GenesisError, measurement: Record<string, unknown>) {
+    super(base.message, base.status, base.code, base.reasons);
+    this.name = "RegionFetchError";
+    this.measurement = measurement;
+  }
+}
+
+async function regionError(response: Response): Promise<GenesisError> {
+  // Read the body ONCE: `genesisError` consumes it, so the measurement has to
+  // be pulled from the same clone rather than from a second `response.text()`
+  // that would come back empty.
+  const clone = response.clone();
+  const base = await genesisError(response);
+  try {
+    const data = (await clone.json()) as { detail?: { measurement?: Record<string, unknown> } };
+    const measurement = data?.detail?.measurement;
+    if (measurement && typeof measurement === "object") return new RegionFetchError(base, measurement);
+  } catch {
+    // No structured measurement -- the plain refusal is still the answer.
+  }
+  return base;
+}
+
+export async function fetchRegionLimits(lat: number, lon: number): Promise<RegionLimits> {
+  const query = `lat=${encodeURIComponent(String(lat))}&lon=${encodeURIComponent(String(lon))}`;
+  const r = await apiFetch(`/api/genesis/region/limits?${query}`, { cache: "no-store" });
+  if (!r.ok) throw await regionError(r);
+  return r.json();
+}
+
+export async function previewRegion(bbox: {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}): Promise<RegionMeasurement> {
+  const query = new URLSearchParams({
+    south: String(bbox.south),
+    west: String(bbox.west),
+    north: String(bbox.north),
+    east: String(bbox.east),
+  });
+  const r = await apiFetch(`/api/genesis/region/preview?${query.toString()}`, { cache: "no-store" });
+  if (!r.ok) throw await regionError(r);
+  return r.json();
+}
+
+export async function startRegionFetch(payload: {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+  name?: string;
+}): Promise<RegionFetch> {
+  const r = await apiMutationFetch("/api/genesis/region/fetches", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw await regionError(r);
+  return r.json();
+}
+
+export async function fetchRegionFetches(): Promise<RegionFetch[]> {
+  const r = await apiFetch("/api/genesis/region/fetches", { cache: "no-store" });
+  if (!r.ok) throw await regionError(r);
+  const payload = (await r.json()) as { fetches: RegionFetch[] };
+  return payload.fetches;
+}
+
+export async function fetchRegionFetch(fetchId: string): Promise<RegionFetch> {
+  const r = await apiFetch(`/api/genesis/region/fetches/${fetchId}`, { cache: "no-store" });
+  if (!r.ok) throw await regionError(r);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
 // Admin: accounts and project membership (unit P④ — backend/routers/admin.py)
 // ---------------------------------------------------------------------------
 //

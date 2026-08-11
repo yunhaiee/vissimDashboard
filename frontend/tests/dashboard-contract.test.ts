@@ -1353,3 +1353,174 @@ contractTest("genesis API surface keeps its workspace and refusal contract", (pi
 
   pin.match(shell, /href: "\/genesis"/, "expected the genesis page to be reachable from the main navigation");
 });
+
+// ---------------------------------------------------------------------------
+// Roadmap v2 §5.B B2 -- the region picker, and where it deliberately stops
+// ---------------------------------------------------------------------------
+//
+// Two tests, each on one concern, and neither carrying a layout pin: the value
+// of this unit is that a fetched region enters generation on B1's road and no
+// other, and a restyle of the measurement card must never be able to hide that.
+
+contractTest("B2: the region page ends at the staging door and hands off to B1's route", (pin) => {
+  const page = read("app/genesis/region/page.tsx");
+
+  // THE property. The only thing the page does with a completed fetch is call
+  // `startGenesisJob` with the token -- the same call the upload flow makes.
+  pin.match(
+    page,
+    /await startGenesisJob\(\{\s*\n\s*upload_token: selected\.upload_token,/,
+    "expected the staged extract to be handed to B1's existing generation route by token",
+  );
+  // And it must never grow a road of its own into the gate or the dataset slot.
+  for (const forbidden of ["gate", "publish", "datasets/upload", "artifact"]) {
+    pin.doesNotMatch(
+      page,
+      new RegExp(`/api/[\\w/{}$-]*${forbidden}`),
+      `the region page must not address a ${forbidden} endpoint -- generation, gating and publishing stay on B1's road`,
+    );
+  }
+
+  // Every number on screen is the SERVER's measurement. A cap recomputed in the
+  // browser could disagree with the cap that actually refuses.
+  pin.match(page, /previewRegion\(parsed\)/, "expected the region to be measured by the server, not in the browser");
+  pin.doesNotMatch(
+    page,
+    /validity_radius_m\s*=[^=]/,
+    "the browser must not compute a validity radius of its own",
+  );
+  // An estimate presented as a guarantee is how "it will fit" becomes a refusal
+  // nobody predicted.
+  pin.match(page, /estimated_bytes/, "expected the estimated size to be shown against the cap before fetching");
+  // MEASURED against the running app 2026-08-11: a 1.4 x 8.4 km region is
+  // 12 km² against a 17 km² square limit -- comfortably "inside" by area -- and
+  // is refused, because its half-extent is 4 195 m against a 2 079 m radius.
+  // The headline has to be the comparison that actually decides, or the screen
+  // tells that user they are fine right up until the refusal.
+  pin.match(
+    page,
+    /within_region_cap\s*\n?\s*\?\s*t\("한계 안"/,
+    "expected the verdict headline to lead with the half-extent verdict, not with the area",
+  );
+  pin.match(
+    page,
+    /한계 초과 — 이 영역은 추출할 수 없습니다/,
+    "expected an over-limit region to say so in words, not only by colour",
+  );
+  pin.match(
+    page,
+    /예상치일 뿐이며, 한계는 실제로 도착한 바이트에 대해 적용됩니다/,
+    "expected the size estimate to say it is an estimate and that the cap applies to the bytes that arrive",
+  );
+
+  // The five fetch states are five answers. `refused` in particular must read
+  // as a decision with a reason, never as a crash.
+  for (const status of ["queued", "running", "staged", "refused", "error"]) {
+    pin.match(page, new RegExp(`case "${status}":`), `expected the ${status} fetch state to be named on the region page`);
+  }
+  pin.match(page, /거부됨 — 아무것도 받지 않았습니다/, "expected a refusal to say that nothing was downloaded");
+  pin.match(
+    page,
+    /selected\.refusal\.reasons\.map/,
+    "expected the backend's own refusal reasons to be shown verbatim, numbers included",
+  );
+
+  // Provenance is the product thesis. The instance, the query, the time, the
+  // byte count and the licence all have to be on screen.
+  for (const field of ["endpoint", "fetched_at", "bytes", "sha256", "licence", "query"]) {
+    pin.match(
+      page,
+      new RegExp(`selected\\.provenance\\.${field}`),
+      `expected the extract's ${field} to be visible -- a network whose origin cannot be reconstructed is not auditable`,
+    );
+  }
+  pin.match(
+    page,
+    /attribution_note_present/,
+    "expected a missing ODbL note to be reported as missing rather than replaced with one we wrote",
+  );
+
+  // What of the 0.4 mockup did NOT ship is said on the page, not only in a
+  // commit message -- a consultant who read the mockup would otherwise look for
+  // the lasso and conclude the page is broken.
+  pin.match(
+    page,
+    /폴리곤 라쏘·도로 개별 선택·블록 제외/,
+    "expected the deferred lasso / per-road / block-exclusion features to be named on the page",
+  );
+
+  // ko primary with an explicit ja argument on every t().
+  pin.doesNotMatch(
+    page,
+    /\bt\(\s*"(?:[^"\\]|\\.)*"\s*,\s*"(?:[^"\\]|\\.)*"\s*,?\s*\)/,
+    "a two-argument t() on this page would fall back to English for ja -- pass the third argument",
+  );
+  const calls = page.match(/\bt\(/g) ?? [];
+  pin.match(
+    `count=${calls.length}`,
+    /count=([4-9]\d|\d{3,})/,
+    "expected at least 40 t() calls on the region page -- fewer means this extraction went stale",
+  );
+});
+
+contractTest("B2: the region API bindings carry the workspace header and the measured refusal", (pin) => {
+  const api = read("lib/api.ts");
+  const genesisPage = read("app/genesis/page.tsx");
+
+  const regionSection = sliceBetween(
+    api,
+    "// Roadmap v2 §5.B B2 -- Region",
+    "// Admin: accounts and project membership",
+  );
+  pin.match(regionSection, /\S/, "expected the region bindings in lib/api.ts (marker moved?)");
+
+  // The bindings live ABOVE the admin block on purpose: the P4 pin slices
+  // lib/api.ts from `adminRequest` to EOF and forbids apiFetch/apiMutationFetch
+  // inside that slice, so a region binding placed below it would fail a test
+  // about a different unit entirely.
+  const adminSlice = api.slice(api.indexOf("async function adminRequest"));
+  pin.doesNotMatch(adminSlice, /startRegionFetch|previewRegion/, "region bindings must stay above the admin block");
+
+  // The mutation goes through apiMutationFetch, one of the two places
+  // X-Workspace-Id and credentials are attached -- a bare fetch() here would
+  // stage a client's extract into the DEFAULT project.
+  pin.match(
+    regionSection,
+    /startRegionFetch[\s\S]*?apiMutationFetch\("\/api\/genesis\/region\/fetches"/,
+    "expected starting a region fetch to go through apiMutationFetch",
+  );
+  pin.doesNotMatch(
+    regionSection,
+    /\n\s*const r = await fetch\(/,
+    "region calls must not bypass the workspace-header fetch helpers",
+  );
+
+  // Five states in the type, so a UI that collapsed them would stop compiling
+  // rather than quietly lie.
+  pin.match(
+    regionSection,
+    /RegionFetchStatus = "queued" \| "running" \| "staged" \| "refused" \| "error"/,
+    "expected the five fetch states to be distinct in the client type",
+  );
+  // "Too large" without the numbers is not an actionable refusal.
+  pin.match(
+    regionSection,
+    /class RegionFetchError extends GenesisError/,
+    "expected region refusals to carry their measurement",
+  );
+  pin.match(regionSection, /measurement: Record<string, unknown>/, "expected the measurement to survive onto the error");
+  pin.match(
+    regionSection,
+    /within_region_cap: boolean/,
+    "expected the cap verdict to be part of the measurement the UI reads",
+  );
+  // The Overpass instance is SERVER configuration. The client type reads it
+  // back; nothing here ever sends one, because a caller-supplied URL would make
+  // the fetch route an SSRF instrument pointed at whatever the backend reaches.
+  const startBinding = sliceBetween(regionSection, "export async function startRegionFetch", "export async function fetchRegionFetches");
+  pin.match(startBinding, /\S/, "expected the startRegionFetch binding (marker moved?)");
+  pin.doesNotMatch(startBinding, /endpoint/, "the client must never send an Overpass endpoint");
+
+  // Discoverable: the upload flow points at the region flow.
+  pin.match(genesisPage, /href="\/genesis\/region"/, "expected the genesis page to link to the region extractor");
+});

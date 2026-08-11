@@ -5106,3 +5106,88 @@ saved copy preserves the detector and signal-head counts (`detector_count_matche
 controller checked. A second `Vissim260` on the box is the OPERATOR'S OWN GUI (window title
 `murdoch.inpx`, started the previous morning) and was deliberately left alone — CLAUDE.md's COM rule
 exists precisely so automation never touches a human's open session.
+
+---
+
+## 2026-08-11 — B2: the region becomes the input, and the .osm's origin becomes auditable
+
+**Context:** roadmap v2 §5.B row **B2**. Row 0.4 shipped a region-picker MOCKUP in July; B1 made
+generation a job that starts from an uploaded `.osm`. Nobody could draw a region and get a network.
+
+**The composition rule this unit obeys:** a fetched region is staged through
+`genesis_jobs.stage_osm` — the *same function* `POST /api/genesis/uploads` calls, returning the same
+token. So a region enters generation on the road B1 already proved, and **there is deliberately no
+second way into `gate_and_publish`**. That single-entrance property is what A4 bought and a
+"convenient" shortcut would have quietly spent. Pinned by AST, not substring: `osm_fetch` references
+no `gate_and_publish` / `save_active_dataset` / `start_genesis_job` / `create_genesis_job`.
+
+### Both caps are derived, and the binding term is named
+
+**Region cap = `LocalTangentPlane(centre).validity_radius_m`, imported, not chosen.** That is the
+half-extent at which the draft's own projection reaches its 1 m planimetric budget — and
+`build_draft` *already* refuses past it (`projection_out_of_range`). A larger region is therefore
+data the pipeline is guaranteed to reject, so refusing at the door is not a policy, it is arithmetic
+the generator already does. **Latitude-dependent, computed per region**: ≈2,254 m at Perth,
+**2,080.6 m measured at Daejeon**, ≈3,567 m at the equator.
+
+**Response cap = min of two named terms, and Term B binds by ~15×:**
+* *Term A, staging parity* — `routers/datasets.MAX_UPLOAD_BYTES` (250 MB), the ceiling on the other
+  road into `stage_osm`. Deliberately NOT imported (service→router is a layering inversion); the
+  relationship is pinned by a test instead.
+* *Term B, measured* — 28,017 B/km² mean × **11.8 peak-to-mean** (densest 1 km² tile ÷ mean, tiled
+  on a 41 km² reference extract *of this module's own query shape*) × max region area ≈ **16.0 MB**.
+  A mean alone is the wrong number for a cap; the peak ratio is why.
+
+**Caps REFUSE, never truncate.** A declared `Content-Length` over cap is refused having read zero
+bytes; with no `Content-Length` the cap holds *during* the read and the download stops (the test
+asserts the later chunks were never requested).
+
+### The trap worth recording
+
+**Overpass reports server-side failure as a `<remark>` inside a valid `<osm>` document, with HTTP
+200.** That parses, passes `stage_osm`'s root-element check, and becomes an empty network several
+steps later with nobody able to say why — the exact silent-success shape this project keeps finding
+(`LoadNet` on a stripped file; the schema guard's warm memo). Caught at the door by `_scan_osm`.
+
+**429 is never retried.** It means "you are asking too often", and an immediate second ask is what
+gets an instance to block a network. One retry for genuinely transient failures (socket timeout,
+connection failure, 502/503/504); everything ends as a named refusal carrying the endpoint.
+
+**The endpoint is server config** (`PRISM_OVERPASS_ENDPOINT`), never a request field — a
+caller-supplied URL would make this an SSRF instrument.
+
+**Provenance travels INSIDE the document**, as a leading XML comment (invisible to `iterparse`, so
+it stages and parses identically). A sidecar would be lost: `create_genesis_job` copies only the
+`.osm` into the job's work dir. Records the instance, the exact query, the region, both timestamps,
+elapsed, attempts, bytes, the sha256 **as received**, way/node counts, the full cap measurement —
+and the ODbL licence note **byte-for-byte**, with an absent note recorded as *absent* rather than
+replaced with one we wrote.
+
+**A defect found by looking at the running app**, not by reading code: the region card originally
+led with *area vs max area*. Measured live, a 1.4 × 8.4 km region is 12.04 km² against a 17.3 km²
+limit — reads "fine" — while its half-extent is 4,195 m against 2,079 m, which is refused. The
+headline is now the half-extent verdict in words, with area as context and the square caveat stated.
+
+**Verification:** B2's scoped surface — `test_osm_fetch.py` (47 new) + `test_genesis_jobs.py` +
+`test_auth_core.py` — **158 passed**; typecheck clean; contract **41/41**. 14/14 backend behaviours
+and 5/5 frontend pins confirmed by reverting each in turn. **No test touches the network**: every
+one fixtures `_open_url`, and the module is pinned to exactly one `urlopen` call site.
+
+**Offline only, and what a live fetch would still have to prove:** that a real instance accepts the
+query (particularly the turn-restriction relation clause), that the 28,017 B/km² × 11.8 density
+holds for a dense Korean CBD rather than a suburban extract (if not, the refusal stays honest but
+the cap wants re-deriving from a Daejeon measurement), the real 429/504 header shapes, and that
+end-to-end latency sits inside the 128 s socket budget.
+
+### A process finding, recorded because it cost real time
+
+Two agents ran concurrently on **disjoint filesets** (B2 in `routers/`+`services/osm_fetch.py`+
+frontend; A5 in `services/genesis/gate.py`). Disjoint files were **not sufficient**: A5's mutation
+harness reverts `gate.py` in place to prove its tests bite, so B2's full-suite runs saw 3–4 varying
+`test_genesis_gate.py` failures and a collection count moving 68 → 73 → 82. B2 proved the failures
+were not its own by restoring its files to HEAD and watching the same four fail.
+
+**Rule going forward: two agents may share a working tree only if neither runs a mutation harness,
+because a mutation harness makes the whole tree briefly wrong for everyone.** Either serialise, or
+give the mutating lane its own worktree. This is why B2's verification here is stated on its scoped
+surface, and the full suite is re-run once the concurrent lane lands.
