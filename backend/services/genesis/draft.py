@@ -419,6 +419,11 @@ _RULE_TITLE: dict[str, dict[str, str]] = {
         "en": "§5.3.3 unreachable pockets excluded from the network",
         "ja": "§5.3.3 到達不能ゾーンの除外",
     },
+    "5.3.3-duplicate-osm-way": {
+        "ko": "§5.3.3 동일 도로가 원본 지도에 중복 매핑됨",
+        "en": "§5.3.3 the same road is mapped twice in the source data",
+        "ja": "§5.3.3 同一道路が元データに二重マッピングされている",
+    },
     "5.3.3-lane-gain-drop-one-connector": {
         "ko": "§5.3.3 차로 증감은 커넥터 1개로",
         "en": "§5.3.3 lane gains and drops use one connector",
@@ -1104,6 +1109,79 @@ def _segment_skip(way, segment_index: int, length_m: float, *, trimmed: bool) ->
     }
 
 
+def _direction_skip_after_offset(
+    way, segment_index: int, forward: bool, length_m: float
+) -> dict:
+    """One dropped DIRECTIONAL carriageway — the shared centreline cleared
+    :data:`MIN_LINK_LENGTH_M`, but this direction's OFFSET polyline did not.
+
+    Same dict shape as :func:`_segment_skip` (and a NEW ``reason`` value, not
+    a reuse of ``segment_too_short*``) so the compliance report's existing
+    group-by-reason rendering picks it up with no special case, while still
+    reading as the different claim it is: the segment itself was never short;
+    only one of its two offset carriageways ended up that way, on a bend
+    tight enough that ``_offset_polyline``'s own miter approximation ate more
+    length on the concave side than the straight-line centreline check could
+    see.
+    """
+    return {
+        "way_id": way.id,
+        "reason": "segment_too_short_after_offset",
+        "highway": getattr(way, "highway", "") or "",
+        "detail": (
+            f"segment {segment_index} [{'FWD' if forward else 'REV'}]: "
+            f"{length_m:.2f} m < MIN_LINK_LENGTH_M {MIN_LINK_LENGTH_M:g} m after "
+            "the directional offset (the shared centreline cleared the floor; "
+            "this carriageway's own offset polyline did not)"
+        ),
+    }
+
+
+def _duplicate_osm_way_findings(links: list["DraftLink"]) -> list[dict]:
+    """Distinct OSM ways whose emitted link geometry is byte-identical.
+
+    Grouped on the SAME key gate.py's V7 uses to find this (the rounded
+    polyline at :data:`COORD_DECIMALS`, which is exactly ``gate.OVERLAP_DECIMALS``
+    — the two are the one constant, imported from here). Only groups spanning
+    **more than one ``osm_way_id``** are reported: a FWD/REV pair of the SAME
+    way sharing a polyline is the OTHER 2026-08-11 §5.A/A3 defect (a degenerate
+    centreline the offset now handles explicitly, see the direction loop
+    above) and is not this one.
+
+    2026-08-11 §5.A/A3 found exactly one such pair on Murdoch, at 1.46 m
+    apart pre-merge and sharing their downstream node exactly: two ways with
+    near-identical tags (`access=no, bus=yes, motor_vehicle=no` — a bus-only
+    service spur), one a node-sequence PREFIX of the other. That is a
+    consultant base-map defect — a mapper digitised the same short spur
+    twice — not this generator's, and it is reported rather than repaired:
+    excluding either way would be a *choice* about which of two records of
+    reality is correct, made with no basis to make it, on the client's own
+    survey/imagery data this generator does not have. Deleting one silently
+    would be indistinguishable from having modelled the road once correctly;
+    naming it here is what makes the difference visible.
+    """
+    by_geometry: dict[tuple, list["DraftLink"]] = {}
+    for link in links:
+        if len(link.points) < 2:
+            continue
+        by_geometry.setdefault(tuple(link.points), []).append(link)
+
+    findings: list[dict] = []
+    for group in by_geometry.values():
+        way_ids = sorted({link.osm_way_id for link in group})
+        if len(way_ids) < 2:
+            continue
+        findings.append(
+            {
+                "osm_way_ids": way_ids,
+                "link_ids": sorted(link.id for link in group),
+                "names": sorted({link.name for link in group}),
+            }
+        )
+    findings.sort(key=lambda f: f["osm_way_ids"])
+    return findings
+
+
 def _round_point(point: tuple[float, float]) -> tuple[float, float]:
     return round(point[0], COORD_DECIMALS), round(point[1], COORD_DECIMALS)
 
@@ -1729,7 +1807,6 @@ def _build_once(extract: OsmExtract, *, name: str) -> DraftNetwork:
                 continue
 
             for direction in sorted(way.directions, key=lambda d: not d.forward):
-                travel = trimmed if direction.forward else list(reversed(trimmed))
                 # A TWO-WAY OSM way is the road's shared centreline, so each
                 # direction's carriageway centre sits half its own width to the
                 # LEFT of it (§5.2.1.1, CIT_S5211_LEFT_HAND). A ONE-WAY way is
@@ -1740,9 +1817,56 @@ def _build_once(extract: OsmExtract, *, name: str) -> DraftNetwork:
                 # backwards is the other half of the silent-mirror family of
                 # bugs, and it is asserted by sign in the tests.
                 offset = 0.0 if way.is_oneway else direction.lanes * LANE_WIDTH_M / 2.0
-                points = [
-                    _round_point(p) for p in _offset_polyline(travel, offset)
+                # The offset is always computed on the CANONICAL (never
+                # reversed) centreline, with the SIGN carrying which side FWD
+                # vs REV lands on; point order is reversed afterwards, as a
+                # separate step, only for REV. This is the same geometry the
+                # old "reverse the points, then offset by the same positive
+                # amount" approach produced for every ordinary centreline —
+                # reversing a polyline negates its own left-normal at every
+                # vertex, so offsetting the reversed list by +offset lands on
+                # the identical points as offsetting the ORIGINAL list by
+                # -offset and reversing the result afterwards (pinned for
+                # straight, bent and multi-vertex polylines by
+                # test_genesis_osm_draft.py::
+                # test_signed_offset_reformulation_matches_reverse_then_offset).
+                # It stops agreeing exactly where the old approach silently
+                # broke: a segment whose own two ends were merged onto the
+                # SAME junction node (2026-08-11 §5.A/A3 — a driveway spur
+                # whose Vissim start and end became one point) makes `trimmed`
+                # a palindrome, so reversing it is a no-op and the old code
+                # fed FWD and REV the literal same point list, landing both
+                # carriageways on one polyline. Flipping the offset SIGN
+                # instead of the point ORDER keeps FWD and REV on opposite
+                # sides of the centreline even then, with no special case for
+                # the degenerate shape.
+                oriented = [
+                    _round_point(p)
+                    for p in _offset_polyline(
+                        trimmed, offset if direction.forward else -offset
+                    )
                 ]
+                points = oriented if direction.forward else list(reversed(oriented))
+                # The floor (MIN_LINK_LENGTH_M) was already checked on the
+                # shared, undirected centreline above — but that is not the
+                # geometry Vissim receives. `_offset_polyline`'s own docstring
+                # names its bend residual, and on a tight enough curve the
+                # offset carriageway on the CONCAVE side can lose enough of
+                # that residual to cross the floor even when the centreline
+                # cleared it comfortably (2026-08-11 §5.A/A3: a 3.51 m trimmed
+                # centreline produced a 1.967 m REV carriageway on a bend).
+                # The invariant has to hold on what is actually emitted, so it
+                # is re-checked here, per direction — and a direction that
+                # fails it is dropped exactly like a too-short segment: named,
+                # never silent.
+                offset_length = _polyline_length(points)
+                if offset_length < MIN_LINK_LENGTH_M:
+                    dropped_segments.append(
+                        _direction_skip_after_offset(
+                            way, segment_index, direction.forward, offset_length
+                        )
+                    )
+                    continue
                 node_from = segment[0] if direction.forward else segment[-1]
                 node_to = segment[-1] if direction.forward else segment[0]
                 links.append(
@@ -1769,6 +1893,8 @@ def _build_once(extract: OsmExtract, *, name: str) -> DraftNetwork:
     # are already in (way id, segment index) order — sorting again would be a
     # no-op that hid a future ordering regression rather than catching it.
     draft.skipped_ways.extend(dropped_segments)
+    duplicate_ways = _duplicate_osm_way_findings(links)
+    draft.metadata["duplicate_osm_ways"] = duplicate_ways
 
     # --- nodes -------------------------------------------------------------
     touched = {link.from_node_osm_id for link in links} | {link.to_node_osm_id for link in links}
@@ -1932,7 +2058,9 @@ def _build_once(extract: OsmExtract, *, name: str) -> DraftNetwork:
         turn_lane_allocations,
         turn_lane_refusals,
     )
-    draft.compliance = _compliance(draft, extract, ways, naive_link_count, check)
+    draft.compliance = _compliance(
+        draft, extract, ways, naive_link_count, check, duplicate_ways
+    )
     return draft
 
 
@@ -2442,8 +2570,10 @@ def _compliance(
     ways: list[OsmWay],
     naive_link_count: int,
     check: ExtentCheck,
+    duplicate_ways: list[dict] | None = None,
 ) -> ComplianceReport:
     items: list[ComplianceItem] = []
+    duplicate_ways = duplicate_ways or []
 
     # --- §5.1.2 -------------------------------------------------------------
     items.append(
@@ -2643,6 +2773,68 @@ def _compliance(
             },
         )
     )
+    if duplicate_ways:
+        dup_link_ids = sorted(
+            {lid for finding in duplicate_ways for lid in finding["link_ids"]}
+        )
+        dup_way_ids = sorted(
+            {wid for finding in duplicate_ways for wid in finding["osm_way_ids"]}
+        )
+        items.append(
+            ComplianceItem(
+                rule_id="5.3.3-duplicate-osm-way",
+                section="§5.3.3",
+                doc_page=193,
+                # VIOLATED, not NOT_CHECKABLE: §5.3.3 asks for the network
+                # that represents the road system with the fewest links, and
+                # two links standing in for one physical road is measurably
+                # not that — this IS checkable, and it fails. It is not this
+                # generator's defect to fix: see the detail text and
+                # `_duplicate_osm_way_findings`'s docstring for why deleting
+                # either record would be a guess this generator has no basis
+                # to make.
+                state=ComplianceState.VIOLATED,
+                citation=CIT_S533_MINIMISE,
+                instances=len(duplicate_ways),
+                subjects=[
+                    f"{' / '.join(finding['names'])} (OSM way "
+                    f"{', '.join(str(w) for w in finding['osm_way_ids'])}; "
+                    f"link {', '.join(str(l) for l in finding['link_ids'])})"
+                    for finding in duplicate_ways
+                ],
+                evidence={
+                    "duplicate_way_groups": len(duplicate_ways),
+                    "osm_ways_involved": len(dup_way_ids),
+                    "links_involved": len(dup_link_ids),
+                },
+                detail={
+                    "ko": (
+                        f"서로 다른 OSM way {len(dup_way_ids)}개가 동일한 도로를 완전히 겹치는 "
+                        f"선형으로 나타내 링크 {len(dup_link_ids)}개가 중복되었습니다. 이는 "
+                        "원본 지도가 같은 도로를 두 번 매핑한 것으로 보이며, 이 생성기의 결함이 "
+                        "아닙니다. 둘 중 하나를 지우는 것은 어느 기록이 맞는지 판단하는 일이고 "
+                        "이 생성기에는 그 근거(설계도면·항공사진)가 없으므로, 둘 다 남기고 "
+                        "이름을 남깁니다."
+                    ),
+                    "en": (
+                        f"{len(dup_way_ids)} distinct OSM way(s) draw the same road as "
+                        f"{len(dup_link_ids)} fully-overlapping link(s) — a base-map defect "
+                        "(the same road digitised twice), not this generator's. Deleting "
+                        "either record would be a choice about which one is correct, made "
+                        "with no design-drawing or aerial-imagery basis to make it, so both "
+                        "are kept and named here instead."
+                    ),
+                    "ja": (
+                        f"異なるOSM way {len(dup_way_ids)}本が同一道路を完全に重なる線形として "
+                        f"表現し、リンク{len(dup_link_ids)}本が重複しています。元データが同じ道路を"
+                        "二重にマッピングしたものであり、本生成器の欠陥ではありません。"
+                        "どちらか一方を削除することはどちらが正しいかを判断する行為であり、"
+                        "その根拠(設計図・航空写真)が本生成器にはないため、両方を保持し"
+                        "ここに名前を残します。"
+                    ),
+                },
+            )
+        )
 
     # --- §5.3.3.1 / §5.3.3.2 (outside the emitted subset) -------------------
     items.append(

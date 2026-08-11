@@ -4861,3 +4861,115 @@ Subjects now carry the full list. (3) The V4 example cited link 630, which is th
 id — the rebuild renumbers, and in the shipped artifact that road (way 406690969) is link 528;
 the entry now says to look it up by way id. The .inpx is byte-identical after all three
 (38a3f2c4…), so the live LoadNet evidence and V1 sha-identity remain valid.
+
+---
+
+## 2026-08-11 — V7's four warn-tier findings on our own output, and the two that were ours
+
+**Context.** Roadmap v2 §5.A row A3, the unit after the one above: with V3 and V4 answered, V7
+(warn tier, geometry sanity) still failed with exactly four findings on the regenerated Murdoch
+draft — **3 pairs of links sharing one polyline** (6 links) and **1 link at 1.967 m**, below the
+generator's own `MIN_LINK_LENGTH_M` = 2.0 m floor. `emit.py` and `gate.py` untouched throughout;
+all four findings turned out to need a diagnosis before a fix, same discipline as the unit above,
+and two of the three same-polyline pairs and the short link were ours, the third pair was not.
+
+**Finding 1 — two of the three same-polyline pairs (links 868/869, way 658741831; links 874/875,
+way 658741846) are FWD/REV of the SAME way, and the cause is a palindrome the offset code did not
+handle.** Diagnosed by tracing the actual pipeline rather than guessing: both ways are short
+driveway/parking-loop spurs whose two ends, after `merge_junction_nodes`, land on the identical
+merged node (`6168482944` — itself a legitimate merge, three real junctions
+`6168482956`/`6168482946`/`6168482944` each within the 7.0 m tolerance of the next, transitively
+unioned, diameter 11.3 m, under the 14.0 m cluster cap; not a chaining bug, and not touched here).
+That makes the segment's own trimmed centreline `[A, M, A]` — a PALINDROME. The old code built REV
+by reversing the point list and offsetting the reversed list by the same POSITIVE amount, relying
+on reversal to put REV's carriageway on the opposite side of FWD's. Reversing a palindrome is a
+no-op, so FWD and REV were fed the literal same point list and produced the literal same offset
+polyline.
+
+**The fix carries no special case for the palindrome.** `_build_once`'s link loop now computes the
+offset on the CANONICAL (never-reversed) centreline, with the SIGN carrying which side FWD vs REV
+lands on (`+offset` / `-offset`), and reverses point ORDER only afterwards, only for REV — the same
+two effects the old code got from one reversal, now two independent steps. For every ORDINARY
+(non-palindromic) centreline this is mathematically the identical geometry the old code produced
+(`_offset_polyline(reverse(P), +k)[i] == reverse(_offset_polyline(P, -k))[i]` for any P — pinned for
+straight, single-bend and multi-vertex centrelines by
+`test_signed_offset_reformulation_matches_reverse_then_offset`, which also pins the divergence on a
+palindrome; an earlier revision of this entry and the code comment cited a proof test that did not
+yet exist, which an adversarial pass caught — the test now exists), so no correctly-offset link
+anywhere in the network moved (verified: regenerating from HEAD vs the fix and diffing all 1,828
+common links by `(osm_way_id, segment_index, forward)` moved geometry on exactly the two REV
+carriageways named below and dropped exactly the one sub-floor REV, nothing else). It stops agreeing exactly where the old
+approach silently broke: flipping the offset SIGN keeps FWD and REV on opposite sides of the
+centreline even when point-order reversal is a no-op.
+
+**Finding 2 — the 1.967 m link (1658, Chancery Crescent REV, way 1154401444 segment 3) is ours too,
+and the obvious "delete the short link" fix would have been the wrong layer to fix it at.** The
+`MIN_LINK_LENGTH_M` floor was checked on the shared, undirected TRIMMED CENTRELINE (3.51 m — clears
+the floor with 75 % to spare) — but that is not the geometry Vissim receives. `_offset_polyline`'s
+own docstring already named its bend residual ("a proper miter join would also lengthen the offset
+by 1/cos(θ/2)"); on this bend (heading swings of only 42.5°/31.0°/−9.7° — nowhere near a hairpin,
+but built from three short segments of 0.71 m/1.96 m/0.84 m, each comparable to or shorter than the
+1.75 m offset itself) the per-vertex normal-averaging approximation displaced the REV carriageway
+enough to shrink it to 1.967 m, a defect the straight-line centreline check could not see because it
+never looked at the offset polyline at all.
+
+**The fix moves the SAME invariant to where it is actually true, per direction, and still never
+drops silently.** After computing each direction's final (offset, and for REV, reversed) points, its
+length is re-checked against `MIN_LINK_LENGTH_M`; a direction that fails is dropped with a NEW named
+skip reason (`segment_too_short_after_offset`, not a reuse of `segment_too_short*` — the segment
+itself was never short, only one of its two offset carriageways) that lands in `skipped_ways`/the
+compliance report exactly like every other named skip. FWD (the convex side of this same bend) grew
+to 5.08 m and is kept.
+
+**Finding 3 — the third pair (links 880/885, ways 658741856 and 658741873) is the map's, and stays
+un-repaired on purpose.** Both are `access=no bus=yes motor_vehicle=no` bus-only service spurs;
+658741856 is a two-node way whose entire extent is a node-sequence PREFIX of 658741873's longer one,
+and their shared node is literally the same OSM node id — while their START nodes are two different
+OSM nodes only 1.46 m apart pre-merge. Four independent signals (near-identical tags, one way's
+nodes a strict prefix of the other's, the shared downstream node being exact rather than merge-close,
+one way simply stopping where the other continues) agree this is a mapper digitising the same short
+spur twice, not a generator defect — the same "diagnose against the source" standard the unit above
+used for V3's zones. Per CLAUDE.md ("if a finding turns out to be the MAP's defect rather than ours,
+the deliverable is a named report entry, not a silent normalisation") this is reported, not repaired:
+excluding either way would be a choice about which of two records of reality is correct, made with no
+design-drawing or aerial-imagery basis this generator has. Both links are KEPT. A new
+`services.genesis.draft._duplicate_osm_way_findings` pass (grouped on the same rounded-polyline key
+`gate.OVERLAP_DECIMALS` uses, restricted to groups spanning more than one `osm_way_id` so a same-way
+FWD/REV pair is never misreported as this OTHER defect) records the finding in
+`draft.metadata["duplicate_osm_ways"]` and a new VIOLATED `5.3.3-duplicate-osm-way` compliance item
+(citing the same `CIT_S533_MINIMISE` "Overlapping between links and connectors be minimised" §5.3.3
+text the isolated-zone item uses — no new citation was invented) names both ways and both links by
+id in `subjects`, so a client reading the report can go fix their base map.
+
+**Result on Murdoch: V7 4 findings → 1 (named and argued).** The remaining finding is exactly
+Finding 3, correctly still warning — the gate is right to keep flagging a defect this generator
+cannot resolve on its own authority. Network delta: links **1829 → 1828** (−1, the dropped
+`1658` REV direction), connectors **3257 → 3254** (−3, connectors that referenced the dropped
+link), nodes **761 → 761** (unchanged — no node was touched by either fix). The dangling-end census
+is **21, unchanged**, independently confirmed with `genesis_connectivity_probe.py` — neither fix
+removes or adds a link's reachability, only corrects which offset polyline two ALREADY-modelled
+directions get, or drops one direction whose own emitted geometry never met the generator's stated
+floor. Overall gate verdict stays `refused` before and after, driven entirely by V3's own 19
+findings (unrelated to this unit, unchanged) — this unit's job was V7, not the verdict.
+
+**Verification.** Two full Murdoch regenerations are byte-identical: `.inpx` sha256
+`13657a41b395…`, `.genesis.json` sha256 `7029b6050b3e…`. `backend/tests/test_genesis_osm_draft.py`
+gained four tests, each a synthetic fixture authored for this unit and each independently confirmed
+to FAIL against the pre-unit `draft.py` (checked out from `HEAD` and run before being restored —
+not merely asserted): `test_a_ways_own_endpoints_landing_on_one_node_still_offsets_fwd_and_rev_apart`
+(a standalone way with nodes `[1, 2, 1]` — the palindrome shape authored directly, no merge needed —
+hand-derives that FWD and REV must share their two physical-endpoint y-values but MIRROR at the
+interior vertex); `test_a_directional_offset_that_shrinks_below_the_floor_is_dropped_and_named`
+(reproduces the Chancery Crescent segment shape at high coordinate precision — `_osm_text`'s
+standard 6 decimal places is ~0.11 m of noise at this latitude, larger than this fixture's ~0.03 m
+margin against the floor, and was measured to flip the outcome before the fixture was written at 9
+decimals instead); `test_two_distinct_osm_ways_drawing_one_road_are_named_not_silently_normalised`
+(a way that is a node-sequence prefix of another, asserting both links survive and the compliance
+item + metadata name them); `test_fwd_rev_pair_of_the_same_way_never_counts_as_a_duplicate_osm_way`
+(the negative case — an ordinary two-way way must never trip the duplicate-way detector against
+itself). Full backend suite **4149 passed, 1 skipped** (`test_rag_retrieval_quality`,
+pre-existing/environmental) — run alongside concurrent work already in the tree from the
+router/jobs/frontend unit this file's instructions name; this unit's own diff is confined to
+`backend/services/genesis/draft.py` and `backend/tests/test_genesis_osm_draft.py` (confirmed via
+`git diff --stat`), and its four new tests were the entire source of the pass-count movement
+verifiable from that diff. `emit.py` and `gate.py` are byte-unchanged.

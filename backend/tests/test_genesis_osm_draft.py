@@ -264,6 +264,125 @@ def bus_lane_osm() -> str:
     )
 
 
+def spike_osm() -> str:
+    """A two-way way whose own two ends are the LITERAL SAME OSM node.
+
+    2026-08-11 §5.A/A3: on the real Murdoch extract this shape only ever
+    arose downstream of the node merge, which can legitimately collapse a
+    tight driveway loop's distinct start and end onto one junction node
+    (ways 658741831 / 658741846). It is authored DIRECTLY here — no merge
+    needed — because the defect it triggers lives entirely in what the link
+    loop does with a centreline shaped ``[A, M, A]``, one node id repeated,
+    regardless of how that shape was reached.
+
+    way 701 "Spike Ave", nodes 1→2→1, ``highway=service``, ``lanes=2``
+    (two-way, even total ⇒ 1 lane each direction ⇒ offset = 1×3.5/2 = 1.75 m).
+    Node 1 is (LAT0, LON0); node 2 is due EAST of it (``X_AT_0_003_LON``), so
+    the whole shape lies on y = 0 and every offset is purely vertical — the
+    same trick ``test_eastbound_carriageway_sits_NORTH_of_the_centreline``
+    uses.
+    """
+    return _osm_text(
+        [(1, LAT0, LON0), (2, LAT0, LON0 + 0.003)],
+        [(701, [1, 2, 1], {"highway": "service", "lanes": "2", "name": "Spike Ave"})],
+    )
+
+
+def offset_shrinks_below_floor_osm() -> str:
+    """A gentle multi-segment bend, short enough relative to the offset that
+    ONE side's offset polyline crosses :data:`MIN_LINK_LENGTH_M` even though
+    the shared centreline clears it comfortably.
+
+    2026-08-11 §5.A/A3: the real Murdoch defect (Chancery Crescent, way
+    1154401444 segment 3) was a 3.51 m trimmed centreline whose REV
+    carriageway offset down to 1.967 m on a bend nowhere near a hairpin
+    (heading swings of 42.5° / 31.0° / −9.7° between its three segments) —
+    the segments themselves (0.71 m / 1.96 m / 0.84 m) are short enough
+    relative to the 1.75 m offset that ``_offset_polyline``'s per-vertex
+    normal averaging displaces more of the path than the straight-line
+    centreline length check can see. Way 901 reproduces the same relative
+    shape (segment vectors (0.52, 0.477) / (1.68, 1.009) / (0.83, −0.142),
+    metres) at the same 1.75 m offset (``lanes=2`` ⇒ 1 lane/direction);
+    empirically this way's REV carriageway offsets down to ≈1.97 m while FWD
+    grows to ≈5.08 m and the shared centreline is ≈5.45 m — same shape,
+    same result.
+
+    Written with 9 decimal places (``_osm_text``'s standard 6 is ~0.11 m per
+    coordinate at this latitude — noise bigger than the ~0.03 m margin
+    between this shape's REV length and :data:`~services.genesis.draft.MIN_LINK_LENGTH_M`,
+    enough to flip the outcome the fixture exists to force).
+    """
+    plane = LocalTangentPlane(LAT0, LON0)
+    xy = [(0.0, 0.0), (0.52, 0.477), (2.2, 1.486), (3.03, 1.344)]
+    latlon = [plane.inverse(x, y) for x, y in xy]
+    nodes = "\n".join(
+        f'  <node id="{i + 1}" lat="{lat:.9f}" lon="{lon:.9f}"/>'
+        for i, (lat, lon) in enumerate(latlon)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<osm version="0.6" generator="prism-test">\n'
+        f"{nodes}\n"
+        '  <way id="901">\n'
+        '    <nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/>\n'
+        '    <tag k="highway" v="service"/>\n'
+        '    <tag k="lanes" v="2"/>\n'
+        '    <tag k="name" v="Hairpin"/>\n'
+        "  </way>\n"
+        "</osm>\n"
+    )
+
+
+def duplicate_osm_way_osm() -> str:
+    """Two DISTINCT OSM ways drawing the same short spur — a base-map
+    digitisation duplicate, not this generator's defect.
+
+    2026-08-11 §5.A/A3: on the real Murdoch extract this was ways 658741856
+    and 658741873, two bus-only service spurs (``access=no bus=yes
+    motor_vehicle=no``) sharing their downstream node exactly and starting
+    1.46 m apart pre-merge — 658741856's entire two-node extent is a node-
+    sequence PREFIX of 658741873's longer one. Reproduced directly here by
+    starting both ways at the literal SAME node (a strictly stronger trigger
+    of the same geometric symptom: post-merge, 1.46 m apart rounds to the
+    same :data:`services.genesis.draft.COORD_DECIMALS`-precision point
+    anyway): way 801 (the fully-subsumed duplicate) and way 802 (which
+    continues on to a third node), both one-way ``highway=service``.
+    """
+    return _osm_text(
+        [
+            (1, LAT0, LON0),
+            (2, LAT0, LON0 + 0.001),
+            (3, LAT0, LON0 + 0.002),
+        ],
+        [
+            (
+                801,
+                [1, 2],
+                {
+                    "highway": "service",
+                    "oneway": "yes",
+                    "access": "no",
+                    "bus": "yes",
+                    "motor_vehicle": "no",
+                    "name": "Bus Spur A",
+                },
+            ),
+            (
+                802,
+                [1, 2, 3],
+                {
+                    "highway": "service",
+                    "oneway": "yes",
+                    "access": "no",
+                    "bus": "yes",
+                    "motor_vehicle": "no",
+                    "name": "Bus Spur B",
+                },
+            ),
+        ],
+    )
+
+
 @pytest.fixture()
 def crossroads_draft(tmp_path: Path):
     return build_draft(parse_osm_file(_write(tmp_path, "cross.osm", crossroads_osm())), name="cross")
@@ -581,6 +700,182 @@ def test_a_one_way_way_is_placed_on_its_own_centreline_not_offset(tmp_path: Path
     westbound = _one([l for l in draft.links if l.osm_way_id == 302])
     assert westbound.forward is False, "oneway=-1 travels against the digitised order"
     assert westbound.points[-1][0] < westbound.points[0][0]
+
+
+# ---------------------------------------------------------------------------
+# 2b. V7 (warn tier) findings on the generator's OWN output — 2026-08-11 §5.A/A3
+# ---------------------------------------------------------------------------
+
+
+def test_a_ways_own_endpoints_landing_on_one_node_still_offsets_fwd_and_rev_apart(
+    tmp_path: Path,
+):
+    """The FWD/REV-share-one-polyline bug (gate.py V7's
+    ``v7_links_share_one_polyline``): when a way's own two ends are the SAME
+    node, ``trimmed`` is a PALINDROME ``[A, M, A]``. Reversing a palindrome is
+    a no-op, so the OLD code — which mirrored REV by reversing the point
+    list and offsetting the result by the same POSITIVE amount — fed FWD and
+    REV the literal identical point list and got the literal identical
+    offset polyline: two distinct carriageways landing on top of each other.
+
+    Hand-derived (node 1 = A at y=0, node 2 = M due east of it, also y=0;
+    ``lanes=2`` on a two-way way ⇒ 1 lane each direction ⇒
+    offset = 1 × 3.5 / 2 = 1.75 m):
+
+    * seg0 (A→M) travels due east: left normal = north = (0, +1).
+    * seg1 (M→A) travels due west: left normal = south = (0, −1) — the exact
+      negation of seg0's, so the two normals meeting at the middle vertex M
+      cancel and ``_offset_polyline`` falls back to using just one of them.
+
+    FWD offsets the untouched centreline by +1.75: A → y=+1.75, M (fallback
+    normal = south) → y=−1.75, and the closing A (same fallback) → y=−1.75.
+    REV must offset the SAME centreline by −1.75 and then have its point
+    ORDER reversed for node bookkeeping — so REV's y at the two array
+    positions that are physically point A (index 0 and the last index) comes
+    out matching FWD's (both visit the same physical point), but the
+    interior vertex M — where the two carriageways actually diverge — must
+    be the MIRROR of FWD's, not a copy: +1.75 where FWD is −1.75.
+    """
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "spike.osm", spike_osm())), name="spike"
+    )
+    fwd = _one([l for l in draft.links if l.osm_way_id == 701 and l.forward])
+    rev = _one([l for l in draft.links if l.osm_way_id == 701 and not l.forward])
+    assert fwd.side_offset_m == pytest.approx(1.75)
+    assert rev.side_offset_m == pytest.approx(1.75)
+    assert len(fwd.points) == 3 and len(rev.points) == 3
+    assert fwd.points != rev.points, "FWD and REV must not share one polyline"
+    # The physical endpoint (node 1, visited at both ends of this literal
+    # loop) offsets to the same y in both directions...
+    assert fwd.points[0][1] == pytest.approx(rev.points[0][1], abs=1e-6)
+    assert fwd.points[-1][1] == pytest.approx(rev.points[-1][1], abs=1e-6)
+    # ...but the interior vertex — where FWD and REV actually separate —
+    # must be the mirror image, not a copy of FWD's.
+    assert fwd.points[1][1] == pytest.approx(-1.75, abs=1e-6)
+    assert rev.points[1][1] == pytest.approx(1.75, abs=1e-6)
+
+
+def test_a_directional_offset_that_shrinks_below_the_floor_is_dropped_and_named(
+    tmp_path: Path,
+):
+    """gate.py V7's ``v7_link_below_generator_floor``: the floor
+    (:data:`~services.genesis.draft.MIN_LINK_LENGTH_M`) is checked on the
+    shared, undirected centreline BEFORE either directional carriageway is
+    offset off it — but offsetting is not length-preserving on a bend, and
+    the offset polyline is what Vissim actually receives. This shape's
+    centreline (≈5.45 m) clears the 2.0 m floor with room to spare; its REV
+    carriageway, offset onto the concave side of the bend, does not
+    (empirically ≈1.97 m — see ``offset_shrinks_below_floor_osm``'s
+    docstring for the arithmetic this reproduces). The invariant has to hold
+    on what is emitted, so the REV direction must be DROPPED — and named,
+    never silently: the same ``skipped_ways`` shape a too-short SEGMENT gets,
+    with its own ``reason`` because the segment itself was never short."""
+    draft = build_draft(
+        parse_osm_file(
+            _write(tmp_path, "hairpin.osm", offset_shrinks_below_floor_osm())
+        ),
+        name="hairpin",
+    )
+    kept = [l for l in draft.links if l.osm_way_id == 901]
+    assert len(kept) == 1, "the too-short direction must not be emitted"
+    assert kept[0].forward is True, "FWD (convex side) is the one that clears the floor"
+    assert all(
+        l.length_m >= draft_module.MIN_LINK_LENGTH_M for l in draft.links
+    ), "no emitted link may be shorter than the generator's own declared floor"
+    skips = [s for s in draft.skipped_ways if s["way_id"] == 901]
+    assert len(skips) == 1
+    assert skips[0]["reason"] == "segment_too_short_after_offset"
+    assert "REV" in skips[0]["detail"]
+
+
+def test_two_distinct_osm_ways_drawing_one_road_are_named_not_silently_normalised(
+    tmp_path: Path,
+):
+    """gate.py V7's ``v7_links_share_one_polyline`` between two DIFFERENT
+    ``osm_way_id``s is a base-map defect (the same road digitised twice), not
+    this generator's — CLAUDE.md: "if a finding turns out to be the MAP's
+    defect rather than ours, the deliverable is a named report entry, not a
+    silent normalisation." Way 801 is a strict node-sequence PREFIX of way
+    802, so their first (and, for 801, only) segments are byte-identical
+    polylines. Both links are kept — deleting either would be a choice about
+    which record of reality is correct, made with no design-drawing or
+    aerial-imagery basis to make it — and the duplication is named in both
+    the draft's metadata and a VIOLATED §5.3.3 compliance item."""
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "dup.osm", duplicate_osm_way_osm())),
+        name="dup",
+    )
+    way_ids = sorted({l.osm_way_id for l in draft.links})
+    assert way_ids == [801, 802], "the duplicate is NOT deleted"
+    findings = draft.metadata.get("duplicate_osm_ways")
+    assert findings and len(findings) == 1
+    assert findings[0]["osm_way_ids"] == [801, 802]
+    dup_item = _one(
+        [
+            item
+            for item in draft.compliance.items
+            if item.rule_id == "5.3.3-duplicate-osm-way"
+        ]
+    )
+    assert dup_item.state == ComplianceState.VIOLATED
+    assert dup_item.instances == 1
+    assert "801" in dup_item.subjects[0] and "802" in dup_item.subjects[0]
+
+
+def test_fwd_rev_pair_of_the_same_way_never_counts_as_a_duplicate_osm_way(
+    tmp_path: Path,
+):
+    """The two 2026-08-11 §5.A/A3 findings are DIFFERENT defects with
+    different fixes: a FWD/REV pair of the SAME way sharing a polyline (now
+    prevented — see the spike test above) must never be reported by the
+    duplicate-OSM-way detector, which exists for DIFFERENT ways only. A
+    two-way way with an ordinary (non-degenerate) centreline proves the
+    negative case cleanly: FWD and REV never share geometry at all, so if the
+    detector's own-way filter were missing, this fixture would report
+    every two-way way in every other fixture as "duplicated" against itself."""
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "cross2.osm", crossroads_osm())), name="cross2"
+    )
+    assert draft.metadata.get("duplicate_osm_ways") == []
+    assert not [
+        item
+        for item in draft.compliance.items
+        if item.rule_id == "5.3.3-duplicate-osm-way"
+    ]
+
+
+def test_the_duplicate_detector_filters_same_way_pairs_at_the_source(tmp_path: Path):
+    """Drive the own-way filter directly, not through a fixture that can't reach it.
+
+    The end-to-end negative above proves the CURRENT generator emits no
+    same-way overlap — but the A3 offset fix is exactly what guarantees that,
+    so that test would keep passing even if ``_duplicate_osm_way_findings``
+    dropped its ``len(way_ids) < 2`` guard: the two are the same fix seen
+    twice. An adversarial pass flagged that the filter itself was therefore
+    unexercised. This feeds the detector two links on the IDENTICAL polyline —
+    one same-way pair, one cross-way pair — so the guard is the only thing that
+    can produce the expected answer.
+    """
+    from services.genesis.draft import DraftLink, _duplicate_osm_way_findings
+
+    shared = [(0.0, 0.0), (25.0, 0.0)]
+
+    def _link(link_id: int, way_id: int, forward: bool) -> DraftLink:
+        return DraftLink(
+            id=link_id, name=f"way {way_id}", osm_way_id=way_id, segment_index=0,
+            forward=forward, lanes=1, lane_width_m=3.5, points=shared,
+            lane_provenance={}, highway="residential",
+            from_node_osm_id=1, to_node_osm_id=2, side_offset_m=0.0,
+        )
+
+    # Same way, both directions, identical polyline: NOT a duplicate.
+    same_way = _duplicate_osm_way_findings([_link(1, 900, True), _link(2, 900, False)])
+    assert same_way == [], "a FWD/REV pair of one way must never be a duplicate-way finding"
+
+    # Two DIFFERENT ways on the identical polyline: reported.
+    cross_way = _duplicate_osm_way_findings([_link(1, 900, True), _link(2, 901, True)])
+    assert len(cross_way) == 1
+    assert cross_way[0]["osm_way_ids"] == [900, 901]
 
 
 # ---------------------------------------------------------------------------
@@ -2349,3 +2644,45 @@ def test_the_repaired_allocation_survives_the_emitter_and_the_parser(tmp_path: P
     assert lanes_used == {"1", "2", "3", "4"}
     parsed = {link["id"]: link for link in parse_network(str(path))["links"]}
     assert parsed[str(approach.id)]["lanes"] == 4
+
+
+def test_signed_offset_reformulation_matches_reverse_then_offset():
+    """The claim the FWD/REV offset comment makes, pinned so it cannot rot.
+
+    ``draft.py`` computes REV geometry as ``reverse(offset_polyline(P, -k))``
+    where the OLD code computed ``offset_polyline(reverse(P), +k)``. The comment
+    asserts the two are identical for every ORDINARY (non-palindrome) centreline
+    and diverge only where the old code silently broke — a centreline whose ends
+    coincide. This test IS that proof; an earlier revision of the comment cited a
+    test of this name that did not exist, which an adversarial pass caught.
+
+    Verified across three shapes a real centreline takes: a straight two-point
+    segment, a single bend, and a multi-vertex polyline. Equality is exact to
+    the coordinate rounding the emitter applies (1 mm), not approximate.
+    """
+    from services.genesis.draft import _offset_polyline, _round_point
+
+    k = 3.5 * 2 / 2.0  # a plausible carriageway offset, metres
+
+    shapes = {
+        "straight": [(0.0, 0.0), (40.0, 0.0)],
+        "single_bend": [(0.0, 0.0), (30.0, 0.0), (30.0, 25.0)],
+        "multi_vertex": [(0.0, 0.0), (20.0, 5.0), (45.0, 4.0), (60.0, 20.0)],
+    }
+    for name, pts in shapes.items():
+        old = [_round_point(p) for p in _offset_polyline(list(reversed(pts)), k)]
+        new = list(
+            reversed([_round_point(p) for p in _offset_polyline(pts, -k)])
+        )
+        assert old == new, f"{name}: reformulation diverged on an ordinary centreline"
+
+    # And it MUST diverge on the degenerate shape the reformulation exists for:
+    # a palindrome centreline, where reversing is a no-op so the OLD code fed
+    # FWD and REV the identical points (both carriageways on one polyline) while
+    # the signed form keeps them on opposite sides.
+    palindrome = [(0.0, 0.0), (10.0, 4.0), (0.0, 0.0)]
+    old_rev = [_round_point(p) for p in _offset_polyline(list(reversed(palindrome)), k)]
+    old_fwd = [_round_point(p) for p in _offset_polyline(palindrome, k)]
+    assert old_fwd == old_rev, "the OLD bug: a palindrome put both carriageways together"
+    new_rev = list(reversed([_round_point(p) for p in _offset_polyline(palindrome, -k)]))
+    assert new_rev != old_fwd, "the FIX: signed offset separates them even on a palindrome"
