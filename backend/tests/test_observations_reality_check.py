@@ -469,3 +469,108 @@ def _build(
             else None
         ),
     )
+
+
+def _run_result_with_movements(node_id: str, node_total: float, movements: int) -> dict[str, Any]:
+    """Several modelled movements at ONE node, none of them observed.
+
+    ``_run_result`` above emits exactly one movement per node, which cannot
+    show the difference between "one entry per movement" and "one entry per
+    node" — the two collapse to the same thing at n=1.
+    """
+    each = node_total / movements
+    return {
+        "movement_volumes": {
+            f"{node_id}-{i}-0.0-{i + 1}-0.0": {"vehs": each, "node": node_id}
+            for i in range(1, movements + 1)
+        }
+    }
+
+
+def test_a_detector_count_node_lists_its_ungradable_movements_once_not_once_each(
+    workspace_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """For a detector-loop site EVERY movement is ungradable by construction.
+
+    ``observations.observed_side`` sets ``directions: []`` for a
+    ``detector_counts`` node deliberately — a SCATS loop counts vehicles
+    crossing it and carries no turning movement, so there is no observed
+    movement value to compare against and there never will be from that
+    source. Enumerating each one says the same sentence N times.
+
+    Measured on the first real run against the WA SCATS drop (2026-08-11):
+    3 detector-count nodes produced ``movements_compared: 0,
+    movements_ungradable: 30`` — 30 entries plus a truncation marker, which
+    pushed ``run_nodes_without_observed`` and ``sites_with_mixed_count_basis``
+    (the fields a reader of THAT report needs) far enough down to miss.
+
+    The TOTAL is deliberately unchanged: ``counts.movements_ungradable`` is a
+    published number and must mean the same thing for every basis. Only the
+    itemisation collapses.
+    """
+    from tests.test_dataimport_scats_wa_xlsx import (
+        SITE_ID as SCATS_SITE_ID,
+        _default_quarter_grid,
+        _write_workbook as _write_scats_workbook,
+    )
+    from tests.test_observations_detector_counts import FULL_PERIOD
+
+    workbook = _write_scats_workbook(tmp_path / "T00001.xlsx", quarter_grid=_default_quarter_grid())
+    record = observations.ingest_observation_set(
+        [workbook], name="SCATS 관측 세트", periods=[FULL_PERIOD], adapter_name="scats_wa"
+    )
+
+    report = _build(
+        record["id"],
+        site_nodes=[{"site_id": SCATS_SITE_ID, "node_id": "1"}],
+        run=_run_result_with_movements("1", 100.0, movements=6),
+        observation_period="AM",
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+
+    assert report["status"] == reality_check.CHECKED
+    coverage = report["coverage"]
+
+    # ONE entry for the node, not six.
+    entries = coverage["ungradable_movements"]
+    assert len(entries) == 1, entries
+    entry = entries[0]
+    assert entry["node_id"] == "1"
+    assert entry["movements_ungradable"] == 6
+    assert entry["count_basis"] == "detector_counts"
+    assert "no movement-level observed value" in entry["reason"]
+    # The collapsed entry replaces the per-movement shape entirely.
+    assert "movement_id" not in entry
+    assert "has_observed" not in entry
+
+    # The published total still counts MOVEMENTS, not entries.
+    assert coverage["counts"]["movements_ungradable"] == 6
+    assert coverage["counts"]["movements_compared"] == 0
+
+
+def test_a_turning_count_node_still_names_each_ungradable_movement_individually(
+    stored_set: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The other half of the rule, pinned so the collapse cannot spread.
+
+    On a ``turning_counts`` node an ungradable movement is a REAL finding —
+    this specific movement had an observed value and the run did not produce
+    it, or the reverse — and naming which one is the entire value of the
+    field. Collapsing it to a count would delete the information.
+    """
+    report = _build(
+        stored_set["id"],
+        site_nodes=[{"site_id": SITE_A, "node_id": "1"}],
+        run=_run_result_with_movements("1", 100.0, movements=3),
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+
+    assert report["status"] == reality_check.CHECKED
+    entries = report["coverage"]["ungradable_movements"]
+    assert entries, "a turning-count node must still enumerate its ungradable movements"
+    for entry in entries:
+        assert "movement_id" in entry, entry
+        assert "has_observed" in entry and "has_modelled" in entry, entry
+        assert "movements_ungradable" not in entry, entry

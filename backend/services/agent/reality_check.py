@@ -716,6 +716,11 @@ def check_run_against_counts(
     refusals: list[dict[str, Any]] = []
     movements_compared = 0
     ungradable: list[dict[str, Any]] = []
+    #: MOVEMENTS, not entries. `ungradable` collapses a detector-count node's
+    #: movements into one entry, so `len(ungradable)` stopped being the count
+    #: the moment that collapse was introduced. `counts.movements_ungradable`
+    #: is a published total -- it must mean the same thing for every basis.
+    movements_ungradable = 0
     rejected_aliases: list[str] = []
 
     for node_id in compared_ids:
@@ -725,9 +730,23 @@ def check_run_against_counts(
         rejected_aliases.extend(f"{node_id}: {item}" for item in rejected)
         merged = fixes.merge_modelled_from_run_result(evidence, view)
 
+        # A detector-loop site has NO movement-level observed value and never
+        # will from that source -- `observations.observed_side` sets
+        # `directions: []` for it deliberately -- so every one of its movements
+        # is ungradable by construction. Listing them one by one says the same
+        # thing thirty times, and on the first real WA SCATS run it buried
+        # `run_nodes_without_observed` and `sites_with_mixed_count_basis`, which
+        # are the fields a reader of THAT report actually needs. Collapse to one
+        # entry per node naming the basis and the count.
+        #
+        # `turning_counts` keeps the per-movement enumeration: there an
+        # ungradable movement is a real, specific finding -- this movement had
+        # an observed value and the run did not produce it (or vice versa) --
+        # and naming which one is the whole value of the field.
+        node_ungradable: list[dict[str, Any]] = []
         for movement in merged.get("movements") or []:
             if movement.get("modelled") is None or movement.get("observed") is None:
-                ungradable.append(
+                node_ungradable.append(
                     {
                         "node_id": node_id,
                         "movement_id": movement.get("id"),
@@ -737,6 +756,23 @@ def check_run_against_counts(
                 )
             else:
                 movements_compared += 1
+
+        movements_ungradable += len(node_ungradable)
+
+        if node.get("count_basis") == "detector_counts" and node_ungradable:
+            ungradable.append(
+                {
+                    "node_id": node_id,
+                    "movements_ungradable": len(node_ungradable),
+                    "count_basis": "detector_counts",
+                    "reason": (
+                        "detector-loop basis: no movement-level observed value "
+                        "exists in this source"
+                    ),
+                }
+            )
+        else:
+            ungradable.extend(node_ungradable)
 
         outcome = fixes.map_node_counts(
             merged,
@@ -759,7 +795,7 @@ def check_run_against_counts(
     coverage["ungradable_movements"] = _bound(ungradable)
     coverage["rejected_movement_aliases"] = _bound(rejected_aliases)
     coverage["counts"].update(
-        {"movements_compared": movements_compared, "movements_ungradable": len(ungradable)}
+        {"movements_compared": movements_compared, "movements_ungradable": movements_ungradable}
     )
 
     return {

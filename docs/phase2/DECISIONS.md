@@ -4529,3 +4529,119 @@ fixture, using `declared_amber_s == CLEAN_YELLOW_RED_S` and `CLEAN_YELLOW_RED_S 
 rather than a new fixture file — the amber gate is a single scalar applied uniformly, so the
 existing fixture already exercises both the boundary and the violation. Full backend suite: 4004
 passed, 1 skipped (`test_rag_retrieval_quality`, pre-existing/environmental, unrelated).
+
+---
+
+## 2026-08-11 — The first real observed number: SCATS site → Vissim node, and what the GEH decomposes into
+
+**Context:** `fd2937e` made the three real WA SCATS `.xlsx` workbooks readable and wired site-level
+comparison into `services/observations.py`, but that consumption path had only ever been verified by
+READING the code. No real observed number had ever been compared against a real model run. The
+blocker was a named one: `observations.observed_side` requires a caller-supplied
+`{site_id: node_id}` map and refuses without it — correctly, because survey site ids are not Vissim
+node ids. Nothing in the repo could produce that map.
+
+**Decision 1 — derive the site→node join from coordinates, at a tolerance built the way the
+benchmark's is.** New module `backend/services/site_node_map.py`. The SCATS `Site` tab states
+decimal-degree lat/lon; the consultant `.inpx` states local metres with no EPSG. They are joined
+through this project's only georeference, reusing `genesis.benchmark.helmert_bridge` rather than
+reimplementing it (so a missing `refPointMap`/`refPointNet` anchor stays a REFUSE, never a
+zero-offset guess). `SITE_NODE_TOLERANCE_M = 29.0` = **14.0** georeference residual
+(`diff.GEOREF_MAX_RESIDUAL_M` — the floor, because the bridge itself moves points by up to this
+much) + **1.0** tangent-plane budget (`project.MAX_PLANIMETRIC_ERROR_M`) + **14.0** junction-centre
+allowance (`2 × connectivity.NODE_MERGE_TOLERANCE_M` = 4 × the only lane width MRWA §5 prints). The
+third term is an **allowance, not a measurement**, and says so — SCATS records one point per signal
+site while a Vissim node centre is derived from where its member links cross the junction, and the
+two are not defined to be the same point. This is a *different* question from
+`benchmark.MATCH_TOLERANCE_M`'s 22 m (a point against a junction centre, not a polyline against a
+polyline), so it gets its own third term rather than borrowing that one.
+
+Refusal-first in four shapes, each naming the site: nothing within tolerance (**nearest does not win
+by default**), two or more nodes within tolerance (every candidate named, none chosen), two sites on
+one node (both refused), and no stated coordinate at all. A match is never silent — distance,
+runner-up, runner-up distance and separation ratio all ride on the result, and a match with less
+spare budget than the georeference residual is flagged `thin_margin`.
+
+One defect found and fixed by its own test while building it: `inpx_parser` returns `(0, 0)` both
+for "node at the local origin" and for "node whose centre could not be derived", and reading that
+sentinel alone dropped a legitimate node sitting on the origin — which would then have made the
+origin a magnet for every distant site. Now `(0, 0)` counts as unplaced only when the node carries
+no polygon either.
+
+**Result on the real pair:** all 3 sites resolved, 0 refusals, at 6.4 m / 10.5 m / 27.8 m. The
+mapping is not sensitive to the tolerance: the closest two nodes in this network are 164 m apart, so
+twice the tolerance cannot reach two junctions, and every match beat its runner-up by 5.9×–79×. The
+27.8 m match is inside the budget by only 1.2 m and is reported `thin_margin` for exactly that
+reason — it rests on the runner-up separation, not on the absolute distance.
+
+**Decision 2 — compare against the consultant's `.inpx`, not the generated OSM draft.** The Helmert
+fit is fitted to nine surveyed intersections *of that network*, so no site→node map exists for any
+other one; the draft is geometry-only (a plain draft has no demand, so its node totals would be
+zero) and its node ids are sequential-from-1 with no relation to the consultant's — the exact
+id-collision benchmark v2 was written to kill.
+
+**Decision 3 — the period is declared and measured, not assumed:** Tuesday 2026-02-17, 07:15–08:45.
+A mid-week neutral day; one of the four days in the drop with *zero* blank detector cells at all
+three sites (Thu/Fri/Sun have blanks at the smallest site, and a blank is an unobserved interval,
+not zero flow); 07:15–08:45 is the shortest window containing every site's own measured AM peak
+hour; and 90 minutes is the model's OWN declared `simPeriod`, whose demand is flat across all six
+15-minute intervals — so matching the durations means **neither side is scaled**.
+
+**THE NUMBERS (live, `backend/tools/scats_reality_check_live.py`, 5400 s / 1 seed / 1 result .db,
+consultant `.inpx` hashed identical before and after).** Site-level GEH, modelled node total vs
+observed site total, threshold 5.0:
+
+| site → node | GEH | modelled vs observed |
+|---|---|---|
+| LM00398 → node 1 | **2.79** | −3.0 % |
+| LM00972 → node 2 | **3.51** | −5.0 % |
+| LM00973 → node 3 | **6.38** | −9.5 % |
+
+2 of 3 under GEH 5. Every site is modelled BELOW observed — a consistent direction, which is
+evidence in itself.
+
+**Decision 4 — a single-duration GEH is not decomposable, so two durations were run.** A second live
+run at 60 min (07:30–08:30 / 3600 s) turns two hand-waved caveats into measured numbers, because
+modelled throughput is very nearly linear in run length:
+
+* *fill deficit* (empty network at t=0), fitting `modelled(T) = rate × T − D`: **25 / 4 / 75
+  vehicles**, i.e. 0.31 % / 0.09 % / 1.91 % of the 90-minute modelled total. Small — the warm-up is
+  **not** the explanation for the shortfall, which is the opposite of what was assumed before
+  measuring it.
+* *demand-profile shape*: the observed rate in the peak hour exceeds the 90-minute average rate by
+  **+3.7 % / +2.9 % / +0.2 %**. The model's demand is flat across all six intervals, so this
+  within-peak peaking is something it cannot reproduce **by construction** — and it is why the
+  60-minute comparison reads worse (GEH 5.14 / 4.51 / 5.79 at −6.6 % / −7.7 % / −10.5 %) despite
+  being the busier window.
+* *residual* — what survives both is the model's real disagreement with the field, and it is the
+  only part a calibration edit should ever act on.
+
+**Decision 5 — STOP before the edit/apply loop, and say why.** The loop's mechanism is already
+live-certified (the 2026-08-07 reproof); re-running it would re-prove the mechanism, not the
+numbers. Three reasons not to drive a demand edit from these numbers:
+
+1. **The dominant uncertainty is unresolved and unresolvable from this drop.** A site total is the
+   sum of that site's detector volumes. Whether that equals "vehicles entering the junction" depends
+   on the site's detector layout — a site carrying both stop-line and upstream loops on one lane
+   double-counts it. Only the MRWA Appendix-A LMA/LMB drawing states the layout, and
+   `adapters.scats_wa.build_turning_counts_from_detector_map` already measured that it is not here.
+2. **The fix path's stated assumption is known not to hold at these nodes.**
+   `fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL` needs one vehicle input to dominate a node's demand; the
+   2026-08-07 probe picked node 8 precisely because input 113 carries ~69 % of what reaches it.
+   Nodes 1 and 3 — the two that would produce proposals — are the network's largest junctions, fed
+   by many inputs, and no equivalent share has been measured for them.
+3. **It is the client's calibrated model.** Editing its demand on a site-total comparison whose
+   basis is explicitly not movement-level, and whose largest uncertainty is open, is the "completed
+   edit with wrong numbers" the hard rules forbid.
+
+**Consequence:** the site→node join is no longer a human-typed input, and the observed side of the
+reality check has been exercised on real client data end to end. What a human must still supply is
+unchanged and now precisely bounded: the **LMA/LMB site drawings**, which alone would (a) resolve
+whether a site total is entering volume or double-counted, and (b) unlock the detector→movement lift
+that turns this site-level check into the movement-level one the fix path actually wants.
+
+**Verification:** `backend/tests/test_site_node_map.py`, 13 tests, all synthetic fixtures (no client
+file is read by any test). Mutation-checked: disabling the ambiguity refusal, the no-candidate
+refusal, the conflict refusal, the thin-margin flag or the origin-sentinel fix fails 9 of the 13.
+Full backend suite: 4017 passed, 1 skipped (`test_rag_retrieval_quality`, pre-existing/environmental).
+Live evidence (git-ignored): `runtime/scats-reality-check-live/{state,log}{,_60min}.*`.
