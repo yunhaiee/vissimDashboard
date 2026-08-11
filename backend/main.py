@@ -8,13 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.datastructures import Headers
 from starlette.requests import HTTPConnection as StarletteConnection
-from routers import assistant, datasets, network, network_diff, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health, observations
+from routers import assistant, datasets, genesis, network, network_diff, scenarios, search, simulations, geojson, validation, exports, report, trajectories, agent_audit, agent_downloads, health, observations
 from routers import admin as admin_router
 from routers import auth as auth_router
 from routers import workspaces as workspaces_router
 from services import auth as auth_service
 from services import membership, workspaces
 from services.agent.planner import pick_language_text
+from services import genesis_jobs
 from services.agent.sessions import sweep_stale_sessions
 from services.license_guard import license_required, license_status
 
@@ -35,6 +36,15 @@ async def lifespan(app: FastAPI):
         sweep_stale_sessions()
     except Exception:  # noqa: BLE001 - a cleanup failure must never block startup
         logger.exception("Agent session sweep failed at startup; continuing without cleanup.")
+    # A genesis generation runs in a worker thread inside THIS process, so a
+    # crash or a restart leaves jobs stuck at queued/running that nothing will
+    # ever advance -- the thread that owned them died with the old process. The
+    # UI would poll them forever. Terminate them honestly at boot: no verdict
+    # was reached, so they become `error`, never a gated status.
+    try:
+        genesis_jobs.reconcile_interrupted_jobs()
+    except Exception:  # noqa: BLE001 - same rule: bookkeeping never blocks startup
+        logger.exception("Genesis job reconciliation failed at startup; continuing.")
     yield
 
 
@@ -370,6 +380,13 @@ app.include_router(admin_router.router)
 # of ingested field counts that feeds the reality check's observed side.
 # Purely ADDITIVE: a prefix nothing else claims, and no existing route changes.
 app.include_router(observations.router)
+# Roadmap v2 §5.B B1 + §5.A A4: /api/genesis — the OSM → draft → emit → GATE →
+# publish chain as a job, which until now ran only from backend/tools scripts.
+# Purely ADDITIVE: a prefix nothing else claims, and no existing route changes.
+# Deliberately NOT added to _MEMBERSHIP_EXEMPT_PREFIXES above — a generation
+# writes into a project's own tree and replaces its active dataset, so it is
+# exactly the kind of route the workspace membership gate exists for.
+app.include_router(genesis.router)
 app.include_router(health.router)
 
 

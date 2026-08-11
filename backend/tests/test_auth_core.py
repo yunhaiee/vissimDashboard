@@ -902,6 +902,31 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       ``current_user`` because a project has to be created BY somebody in
       order to be granted to them.
 
+    **B1 (roadmap v2 §5.B) adds exactly the three MUTATING ``/api/genesis``
+    routes**, and nothing else:
+
+    * ``POST /api/genesis/uploads`` — stage an ``.osm``;
+    * ``POST /api/genesis/jobs`` — start a generation, which REPLACES the
+      project's active dataset when the gate lets it through, so "who built
+      this network" has to be answerable in the audit document that ships with
+      it (the username is stamped on the job record);
+    * ``POST /api/genesis/jobs/{job_id}/live-check`` — attach a real Vissim's
+      load evidence and re-gate, which can publish OR revoke.
+
+    plus ONE read, added by the adversarial pass on B1:
+
+    * ``GET /api/genesis/jobs/{job_id}/artifact/{kind}`` — the network FILE.
+      The other genesis reads return the record of a decision (the job list,
+      one job, the gate verdict, the report) and stay open in parity with
+      ``/api/simulations`` and the audit EXPORTs: reading a decision is not
+      making one. This one returns the artifact itself, and the app's
+      pre-existing ``POST /api/datasets/upload`` is un-gated — so an anonymous
+      caller could download a REFUSED network and re-upload those exact bytes
+      as the project's active dataset, laundering a proven fault past the gate.
+      Requiring a session does not close that upload path (tracked with the
+      app-wide-login decision, DECISIONS 2026-08-11); it stops this router
+      handing the bytes to someone with no identity at all.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -925,6 +950,10 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/auth/whoami",
         "/api/assistant/agent/approve",
         "/api/workspaces",
+        "/api/genesis/uploads",
+        "/api/genesis/jobs",
+        "/api/genesis/jobs/{job_id}/artifact/{kind}",
+        "/api/genesis/jobs/{job_id}/live-check",
         "/api/admin/users",
         "/api/admin/users/{user_id}/password",
         "/api/admin/users/{user_id}/disabled",

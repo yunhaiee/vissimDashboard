@@ -9,7 +9,7 @@ import { useLanguage } from "@/components/LanguageProvider";
 import { loginHref } from "@/lib/authRedirect";
 import type { Language } from "@/lib/i18n";
 
-function NavIcon({ name }: { name: "dashboard" | "network" | "network-diff" | "validation" | "downloads" | "report" | "health" | "admin" }) {
+function NavIcon({ name }: { name: "dashboard" | "network" | "genesis" | "network-diff" | "validation" | "downloads" | "report" | "health" | "admin" }) {
   const paths: Record<string, React.ReactNode> = {
     dashboard: (
       <>
@@ -25,6 +25,18 @@ function NavIcon({ name }: { name: "dashboard" | "network" | "network-diff" | "v
         <path d="M8.1 6.8 15.8 7.9" />
         <path d="M7.2 8.1 8.3 15.7" />
         <path d="M16.4 9.9 10.8 16.3" />
+      </>
+    ),
+    // A map pin turning into a road grid: an extract on one side, a built
+    // network on the other -- what genesis does in one glyph.
+    genesis: (
+      <>
+        <path d="M8.5 3.5c2.2 0 4 1.8 4 4 0 2.9-4 7-4 7s-4-4.1-4-7c0-2.2 1.8-4 4-4Z" />
+        <circle cx="8.5" cy="7.5" r="1.3" />
+        <path d="M14 8.5h6" />
+        <path d="M14 12.5h6" />
+        <path d="M17 8.5v12" />
+        <path d="M11 20.5h9" />
       </>
     ),
     // Two stacked panes with a change marker between them -- the side-by-side
@@ -91,10 +103,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // Dashboard listed first: it's the landing page (root redirects here) and
   // the page most users need first; the more specialist calibration page
   // follows it instead of leading.
-  const links: Array<{ href: string; label: string; icon: "dashboard" | "network" | "network-diff" | "validation" | "downloads" | "report" | "health" | "admin" }> = [
+  const links: Array<{ href: string; label: string; icon: "dashboard" | "network" | "genesis" | "network-diff" | "validation" | "downloads" | "report" | "health" | "admin" }> = [
     { href: "/dashboard", label: t("대시보드", "Dashboard", "ダッシュボード"), icon: "dashboard" },
     { href: "/base-model", label: t("베이스모델 검증", "Base Model Validation", "ベースモデル検証"), icon: "validation" },
     { href: "/network", label: t("네트워크", "Network", "ネットワーク"), icon: "network" },
+    // Roadmap v2 §5.B B1: the .osm -> gated .inpx chain, which until now ran
+    // only from backend/tools scripts. Placed next to /network because what it
+    // produces IS the project's network, and a consultant reaches for it before
+    // there is one to look at.
+    { href: "/genesis", label: t("네트워크 생성", "Network Genesis", "ネットワーク生成"), icon: "genesis" },
     // Roadmap 2.4: sits directly under /network -- it reads the same object,
     // one snapshot pair at a time, and a reviewer reaches for it right after
     // looking at the network itself.

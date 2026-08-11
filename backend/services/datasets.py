@@ -60,6 +60,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from io import BytesIO
 import errno
+import hashlib
 import json
 import logging
 import shutil
@@ -328,6 +329,64 @@ def reset_active_dataset() -> dict:
         _sweep_upload_leftovers(base)
     _clear_validation_caches()
     return get_active_dataset()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def reset_active_dataset_if_sha(expected_sha256: str) -> dict:
+    """Reset the active dataset to the ``data/`` demo, but ONLY while the active
+    ``.inpx`` still hashes to ``expected_sha256`` — atomically.
+
+    This is the identity-guarded delete ``genesis_jobs._revoke_publication``
+    needs. The bug it closes is a TOCTOU: a caller that reads the active hash,
+    finds it matches, and THEN calls :func:`reset_active_dataset` can have a
+    concurrent upload land in the gap and destroy a dataset that never matched.
+    Here the hash re-check and the ``rmtree`` happen under the SAME per-workspace
+    upload lock the upload/reset paths take, so nothing can be swapped in
+    between: an active dataset that is no longer this artifact is a recorded
+    no-op, never a delete.
+
+    Returns ``{"removed": bool, "active_sha256": str, "reason": str}``. Raises
+    :class:`DatasetStorageError` only when the matching dataset could not be
+    removed (a held Windows handle), exactly like :func:`reset_active_dataset`.
+    """
+    base = uploads_root()
+    with _upload_lock(base):
+        active = active_inpx_path()
+        active_sha = _sha256_file(active) if active.is_file() else ""
+        if not expected_sha256 or active_sha != expected_sha256:
+            # Re-checked UNDER the lock: whatever is active now is not the
+            # artifact we were asked to revoke, so we touch nothing.
+            return {
+                "removed": False,
+                "active_sha256": active_sha,
+                "reason": "active_dataset_is_not_this_artifact",
+            }
+        target = upload_dir()
+        if target.exists():
+            try:
+                shutil.rmtree(target)
+            except OSError as exc:
+                raise DatasetStorageError(
+                    "Could not remove the active dataset"
+                    + (
+                        " because something on this machine still has it open (Vissim, a "
+                        "running simulation, or a window sitting in the dataset folder). "
+                        "Close it and try again."
+                        if _is_file_lock_error(exc)
+                        else " because of a storage error."
+                    )
+                    + f" [{type(exc).__name__}: {exc}]"
+                ) from exc
+        _sweep_upload_leftovers(base)
+    _clear_validation_caches()
+    return {"removed": True, "active_sha256": active_sha, "reason": "matched"}
 
 
 def save_active_real_counts_excel(filename: str, content: bytes) -> dict:

@@ -4973,3 +4973,82 @@ router/jobs/frontend unit this file's instructions name; this unit's own diff is
 `backend/services/genesis/draft.py` and `backend/tests/test_genesis_osm_draft.py` (confirmed via
 `git diff --stat`), and its four new tests were the entire source of the pass-count movement
 verifiable from that diff. `emit.py` and `gate.py` are byte-unchanged.
+
+---
+
+## 2026-08-11 — Genesis becomes a product feature, and the gate becomes its exit door
+
+**Context:** roadmap v2 §5.B row B1 + §5.A row A4. The whole OSM → draft → emit → gate chain ran
+only from `backend/tools/*.py`: it worked, and a consultant had no button. Worse for A4, the gate
+ran only when a human remembered to run it — which makes *"the validation gate is what makes AI
+construction sellable"* (§R1.5) a habit rather than a property.
+
+**The exit door is structural.** `gate_and_publish` is the only function that can turn a generated
+artifact into a workspace dataset. It takes no verdict and no skip flag (the gate is COMPUTED
+there), it writes the verdict and the ko report beside the artifact **before any branch** so a
+refusal is as durable as a pass, and `_register_as_active_dataset` has exactly one call site — after
+the `REFUSED` early return. All three are pinned against the module's own source, because "we always
+remember to gate first" is precisely the convention this unit replaces.
+
+Four terminal states, never collapsed: `refused` (fault proven, artifact retained and explained,
+never registered), `provisional` (published, a refuse-tier check could not RUN — always V1 on a
+fresh generation, since a job may not open COM), `published` (every refuse-tier check genuinely
+passed), `error` (no artifact — the `.osm` never became a network). A geometry-only draft can never
+reach `published`: V5/V6 are NOT_CHECKABLE without signals and demand. That ceiling is pinned as a
+fact rather than hidden.
+
+### What the adversarial pass found: 8 defects, 3 critical, 0 refuted
+
+**The one worth reading. "Nothing here can fake it" was false.** The module claimed the sha256
+identity rule made attached live-check evidence unforgeable. It does not. The rule proves the
+evidence is *about* this artifact; it cannot prove Vissim ever ran, because the `state.json` arrives
+over HTTP and a caller who knows the artifact — its own sha is in the job record — can hand-write
+`load_ok: true` around it. Reviewers demonstrated a V1 flipping NOT_CHECKABLE → PASS with a
+`vissim_version` of `"PTV Vissim FORGED 0.0"`.
+
+**A false safety claim is a defect in its own right**, and the fix is honesty, not a stronger lock:
+there is no cryptographic path from "a JSON a client uploaded" to "PTV Vissim opened this file".
+Attached evidence is now modelled as what it is — an **operator attestation**, the same shape as the
+Daejeon amber (a reviewer's declaration carrying provenance, never a measurement the document made).
+It records WHO attested and WHEN, carries `basis: "operator_attested"`, and the verdict carries
+`rests_on_attestation` so no reader — API, report or UI — has to infer which kind of V1 they are
+looking at. The UI says it in words: *"이 판정의 V1은 운영자 진술에 근거합니다 — 이 앱이 Vissim
+로딩을 직접 관측한 것이 아닙니다."* An accountable human claim is genuinely useful; it is simply not
+the same thing as the app having watched the load, and the two must never read alike.
+
+**A fix that was wrong, caught by the existing tests.** The first attempt also "hardened" the rule
+by rewriting the evidence's `network` path to this job's own artifact before hashing. That is
+backwards: forcing the path makes every `state.json` hash our own file, so the comparison can never
+fail and the one mechanical check here is destroyed — evidence about another build would start
+passing. `test_evidence_about_another_build_upgrades_nothing` failed immediately and the rewrite was
+reverted. The client-named path carries the claim; hashing it is how the claim is tested.
+
+**The other two criticals:** revocation compared the active dataset's sha and then deleted it as a
+separate, unsynchronised step, so a concurrent upload landing in the gap was destroyed — the
+docstring promised this could never happen. The identity check and the delete are now atomic under
+the dataset store's own upload lock (`reset_active_dataset_if_sha`), and a revocation that finds the
+active dataset is no longer ours is a recorded no-op. And a registry write failing *after* a
+successful publish fell through to the generic handler, labelling the job `error` — whose contract
+is "no artifact exists" — while the dataset was in fact live, losing the publication record forever.
+
+**Scoped honestly, not overclaimed:** `GET /api/genesis/jobs/{id}/artifact/{kind}` is now
+authenticated, because it returns the network itself and the app's pre-existing
+`POST /api/datasets/upload` is un-gated and unauthenticated — so an anonymous caller could download a
+REFUSED artifact and re-upload those exact bytes as the active dataset, laundering a proven fault
+past this gate. **That upload path remains gate-free and is NOT fixed here**; it belongs to the
+app-wide-login decision still open in roadmap v2 §5.F. So the claim "the gate is structurally
+unskippable" is true *of the genesis path* and is stated that way rather than as a property of the
+whole app.
+
+**Also fixed:** a crash inside `run_gate` on the re-gate path left `phase=gating` beside a stale
+terminal status and surfaced as a raw 500 — it now reaches a coherent terminal record and the app's
+explained-error shape; the job record no longer carries an absolute server path across the HTTP
+boundary (it published the data root, workspace id and work-dir naming to anonymous callers, and is
+re-derivable from the job id); jobs a dead process left `queued`/`running` are swept to `error` at
+startup, since the thread that owned them died with the old process; and the UI keeps observing a
+terminal job slowly, because `attach_live_check` can overturn a verdict an operator is looking at
+and the poll used to stop forever at the first terminal state.
+
+**Verification:** full suite **4155 passed, 1 skipped**; typecheck clean; contract 39/39. Every fix
+has a test that fails without it, confirmed by reverting each in turn. The auth sentinel was updated
+deliberately, with the reasoning for the one added read recorded in its docstring.

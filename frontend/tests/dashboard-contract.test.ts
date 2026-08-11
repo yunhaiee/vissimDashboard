@@ -1266,3 +1266,90 @@ test("U9: safeNextPath only ever returns a same-origin path", () => {
   assert.equal(loginHref("https://evil.example"), "/login");
   assert.equal(loginHref(DEFAULT_NEXT_PATH), "/login");
 });
+
+// ---------------------------------------------------------------------------
+// Roadmap v2 §5.B B1 / §5.A A4 -- the genesis page and its gate rendering
+// ---------------------------------------------------------------------------
+//
+// Kept in their own tests (and away from the layout/style pins) for the reason
+// this file's contractTest docstring gives: a restyle of the verdict cards must
+// never be able to hide the behavioural pins below it.
+
+contractTest("genesis view renders the gate's tri-state without collapsing it", (pin) => {
+  const page = read("app/genesis/page.tsx");
+
+  // The design rule the whole R1.5 gate hangs on: a check that could not RUN is
+  // never a pass. Three states, three words, and not_checkable said out loud.
+  pin.match(page, /case "not_checkable":\s*\n\s*return t\("확인 불가"/, "expected NOT_CHECKABLE to have its own word, not a grey pending state");
+  pin.match(page, /case "fail":\s*\n\s*return t\("실패"/, "expected FAIL to be rendered distinctly");
+  pin.match(page, /case "pass":\s*\n\s*return t\("통과"/, "expected PASS to be rendered distinctly");
+  pin.match(
+    page,
+    /if \(state === "pass"\) return "border-emerald/,
+    "expected only the PASS state to get the success colour",
+  );
+
+  // The four terminal job states are four answers, never ok/not-ok. In
+  // particular `provisional` must not read as success: it means the network was
+  // registered AND a refuse-tier check could not run.
+  for (const status of ["refused", "provisional", "published", "error"]) {
+    pin.match(page, new RegExp(`case "${status}":`), `expected the ${status} job state to be named on the genesis page`);
+  }
+  pin.match(page, /잠정 등록 — 미확인 검사 있음/, "expected the provisional label to state that a check could not run");
+  pin.match(page, /거부됨 — 등록하지 않음/, "expected the refused label to state that nothing was registered");
+
+  // Every gate sentence comes from the backend payload (gate.py's own ko/en/ja
+  // table), never from a dictionary in this file.
+  pin.match(page, /\{check\.title\}/, "expected the check title to come from the gate payload");
+  pin.match(page, /\{finding\.message\}/, "expected finding text to come from the gate payload");
+  pin.match(page, /\{gap\.message\}/, "expected gap text to come from the gate payload");
+
+  // A dropped finding nobody counts is the silent drop this project forbids.
+  pin.match(page, /check\.findings_omitted > 0/, "expected omitted findings to be counted on screen");
+
+  // The verdict shown is the STORED one -- the verdict that actually decided
+  // whether the artifact was published, never a fresh re-run.
+  pin.match(page, /fetchGenesisGateReport\(gatedJobId, lang\)/, "expected the gate report to be read from the stored-verdict endpoint");
+  // A re-gate (live-check evidence) changes the verdict without changing the
+  // job id, so the fetch key has to include when the verdict was decided --
+  // otherwise the page would keep showing the superseded one.
+  pin.match(page, /\}, \[gatedJobId, gateCheckedAt, lang\]\);/, "expected the gate fetch to re-key on checked_at, so a re-gate is not shown stale");
+
+  // ko primary with an explicit ja argument on every t(), so no string here
+  // depends on an entry landing in the generated lib/i18n-ja.ts dictionary.
+  pin.doesNotMatch(
+    page,
+    /\bt\(\s*"(?:[^"\\]|\\.)*"\s*,\s*"(?:[^"\\]|\\.)*"\s*,?\s*\)/,
+    "a two-argument t() on this page would fall back to English for ja -- pass the third argument",
+  );
+  const calls = page.match(/\bt\(/g) ?? [];
+  pin.match(
+    `count=${calls.length}`,
+    /count=([4-9]\d|\d{3,})/,
+    "expected at least 40 t() calls on the genesis page -- fewer means this extraction went stale",
+  );
+});
+
+contractTest("genesis API surface keeps its workspace and refusal contract", (pin) => {
+  const api = read("lib/api.ts");
+  const shell = read("components/AppShell.tsx");
+
+  const genesisSection = sliceBetween(api, "export type GenesisJobStatus", "export function genesisArtifactUrl");
+
+  // Mutations go through apiMutationFetch, which is one of the two places
+  // X-Workspace-Id and credentials are attached -- a bare fetch() here would
+  // publish a generated network into the DEFAULT project.
+  pin.match(genesisSection, /uploadGenesisOsm[\s\S]*?apiMutationFetch\(path, \{ method: "POST"/, "expected the .osm upload to go through apiMutationFetch");
+  pin.match(genesisSection, /startGenesisJob[\s\S]*?apiMutationFetch\("\/api\/genesis\/jobs"/, "expected starting a job to go through apiMutationFetch");
+  pin.match(genesisSection, /attachGenesisLiveCheck[\s\S]*?apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/live-check`/, "expected live-check attachment to go through apiMutationFetch");
+  pin.doesNotMatch(genesisSection, /\n\s*const r = await fetch\(/, "genesis calls must not bypass the workspace-header fetch helpers");
+
+  // The four job states and the three verdicts are in the type, so a UI that
+  // collapsed them would stop compiling rather than quietly lie.
+  pin.match(genesisSection, /"refused"\s*\n?\s*\|\s*"provisional"\s*\n?\s*\|\s*"published"/, "expected refused/provisional/published to be distinct job states");
+  pin.match(genesisSection, /GenesisGateVerdict = "pass" \| "refused" \| "incomplete"/, "expected the gate's own tri-state verdict in the client type");
+  pin.match(genesisSection, /findings_omitted: number/, "expected the omitted-findings count to survive into the client type");
+  pin.match(genesisSection, /admitted: boolean/, "expected live evidence to carry whether the gate ADMITTED it");
+
+  pin.match(shell, /href: "\/genesis"/, "expected the genesis page to be reachable from the main navigation");
+});

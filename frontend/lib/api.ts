@@ -2743,6 +2743,274 @@ export async function fetchTrajectories(params?: {
 }
 
 // ---------------------------------------------------------------------------
+// Roadmap v2 §5.B B1 / §5.A A4 -- Genesis: OSM in, gated network out
+// ---------------------------------------------------------------------------
+//
+// The whole chain (backend/routers/genesis.py -> services/genesis_jobs.py) is
+// two calls plus polling: stage the .osm, start a job, watch it. What comes
+// back is deliberately NOT a boolean:
+//
+//   refused     a refuse-tier check PROVED a fault. Nothing was registered, and
+//               the artifact + verdict stay downloadable so the fault is
+//               actionable.
+//   provisional published, but a refuse-tier check could not RUN. On a fresh
+//               generation that is always V1 -- a generation job may not open
+//               COM, and V1 is the only check that proves a real Vissim opens
+//               the file. `gate.live_evidence` is how that stops being true.
+//   published   every refuse-tier check genuinely passed.
+//   error       the .osm never became a network at all. `refusal.reasons` says
+//               why; distinct from `refused`, which means an artifact exists.
+//
+// The UI must never collapse those four into "ok / not ok" -- the tri-state IS
+// the product (tk-requirements-2026-07-31.md §R1.5).
+
+export type GenesisJobStatus =
+  | "queued"
+  | "running"
+  | "refused"
+  | "provisional"
+  | "published"
+  | "error";
+
+export type GenesisGateVerdict = "pass" | "refused" | "incomplete";
+
+export type GenesisCheckState = "pass" | "fail" | "not_checkable";
+
+export interface GenesisGateCounts {
+  pass: number;
+  fail: number;
+  not_checkable: number;
+}
+
+export interface GenesisLiveEvidence {
+  label: string;
+  network: string;
+  vissim_version: string | null;
+  sha256: string | null;
+  // Whether gate.py ADMITTED the evidence -- false when the probe's file
+  // sha256 does not equal the gated file's. Evidence about another build is not
+  // weak evidence, so this renders as "not admitted", never as "pending".
+  admitted: boolean;
+  gap_codes: string[];
+  // What this evidence RESTS ON. It arrived over HTTP, so the app cannot prove
+  // Vissim ever ran -- a caller who knows the artifact can hand-write
+  // `load_ok: true` about it. The backend therefore records it as an operator's
+  // attestation, with a name, and the UI says so. A V1 that went green this way
+  // must never read like one the app watched happen.
+  basis: string;
+  attested_by: string | null;
+  attested_at: string | null;
+}
+
+export interface GenesisJobGate {
+  verdict: GenesisGateVerdict;
+  counts: GenesisGateCounts;
+  // Refuse-tier checks that are not PASS -- the reason the verdict is not one.
+  blocking: string[];
+  checked_at: string;
+  network_sha256: string;
+  live_evidence: GenesisLiveEvidence | null;
+  live_evidence_gap: string | null;
+  // True when a refuse-tier check is green because a human attested it rather
+  // than because this process observed it.
+  rests_on_attestation: boolean;
+}
+
+export interface GenesisPublication {
+  published_at: string;
+  dataset_filename: string;
+  dataset_revision: string;
+  artifact_sha256: string;
+  replaced: { source: string; filename: string; revision: string };
+}
+
+export interface GenesisRevocation {
+  revoked_at: string;
+  removed_from_workspace: boolean;
+  reason: string;
+  detail?: string;
+}
+
+export interface GenesisJob {
+  id: string;
+  workspace_id: string;
+  name: string;
+  status: GenesisJobStatus;
+  phase: string;
+  progress: number;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  submitted_by: string | null;
+  options: { exclude_service: boolean };
+  source_osm: { filename: string; bytes: number; sha256: string };
+  network: { links: number; connectors: number; nodes: number } | null;
+  artifact: { inpx: string; sha256: string; bytes: number } | null;
+  gate: GenesisJobGate | null;
+  publication: GenesisPublication | null;
+  revocation?: GenesisRevocation | null;
+  refusal: { code: string; reasons: string[] } | null;
+  error: string | null;
+}
+
+export interface GenesisGateFinding {
+  code: string;
+  subject: string;
+  // Rendered by gate.py's OWN ko/en/ja table -- this client never authors a
+  // replacement sentence for a finding the backend already words.
+  message: string;
+}
+
+export interface GenesisGateCheck {
+  id: string;
+  tier: "refuse" | "warn";
+  state: GenesisCheckState;
+  title: string;
+  blocks: boolean;
+  findings: GenesisGateFinding[];
+  // How many findings the payload left out (gate.json on disk always holds all
+  // of them). Never silent: a dropped finding nobody counts is the failure mode
+  // this project's operating principles forbid.
+  findings_omitted: number;
+  warnings: GenesisGateFinding[];
+  warnings_omitted: number;
+  gaps: Array<{ code: string; message: string }>;
+  evidence: Record<string, unknown>;
+}
+
+export interface GenesisGateReport {
+  job_id: string;
+  language: string;
+  network: string;
+  network_sha256: string;
+  verdict: GenesisGateVerdict;
+  counts: GenesisGateCounts;
+  status: GenesisJobStatus;
+  publication: GenesisPublication | null;
+  revocation: GenesisRevocation | null;
+  live_evidence: GenesisLiveEvidence | null;
+  checks: GenesisGateCheck[];
+  report_markdown: string;
+}
+
+export class GenesisError extends Error {
+  status: number;
+  // The backend's stable refusal code (`genesis_upload_not_osm`,
+  // `genesis_bad_name`, ...) when it sent one, so the UI can translate the
+  // REASON instead of showing an English sentence to a Korean consultant.
+  code: string | null;
+  reasons: string[];
+
+  constructor(message: string, status: number, code: string | null = null, reasons: string[] = []) {
+    super(message);
+    this.name = "GenesisError";
+    this.status = status;
+    this.code = code;
+    this.reasons = reasons;
+  }
+}
+
+async function genesisError(response: Response): Promise<GenesisError> {
+  const text = await response.text();
+  try {
+    const data = JSON.parse(text) as { detail?: unknown };
+    const detail = data.detail;
+    if (detail && typeof detail === "object") {
+      const structured = detail as { code?: string; reasons?: string[] };
+      return new GenesisError(
+        (structured.reasons ?? []).join(" ") || String(structured.code ?? text),
+        response.status,
+        structured.code ?? null,
+        structured.reasons ?? [],
+      );
+    }
+    if (typeof detail === "string") return new GenesisError(detail, response.status);
+  } catch {
+    // Plain text errors are still useful.
+  }
+  return new GenesisError(text || `${response.status} ${response.statusText}`.trim(), response.status);
+}
+
+export async function uploadGenesisOsm(
+  file: File,
+): Promise<{ token: string; filename: string; bytes: number }> {
+  const path = `/api/genesis/uploads?filename=${encodeURIComponent(file.name)}`;
+  const r = await apiMutationFetch(path, { method: "POST", cache: "no-store", body: file });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+export async function startGenesisJob(payload: {
+  upload_token: string;
+  name?: string;
+  exclude_service?: boolean;
+}): Promise<GenesisJob> {
+  const r = await apiMutationFetch("/api/genesis/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+export async function fetchGenesisJobs(): Promise<GenesisJob[]> {
+  const r = await apiFetch("/api/genesis/jobs", { cache: "no-store" });
+  if (!r.ok) throw await genesisError(r);
+  const payload = (await r.json()) as { jobs: GenesisJob[] };
+  return payload.jobs;
+}
+
+export async function fetchGenesisJob(jobId: string): Promise<GenesisJob> {
+  const r = await apiFetch(`/api/genesis/jobs/${jobId}`, { cache: "no-store" });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+export async function fetchGenesisGateReport(
+  jobId: string,
+  language: string,
+): Promise<GenesisGateReport> {
+  const r = await apiFetch(
+    `/api/genesis/jobs/${jobId}/gate?language=${encodeURIComponent(language)}`,
+    { cache: "no-store" },
+  );
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+// Attach a real Vissim's LoadNet evidence (tools/genesis_open_live_check.py's
+// state.json) and RE-GATE. The upgrade is never granted client-side: gate.py
+// admits the evidence only when the sha256 of the file the probe loaded equals
+// the gated file's, and evidence that the load FAILED downgrades the verdict
+// and revokes the publication.
+export async function attachGenesisLiveCheck(
+  jobId: string,
+  state: unknown,
+  label?: string,
+): Promise<GenesisJob> {
+  const r = await apiMutationFetch(`/api/genesis/jobs/${jobId}/live-check`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ state, label: label ?? null }),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+export type GenesisArtifactKind =
+  | "inpx"
+  | "genesis_json"
+  | "compliance_md"
+  | "gate_json"
+  | "gate_report"
+  | "source_osm";
+
+export function genesisArtifactUrl(jobId: string, kind: GenesisArtifactKind): string {
+  return apiUrl(`/api/genesis/jobs/${jobId}/artifact/${kind}`);
+}
+
+// ---------------------------------------------------------------------------
 // Admin: accounts and project membership (unit P④ — backend/routers/admin.py)
 // ---------------------------------------------------------------------------
 //
