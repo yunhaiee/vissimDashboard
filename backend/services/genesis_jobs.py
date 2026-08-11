@@ -1288,6 +1288,11 @@ def _gate_summary(
         "blocking": [check.id for check in result.blocking],
         "checked_at": _now_iso(),
         "network_sha256": result.network_sha256,
+        # V5's and V6's coverage clauses change TIER on this, so ``counts`` means
+        # two different things depending on it. A reader of the compact summary
+        # must not have to fetch the full ``gate.json`` and recognise a gap code
+        # to discover that a refuse-tier finding was reported as a warning.
+        "provenance": result.provenance.as_dict(),
         "live_evidence": evidence,
         "live_evidence_gap": None if live_oracle is not None else live_oracle_gap,
         # True only when a refuse-tier check went green on a human's claim
@@ -1351,6 +1356,7 @@ def gate_payload(job_id: str, language: str = "ko") -> dict[str, Any]:
         "network_sha256": result.network_sha256,
         "verdict": result.verdict.value,
         "counts": result.counts(),
+        "provenance": result.provenance.as_dict(),
         "status": record.get("status"),
         "publication": record.get("publication"),
         "revocation": record.get("revocation"),
@@ -1367,12 +1373,20 @@ def _gate_result_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
     else, so the round trip is a key drop plus the nested check models pydantic
     validates itself.
     """
-    return {
+    kwargs: dict[str, Any] = {
         "network": raw.get("network", ""),
         "network_sha256": raw.get("network_sha256", ""),
         "verdict": raw.get("verdict"),
         "checks": raw.get("checks", []),
     }
+    # Carried across the round trip because ``render_report`` prints it and V5's
+    # and V6's tier depends on it: dropping it would make a stored verdict read
+    # back as "provenance unproven" for a file the gate proved was ours. Absent
+    # in a ``gate.json`` written before 2026-08-11, and the model's default —
+    # UNKNOWN — is the right answer for one of those.
+    if isinstance(raw.get("provenance"), dict):
+        kwargs["provenance"] = raw["provenance"]
+    return kwargs
 
 
 def artifact_path(job_id: str, kind: str) -> Path:

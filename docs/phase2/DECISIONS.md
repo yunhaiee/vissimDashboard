@@ -5191,3 +5191,131 @@ were not its own by restoring its files to HEAD and watching the same four fail.
 because a mutation harness makes the whole tree briefly wrong for everyone.** Either serialise, or
 give the mutating lane its own worktree. This is why B2's verification here is stated on its scoped
 surface, and the full suite is re-run once the concurrent lane lands.
+
+---
+
+## 2026-08-11 — A5: the R1.5 gate stops being a GENERATOR gate, and learns to say whose network it is judging
+
+**Context:** roadmap v2 §5.A row **A5**. The gate shipped on 2026-08-11 (`3324246`) judged only files
+`services.genesis` emits. Run against the **consultant's own calibrated Murdoch model** it did not
+answer "I cannot grade this" — it answered **REFUSED with 253 `v2_unresolved_reference` findings, and
+they were false.**
+
+**The mechanism, measured.** The file carries 1,364 `intObjectRef`; **1,108 under `<linkSeq>` (links)
+and 256 under six other containers** (`vehClasses`, `blockedVehClasses`, `blockedVehClassesDynAssign`,
+`vehTypes`, `pedTypes`, `wttFiles`). V2's table was keyed on the ELEMENT NAME, so all 1,364 were
+resolved against the link id space. 253 failed — and the quieter half of the same bug: **3
+vehicle-type references coincidentally matched a real link id and were graded against the wrong
+universe**, a false pass hiding inside the false failures.
+
+This is the repo's own recurring lesson a third time (`a522ec6`, 2026-08-07: *a live check's negative
+generalises only to its sampled population*). The table was measured on our output and silently
+assumed every `.inpx` looks like ours.
+
+**Why it outranked "cannot judge":** showing a consultant their own model annotated with 253
+fabricated defects is worse than admitting we cannot grade it. A gate that manufactures faults
+destroys exactly the trust it exists to create.
+
+### What was built
+
+References are keyed on **(parent tag, element tag, attribute)** — 48 contexts, measured over **825
+real `.inpx`** (PTV Examples Demo/Training 2024 **and** 2026 — the connector-endpoint shape changed
+between them — plus this repo's live-check networks, `practice.inpx`, one consultant model) by a new
+reproducible probe, `backend/tools/probe_reference_contexts.py`. A target is admitted only when it is
+the **unanimous** answer in every file the site occurs in, then **registered by hand** — the same
+discipline `inpx_structure.ID_REFERENCE_SITES` was built with, because the candidate list contains
+coincidences no filter removes (`occupancyDistribution/@mean` resolves unanimously across 402 files
+and is a *mean*). An unmeasured context is **named** (`v2_reference_context_not_measured`), never
+guessed; 5 remain deliberately unregistered, each with its measured reason.
+
+**A second, independent pre-existing defect surfaced by the audit:**
+`vehicleCompositionRelativeFlow/@desSpeedDistr` targeted one of two PTV class spellings that **never
+coexist** (379 files carry `desSpeedDistribution`, 425 `speedDistribution`, **0 both**, over 804) —
+fabricating one finding per composition flow on every Vissim-2024-era file. Resolved against the
+union: exact, not lax, precisely because the spellings never co-occur.
+
+**Three of our own "invariants" were assumptions.** V4's *"a connector is never wider than either link
+it joins"* is **false of real Vissim** — PTV's own library has 50 such connectors in 17 networks, in
+files named `Ghost Island Merge 2+3 to 4 Lanes`. Replaced by the universal form (a connector must not
+map more lanes on one side than that side's link has): **0 violations across 23,644 connector sides**.
+V5's headless-group rule fires on **304 of 1,387 PTV signal groups**. V6 summed a *rate* across
+intervals, reporting **11,893 veh/h on a road carrying ~1,980** — invisible to us because our
+generator emits one interval per input, so sum == max.
+
+### The adversarial pass: 13 findings, 2 CRITICAL, 0 refuted — both the same shape
+
+The unit stopped false positives by RELAXING checks, and **a relaxation that silences a real defect is
+strictly worse than the false positives it removed.** Both criticals were exactly that:
+
+* **V5's "interior" exclusion hid real dead ends.** It subtracted every link that is ever a same-node
+  connector's `to_link` **before** the reachability walk ran, so a branch that genuinely never meets a
+  head vanished — **no finding, no warning, V5 PASS**. Reproduced against the shipped `run_gate()`.
+  Not scoped to foreign files either: a network **we** built got the same silent pass.
+* **Provenance failed open.** `built_by_this_generator` was `bool(draft_metadata)` — no identity
+  check. Lose the census (which `genesis_jobs` treats as normal, setting `metadata=None`) and a
+  genuinely defective network is scored "not ours", its refuse-tier findings demote to warnings, the
+  verdict becomes INCOMPLETE rather than REFUSED — and since registration gates only on REFUSED,
+  **the defective network publishes as the workspace's live dataset.** Before A5 those were
+  unconditional FAILs. The fix had introduced the inversion of what the gate is for.
+
+A third worth recording: the safety-net test pinned that the *enum* could not reach PASS, not that the
+**artifact stayed out of the workspace** — a test measuring the wrong noun.
+
+### The fix corrected the controller's instruction, with measurement
+
+I specified removing the interior exclusion outright, on the reviewer's measurement that it "buys
+essentially none of the noise reduction". **That premise was half wrong and the fix agent proved it.**
+Of the 24 extra hits removal produces on PTV 2026, **15 have a head UPSTREAM inside the node** —
+traffic has already passed the stop line, the exact false positive the exclusion was built for — and
+**9 are real**. So the exclusion is now **conditional**: an interior link is excluded only when a head
+lies upstream of it inside the node (`_passed_a_head_inside_node`, the mirror of the walk V5 already
+trusts).
+
+| rule | PTV 2026 | consultant |
+|---|---|---|
+| pre-A5 (membership only) | 195 | 30 |
+| A5 as shipped (unconditional exclusion) | 6 | 5 |
+| no exclusion (what I asked for) | 30 | 19 |
+| **conditional (implemented)** | **15** | **10** |
+
+A worked real case: PTV's own `Mainz - Static Routes.inpx` node 22, where link 8 feeds both a
+signalised movement and link 68, and everything through 68 crosses the junction without meeting a head.
+
+**Provenance is now three states, and UNKNOWN grades as strictly as OURS.** `OURS` requires the census
+to be **proven to describe this artifact** — its link+connector and node id sets must equal the file's
+own (`_census_identity`, V1's sha-admissibility rule applied to the census; verified to survive a
+Vissim `SaveNetAs` round trip and to reject an earlier build of the same source, 5,082 vs 5,086
+links). `FOREIGN` requires **positive** evidence. `UNKNOWN` is everything else and softens nothing —
+only positively-established FOREIGN does. The decision is surfaced in `GateResult`, per-check evidence,
+the report front page, the job summary and the gate.json round trip: an invisible tier switch makes the
+same verdict word mean two things without saying so.
+
+**`--audit` is green on a healthy tree.** All 7 previously-"BROKEN" rows were verified first: every one
+of the 61 unresolved values is "target class entirely absent from the file", **zero genuine table
+errors**. The audit now separates **BROKEN** (the container exists and the id is not in it → exit 1)
+from **INCONCLUSIVE** (no such object declared → says nothing about the table). A self-audit that
+always reports failures teaches everyone to ignore it.
+
+**A check can no longer PASS over its own NOT_CHECKABLE clause** — `CheckResult.build` takes the worst
+of findings, gaps and clause states, rather than leaving it to each check. Live effect: the
+consultant's V5/V6 go PASS → NOT_CHECKABLE, which is the honest reading.
+
+### Verification (controller-re-measured)
+
+* Full suite **4241 passed, 1 skipped** (baseline 4222 + 19 new).
+* `probe_reference_contexts.py --audit` → **exit 0**, 41/41 simple and 7/7 pair contexts, **0 BROKEN**.
+* **Consultant model: `v2_unresolved_reference` = 0** (independently counted), verdict INCOMPLETE,
+  provenance `foreign`. V5's 5 real hidden cases are now named.
+* **Our own Murdoch: verdict IDENTICAL to baseline** — V1/V2/V4 PASS, V3 fail ×19, V7 fail ×1,
+  3 pass / 2 fail / 4 not-checkable, REFUSED. Provenance `ours`, census `matches_this_network`.
+* One real finding about the client's model stands unchanged and is worth their attention: **39 signal
+  heads, 0 queue counters, 0 data-collection points** — V9, warn tier, literally true and actionable.
+
+**What stays NOT_CHECKABLE on a consultant file, and why that is the honest answer:** V1 (no live
+`LoadNet`), V3's departure clause (no census — its reachability half now reports as a passing clause),
+V7/V8 (no reference network; right-of-way is not in any `.inpx`), and V2's **114 element types whose
+reference surface has never been enumerated**. V2 could have been made PASS by widening the inventory
+to the corpus — a lie of a specific and dangerous kind, because V2 exists precisely because *one*
+unresolved id two hops from the geometry once deleted an entire network with `load_ok=True`. **"I did
+not look" is not "there is nothing there."** The fabricated findings are gone; the honest gap remains,
+and widening it is now a measurement job with a tool to do it.

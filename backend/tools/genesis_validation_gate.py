@@ -39,6 +39,16 @@ not in the ``.inpx`` — it is in the draft's ``*.genesis.json``. This script
 looks for ``<inpx stem>.genesis.json`` beside the network and says whether it
 found one; ``--genesis-json`` points at it explicitly.
 
+**Finding one is not the same as it being about this file.** The census is
+resolved by filename convention here and by recorded artifact name in the job
+pipeline, so the gate itself checks that the link, connector and node ids it
+names are the network's own before it admits it — the same rule V1 applies to
+its load oracle above. The report's front page states the resulting provenance
+(ours / not ours / unproven) and the census verdict behind it, because V5's and
+V6's coverage clauses REFUSE at the first and third and only warn at the second.
+An UNPROVEN provenance is graded strictly: a refuse-tier check must never be
+softened by the absence of evidence.
+
 Exit codes
 ----------
 ``0`` PASS, ``2`` REFUSED (a refuse-tier check proved a fault), ``3``

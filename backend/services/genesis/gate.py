@@ -105,6 +105,65 @@ lane-change runway                      **Read from the file**: each link's own
                                         edit-time guardrail can never disagree.
 ======================================= ============================================
 
+WHAT A CHECK MAY REFUSE ON SOMEBODY ELSE'S FILE (2026-08-11, roadmap §5.A A5)
+------------------------------------------------------------------------------
+This gate was built against what ``services.genesis`` emits, and until it was
+pointed at a real consultant's ``.inpx`` nothing distinguished "a property of
+every valid Vissim network" from "a property of the networks we happen to
+build". On the first foreign file it refused with 0 pass / 5 fail, and **the
+overwhelming majority of those findings were about us, not about the file** —
+253 fabricated reference failures, 33 lane-continuity findings on connectors
+that model a lane GAIN, six capacity warnings that were six time intervals of
+ordinary demand added together. A gate that manufactures faults destroys
+exactly the trust it exists to create, so each clause now carries the scope its
+evidence supports:
+
+* **Universal** — proven against THE CORPUS (below): reference integrity in a
+  MEASURED context, lane references naming lanes that exist,
+  head→controller/group/lane integrity, reachability. These refuse any file.
+* **Provenance-scoped** — true of phasing and demand THIS generator imported,
+  and merely an observation about a model it did not build (R1.5's own wording:
+  "임포트된 phasing의 …"). Measured on PTV's own 2026 example library (411
+  files): 304 of 1,387 signal groups are displayed by no head, 45 of 292
+  controllers have no head at all, and 60 of 1,116 vehicle inputs carry zero
+  volume — none of which can be a universal defect. These REFUSE a network of
+  ours and ride as NAMED WARNINGS only on one PROVEN to be somebody else's.
+* **Not measured** — a reference in a context the table has never measured is
+  named (``v2_reference_context_not_measured``), never resolved against the
+  nearest plausible id space; an element type whose reference surface was never
+  enumerated makes V2 NOT_CHECKABLE with the tags named.
+
+The recurring lesson this is an instance of is recorded in ``DECISIONS.md``
+(2026-08-07, ``a522ec6``): *a live check's negative generalises only to its
+sampled population*. Every scope above names its population.
+
+PROVENANCE HAS THREE STATES, AND ONLY ONE OF THEM SOFTENS A CHECK
+-----------------------------------------------------------------
+:class:`Provenance` is ``OURS`` / ``FOREIGN`` / ``UNKNOWN``, never a boolean.
+Deciding it by the mere PRESENCE of a ``*.genesis.json`` failed OPEN in both
+directions: a genesis network whose census went missing mid-pipeline scored as
+"not ours" and had its refuse-tier V5/V6 findings demoted to warnings — which
+turns REFUSED into INCOMPLETE, and ``genesis_jobs.gate_and_publish`` registers
+everything that is not REFUSED, so the defective network became the workspace's
+live dataset. So:
+
+* ``OURS`` needs the census to be **proven to describe this artifact** — the id
+  sets of its links, connectors and nodes against the file's own
+  (:func:`_census_identity`), which is V1's sha256 admissibility rule applied to
+  the other piece of evidence this gate is handed. It survives a Vissim
+  ``SaveNetAs`` round trip (ids preserved) and rejects an earlier build of the
+  same source (they are not).
+* ``FOREIGN`` needs POSITIVE evidence: a top-level container the emitter has no
+  code to write (:data:`GENERATOR_TOP_LEVEL_CONTAINERS`, imported from the
+  emitter's own schema), and no provenance comment of ours in the file.
+* ``UNKNOWN`` is everything else, and it grades exactly as strictly as ``OURS``.
+  A refuse-tier check must never be softened by the ABSENCE of evidence.
+
+The decision, its evidence and the tier each check applied are on
+:attr:`GateResult.provenance`, in V5's and V6's own ``evidence``, on the report's
+front page and in the job record's compact summary — an invisible tier switch
+makes the same verdict word mean two different things without saying so.
+
 WHAT IS OFFLINE-ONLY, STATED HERE RATHER THAN DISCOVERED LATER
 --------------------------------------------------------------
 * V1 needs the live probe's evidence. Without it: NOT_CHECKABLE.
@@ -149,6 +208,11 @@ from .diff import (
     load_topology,
 )
 from .draft import COORD_DECIMALS, MIN_LINK_LENGTH_M, pick_text
+# The emitter's OWN declaration of every top-level container it is able to
+# write: ``emit.build_tree`` raises ``AssertionError`` if it ever builds one
+# this tuple does not name, so provenance cannot drift away from the emitter by
+# restating the list here.
+from .schema import CONTAINER_ORDER as _EMITTED_CONTAINERS
 
 # ``services.agent.constraints`` owns the rough capacity the edit-time
 # ``latent_demand_overflow`` guardrail judges by. Mirrored (imported, not
@@ -160,9 +224,14 @@ from services.agent.constraints import (  # noqa: E402
 )
 
 __all__ = [
+    "CheckClause",
     "CheckResult",
     "CheckState",
     "CheckTier",
+    "GENERATOR_PROVENANCE_MARKER",
+    "GENERATOR_TOP_LEVEL_CONTAINERS",
+    "GENERIC_REFERENCE_TAGS",
+    "MEASURED_REFERENCE_SURFACE_TAGS",
     "GateFinding",
     "GateGap",
     "GateResult",
@@ -170,6 +239,8 @@ __all__ = [
     "GateVerdict",
     "LoadOracle",
     "OVERLAP_DECIMALS",
+    "Provenance",
+    "ProvenanceEvidence",
     "ROUGH_LANE_CAPACITY_VEH_PER_H",
     "SHORT_LINK_FLOOR_M",
     "ZERO_LENGTH_M",
@@ -253,6 +324,189 @@ class GateVerdict(str, Enum):
     INCOMPLETE = "incomplete"
 
 
+class Provenance(str, Enum):
+    """Who built the network under test — in THREE states, not two.
+
+    A handful of R1.5's clauses are about *the phasing and the demand THIS
+    generator imported* ("임포트된 phasing의 …"). They are contradictions of the
+    artifact's own provenance when we built it, and merely observations about
+    somebody else's modelling choice when we did not — PTV's own 2026 example
+    library has 304 of 1,387 signal groups displayed by no head, so neither can
+    be a universal defect.
+
+    The trap is that "we cannot prove we built it" is NOT "somebody else built
+    it". Scoring an unproven file as foreign softens a refuse-tier check on the
+    strength of missing evidence, and the pipeline publishes anything that is
+    not REFUSED — so a genesis network whose census went missing mid-pipeline
+    would reach the workspace carrying the very defect the clause exists to
+    catch. **UNKNOWN therefore grades exactly as strictly as OURS.** Only
+    :attr:`FOREIGN` — which needs POSITIVE evidence — softens anything.
+    """
+
+    #: The generator's own census, PROVEN to describe this artifact.
+    OURS = "ours"
+    #: Positive evidence to the contrary: the file declares a top-level
+    #: container ``services.genesis.emit`` cannot write.
+    FOREIGN = "foreign"
+    #: Neither. Graded strictly, and named as unproven wherever the verdict goes.
+    UNKNOWN = "unknown"
+
+
+#: Every top-level container the emitter is ABLE to write. Imported from the
+#: emitter's own schema rather than restated, so the two cannot drift: an
+#: element type outside this set is something ``services.genesis`` has no code
+#: to produce, which is why its presence is evidence and its absence is not.
+GENERATOR_TOP_LEVEL_CONTAINERS: frozenset[str] = frozenset(_EMITTED_CONTAINERS)
+
+#: The opening words of the XML comment ``emit.provenance_comment`` writes into
+#: every file this generator produces. Its presence VETOES a foreign verdict; its
+#: absence proves nothing, because Vissim's own ``SaveNetAs`` drops comments
+#: (measured on this repository's round-tripped Murdoch).
+GENERATOR_PROVENANCE_MARKER = "Generated by Prism services.genesis"
+
+#: How far into the file the marker is looked for. ``emit.build_tree`` appends
+#: the comment as the FIRST child of ``<network>``, so a bounded read is exact
+#: rather than a heuristic — and a gate does not read a 7 MB file twice for it.
+_PROVENANCE_MARKER_WINDOW_BYTES = 8192
+
+
+class ProvenanceEvidence(BaseModel):
+    """Why the gate believes what it believes about who built this file.
+
+    Carried on :class:`GateResult`, echoed into the evidence of every check that
+    changes tier because of it, printed in the report and copied into the job
+    record's compact summary. An invisible tier switch makes the same verdict
+    word mean two different things without saying so.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Provenance
+    #: ``absent`` | ``matches_this_network`` | ``describes_another_network`` |
+    #: ``declares_no_elements``. Anything but ``matches_this_network`` means the
+    #: census is INADMISSIBLE — V1's rule for its load oracle, applied to the
+    #: other piece of evidence this gate is handed about a file.
+    census: str
+    #: Whether the emitter's own provenance comment is in the file.
+    generator_marker: bool
+    #: Top-level containers the emitter cannot write, in tag order. Counts and
+    #: tag names only — never an id, never a value.
+    foreign_containers: list[str] = Field(default_factory=list)
+    #: Element counts behind the identity verdict, so a stale sidecar is legible.
+    census_elements: int = 0
+    network_elements: int = 0
+
+    @property
+    def census_is_admissible(self) -> bool:
+        return self.census == "matches_this_network"
+
+    @property
+    def grades_strictly(self) -> bool:
+        """Whether a provenance-scoped clause REFUSES on this file.
+
+        OURS and UNKNOWN both do. Only proven-foreign softens.
+        """
+        return self.state is not Provenance.FOREIGN
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state.value,
+            "census": self.census,
+            "generator_marker": self.generator_marker,
+            "foreign_containers": list(self.foreign_containers),
+            "census_elements": self.census_elements,
+            "network_elements": self.network_elements,
+        }
+
+
+def _census_identity(
+    metadata: dict[str, Any] | None,
+    *,
+    network_links: set[str],
+    network_nodes: set[str],
+) -> tuple[str, int, int]:
+    """Does this ``*.genesis.json`` describe THIS ``.inpx``?
+
+    The same admissibility rule :class:`LoadOracle` already applies to V1's live
+    evidence: a record about a different file is not weak evidence, it is none.
+    A ``.genesis.json`` is the draft's whole ``model_dump``, so it names every
+    link, connector and node it built — and the emitter writes each one's ``id``
+    straight into ``<link no>`` / ``<node no>``. Comparing those id SETS ties the
+    census to the artifact without needing the emitter to record a hash it does
+    not record, and it survives the one transformation that legitimately rewrites
+    our bytes: a Vissim ``SaveNetAs`` round trip preserves every id (measured on
+    this repository's Murdoch: 5,082 links and 761 nodes, identical before and
+    after), while an EARLIER BUILD of the same source does not (5,086 links).
+    """
+    if not isinstance(metadata, dict) or not metadata:
+        return "absent", 0, len(network_links) + len(network_nodes)
+    census_links = {
+        str(entry["id"])
+        for key in ("links", "connectors")
+        for entry in (metadata.get(key) or [])
+        if isinstance(entry, dict) and entry.get("id") is not None
+    }
+    census_nodes = {
+        str(entry["id"])
+        for entry in (metadata.get("nodes") or [])
+        if isinstance(entry, dict) and entry.get("id") is not None
+    }
+    census_count = len(census_links) + len(census_nodes)
+    network_count = len(network_links) + len(network_nodes)
+    if not census_links and not census_nodes:
+        return "declares_no_elements", census_count, network_count
+    if census_links == network_links and census_nodes == network_nodes:
+        return "matches_this_network", census_count, network_count
+    return "describes_another_network", census_count, network_count
+
+
+def _decide_provenance(
+    root: ET.Element,
+    metadata: dict[str, Any] | None,
+    *,
+    network_links: set[str],
+    network_nodes: set[str],
+    generator_marker: bool,
+) -> ProvenanceEvidence:
+    """Three states, and only one of them softens a check.
+
+    ``OURS`` needs the census to be admissible. ``FOREIGN`` needs positive
+    evidence — a top-level container the emitter has no code to write, and no
+    provenance comment of ours in the file. Everything else is ``UNKNOWN`` and
+    is graded exactly as strictly as ours.
+    """
+    census, census_count, network_count = _census_identity(
+        metadata, network_links=network_links, network_nodes=network_nodes
+    )
+    foreign = sorted(
+        {child.tag for child in root if child.tag not in GENERATOR_TOP_LEVEL_CONTAINERS}
+    )
+    if census == "matches_this_network":
+        state = Provenance.OURS
+    elif foreign and not generator_marker:
+        state = Provenance.FOREIGN
+    else:
+        state = Provenance.UNKNOWN
+    return ProvenanceEvidence(
+        state=state,
+        census=census,
+        generator_marker=generator_marker,
+        foreign_containers=foreign,
+        census_elements=census_count,
+        network_elements=network_count,
+    )
+
+
+def _carries_generator_marker(path: Path) -> bool:
+    """Is the emitter's own provenance comment in the head of this file?"""
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(_PROVENANCE_MARKER_WINDOW_BYTES)
+    except OSError:  # pragma: no cover - the caller already read the file
+        return False
+    return GENERATOR_PROVENANCE_MARKER.encode("utf-8") in head
+
+
 class GateFinding(BaseModel):
     """One proven fault, naming the object it is about."""
 
@@ -284,12 +538,61 @@ class GateGap(BaseModel):
         return pick_text(template, language).format(**self.context)
 
 
+class CheckClause(BaseModel):
+    """One named sub-question inside a check, with its OWN state.
+
+    A check is one line in a verdict, but most of the nine ask several
+    independent questions and a reader deserves to know which of them ran. V3
+    is the case that forced this: on a consultant's ``.inpx`` its reachability
+    half runs in full and proves ``orphan_links=0`` /
+    ``links_in_a_broken_zone=0``, while its silent-departure half needs the
+    generator's own census and cannot — and reporting the whole check as one
+    grey box threw away a real, earned result.
+
+    A clause NEVER SOFTENS the check: :meth:`CheckResult.build` takes the worst
+    of the check's own findings/gaps and its clauses' states, so a check with an
+    unrunnable clause is never a PASS. That rule lives in exactly one place, and
+    it is enforced there rather than trusted to each check — V5 and V6 both
+    reported ``PASS`` over a ``NOT_CHECKABLE`` clause until 2026-08-11, because
+    each had appended its "could not certify this" gap to the clause's own list
+    and not to the check's.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    code: str
+    state: CheckState
+
+    def message(self, language: str = "ko") -> str:
+        template = _TEXT.get(self.code)
+        if template is None:  # pragma: no cover - every clause code has text
+            return self.code
+        return pick_text(template, language)
+
+
+def _clause(
+    code: str,
+    *,
+    findings: Iterable[GateFinding] = (),
+    gaps: Iterable[GateGap] = (),
+) -> CheckClause:
+    """A clause's state by the SAME precedence the check itself uses."""
+    if any(True for _ in findings):
+        state = CheckState.FAIL
+    elif any(True for _ in gaps):
+        state = CheckState.NOT_CHECKABLE
+    else:
+        state = CheckState.PASS
+    return CheckClause(code=code, state=state)
+
+
 class CheckResult(BaseModel):
     """One of the nine checks, in exactly one state.
 
     Build these with :meth:`build` and never by setting ``state`` directly: the
     precedence FAIL > NOT_CHECKABLE > PASS lives there and nowhere else, so a
-    check cannot report a pass it did not earn.
+    check cannot report a pass it did not earn — and that precedence is applied
+    to the check's CLAUSES as well as to its own findings and gaps.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -304,6 +607,9 @@ class CheckResult(BaseModel):
     #: check. They ride on the result and never touch :attr:`state`.
     warnings: list[GateFinding] = Field(default_factory=list)
     gaps: list[GateGap] = Field(default_factory=list)
+    #: Named sub-questions and how each one resolved. Reporting only — see
+    #: :class:`CheckClause`; they never change :attr:`state`.
+    clauses: list[CheckClause] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
@@ -315,14 +621,21 @@ class CheckResult(BaseModel):
         findings: Iterable[GateFinding] = (),
         warnings: Iterable[GateFinding] = (),
         gaps: Iterable[GateGap] = (),
+        clauses: Iterable[CheckClause] = (),
         evidence: dict[str, Any] | None = None,
     ) -> "CheckResult":
         ordered_findings = sorted(findings, key=_finding_sort_key)
         ordered_warnings = sorted(warnings, key=_finding_sort_key)
         ordered_gaps = sorted(gaps, key=lambda g: g.code)
-        if ordered_findings:
+        ordered_clauses = sorted(clauses, key=lambda c: c.code)
+        # The clauses are part of the answer, not a commentary on it. A check
+        # whose own sub-question could not run has not certified what it claims
+        # to certify, so it cannot be a PASS — enforced HERE, once, rather than
+        # depending on every check remembering to copy its clause's gap up.
+        clause_states = {clause.state for clause in ordered_clauses}
+        if ordered_findings or CheckState.FAIL in clause_states:
             state = CheckState.FAIL
-        elif ordered_gaps:
+        elif ordered_gaps or CheckState.NOT_CHECKABLE in clause_states:
             state = CheckState.NOT_CHECKABLE
         else:
             state = CheckState.PASS
@@ -333,6 +646,7 @@ class CheckResult(BaseModel):
             findings=ordered_findings,
             warnings=ordered_warnings,
             gaps=ordered_gaps,
+            clauses=ordered_clauses,
             evidence=dict(sorted((evidence or {}).items())),
         )
 
@@ -369,6 +683,14 @@ class GateResult(BaseModel):
     network: str
     network_sha256: str
     verdict: GateVerdict
+    #: Who built this file, and on what evidence. Refuse-tier checks change tier
+    #: on it, so it travels with the verdict rather than being reconstructible
+    #: only by a reader of the full per-check clause detail.
+    provenance: ProvenanceEvidence = Field(
+        default_factory=lambda: ProvenanceEvidence(
+            state=Provenance.UNKNOWN, census="absent", generator_marker=False
+        )
+    )
     checks: list[CheckResult] = Field(default_factory=list)
 
     def check(self, check_id: str) -> CheckResult:
@@ -401,6 +723,7 @@ class GateResult(BaseModel):
             "network": self.network,
             "network_sha256": self.network_sha256,
             "verdict": self.verdict.value,
+            "provenance": self.provenance.as_dict(),
             "counts": self.counts(),
             "checks": [
                 {
@@ -416,6 +739,9 @@ class GateResult(BaseModel):
                         for f in c.warnings
                     ],
                     "gaps": [{"code": g.code, "context": g.context} for g in c.gaps],
+                    "clauses": [
+                        {"code": cl.code, "state": cl.state.value} for cl in c.clauses
+                    ],
                     "evidence": c.evidence,
                 }
                 for c in self.checks
@@ -538,67 +864,178 @@ def _sha256(path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Reference integrity table (V2) — MEASURED, not guessed
+# Reference integrity table (V2) — MEASURED, not guessed, and CONTEXT-KEYED
 #
-# Every entry below was read off two real emissions on 2026-08-11: the
-# four-layer synthetic network ``genesis_fullstack_live_check.build_fullstack_
-# network`` writes (geometry + signals + demand + fleet) and the geometry-only
-# Murdoch generation. The pair is what makes the table complete for what this
-# generator can emit rather than complete for what Vissim can express.
+# Every entry is keyed on ``(parent element tag, element tag, attribute)``, not
+# on the element tag alone, because **the same element name means different
+# things under different parents**. ``<intObjectRef key="…"/>`` is the whole
+# argument: it is Vissim's generic "this set contains that object" element, and
+# its referent is named by the CONTAINER, never by itself. Measured across the
+# corpus below, one element name resolves against seven different id spaces:
 #
-# Why a table at all, rather than "resolve everything numeric": the same
-# attribute name means different things on different elements, and a numeric
+#     <linkSeq>  links · <vehClasses>/<blockedVehClasses>/<blockedVehClasses-
+#     DynAssign>  vehicle classes · <vehTypes>  vehicle types · <pedTypes>
+#     pedestrian types · <wttFiles>  WTT files · <dataCollectionPoints>  data-
+#     collection points · <ptStops>  PT stops · <ptLines>  PT lines ·
+#     <actLvls>  levels · <vehTravTmMeas>  travel-time measurements
+#
+# Keyed on the element name alone (as this table was until 2026-08-11), every
+# non-``<linkSeq>`` occurrence was resolved against the LINK table. On the first
+# real consultant model that produced **253 fabricated "unresolved reference"
+# findings** — and, in the other direction, silently GRADED 3 vehicle-type
+# references against the link id space, where they happened to resolve. Both
+# halves of that are the same bug: a reference judged against the wrong universe.
+#
+# THE CORPUS — ONE NUMBER, MEASURED (``backend/tools/probe_reference_contexts.py``)
+# ------------------------------------------------------------------------------
+# **825 real ``.inpx`` files**, every one of them readable, and this is the ONLY
+# corpus size this module quotes: 411 from PTV's own Vissim 2026 "Examples Demo"
+# and "Examples Training" libraries, 380 from the Vissim 2024 ones, 33 of this
+# repository's own live-check networks, and 1 hand-authored fixture. (The table
+# was first measured against roughly half that corpus, and several of the counts
+# in this docstring were never re-run when it grew — every number below is a
+# re-run against the 825 on 2026-08-11, and ``--audit`` is the tool that keeps
+# them honest.) The one real consultant model is deliberately NOT in the default
+# corpus: ``client-data/`` and ``runtime/workspaces/`` are confidential and are
+# passed explicitly with ``--root`` when a measurement needs them.
+#
+# For every ``(parent, tag, attribute)`` site the probe collects the values and
+# asks which of the id spaces the SAME file declares contains all of them; a
+# target is admitted only when it is the unanimous answer in EVERY file the site
+# occurs in, over enough distinct values that coincidence is implausible. What
+# survives is READ and registered by hand — never auto-registered — exactly as
+# ``inpx_structure.ID_REFERENCE_SITES`` (this repository's other, older
+# reference registry, xpath-keyed for the same reason) was built.
+#
+# Five generic-membership sites are deliberately left UNREGISTERED, and the
+# reason differs between them, so it is stated per site rather than in one
+# sentence that fits none of them. Four are genuinely ambiguous — no single id
+# space wins: ``<sectFilt>`` (6 files, 5 candidate id spaces), ``<evalGrps>``
+# (17 files, 2), ``<sections>`` (91 files, 2), ``<mesoSectsForMicroSim>`` (2
+# files, 21 — too few samples to exclude anything). The fifth,
+# ``<walkPedClasses>``, DOES have a single unanimous candidate
+# (``pedestrianClass``) and is left out on VOLUME instead: 4 occurrences of one
+# distinct value across 4 files is below the probe's own
+# ``MIN_DISTINCT_VALUES``, which is not enough to tell a reference from a
+# coincidence. All five are NAMED as unmeasured rather than resolved against the
+# most plausible guess.
+#
+# Why a table at all, rather than "resolve everything numeric": a numeric
 # attribute is far more often a parameter than a reference (``latDistDrivDef``
-# is a lateral distance, ``alc_v_limit`` a speed). Guessing would produce
-# findings about numbers that reference nothing.
+# is a lateral distance, ``alc_v_limit`` a speed), and the probe's own output
+# proves it — ``occupancyDistribution/@mean`` resolves unanimously against the
+# occupancy-distribution id space across 402 files and is a MEAN, not a
+# reference. Guessing would produce findings about numbers that reference
+# nothing.
 #
-# The cost of a table is that it can fall behind the emitter. That is handled,
-# not hoped about: :data:`KNOWN_EMITTED_TAGS` is the measured tag inventory of
-# those same two files, and a document containing a tag outside it makes V2
-# NOT_CHECKABLE with the tag named — a new layer is a new reference surface this
-# table was never measured against.
+# The cost of a table is that it can fall behind. That is handled twice over:
+# :data:`MEASURED_REFERENCE_SURFACE_TAGS` is the tag inventory the table's own
+# reference surface was enumerated against, and any element carrying a reference
+# in a context outside the table is NAMED (``v2_reference_context_not_measured``)
+# instead of resolved. A gate that says "I have not measured ``<foo>/@bar``" is
+# honest; one that assumes is the bug this table exists to have stopped making.
 # ---------------------------------------------------------------------------
 
-#: ``(element tag, attribute) -> target element tag``. A plain id reference.
-_SIMPLE_REFERENCES: dict[tuple[str, str], str] = {
-    ("link", "displayType"): "displayType",
-    ("link", "linkBehavType"): "linkBehaviorType",
-    ("link", "level"): "level",
-    ("lane", "markingType"): "laneMarkingType",
-    ("linkBehaviorType", "drivBehavDef"): "drivingBehavior",
-    ("drivingBehavior", "w99cc1Distr"): "timeDistribution",
-    ("drivingBehavior", "zipperOvtTmDistr"): "timeDistribution",
-    ("fromLinkEndPt", "link"): "link",
-    ("toLinkEndPt", "link"): "link",
-    ("detector", "sc"): "signalController",
-    ("vehicleInput", "link"): "link",
-    ("timeIntervalVehVolume", "vehComp"): "vehicleComposition",
-    ("vehicleCompositionRelativeFlow", "vehType"): "vehicleType",
-    ("vehicleCompositionRelativeFlow", "desSpeedDistr"): "speedDistribution",
-    ("vehicleRoutingDecisionStatic", "link"): "link",
-    ("vehicleRouteStatic", "destLink"): "link",
-    ("vehicleType", "colorDistr1"): "colorDistribution",
-    ("vehicleType", "desAccelFunc"): "desAccelerationFunction",
-    ("vehicleType", "maxAccelFunc"): "maxAccelerationFunction",
-    ("vehicleType", "desDecelFunc"): "desDecelerationFunction",
-    ("vehicleType", "maxDecelFunc"): "maxDecelerationFunction",
-    ("vehicleType", "desCurveSpeedFunc"): "curvSpeedFunc",
-    ("vehicleType", "model2D3DDistr"): "model2D3DDistribution",
-    ("vehicleType", "occupDistr"): "occupancyDistribution",
-    ("vehicleType", "powerDistr"): "powerDistribution",
-    ("vehicleType", "weightDistr"): "weightDistribution",
-    ("model2D3DDistributionElement", "model2D3D"): "model2D3D",
-    ("intObjectRef", "key"): "link",
+#: Elements whose ONLY purpose is to reference another object — they carry no
+#: content of their own, so every attribute on one is a reference by
+#: construction. An occurrence in a context the table has not measured is
+#: therefore a reference we know we cannot resolve, and it is reported as a gap
+#: rather than resolved against the nearest plausible id space.
+GENERIC_REFERENCE_TAGS: frozenset[str] = frozenset({"intObjectRef", "objectRef"})
+
+#: ``(parent tag, element tag, attribute) -> target element tag``. A plain id
+#: reference. A TUPLE of tags is one object class Vissim has spelled more than
+#: one way across schema versions — resolved against the union, which is exact
+#: rather than lax because the spellings never coexist (measured; see
+#: ``desSpeedDistr`` below).
+_SIMPLE_REFERENCES: dict[tuple[str, str, str], str | tuple[str, ...]] = {
+    ("links", "link", "displayType"): "displayType",
+    ("links", "link", "linkBehavType"): "linkBehaviorType",
+    ("links", "link", "level"): "level",
+    ("lanes", "lane", "markingType"): "laneMarkingType",
+    ("linkBehaviorTypes", "linkBehaviorType", "drivBehavDef"): "drivingBehavior",
+    ("drivingBehaviors", "drivingBehavior", "w99cc1Distr"): "timeDistribution",
+    ("drivingBehaviors", "drivingBehavior", "zipperOvtTmDistr"): "timeDistribution",
+    ("link", "fromLinkEndPt", "link"): "link",
+    ("link", "toLinkEndPt", "link"): "link",
+    ("detectors", "detector", "sc"): "signalController",
+    ("vehicleInputs", "vehicleInput", "link"): "link",
+    ("timeIntVehVols", "timeIntervalVehVolume", "vehComp"): "vehicleComposition",
+    ("vehCompRelFlows", "vehicleCompositionRelativeFlow", "vehType"): "vehicleType",
+    # PTV RENAMED this object class between schema versions: Vissim 2024 writes
+    # <desSpeedDistributions><desSpeedDistribution no="…">, Vissim 2026 writes
+    # <speedDistributions><speedDistribution no="…">, and ``desSpeedDistr``
+    # points at whichever the file declares. Measured over the 804 files of the
+    # corpus that declare one: 379 carry only the 2024 spelling, 425 only the
+    # 2026 spelling, and NOT ONE carries both — so the union cannot let a
+    # dangling reference through, and it repairs a table entry that (measured on
+    # this generator's 2026 output alone) fabricated one finding per composition
+    # flow on every Vissim 2024 file, 277 of them across the example libraries.
+    ("vehCompRelFlows", "vehicleCompositionRelativeFlow", "desSpeedDistr"): (
+        "speedDistribution",
+        "desSpeedDistribution",
+    ),
+    (
+        "vehicleRoutingDecisionsStatic",
+        "vehicleRoutingDecisionStatic",
+        "link",
+    ): "link",
+    ("vehRoutSta", "vehicleRouteStatic", "destLink"): "link",
+    # ``data/practice.inpx``'s hand-authored shape puts the route directly under
+    # its decision with no ``<vehRoutSta>`` wrapper. Measured, so registered —
+    # the same "a real deployment will see either shape" argument
+    # ``inpx_structure.ID_REFERENCE_SITES`` makes about connector endpoints.
+    ("vehicleRoutingDecisionStatic", "vehicleRouteStatic", "destLink"): "link",
+    ("vehicleTypes", "vehicleType", "colorDistr1"): "colorDistribution",
+    ("vehicleTypes", "vehicleType", "desAccelFunc"): "desAccelerationFunction",
+    ("vehicleTypes", "vehicleType", "maxAccelFunc"): "maxAccelerationFunction",
+    ("vehicleTypes", "vehicleType", "desDecelFunc"): "desDecelerationFunction",
+    ("vehicleTypes", "vehicleType", "maxDecelFunc"): "maxDecelerationFunction",
+    ("vehicleTypes", "vehicleType", "desCurveSpeedFunc"): "curvSpeedFunc",
+    ("vehicleTypes", "vehicleType", "model2D3DDistr"): "model2D3DDistribution",
+    ("vehicleTypes", "vehicleType", "occupDistr"): "occupancyDistribution",
+    ("vehicleTypes", "vehicleType", "powerDistr"): "powerDistribution",
+    ("vehicleTypes", "vehicleType", "weightDistr"): "weightDistribution",
+    ("model2D3DDistrEl", "model2D3DDistributionElement", "model2D3D"): "model2D3D",
+    # -- the generic membership element, one entry per MEASURED container -----
+    ("linkSeq", "intObjectRef", "key"): "link",
+    ("vehClasses", "intObjectRef", "key"): "vehicleClass",
+    ("blockedVehClasses", "intObjectRef", "key"): "vehicleClass",
+    ("blockedVehClassesDynAssign", "intObjectRef", "key"): "vehicleClass",
+    ("vehTypes", "intObjectRef", "key"): "vehicleType",
+    ("pedTypes", "intObjectRef", "key"): "pedestrianType",
+    ("pedClasses", "intObjectRef", "key"): "pedestrianClass",
+    ("wttFiles", "intObjectRef", "key"): "wttFile",
+    ("dataCollectionPoints", "intObjectRef", "key"): "dataCollectionPoint",
+    ("vehTravTmMeas", "intObjectRef", "key"): "vehicleTravelTimeMeasurement",
+    ("ptStops", "intObjectRef", "key"): "ptStop",
+    ("ptLines", "intObjectRef", "key"): "ptLine",
+    ("actLvls", "intObjectRef", "key"): "level",
 }
 
-#: ``(element tag, attribute) -> (owner tag, member tag)``. A ``"<owner no>
-#: <member no>"`` pair, the shape Vissim uses for lane and signal-group refs.
-_PAIR_REFERENCES: dict[tuple[str, str], tuple[str, str]] = {
-    ("objectRef", "key"): ("link", "lane"),
-    ("signalHead", "lane"): ("link", "lane"),
-    ("detector", "lane"): ("link", "lane"),
-    ("signalHead", "sg"): ("signalController", "signalGroup"),
-    ("signalOutputConfigurationElement", "sg"): ("signalController", "signalGroup"),
+#: ``(parent tag, element tag, attribute) -> (owner tag, member tag)``. A
+#: ``"<owner no> <member no>"`` pair, the shape Vissim uses for lane and
+#: signal-group refs.
+_PAIR_REFERENCES: dict[tuple[str, str, str], tuple[str, str]] = {
+    ("fromLanes", "objectRef", "key"): ("link", "lane"),
+    ("toLanes", "objectRef", "key"): ("link", "lane"),
+    ("signalHeads", "signalHead", "lane"): ("link", "lane"),
+    ("detectors", "detector", "lane"): ("link", "lane"),
+    ("signalHeads", "signalHead", "sg"): ("signalController", "signalGroup"),
+    (
+        "sigTmsTabConfig",
+        "signalOutputConfigurationElement",
+        "sg",
+    ): ("signalController", "signalGroup"),
+    # The same element under the detector-record configuration. Both parents
+    # were measured (2,703 occurrences in 199 files under <sigTmsTabConfig>, 60
+    # in 4 under <scDetRecConf>, 100 % resolving) rather than one being assumed
+    # from the other. All seven pair contexts are re-checked by ``--audit``.
+    (
+        "scDetRecConf",
+        "signalOutputConfigurationElement",
+        "sg",
+    ): ("signalController", "signalGroup"),
 }
 
 #: Attributes that LOOK like references and are deliberately NOT resolved, each
@@ -618,10 +1055,26 @@ _UNRESOLVED_REFERENCES: dict[str, str] = {
     ),
 }
 
-#: The measured tag inventory of what ``services.genesis`` emits (geometry-only
-#: + the four-layer full stack, 2026-08-11). A tag outside this set is a
-#: reference surface :data:`_SIMPLE_REFERENCES` was never measured against.
-KNOWN_EMITTED_TAGS: frozenset[str] = frozenset(
+#: The element types whose reference surface :data:`_SIMPLE_REFERENCES` and
+#: :data:`_PAIR_REFERENCES` were enumerated against — the tag inventory of what
+#: ``services.genesis`` emits (geometry-only + the four-layer full stack,
+#: 2026-08-11).
+#:
+#: The claim this set makes, stated exactly so nobody has to infer it: **for
+#: these element types the table has looked at every attribute and recorded a
+#: verdict** — reference (registered above), deliberately unresolvable
+#: (:data:`_UNRESOLVED_REFERENCES`), or parameter. For an element type OUTSIDE
+#: the set the table has looked at nothing, so V2 reads NOT_CHECKABLE with the
+#: tags named. That is why a real consultant model still ends NOT_CHECKABLE
+#: after the context fix: the fabricated findings are gone, but a file carrying
+#: conflict areas, priority rules, PT lines and parking lots carries reference
+#: surfaces this table has never enumerated, and "I did not look" is not "there
+#: is nothing there".
+#:
+#: Widening this set is a measurement job, not an edit: register the element
+#: type's reference attributes from ``tools/probe_reference_contexts.py``'s
+#: output first, then add the tag.
+MEASURED_REFERENCE_SURFACE_TAGS: frozenset[str] = frozenset(
     {
         "accelFuncDataPts", "accelerationFunctionDataPoint", "colorDistrEl",
         "colorDistribution", "colorDistributionElement", "colorDistributions",
@@ -651,7 +1104,29 @@ KNOWN_EMITTED_TAGS: frozenset[str] = frozenset(
         "vehicleInputs", "vehicleRouteStatic", "vehicleRoutingDecisionStatic",
         "vehicleRoutingDecisionsStatic", "vehicleType", "vehicleTypes",
         "weightDistribution", "weightDistributions",
+        # -- generic-membership CONTAINERS, added 2026-08-11 -----------------
+        # Pure wrappers: measured over the whole 825-file corpus, all 13 of these
+        # (and ``linkSeq`` above) carry ZERO attributes of their own in every
+        # occurrence, so "the reference surface of this element type is
+        # enumerated" is a claim the measurement supports outright. Four of them
+        # also hold the OBJECT elements themselves (``ptLine``, ``ptStop``,
+        # ``wttFile``, ``dataCollectionPoint``) beside the reference children —
+        # those object types carry attributes of their own, they are a reference
+        # surface nobody has enumerated, and they are deliberately NOT in this
+        # set, so a file that has one still reads NOT_CHECKABLE.
+        "actLvls", "blockedVehClasses", "blockedVehClassesDynAssign",
+        "dataCollectionPoints", "pedClasses", "pedTypes", "ptLines", "ptStops",
+        "scDetRecConf", "vehClasses", "vehTravTmMeas", "vehTypes", "wttFiles",
     }
+)
+
+#: ``(element tag, attribute)`` pairs the table resolves under AT LEAST ONE
+#: parent. An element carrying one of these attributes under a DIFFERENT parent
+#: is a measured reference surface in an unmeasured context — named, never
+#: resolved against the context we happen to know.
+_REFERENCE_SURFACE: frozenset[tuple[str, str]] = frozenset(
+    {(tag, attribute) for _, tag, attribute in _SIMPLE_REFERENCES}
+    | {(tag, attribute) for _, tag, attribute in _PAIR_REFERENCES}
 )
 
 
@@ -709,10 +1184,12 @@ class _Facts:
         root: ET.Element,
         topology: NetworkTopology | None,
         draft_metadata: dict[str, Any] | None,
+        *,
+        generator_marker: bool = False,
     ) -> None:
         self.root = root
         self.topology = topology
-        self.draft_metadata = draft_metadata or {}
+        self.offered_metadata = draft_metadata or {}
 
         self.links: dict[str, _LinkFacts] = {}
         self.connectors: dict[str, _LinkFacts] = {}
@@ -750,11 +1227,17 @@ class _Facts:
         self.nodes = root.findall(".//nodes/node")
 
         #: ``tag -> {no}`` for every element that declares one. V2's universe.
+        #: The same pass records each element's PARENT tag, because a
+        #: reference's referent is named by where it sits, not by what it is
+        #: called (see the reference table's own comment).
         self.declared: dict[str, set[str]] = defaultdict(set)
+        self.parent_tag: dict[ET.Element, str] = {}
         for element in root.iter():
             no = element.get("no")
             if no is not None:
                 self.declared[element.tag].add(no)
+            for child in element:
+                self.parent_tag[child] = element.tag
 
         #: The signal groups each controller declares.
         self.controller_groups: dict[str, set[str]] = {}
@@ -766,7 +1249,44 @@ class _Facts:
 
         self.tags: set[str] = {element.tag for element in root.iter()}
 
+        #: Who built this file, decided ONCE, on the artifact's own evidence.
+        self.provenance = _decide_provenance(
+            root,
+            draft_metadata,
+            network_links=set(self.links) | set(self.connectors),
+            network_nodes={node.get("no") or "" for node in self.nodes},
+            generator_marker=generator_marker,
+        )
+        #: The census, and ONLY when it was proven to describe this artifact. A
+        #: sidecar about another build is not weak evidence about this one, so a
+        #: clause that needs the census reads a gap rather than grading itself
+        #: against ids that may no longer exist.
+        self.draft_metadata: dict[str, Any] = (
+            self.offered_metadata if self.provenance.census_is_admissible else {}
+        )
+
     # -- derived helpers ----------------------------------------------------
+
+    @property
+    def grades_as_ours(self) -> bool:
+        """Does a provenance-scoped clause REFUSE on this file?
+
+        R1.5's coverage clauses are about **the phasing and the demand THIS
+        generator imported** — "임포트된 phasing의 …". They are contradictions of
+        the artifact's own provenance when we built it, and merely observations
+        about somebody else's modelling choice when we did not: PTV's OWN 2026
+        example library has 304 of 1,387 signal groups displayed by no head and
+        60 zero-volume vehicle inputs, so neither can be a universal defect.
+
+        The switch is :class:`Provenance`, and it is deliberately not a boolean:
+        ``OURS`` and ``UNKNOWN`` both refuse, and only proven ``FOREIGN`` rides
+        as a named warning. An unproven file graded leniently is a refuse-tier
+        defect converted into a warning by the ABSENCE of evidence, and
+        ``genesis_jobs.gate_and_publish`` publishes everything that is not
+        REFUSED — so that conversion is the difference between a defect being
+        stopped and it becoming the workspace's live dataset.
+        """
+        return self.provenance.grades_strictly
 
     def host(self, link_id: str | None) -> _LinkFacts | None:
         if not link_id:
@@ -1001,13 +1521,19 @@ def _check_v2(facts: _Facts, topology: NetworkTopology | None) -> CheckResult:
     the network vanish** — with ``load_ok=True`` and no ``.err``
     (``schema.py``'s own comment records it). One unresolved id two hops away
     from the geometry deleted the geometry.
+
+    Resolution is CONTEXT-AWARE: what a reference points at is decided by where
+    it sits, never by the element's name alone. See the reference table's own
+    comment for the measurement and for the 253 fabricated findings the
+    name-only version produced on the first real consultant model.
     """
     tier = CheckTier.REFUSE
     findings: list[GateFinding] = []
     gaps: list[GateGap] = []
     checked = 0
+    unmeasured_contexts: set[str] = set()
 
-    unknown_tags = sorted(facts.tags - KNOWN_EMITTED_TAGS)
+    unknown_tags = sorted(facts.tags - MEASURED_REFERENCE_SURFACE_TAGS)
     if unknown_tags:
         gaps.append(
             GateGap(
@@ -1017,34 +1543,51 @@ def _check_v2(facts: _Facts, topology: NetworkTopology | None) -> CheckResult:
         )
 
     for element in facts.root.iter():
-        for (tag, attribute), target in _SIMPLE_REFERENCES.items():
-            if element.tag != tag:
+        tag = element.tag
+        if not element.attrib:
+            continue
+        parent = facts.parent_tag.get(element, "")
+        generic = tag in GENERIC_REFERENCE_TAGS
+        for attribute, value in element.attrib.items():
+            context = (parent, tag, attribute)
+            simple_target = _SIMPLE_REFERENCES.get(context)
+            pair_target = _PAIR_REFERENCES.get(context)
+            if simple_target is None and pair_target is None:
+                # A reference surface we HAVE measured, appearing somewhere we
+                # have not — or a generic reference element, which is a
+                # reference by construction. Either way it is named, not
+                # guessed at. Anything else on an ordinary element stays quiet:
+                # the probe's own output is the evidence that an ordinary
+                # numeric attribute is far more often a parameter than a
+                # reference, and naming every one of them would bury the short,
+                # honest list under noise nobody can act on.
+                if generic or (tag, attribute) in _REFERENCE_SURFACE:
+                    unmeasured_contexts.add(f"{parent}/{tag}/@{attribute}")
                 continue
-            value = element.get(attribute)
-            if value is None:
-                continue
+
+            subject = f"{parent}/{tag}[{_self_id(element)}]/@{attribute}"
             checked += 1
-            if value not in facts.declared.get(target, set()):
-                findings.append(
-                    GateFinding(
-                        code="v2_unresolved_reference",
-                        subject=f"{tag}[{_self_id(element)}]/@{attribute}",
-                        context={"value": value, "target": target},
-                    )
+            if simple_target is not None:
+                spellings = (
+                    (simple_target,) if isinstance(simple_target, str) else simple_target
                 )
-        for (tag, attribute), (owner_tag, member_tag) in _PAIR_REFERENCES.items():
-            if element.tag != tag:
+                if not any(value in facts.declared.get(t, ()) for t in spellings):
+                    findings.append(
+                        GateFinding(
+                            code="v2_unresolved_reference",
+                            subject=subject,
+                            context={"value": value, "target": " | ".join(spellings)},
+                        )
+                    )
                 continue
-            value = element.get(attribute)
-            if value is None:
-                continue
-            checked += 1
+
+            owner_tag, member_tag = pair_target
             parts = value.split()
             if len(parts) != 2:
                 findings.append(
                     GateFinding(
                         code="v2_malformed_pair_reference",
-                        subject=f"{tag}[{_self_id(element)}]/@{attribute}",
+                        subject=subject,
                         context={"value": value, "expected": f"<{owner_tag} no> <{member_tag} no>"},
                     )
                 )
@@ -1056,7 +1599,7 @@ def _check_v2(facts: _Facts, topology: NetworkTopology | None) -> CheckResult:
                     findings.append(
                         GateFinding(
                             code="v2_unresolved_reference",
-                            subject=f"{tag}[{_self_id(element)}]/@{attribute}",
+                            subject=subject,
                             context={"value": owner, "target": owner_tag},
                         )
                     )
@@ -1064,7 +1607,7 @@ def _check_v2(facts: _Facts, topology: NetworkTopology | None) -> CheckResult:
                     findings.append(
                         GateFinding(
                             code="v2_lane_index_out_of_range",
-                            subject=f"{tag}[{_self_id(element)}]/@{attribute}",
+                            subject=subject,
                             context={"value": value, "link": owner, "lanes": host.lanes},
                         )
                     )
@@ -1074,7 +1617,7 @@ def _check_v2(facts: _Facts, topology: NetworkTopology | None) -> CheckResult:
                 findings.append(
                     GateFinding(
                         code="v2_unresolved_reference",
-                        subject=f"{tag}[{_self_id(element)}]/@{attribute}",
+                        subject=subject,
                         context={"value": owner, "target": owner_tag},
                     )
                 )
@@ -1082,10 +1625,19 @@ def _check_v2(facts: _Facts, topology: NetworkTopology | None) -> CheckResult:
                 findings.append(
                     GateFinding(
                         code="v2_unresolved_reference",
-                        subject=f"{tag}[{_self_id(element)}]/@{attribute}",
+                        subject=subject,
                         context={"value": value, "target": member_tag},
                     )
                 )
+
+    if unmeasured_contexts:
+        named = sorted(unmeasured_contexts)
+        gaps.append(
+            GateGap(
+                code="v2_reference_context_not_measured",
+                context={"contexts": named[:20], "count": len(named)},
+            )
+        )
 
     # The connector-endpoint sweep ``genesis.diff`` already owns. Used, not
     # duplicated — the same argument NetworkTopology makes for using the
@@ -1100,15 +1652,29 @@ def _check_v2(facts: _Facts, topology: NetworkTopology | None) -> CheckResult:
                 )
             )
 
+    clauses = [
+        _clause(
+            "v2_references_resolve",
+            findings=findings,
+            gaps=[g for g in gaps if g.code == "v2_reference_context_not_measured"],
+        ),
+        _clause(
+            "v2_surface_fully_measured",
+            gaps=[g for g in gaps if g.code == "v2_reference_table_not_measured_for_tag"],
+        ),
+    ]
     evidence = {
         "references_checked": checked,
-        "reference_kinds": len(_SIMPLE_REFERENCES) + len(_PAIR_REFERENCES),
+        "reference_contexts": len(_SIMPLE_REFERENCES) + len(_PAIR_REFERENCES),
         "reference_kinds_not_resolved": [
             f"{name} — {reason}" for name, reason in sorted(_UNRESOLVED_REFERENCES.items())
         ],
         "declared_object_tags": len(facts.declared),
+        "unmeasured_reference_contexts": len(unmeasured_contexts),
     }
-    return CheckResult.build("V2", tier, findings=findings, gaps=gaps, evidence=evidence)
+    return CheckResult.build(
+        "V2", tier, findings=findings, gaps=gaps, clauses=clauses, evidence=evidence
+    )
 
 
 def _self_id(element: ET.Element) -> str:
@@ -1216,23 +1782,57 @@ def _check_v3(facts: _Facts) -> CheckResult:
                     )
                 )
 
+    input_findings = [f for f in findings if f.code == "v3_input_cannot_reach_an_exit"]
+    reachability_findings = [f for f in findings if f.code != "v3_input_cannot_reach_an_exit"]
+    input_gaps = [g for g in gaps if g.code == "v3_no_vehicle_inputs"]
+
     # -- silent departure points -------------------------------------------
+    departure_findings: list[GateFinding] = []
+    departure_gaps: list[GateGap] = []
     connectivity = facts.draft_metadata.get("metadata", {}).get("connectivity")
     if not isinstance(connectivity, dict):
-        gaps.append(GateGap(code="v3_no_generator_census"))
+        # A census that does not describe THIS artifact is named as such rather
+        # than folded into "no census": grading a departure list against link
+        # ids from another build is the failure V1's sha256 gate exists to stop,
+        # and the operator's repair is different in each case.
+        if facts.offered_metadata and not facts.provenance.census_is_admissible:
+            census_gap = GateGap(
+                code="v3_census_is_not_about_this_network",
+                context={
+                    "reason": facts.provenance.census,
+                    "census_elements": facts.provenance.census_elements,
+                    "network_elements": facts.provenance.network_elements,
+                },
+            )
+        else:
+            census_gap = GateGap(code="v3_no_generator_census")
+        gaps.append(census_gap)
+        departure_gaps.append(census_gap)
     else:
         census = connectivity.get("dangling_approaches") or []
         for entry in sorted(census, key=lambda e: _id_sort_key(str(e.get("link_id", "")))):
             cause = str(entry.get("cause") or "")
             if cause in BENIGN_DANGLING_CAUSES:
                 continue
-            findings.append(
+            departure_findings.append(
                 GateFinding(
                     code="v3_silent_departure_point",
                     subject=str(entry.get("link") or entry.get("link_id") or "?"),
                     context={"cause": cause, "link_id": entry.get("link_id")},
                 )
             )
+    findings.extend(departure_findings)
+
+    # The reachability half of V3 runs on ANY .inpx, so on a file with no
+    # generator census it still EARNS its answer — reported as a passing clause
+    # rather than swallowed by the grey box the census gap puts around the
+    # check. The check itself is still NOT_CHECKABLE: a clause that could not
+    # run never becomes a pass, only a visible one.
+    clauses = [
+        _clause("v3_reachability", findings=reachability_findings),
+        _clause("v3_inputs_reach_an_exit", findings=input_findings, gaps=input_gaps),
+        _clause("v3_departures_are_at_the_boundary", findings=departure_findings, gaps=departure_gaps),
+    ]
 
     evidence = {
         "plain_links": len(facts.links),
@@ -1245,7 +1845,9 @@ def _check_v3(facts: _Facts) -> CheckResult:
         "links_in_a_broken_zone": len(broken),
         "vehicle_input_links": len(input_links),
     }
-    return CheckResult.build("V3", tier, findings=findings, gaps=gaps, evidence=evidence)
+    return CheckResult.build(
+        "V3", tier, findings=findings, gaps=gaps, clauses=clauses, evidence=evidence
+    )
 
 
 def _reach(seeds: Iterable[str], edges: dict[str, list[str]]) -> set[str]:
@@ -1297,7 +1899,22 @@ def _check_v4(facts: _Facts, settings: GateSettings) -> CheckResult:
 
     Clause 1 is exact: every ``<fromLanes>/<toLanes>`` reference names a link
     the file declares and a lane index within that link's lane count, and a
-    connector is never wider than either link it joins.
+    connector never maps MORE lanes on one side than that side's link has.
+
+    That last clause used to read "a connector is never wider than either link
+    it joins", and that is false of real Vissim. A connector's lane count is the
+    WIDER of its two ends when a road gains lanes across a junction: the extra
+    connector lanes simply carry no ``<fromLanes>`` (they begin at the
+    connector) or no ``<toLanes>`` (they end there). PTV's own Vissim 2026
+    example library settles it — 50 connectors across 17 networks are wider than
+    one of their links, in files named ``Inside Merge 2+2 to 3 Lanes`` and
+    ``Ghost Island Merge 2+3 to 4 Lanes, Diverge 4 to 2+3 Lanes``, which is the
+    modelling intent stated in the filename. On the first real consultant model
+    the old clause manufactured 33 findings, every one of them a lane gain.
+    What IS universal, and what this clause now asks, is that a side never maps
+    more lanes than exist there: measured 0 violations across all 8,381
+    connectors in that same PTV 2026 library, across this generator's own output
+    and across the consultant model.
 
     Clause 2 needs a distance, and the distance is **the file's own**: each link
     declares ``lnChgDist`` — how much road Vissim gives a vehicle to change
@@ -1321,14 +1938,14 @@ def _check_v4(facts: _Facts, settings: GateSettings) -> CheckResult:
             host = facts.host(host_id)
             if host is None:
                 continue  # V2 owns the missing link itself
-            if connector.lanes > host.lanes:
+            if len(refs) > host.lanes:
                 findings.append(
                     GateFinding(
-                        code="v4_connector_wider_than_link",
+                        code="v4_more_mapped_lanes_than_link_has",
                         subject=connector.id,
                         context={
                             "side": side,
-                            "connector_lanes": connector.lanes,
+                            "mapped_lanes": len(refs),
                             "link": host_id or "",
                             "link_lanes": host.lanes,
                         },
@@ -1485,9 +2102,42 @@ def _check_v5(facts: _Facts) -> CheckResult:
     going green on a network whose signals were never imported. That is the
     vacuous-pass trap this module exists to refuse: "every signalised approach
     has a head" is trivially true of zero approaches.
+
+    TWO OF THE THREE CLAUSES ARE ABOUT PHASING **WE** IMPORTED
+    ----------------------------------------------------------
+    R1.5 scopes V5 to "임포트된 phasing의 …". Head→controller, head→group and
+    head→lane integrity are universal — a head naming a controller the file does
+    not declare is broken in anybody's model, and those stay refuse-tier for
+    every file. The coverage clauses are not:
+
+    * **A signal group no head displays.** Measured across PTV's own Vissim 2026
+      example library: **304 of 1,387 signal groups** (22 %, in 36 of 126
+      signalised networks) are displayed by no head, and 45 of 292 controllers
+      have no head at all. Pedestrian phases in a network without pedestrians,
+      spare stages, imported controller rosters — all normal.
+    * **A signalised approach with no head.** "Approach" is derived from node
+      membership, and node footprints are drawn by whoever built the model. On
+      the first real consultant model, 8 of the 12 links this derivation calls
+      approaches of one node are *interior* links, and the stop lines sit on
+      those interior links rather than on the entering ones. The clause is
+      reformulated below to the question that IS portable — can traffic entering
+      a signalised node reach a head before it leaves — see
+      :func:`_node_entry_approaches` for what that costs and what it must not
+      buy. The findings that survive it are partially signalised junctions (a
+      bus gate, a signalised crossing on one arm) in PTV's own library and in
+      the consultant model, which no ``.inpx`` can distinguish from a missing
+      head.
+
+    So both are run against every file and reported in full, and their SEVERITY
+    follows provenance: a refusal when this generator built the network (the
+    artifact contradicts the import it claims) OR when nothing proves who did,
+    and a named warning only on a file PROVEN to be somebody else's. See
+    :attr:`_Facts.grades_as_ours` and :class:`Provenance`.
     """
     tier = CheckTier.REFUSE
     findings: list[GateFinding] = []
+    warnings: list[GateFinding] = []
+    provenance_findings: list[GateFinding] = []
     gaps: list[GateGap] = []
 
     if not facts.signal_controllers and not facts.signal_heads:
@@ -1540,7 +2190,7 @@ def _check_v5(facts: _Facts) -> CheckResult:
     for controller in sorted(facts.controller_groups, key=_id_sort_key):
         for group in sorted(facts.controller_groups[controller], key=_id_sort_key):
             if (controller, group) not in groups_with_head:
-                findings.append(
+                provenance_findings.append(
                     GateFinding(
                         code="v5_signal_group_without_head",
                         subject=f"{controller} {group}",
@@ -1548,7 +2198,7 @@ def _check_v5(facts: _Facts) -> CheckResult:
                     )
                 )
 
-    # -- every signalised approach carries at least one head ----------------
+    # -- traffic entering a signalised node meets a head inside it -----------
     if facts.topology is None or not facts.topology.node_members:
         gaps.append(GateGap(code="v5_no_node_membership"))
     else:
@@ -1570,39 +2220,200 @@ def _check_v5(facts: _Facts) -> CheckResult:
         if not signalised_nodes:
             gaps.append(GateGap(code="v5_heads_belong_to_no_node"))
         for node_id in signalised_nodes:
-            for approach in _node_approaches(facts, node_id):
-                if heads_by_link.get(approach, 0) == 0:
-                    findings.append(
+            for approach in _node_entry_approaches(facts, node_id, heads_by_link):
+                if not _reaches_a_head_inside_node(facts, node_id, approach, heads_by_link):
+                    provenance_findings.append(
                         GateFinding(
-                            code="v5_signalised_approach_without_head",
+                            code="v5_approach_reaches_no_head_in_node",
                             subject=_label(facts, approach),
                             context={"node": node_id},
                         )
                     )
 
+    head_findings = list(findings)
+    strict = facts.grades_as_ours
+    if strict:
+        findings.extend(provenance_findings)
+    else:
+        warnings.extend(provenance_findings)
+
+    # ``v5_no_node_membership`` / ``v5_heads_belong_to_no_node`` are what the
+    # COVERAGE clause needed and did not get; head integrity ran regardless.
+    # The "not our import" gap goes into the CHECK's gaps too, not the clause's
+    # alone: a check that could not certify its own coverage question is
+    # NOT_CHECKABLE, and a reader of the verdict is owed the reason by name.
+    if not strict:
+        gaps.append(
+            GateGap(
+                code="v5_coverage_is_not_our_import",
+                context={"provenance": facts.provenance.state.value},
+            )
+        )
+    clauses = [
+        _clause("v5_heads_resolve", findings=head_findings),
+        _clause(
+            "v5_coverage_of_the_imported_phasing",
+            findings=provenance_findings if strict else (),
+            gaps=gaps,
+        ),
+    ]
     evidence = {
         "signal_controllers": len(facts.signal_controllers),
         "signal_heads": len(facts.signal_heads),
         "signal_groups": sum(len(v) for v in facts.controller_groups.values()),
         "links_with_a_head": len(heads_by_link),
         "detectors": len(facts.detectors),
+        # The tier this check applied, IN the check, so "9 passed" can never
+        # quietly mean "and two refusals were downgraded".
+        "provenance": facts.provenance.state.value,
+        "coverage_tier": "refuse" if strict else "warn",
     }
-    return CheckResult.build("V5", tier, findings=findings, gaps=gaps, evidence=evidence)
+    return CheckResult.build(
+        "V5",
+        tier,
+        findings=findings,
+        warnings=warnings,
+        gaps=gaps,
+        clauses=clauses,
+        evidence=evidence,
+    )
 
 
-def _node_approaches(facts: _Facts, node_id: str) -> list[str]:
-    """The plain links traffic enters ``node_id`` on, in id order.
+def _node_members(facts: _Facts, node_id: str) -> set[str]:
+    return facts.topology.node_members.get(node_id, set()) if facts.topology else set()
 
-    Derived from the node's own connector membership: a connector belonging to
-    the node leaves the approach it belongs to. Never from proximity.
+
+def _node_entry_approaches(
+    facts: _Facts, node_id: str, heads_by_link: dict[str, int]
+) -> list[str]:
+    """Every plain link traffic enters ``node_id`` on **without having passed a
+    stop line to get there**, in id order.
+
+    Derived from the node's own connector membership, never from proximity: a
+    connector belonging to the node leaves the link it belongs to. A link that
+    is itself fed by a connector of the SAME node is *interior* — a leg inside
+    the junction rather than an arm arriving at it — and a modeller who meshes
+    the junction interior would otherwise have every internal leg counted as an
+    unsignalised approach (35 of the 47 links the old, membership-only
+    derivation called approaches on the first real consultant model are
+    interior).
+
+    THE EXCLUSION IS CONDITIONAL, AND THE CONDITION IS THE WHOLE POINT
+    ------------------------------------------------------------------
+    An interior leg is only innocent because traffic on it **already met a head
+    upstream, inside this node**. Excluding every interior link unconditionally
+    — as this did until 2026-08-11 — deletes the branch from the check before
+    the reachability walk ever sees it, so a leg that meets NO head on any path,
+    forward or back, disappears with no finding and no warning. Measured:
+
+    ==================================== ===== ==========
+    rule                                 PTV   consultant
+    ==================================== ===== ==========
+    membership only, head on the arm      195         30
+    unconditional interior exclusion        6          5
+    no exclusion at all                    30         19
+    **exclusion only where a head is
+    upstream (this rule)**                 15         10
+    ==================================== ===== ==========
+
+    Dropping the exclusion entirely would indeed catch the hidden cases, but it
+    re-manufactures the false positives it was built for: of the 24 extra hits
+    on PTV's 2026 library, **15 have a head upstream inside the node** (traffic
+    there passed the stop line already) and only 9 are real. Asking the upstream
+    question keeps all 9 — e.g. PTV's own ``Mainz - Static Routes``, where link 8
+    feeds both a signalised movement and link 68, and everything through 68 and
+    out crosses node 22 without ever meeting a head — and reinstates none of the
+    15. On the consultant model the same rule recovers 5 real cases the
+    unconditional exclusion hid.
+
+    ``heads_by_link`` is a parameter rather than a lookup so this function stays
+    a pure statement about one node.
     """
-    members = (facts.topology.node_members.get(node_id, set()) if facts.topology else set())
+    members = _node_members(facts, node_id)
+    connectors = [m for m in members if m in facts.connectors]
     approaches = {
         facts.connectors[member].from_link
-        for member in members
-        if member in facts.connectors and facts.connectors[member].from_link in facts.links
+        for member in connectors
+        if facts.connectors[member].from_link in facts.links
     }
-    return sorted((a for a in approaches if a), key=_id_sort_key)
+    interior = {
+        facts.connectors[member].to_link
+        for member in connectors
+        if facts.connectors[member].to_link in facts.links
+    }
+    excluded = {
+        link_id
+        for link_id in approaches & interior
+        if _passed_a_head_inside_node(facts, node_id, link_id, heads_by_link)
+    }
+    return sorted((a for a in approaches - excluded if a), key=_id_sort_key)
+
+
+def _passed_a_head_inside_node(
+    facts: _Facts, node_id: str, link_id: str, heads_by_link: dict[str, int]
+) -> bool:
+    """Did traffic on ``link_id`` meet a head on its way INTO it, inside the node?
+
+    The mirror of :func:`_reaches_a_head_inside_node`, walking the node's own
+    connectors backwards. It answers the only question that makes an interior
+    leg innocent, and it answers it about the leg rather than about the shape of
+    the junction.
+    """
+    members = _node_members(facts, node_id)
+    connectors = [m for m in members if m in facts.connectors]
+    seen = {link_id}
+    queue = deque([link_id])
+    while queue:
+        current = queue.popleft()
+        for member in connectors:
+            connector = facts.connectors[member]
+            if connector.to_link != current:
+                continue
+            for previous in (member, connector.from_link):
+                if not previous or previous in seen:
+                    continue
+                if heads_by_link.get(previous, 0) > 0:
+                    return True
+                seen.add(previous)
+                queue.append(previous)
+    return False
+
+
+def _reaches_a_head_inside_node(
+    facts: _Facts, node_id: str, approach: str, heads_by_link: dict[str, int]
+) -> bool:
+    """Can traffic entering on ``approach`` meet a signal head before it leaves
+    ``node_id``?
+
+    The portable form of "every signalised approach has a head". Where a stop
+    line sits — on the arm itself, or on a short interior leg one connector in —
+    is a modelling convention, and both conventions occur in real files; where
+    it does NOT sit is the defect. The walk stays inside the node's own
+    membership, so a head one junction downstream never launders an arm that has
+    none.
+    """
+    if heads_by_link.get(approach, 0) > 0:
+        return True
+    members = _node_members(facts, node_id)
+    connectors = [m for m in members if m in facts.connectors]
+    seen = {approach}
+    queue = deque([approach])
+    while queue:
+        current = queue.popleft()
+        for member in connectors:
+            connector = facts.connectors[member]
+            if connector.from_link != current:
+                continue
+            for nxt in (member, connector.to_link):
+                if not nxt or nxt in seen:
+                    continue
+                if nxt not in members:
+                    continue
+                if heads_by_link.get(nxt, 0) > 0:
+                    return True
+                seen.add(nxt)
+                queue.append(nxt)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1625,9 +2436,19 @@ def _check_v6(facts: _Facts) -> CheckResult:
     ``lanes x 1900 veh/h``, and excess queues invisibly as latent demand rather
     than being refused. One constant, imported, so the gate and the guardrail
     cannot disagree about the same link.
+
+    A ``volume`` is a RATE, in veh/h, that applies DURING one time interval, so
+    the demand on a link is the largest of its per-interval totals — never the
+    sum across intervals. This generator emits one interval per input, which
+    made sum and max the same number and hid the difference until a real
+    consultant model with six 15-minute intervals reported 11,893 veh/h on a
+    three-lane road: six intervals of a perfectly ordinary ~1,980 veh/h, added
+    up. Six of that model's warn-tier capacity findings were that arithmetic and
+    nothing else.
     """
     tier = CheckTier.REFUSE
     findings: list[GateFinding] = []
+    provenance_findings: list[GateFinding] = []
     gaps: list[GateGap] = []
 
     if not facts.vehicle_inputs:
@@ -1672,7 +2493,11 @@ def _check_v6(facts: _Facts) -> CheckResult:
     decision_links = {
         el.get("link") or "" for el in facts.routing_decisions
     } - {""}
-    volume_by_link: dict[str, float] = defaultdict(float)
+    #: ``link -> {time interval token -> concurrent veh/h}``. Keyed by the
+    #: interval so the comparison against capacity is rate against rate.
+    volume_by_link_interval: dict[str, dict[str, float]] = defaultdict(
+        lambda: defaultdict(float)
+    )
 
     for element in sorted(facts.vehicle_inputs, key=lambda e: _id_sort_key(e.get("no") or "")):
         input_no = element.get("no") or "?"
@@ -1684,7 +2509,7 @@ def _check_v6(facts: _Facts) -> CheckResult:
             )
         positive = [v for v in volumes if _as_float(v.get("volume")) > 0]
         if volumes and not positive:
-            findings.append(
+            provenance_findings.append(
                 GateFinding(
                     code="v6_input_volume_is_zero",
                     subject=input_no,
@@ -1692,7 +2517,8 @@ def _check_v6(facts: _Facts) -> CheckResult:
                 )
             )
         for volume in volumes:
-            volume_by_link[link_id] += _as_float(volume.get("volume"))
+            interval = " ".join((volume.get("timeInt") or "").split()) or "?"
+            volume_by_link_interval[link_id][interval] += _as_float(volume.get("volume"))
             comp = volume.get("vehComp") or ""
             if comp not in composition_flows:
                 findings.append(
@@ -1719,11 +2545,16 @@ def _check_v6(facts: _Facts) -> CheckResult:
     # it queues as latent demand — so it rides on the result and never refuses
     # a build on its own.
     warnings: list[GateFinding] = []
-    for link_id, volume in sorted(volume_by_link.items(), key=lambda kv: _id_sort_key(kv[0])):
+    for link_id, per_interval in sorted(
+        volume_by_link_interval.items(), key=lambda kv: _id_sort_key(kv[0])
+    ):
         link = facts.links.get(link_id)
         if link is None or link.lanes <= 0:
             continue
         capacity = link.lanes * ROUGH_LANE_CAPACITY_VEH_PER_H
+        peak_interval, volume = max(
+            sorted(per_interval.items()), key=lambda kv: kv[1], default=("?", 0.0)
+        )
         if volume > capacity:
             warnings.append(
                 GateFinding(
@@ -1733,20 +2564,70 @@ def _check_v6(facts: _Facts) -> CheckResult:
                         "volume_vph": round(volume, 2),
                         "capacity_vph": capacity,
                         "lanes": link.lanes,
+                        "interval": peak_interval,
+                        "intervals": len(per_interval),
                     },
                 )
             )
 
+    # A zero-volume vehicle input contributes nothing, which contradicts a
+    # demand layer THIS generator built (it emits an input only where it has a
+    # count) and is an ordinary modelling idiom in a file it did not: a
+    # spreadsheet-driven build declares the same input on every entry link and
+    # leaves the volume at 0 where the count was 0, and PTV's own 2026 example
+    # library carries 60 of them among 1,116 inputs. Named either way; rides as
+    # a warning only on a file PROVEN to be somebody else's — an unprovable
+    # provenance refuses, because a demotion earned by MISSING evidence is how a
+    # refuse-tier defect reaches the workspace as a published dataset.
+    strict = facts.grades_as_ours
+    if strict:
+        findings.extend(provenance_findings)
+    else:
+        warnings.extend(provenance_findings)
+        # In the CHECK's gaps, not the clause's alone — see ``_check_v5``.
+        gaps.append(
+            GateGap(
+                code="v6_zero_volume_is_not_our_import",
+                context={"provenance": facts.provenance.state.value},
+            )
+        )
+
+    clauses = [
+        _clause(
+            "v6_structure",
+            findings=[f for f in findings if f.code != "v6_input_volume_is_zero"],
+            gaps=[g for g in gaps if g.code != "v6_zero_volume_is_not_our_import"],
+        ),
+        _clause(
+            "v6_every_input_generates_traffic",
+            findings=provenance_findings if strict else (),
+            gaps=() if strict
+            else (GateGap(code="v6_zero_volume_is_not_our_import"),),
+        ),
+    ]
     evidence = {
+        "provenance": facts.provenance.state.value,
+        "zero_volume_tier": "refuse" if strict else "warn",
         "vehicle_inputs": len(facts.vehicle_inputs),
         "compositions": len(facts.compositions),
         "routing_decisions": len(facts.routing_decisions),
-        "links_with_demand": len(volume_by_link),
-        "links_over_rough_capacity": len(warnings),
+        "links_with_demand": len(volume_by_link_interval),
+        "links_over_rough_capacity": len(
+            [w for w in warnings if w.code == "v6_link_demand_over_capacity"]
+        ),
+        "demand_time_intervals": len(
+            {i for per in volume_by_link_interval.values() for i in per}
+        ),
         "rough_lane_capacity_veh_per_h": ROUGH_LANE_CAPACITY_VEH_PER_H,
     }
     return CheckResult.build(
-        "V6", tier, findings=findings, warnings=warnings, gaps=gaps, evidence=evidence
+        "V6",
+        tier,
+        findings=findings,
+        warnings=warnings,
+        gaps=gaps,
+        clauses=clauses,
+        evidence=evidence,
     )
 
 
@@ -2081,8 +2962,12 @@ def run_gate(
     """Run all nine checks against one generated ``.inpx``.
 
     ``draft_metadata`` is the draft's ``*.genesis.json`` as a dict (V3's
-    boundary attribution). ``load_oracle`` is V1's live evidence; without it the
-    verdict can never be an unqualified pass. Nothing here opens COM.
+    boundary attribution, and the evidence :class:`Provenance` rests on). It is
+    admitted only when it is proven to describe THIS file — see
+    :func:`_census_identity`; a sidecar about another build is ignored with the
+    reason named, exactly as V1 treats a load oracle for another network.
+    ``load_oracle`` is V1's live evidence; without it the verdict can never be
+    an unqualified pass. Nothing here opens COM.
 
     An unreadable file is not an empty network: the whole gate refuses with V1
     and V2 naming the read failure, and no check reports a pass.
@@ -2097,7 +2982,9 @@ def run_gate(
         return _unreadable_result(path, digest, refusal)
 
     root = ET.parse(path).getroot()
-    facts = _Facts(root, topology, draft_metadata)
+    facts = _Facts(
+        root, topology, draft_metadata, generator_marker=_carries_generator_marker(path)
+    )
 
     reference_topology: NetworkTopology | None = None
     if reference_inpx is not None:
@@ -2118,6 +3005,7 @@ def run_gate(
         network=path.name,
         network_sha256=digest,
         verdict=_verdict(checks),
+        provenance=facts.provenance,
         checks=checks,
     )
 
@@ -2153,7 +3041,14 @@ def _unreadable_result(
         for check_id, tier in _CHECK_TIERS.items()
     ]
     return GateResult(
-        network=path.name, network_sha256=digest, verdict=GateVerdict.INCOMPLETE, checks=checks
+        network=path.name,
+        network_sha256=digest,
+        verdict=GateVerdict.INCOMPLETE,
+        # Nothing could be read, so nothing is known — and unknown never softens.
+        provenance=ProvenanceEvidence(
+            state=Provenance.UNKNOWN, census="absent", generator_marker=False
+        ),
+        checks=checks,
     )
 
 
@@ -2190,6 +3085,15 @@ def render_report(
         "",
         pick_text(_REPORT['summary'], language).format(**counts),
         "",
+        # Provenance decides the TIER of V5's and V6's coverage clauses, so the
+        # same verdict word means two different things without it on the page.
+        pick_text(_REPORT["provenance"], language).format(
+            state=pick_text(
+                _PROVENANCE_LABEL[result.provenance.state.value], language
+            ),
+            census=pick_text(_CENSUS_LABEL[result.provenance.census], language),
+        ),
+        "",
     ]
     blocking = result.blocking
     if blocking:
@@ -2205,6 +3109,9 @@ def render_report(
         state = pick_text(_STATE_LABEL[check.state.value], language)
         tier = pick_text(_TIER_LABEL[check.tier.value], language)
         out.append(f"## {check.id} [{state}] ({tier}) {check.title(language)}")
+        for clause in check.clauses:
+            label = pick_text(_STATE_LABEL[clause.state.value], language)
+            out.append(f"- [{label}] {clause.message(language)}")
         for gap in check.gaps[: settings.max_subjects_rendered]:
             out.append(f"- {pick_text(_REPORT['gap'], language)}: {gap.message(language)}")
         if len(check.gaps) > settings.max_subjects_rendered:
@@ -2254,6 +3161,48 @@ _VERDICT_LABEL: dict[str, dict[str, str]] = {
     },
 }
 
+_PROVENANCE_LABEL: dict[str, dict[str, str]] = {
+    "ours": {
+        "ko": "이 생성기가 만든 네트워크(명부로 입증)",
+        "en": "built by this generator (proven by its census)",
+        "ja": "この生成器が作成(名簿で立証)",
+    },
+    "foreign": {
+        "ko": "이 생성기가 만들지 않은 네트워크(이 생성기가 쓸 수 없는 최상위 컨테이너 존재)",
+        "en": "NOT built by this generator (it declares a top-level container the "
+        "emitter cannot write)",
+        "ja": "この生成器の作成ではない(出力できない最上位コンテナが存在)",
+    },
+    "unknown": {
+        "ko": "출처 미입증 — 거부 등급 그대로 채점합니다",
+        "en": "provenance UNPROVEN — graded at the strict (refuse) tier",
+        "ja": "出自は未証明 — 拒否ティアのまま採点します",
+    },
+}
+
+_CENSUS_LABEL: dict[str, dict[str, str]] = {
+    "absent": {
+        "ko": "생성기 명부 없음",
+        "en": "no generator census supplied",
+        "ja": "生成器の名簿なし",
+    },
+    "matches_this_network": {
+        "ko": "명부가 이 파일의 요소와 일치",
+        "en": "the census matches this file's own elements",
+        "ja": "名簿がこのファイルの要素と一致",
+    },
+    "describes_another_network": {
+        "ko": "명부가 다른 빌드를 설명함 — 채택하지 않음",
+        "en": "the census describes another build — not admitted",
+        "ja": "名簿は別のビルドの記述 — 採用せず",
+    },
+    "declares_no_elements": {
+        "ko": "명부가 요소를 선언하지 않아 대조 불가 — 채택하지 않음",
+        "en": "the census declares no elements to match against — not admitted",
+        "ja": "名簿が要素を宣言せず照合不可 — 採用せず",
+    },
+}
+
 _REPORT: dict[str, dict[str, str]] = {
     "heading": {
         "ko": "R1.5 네트워크 검증 게이트",
@@ -2273,6 +3222,11 @@ _REPORT: dict[str, dict[str, str]] = {
     },
     "gap": {"ko": "확인 불가 사유", "en": "not checkable", "ja": "確認不可の理由"},
     "evidence": {"ko": "근거", "en": "evidence", "ja": "根拠"},
+    "provenance": {
+        "ko": "출처: {state} — {census}",
+        "en": "Provenance: {state} — {census}",
+        "ja": "出自: {state} — {census}",
+    },
     "footer": {
         "ko": "실행되지 못한 검사는 통과로 계산되지 않습니다. V1 없이는 어떤 판정도 무조건적 통과가 아닙니다.",
         "en": "A check that could not run is never counted as a pass. Without V1 no verdict is "
@@ -2436,6 +3390,24 @@ _TEXT: dict[str, dict[str, str]] = {
         "en": "{subject} — points at a link the network does not contain.",
         "ja": "{subject} — ネットワークに存在しないリンクを指しています。",
     },
+    "v2_reference_context_not_measured": {
+        "ko": "참조가 놓인 위치 {count}종을 측정한 적이 없어 그 대상을 추정하지 않고 미확인으로 둡니다: "
+        "{contexts}",
+        "en": "{count} reference context(s) have never been measured, so their targets are left "
+        "unresolved rather than guessed: {contexts}",
+        "ja": "参照の置かれた文脈 {count} 種を測定したことがないため、対象を推測せず未確認とします: "
+        "{contexts}",
+    },
+    "v2_references_resolve": {
+        "ko": "측정된 문맥의 모든 참조가 파일이 선언한 대상을 가리킨다",
+        "en": "every reference in a measured context names an object the file declares",
+        "ja": "測定済み文脈の全参照がファイルの宣言対象を指す",
+    },
+    "v2_surface_fully_measured": {
+        "ko": "이 파일의 모든 요소 종류에 대해 참조 표면이 측정되어 있다",
+        "en": "the reference surface of every element type in this file has been measured",
+        "ja": "このファイルの全要素種について参照表面が測定済み",
+    },
     # -- V3 ----------------------------------------------------------------
     "v3_no_vehicle_inputs": {
         "ko": "vehicle input이 하나도 없어 '모든 input이 출구에 도달하는가'를 검사할 대상이 없습니다.",
@@ -2450,6 +3422,15 @@ _TEXT: dict[str, dict[str, str]] = {
         "silent one — supply the generator's own census (*.genesis.json).",
         "ja": ".inpx だけではモデル境界での正常な流出と静かな流出を区別できません — "
         "生成器の名簿(*.genesis.json)を渡してください。",
+    },
+    "v3_census_is_not_about_this_network": {
+        "ko": "생성기 명부가 있지만 이 파일을 설명하지 않습니다({reason}: 명부 요소 {census_elements}개 "
+        "vs 파일 요소 {network_elements}개) — 다른 빌드의 명부는 약한 근거가 아니라 근거가 아닙니다.",
+        "en": "A generator census was supplied but it does not describe THIS file "
+        "({reason}: {census_elements} census element(s) vs {network_elements} in the network) — "
+        "a census about another build is not weak evidence, it is no evidence.",
+        "ja": "生成器の名簿はありますが、このファイルを説明していません({reason}: 名簿 "
+        "{census_elements} 要素 vs ファイル {network_elements} 要素) — 別ビルドの名簿は根拠になりません。",
     },
     "v3_orphan_link": {
         "ko": "{subject}: 도착하는 커넥터도 떠나는 커넥터도 없는 고아 링크입니다.",
@@ -2491,6 +3472,21 @@ _TEXT: dict[str, dict[str, str]] = {
         "vehicles depart the network here in silence ({cause}).",
         "ja": "{subject}: モデル境界でないのに出発するコネクタがありません — 車両が静かに消える地点です({cause})。",
     },
+    "v3_reachability": {
+        "ko": "고아 링크 0건, 도달 불능·이탈 불능 구역 0건 (.inpx만으로 판정 가능)",
+        "en": "no orphan links and no unreachable or trapped zone (answerable from the .inpx alone)",
+        "ja": "孤立リンク 0 件、到達不能・離脱不能ゾーン 0 件(.inpx 単独で判定可能)",
+    },
+    "v3_inputs_reach_an_exit": {
+        "ko": "모든 vehicle input에서 네트워크 출구에 도달할 수 있다",
+        "en": "every vehicle input can reach a network exit",
+        "ja": "全 vehicle input からネットワーク出口に到達できる",
+    },
+    "v3_departures_are_at_the_boundary": {
+        "ko": "차량이 떠나는 지점은 전부 모델 경계다 (생성기 명부 필요)",
+        "en": "every point traffic departs at is the model boundary (needs the generator's census)",
+        "ja": "車両が離脱する地点はすべてモデル境界である(生成器の名簿が必要)",
+    },
     # -- V4 ----------------------------------------------------------------
     "v4_link_declares_no_lane_change_distance": {
         "ko": "링크 {link}가 lnChgDist를 선언하지 않아 필요한 차로변경 거리를 알 수 없습니다.",
@@ -2503,11 +3499,13 @@ _TEXT: dict[str, dict[str, str]] = {
         "expansions; a lower bound is not graded.",
         "ja": "リンク {link} の上流距離探索が予算 {budget} 回を使い切りました — 下限値では判定しません。",
     },
-    "v4_connector_wider_than_link": {
-        "ko": "커넥터 {subject}: {side} 쪽 링크 {link}의 차로는 {link_lanes}개인데 커넥터는 {connector_lanes}차로입니다.",
-        "en": "Connector {subject}: its {side} link {link} has {link_lanes} lane(s) but the "
-        "connector is {connector_lanes} lane(s) wide.",
-        "ja": "コネクタ {subject}: {side} 側リンク {link} の車線は {link_lanes} 本ですが、コネクタは {connector_lanes} 車線です。",
+    "v4_more_mapped_lanes_than_link_has": {
+        "ko": "커넥터 {subject}: {side} 쪽 링크 {link}의 차로는 {link_lanes}개인데 {mapped_lanes}개 차로를 "
+        "매핑합니다 — 존재하지 않는 차로를 잇습니다.",
+        "en": "Connector {subject}: it maps {mapped_lanes} lane(s) on its {side} side, but link "
+        "{link} has only {link_lanes} — it joins lanes that do not exist.",
+        "ja": "コネクタ {subject}: {side} 側リンク {link} の車線は {link_lanes} 本ですが {mapped_lanes} "
+        "本を対応付けています — 存在しない車線を繋いでいます。",
     },
     "v4_lane_reference_malformed": {
         "ko": "커넥터 {subject}: {side} 차로 참조 '{value}'가 '<링크> <차로>' 형식이 아닙니다.",
@@ -2571,10 +3569,33 @@ _TEXT: dict[str, dict[str, str]] = {
         "en": "Signal group {subject}: no signal head displays it — the phase controls nothing.",
         "ja": "signal group {subject}: これを表示する signal head がありません — 現示が何も制御しません。",
     },
-    "v5_signalised_approach_without_head": {
-        "ko": "{subject}: 노드 {node}는 신호화되어 있는데 이 접근로에 signal head가 없습니다.",
-        "en": "{subject}: node {node} is signalised but this approach carries no signal head.",
-        "ja": "{subject}: ノード {node} は信号化されていますが、この approach に signal head がありません。",
+    "v5_approach_reaches_no_head_in_node": {
+        "ko": "{subject}: 노드 {node}는 신호화되어 있는데, 이 접근로로 진입한 차량은 노드를 빠져나갈 때까지 "
+        "어떤 signal head도 만나지 않습니다.",
+        "en": "{subject}: node {node} is signalised, but traffic entering on this approach meets no "
+        "signal head anywhere before it leaves the node.",
+        "ja": "{subject}: ノード {node} は信号化されていますが、この approach から進入した車両はノードを"
+        "出るまでいかなる signal head にも出会いません。",
+    },
+    "v5_heads_resolve": {
+        "ko": "모든 signal head가 실재하는 컨트롤러·그룹·차로를 가리킨다",
+        "en": "every signal head names a controller, a group and a lane that exist",
+        "ja": "全 signal head が実在するコントローラ・グループ・車線を指す",
+    },
+    "v5_coverage_of_the_imported_phasing": {
+        "ko": "임포트한 phasing의 커버리지 — 모든 group이 head에, 신호 노드의 모든 진입 접근로가 head를 만난다",
+        "en": "coverage of the phasing we imported — every group on a head, every entering approach "
+        "of a signalised node meeting one",
+        "ja": "取り込んだ phasing のカバレッジ — 全 group が head に、信号ノードの全進入 approach が head に出会う",
+    },
+    "v5_coverage_is_not_our_import": {
+        "ko": "이 네트워크는 이 생성기가 만든 것이 아닙니다 — phasing 커버리지가 결함인지 설계인지는 "
+        "파일이 말해주지 않으므로, 발견 사항은 이름을 붙여 경고로만 보고합니다.",
+        "en": "This network was not built by this generator, so whether a coverage gap in its "
+        "phasing is a defect or a modelling choice is not something the file can say; the "
+        "observations are named and reported as warnings only.",
+        "ja": "このネットワークは本ジェネレータの生成物ではないため、phasing のカバレッジ不足が欠陥か"
+        "設計かはファイルからは判断できません。所見は名前を付けて警告としてのみ報告します。",
     },
     # -- V6 ----------------------------------------------------------------
     "v6_no_demand_layer": {
@@ -2625,12 +3646,35 @@ _TEXT: dict[str, dict[str, str]] = {
         "その配分は観測ではなく Vissim が作り出した値になります。",
     },
     "v6_link_demand_over_capacity": {
-        "ko": "{subject}: 차로 {lanes}개의 개략 용량 {capacity_vph} veh/h를 수요 {volume_vph} veh/h가 "
-        "초과합니다 — 초과분은 화면에 보이지 않는 잠재 수요로 대기합니다.",
-        "en": "{subject}: demand {volume_vph} veh/h exceeds the rough capacity {capacity_vph} veh/h "
-        "of {lanes} lane(s) — the excess queues invisibly as latent demand.",
-        "ja": "{subject}: 需要 {volume_vph} veh/h が車線 {lanes} 本の概略容量 {capacity_vph} veh/h を"
-        "超えています — 超過分は不可視の潜在需要として待機します。",
+        "ko": "{subject}: 구간 {interval}에서 차로 {lanes}개의 개략 용량 {capacity_vph} veh/h를 "
+        "동시 수요 {volume_vph} veh/h가 초과합니다(전체 {intervals}개 구간 중 최대) — 초과분은 "
+        "화면에 보이지 않는 잠재 수요로 대기합니다.",
+        "en": "{subject}: in interval {interval} the concurrent demand {volume_vph} veh/h exceeds "
+        "the rough capacity {capacity_vph} veh/h of {lanes} lane(s) (the peak of {intervals} "
+        "interval(s)) — the excess queues invisibly as latent demand.",
+        "ja": "{subject}: 区間 {interval} で車線 {lanes} 本の概略容量 {capacity_vph} veh/h を同時需要 "
+        "{volume_vph} veh/h が超えています(全 {intervals} 区間の最大) — 超過分は不可視の潜在需要"
+        "として待機します。",
+    },
+    "v6_structure": {
+        "ko": "구조 — composition 합, 참조, 그리고 모든 input이 분기 전에 라우팅 결정을 만난다",
+        "en": "structure — compositions add up, references resolve, every input meets a routing "
+        "decision before it branches",
+        "ja": "構造 — composition の合計・参照・全 input が分岐前に経路決定に出会う",
+    },
+    "v6_every_input_generates_traffic": {
+        "ko": "우리가 만든 수요층의 모든 vehicle input이 실제로 차량을 생성한다",
+        "en": "every vehicle input in the demand layer we built actually generates traffic",
+        "ja": "我々が構築した需要層の全 vehicle input が実際に車両を生成する",
+    },
+    "v6_zero_volume_is_not_our_import": {
+        "ko": "이 수요층은 이 생성기가 만든 것이 아닙니다 — 볼륨 0인 input이 누락인지 '해당 없음'의 "
+        "표기인지 파일이 말해주지 않으므로, 이름을 붙여 경고로만 보고합니다.",
+        "en": "This demand layer was not built by this generator, so whether a zero-volume input is "
+        "a missing count or a recorded 'none' is not something the file can say; it is named and "
+        "reported as a warning only.",
+        "ja": "この需要層は本ジェネレータの生成物ではないため、交通量 0 の input が欠落なのか「該当なし」"
+        "の記録なのかはファイルからは判断できません。名前を付けて警告としてのみ報告します。",
     },
     # -- V7 ----------------------------------------------------------------
     "v7_no_reference_network": {

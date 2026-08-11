@@ -41,9 +41,26 @@ import main
 from conftest import admin_headers, bearer_headers
 from services import datasets, genesis_jobs, workspaces
 from services.datasets import DatasetStorageError
-from services.genesis.gate import CheckState, GateVerdict
+from services.genesis.gate import CheckState, GateVerdict, Provenance
 
-from tests.test_genesis_gate import connector, link, network, write
+from tests.test_genesis_gate import (
+    connector,
+    link,
+    network,
+    node,
+    straight_pair,
+    write,
+)
+from tests.test_genesis_gate import _DEMAND_SUPPORT as demand_support
+from tests.test_genesis_gate import _SUPPORT as gate_support
+from tests.test_genesis_gate import _census as census_for_network
+from tests.test_genesis_gate import _demand as demand_layer
+from tests.test_genesis_gate import _signals as signal_layer
+
+
+def census_for(inpx_xml: str) -> dict:
+    """The census the generator would have written beside this artifact."""
+    return census_for_network([], inpx_xml)
 from tests.test_genesis_osm_draft import crossroads_osm
 
 GENESIS_JOBS_SOURCE = Path(genesis_jobs.__file__).read_text(encoding="utf-8")
@@ -413,6 +430,92 @@ def test_a_refused_verdict_never_becomes_a_workspace_dataset(workspace_root: Pat
     assert "V3" in result["gate"]["blocking"]
     assert result["publication"] is None
     assert datasets.get_active_dataset()["source"] == "default"
+
+
+def _headless_group_network() -> str:
+    """A genesis-shaped artifact with a REAL refuse-tier defect in its phasing.
+
+    Signal group 2 is displayed by no head: green comes and goes and no vehicle
+    ever sees it. Every top-level container here is one ``services.genesis.emit``
+    writes, so nothing in the file is evidence that somebody else built it — the
+    only thing that could prove WE did is the census.
+    """
+    return network(
+        links=straight_pair(),
+        nodes=[node(1, [(95.0, -10.0), (110.0, -10.0), (110.0, 10.0), (95.0, 10.0)])],
+        extra=signal_layer(groups=(1, 2), heads=[(1, 1, 1, 100.0, 1, 1)]) + demand_layer(),
+        support=gate_support + demand_support,
+    )
+
+
+def test_a_lost_census_does_not_let_a_defect_into_the_workspace(workspace_root: Path):
+    """The publication guarantee, pinned at the seam that decides it.
+
+    ``gate_and_publish`` reads the census by sibling filename and sets
+    ``metadata=None`` when the file is missing or unparseable — a case its own
+    CLI help calls normal. While provenance was ``bool(draft_metadata)``, that
+    absence DEMOTED V5's refuse-tier finding to a warning, which turned REFUSED
+    into INCOMPLETE, and this function registers everything that is not REFUSED.
+    So the defective network became the workspace's live dataset because a JSON
+    file was missing.
+
+    The gate-level test (``test_genesis_gate.py``) pins the verdict; this one
+    pins what the verdict is FOR. Asserting ``verdict is not PASS`` there would
+    have left this hole wide open, because nothing in the pipeline asks that.
+    """
+    record = _seed_job(_headless_group_network(), name="lost")
+    (genesis_jobs.job_dir(record["id"]) / "lost.genesis.json").unlink()
+
+    result = genesis_jobs.gate_and_publish(record["id"])
+
+    assert result["gate"]["provenance"]["state"] == Provenance.UNKNOWN.value
+    assert result["gate"]["provenance"]["census"] == "absent"
+    assert result["gate"]["verdict"] == GateVerdict.REFUSED.value
+    # V5's headless signal group is the ONLY refuse-tier fault in the artifact,
+    # so this refusal is about provenance and about nothing else.
+    payload = genesis_jobs.gate_payload(record["id"])
+    failed = [
+        c["id"]
+        for c in payload["checks"]
+        if c["state"] == CheckState.FAIL.value and c["tier"] == "refuse"
+    ]
+    assert failed == ["V5"]
+    assert "V5" in result["gate"]["blocking"]
+    assert result["status"] == genesis_jobs.STATUS_REFUSED
+    assert result["publication"] is None
+    assert datasets.get_active_dataset()["source"] == "default"
+
+
+def test_the_job_summary_says_which_tier_the_gate_applied(workspace_root: Path):
+    """``counts`` means two different things depending on provenance, so the
+    compact summary a job list reads carries the provenance decision itself —
+    not only the full ``gate.json`` a dashboard is unlikely to fetch."""
+    record = _seed_job(_headless_group_network(), name="tiered")
+    result = genesis_jobs.gate_and_publish(record["id"])
+
+    provenance = result["gate"]["provenance"]
+    assert provenance["census"] == "declares_no_elements"
+    assert provenance["state"] == Provenance.UNKNOWN.value
+    assert provenance["foreign_containers"] == []
+    payload = genesis_jobs.gate_payload(record["id"])
+    v5 = next(check for check in payload["checks"] if check["id"] == "V5")
+    assert v5["evidence"]["coverage_tier"] == "refuse"
+    # The stored verdict round-trips its provenance: reading gate.json back must
+    # not turn a proven decision into "unproven" in the rendered report.
+    assert payload["provenance"] == provenance
+    assert "provenance UNPROVEN" in genesis_jobs.gate_payload(
+        record["id"], language="en"
+    )["report_markdown"]
+
+    # The same artifact WITH its census: proven ours, and it survives the trip
+    # through gate.json rather than reading back as the model's default.
+    artifact = _headless_group_network()
+    proven = _seed_job(artifact, census=census_for(artifact), name="proven")
+    genesis_jobs.gate_and_publish(proven["id"])
+    stored = genesis_jobs.gate_payload(proven["id"], language="en")
+    assert stored["provenance"]["state"] == Provenance.OURS.value
+    assert stored["provenance"]["census"] == "matches_this_network"
+    assert "built by this generator" in stored["report_markdown"]
 
 
 def test_a_refusal_is_a_deliverable_not_a_deleted_file(workspace_root: Path):

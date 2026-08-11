@@ -32,11 +32,13 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
 from services.genesis.gate import (
+    CheckClause,
     CheckResult,
     CheckState,
     CheckTier,
@@ -44,6 +46,7 @@ from services.genesis.gate import (
     GateGap,
     GateVerdict,
     LoadOracle,
+    Provenance,
     render_report,
     run_gate,
 )
@@ -213,6 +216,31 @@ def test_a_finding_beats_a_gap_because_a_proven_fault_is_a_definite_answer():
         gaps=[GateGap(code="x")],
     )
     assert result.state is CheckState.FAIL
+
+
+def test_a_check_is_never_a_pass_over_a_clause_that_could_not_run():
+    """The module's own doctrine, enforced in ``build`` instead of trusted.
+
+    V5 and V6 both reported ``PASS`` with a ``NOT_CHECKABLE`` clause printed
+    directly underneath, because each had appended its "could not certify this"
+    gap to the CLAUSE's list and not to the check's — a self-contradictory report
+    that anything checking ``state == PASS`` reads as an unqualified pass."""
+    result = CheckResult.build(
+        "V5",
+        CheckTier.REFUSE,
+        clauses=[
+            CheckClause(code="a", state=CheckState.PASS),
+            CheckClause(code="b", state=CheckState.NOT_CHECKABLE),
+        ],
+    )
+    assert result.state is CheckState.NOT_CHECKABLE
+
+    failed = CheckResult.build(
+        "V5",
+        CheckTier.REFUSE,
+        clauses=[CheckClause(code="a", state=CheckState.FAIL)],
+    )
+    assert failed.state is CheckState.FAIL
 
 
 def test_a_warn_clause_inside_a_refuse_check_never_fails_it():
@@ -459,34 +487,347 @@ def test_v2_refuses_to_claim_integrity_for_a_tag_it_never_measured(tmp_path):
     assert "v2_reference_table_not_measured_for_tag" in gap_codes(result, "V2")
 
 
+# -- the same element name, seven different referents ------------------------
+#
+# ``<intObjectRef key="…"/>`` is Vissim's generic "this set contains that
+# object" element. Its referent is named by the CONTAINER, and a table keyed on
+# the element name alone resolves every one of them against whichever id space
+# it happened to be measured on. This fixture is that shape, authored
+# synthetically: five containers, five different referents, and — deliberately —
+# ids that COLLIDE across the id spaces, so a context-blind resolver both
+# fabricates failures and grades some references against the wrong universe.
+
+
+def _multi_context_refs() -> str:
+    """Five ``<intObjectRef>`` containers whose referents are five different
+    object classes.
+
+    The ids are chosen so the fixture DISCRIMINATES. Links are 1, 2 and 10001;
+    every non-``<linkSeq>`` reference below names 4, 5, 6 or 7 — valid in its own
+    id space and in NO other, least of all the link table. A context-blind,
+    link-keyed resolver (the shape this table had until 2026-08-11) therefore
+    fabricates a finding for every one of them, so "all four resolve" is a
+    statement about context-awareness rather than about ids that happen to be
+    valid everywhere."""
+    return (
+        "<vehicleClasses><vehicleClass name='HGV' no='7'>"
+        "<vehTypes><intObjectRef key='4'/></vehTypes></vehicleClass></vehicleClasses>"
+        "<pedestrianTypes><pedestrianType name='ped' no='5'/></pedestrianTypes>"
+        "<pedestrianClasses><pedestrianClass name='pc' no='5'>"
+        "<pedTypes><intObjectRef key='5'/></pedTypes></pedestrianClass></pedestrianClasses>"
+        "<wttFiles><intObjectRef key='6'/></wttFiles>"
+        "<vehicleRoutingDecisionsStatic>"
+        "<vehicleRoutingDecisionStatic link='1' name='' no='1' pos='10'>"
+        "<vehRoutSta><vehicleRouteStatic destLink='2' name='' no='1' relFlow='1'>"
+        "<linkSeq><intObjectRef key='10001'/><intObjectRef key='2'/></linkSeq>"
+        "</vehicleRouteStatic></vehRoutSta>"
+        "</vehicleRoutingDecisionStatic></vehicleRoutingDecisionsStatic>"
+        "<lanes><lane><blockedVehClasses><intObjectRef key='7'/></blockedVehClasses></lane></lanes>"
+    )
+
+
+def _multi_context_support() -> str:
+    return (
+        "<vehicleTypes><vehicleType category='CAR' colorDistr1='1' name='Car' no='4'/>"
+        "</vehicleTypes>"
+        "<colorDistributions><colorDistribution name='c' no='1'/></colorDistributions>"
+        "<wttFile name='wtt' no='6'/>"
+    )
+
+
+def test_v2_resolves_the_same_element_name_against_the_container_that_names_it(tmp_path):
+    """Every reference in the fixture resolves — because each is judged against
+    the id space its OWN container names. Keyed on the element name alone,
+    ``<vehTypes>``/``<pedTypes>``/``<wttFiles>``/``<blockedVehClasses>`` would
+    all be resolved against the LINK table, which is the defect that put 253
+    fabricated findings on a real consultant model — and none of the four ids
+    here is a link id, so that resolver would fabricate four findings."""
+    xml = network(
+        links=straight_pair(),
+        extra=_multi_context_refs(),
+        support=_SUPPORT + _multi_context_support(),
+    )
+    result = gate(write(tmp_path, xml))
+    assert codes(result, "V2") == []
+    assert result.check("V2").evidence["unmeasured_reference_contexts"] == 0
+
+
+def test_v2_never_grades_a_reference_against_the_wrong_id_space(tmp_path):
+    """The other half of the same defect, and the quieter one.
+
+    ``<vehTypes><intObjectRef key='1'/>`` is a TRUE COLLISION: 1 is not a vehicle
+    type in this file (the only one is 4) and it IS link 1, so a link-keyed
+    resolver calls the reference resolved and says nothing — the failure mode
+    credited with 3 silent false negatives on the real consultant model. The
+    earlier version of this test used ``key='9'``, which is not valid in ANY id
+    space the file declares, so the pre-fix resolver would have failed it too and
+    the test only ever proved that the ERROR MESSAGE names the right target."""
+    collision = _multi_context_refs().replace(
+        "<vehTypes><intObjectRef key='4'/>", "<vehTypes><intObjectRef key='1'/>"
+    )
+    passing = gate(
+        write(
+            tmp_path,
+            network(
+                links=straight_pair(),
+                extra=_multi_context_refs(),
+                support=_SUPPORT + _multi_context_support(),
+            ),
+            name="ok.inpx",
+        )
+    )
+    assert codes(passing, "V2") == []
+
+    xml = network(
+        links=straight_pair(),
+        extra=collision,
+        support=_SUPPORT + _multi_context_support(),
+    )
+    result = gate(write(tmp_path, xml, name="bad.inpx"))
+    finding = next(f for f in result.check("V2").findings if f.code == "v2_unresolved_reference")
+    assert finding.context["target"] == "vehicleType"
+    assert finding.context["value"] == "1"
+    assert finding.subject.startswith("vehTypes/intObjectRef")
+    # The collision is real: the same value IS a declared link in this file.
+    assert "1" in {el.get("no") for el in ET.fromstring(xml).findall(".//links/link")}
+
+
+def test_v2_names_a_reference_context_it_has_not_measured_instead_of_guessing(tmp_path):
+    """``<intObjectRef>`` is a reference by construction, so an occurrence under
+    a container the table has never measured is a reference we KNOW we cannot
+    resolve. It is named and left unresolved — never resolved against the
+    nearest plausible id space."""
+    xml = network(
+        links=straight_pair(),
+        extra="<evalGrps><intObjectRef key='1'/></evalGrps>",
+    )
+    result = gate(write(tmp_path, xml))
+    assert "v2_reference_context_not_measured" in gap_codes(result, "V2")
+    gap = next(g for g in result.check("V2").gaps if g.code == "v2_reference_context_not_measured")
+    assert gap.context["contexts"] == ["evalGrps/intObjectRef/@key"]
+    assert codes(result, "V2") == []
+    assert result.check("V2").state is CheckState.NOT_CHECKABLE
+
+
+def test_v2_names_a_measured_attribute_appearing_under_an_unmeasured_parent(tmp_path):
+    """``@destLink`` is a measured reference surface under two containers. Under
+    a third it is the same attribute in a context nobody measured, and the check
+    says so rather than assuming the referent carries over."""
+    xml = network(
+        links=straight_pair(),
+        extra="<vehRoutPart><vehicleRouteStatic destLink='2' name='' no='1'/></vehRoutPart>",
+    )
+    result = gate(write(tmp_path, xml))
+    gap = next(g for g in result.check("V2").gaps if g.code == "v2_reference_context_not_measured")
+    assert "vehRoutPart/vehicleRouteStatic/@destLink" in gap.context["contexts"]
+
+
+def test_v2_resolves_an_object_class_vissim_renamed_between_schema_versions(tmp_path):
+    """``desSpeedDistr`` points at ``<speedDistribution>`` in a Vissim 2026 file
+    and at ``<desSpeedDistribution>`` in a 2024 one — the same object class, two
+    spellings. Measured over 804 real files that declare one: 379 carry only the
+    2024 spelling, 425 only the 2026 spelling, NOT ONE carries both, so the union
+    cannot launder a dangling reference. Keyed on the 2026 spelling alone (as it
+    was), V2 fabricated one finding per composition flow on every 2024 file."""
+    demand_2024 = (
+        "<vehicleTypes><vehicleType category='CAR' name='Car' no='1'/></vehicleTypes>"
+        "<desSpeedDistributions><desSpeedDistribution name='50' no='50'/>"
+        "</desSpeedDistributions>"
+        "<vehicleCompositions><vehicleComposition name='c1' no='1'><vehCompRelFlows>"
+        "<vehicleCompositionRelativeFlow desSpeedDistr='50' relFlow='1.0' vehType='1'/>"
+        "</vehCompRelFlows></vehicleComposition></vehicleCompositions>"
+        "<vehicleInputs><vehicleInput link='1' name='' no='1'><timeIntVehVols>"
+        "<timeIntervalVehVolume timeInt='1 0' vehComp='1' volume='100'/>"
+        "</timeIntVehVols></vehicleInput></vehicleInputs>"
+    )
+    result = gate(write(tmp_path, network(links=straight_pair(), extra=demand_2024)))
+    assert [f.code for f in result.check("V2").findings] == []
+
+
+def test_v2_still_refuses_a_speed_distribution_neither_spelling_declares(tmp_path):
+    """The union is two spellings of one class, not an amnesty."""
+    demand = (
+        "<vehicleTypes><vehicleType category='CAR' name='Car' no='1'/></vehicleTypes>"
+        "<desSpeedDistributions><desSpeedDistribution name='50' no='50'/>"
+        "</desSpeedDistributions>"
+        "<vehicleCompositions><vehicleComposition name='c1' no='1'><vehCompRelFlows>"
+        "<vehicleCompositionRelativeFlow desSpeedDistr='99' relFlow='1.0' vehType='1'/>"
+        "</vehCompRelFlows></vehicleComposition></vehicleCompositions>"
+        "<vehicleInputs><vehicleInput link='1' name='' no='1'><timeIntVehVols>"
+        "<timeIntervalVehVolume timeInt='1 0' vehComp='1' volume='100'/>"
+        "</timeIntVehVols></vehicleInput></vehicleInputs>"
+    )
+    result = gate(write(tmp_path, network(links=straight_pair(), extra=demand)))
+    finding = next(f for f in result.check("V2").findings if f.code == "v2_unresolved_reference")
+    assert finding.context["target"] == "speedDistribution | desSpeedDistribution"
+
+
+def test_v2_names_only_the_attributes_it_has_reason_to_call_references(tmp_path):
+    """The unmeasured-context list has to stay actionable. ``@vehComp`` is a
+    measured reference surface and is named under an unmeasured parent;
+    ``@timeInt`` is published as deliberately unresolvable with its reason, and
+    ``@volume`` is a number. Naming every numeric attribute would bury the short
+    list under noise — the probe's own output is the evidence, where
+    ``occupancyDistribution/@mean`` resolves unanimously across 188 files and is
+    a mean."""
+    xml = network(
+        links=straight_pair(),
+        extra="<odd><timeIntervalVehVolume timeInt='1 0' vehComp='1' volume='100'/></odd>",
+    )
+    result = gate(write(tmp_path, xml))
+    gap = next(g for g in result.check("V2").gaps if g.code == "v2_reference_context_not_measured")
+    assert gap.context["contexts"] == ["odd/timeIntervalVehVolume/@vehComp"]
+
+
+def test_losing_the_generator_census_grades_the_same_defect_the_same_way(tmp_path):
+    """The safety argument for provenance scoping, pinned at the strength that
+    matters.
+
+    The old version of this test asserted only ``verdict is not PASS``, which is
+    a property of the ``GateVerdict`` enum and NOT the property the pipeline
+    turns on: ``genesis_jobs.gate_and_publish`` gates registration on ``verdict
+    is REFUSED``, so INCOMPLETE — exactly what a lenient run produced — still
+    became the workspace's live dataset. The guarantee is therefore stated as
+    'the same defect, the same verdict, census or no census', and
+    ``test_genesis_jobs.py`` pins the publication half at its own seam."""
+    xml = network(
+        links=straight_pair(),
+        nodes=[node(1, [(95.0, -10.0), (110.0, -10.0), (110.0, 10.0), (95.0, 10.0)])],
+        extra=_signals(groups=(1, 2), heads=[(1, 1, 1, 100.0, 1, 1)]) + _demand(),
+        support=_SUPPORT + _DEMAND_SUPPORT,
+    )
+    path = write(tmp_path, xml)
+    without_census = gate(path)
+    # The ONLY refuse-tier fault in this file is the headless signal group, so
+    # the verdicts below are about provenance and nothing else.
+    assert [c.id for c in without_census.refuse_tier if c.state is CheckState.FAIL] == ["V5"]
+    assert without_census.provenance.state is Provenance.UNKNOWN
+    assert without_census.check("V5").state is CheckState.FAIL
+    assert without_census.verdict is GateVerdict.REFUSED
+
+    with_census = gate(path, draft_metadata=_census([], xml))
+    assert with_census.provenance.state is Provenance.OURS
+    assert with_census.check("V5").state is CheckState.FAIL
+    assert with_census.verdict is GateVerdict.REFUSED
+
+
+def test_the_report_shows_which_sub_questions_ran(tmp_path):
+    path = write(tmp_path, network(links=straight_pair(), extra=_demand()))
+    text = render_report(gate(path), language="en")
+    assert "[PASS] no orphan links and no unreachable or trapped zone" in text
+    assert "[NOT CHECKABLE] every point traffic departs at is the model boundary" in text
+
+
+def test_v2_reports_which_of_its_own_clauses_ran(tmp_path):
+    """The whole file resolves; only the surface-measured clause is grey."""
+    xml = network(links=straight_pair(), extra="<parkingLots><parkingLot no='1'/></parkingLots>")
+    result = gate(write(tmp_path, xml))
+    states = {c.code: c.state for c in result.check("V2").clauses}
+    assert states["v2_references_resolve"] is CheckState.PASS
+    assert states["v2_surface_fully_measured"] is CheckState.NOT_CHECKABLE
+
+
 # ---------------------------------------------------------------------------
 # §4 V3 — connectivity
 # ---------------------------------------------------------------------------
 
 
-def _census(entries: list[dict]) -> dict:
-    return {"metadata": {"connectivity": {"dangling_approaches": entries}}}
+def _census(entries: list[dict], network_xml: str) -> dict:
+    """A generator census that DESCRIBES the network it is handed.
+
+    The gate admits a ``*.genesis.json`` only when the link, connector and node
+    ids it names are this file's own — a census about another build is not weak
+    evidence about this one, it is none, the same rule V1 applies to its load
+    oracle. So a fixture that wants to be graded as OURS has to identify itself,
+    and the ids are read off the fixture rather than hand-listed, so a test that
+    changes its network cannot quietly stop being ours.
+    """
+    root = ET.fromstring(network_xml)
+    links: list[dict] = []
+    connectors: list[dict] = []
+    for element in root.findall(".//links/link"):
+        is_connector = (
+            element.find("fromLinkEndPt") is not None
+            or element.find("toLinkEndPt") is not None
+        )
+        (connectors if is_connector else links).append({"id": int(element.get("no"))})
+    return {
+        "links": links,
+        "connectors": connectors,
+        "nodes": [{"id": int(e.get("no"))} for e in root.findall(".//nodes/node")],
+        "metadata": {"connectivity": {"dangling_approaches": entries}},
+    }
+
+
+#: What ``_demand()``'s composition points at. Without it V2 refuses the file
+#: for two dangling references, and a test asserting REFUSED would pass for a
+#: reason it never meant to exercise — which is exactly how a provenance test
+#: can look green while the switch under it is broken.
+_DEMAND_SUPPORT = (
+    "<speedDistributions><speedDistribution name='50' no='50'/></speedDistributions>"
+    "<vehicleTypes><vehicleType category='CAR' name='Car' no='1'/></vehicleTypes>"
+)
+
+
+def _foreign(extra: str = "") -> str:
+    """Whatever makes a fixture PROVABLY not this generator's output.
+
+    ``<conflictAreas>`` is a top-level container ``services.genesis.emit`` has no
+    code to write (it is not in ``schema.CONTAINER_ORDER``, and ``build_tree``
+    raises if it ever builds one that is not), which is the positive evidence
+    :class:`Provenance` requires before it will soften a refuse-tier clause.
+    Every real consultant model carries 20-odd of them; the first one this gate
+    was pointed at carries 21.
+    """
+    return f"{extra}<conflictAreas><conflictArea no='1' status='PASSIVE'/></conflictAreas>"
 
 
 def test_v3_passes_when_traffic_can_get_in_through_and_out(tmp_path):
     """A pass needs BOTH halves: the census that says where departures are
     legitimate, and a vehicle input to ask the reachability question about."""
-    path = write(tmp_path, network(links=straight_pair(), extra=_demand()))
-    result = gate(path, draft_metadata=_census([]))
+    xml = network(links=straight_pair(), extra=_demand())
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
     assert result.check("V3").state is CheckState.PASS
 
 
 def test_v3_with_no_vehicle_inputs_cannot_answer_its_own_first_clause(tmp_path):
-    path = write(tmp_path, network(links=straight_pair()))
-    result = gate(path, draft_metadata=_census([]))
+    xml = network(links=straight_pair())
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
     assert result.check("V3").state is CheckState.NOT_CHECKABLE
     assert gap_codes(result, "V3") == ["v3_no_vehicle_inputs"]
+
+
+def test_v3_reports_the_clause_that_ran_even_when_another_could_not(tmp_path):
+    """On a file with no generator census V3 is NOT_CHECKABLE — and its
+    reachability half still ran in full and EARNED its answer. Reporting the
+    whole check as one grey box threw that away. The check's own state is
+    unchanged: a clause that could not run never becomes a pass, only a visible
+    one."""
+    path = write(tmp_path, network(links=straight_pair(), extra=_demand()))
+    result = gate(path)
+    check = result.check("V3")
+    assert check.state is CheckState.NOT_CHECKABLE
+    states = {c.code: c.state for c in check.clauses}
+    assert states["v3_reachability"] is CheckState.PASS
+    assert states["v3_inputs_reach_an_exit"] is CheckState.PASS
+    assert states["v3_departures_are_at_the_boundary"] is CheckState.NOT_CHECKABLE
+
+
+def test_v3_reachability_clause_fails_with_the_check(tmp_path):
+    links = straight_pair()
+    links.append(link(3, [(0.0, 400.0), (100.0, 400.0)], name="island"))
+    xml = network(links=links)
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
+    states = {c.code: c.state for c in result.check("V3").clauses}
+    assert states["v3_reachability"] is CheckState.FAIL
+    assert states["v3_departures_are_at_the_boundary"] is CheckState.PASS
 
 
 def test_v3_fails_on_an_orphan_link(tmp_path):
     links = straight_pair()
     links.append(link(3, [(0.0, 400.0), (100.0, 400.0)], name="island"))
-    result = gate(write(tmp_path, network(links=links)), draft_metadata=_census([]))
+    xml = network(links=links)
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
     assert result.check("V3").state is CheckState.FAIL
     assert "v3_orphan_link" in codes(result, "V3")
 
@@ -503,7 +844,8 @@ def test_v3_fails_on_a_zone_nothing_reaches_and_nothing_leaves(tmp_path):
         connector(10002, 3, 4, [(100.0, 400.0), (104.0, 400.0)], from_pos=100.0),
         connector(10003, 4, 3, [(204.0, 400.0), (0.0, 400.0)], from_pos=100.0),
     ]
-    result = gate(write(tmp_path, network(links=links)), draft_metadata=_census([]))
+    xml = network(links=links)
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
     assert result.check("V3").state is CheckState.FAIL
     assert "v3_isolated_zone" in codes(result, "V3")
     finding = next(f for f in result.check("V3").findings if f.code == "v3_isolated_zone")
@@ -518,14 +860,15 @@ def test_v3_without_the_generator_census_cannot_judge_departures(tmp_path):
 
 
 def test_v3_fails_on_a_departure_the_generator_itself_called_a_trap(tmp_path):
-    path = write(tmp_path, network(links=straight_pair()))
+    xml = network(links=straight_pair())
     census = _census(
         [
             {"link_id": 2, "link": "Some Street [FWD]", "cause": "one_way_dead_end_unfixable"},
             {"link_id": 9, "link": "Edge Road [FWD]", "cause": "model_boundary_correct"},
-        ]
+        ],
+        xml,
     )
-    result = gate(path, draft_metadata=census)
+    result = gate(write(tmp_path, xml), draft_metadata=census)
     assert result.check("V3").state is CheckState.FAIL
     departures = [f for f in result.check("V3").findings if f.code == "v3_silent_departure_point"]
     assert [f.subject for f in departures] == ["Some Street [FWD]"]
@@ -546,7 +889,8 @@ def test_v3_fails_when_a_vehicle_input_can_reach_no_exit(tmp_path):
         "<timeIntervalVehVolume timeInt='1 0' vehComp='1' volume='100'/>"
         "</timeIntVehVols></vehicleInput></vehicleInputs>"
     )
-    result = gate(write(tmp_path, network(links=links, extra=demand)), draft_metadata=_census([]))
+    xml = network(links=links, extra=demand)
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
     assert "v3_input_cannot_reach_an_exit" in codes(result, "V3")
 
 
@@ -570,14 +914,51 @@ def test_v4_fails_on_a_lane_index_the_link_does_not_have(tmp_path):
     assert "v4_lane_index_outside_link" in codes(result, "V4")
 
 
-def test_v4_fails_on_a_connector_wider_than_the_link_it_joins(tmp_path):
-    links = straight_pair(a_lanes=2, b_lanes=2)
+def test_v4_fails_when_a_connector_maps_more_lanes_than_the_link_has(tmp_path):
+    """Three lanes mapped off a two-lane link: the connector joins lanes that
+    are not there."""
+    links = straight_pair(a_lanes=2, b_lanes=3)
     links[2] = connector(
-        10001, 1, 2, [(100.0, 0.0), (104.0, 0.0)], lane_pairs=[(1, 1), (2, 2), (2, 2)],
+        10001, 1, 2, [(100.0, 0.0), (104.0, 0.0)], lane_pairs=[(1, 1), (2, 2), (2, 3)],
         from_pos=100.0,
     )
     result = gate(write(tmp_path, network(links=links)))
-    assert "v4_connector_wider_than_link" in codes(result, "V4")
+    assert result.check("V4").state is CheckState.FAIL
+    finding = next(
+        f for f in result.check("V4").findings if f.code == "v4_more_mapped_lanes_than_link_has"
+    )
+    assert finding.context == {
+        "side": "from",
+        "mapped_lanes": 3,
+        "link": "1",
+        "link_lanes": 2,
+    }
+
+
+def test_v4_accepts_a_connector_that_widens_where_the_road_gains_a_lane(tmp_path):
+    """Two lanes in, three out: the third connector lane carries no
+    ``<fromLanes>`` because it BEGINS at the connector. PTV's own 2026 example
+    library ships this shape in files named for it ("Inside Merge 2+2 to 3
+    Lanes"), so a connector wider than one of its links is a lane gain, not a
+    defect — the clause this replaced manufactured 33 findings on one real
+    consultant model, every one of them this."""
+    links = straight_pair(a_lanes=2, b_lanes=3)
+    lane_xml = (
+        '<lane markingType="1"><fromLanes><objectRef key="1 1"/></fromLanes>'
+        '<toLanes><objectRef key="2 1"/></toLanes></lane>'
+        '<lane markingType="1"><fromLanes><objectRef key="1 2"/></fromLanes>'
+        '<toLanes><objectRef key="2 2"/></toLanes></lane>'
+        '<lane markingType="1"><toLanes><objectRef key="2 3"/></toLanes></lane>'
+    )
+    links[2] = (
+        '<link displayType="1" linkBehavType="1" lnChgDist="200" name="widening" no="10001">'
+        '<fromLinkEndPt link="1" pos="100.0"/>'
+        f'{_points([(100.0, 0.0), (104.0, 0.0)])}<lanes>{lane_xml}</lanes>'
+        '<toLinkEndPt link="2" pos="0.0"/></link>'
+    )
+    result = gate(write(tmp_path, network(links=links)))
+    assert "v4_more_mapped_lanes_than_link_has" not in codes(result, "V4")
+    assert result.check("V4").state is CheckState.PASS
 
 
 def test_v4_fails_when_a_dropped_lane_has_no_runway(tmp_path):
@@ -694,19 +1075,149 @@ def test_v5_fails_on_a_head_whose_controller_is_not_in_the_file(tmp_path):
     assert "v5_head_without_controller" in codes(result, "V5")
 
 
-def test_v5_fails_on_a_signal_group_no_head_displays(tmp_path):
-    """A phase that controls nothing: green comes and goes and no vehicle sees it."""
+def test_v5_fails_on_a_signal_group_no_head_displays_in_a_network_we_built(tmp_path):
+    """A phase that controls nothing: green comes and goes and no vehicle sees
+    it. In phasing THIS generator imported that is a contradiction of the
+    import, so it refuses."""
     xml = network(
         links=straight_pair(), extra=_signals(groups=(1, 2), heads=[(1, 1, 1, 100.0, 1, 1)])
     )
-    result = gate(write(tmp_path, xml))
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
     assert result.check("V5").state is CheckState.FAIL
     assert "v5_signal_group_without_head" in codes(result, "V5")
 
 
-def test_v5_fails_on_a_signalised_approach_with_no_head(tmp_path):
-    """Two approaches into one node, one head. The unsignalised approach runs
-    the intersection."""
+def test_v5_only_warns_about_a_headless_group_in_a_network_we_did_not_build(tmp_path):
+    """The same defect in a file PROVEN to be somebody else's. PTV's OWN 2026
+    example library has 304 of 1,387 signal groups displayed by no head —
+    pedestrian phases, spare stages, imported rosters — so it cannot be a proven
+    fault in a model we did not build. Named in full, never dropped, and never a
+    refusal; and the check does not call itself a PASS, because it could not
+    certify the question it was asked."""
+    xml = network(
+        links=straight_pair(),
+        extra=_foreign(_signals(groups=(1, 2), heads=[(1, 1, 1, 100.0, 1, 1)])),
+    )
+    result = gate(write(tmp_path, xml))
+    assert result.provenance.state is Provenance.FOREIGN
+    assert codes(result, "V5") == []
+    assert [f.code for f in result.check("V5").warnings] == ["v5_signal_group_without_head"]
+    states = {c.code: c.state for c in result.check("V5").clauses}
+    assert states["v5_heads_resolve"] is CheckState.PASS
+    assert states["v5_coverage_of_the_imported_phasing"] is CheckState.NOT_CHECKABLE
+    assert result.check("V5").state is CheckState.NOT_CHECKABLE
+
+
+def test_v5_refuses_a_headless_group_when_nothing_proves_whose_network_it_is(tmp_path):
+    """The census went missing, and NOTHING in the file says it is not ours.
+
+    Deciding provenance by the mere absence of a ``*.genesis.json`` failed OPEN:
+    the same defect that REFUSES with the census present became a warning
+    without it, the verdict went REFUSED -> INCOMPLETE, and
+    ``gate_and_publish`` registers everything that is not REFUSED. An unproven
+    provenance is graded at the strict tier for exactly that reason."""
+    xml = network(
+        links=straight_pair(), extra=_signals(groups=(1, 2), heads=[(1, 1, 1, 100.0, 1, 1)])
+    )
+    result = gate(write(tmp_path, xml))
+    assert result.provenance.state is Provenance.UNKNOWN
+    assert "v5_signal_group_without_head" in codes(result, "V5")
+    assert result.check("V5").state is CheckState.FAIL
+    # The headless group is the file's only refuse-tier fault.
+    assert [c.id for c in result.refuse_tier if c.state is CheckState.FAIL] == ["V5"]
+    assert result.verdict is GateVerdict.REFUSED
+
+
+def test_a_census_about_another_build_never_makes_a_file_ours(tmp_path):
+    """The identity half of the same rule, in the other direction.
+
+    Before 2026-08-11 provenance was ``bool(draft_metadata)``: any same-named
+    sidecar, about any network, made a file "ours" — so a foreign model that
+    happened to sit beside a stale ``*.genesis.json`` collected refusals meant
+    for our own imports, and our own file with a sidecar from an EARLIER build
+    had V3's departure clause graded against link ids that no longer exist."""
+    xml = network(
+        links=straight_pair(),
+        extra=_foreign(_signals(groups=(1, 2), heads=[(1, 1, 1, 100.0, 1, 1)])),
+    )
+    other = network(links=straight_pair(a_len=120.0) + [link(7, [(0.0, 9.0), (50.0, 9.0)])])
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], other))
+    assert result.provenance.census == "describes_another_network"
+    assert result.provenance.state is Provenance.FOREIGN
+    assert [f.code for f in result.check("V5").warnings] == ["v5_signal_group_without_head"]
+    assert "v3_census_is_not_about_this_network" in gap_codes(result, "V3")
+
+
+def test_a_census_with_no_elements_cannot_identify_anything(tmp_path):
+    """A sidecar that names no link, connector or node proves nothing about
+    which file it belongs to — so it is not admitted, and the file falls back to
+    the STRICT tier rather than to the lenient one."""
+    xml = network(
+        links=straight_pair(), extra=_signals(groups=(1, 2), heads=[(1, 1, 1, 100.0, 1, 1)])
+    )
+    stub = {"metadata": {"connectivity": {"dangling_approaches": []}}}
+    result = gate(write(tmp_path, xml), draft_metadata=stub)
+    assert result.provenance.census == "declares_no_elements"
+    assert result.provenance.state is Provenance.UNKNOWN
+    assert result.check("V5").state is CheckState.FAIL
+
+
+def test_our_own_provenance_comment_vetoes_a_foreign_verdict(tmp_path):
+    """``emit.build_tree`` writes its provenance comment into every file this
+    generator produces, so a file that carries one is not somebody else's
+    however many containers it has gained since. The absence of the comment
+    proves nothing in the other direction — Vissim's own ``SaveNetAs`` drops
+    comments, measured on this repository's round-tripped Murdoch — which is
+    why it can only ever VETO a foreign verdict, never establish one."""
+    xml = network(
+        links=straight_pair(),
+        extra=_foreign(_signals(groups=(1, 2), heads=[(1, 1, 1, 100.0, 1, 1)])),
+    ).replace(
+        "<links>",
+        "<!-- Generated by Prism services.genesis (roadmap 2.3 Genesis (a)) -->\n<links>",
+        1,
+    )
+    result = gate(write(tmp_path, xml))
+    assert result.provenance.generator_marker is True
+    assert result.provenance.foreign_containers == ["conflictAreas"]
+    assert result.provenance.state is Provenance.UNKNOWN
+    assert "v5_signal_group_without_head" in codes(result, "V5")
+
+
+def test_the_provenance_decision_is_carried_where_a_reader_will_see_it(tmp_path):
+    """An invisible tier switch makes the same verdict word mean two different
+    things. The decision rides on the result, in the evidence of every check
+    whose tier it changed, and on the front page of the report."""
+    xml = network(
+        links=straight_pair(),
+        extra=_foreign(
+            _signals(groups=(1, 2), heads=[(1, 1, 1, 100.0, 1, 1)]) + _demand()
+        ),
+    )
+    result = gate(write(tmp_path, xml))
+    assert result.provenance.state is Provenance.FOREIGN
+    assert result.provenance.foreign_containers == ["conflictAreas"]
+    assert result.as_dict()["provenance"]["state"] == "foreign"
+    assert result.check("V5").evidence["coverage_tier"] == "warn"
+    assert result.check("V6").evidence["zero_volume_tier"] == "warn"
+    text = render_report(result, language="en")
+    assert "Provenance: NOT built by this generator" in text
+
+
+def test_v5_still_refuses_a_head_naming_a_missing_controller_in_any_file(tmp_path):
+    """Provenance scopes the COVERAGE clauses only. A head pointing at a
+    controller the file does not declare is broken in anybody's model."""
+    xml = network(
+        links=straight_pair(), extra=_signals(groups=(1,), heads=[(1, 1, 1, 100.0, 9, 1)])
+    )
+    result = gate(write(tmp_path, xml))
+    assert result.check("V5").state is CheckState.FAIL
+    assert "v5_head_without_controller" in codes(result, "V5")
+
+
+def test_v5_fails_on_an_approach_that_meets_no_head_anywhere_in_the_node(tmp_path):
+    """Two approaches into one node, one head. Traffic on the south arm crosses
+    the whole junction without ever meeting a stop line."""
     links = [
         link(1, [(0.0, 0.0), (100.0, 0.0)], name="west approach"),
         link(2, [(50.0, -100.0), (50.0, -4.0)], name="south approach"),
@@ -719,10 +1230,99 @@ def test_v5_fails_on_a_signalised_approach_with_no_head(tmp_path):
         nodes=[node(1, [(96.0, -12.0), (112.0, -12.0), (112.0, 12.0), (96.0, 12.0)])],
         extra=_signals(groups=(1,), heads=[(1, 1, 1, 100.0, 1, 1)]),
     )
-    result = gate(write(tmp_path, xml))
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
     assert result.check("V5").state is CheckState.FAIL
-    subjects = [f.subject for f in result.check("V5").findings]
-    assert any("south approach" in s for s in subjects)
+    findings = [
+        f for f in result.check("V5").findings
+        if f.code == "v5_approach_reaches_no_head_in_node"
+    ]
+    assert [f.subject for f in findings] == ["2 (south approach)"]
+
+
+def test_v5_does_not_count_an_interior_leg_of_the_node_as_an_approach(tmp_path):
+    """The stop line is on the ARM; the junction interior is meshed with a short
+    leg that carries no head of its own and leads out of the node. A derivation
+    that calls every link feeding a node connector an "approach" reports that
+    leg as unsignalised — 35 of the 47 such links on the first real consultant
+    model are interior legs exactly like it. Traffic already passed the stop
+    line to get there."""
+    links = [
+        link(1, [(0.0, 0.0), (100.0, 0.0)], name="west arm"),
+        link(2, [(104.0, 0.0), (140.0, 0.0)], name="interior leg"),
+        link(3, [(144.0, 0.0), (244.0, 0.0)], name="east exit"),
+        connector(10001, 1, 2, [(100.0, 0.0), (104.0, 0.0)], from_pos=100.0),
+        connector(10002, 2, 3, [(140.0, 0.0), (144.0, 0.0)], from_pos=36.0),
+    ]
+    xml = network(
+        links=links,
+        nodes=[node(1, [(96.0, -12.0), (150.0, -12.0), (150.0, 12.0), (96.0, 12.0)])],
+        extra=_signals(groups=(1,), heads=[(1, 1, 1, 100.0, 1, 1)]),
+    )
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
+    assert "v5_approach_reaches_no_head_in_node" not in codes(result, "V5")
+    assert result.check("V5").state is CheckState.PASS
+
+
+def test_v5_finds_a_branch_inside_the_node_that_never_meets_a_head(tmp_path):
+    """The case the unconditional interior exclusion DELETED before the walk ran.
+
+    One true arm P branches inside the junction: P -> ARM -> EXIT carries the
+    node's one head, and P -> RING -> STUB carries none anywhere, forward or
+    back. P itself passes — it reaches the head down the other branch — and RING
+    used to be dropped from the check outright for being the ``to_link`` of a
+    same-node connector, so V5 read PASS with zero findings and zero warnings
+    while a whole branch crossed the junction unsignalised. RING has NO head
+    upstream of it inside the node, so it is not an innocent interior leg and it
+    is checked; PTV's own ``Mainz - Static Routes`` has exactly this shape, and
+    the consultant model has five of them."""
+    links = [
+        link(1, [(0.0, 0.0), (100.0, 0.0)], name="P the only arm"),
+        link(2, [(104.0, -20.0), (140.0, -20.0)], name="RING"),
+        link(3, [(104.0, 20.0), (140.0, 20.0)], name="ARM"),
+        link(4, [(144.0, -20.0), (244.0, -20.0)], name="STUB"),
+        link(5, [(144.0, 20.0), (244.0, 20.0)], name="EXIT"),
+        connector(10001, 1, 2, [(100.0, 0.0), (104.0, -20.0)], from_pos=100.0),
+        connector(10002, 1, 3, [(100.0, 0.0), (104.0, 20.0)], from_pos=100.0),
+        connector(10003, 2, 4, [(140.0, -20.0), (144.0, -20.0)], from_pos=36.0),
+        connector(10004, 3, 5, [(140.0, 20.0), (144.0, 20.0)], from_pos=36.0),
+    ]
+    xml = network(
+        links=links,
+        nodes=[node(1, [(96.0, -40.0), (150.0, -40.0), (150.0, 40.0), (96.0, 40.0)])],
+        extra=_signals(groups=(1,), heads=[(1, 5, 1, 10.0, 1, 1)]),
+    )
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
+    findings = [
+        f for f in result.check("V5").findings
+        if f.code == "v5_approach_reaches_no_head_in_node"
+    ]
+    assert [f.subject for f in findings] == ["2 (RING)"]
+    assert result.check("V5").state is CheckState.FAIL
+    # V5 is the only refuse-tier fault, so the refusal IS this branch.
+    assert [c.id for c in result.refuse_tier if c.state is CheckState.FAIL] == ["V5"]
+    assert result.verdict is GateVerdict.REFUSED
+
+
+def test_v5_accepts_a_stop_line_on_an_interior_leg_of_the_node(tmp_path):
+    """The head sits one connector INSIDE the junction rather than on the arm —
+    a modelling convention this generator does not use and a real consultant
+    model does. Traffic entering on the arm still meets it, so there is no
+    defect; the clause this replaced called all 12 of one node's member links
+    approaches and reported 8 interior legs as unsignalised."""
+    links = [
+        link(1, [(0.0, 0.0), (100.0, 0.0)], name="west approach"),
+        link(2, [(104.0, 0.0), (140.0, 0.0)], name="interior leg", lanes=1),
+        link(3, [(144.0, 0.0), (244.0, 0.0)], name="east exit"),
+        connector(10001, 1, 2, [(100.0, 0.0), (104.0, 0.0)], from_pos=100.0),
+        connector(10002, 2, 3, [(140.0, 0.0), (144.0, 0.0)], from_pos=36.0),
+    ]
+    xml = network(
+        links=links,
+        nodes=[node(1, [(96.0, -12.0), (150.0, -12.0), (150.0, 12.0), (96.0, 12.0)])],
+        extra=_signals(groups=(1,), heads=[(1, 2, 1, 30.0, 1, 1)]),
+    )
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
+    assert "v5_approach_reaches_no_head_in_node" not in codes(result, "V5")
 
 
 # ---------------------------------------------------------------------------
@@ -787,10 +1387,40 @@ def test_v6_fails_when_the_composition_is_not_in_the_file(tmp_path):
     assert "v6_input_composition_missing" in codes(result, "V6")
 
 
-def test_v6_fails_on_an_input_that_generates_nothing(tmp_path):
+def test_v6_fails_on_an_input_that_generates_nothing_in_a_layer_we_built(tmp_path):
     xml = network(links=straight_pair(), extra=_demand(inputs=[(1, 1, 1, 0)]))
-    result = gate(write(tmp_path, xml))
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
+    assert result.check("V6").state is CheckState.FAIL
     assert "v6_input_volume_is_zero" in codes(result, "V6")
+
+
+def test_v6_only_warns_about_a_zero_input_in_a_layer_we_did_not_build(tmp_path):
+    """A spreadsheet-driven demand build declares the same input on every entry
+    link and leaves the volume at 0 where the count was 0; PTV's own 2026
+    example library carries 60 of them among 1,116 inputs. Named, never a
+    refusal — on a file PROVEN to be somebody else's."""
+    xml = network(links=straight_pair(), extra=_foreign(_demand(inputs=[(1, 1, 1, 0)])))
+    result = gate(write(tmp_path, xml))
+    assert result.provenance.state is Provenance.FOREIGN
+    assert codes(result, "V6") == []
+    assert [f.code for f in result.check("V6").warnings] == ["v6_input_volume_is_zero"]
+
+
+def test_v6_refuses_a_zero_input_when_nothing_proves_whose_layer_it_is(tmp_path):
+    """Same file without the foreign container: nothing says it is not ours, so
+    the refuse tier holds. A demotion earned by MISSING evidence is how a
+    refuse-tier defect reaches the workspace as a published dataset."""
+    xml = network(
+        links=straight_pair(),
+        extra=_demand(inputs=[(1, 1, 1, 0)]),
+        support=_SUPPORT + _DEMAND_SUPPORT,
+    )
+    result = gate(write(tmp_path, xml))
+    assert result.provenance.state is Provenance.UNKNOWN
+    assert "v6_input_volume_is_zero" in codes(result, "V6")
+    # The zero volume is the file's only refuse-tier fault.
+    assert [c.id for c in result.refuse_tier if c.state is CheckState.FAIL] == ["V6"]
+    assert result.verdict is GateVerdict.REFUSED
 
 
 def test_v6_fails_on_a_composition_whose_relative_flows_sum_to_zero(tmp_path):
@@ -829,6 +1459,53 @@ def test_v6_capacity_is_a_warning_that_rides_on_the_result(tmp_path):
     assert check.state is CheckState.PASS
     assert [w.code for w in check.warnings] == ["v6_link_demand_over_capacity"]
     assert check.evidence["rough_lane_capacity_veh_per_h"] == 1900
+
+
+def _multi_interval_demand(volumes: list[float]) -> str:
+    """One input on link 1 carrying one volume per 15-minute interval — the
+    shape every real peak-hour model uses and this generator never emits."""
+    intervals = "".join(
+        f"<timeIntervalVehVolume timeInt='1 {900_000 * i}' vehComp='1' volume='{v}'/>"
+        for i, v in enumerate(volumes)
+    )
+    return (
+        "<vehicleCompositions><vehicleComposition name='c1' no='1'><vehCompRelFlows>"
+        "<vehicleCompositionRelativeFlow desSpeedDistr='50' relFlow='1.0' vehType='1'/>"
+        "</vehCompRelFlows></vehicleComposition></vehicleCompositions>"
+        f"<vehicleInputs><vehicleInput link='1' name='' no='1'><timeIntVehVols>{intervals}"
+        "</timeIntVehVols></vehicleInput></vehicleInputs>"
+    )
+
+
+def test_v6_compares_capacity_against_the_peak_interval_not_the_sum_of_them(tmp_path):
+    """``volume`` is a RATE that applies DURING one interval, so six intervals
+    of 1,500 veh/h is 1,500 veh/h of demand, not 9,000. This generator emits one
+    interval per input, which made sum and max the same number and hid the
+    difference until a real model with six 15-minute intervals was reported at
+    11,893 veh/h on a three-lane road."""
+    xml = network(
+        links=straight_pair(a_lanes=1),
+        extra=_multi_interval_demand([1500.0] * 6),
+    )
+    result = gate(write(tmp_path, xml))
+    assert [w.code for w in result.check("V6").warnings] == []
+    assert result.check("V6").evidence["demand_time_intervals"] == 6
+
+
+def test_v6_still_warns_when_one_interval_on_its_own_is_over_capacity(tmp_path):
+    """The same six intervals with one genuine peak. Taking the max must not
+    mean taking nothing."""
+    xml = network(
+        links=straight_pair(a_lanes=1),
+        extra=_multi_interval_demand([1500.0, 1500.0, 2500.0, 1500.0, 1500.0, 1500.0]),
+    )
+    result = gate(write(tmp_path, xml))
+    warning = next(
+        w for w in result.check("V6").warnings if w.code == "v6_link_demand_over_capacity"
+    )
+    assert warning.context["volume_vph"] == 2500.0
+    assert warning.context["interval"] == "1 1800000"
+    assert warning.context["intervals"] == 6
 
 
 def test_v6_capacity_uses_the_same_constant_the_edit_time_guardrail_does():
@@ -1030,9 +1707,10 @@ def test_cli_exit_code_separates_incomplete_from_refused(tmp_path):
 
     links = straight_pair()
     links.append(link(3, [(0.0, 400.0), (100.0, 400.0)], name="island"))
-    broken = write(tmp_path, network(links=links), "broken.inpx")
+    broken_xml = network(links=links)
+    broken = write(tmp_path, broken_xml, "broken.inpx")
     (tmp_path / "broken.genesis.json").write_text(
-        json.dumps(_census([])), encoding="utf-8"
+        json.dumps(_census([], broken_xml)), encoding="utf-8"
     )
     proc = _run_cli("--inpx", str(broken), "--lang", "en")
     assert proc.returncode == 2, proc.stderr  # REFUSED — V3 proved a fault
