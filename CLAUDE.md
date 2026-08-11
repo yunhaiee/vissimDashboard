@@ -4,8 +4,11 @@ Vissim traffic-simulation validation dashboard (Dochak) + LLM agent that edits V
 FastAPI backend on **port 8001** + Next.js 16 frontend on 3000; file-based storage, no DB.
 **Goal (re-set 2026-07-31): the full consultant pipeline as a product** — scoping → data →
 AI network build → AI calibration → scenario sweep → styled report. Master plan:
-`docs/product/master-roadmap-2026-07.md` (8 tracks / 5 phases); requirements:
-`docs/product/tk-requirements-2026-07-31.md` (v2.1). The TR-C paper is DEFERRED (post-US-move);
+**`docs/product/master-roadmap-v2-2026-08-11.md`** (v2 — done = one line + commit, remaining =
+detailed; read §2 현 위치 → §5 남은 것 → §6 사람 대기). `master-roadmap-2026-07.md` is v1,
+SUPERSEDED — kept as history because its rows carry each unit's measurements, never for planning.
+Requirements: `docs/product/tk-requirements-2026-07-31.md` (v2.1); §R1.5 defines the V1–V9
+validation gate that `services/genesis/gate.py` implements. The TR-C paper is DEFERRED (post-US-move);
 sweep/calibration instrumentation still accumulates paper data by design. Target market:
 Korea/Daejeon first via a format-neutral adapter layer; micro (not meso); Vissim-focused.
 
