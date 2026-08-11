@@ -57,6 +57,7 @@ import pytest
 
 from services.genesis import connectivity as conn
 from services.genesis import diff as diff_module
+from services.genesis import draft as draft_module
 from services.genesis.draft import (
     _segment_skip,
     LANE_WIDTH_M,
@@ -69,6 +70,7 @@ from services.genesis.draft import (
 from services.genesis.emit import emit_inpx, to_xml_text
 from services.genesis.osm import (
     RESTRICTION_VIA_NOT_A_NODE,
+    SKIP_ISOLATED_ZONE,
     SKIP_SERVICE_EXCLUDED_BY_POLICY,
     SKIP_ZERO_LENGTH,
     parse_osm_file,
@@ -1893,3 +1895,483 @@ def test_the_setback_trim_drop_is_named_apart_from_the_plain_too_short_drop():
     # Same shape as every other skipped_ways entry, so the report's group-by
     # rendering needs no special case for these.
     assert set(plain) == {"way_id", "reason", "highway", "detail"}
+
+
+# ---------------------------------------------------------------------------
+# 7. Isolated zones — the fault a census of link ends structurally cannot see
+#
+# Every link of the pockets below has a connector in AND a connector out, so
+# §2b's dangling-end census scores all of them healthy. The question that finds
+# them is a different one — can a vehicle entering the model ever GET here, and
+# can one here ever get out? — and on the real Murdoch extract the two questions
+# disagreed by 150 links in 8 pockets, 7.6 % of the network.
+#
+# The answer is exclusion, never a connector: each cause below is a statement
+# about the SOURCE (the access road is a footway, or is absent, or left through
+# the extract's edge), and adding a connector would invent a road. The one cause
+# that is NOT about the source — the pocket the source connects and this
+# generator does not — is never excluded, because a pass that can delete its own
+# bugs is worse than no pass at all.
+# ---------------------------------------------------------------------------
+
+
+def pocket_osm(*, link_class: str = "footway", attach: bool = False) -> str:
+    """A crossroads plus a pocket of two residential streets it cannot reach.
+
+    The crossroads is the ``_FRAME`` (Main St 1-2-3, First Ave 4-2-5). The
+    pocket is way 301 (node 30 to 31) and way 302 (node 31 to 32); the two share
+    node 31, so the pocket is internally connected and — once §1's cul-de-sac
+    U-turns are added at nodes 30 and 32 — not one of its four links is a
+    dangling end.
+
+    Node 30 sits at (LAT0 + 0.0015, LON0 + 0.0015) = (141.6 m east, 166.3 m
+    north). The extent rectangle is +/-283.3 m by +/-221.8 m, so the whole
+    pocket is strictly INSIDE the model and no part of it is a boundary
+    terminal.
+
+    ``link_class`` is the class of way 303, which runs from the crossroads
+    (node 5) to the pocket (node 30):
+
+    * ``"footway"`` — the corridor exists for a pedestrian and not for a car;
+    * ``""`` — way 303 is omitted, so nothing at all joins the pocket.
+
+    ``attach=True`` instead makes way 303 a ``residential`` carriageway, i.e.
+    the pocket IS reachable and there is nothing to find.
+    """
+    ways = [
+        (101, [1, 2, 3], {"highway": "secondary", "name": "Main St", "lanes": "4"}),
+        (102, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+        (301, [30, 31], {"highway": "residential", "name": "Pocket Way"}),
+        (302, [31, 32], {"highway": "residential", "name": "Pocket Close"}),
+    ]
+    if attach:
+        ways.append((303, [5, 30], {"highway": "residential", "name": "Access Rd"}))
+    elif link_class:
+        ways.append((303, [5, 30], {"highway": link_class}))
+    return _osm_text(
+        _FRAME
+        + [
+            (30, LAT0 + 0.0015, LON0 + 0.0015),
+            (31, LAT0 + 0.0015, LON0 + 0.002),
+            (32, LAT0 + 0.001, LON0 + 0.002),
+        ],
+        ways,
+    )
+
+
+def _way_ids_built(draft) -> set[int]:
+    return {link.osm_way_id for link in draft.links}
+
+
+def test_a_pocket_whose_only_access_is_a_footway_is_excluded_and_the_class_named(
+    tmp_path: Path,
+):
+    """The Murdoch finding in miniature — and the reason must name the footway.
+
+    Ways 301 and 302 build 4 links (two two-way streets), every one of which has
+    both an incoming and an outgoing connector, so the dangling census sees
+    nothing wrong. Nothing can drive in: the only thing joining the pocket to
+    the crossroads is ``highway=footway``, which is not in the drivable
+    allowlist.
+
+    "Isolated" alone is not an actionable finding; "isolated, and your base map
+    connects it by footpath" is. So the class is asserted, not just the count.
+    """
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "pocket.osm", pocket_osm())), name="pocket"
+    )
+
+    zones = draft.metadata["connectivity"]["excluded_zones"]
+    assert len(zones) == 1
+    assert zones[0]["reason"] == conn.ZONE_NON_DRIVABLE_ACCESS
+    assert "highway=footway" in zones[0]["detail"]
+    assert zones[0]["links"] == 4 and zones[0]["ways"] == 2
+    assert zones[0]["way_ids"] == [301, 302]
+    assert sorted(zones[0]["street_names"]) == ["Pocket Close", "Pocket Way"]
+    # Removed from the network, not merely reported.
+    assert _way_ids_built(draft) == {101, 102}
+
+
+def test_removing_a_pocket_leaves_the_rest_of_the_network_exactly_as_it_was(
+    tmp_path: Path,
+):
+    """The pocket goes; Main St and First Ave do not notice.
+
+    Compared against the identical file with the pocket ways never present, so
+    the claim is "the same network", not "a network of the same size".
+    """
+    with_pocket = build_draft(
+        parse_osm_file(_write(tmp_path, "pocket.osm", pocket_osm())), name="n"
+    )
+    without = build_draft(
+        parse_osm_file(
+            _write(
+                tmp_path,
+                "plain.osm",
+                _osm_text(
+                    _FRAME,
+                    [
+                        (
+                            101,
+                            [1, 2, 3],
+                            {"highway": "secondary", "name": "Main St", "lanes": "4"},
+                        ),
+                        (102, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+                    ],
+                ),
+            )
+        ),
+        name="n",
+    )
+
+    assert [l.points for l in with_pocket.links] == [l.points for l in without.links]
+    assert [
+        (c.from_link, c.to_link, c.from_lanes, c.to_lanes) for c in with_pocket.connectors
+    ] == [(c.from_link, c.to_link, c.from_lanes, c.to_lanes) for c in without.connectors]
+
+
+def test_a_pocket_nothing_in_the_file_touches_is_excluded_as_severed_in_the_source(
+    tmp_path: Path,
+):
+    """No footway either — the severance is unqualified, and says so.
+
+    The two reasons are kept apart because they are different messages to a
+    client: "your base map joins this by footpath" is a mapping decision to
+    review, "nothing joins this at all" is missing data.
+    """
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "severed.osm", pocket_osm(link_class=""))),
+        name="severed",
+    )
+
+    zones = draft.metadata["connectivity"]["excluded_zones"]
+    assert len(zones) == 1
+    assert zones[0]["reason"] == conn.ZONE_SEVERED_IN_SOURCE
+    assert "not so much as a footway" in zones[0]["detail"]
+    assert _way_ids_built(draft) == {101, 102}
+
+
+def test_a_reachable_pocket_is_never_excluded(tmp_path: Path):
+    """The counterfactual: identical geometry, access road drivable.
+
+    Without this, the two tests above would pass just as well for a pass that
+    deleted every pocket it could find.
+    """
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "attached.osm", pocket_osm(attach=True))),
+        name="attached",
+    )
+
+    assert draft.metadata["connectivity"]["excluded_zones"] == []
+    assert _way_ids_built(draft) == {101, 102, 301, 302, 303}
+
+
+def test_every_excluded_way_is_a_named_skip_and_a_compliance_item(tmp_path: Path):
+    """An exclusion no report can name is indistinguishable from a lost road.
+
+    Same doctrine as ``--exclude-service``: each way leaves a
+    :data:`SKIP_ISOLATED_ZONE` behind carrying the reason, so the removal is
+    visible in ``skipped_summary()``, in ``*.genesis.json`` and in the rendered
+    §5 report — where a client who reads it can go and fix the base map.
+    """
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "pocket.osm", pocket_osm())), name="pocket"
+    )
+
+    skips = {
+        s["way_id"]: s for s in draft.skipped_ways if s["reason"] == SKIP_ISOLATED_ZONE
+    }
+    assert sorted(skips) == [301, 302]
+    assert conn.ZONE_NON_DRIVABLE_ACCESS in skips[301]["detail"]
+
+    item = next(
+        i for i in draft.compliance.items if i.rule_id == "5.3.3-isolated-zone-excluded"
+    )
+    assert item.state.value == "applied"
+    assert item.evidence["excluded_links"] == 4
+    assert item.evidence["retained_zones_this_generator_severed"] == 0
+    rendered = draft.render_compliance("en")
+    assert "Pocket Way" in rendered
+    assert conn.ZONE_NON_DRIVABLE_ACCESS in rendered
+
+
+def test_a_pocket_the_source_connects_is_reported_and_never_excluded(tmp_path: Path):
+    """The guard on the whole pass: it may not delete this generator's own bugs.
+
+    Way 303 IS a residential carriageway, sharing node 5 with First Ave and node
+    30 with the pocket, so the source says these roads meet. Two turn
+    restrictions then ban every movement across node 5 in both directions and
+    the pocket becomes unreachable while remaining connected *in the file*.
+
+    That is not a severance in the base map, so the zone stays in the network
+    with its name on it and the compliance item turns VIOLATED. Excluding it
+    would delete the evidence and let a gate go green over a movement that went
+    missing on roads the source joins.
+    """
+    text = _osm_text(
+        _FRAME
+        + [
+            (30, LAT0 + 0.0015, LON0 + 0.0015),
+            (31, LAT0 + 0.0015, LON0 + 0.002),
+        ],
+        [
+            (101, [1, 2, 3], {"highway": "secondary", "name": "Main St", "lanes": "4"}),
+            (102, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+            (303, [5, 30], {"highway": "residential", "name": "Access Rd"}),
+            (301, [30, 31], {"highway": "residential", "name": "Pocket Way"}),
+        ],
+        relations=[
+            (
+                9001,
+                [("way", 102, "from"), ("node", 5, "via"), ("way", 303, "to")],
+                {"type": "restriction", "restriction": "no_left_turn"},
+            ),
+            (
+                9002,
+                [("way", 303, "from"), ("node", 5, "via"), ("way", 102, "to")],
+                {"type": "restriction", "restriction": "no_left_turn"},
+            ),
+        ],
+    )
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "ourbug.osm", text)), name="ourbug"
+    )
+
+    assert draft.metadata["connectivity"]["excluded_zones"] == []
+    retained = draft.metadata["connectivity"]["isolated_zones_retained"]
+    assert len(retained) == 1
+    assert retained[0]["reason"] == conn.ZONE_SEVERED_BY_THIS_GENERATOR
+    assert "way 102" in retained[0]["detail"] or "way 303" in retained[0]["detail"]
+    # Every road the source contains is still in the network.
+    assert _way_ids_built(draft) == {101, 102, 301, 303}
+    item = next(
+        i for i in draft.compliance.items if i.rule_id == "5.3.3-isolated-zone-excluded"
+    )
+    assert item.state.value == "violated"
+    assert item.evidence["retained_zones_this_generator_severed"] == 1
+
+
+def test_isolated_zones_requires_both_unreachable_and_inescapable():
+    """A pocket a vehicle CAN reach is never excluded, however badly it ends.
+
+    Three cases, and the middle one is the whole reason the rule is an AND:
+
+    1. ``1 -> 2``: link 1 is a network entry and link 2 an exit. An ordinary
+       corridor; a rule that removed it would remove every model boundary.
+    2. ``1 -> 2 -> 3 -> 2``: traffic enters at 1 and then circulates forever —
+       no link reaches an exit, so every link is "trapped". It is still a road
+       vehicles drive on, and it is named by the dangling-end census. Deleting
+       it would delete a live network on the strength of half the test.
+    3. ``1 -> 2 -> 1``: a closed cycle with no entry and no exit. Nothing can
+       ever be here. This one, and only this one, is a zone.
+    """
+    link = lambda i: type("L", (), {"id": i, "osm_way_id": i, "name": f"L{i}"})()
+    edge = lambda a, b: type("C", (), {"from_link": a, "to_link": b})()
+
+    assert conn.isolated_zones([link(1), link(2)], [edge(1, 2)]) == []
+    assert (
+        conn.isolated_zones(
+            [link(1), link(2), link(3)], [edge(1, 2), edge(2, 3), edge(3, 2)]
+        )
+        == []
+    )
+    assert conn.isolated_zones([link(1), link(2)], [edge(1, 2), edge(2, 1)]) == [(1, 2)]
+
+
+def test_a_pocket_at_the_model_edge_is_excluded_as_truncated_not_as_severed(
+    tmp_path: Path,
+):
+    """A pocket ON the extent is a road that leaves the window, not a broken map.
+
+    The pocket here is a one-way loop — ways 301/302/303 running 30 to 31 to 32
+    and back to 30, the shape of a car-park circulation ring. Every one of its
+    three links has a connector in and a connector out, none of them is a dead
+    end, and there is no entry and no exit, so nothing can ever be on it.
+
+    A two-way stub at the edge is deliberately NOT this case: its outbound
+    carriageway is a network exit and its inbound one an entry, which is exactly
+    what a road leaving the study area should look like. It takes a loop to
+    produce a boundary pocket that is genuinely inert.
+
+    Node 30 sits at LON0 + 0.004, the east-most point of the kept geometry, so
+    the pocket is part of the model's own edge — and the honest reason is that
+    whatever joins it to the network is OUTSIDE the extract. That is a statement
+    about where the study area was drawn, not a defect in anybody's data, which
+    is why it does not share a reason code with the two above.
+
+    Turn angles, hand-derived so the fixture cannot silently become a U-turn
+    (which §5.3.3 would suppress, breaking the loop): at node 30 the movement
+    turns 80.9 deg, at nodes 31 and 32 it turns 139.6 deg — all under
+    UTURN_ANGLE_DEG = 150.
+    """
+    text = _osm_text(
+        _FRAME
+        + [
+            (30, LAT0 + 0.0015, LON0 + 0.004),
+            (31, LAT0 + 0.002, LON0 + 0.0035),
+            (32, LAT0 + 0.001, LON0 + 0.0035),
+        ],
+        [
+            (101, [1, 2, 3], {"highway": "secondary", "name": "Main St", "lanes": "4"}),
+            (102, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+            (301, [30, 31], {"highway": "service", "oneway": "yes"}),
+            (302, [31, 32], {"highway": "service", "oneway": "yes"}),
+            (303, [32, 30], {"highway": "service", "oneway": "yes"}),
+        ],
+    )
+    draft = build_draft(parse_osm_file(_write(tmp_path, "edge.osm", text)), name="edge")
+
+    zones = draft.metadata["connectivity"]["excluded_zones"]
+    assert len(zones) == 1
+    assert zones[0]["reason"] == conn.ZONE_TRUNCATED_AT_BOUNDARY
+    assert zones[0]["links"] == 3
+    assert _way_ids_built(draft) == {101, 102}
+
+
+def test_when_the_removal_cap_is_exhausted_the_zones_stay_and_are_named(
+    tmp_path: Path, monkeypatch
+):
+    """The fail-safe direction: give up LOUDLY and leave the network alone.
+
+    Removing a component nothing can reach cannot isolate anything else, so one
+    extra round is enough and the cap should never be hit. It exists so that
+    claim is falsifiable rather than assumed — and if it ever is hit, the
+    pockets stay in the file with a named gap on them and the R1.5 gate refuses,
+    which is the right way round. A silent loop that quietly stopped converging
+    is the failure mode this package keeps finding in other people's code.
+    """
+    monkeypatch.setattr(draft_module, "MAX_ISOLATION_ROUNDS", 1)
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "pocket.osm", pocket_osm())), name="pocket"
+    )
+
+    connectivity = draft.metadata["connectivity"]
+    assert connectivity["excluded_zones"] == []
+    assert connectivity["excluded_zones_unresolved"] == draft_module.ISOLATION_ROUNDS_EXHAUSTED
+    assert _way_ids_built(draft) == {101, 102, 301, 302}
+
+    # "Named" is the load-bearing word in this test's title, and the first cut
+    # of the cap branch failed it: a stuck zone landed in NEITHER ledger (not
+    # excluded — the break ran before the extend; not retained — its reason was
+    # excludable), so a pocket still physically in the file appeared in no
+    # report at all. The adversarial pass caught it. The stuck zone must be in
+    # `isolated_zones_retained` re-tagged with the cap reason, and the §5.3.3
+    # compliance item must exist and be VIOLATED — a generator that cannot
+    # finish its own cleanup must not grade itself APPLIED.
+    stuck = connectivity["isolated_zones_retained"]
+    assert len(stuck) == 1, stuck
+    assert stuck[0]["reason"] == draft_module.ISOLATION_ROUNDS_EXHAUSTED
+    assert stuck[0]["street_names"], "the stuck pocket must carry its streets"
+
+    item = next(
+        i for i in draft.compliance.items if i.rule_id == "5.3.3-isolated-zone-excluded"
+    )
+    assert item.state.name == "VIOLATED"
+    assert any("[" + draft_module.ISOLATION_ROUNDS_EXHAUSTED + "]" in s for s in item.subjects)
+
+
+def test_the_compliance_item_names_every_street_of_a_pocket_not_one(tmp_path: Path):
+    """"Names every pocket by street" must mean ALL of them.
+
+    The 96-link Murdoch pocket spans a dozen named streets; a subject reading
+    "Scandrett Way +95 link(s)" names one and buries eleven. A client fixing
+    their base map works street by street, so the subject carries the whole
+    list. ``pocket_osm``'s pocket is Pocket Way + Pocket Close — two distinct
+    names, and both must appear in the SAME subject line.
+    """
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "pocket.osm", pocket_osm())), name="pocket"
+    )
+
+    item = next(
+        i for i in draft.compliance.items if i.rule_id == "5.3.3-isolated-zone-excluded"
+    )
+    assert len(item.subjects) == 1, item.subjects
+    subject = item.subjects[0]
+    assert "Pocket Way" in subject
+    assert "Pocket Close" in subject
+
+
+def test_a_way_with_no_highway_tag_is_reported_as_such_not_as_an_empty_string(
+    tmp_path: Path,
+):
+    """``highway=`` reads as a bug in a report; "no highway tag" reads as data.
+
+    Way 303 carries a ``barrier`` and no ``highway``, so it is skipped as
+    ``no_highway_tag`` — and it is still the only thing in the file touching the
+    pocket, so it is still the reason the pocket is unreachable.
+    """
+    text = _osm_text(
+        _FRAME
+        + [
+            (30, LAT0 + 0.0015, LON0 + 0.0015),
+            (31, LAT0 + 0.0015, LON0 + 0.002),
+        ],
+        [
+            (101, [1, 2, 3], {"highway": "secondary", "name": "Main St", "lanes": "4"}),
+            (102, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+            (303, [5, 30], {"barrier": "hedge"}),
+            (301, [30, 31], {"highway": "residential", "name": "Pocket Way"}),
+        ],
+    )
+    draft = build_draft(parse_osm_file(_write(tmp_path, "hedge.osm", text)), name="hedge")
+
+    zones = draft.metadata["connectivity"]["excluded_zones"]
+    assert len(zones) == 1
+    assert zones[0]["reason"] == conn.ZONE_NON_DRIVABLE_ACCESS
+    assert "highway=no highway tag" in zones[0]["detail"]
+
+
+def test_without_ways_prunes_the_nodes_that_leave_with_them(tmp_path: Path):
+    """The extract's extent is the projection origin, and the origin is every
+    coordinate in the emitted file.
+
+    So a removal that left the departed geometry's nodes behind would shrink the
+    network while keeping the map's old centre — every link in the file would
+    move, for a road that is no longer in it. Asserted on ``bounds()`` because
+    that is the value ``build_draft`` actually consumes.
+    """
+    text = _osm_text(
+        _FRAME + [(40, LAT0 + 0.010, LON0 + 0.010), (41, LAT0 + 0.011, LON0 + 0.011)],
+        [
+            (101, [1, 2, 3], {"highway": "secondary", "name": "Main St", "lanes": "4"}),
+            (102, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+            (401, [40, 41], {"highway": "residential", "name": "Far Rd"}),
+        ],
+    )
+    extract = parse_osm_file(_write(tmp_path, "far.osm", text))
+    assert extract.bounds()[3] == pytest.approx(LON0 + 0.011)
+
+    reduced = extract.without_ways(
+        [401], reason=SKIP_ISOLATED_ZONE, detail_for=lambda way_id: f"way {way_id}"
+    )
+
+    assert set(reduced.nodes) == {1, 2, 3, 4, 5}
+    assert reduced.bounds()[3] == pytest.approx(LON0 + 0.003)
+    # The original is untouched: the caller keeps it to diagnose against.
+    assert set(extract.nodes) == {1, 2, 3, 4, 5, 40, 41}
+    assert [s["way_id"] for s in (w.as_dict() for w in reduced.skipped)].count(401) == 1
+
+
+def test_the_r15_gate_finds_no_isolated_zone_in_what_the_generator_now_emits(
+    tmp_path: Path,
+):
+    """The two definitions must agree, and only an end-to-end run proves it.
+
+    ``connectivity.isolated_zones`` runs on the draft; ``gate._check_v3`` runs on
+    the finished ``.inpx``. They are deliberately separate implementations — the
+    generator may not import its own judge — so nothing but this test stops them
+    drifting apart. Emitting the footway-pocket fixture and running the real gate
+    over the real file is the only version of the assertion that cannot be
+    satisfied by two functions agreeing about nothing.
+    """
+    from services.genesis.gate import run_gate
+
+    source = _write(tmp_path, "pocket.osm", pocket_osm())
+    draft = build_draft(parse_osm_file(source), name="pocket")
+    path = emit_inpx(draft, tmp_path / "pocket.inpx")
+
+    v3 = run_gate(path).check("V3")
+    assert [f.code for f in v3.findings if f.code.endswith("_zone")] == []
+    assert v3.evidence["links_in_a_broken_zone"] == 0
+    assert v3.evidence["plain_links"] == len(draft.links)

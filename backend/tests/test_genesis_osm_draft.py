@@ -2027,3 +2027,325 @@ def test_cli_refuses_an_area_too_large_for_the_projection(tmp_path: Path):
     assert result.returncode == 2
     assert "projection_out_of_range" in result.stderr
     assert "validity radius" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# 9. Lane allocation from the source's own turn:lanes
+#
+# The geometric default gives every movement ``min(approach, exit)`` lanes
+# counted from one side, so two movements out of one approach are routinely
+# given the SAME lanes while the approach's other lanes get no connector at all.
+# Vissim says nothing: the vehicles in those lanes cannot merge, wait, and are
+# deleted after ``DiffusTm`` with the demand vanishing. Measured on a real
+# 4-lane trunk approach tagged ``through|through|right|right``, both movements
+# were allocated lanes 1 and 2 and half the road was unusable — a lane drop the
+# road does not have.
+#
+# The repair reads the allocation off the file. It is deliberately narrow: it
+# only runs where the default STARVES a lane, only where every entry of
+# ``turn:lanes`` names a movement, and only where the tag's groups are exactly
+# as many as the movements built. Every refusal is counted by name.
+#
+# Frame for the fixtures below (all one-way, so there are no REV carriageways
+# and no U-turns to reason about):
+#     node 1 = (LAT0, LON0 - 0.003)  ->  283.26 m west of the origin
+#     node 2 = (LAT0, LON0)          ->  the junction
+#     node 3 = (LAT0, LON0 + 0.003)  ->  283.26 m east   (the through exit)
+#     node 6 = (LAT0 - 0.001, LON0 + 0.003) -> east and 110.89 m south (the ramp)
+# The approach 1->2 runs due east, so its heading is (1, 0). The through exit
+# 2->3 is due east too: cross = 0, angle = 0.0 deg. The ramp exit 2->6 has
+# direction (283.26, -110.89): cross = 1*(-110.89) - 0*283.26 = -110.89 and
+# dot = 283.26, so angle = atan2(-110.89, 283.26) = **-21.38 deg** — a RIGHT
+# divergence geometrically, but inside THROUGH_ANGLE_DEG = 30, so both movements
+# classify as `through` and the tag is the only thing that can tell them apart.
+# ---------------------------------------------------------------------------
+
+_RAMP_NODE = (6, LAT0 - 0.001, LON0 + 0.003)
+
+
+def diverge_osm(*, turn_lanes: str | None, lanes: str = "4", exits: int = 2) -> str:
+    """A 4-lane one-way approach splitting into a through road and a ramp."""
+    tags = {"highway": "trunk", "name": "South St", "oneway": "yes", "lanes": lanes}
+    if turn_lanes is not None:
+        tags["turn:lanes"] = turn_lanes
+    ways = [
+        (401, [1, 2], tags),
+        (402, [2, 3], {"highway": "trunk", "name": "South St", "oneway": "yes", "lanes": "2"}),
+    ]
+    if exits >= 2:
+        ways.append(
+            (403, [2, 6], {"highway": "motorway_link", "oneway": "yes", "lanes": "2"})
+        )
+    return _osm_text(_CROSS_NODES + [_RAMP_NODE], ways)
+
+
+def _from_lanes_by_exit(draft) -> dict[int, list[int]]:
+    exit_way = {link.id: link.osm_way_id for link in draft.links}
+    return {
+        exit_way[c.to_link]: list(c.from_lanes)
+        for c in draft.connectors
+        if exit_way[c.from_link] == 401
+    }
+
+
+def test_a_one_way_way_keeps_its_turn_lanes_when_the_lane_count_came_from_lanes():
+    """``lanes`` and ``turn:lanes`` are two reads of the same road, not a race.
+
+    ``_directional_lanes`` resolves the lane COUNT from the most specific tag
+    available, and ``lanes=4`` wins over counting the ``turn:lanes`` entries.
+    That is right for the count and was wrong for everything else: the turn
+    values were dropped on the floor, so the file's own statement of which lane
+    goes where never reached the connector builder. On a one-way way the
+    unsuffixed tag can only describe the one direction there is.
+    """
+    directions = osm_module._directional_lanes(
+        {"lanes": "4", "turn:lanes": "through|through|right|right", "oneway": "yes"},
+        "trunk",
+        1,
+    )
+
+    assert len(directions) == 1
+    assert directions[0].lanes == 4
+    assert directions[0].provenance.osm_key == "lanes"
+    assert directions[0].turn_lanes == ("through", "through", "right", "right")
+
+
+def test_a_two_way_way_never_takes_an_unsuffixed_turn_lanes_tag():
+    """On a two-way way OSM does not say which direction the tag describes.
+
+    So it is not used — for either direction — and the lane allocation stays
+    geometric. Guessing would put a right-turn pocket on whichever carriageway
+    the generator felt like.
+    """
+    directions = osm_module._directional_lanes(
+        {"lanes": "4", "turn:lanes": "through|right"}, "secondary", 0
+    )
+
+    assert [d.turn_lanes for d in directions] == [(), ()]
+
+
+def test_turn_lane_allocation_maps_osm_left_to_right_onto_vissim_right_to_left():
+    """The crux, derived by hand.
+
+    OSM writes ``turn:lanes`` entries leftmost-to-rightmost in the direction of
+    travel, in either driving regime; this generator indexes lanes with lane 1
+    RIGHT-most (``LANE_INDEX_1_IS_RIGHTMOST``). So OSM position p of n lanes is
+    Vissim index n - p + 1:
+
+        ``through|through|right|right`` on 4 lanes
+          OSM 1,2 = through -> Vissim 4,3
+          OSM 3,4 = right   -> Vissim 2,1
+
+    Getting this backwards would put every turn on the wrong side of the road,
+    which is why it is asserted rather than trusted. The movements are given in
+    build order and matched to the groups by heading (leftmost group to leftmost
+    movement), so the -21.4 deg ramp — classified `through` because it is inside
+    the 30 deg band — still lands on the ``right`` group.
+    """
+    allocation, reason = draft_module.turn_lane_allocation(
+        ("through", "through", "right", "right"),
+        4,
+        [(TURN_THROUGH, 0.0), (TURN_THROUGH, -21.38)],
+    )
+
+    assert reason == ""
+    assert allocation == {0: (3, 4), 1: (1, 2)}
+
+
+def test_a_fully_specified_turn_lanes_tag_gives_every_lane_a_connector(tmp_path: Path):
+    """The V4 finding, fixed at its cause.
+
+    Without the repair both movements take lanes 1 and 2 — the two lanes the tag
+    reserves for the ramp — and lanes 3 and 4 have no onward connector at all,
+    which is a lane drop this road does not have. With it, the through movement
+    takes the two lanes the file marks ``through`` (Vissim 3 and 4) and the ramp
+    takes the two marked ``right`` (Vissim 1 and 2), and all four lanes are
+    served.
+    """
+    draft = build_draft(
+        parse_osm_file(
+            _write(
+                tmp_path,
+                "diverge.osm",
+                diverge_osm(turn_lanes="through|through|right|right"),
+            )
+        ),
+        name="diverge",
+    )
+
+    assert _from_lanes_by_exit(draft) == {402: [3, 4], 403: [1, 2]}
+    served = {lane for c in draft.connectors for lane in c.from_lanes}
+    assert served == {1, 2, 3, 4}
+
+    applied = draft.metadata["connectivity"]["turn_lane_allocations_applied"]
+    assert len(applied) == 1
+    assert applied[0]["starved_lanes_before"] == [3, 4]
+    assert applied[0]["turn_lanes"] == ["through", "through", "right", "right"]
+
+
+def test_without_the_tag_the_geometric_default_stands_and_starves_two_lanes(
+    tmp_path: Path,
+):
+    """The counterfactual, and the measurement of what the repair is worth.
+
+    Identical geometry with no ``turn:lanes``: the source says nothing about
+    which lane goes where, so nothing is invented, both movements align on the
+    median side, and lanes 3 and 4 are left with no connector. The refusal is
+    recorded by name — a starved lane nobody names is a lane full of vehicles
+    Vissim deletes in silence.
+    """
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "plain.osm", diverge_osm(turn_lanes=None))),
+        name="plain",
+    )
+
+    assert _from_lanes_by_exit(draft) == {402: [1, 2], 403: [1, 2]}
+    refused = draft.metadata["connectivity"]["turn_lane_allocations_refused"]
+    assert [r["reason"] for r in refused] == [draft_module.TURN_LANES_NO_TAG]
+    assert refused[0]["starved_lanes"] == [3, 4]
+
+
+def test_an_unspecified_turn_lane_entry_is_never_filled_in(tmp_path: Path):
+    """``through||right|right``: one lane the file does not describe.
+
+    An empty entry (and ``none``, its explicit twin) means the source did not
+    say what that lane does. Filling it in would be exactly the invention this
+    package refuses everywhere else, so the whole tag goes unused and the
+    default — starved lanes and all — stands, named.
+    """
+    draft = build_draft(
+        parse_osm_file(
+            _write(tmp_path, "gap.osm", diverge_osm(turn_lanes="through||right|right"))
+        ),
+        name="gap",
+    )
+
+    assert _from_lanes_by_exit(draft) == {402: [1, 2], 403: [1, 2]}
+    assert draft.metadata["connectivity"]["turn_lane_allocations_refused_by_reason"] == {
+        draft_module.TURN_LANES_UNSPECIFIED_ENTRY: 1
+    }
+
+
+def test_a_turn_lanes_tag_of_the_wrong_length_is_refused(tmp_path: Path):
+    """Three entries against four lanes: the tag is not about this road as read.
+
+    Which three of the four it describes is unknowable, so the tag is dropped
+    with its own reason rather than stretched to fit.
+    """
+    draft = build_draft(
+        parse_osm_file(
+            _write(tmp_path, "short.osm", diverge_osm(turn_lanes="through|right|right"))
+        ),
+        name="short",
+    )
+
+    assert draft.metadata["connectivity"]["turn_lane_allocations_refused_by_reason"] == {
+        draft_module.TURN_LANES_COUNT_MISMATCH: 1
+    }
+
+
+def test_a_tag_with_more_groups_than_movements_is_refused(tmp_path: Path):
+    """``left|through|right|right`` where only two movements exist.
+
+    Three groups, two movements: the correspondence would have to be CHOSEN, and
+    a chosen correspondence is a guess about which turn the missing group was.
+    Refused by name.
+    """
+    draft = build_draft(
+        parse_osm_file(
+            _write(tmp_path, "extra.osm", diverge_osm(turn_lanes="left|through|right|right"))
+        ),
+        name="extra",
+    )
+
+    assert draft.metadata["connectivity"]["turn_lane_allocations_refused_by_reason"] == {
+        draft_module.TURN_LANES_BLOCKS_NE_MOVEMENTS: 1
+    }
+
+
+def test_a_group_whose_word_contradicts_the_geometry_is_refused():
+    """A group saying ``right`` may not land on a movement classified LEFT.
+
+    The order match is the mechanism; this is its sanity check. If the tag's own
+    words disagree with the geometry the generator measured, one of the two is
+    wrong about this junction and neither may be applied on the strength of the
+    other.
+    """
+    allocation, reason = draft_module.turn_lane_allocation(
+        ("right", "left"), 2, [(TURN_LEFT, 40.0), (TURN_RIGHT, -40.0)]
+    )
+
+    assert allocation == {}
+    assert reason == draft_module.TURN_LANES_CONTRADICTS_GEOMETRY
+
+
+def test_turn_lanes_is_not_used_where_the_default_already_serves_every_lane(
+    tmp_path: Path,
+):
+    """Repair-only, and this is the line that makes it so.
+
+    A 2-lane approach tagged ``through|right`` whose two exits each take both
+    lanes has no starved lane, so the default — the rule this package's live
+    check certified — is left alone. Re-allocating a working junction on the
+    strength of a tag would be a change with no defect behind it.
+    """
+    draft = build_draft(
+        parse_osm_file(
+            _write(
+                tmp_path,
+                "ok.osm",
+                diverge_osm(turn_lanes="through|right", lanes="2"),
+            )
+        ),
+        name="ok",
+    )
+
+    assert _from_lanes_by_exit(draft) == {402: [1, 2], 403: [1, 2]}
+    assert draft.metadata["connectivity"]["turn_lane_allocations_applied"] == []
+    assert draft.metadata["connectivity"]["turn_lane_allocations_refused"] == []
+
+
+def test_connector_lane_pairs_takes_the_block_lanes_nearest_the_movement():
+    """When the exit is narrower than the block the road really does drop a lane.
+
+    The block is which lanes the SOURCE assigns to this movement; the exit's
+    width is geometry. Where the second is smaller, the ``k`` lanes of the block
+    nearest the side the movement is heading are taken — a right turn hugs the
+    low indices, a left turn the high ones — and the rest of the block is a
+    genuine lane drop that the R1.5 gate's V4 is then free to measure.
+    """
+    # Block {2, 3, 4} into a 2-lane exit.
+    assert draft_module.connector_lane_pairs(TURN_RIGHT, 4, 2, (2, 3, 4)) == [(2, 1), (3, 2)]
+    assert draft_module.connector_lane_pairs(TURN_LEFT, 4, 2, (2, 3, 4)) == [(3, 1), (4, 2)]
+    # A block that fits keeps all of itself, whatever the turn.
+    assert draft_module.connector_lane_pairs(TURN_RIGHT, 4, 2, (1, 2)) == [(1, 1), (2, 2)]
+    # No block: unchanged from the derivation this function has always used.
+    assert draft_module.connector_lane_pairs(TURN_RIGHT, 4, 2) == [(1, 1), (2, 2)]
+
+
+def test_the_repaired_allocation_survives_the_emitter_and_the_parser(tmp_path: Path):
+    """The lanes the repair chose are the lanes in the ``.inpx``.
+
+    ``emit.py`` is live-certified and unchanged by this work, so the risk is not
+    that it writes lane references wrongly — it is that the draft and the file
+    disagree about which lanes those are. Read back through this repo's own
+    parser, they do not.
+    """
+    draft = build_draft(
+        parse_osm_file(
+            _write(
+                tmp_path,
+                "diverge.osm",
+                diverge_osm(turn_lanes="through|through|right|right"),
+            )
+        ),
+        name="diverge",
+    )
+    path = emit_inpx(draft, tmp_path / "diverge.inpx")
+
+    text = path.read_text(encoding="utf-8")
+    approach = next(l for l in draft.links if l.osm_way_id == 401)
+    lanes_used = set(re.findall(rf'"{approach.id} (\d)"', text))
+    assert lanes_used == {"1", "2", "3", "4"}
+    parsed = {link["id"]: link for link in parse_network(str(path))["links"]}
+    assert parsed[str(approach.id)]["lanes"] == 4

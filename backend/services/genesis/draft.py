@@ -53,6 +53,7 @@ default. All of them are listed in the report.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -68,8 +69,11 @@ from .connectivity import (
     NODE_MERGE_TOLERANCE_M,
     TOLERANCE_BASIS as NODE_MERGE_TOLERANCE_BASIS,
     DeadEnd,
+    EXCLUDABLE_ZONE_REASONS,
+    IsolatedZone,
     MergeReport,
     dead_ends,
+    diagnose_isolated_zones,
     merge_junction_nodes,
     suppressed_by_restriction,
 )
@@ -77,6 +81,7 @@ from .osm import (
     EXTRACT,
     CIT_S5211_LEFT_HAND,
     CIT_S5212_UNITS,
+    SKIP_ISOLATED_ZONE,
     OsmExtract,
     OsmWay,
     left_normal,
@@ -408,6 +413,11 @@ _RULE_TITLE: dict[str, dict[str, str]] = {
         "ko": "§5.3.3 링크·커넥터 수 최소화",
         "en": "§5.3.3 minimise the number of links and connectors",
         "ja": "§5.3.3 リンク・コネクタ数の最小化",
+    },
+    "5.3.3-isolated-zone-excluded": {
+        "ko": "§5.3.3 도달 불가 구역 제외",
+        "en": "§5.3.3 unreachable pockets excluded from the network",
+        "ja": "§5.3.3 到達不能ゾーンの除外",
     },
     "5.3.3-lane-gain-drop-one-connector": {
         "ko": "§5.3.3 차로 증감은 커넥터 1개로",
@@ -1210,7 +1220,10 @@ def classify_turn(
 
 
 def connector_lane_pairs(
-    turn: str, approach_lanes: int, exit_lanes: int
+    turn: str,
+    approach_lanes: int,
+    exit_lanes: int,
+    approach_block: tuple[int, ...] | None = None,
 ) -> list[tuple[int, int]]:
     """Which approach lane each connector lane leaves, and which exit lane it joins.
 
@@ -1256,7 +1269,25 @@ def connector_lane_pairs(
     And with a three-lane approach into a two-lane exit (``k = 2``), a left turn
     gives ``[(2, 1), (3, 2)]``: connector lane 1 is the right-most of the
     connector, so it takes the right-most of the selected block on both sides.
+
+    ``approach_block``: when the SOURCE says which lanes
+    -------------------------------------------------------
+    Everything above is a derivation from geometry, used because OSM usually
+    says nothing about lane allocation. When it does — a fully specified
+    ``turn:lanes`` (see :func:`turn_lane_allocation`) — the approach side is
+    read from the file instead of derived, and only the EXIT side keeps the
+    geometric rule, because ``turn:lanes`` describes the approach and is silent
+    about which lane of the exit a movement lands in.
+
+    The block is a set of approach lane indices. If the exit is narrower than
+    the block, the ``k`` lanes of the block nearest the side the movement is
+    heading are taken — the same "which side does this movement hug" question
+    the derivation above answers, asked inside a smaller pool. Those of the
+    block's lanes that do not fit are then a genuine lane drop, which is what
+    the road actually does, and V4 of the R1.5 gate is left free to measure it.
     """
+    if approach_block:
+        return _pairs_from_block(turn, approach_block, exit_lanes)
     count = max(1, min(approach_lanes, exit_lanes))
     approach_total = max(1, approach_lanes)
     exit_total = max(1, exit_lanes)
@@ -1291,6 +1322,120 @@ def connector_lane_pairs(
     return list(zip(block(approach_total), block(exit_total)))
 
 
+def _keeps_left(turn: str) -> bool:
+    """Does this movement hug the LEFT (highest-index) side of its lane pool?"""
+    if turn == TURN_LEFT:
+        return True
+    if turn == TURN_RIGHT:
+        return False
+    # Through and U-turn both align on the median side — see the branches in
+    # ``connector_lane_pairs``, of which this is the extracted predicate.
+    return TRAFFIC_REGULATION != "LEFTHANDTRAFFIC"
+
+
+def _pairs_from_block(
+    turn: str, approach_block: tuple[int, ...], exit_lanes: int
+) -> list[tuple[int, int]]:
+    """``connector_lane_pairs`` with the approach lanes given, not derived."""
+    pool = sorted(approach_block)
+    exit_total = max(1, exit_lanes)
+    count = max(1, min(len(pool), exit_total))
+    chosen = pool[-count:] if _keeps_left(turn) else pool[:count]
+    if _keeps_left(turn):
+        exit_side = list(range(exit_total - count + 1, exit_total + 1))
+    else:
+        exit_side = list(range(1, count + 1))
+    return list(zip(chosen, exit_side))
+
+
+#: A ``turn:lanes`` entry that names no movement. Both spellings mean "the
+#: source does not say what this lane does": an empty entry is an unfilled slot
+#: and ``none`` is an explicit "no turn arrow painted here". Either way the file
+#: has not stated an allocation, and guessing one would be an invention — so a
+#: tag containing either is not used at all.
+UNSPECIFIED_TURN_LANE_VALUES = frozenset({"", "none"})
+
+#: Why a link's ``turn:lanes`` was not used to allocate its lanes. Counted in
+#: the connectivity metadata so "the tag was there and we ignored it" is never
+#: a silence.
+TURN_LANES_NO_TAG = "no_turn_lanes_tag_for_this_direction"
+TURN_LANES_COUNT_MISMATCH = "turn_lanes_entry_count_differs_from_lane_count"
+TURN_LANES_UNSPECIFIED_ENTRY = "turn_lanes_has_an_unspecified_entry"
+TURN_LANES_BLOCKS_NE_MOVEMENTS = "turn_lanes_groups_do_not_match_the_movements_built"
+TURN_LANES_CONTRADICTS_GEOMETRY = "turn_lanes_order_contradicts_the_turn_geometry"
+TURN_LANES_NO_STARVED_LANE = "default_allocation_already_serves_every_lane"
+
+
+def turn_lane_allocation(
+    turn_lanes: tuple[str, ...], lanes: int, movements: list[tuple[str, float]]
+) -> tuple[dict[int, tuple[int, ...]], str]:
+    """Which approach lanes each movement leaves, read from ``turn:lanes``.
+
+    Returns ``({movement index: lane indices}, "")`` when the source states the
+    allocation completely, and ``({}, reason)`` when it does not.
+
+    **What this repairs.** The geometric default in
+    :func:`connector_lane_pairs` gives every movement ``min(approach, exit)``
+    lanes measured from one side, so two movements out of one approach are
+    routinely given the SAME lanes while the approach's other lanes are left
+    with no connector at all. Vissim does not complain: the vehicles in those
+    lanes fail to merge, wait, and are deleted after ``DiffusTm`` with the
+    demand vanishing silently. Measured on a real 4-lane trunk approach tagged
+    ``through|through|right|right``: both movements were allocated lanes 1 and 2
+    and half the road was unusable — a lane drop the road does not have.
+
+    **The mapping, and the one place it can go wrong.** OSM orders ``turn:lanes``
+    entries **leftmost to rightmost in the direction of travel**, in either
+    driving regime. This generator indexes lanes with
+    :data:`LANE_INDEX_1_IS_RIGHTMOST`. So OSM position ``p`` of ``n`` lanes is
+    Vissim index ``n - p + 1``, and getting that backwards would put every
+    turn on the wrong side of the road — which is why it is asserted by hand in
+    the tests rather than trusted.
+
+    **Preconditions, all required, because a partial read is worse than none:**
+
+    1. the tag applies to this direction and has exactly ``lanes`` entries;
+    2. every entry names a movement — an empty or ``none`` entry means the
+       source did not say, and this function never fills in a gap;
+    3. the tag's contiguous groups are exactly as many as the movements built,
+       so the correspondence is forced rather than chosen;
+    4. taken in order (leftmost group ↔ leftmost movement, ordered by signed
+       heading change), no group's own word contradicts the geometry — a group
+       saying ``left`` may not land on a movement classified as a right turn.
+    """
+    if not turn_lanes:
+        return {}, TURN_LANES_NO_TAG
+    if len(turn_lanes) != lanes or lanes < 1:
+        return {}, TURN_LANES_COUNT_MISMATCH
+    if any(value.strip().lower() in UNSPECIFIED_TURN_LANE_VALUES for value in turn_lanes):
+        return {}, TURN_LANES_UNSPECIFIED_ENTRY
+
+    groups: list[tuple[str, list[int]]] = []
+    for position, value in enumerate(turn_lanes, start=1):
+        index = lanes - position + 1
+        if groups and groups[-1][0] == value:
+            groups[-1][1].append(index)
+        else:
+            groups.append((value, [index]))
+    if len(groups) != len(movements):
+        return {}, TURN_LANES_BLOCKS_NE_MOVEMENTS
+
+    # Movements sorted leftmost-first: a positive heading change is a geometric
+    # left turn (``classify_turn``), so descending angle is left → right, the
+    # same order the tag is written in.
+    order = sorted(range(len(movements)), key=lambda i: (-movements[i][1], i))
+    allocation: dict[int, tuple[int, ...]] = {}
+    for (value, indices), movement_index in zip(groups, order):
+        turn = movements[movement_index][0]
+        words = {word.strip().lower() for word in value.split(";")}
+        if (turn == TURN_LEFT and words <= {"right", "merge_to_right"}) or (
+            turn == TURN_RIGHT and words <= {"left", "merge_to_left"}
+        ):
+            return {}, TURN_LANES_CONTRADICTS_GEOMETRY
+        allocation[movement_index] = tuple(sorted(indices))
+    return allocation, ""
+
+
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
@@ -1312,8 +1457,185 @@ def _way_segments(way: OsmWay, intersections: set[int]) -> list[tuple[int, ...]]
     return [tuple(node_ids[cuts[i] : cuts[i + 1] + 1]) for i in range(len(cuts) - 1)]
 
 
+#: How many times :func:`build_draft` may remove isolated zones and rebuild.
+#: Removing a component that nothing can reach cannot isolate anything else, so
+#: one extra round is enough in theory and the cap exists to make that claim
+#: falsifiable rather than assumed: exhausting it is reported as a named gap and
+#: the surviving zones stay in the network for the gate to refuse. A silent
+#: `while True` that quietly stopped converging is exactly the failure this
+#: package keeps finding in other people's code.
+MAX_ISOLATION_ROUNDS = 3
+
+#: Recorded when the cap above is hit. Never a silence.
+ISOLATION_ROUNDS_EXHAUSTED = "isolated_zone_removal_did_not_converge"
+
+
 def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
     """OSM extract → draft network + §5 compliance report. Reports, never raises.
+
+    Two passes over :func:`_build_once`, because one of the questions can only
+    be asked of a finished network: **is there a pocket of streets nothing can
+    enter and nothing can leave?** A vehicle cannot be in one, so the pocket
+    simulates nothing while inflating every count in every report — and the
+    reason it is unreachable is always a property of the source (a footway for
+    an access road, a severance in the base map, the edge of the extract), never
+    something a connector may repair. So the zone is REMOVED and named; see
+    :class:`~services.genesis.connectivity.IsolatedZone` for the full argument
+    and :data:`~services.genesis.osm.SKIP_ISOLATED_ZONE` for the skip each
+    excluded way leaves behind.
+
+    Removing the ways shrinks the extract's extent, which moves the projection
+    origin, which moves every coordinate — so the second pass is a full rebuild
+    rather than a deletion from the first pass's output. That is the only way
+    the numbers in the report can be the numbers in the file.
+    """
+    excluded: list[IsolatedZone] = []
+    retained: list[IsolatedZone] = []
+    current = extract
+    unconverged = False
+    for round_index in range(MAX_ISOLATION_ROUNDS):
+        draft = _build_once(current, name=name)
+        if draft.refused:
+            return draft
+        zones = diagnose_isolated_zones(draft.links, draft.connectors, current)
+        # A zone the SOURCE connects and this generator did not is our bug, not
+        # the map's, and it stays in the network with its name on it. Excluding
+        # it would delete the evidence and turn the gate green over a defect
+        # nobody ever saw.
+        retained = [
+            zone for zone in zones if zone.reason not in EXCLUDABLE_ZONE_REASONS
+        ]
+        removable = [zone for zone in zones if zone.reason in EXCLUDABLE_ZONE_REASONS]
+        if not removable:
+            break
+        if round_index == MAX_ISOLATION_ROUNDS - 1:
+            # Cap exhausted with zones still removable. They were NOT removed,
+            # so they are retained in the emitted network — and they must be
+            # NAMED as such. The first cut of this branch dropped them from
+            # both lists (not excluded because the break ran before the
+            # extend; not retained because their reason is excludable), so a
+            # stuck pocket appeared in no report at all: present in the file,
+            # absent from every ledger. An exclusion pass whose failure mode
+            # is an unnameable zone commits the exact sin the pass exists to
+            # prevent. Re-tag them with the cap reason and keep them in the
+            # retained list, which is factually what they are.
+            unconverged = True
+            retained = retained + [
+                replace(zone, reason=ISOLATION_ROUNDS_EXHAUSTED)
+                for zone in removable
+            ]
+            break
+        excluded.extend(removable)
+        reason_of = {
+            way_id: zone for zone in removable for way_id in zone.way_ids
+        }
+        current = current.without_ways(
+            sorted(reason_of),
+            reason=SKIP_ISOLATED_ZONE,
+            detail_for=lambda way_id: (
+                f"{reason_of[way_id].reason}: {reason_of[way_id].detail}"
+            ),
+        )
+    connectivity = draft.metadata.setdefault("connectivity", {})
+    connectivity["excluded_zones"] = [zone.as_dict() for zone in excluded]
+    connectivity["excluded_zones_by_reason"] = _count_by(
+        zone.reason for zone in excluded
+    )
+    connectivity["excluded_zone_links"] = sum(len(zone.link_ids) for zone in excluded)
+    connectivity["isolated_zones_retained"] = [zone.as_dict() for zone in retained]
+    if unconverged:
+        connectivity["excluded_zones_unresolved"] = ISOLATION_ROUNDS_EXHAUSTED
+    if excluded or retained:
+        draft.compliance = _compliance_with_exclusions(draft, excluded, retained)
+    return draft
+
+
+def _count_by(values) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _compliance_with_exclusions(
+    draft: DraftNetwork,
+    excluded: list[IsolatedZone],
+    retained: list[IsolatedZone],
+) -> ComplianceReport:
+    """The §5 report plus one item naming every pocket this build removed.
+
+    Its state is APPLIED, and that is the honest grade rather than a generous
+    one: §5.3.3 asks for the smallest network that represents the road system,
+    and a pocket no vehicle can reach represents nothing. But the item carries
+    every excluded pocket by street name in ``subjects``, because the *reason*
+    it was unreachable is a fact about the client's base map, and a client who
+    reads "96 links removed, access is a footway" can go and fix the map. A
+    count with no names would be indistinguishable from the generator quietly
+    losing roads — which is the failure mode this whole package is built
+    against.
+    """
+    items = list(draft.compliance.items)
+    links = sum(len(zone.link_ids) for zone in excluded)
+    items.append(
+        ComplianceItem(
+            rule_id="5.3.3-isolated-zone-excluded",
+            section="§5.3.3",
+            doc_page=193,
+            # VIOLATED the moment a zone had to be RETAINED: that one is a
+            # movement this generator lost on roads the source says meet, and
+            # grading it APPLIED would let our own defect read as tidiness.
+            state=(
+                ComplianceState.VIOLATED if retained else ComplianceState.APPLIED
+            ),
+            citation=CIT_S533_MINIMISE,
+            instances=len(excluded) + len(retained),
+            # EVERY street of the pocket, not a representative-plus-count. The
+            # docstring above promises "every excluded pocket by street name",
+            # and a client fixing their base map needs the whole list — the
+            # 96-link pocket spans a dozen named streets, and "Scandrett Way
+            # +95 link(s)" names one of them. A subject a reader cannot act on
+            # is a count wearing a name.
+            subjects=[
+                f"{', '.join(zone.street_names) or zone.representative} "
+                f"— {len(zone.link_ids)} link(s) [{zone.reason}]"
+                for zone in excluded + retained
+            ],
+            evidence={
+                "excluded_zones": len(excluded),
+                "excluded_links": links,
+                "excluded_osm_ways": sum(len(zone.way_ids) for zone in excluded),
+                "by_reason": _count_by(zone.reason for zone in excluded),
+                "retained_zones_this_generator_severed": len(retained),
+                "retained_links": sum(len(zone.link_ids) for zone in retained),
+            },
+            detail={
+                "ko": (
+                    f"차량이 진입할 수도 이탈할 수도 없는 구역 {len(excluded)}곳(링크 {links}개)을 "
+                    "네트워크에서 제외했습니다. 원인은 모두 원본 지도 쪽이며(비차량 way로만 접근, "
+                    "원본 자체의 단절, 추출 경계 절단), 커넥터를 추가해 잇는 것은 없는 도로를 "
+                    "만들어내는 일이므로 하지 않았습니다. 각 구역과 사유는 위에 이름으로 남깁니다."
+                ),
+                "en": (
+                    f"{len(excluded)} pocket(s) totalling {links} link(s) were removed: nothing "
+                    "can enter them and nothing can leave. Every cause is in the source map "
+                    "(access only via a way this generator does not model, a severance in the "
+                    "base data, or truncation at the extract's edge), so connecting them would "
+                    "have meant inventing a road that does not exist. Each pocket and its reason "
+                    "is named above."
+                ),
+                "ja": (
+                    f"車両が進入も退出もできないゾーン{len(excluded)}箇所(リンク{links}本)を"
+                    "ネットワークから除外しました。原因はいずれも元データ側にあり、"
+                    "コネクタで接続することは存在しない道路の捏造にあたるため行いません。"
+                ),
+            },
+        )
+    )
+    return ComplianceReport(items=items)
+
+
+def _build_once(extract: OsmExtract, *, name: str) -> DraftNetwork:
+    """One OSM extract → one draft network. See :func:`build_draft` for the loop.
 
     The connectivity pass (:mod:`services.genesis.connectivity`) runs FIRST and
     in one fixed order, because the three questions it answers are not
@@ -1483,6 +1805,15 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
     #: ends up with none can be attributed without re-deriving the geometry in
     #: a second tool. Keys are link ids; values are the codes below.
     suppression_of: dict[int, set[str]] = {}
+    #: Approaches whose lane allocation came from the file's own ``turn:lanes``
+    #: instead of from the geometric default, and — for every approach where the
+    #: default starved a lane and the tag could NOT be used — why not. Both
+    #: halves are reported: a repair nobody can name is indistinguishable from a
+    #: fabrication, and a repair that did not happen is a lane full of vehicles
+    #: Vissim will delete without saying so.
+    turn_lane_allocations: list[dict] = []
+    turn_lane_refusals: list[dict] = []
+    way_by_id = {way.id: way for way in ways}
     for osm_node_id in node_ids:
         approaches = sorted(
             (l for l in links if l.to_node_osm_id == osm_node_id), key=lambda l: l.id
@@ -1492,6 +1823,7 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
         )
         for approach in approaches:
             in_dx, in_dy = _heading(approach.points, at_end=True)
+            movements: list[tuple[DraftLink, str, float]] = []
             for exit_link in exits:
                 if approach.segment_key == exit_link.segment_key:
                     # The same carriageway reversed: a U-turn, suppressed under
@@ -1522,8 +1854,19 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
                     restrictions_enforced.add(banned.id)
                     suppression_of.setdefault(approach.id, set()).add(SUPPRESSED_RESTRICTION)
                     continue
-                lanes = min(approach.lanes, exit_link.lanes)
-                lane_pairs = connector_lane_pairs(turn, approach.lanes, exit_link.lanes)
+                movements.append((exit_link, turn, angle))
+
+            blocks = _approach_lane_blocks(
+                approach,
+                movements,
+                way_by_id.get(approach.osm_way_id),
+                turn_lane_allocations,
+                turn_lane_refusals,
+            )
+            for index, (exit_link, turn, angle) in enumerate(movements):
+                lane_pairs = connector_lane_pairs(
+                    turn, approach.lanes, exit_link.lanes, blocks.get(index)
+                )
                 if approach.lanes == exit_link.lanes:
                     lane_change = "same"
                 elif exit_link.lanes > approach.lanes:
@@ -1540,7 +1883,7 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
                         to_link=exit_link.id,
                         from_pos_m=round(approach.length_m, COORD_DECIMALS),
                         to_pos_m=0.0,
-                        lanes=lanes,
+                        lanes=len(lane_pairs),
                         lane_width_m=LANE_WIDTH_M,
                         points=[approach.points[-1], exit_link.points[0]],
                         turn=turn,
@@ -1586,9 +1929,87 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
         restrictions_enforced,
         dangling,
         extract,
+        turn_lane_allocations,
+        turn_lane_refusals,
     )
     draft.compliance = _compliance(draft, extract, ways, naive_link_count, check)
     return draft
+
+
+def _approach_lane_blocks(
+    approach: "DraftLink",
+    movements: list[tuple["DraftLink", str, float]],
+    way: OsmWay | None,
+    applied: list[dict],
+    refused: list[dict],
+) -> dict[int, tuple[int, ...]]:
+    """Per-movement approach lanes, from ``turn:lanes``, ONLY as a repair.
+
+    The geometric default in :func:`connector_lane_pairs` is the rule; this is
+    the exception, and it is deliberately narrow. It runs only when the default
+    **starves a lane** — leaves one of the approach's lanes with no connector at
+    all — because that is the one state that is demonstrably wrong rather than
+    merely less specific than the source. A lane no connector leaves is a lane
+    whose vehicles cannot follow their route, wait, and are deleted after
+    ``DiffusTm`` with the demand vanishing and no error anywhere.
+
+    Where the default already serves every lane it is left alone even if
+    ``turn:lanes`` would say something different: the default is the rule this
+    package's live check certified, and re-allocating a working junction on the
+    strength of a tag would be a change with no defect behind it.
+
+    Both outcomes are recorded — ``applied`` gets the repair, ``refused`` gets
+    the approach and the reason the tag could not be used — so a reader can see
+    the lanes this generator knows are starved and could not fix.
+    """
+    if not movements:
+        return {}
+    default = {
+        lane
+        for index, (exit_link, turn, _angle) in enumerate(movements)
+        for lane, _to in connector_lane_pairs(turn, approach.lanes, exit_link.lanes)
+    }
+    starved = sorted(set(range(1, approach.lanes + 1)) - default)
+    if not starved:
+        return {}
+
+    turn_lanes: tuple[str, ...] = ()
+    if way is not None:
+        for direction in way.directions:
+            if direction.forward == approach.forward:
+                turn_lanes = direction.turn_lanes
+                break
+    allocation, reason = turn_lane_allocation(
+        turn_lanes,
+        approach.lanes,
+        [(turn, angle) for _exit, turn, angle in movements],
+    )
+    if reason:
+        refused.append(
+            {
+                "link_id": approach.id,
+                "link": approach.name,
+                "lanes": approach.lanes,
+                "starved_lanes": starved,
+                "reason": reason,
+                "turn_lanes": list(turn_lanes),
+            }
+        )
+        return {}
+    applied.append(
+        {
+            "link_id": approach.id,
+            "link": approach.name,
+            "lanes": approach.lanes,
+            "starved_lanes_before": starved,
+            "turn_lanes": list(turn_lanes),
+            "allocation": {
+                movements[index][0].id: list(block)
+                for index, block in sorted(allocation.items())
+            },
+        }
+    )
+    return allocation
 
 
 #: A dead end whose U-turn could not be built because one of the two
@@ -1853,6 +2274,8 @@ def _connectivity_metadata(
     restrictions_enforced: set[int],
     dangling: list[dict],
     extract: OsmExtract,
+    turn_lane_allocations: list[dict],
+    turn_lane_refusals: list[dict],
 ) -> dict:
     """Everything the connectivity pass decided, as data.
 
@@ -1902,6 +2325,15 @@ def _connectivity_metadata(
             refusal.as_dict() for refusal in extract.restriction_refusals
         ],
         "movements_suppressed_by_restriction": sorted(restriction_suppressed),
+        # Lane allocation read from the file rather than derived — and, just as
+        # importantly, every approach where the derivation starved a lane and
+        # the file could NOT settle it. The second list is the honest half: it
+        # names lanes whose vehicles Vissim will delete without a word.
+        "turn_lane_allocations_applied": turn_lane_allocations,
+        "turn_lane_allocations_refused": turn_lane_refusals,
+        "turn_lane_allocations_refused_by_reason": _count_by(
+            entry["reason"] for entry in turn_lane_refusals
+        ),
     }
 
 

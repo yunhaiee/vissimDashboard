@@ -4722,3 +4722,142 @@ network that must fail it, and one test family runs the gate over the real emitt
 (osm → draft → emit) so the hand-written fixtures cannot drift from what the generator actually
 writes. One bug found while testing: the CLI's `--json` wrote cp1252 on this Windows box — the same
 defect the connectivity probe hit on 2026-08-10, now with a byte-level regression test.
+
+---
+
+## 2026-08-11 — The gate's two refuse-tier findings were both OURS, and neither wanted the obvious fix
+
+**Context:** the R1.5 gate (committed `3324246`) refuses the network `genesis_osm_draft.py` builds
+from the Murdoch extract. Two refuse-tier failures were the generator's to answer: V3's **8 fully
+isolated zones, 150 links, 7.6 % of the network**, and V4's **one lane drop with 126.12 m of runway
+against the 200 m the file itself declares**. Both looked like a repair job. Both turned out to be
+diagnosis jobs where the obvious repair was the wrong answer.
+
+**V3 — measured before touched, and the measurement decided the fix.** Four candidate causes were
+checked against the source, per zone:
+
+| question asked of `murdoch.osm` | answer |
+|---|---|
+| does any zone way share a node with a way we DID model? | **0 of 8 zones** |
+| is any zone within the 7.0 m node-merge tolerance of the network? | **no — nearest 20.2 m** |
+| did any node-merge refusal sever a zone? | **0 of 64 refusals touch one** |
+| did a short-segment drop split a zone way? | **no — every zone way kept every segment** |
+| is any zone at the model boundary? | **no — nearest 53.2 m inside** |
+
+The decisive measurement is one level up: build the way-graph of the **kept drivable ways alone**
+and take its components. It has 16; the largest holds 811 of 863 ways, and **every one of the 8
+emitted zones is exactly a non-main component of that graph**. Not one zone way is in the main
+component. The other 7 small components were reconciled into the network by the 7.0 m junction
+merge — the merge doing precisely the job it was built for, and the reason the 8 that survive it are
+believable rather than suspicious. **We did not sever these; the extract does**, and what it severs
+them with is legible:
+7 of the 8 are touched only by `footway` / `path` / `cycleway` / `construction`, and the 8th is
+touched by nothing at all.
+
+**So the fix is exclusion, and the rule is that exclusion is only ever for a cause that lives in the
+SOURCE.** `build_draft` now runs a second pass: find the weakly-connected groups of links that
+contain **no network entry and no network exit** (both halves required — a pocket a vehicle can
+reach but not leave is a trap, is named by the dangling census, and is NOT deleted), diagnose each
+against the extract, remove the ones the source explains, and rebuild. Removal is a rebuild rather
+than a deletion because dropping the ways shrinks the extract's extent, which moves the projection
+origin, which moves every coordinate — the numbers in the report have to be the numbers in the file.
+Three source-side reasons are excludable and each says a different thing to the client
+(`access_only_via_ways_this_generator_does_not_model`, naming the classes;
+`severed_in_the_source_extract`; `truncated_at_the_model_boundary`). Every excluded way leaves a
+named `SKIP_ISOLATED_ZONE` behind, exactly as `--exclude-service` does, and a §5.3.3 compliance item
+names every pocket by street.
+
+**The fourth reason is the one that matters, and it fires zero times here.**
+`connected_in_the_source_but_not_in_this_network` — a way we modelled shares a node with the pocket
+and the pocket is still unreachable — is deliberately NOT excludable. That case is a movement THIS
+generator lost, the roads are real, and a pass that can delete its own bugs is worse than no pass:
+the count would improve while the defect went out the door. It is retained in the network, named,
+and turns the compliance item VIOLATED. On Murdoch it is empty, and that emptiness is what makes the
+other three safe to act on.
+
+**Result:** links 1,979 → **1,829** (−150), connectors 3,516 → **3,257** (−259), nodes 804 → **761**
+(−43); V3's `links_in_a_broken_zone` **150 → 0**. The dangling-end census is **21, unchanged**, with
+the same causes — the two questions really are independent.
+
+**V4 — the lane drop is not real, and `lnChgDist` would have papered over it.** The link the gate
+named as 630 (its id in the PRE-exclusion generation; the zone-exclusion rebuild renumbers, and in
+the final artifact this same road — way 406690969, South Street — is **link 528**; id 630 there is
+an unrelated service road, so look it up by way id, not link id) is a 4-lane one-way trunk approach
+tagged `turn:lanes=through|through|right|right` with
+`destination:lanes=||Freeway North Only|Freeway North Only`. Two movements leave it (the road
+continues; a ramp diverges at −24.0°, inside `THROUGH_ANGLE_DEG` so both classify `through`), and
+`connector_lane_pairs` gave **both of them lanes 1 and 2** — the geometric default aligns every
+`through` movement on the median side — leaving lanes 3 and 4 with no connector at all. In the world
+this road has no lane drop: two lanes go through and two go to the ramp. **The model invents the
+merge, and Vissim would delete the vehicles that could not make it, silently, after `DiffusTm`.**
+
+The runway shortfall is real and is also not ours: the chain into the drop stops 126 m upstream
+because South Street's forward carriageway **breaks in OSM** — one way ends and the next begins
+15.63 m away, sharing no node, with neither end a junction the file declares, so the 2026-08-10
+`no_junction_to_reconcile` rule refuses it and must. That break is already one of the 21 named
+dangling ends.
+
+So the unit's offered fix — derive `lnChgDist` per link from the runway that exists — was **measured
+and rejected**. It is honest about a drop that is not there, and it would make V4's clause 2
+**vacuous on our own output**: a generator that derives the declared need from the available runway
+can never fail the check that compares them. A gate that cannot fail is the 2026-08-10 lesson in a
+new costume. `lnChgDist` is untouched; V4 stays able to refuse us.
+
+**What changed instead: the source's own `turn:lanes`, used ONLY as a repair.** OSM writes
+`turn:lanes` leftmost-to-rightmost in the direction of travel in either driving regime, and this
+generator indexes lane 1 RIGHT-most, so OSM position *p* of *n* is Vissim index *n − p + 1* — a
+mapping asserted by hand in the tests, because reversing it would put every turn on the wrong side
+of the road. The allocation is read off the tag only when **all** of: the default starves a lane
+(the one demonstrably wrong state), the tag applies to this direction and has exactly one entry per
+lane, **every** entry names a movement (an empty entry and `none` both mean the source did not say,
+and a gap is never filled in), the tag's contiguous groups are exactly as many as the movements
+built, and no group's own word contradicts the measured geometry. Where the default already serves
+every lane it is left alone — re-allocating a working junction on the strength of a tag is a change
+with no defect behind it.
+
+One bug fell out of the diagnosis: `_directional_lanes` resolved the lane COUNT from `lanes` (right)
+and then **discarded the turn values** (wrong) whenever `lanes` won, so on a one-way way the file's
+statement of which lane goes where never reached the connector builder at all.
+
+**Blast radius, measured before it was written:** of 1,979 links, 48 pass the "tag applies, one entry
+per lane, every entry named" test, 29 also have as many groups as movements, and **4** also have a
+starved lane. Those 4 are what changed. Lane drops **32 → 28**, none added, and every removed drop is
+a road that does not narrow. The other 28 are untouched and V4 still measures their runway. The 28
+approaches where the default starves a lane and the tag could not settle it are now listed by name
+and reason in `turn_lane_allocations_refused` — a starved lane nobody names is a lane full of
+vehicles Vissim deletes without a word.
+
+**Verification:** full suite **4111 passed, 1 skipped** (baseline 4087 + 24 new). A 14-mutation
+harness reverts each decision in turn — including the OSM→Vissim lane-index mapping, the
+both-halves definition of an isolated zone, and the refusal to exclude a zone we severed ourselves —
+and **14/14 are caught**. Two Murdoch runs are byte-identical (`.inpx` sha256 `38a3f2c4…`,
+`.genesis.json` `bcec5d5d…`). The R1.5 gate goes from **1 pass / 3 fail** to **2 pass / 2 fail**:
+V4 passes, V2 still passes, V3 no longer finds a zone. `emit.py` was not touched and neither was
+`gate.py`.
+
+**What still refuses, and why it should.** V3 still fails on the **19 non-benign silent departure
+points** — the 15 one-way roads that end nowhere in OSM and the 4 junctions where every movement is
+antiparallel. Those are the 2026-08-10 refusals: repairing one means inventing a reverse carriageway.
+The gate is right to refuse them, we are right not to "fix" them, and the fix is in the client's base
+map. V1 remains NOT_CHECKABLE until a live `LoadNet` — and after this unit that matters more than
+before, because the isolation pass now REMOVES geometry, and only Vissim can confirm the file it
+removed it from still opens.
+
+**Lesson.** Twice in one unit, the improvement that would have made the number go green was the
+wrong change: connecting the pockets would have invented roads, and deriving `lnChgDist` from the
+runway would have disabled the check that found the problem. **The question a validation layer asks
+is not "how do I make this pass" but "which of us is wrong" — and this time it was us both times,
+in neither of the two places the number pointed at.**
+
+**Post-review (adversarial pass, 4 confirmed / 1 refuted).** Three fixes rode in before commit:
+(1) the isolation-cap safety net committed the exact sin the pass exists to prevent — a zone stuck
+at cap exhaustion landed in NEITHER ledger (not excluded: the break preceded the extend; not
+retained: its reason was excludable), so a pocket physically present in the file appeared in no
+report. Stuck zones are now re-tagged with the cap reason, kept in isolated_zones_retained, and
+turn the §5.3.3 item VIOLATED — a generator that cannot finish its own cleanup does not grade
+itself APPLIED. (2) The §5.3.3 subjects named ONE street per pocket while the docstring promised
+every street; the 96-link pocket spans a dozen and a client fixes a base map street by street.
+Subjects now carry the full list. (3) The V4 example cited link 630, which is the PRE-exclusion
+id — the rebuild renumbers, and in the shipped artifact that road (way 406690969) is link 528;
+the entry now says to look it up by way id. The .inpx is byte-identical after all three
+(38a3f2c4…), so the live LoadNet evidence and V1 sha-identity remain valid.

@@ -911,6 +911,294 @@ def suppressed_by_restriction(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Isolated zones — reachability, which a census of link ends cannot see
+# ---------------------------------------------------------------------------
+
+#: The pocket's only tie to the rest of the map is a way this generator does not
+#: model — a footway, a path, a cycleway, a road still under construction. The
+#: corridor exists for a pedestrian and does not exist for a car, so no vehicle
+#: can reach these streets and none can leave them.
+ZONE_NON_DRIVABLE_ACCESS = "access_only_via_ways_this_generator_does_not_model"
+#: No way of ANY class in the source file joins this pocket to the network. The
+#: severance is in the base map, and nothing this generator can read repairs it.
+ZONE_SEVERED_IN_SOURCE = "severed_in_the_source_extract"
+#: The pocket reaches the model's own edge, so its access road is outside the
+#: window the extract was cut from. Not a defect in the map — a consequence of
+#: where the study area was drawn.
+ZONE_TRUNCATED_AT_BOUNDARY = "truncated_at_the_model_boundary"
+#: A drivable way this generator DID model shares a node with the pocket, and the
+#: pocket is still unreachable. That is not a severance in the source: the source
+#: says these roads meet. Something in THIS generator dropped the movement, and
+#: the honest response is to say so and leave the roads in the network, not to
+#: delete evidence of our own bug. The reason exists to make that case
+#: impossible to confuse with the three above; on the Murdoch extract it fires
+#: zero times, which is what makes the other three safe to act on.
+ZONE_SEVERED_BY_THIS_GENERATOR = "connected_in_the_source_but_not_in_this_network"
+
+#: The reasons whose zones :func:`services.genesis.draft.build_draft` may
+#: remove. Every one of them is a statement about the SOURCE. The fourth —
+#: :data:`ZONE_SEVERED_BY_THIS_GENERATOR` — is deliberately absent.
+EXCLUDABLE_ZONE_REASONS = frozenset(
+    {ZONE_NON_DRIVABLE_ACCESS, ZONE_SEVERED_IN_SOURCE, ZONE_TRUNCATED_AT_BOUNDARY}
+)
+
+
+@dataclass(frozen=True)
+class IsolatedZone:
+    """One pocket of the emitted network nothing can enter and nothing can leave.
+
+    **Why this is not the dangling-end question.** ``dead_ends`` and
+    ``_dangling_approaches`` ask *"does a connector leave this link end?"*.
+    Every link of every zone below answers yes: the pocket's streets connect to
+    each other perfectly. The question that finds them is *"can a vehicle
+    entering the model ever get here, and can one here ever get out?"*, and on
+    the 2026-08-10 Murdoch generation the two questions disagreed by 150 links —
+    a residential pocket and seven smaller ones, all scored healthy by a census
+    of link ends, none of them reachable.
+
+    **Why the answer is exclusion rather than a connector.** Every cause below
+    is a statement about the SOURCE, not about this generator: the access road
+    is a footway, or is not in the file at all, or left through the extract's
+    edge. Adding a connector would invent a road, which is the one thing this
+    package refuses to do (2026-08-10: two roads were invented exactly that way
+    and shipped). Keeping the pocket would be worse than useless — it inflates
+    every link, node and connector count, appears in every rendering, and
+    simulates nothing, because no vehicle can be in it. So it is removed, and
+    named: ``reason`` says why it is unreachable, ``detail`` says what the file
+    shows there.
+    """
+
+    reason: str
+    detail: str
+    link_ids: tuple[int, ...]
+    way_ids: tuple[int, ...]
+    #: The lowest-id link's name — enough for a human to find the pocket on a map.
+    representative: str
+    #: Every distinct street name in the pocket, sorted. A pocket is identified
+    #: by its streets, not by an id a reader cannot look up.
+    street_names: tuple[str, ...]
+
+    def as_dict(self) -> dict:
+        return {
+            "reason": self.reason,
+            "detail": self.detail,
+            "links": len(self.link_ids),
+            "link_ids": list(self.link_ids),
+            "ways": len(self.way_ids),
+            "way_ids": list(self.way_ids),
+            "representative": self.representative,
+            "street_names": list(self.street_names),
+        }
+
+
+def isolated_zones(links, connectors) -> list[tuple[int, ...]]:
+    """Link-id groups nothing can enter and nothing can leave, largest first.
+
+    Duck-typed on purpose — ``links`` need only carry ``id`` and ``connectors``
+    only ``from_link``/``to_link`` — so this runs on the draft before anything is
+    emitted and cannot drift from what ``build_draft`` actually built.
+
+    The definition, stated so it can be compared against the R1.5 gate's V3
+    (which asks the same question of the finished ``.inpx`` and must agree):
+
+    * a **network entry** is a link no connector arrives at, a **network exit**
+      a link no connector leaves — those are the places traffic enters and
+      leaves the model;
+    * a link is *unreachable* when no forward path from any entry reaches it,
+      and *trapped* when no forward path from it reaches any exit;
+    * a **zone** is a weakly-connected group of links every one of which is both.
+
+    Both halves are required. A pocket that can be entered but not left is a
+    trap, and a pocket that can be left but not entered is an orphan source;
+    both are real faults, both are named elsewhere by the dangling census, and
+    NEITHER is excluded here — a link a vehicle can reach is a link that
+    simulates something. Only the pocket that fails both tests is inert.
+    """
+    link_ids = [link.id for link in links]
+    out_edges: dict[int, list[int]] = {lid: [] for lid in link_ids}
+    in_edges: dict[int, list[int]] = {lid: [] for lid in link_ids}
+    for connector in connectors:
+        if connector.from_link in out_edges and connector.to_link in in_edges:
+            out_edges[connector.from_link].append(connector.to_link)
+            in_edges[connector.to_link].append(connector.from_link)
+
+    entries = [lid for lid in link_ids if not in_edges[lid]]
+    exits = [lid for lid in link_ids if not out_edges[lid]]
+    reachable = _reachable_from(entries, out_edges)
+    reaches_exit = _reachable_from(exits, in_edges)
+    inert = {lid for lid in link_ids if lid not in reachable and lid not in reaches_exit}
+
+    seen: set[int] = set()
+    zones: list[tuple[int, ...]] = []
+    for start in sorted(inert):
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        members: list[int] = []
+        while stack:
+            current = stack.pop()
+            members.append(current)
+            for neighbour in out_edges[current] + in_edges[current]:
+                if neighbour in inert and neighbour not in seen:
+                    seen.add(neighbour)
+                    stack.append(neighbour)
+        zones.append(tuple(sorted(members)))
+    # Largest first, ties broken by lowest link id: a reader reads the biggest
+    # finding first, and the order is a function of the data alone.
+    zones.sort(key=lambda z: (-len(z), z[0]))
+    return zones
+
+
+def _reachable_from(seeds: list[int], edges: dict[int, list[int]]) -> set[int]:
+    seen = set(seeds)
+    stack = list(seeds)
+    while stack:
+        current = stack.pop()
+        for neighbour in edges.get(current, ()):
+            if neighbour not in seen:
+                seen.add(neighbour)
+                stack.append(neighbour)
+    return seen
+
+
+def diagnose_isolated_zones(links, connectors, extract: OsmExtract) -> list[IsolatedZone]:
+    """:func:`isolated_zones`, with the cause of each read off the SOURCE extract.
+
+    ``extract`` must be the extract as parsed — *before*
+    :func:`merge_junction_nodes`, which rewrites node ids into cluster
+    representatives. The evidence this function needs (which nodes a footway
+    touches, where the model's edge is) is all stated in the original ids, and
+    looking it up in merged ids would silently miss every zone whose contact
+    node happened to be merged.
+
+    Cause precedence, most specific first, because a zone can satisfy more than
+    one and only the most specific tells a reader what to DO:
+
+    1. **a way we DID model shares a node with it** — then the source says these
+       roads meet and this generator lost the movement. Ranked first because it
+       is the only cause that indicts us, and a pass that could delete its own
+       bugs would be worse than no pass at all;
+    2. **at the model boundary** — the access road left the extract window;
+       nothing is wrong with the map, the study area is simply drawn here;
+    3. **a non-drivable way touches it** — the corridor is in the file, as a
+       footway/path/cycleway/construction; the map may be right (a pedestrian
+       -only pocket) or missing a road, and the classes are named so a reviewer
+       can tell which;
+    4. **nothing touches it at all** — the severance is unqualified.
+    """
+    zones = isolated_zones(links, connectors)
+    if not zones:
+        return []
+
+    by_id = {link.id: link for link in links}
+    ways = {way.id: way for way in extract.ways}
+    boundary = None
+    bounds = extract.bounds()
+    if bounds is not None and extract.nodes:
+        plane = origin_for_bounds(*bounds)
+        xy = {nid: plane.forward(node.lat, node.lon) for nid, node in extract.nodes.items()}
+        boundary = (_boundary_rectangle(extract, xy)[0], xy)
+
+    out: list[IsolatedZone] = []
+    for member_ids in zones:
+        members = [by_id[lid] for lid in member_ids]
+        way_ids = tuple(sorted({link.osm_way_id for link in members}))
+        node_ids = sorted(
+            {nid for wid in way_ids for nid in ways[wid].node_ids if wid in ways}
+        )
+        names = tuple(
+            sorted({_street_name(link.name) for link in members} - {""})
+        )
+        reason, detail = _zone_cause(extract, ways, set(way_ids), node_ids, boundary)
+        out.append(
+            IsolatedZone(
+                reason=reason,
+                detail=detail,
+                link_ids=member_ids,
+                way_ids=way_ids,
+                representative=min(members, key=lambda l: l.id).name,
+                street_names=names,
+            )
+        )
+    return out
+
+
+def _street_name(link_name: str) -> str:
+    """``"Calder Way [FWD] w123s0"`` → ``"Calder Way"``; unnamed roads → ``""``.
+
+    The generator names an unnamed way after its highway class, so a pocket of
+    car-park aisles would otherwise be reported as being on a street called
+    "service". Those are dropped rather than repeated: a list of class names is
+    not a list of streets.
+    """
+    head = link_name.split(" [")[0].strip()
+    return "" if head in DRIVABLE_HIGHWAY_DEFAULT_LANES else head
+
+
+def _zone_cause(
+    extract: OsmExtract,
+    ways: dict[int, OsmWay],
+    zone_way_ids: set[int],
+    node_ids: list[int],
+    boundary,
+) -> tuple[str, str]:
+    inside = set(node_ids)
+    touching = sorted(
+        {
+            way.id
+            for way in extract.ways
+            if way.id not in zone_way_ids and inside.intersection(way.node_ids)
+        }
+    )
+    if touching:
+        named = ", ".join(f"way {wid} ({ways[wid].highway})" for wid in touching[:6])
+        return (
+            ZONE_SEVERED_BY_THIS_GENERATOR,
+            "the source file shares a node between this pocket and "
+            f"{len(touching)} way(s) this generator DID model ({named}), so the map "
+            "says these roads meet — and the network still cannot reach the pocket, "
+            "because every movement between them was suppressed (a turn restriction, "
+            "an antiparallel classification, or a defect in this generator). NOT "
+            "excluded: these are roads the source connects, and deleting them would "
+            "delete the evidence",
+        )
+    if boundary is not None:
+        (minx, maxx, miny, maxy), xy = boundary
+        for node_id in node_ids:
+            point = xy.get(node_id)
+            if point is None:
+                continue
+            x, y = point
+            if (
+                abs(x - minx) <= BOUNDARY_BAND_M
+                or abs(x - maxx) <= BOUNDARY_BAND_M
+                or abs(y - miny) <= BOUNDARY_BAND_M
+                or abs(y - maxy) <= BOUNDARY_BAND_M
+            ):
+                return (
+                    ZONE_TRUNCATED_AT_BOUNDARY,
+                    "the pocket reaches the model's own edge, so whatever connects it "
+                    "to the network is outside the window this extract was cut from",
+                )
+    classes = extract.non_drivable_classes_at(node_ids)
+    if classes:
+        return (
+            ZONE_NON_DRIVABLE_ACCESS,
+            "no way this generator models touches this pocket at all; what the source "
+            f"file does show joining it to anywhere is {', '.join(f'highway={c}' for c in classes)}"
+            " — a corridor for a pedestrian and not a carriageway, so no motor vehicle "
+            "can enter or leave",
+        )
+    return (
+        ZONE_SEVERED_IN_SOURCE,
+        "the source file shows nothing joining this pocket to anywhere — no modelled "
+        "carriageway, and not so much as a footway: the severance is in the base map, "
+        "not in this generator",
+    )
+
+
 __all__ = [
     "ARTERIAL_CLASSES",
     "BENIGN_DANGLING_CAUSES",
@@ -930,6 +1218,8 @@ __all__ = [
     "DEAD_END_U_TURN_NON_DRIVABLE_CONTINUATION",
     "DEAD_END_U_TURN_RESTRICTED",
     "DeadEnd",
+    "EXCLUDABLE_ZONE_REASONS",
+    "IsolatedZone",
     "MAX_CLUSTER_DIAMETER_M",
     "MergeRefusal",
     "MergeReport",
@@ -941,7 +1231,13 @@ __all__ = [
     "REFUSE_NO_JUNCTION_TO_RECONCILE",
     "REFUSE_WOULD_COLLAPSE_WAY",
     "TOLERANCE_BASIS",
+    "ZONE_NON_DRIVABLE_ACCESS",
+    "ZONE_SEVERED_BY_THIS_GENERATOR",
+    "ZONE_SEVERED_IN_SOURCE",
+    "ZONE_TRUNCATED_AT_BOUNDARY",
     "dead_ends",
+    "diagnose_isolated_zones",
+    "isolated_zones",
     "merge_junction_nodes",
     "suppressed_by_restriction",
 ]

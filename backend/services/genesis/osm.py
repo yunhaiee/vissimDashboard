@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import math
 import xml.etree.ElementTree as ET
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -148,6 +149,13 @@ SKIP_ZERO_LENGTH = "zero_length_after_deduplication"
 #: Only ever produced by an explicit ``exclude_service=True`` — see
 #: :data:`SERVICE_HIGHWAY`. A policy exclusion is a named skip, never a silence.
 SKIP_SERVICE_EXCLUDED_BY_POLICY = "service_excluded_by_policy"
+#: A way that survived every test above and still ended up in a pocket of the
+#: emitted network **nothing can enter and nothing can leave**. Produced by
+#: :func:`services.genesis.draft.build_draft`'s isolation pass, never by
+#: parsing, and always accompanied by an ``excluded_zones`` entry naming WHY the
+#: pocket is unreachable. The detail string of each skip carries that reason, so
+#: the exclusion is legible from the skip list alone.
+SKIP_ISOLATED_ZONE = "isolated_zone_unreachable_in_the_source"
 
 #: Reason codes for a ``type=restriction`` relation this module could not read.
 #: Recorded rather than ignored: an unread restriction is a movement that stays
@@ -418,6 +426,13 @@ class OsmExtract:
     #: distinction is reported separately by ``connectivity.dead_ends`` so a
     #: reviewer can disagree with it.
     non_drivable_node_ids: set[int] = field(default_factory=set)
+    #: The same nodes, carrying WHICH classes touch them. ``non_drivable_node_ids``
+    #: answers "does the corridor continue?"; this answers "as what?", and the
+    #: difference is the whole content of an exclusion report: *"this pocket's
+    #: only link to the network is a footway"* is a line a client can act on,
+    #: *"this pocket is isolated"* is not. Values are the raw ``highway=*``
+    #: strings, with ``""`` for a way that carries no ``highway`` tag at all.
+    non_drivable_node_highways: dict[int, set[str]] = field(default_factory=dict)
 
     @property
     def refused(self) -> bool:
@@ -465,6 +480,71 @@ class OsmExtract:
             for direction in way.directions
             if direction.provenance.assumed
         )
+
+    def non_drivable_classes_at(self, node_ids: Iterable[int]) -> tuple[str, ...]:
+        """The ``highway=*`` classes of NOT-modelled ways touching these nodes.
+
+        Sorted and de-duplicated so a caller can put it straight into a report
+        without re-deriving an order; ``""`` (a way with no ``highway`` tag) is
+        rendered as ``no highway tag`` because an empty string in a reason
+        string reads as a bug.
+        """
+        found: set[str] = set()
+        for node_id in node_ids:
+            found |= self.non_drivable_node_highways.get(node_id, set())
+        return tuple(sorted(value or "no highway tag" for value in found))
+
+    def without_ways(
+        self, way_ids: Iterable[int], *, reason: str, detail_for: Callable[[int], str]
+    ) -> "OsmExtract":
+        """A copy of this extract with ``way_ids`` removed as NAMED skips.
+
+        The mirror image of ``exclude_service``: a way this generator decides not
+        to model leaves a :class:`SkippedWay` behind carrying the reason, so the
+        exclusion appears in ``skipped_summary()`` and in the compliance report
+        rather than as an absence a reader cannot notice.
+
+        Three things are pruned with the ways, and each matters:
+
+        * **nodes** no surviving way references — otherwise the extract's
+          :meth:`bounds` (and therefore the projection origin, and therefore
+          every coordinate in the emitted file) would still be sized by geometry
+          that is no longer in the network;
+        * **restrictions** naming a removed way, through the same path a clipped
+          extract takes, so they are refused by name rather than silently
+          retained against a way that no longer exists;
+        * nothing else — ``non_drivable_node_ids`` and its class map describe
+          ways this generator never modelled and are unaffected by which
+          drivable ways survive.
+
+        Never mutates ``self``: the caller keeps the original to diagnose
+        against.
+        """
+        removing = set(way_ids)
+        kept = [way for way in self.ways if way.id not in removing]
+        skipped = list(self.skipped)
+        for way in sorted(
+            (way for way in self.ways if way.id in removing), key=lambda w: w.id
+        ):
+            skipped.append(SkippedWay(way.id, reason, way.highway, detail_for(way.id)))
+        referenced = {node_id for way in kept for node_id in way.node_ids}
+        reduced = OsmExtract(
+            source=self.source,
+            ways=kept,
+            nodes={nid: node for nid, node in self.nodes.items() if nid in referenced},
+            skipped=skipped,
+            refusals=list(self.refusals),
+            ways_seen=self.ways_seen,
+            declared_bounds=self.declared_bounds,
+            restrictions=list(self.restrictions),
+            restriction_refusals=list(self.restriction_refusals),
+            non_drivable_node_ids=set(self.non_drivable_node_ids),
+            non_drivable_node_highways={
+                nid: set(values) for nid, values in self.non_drivable_node_highways.items()
+            },
+        )
+        _drop_restrictions_naming_absent_ways(reduced)
+        return reduced
 
 
 # ---------------------------------------------------------------------------
@@ -641,6 +721,18 @@ def _directional_lanes(
                     True,
                     f"no lane tag; generator default for highway={highway}",
                 )
+        if not turns and turn_plain:
+            # On a ONE-WAY way an unsuffixed ``turn:lanes`` describes the one
+            # direction there is, whatever the lane COUNT came from. The count
+            # and the turn values are two different reads of the same tag, and
+            # only the count branches above: before this, a way tagged
+            # ``lanes=4`` + ``turn:lanes=through|through|right|right`` reached
+            # ``build_draft`` with its lane count from ``lanes`` and its turn
+            # values thrown away, so the file's own statement of which lane goes
+            # where was unavailable to the connector builder. On a TWO-WAY way
+            # the unsuffixed tag is ambiguous (OSM does not say which direction
+            # it describes) and is deliberately NOT used below.
+            turns = turn_plain
         directions.append(WayDirection(forward=forward, lanes=lanes, provenance=prov, turn_lanes=turns))
         return tuple(directions)
 
@@ -795,13 +887,13 @@ def _pass1_ways(
             continue
         highway = tags.get("highway", "").strip()
         if not highway:
-            extract.non_drivable_node_ids.update(node_ids)
+            _record_non_drivable(extract, node_ids, "")
             extract.skipped.append(
                 SkippedWay(way_id, SKIP_NO_HIGHWAY_TAG, "", "way carries no highway=* tag")
             )
             continue
         if highway not in DRIVABLE_HIGHWAY_DEFAULT_LANES:
-            extract.non_drivable_node_ids.update(node_ids)
+            _record_non_drivable(extract, node_ids, highway)
             extract.skipped.append(
                 SkippedWay(
                     way_id,
@@ -859,6 +951,15 @@ def _pass1_ways(
         )
         needed.update(node_ids)
     return needed
+
+
+def _record_non_drivable(
+    extract: OsmExtract, node_ids: Iterable[int], highway: str
+) -> None:
+    """Remember both that a not-modelled way touches these nodes, and as what."""
+    for node_id in node_ids:
+        extract.non_drivable_node_ids.add(node_id)
+        extract.non_drivable_node_highways.setdefault(node_id, set()).add(highway)
 
 
 def _declared_bounds(elem: ET.Element) -> tuple[float, float, float, float] | None:
