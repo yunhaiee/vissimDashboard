@@ -4645,3 +4645,80 @@ file is read by any test). Mutation-checked: disabling the ambiguity refusal, th
 refusal, the conflict refusal, the thin-margin flag or the origin-sentinel fix fails 9 of the 13.
 Full backend suite: 4017 passed, 1 skipped (`test_rag_retrieval_quality`, pre-existing/environmental).
 Live evidence (git-ignored): `runtime/scats-reality-check-live/{state,log}{,_60min}.*`.
+
+---
+
+## 2026-08-11 — The R1.5 gate refuses our own network, and finds what a dangling-end census cannot
+
+**Context:** roadmap 3.3. `tk-requirements-2026-07-31.md` §R1.5 defines nine checks (V1–V6 refuse
+tier, V7–V9 warn) and states the point plainly: *"The validation gate is what makes AI construction
+sellable."* Every check in it is something a controller had been running BY HAND — V1 as a manual
+`genesis_open_live_check` run, V2 as an ad-hoc reference sweep, V3 as the 225→21 dangling-end
+measurement. The gate turns a habit into a property of the product.
+
+**The design rule the whole unit hangs on:** a check that cannot run reports **NOT_CHECKABLE with a
+named reason, and never counts as a pass**. Precedence (`FAIL > NOT_CHECKABLE > PASS`) lives in
+exactly one place, and the verdict is PASS only when every refuse-tier check genuinely passed. This
+codebase has been bitten twice by the opposite shape — Vissim's `LoadNet` returning SUCCESS on a
+stripped file with zero links, and a schema guard that protected only the first open of a database.
+A gate that goes green because a check quietly did not execute manufactures confidence, which is
+worse than having no gate.
+
+**The verdict on our own current output: REFUSED (exit 2).** 1 pass, 3 fail, 5 not-checkable —
+reported as measured, never tuned until green.
+
+**V3 is the finding that justifies the unit.** **8 fully isolated zones totalling 150 links (7.6% of
+the network)**: nothing can enter them, nothing can leave. The largest is **96 links** — Scandrett
+Way, Broadhurst Crescent, Calder Way and neighbours, an entire residential pocket. **No dangling-end
+census can see this**, and ours did not: every one of those 150 links has a connector in *and* a
+connector out, so the 2026-08-10 connectivity work scored them healthy. Dangling ends and
+reachability are different questions with different answers, and only the second asks whether a
+vehicle can actually get there. Independently reproduced by the controller with a from-scratch
+weak-component analysis: 9 pockets / 152 links (7.7%) — the small delta against the gate's 8/150 is
+definitional, and the finding and its scale agree.
+
+**V4** fails on one of 32 lane drops: link 630 (South Street) drops lanes 3 and 4 with only
+**126.12 m** of upstream road against the **200 m the file itself declares** in `lnChgDist`. The
+check never invents a distance — it asks whether the network provides the runway the network says
+it needs. The other 31 drops clear it (p10 ≈ 205 m).
+
+**V1 passes when given live evidence, and proves identity rather than trusting a filename.** The
+gate opens no COM at all — it consumes `genesis_open_live_check.py`'s `state.json` and admits it
+only when the **sha256 of the file that probe loaded equals the gated file's**. It then asserts
+`load_ok`, zero new `.err`, SaveNetAs, **and the COM object census against the file's own element
+counts** — which is the 2026-08-06 empty-load trap, stated as a check. Verified on the connectivity
+network: `oracle_sha256 3f720fd9…` matching, COM census 5,495 / 804 / 3,516 / 1,979 identical to the
+file. With no live evidence V1 is NOT_CHECKABLE, so **an offline run can never report an unqualified
+pass** — deliberate, because V1 is the only check that proves Vissim opens the file at all.
+
+**V5 and V6 are NOT_CHECKABLE, not passes:** the geometry-only draft declares zero controllers, zero
+heads and zero vehicle inputs. A file cannot say whether that means "genuinely unsignalised" or "the
+import is missing", so it is not counted as clean.
+
+**Thresholds, each derived rather than chosen:** `ZERO_LENGTH_M` 0.0005 m = half the emitter's own
+1 mm coordinate quantum (below it a length is not representable as non-zero *in the file*);
+`SHORT_LINK_FLOOR_M` 2.0 m = `draft.MIN_LINK_LENGTH_M`, the generator's own declared floor, so a
+link below it contradicts its own provenance; the lane-change runway is **read per link** from the
+file's `lnChgDist`; `ROUGH_LANE_CAPACITY_VEH_PER_H` 1900 is **imported** from
+`services.agent.constraints`, with a test pinning object identity so the gate and the
+`latent_demand_overflow` guardrail cannot disagree about the same link. Compute budgets are not
+modelling thresholds — exhausting one yields NOT_CHECKABLE with the budget named.
+
+**Honest scope limit:** V2's reference table covers what `services.genesis` emits (33 reference
+kinds read off two real emissions, 33,911 references checked, 0 unresolved). A consultant's real
+`.inpx` carrying tags outside the measured 109-tag inventory reads NOT_CHECKABLE — correct
+behaviour, but it means this is a **generator gate today, not a general `.inpx` gate**. Two
+reference kinds are declared permanently unresolvable by name and reason
+(`signalController/@intSupplyData` is an opaque base64 blob; `timeIntervalVehVolume/@timeInt` is a
+composite whose target carries no `no` attribute).
+
+**Permanently unanswerable offline:** V8's right-of-way (Vissim derives conflict areas from geometry
+at load, writes none back, and offers no COM Add/Remove — so the 7,781 crossing movement pairs at
+513 unsignalised nodes are reported as evidence, not graded), and V1's whole premise.
+
+**Verification:** full suite **4087 passed, 1 skipped** (baseline 4019 + 68 new). A 24-mutation
+harness disables each check in turn; **24/24 caught**. Every refuse-tier check has a synthetic
+network that must fail it, and one test family runs the gate over the real emitter's output
+(osm → draft → emit) so the hand-written fixtures cannot drift from what the generator actually
+writes. One bug found while testing: the CLI's `--json` wrote cp1252 on this Windows box — the same
+defect the connectivity probe hit on 2026-08-10, now with a byte-level regression test.

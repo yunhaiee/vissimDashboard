@@ -42,10 +42,16 @@ Members, in the order row 2.3 runs them:
   networks authored INDEPENDENTLY, where id equality is meaningless and the
   match is geometric (proximity + direction + polyline overlap, every tolerance
   derived from the georeference's own residual).
+* :mod:`services.genesis.gate` — the R1.5 validation gate (V1–V9), roadmap
+  3.3: genesis's shipping gate. Every check is ``PASS``/``FAIL``/
+  ``NOT_CHECKABLE``, a check that could not run is never a pass, and the
+  verdict is a pass only when every refuse-tier check genuinely passed — which
+  includes V1, so an OFFLINE run can never report an unqualified pass.
 
 CLIs: ``backend/tools/genesis_osm_draft.py`` (osm -> draft),
 ``backend/tools/genesis_benchmark.py`` (draft vs consultant model),
-``backend/tools/genesis_signals_daejeon_probe.py`` (대전 signal-sheet coverage).
+``backend/tools/genesis_signals_daejeon_probe.py`` (대전 signal-sheet coverage),
+``backend/tools/genesis_validation_gate.py`` (the R1.5 gate).
 """
 from __future__ import annotations
 
@@ -131,6 +137,19 @@ from .draft import (
     build_draft,
 )
 from .emit import EmitRefused, emit_inpx, to_xml_text
+from .gate import (
+    CheckResult,
+    CheckState,
+    CheckTier,
+    GateFinding,
+    GateGap,
+    GateResult,
+    GateSettings,
+    GateVerdict,
+    LoadOracle,
+    render_report as render_gate_report,
+    run_gate,
+)
 from .fleet import (
     NO_FLEET,
     DraftFleet,
@@ -170,6 +189,9 @@ __all__ = [
     "BenchmarkInvariantError",
     "BenchmarkMethods",
     "ChainMember",
+    "CheckResult",
+    "CheckState",
+    "CheckTier",
     "ComplianceItem",
     "ComplianceReport",
     "ComplianceState",
@@ -198,6 +220,11 @@ __all__ = [
     "ExtentCheck",
     "FleetCoverage",
     "FleetSettings",
+    "GateFinding",
+    "GateGap",
+    "GateResult",
+    "GateSettings",
+    "GateVerdict",
     "GeneratedScope",
     "GeneratorAssumption",
     "GeoNetwork",
@@ -207,6 +234,7 @@ __all__ = [
     "LaneProvenance",
     "LinkDiff",
     "LinkReclassification",
+    "LoadOracle",
     "LocalTangentPlane",
     "MATCH_TOLERANCE_M",
     "MatchBucket",
@@ -269,7 +297,9 @@ __all__ = [
     "parse_osm_file",
     "render_benchmark_report",
     "render_diff_report",
+    "render_gate_report",
     "route_share",
+    "run_gate",
     "to_xml_text",
     "topology_from_root",
 ]
