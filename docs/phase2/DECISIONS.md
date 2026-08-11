@@ -5052,3 +5052,57 @@ and the poll used to stop forever at the first terminal state.
 **Verification:** full suite **4155 passed, 1 skipped**; typecheck clean; contract 39/39. Every fix
 has a test that fails without it, confirmed by reverting each in turn. The auth sentinel was updated
 deliberately, with the reasoning for the one added read recorded in its docstring.
+
+---
+
+## 2026-08-11 — S6 settled by live Vissim: the detector anchor assumption was RIGHT
+
+**Context:** roadmap v2 §5.C row **C2**. `services/genesis/signals.py` (the SCATS half of 3.1,
+`4f38e39`) declared **ASSUMPTION S6** in writing because it could not be settled offline: does a
+Vissim detector's `pos` anchor the **upstream** or the **downstream** end of its 4.5 m body? The
+module chose upstream and therefore emits `pos = stop line − 2.0 − 4.5`. The other reading is a
+**4.5 m error on every detector in every signalised network this generator produces** — silently, in
+a value nothing downstream would flag.
+
+The probe (`backend/tools/genesis_signals_live_check.py`) was written at the same time as the
+assumption, as its named acceptance follow-up. Closing S6 was therefore a RUN, not an investigation
+— which is the payoff for recording an assumption honestly instead of hoping it was right.
+
+**Three independent measurements, in increasing order of authority:**
+
+* **S6-a — offline census of PTV's own library.** Of **826 PTV-authored detectors**, **99** would run
+  off the START of their link under the downstream reading and **ZERO** would run off the END under
+  the upstream reading. Only the upstream anchor is consistent with PTV's own data.
+* **S6-b — Vissim's own `SaveNetAs`.** **AMBIGUOUS, exactly as the module predicted**: Vissim stores
+  `pos` and `length` and adds no end-anchor attribute, so the file round-trips both readings
+  identically. A round trip could never have settled this, which is why S6 existed as an assumption
+  rather than a bug.
+* **S6-c — live COM, the decisive one.** Two stress probes on a 271.264 m link. A detector at
+  `pos = 270.264` (whose body runs past the link END under the upstream reading) was **REFUSED** by
+  Vissim itself: *"Detector 8 does not fit on link 1 … Please reduce its length or move it."* A
+  detector at `pos = 1.0` (which would start before the link START under the downstream reading) was
+  **ACCEPTED**, reading back `1.0 / 4.5`. Vissim anchors `pos` upstream and grows the body
+  downstream.
+
+**Verdict: UPSTREAM. `signals.py`'s ASSUMPTION S6 was correct and the emitted detectors are right.**
+Nothing to fix — which is the outcome an honest assumption is allowed to have.
+
+**Two more offline-unanswerable questions settled in the same run**, both about whether Vissim
+silently substitutes a default for a legitimate zero:
+
+* **Q2 — `begin="0"` green commands**: ACCEPTED. Every one came back out of Vissim's own save as `0`
+  — unchanged, not dropped, not shifted to the cycle time.
+* **Q3 — `redAmber="0"`**: KEPT AS ZERO. Vissim preserved it on every signal group and kept the
+  blob's `<fixedstate display="2" duration="0"/>`. No default was substituted.
+
+Both matter for the same reason the empty-load trap did: this product's failure mode is Vissim
+quietly replacing a deliberate value, and a zero is exactly the shape a defensive default would eat.
+
+**Also confirmed by this run:** the signalised draft builds and LOADS (`signals_ok`), and Vissim's
+saved copy preserves the detector and signal-head counts (`detector_count_matches`,
+`head_count_matches`).
+
+**Housekeeping:** the probe reported one orphan Vissim PID and it had already exited by the time the
+controller checked. A second `Vissim260` on the box is the OPERATOR'S OWN GUI (window title
+`murdoch.inpx`, started the previous morning) and was deliberately left alone — CLAUDE.md's COM rule
+exists precisely so automation never touches a human's open session.
