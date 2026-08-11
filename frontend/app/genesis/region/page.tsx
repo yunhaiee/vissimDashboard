@@ -533,7 +533,7 @@ export default function GenesisRegionPage() {
               {t("투영 오차", "projection error", "投影誤差")} {measurement.planimetric_error_bound_m.toFixed(2)} m
             </p>
             <p className="mt-1 opacity-80">
-              {t("예상 크기", "Estimated size", "推定サイズ")} ≈ {formatBytes(measurement.estimated_bytes)} /{" "}
+              {t("예상 크기(상한 기준)", "Estimated size (upper-ish)", "推定サイズ（上限寄り）")} ≲ {formatBytes(measurement.estimated_bytes)} /{" "}
               {t("응답 한계", "response limit", "応答上限")} {formatBytes(measurement.max_response_bytes)} —{" "}
               {t(
                 "예상치일 뿐이며, 한계는 실제로 도착한 바이트에 대해 적용됩니다.",

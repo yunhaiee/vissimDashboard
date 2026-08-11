@@ -5319,3 +5319,56 @@ to the corpus — a lie of a specific and dangerous kind, because V2 exists prec
 unresolved id two hops from the geometry once deleted an entire network with `load_ok=True`. **"I did
 not look" is not "there is nothing there."** The fabricated findings are gone; the honest gap remains,
 and widening it is now a measurement job with a tool to do it.
+
+---
+
+## 2026-08-11 — B2's first live Overpass fetch: the query works, and the density model does not travel
+
+**Context:** roadmap v2 §5.B row **B2** shipped offline-verified only — every test fixtures
+`_open_url`, so the whole region → network path had never touched a server. Its own report named four
+untested claims. This closes them with one deliberately small request (≈0.36 km² of central Daejeon,
+a fraction of the cap, on a shared public instance).
+
+**What the live fetch proved:**
+* **The query is accepted by a real Overpass** (0.7.62.11), including the turn-restriction relation
+  clause that was syntactically standard but never exercised against a server.
+* **Latency is nowhere near the budget**: 2.4 s against a 128 s socket budget, one attempt, no retry.
+* **The ODbL note is present and preserved**, and `attribution_note_present` records it as measured
+  rather than assumed.
+* Provenance embeds and survives: instance, query, region, timestamps, bytes, sha256, counts.
+
+**What it disproved — and this is why the check was worth making.** The density constants were
+measured on a suburban Perth-area extract. This project's target market is a dense Korean CBD.
+
+| | B/km² |
+|---|---|
+| reference MEAN (`REFERENCE_BYTES_PER_KM2`) | 28,017 |
+| reference PEAK (mean × 11.8) | 330,601 |
+| **measured, central Daejeon** | **555,837** |
+
+**19.8× the reference mean, and 1.68× the reference peak.** The same population-generalisation error
+this repo has now paid for four times (`a522ec6`, the `linkSegment` finding: *a rule measured on one
+population generalises only to that population*).
+
+**Two consequences, deliberately separated because they have different answers:**
+
+* **The cap holds and needed no change.** The largest region cap 1 admits at Daejeon's latitude is
+  17.3 km², which at the measured density is **≈9.6 MB against a 16.8 MB cap — 1.75× headroom**. No
+  legitimate Daejeon region is refused for size. The peak-based cap did its job precisely because it
+  was built on a peak rather than a mean.
+* **The user-facing ESTIMATE lied by 20×.** It was `area × mean`, so it told this fetch's caller
+  ~10 KB and delivered 200 KB. An estimate someone sizes a decision against must not be twenty times
+  light. It now uses the **peak** density — deliberately conservative, and *still* 1.68× under what
+  Daejeon actually returned — and the UI reads "예상 크기(상한 기준) ≲" rather than "≈", because it
+  is an upper-ish bound and not a prediction.
+
+**What was NOT done, on purpose:** the reference constants were not re-derived from this sample. One
+0.36 km² block is a **counter-example, not a density model** — it is recorded as
+`DAEJEON_CBD_MEASURED_BYTES_PER_KM2` with that framing. A proper Korean-CBD figure wants the same
+tiled measurement the original had, and inventing one from a single sample would repeat the very
+mistake being recorded.
+
+**Still unproven live:** real 429/504 header shapes (this instance was healthy and answered first
+time), and behaviour at cap-sized responses.
+
+**Verification:** full suite **4241 passed, 1 skipped**; typecheck clean; contract 41/41.

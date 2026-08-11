@@ -207,6 +207,33 @@ REFERENCE_PEAK_TO_MEAN_DENSITY = 11.8
 #: Peak density = mean × the measured peak-to-mean ratio.
 PEAK_BYTES_PER_KM2 = int(REFERENCE_BYTES_PER_KM2 * REFERENCE_PEAK_TO_MEAN_DENSITY)
 
+#: **Measured against a REAL Overpass instance, 2026-08-11, central Daejeon.**
+#: The two constants above were measured on a suburban Perth-area extract, and
+#: this project's target market is a dense Korean CBD — so the first live fetch
+#: this module ever made was also a test of whether that generalises. It does
+#: not: a 0.36 km² block of Dunsan-dong returned 200,309 B, i.e.
+#: **555,837 B/km² — 19.8× the reference MEAN and 1.68× the reference PEAK.**
+#:
+#: What that does and does not break, stated separately because they have
+#: different answers:
+#:
+#: * **The cap holds.** The largest region cap 1 admits at Daejeon's latitude is
+#:   17.3 km², which at the measured density is ≈9.6 MB against a 16.8 MB cap —
+#:   1.75× headroom. No legitimate Daejeon region is refused for size.
+#: * **The ESTIMATE lied.** It was ``area × mean``, so it told this fetch's
+#:   caller ~10 KB and delivered 200 KB. An estimate a user sizes a decision
+#:   against must not be twenty times light, and "measured on a suburban extract"
+#:   is exactly the population-generalisation error this repo has now paid for
+#:   four times (``a522ec6``: a rule measured on one population generalises only
+#:   to that population).
+#:
+#: So the estimate now uses the PEAK density — deliberately conservative, and
+#: still 1.68× under what Daejeon actually returned, which is why it is reported
+#: as an upper-ish bound rather than a prediction. One 0.36 km² sample is not a
+#: density model; it is a counter-example, and it is recorded as one. Re-deriving
+#: a proper Korean-CBD mean wants a tiled measurement like the original.
+DAEJEON_CBD_MEASURED_BYTES_PER_KM2 = 555_837
+
 #: Cap 2, term B: the peak density held across the largest region cap 1 can
 #: admit. ≈16.8 MB. Term A (``routers/datasets.MAX_UPLOAD_BYTES``, 250 MB) is
 #: ~15× larger and therefore not binding; the tests pin that ordering so a
@@ -424,9 +451,17 @@ class RegionMeasurement:
     """What a region measures, against the caps, BEFORE anything is downloaded.
 
     Every field is a measurement or a derived limit; nothing here is an opinion.
-    ``estimated_bytes`` is explicitly an ESTIMATE (mean measured density × area)
-    and is labelled as one everywhere it surfaces — the cap is enforced against
-    the bytes that actually arrive, never against this number.
+    ``estimated_bytes`` is explicitly an ESTIMATE and is labelled as one
+    everywhere it surfaces — the cap is enforced against the bytes that actually
+    arrive, never against this number.
+
+    It uses the **PEAK** density, not the mean. It used the mean until the first
+    live fetch measured central Daejeon at 19.8× the reference mean and told its
+    caller ~10 KB before delivering 200 KB (see
+    :data:`DAEJEON_CBD_MEASURED_BYTES_PER_KM2`). An estimate a user sizes a
+    decision against must not be twenty times light, so it is now deliberately
+    conservative — and still 1.68× under what Daejeon actually returned, which is
+    why the UI must read it as "up to", never as a prediction.
     """
 
     bbox: BoundingBox
@@ -501,7 +536,9 @@ def measure_region(bbox: BoundingBox) -> RegionMeasurement:
         binding_term=plane.binding_term,
         planimetric_error_bound_m=plane.planimetric_error_bound_m(half_extent_m),
         within_region_cap=half_extent_m <= radius,
-        estimated_bytes=int(area_km2 * REFERENCE_BYTES_PER_KM2),
+        # PEAK, not mean -- see RegionMeasurement's docstring and the Daejeon
+        # counter-example. An estimate that is 20x light is worse than none.
+        estimated_bytes=int(area_km2 * PEAK_BYTES_PER_KM2),
         max_response_bytes=MAX_RESPONSE_BYTES,
     )
 
