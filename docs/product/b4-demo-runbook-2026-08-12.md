@@ -49,9 +49,12 @@ live check. Either way the demo proves the pipeline.
 ## Part B — build the demand input (browser, ~2 min)
 
 1. Back on **네트워크 생성**, click **수요 입력 만들기 →**.
-2. **1. 카운트 워크북 업로드**: **파일 선택** → your 대전 스마트교차로 15-minute counts
-   workbook — one `.xlsx` from the Daejeon drop, named like
-   `가람네거리_15분_집계 주기.xlsx`. Click **업로드**.
+2. **1. 카운트 워크북 업로드**: **파일 선택** → one of the 11 real workbooks extracted at
+   `client-data\유성구-교통량-워크북\` (e.g.
+   `[지역 자치단체 제출용] 2026-04-06 00_00_2026-05-10 23_45_원신흥네거리1_15분_집계 주기.xlsx`
+   — 원신흥네거리 is the best demo site: it also has a 현시도 sheet among the 23, so demand
+   AND signals can both be real). Click **업로드**. NOTE: the region you generate must
+   contain this intersection — find it on Naver/Kakao map and box it lat±0.002 / lon±0.0025.
    - The parsed summary appears: site, legs (e.g. 가람방면), vehicle classes, time window,
      and any per-row refusals by name. A wrong file refuses with a named reason — nothing
      proceeds on a bad parse.
