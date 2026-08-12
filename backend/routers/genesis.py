@@ -836,28 +836,83 @@ def get_gate_report_markdown(job_id: str, request: Request):
 
 
 class StartRegionFetchRequest(BaseModel):
-    """A bounding box plus an optional name for the extract.
+    """ONE region shape — a bounding box or a polygon — plus an optional name.
 
     ``extra="forbid"``, and the endpoint is NOT in this model on purpose: the
     Overpass instance is server configuration (``PRISM_OVERPASS_ENDPOINT``), and
     a caller-supplied URL would turn this route into an SSRF instrument pointed
     at whatever the server can reach.
+
+    **Exactly one shape, enforced here rather than downstream.** A polygon's
+    bounding box is DERIVED from the polygon (``osm_fetch.RegionPolygon``), so a
+    request carrying both would be two claims about one region — and the pair
+    that disagrees is the pair that fetches one area and judges its boundary
+    against another. A request carrying neither is a caller who forgot the
+    region, not a caller asking for the whole planet.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    south: float = Field(description="Southern latitude, WGS84 degrees.")
-    west: float = Field(description="Western longitude, WGS84 degrees.")
-    north: float = Field(description="Northern latitude, WGS84 degrees.")
-    east: float = Field(description="Eastern longitude, WGS84 degrees.")
+    south: float | None = Field(default=None, description="Southern latitude, WGS84 degrees.")
+    west: float | None = Field(default=None, description="Western longitude, WGS84 degrees.")
+    north: float | None = Field(default=None, description="Northern latitude, WGS84 degrees.")
+    east: float | None = Field(default=None, description="Eastern longitude, WGS84 degrees.")
+    polygon: list[list[float]] | None = Field(
+        default=None,
+        description=(
+            "A lasso, as [[lat, lon], …] in WGS84 degrees. The ring may be sent open or "
+            "closed; at least 3 and at most 64 corners; self-intersecting, degenerate and "
+            "antimeridian-spanning rings are refused by name."
+        ),
+    )
     name: str | None = Field(
         default=None,
         description="Base name for the staged extract. Omitted = derived from the centre.",
     )
 
-    def bbox(self) -> osm_fetch.BoundingBox:
+    def region(self) -> osm_fetch.RequestedRegion:
+        """The one shape this request names, validated by its own class.
+
+        The exactly-one rule is enforced HERE and raised as an
+        ``OsmFetchRefused``, not as a pydantic validator: a validator would answer
+        422 with pydantic's own error list, and every other refusal on this route
+        answers 400 with ``{code, reasons, measurement}``. One refusal shape means
+        the browser has one renderer, which is the whole reason
+        :func:`_region_refusal` exists.
+        """
+        corners = (self.south, self.west, self.north, self.east)
+        has_box = all(value is not None for value in corners)
+        if any(value is not None for value in corners) and not has_box:
+            missing = [
+                key
+                for key, value in zip(("south", "west", "north", "east"), corners)
+                if value is None
+            ]
+            raise osm_fetch.OsmFetchRefused(
+                "region_shape_ambiguous",
+                [
+                    "A bounding box needs all four of south/west/north/east; missing: "
+                    + ", ".join(missing)
+                    + ". Send a polygon instead if the region is not a rectangle."
+                ],
+            )
+        if has_box == (self.polygon is not None):
+            raise osm_fetch.OsmFetchRefused(
+                "region_shape_ambiguous",
+                [
+                    "Send exactly one region shape: south/west/north/east, or polygon — "
+                    "never both and never neither. A polygon's bounding box is derived "
+                    "from the polygon, so sending one as well would be two claims about "
+                    "the same region."
+                ],
+            )
+        if self.polygon is not None:
+            return osm_fetch.RegionPolygon.from_sequence(self.polygon)
         return osm_fetch.BoundingBox(
-            south=self.south, west=self.west, north=self.north, east=self.east
+            south=float(self.south),  # type: ignore[arg-type]
+            west=float(self.west),  # type: ignore[arg-type]
+            north=float(self.north),  # type: ignore[arg-type]
+            east=float(self.east),  # type: ignore[arg-type]
         )
 
 
@@ -892,9 +947,42 @@ def get_region_limits(request: Request):
     return osm_fetch.region_limits(_number("lat", 0.0), _number("lon", 0.0))
 
 
+#: How a polygon travels on the PREVIEW's query string: ``lat,lon`` pairs joined
+#: by ``;``. The preview is a GET (open, cacheable, no side effect) and it stays
+#: one, so the shape has to fit in a URL — 64 corners at 7 decimals is ~1.4 kB,
+#: well inside every server's line limit. Refusals name this format literally so
+#: a caller who guessed JSON is told what to send instead.
+_POLYGON_QUERY_FORMAT = 'polygon=lat,lon;lat,lon;lat,lon (at least three pairs)'
+
+
+def _polygon_from_query(raw: str) -> osm_fetch.RegionPolygon:
+    pairs: list[list[float]] = []
+    for index, chunk in enumerate(part.strip() for part in raw.split(";")):
+        if not chunk:
+            continue
+        fields = [value.strip() for value in chunk.split(",")]
+        if len(fields) != 2:
+            raise osm_fetch.OsmFetchRefused(
+                "region_polygon_invalid",
+                [f"Corner {index + 1} ({chunk!r}) is not a lat,lon pair. Use {_POLYGON_QUERY_FORMAT}."],
+            )
+        try:
+            pairs.append([float(fields[0]), float(fields[1])])
+        except ValueError as exc:
+            raise osm_fetch.OsmFetchRefused(
+                "region_polygon_invalid",
+                [f"Corner {index + 1} ({chunk!r}) is not numeric ({exc}). Use {_POLYGON_QUERY_FORMAT}."],
+            ) from exc
+    return osm_fetch.RegionPolygon.from_sequence(pairs)
+
+
 @router.get("/region/preview")
 def preview_region(
-    south: float, west: float, north: float, east: float
+    south: float | None = None,
+    west: float | None = None,
+    north: float | None = None,
+    east: float | None = None,
+    polygon: str | None = None,
 ):
     """Measure a region against cap 1 WITHOUT fetching anything.
 
@@ -903,12 +991,39 @@ def preview_region(
     ``within_region_cap: false`` for a region that is too large rather than
     400-ing: a preview whose whole job is to describe an over-large box must be
     able to describe an over-large box.
+
+    Same exactly-one-shape rule as ``POST /region/fetches`` — a preview that
+    could measure a different shape than the fetch would end up describing is a
+    preview nobody should trust. A polygon arrives as ``lat,lon;lat,lon;…``
+    (:data:`_POLYGON_QUERY_FORMAT`); its measurement carries the derived
+    rectangle under ``region`` exactly as the fetch's provenance will.
     """
+    corners = (south, west, north, east)
+    has_box = all(value is not None for value in corners)
+    if has_box == (polygon is not None):
+        raise _region_refusal(
+            osm_fetch.OsmFetchRefused(
+                "region_shape_ambiguous",
+                [
+                    "Ask for exactly one shape: south/west/north/east, or "
+                    f"{_POLYGON_QUERY_FORMAT} — never both and never neither."
+                ],
+            )
+        )
     try:
-        bbox = osm_fetch.BoundingBox(south=south, west=west, north=north, east=east)
+        region: osm_fetch.RequestedRegion = (
+            _polygon_from_query(polygon)
+            if polygon is not None
+            else osm_fetch.BoundingBox(
+                south=float(south),  # type: ignore[arg-type]
+                west=float(west),  # type: ignore[arg-type]
+                north=float(north),  # type: ignore[arg-type]
+                east=float(east),  # type: ignore[arg-type]
+            )
+        )
     except osm_fetch.OsmFetchRefused as exc:
         raise _region_refusal(exc) from exc
-    return osm_fetch.measure_region(bbox).as_dict()
+    return osm_fetch.measure_region(region).as_dict()
 
 
 @router.post("/region/fetches", status_code=202)
@@ -925,8 +1040,14 @@ def start_region_fetch(
     fetched is a 400 the caller sees immediately instead of a job to poll.
     """
     try:
+        region = payload.region()
+        polygon = osm_fetch.region_polygon(region)
         record = osm_fetch.start_region_fetch(
-            bbox=payload.bbox(),
+            # Exactly one of the two reaches the service, decided by what the
+            # caller drew. A polygon's rectangle is derived INSIDE the service so
+            # that this router cannot become a second place it is computed.
+            bbox=None if polygon is not None else osm_fetch.region_bbox(region),
+            polygon=polygon,
             name=payload.name,
             submitted_by=str(user.get("username") or ""),
         )

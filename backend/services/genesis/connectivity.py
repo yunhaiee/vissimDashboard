@@ -732,6 +732,11 @@ def merge_junction_nodes(extract: OsmExtract) -> tuple[OsmExtract, MergeReport]:
             extract.non_drivable_node_highways, canonical
         ),
         requested_bbox=extract.requested_bbox,
+        # Not node-keyed and not geometry: the shape the caller asked for does not
+        # change because two junctions merged. Carried so the boundary label
+        # cannot revert to "requested bbox" mid-build and start claiming the
+        # polygon itself was judged.
+        requested_polygon=extract.requested_polygon,
         way_trims=list(extract.way_trims),
         # Remapped like every other node-id-keyed field. It cannot actually
         # change — a synthesized node is never a merge candidate, by the refusal
@@ -808,6 +813,16 @@ class DeadEnd:
 #: ``BOUNDARY_BAND_M`` assumption and in the draft metadata, and a reader
 #: comparing two builds needs to be able to tell which boundary each used.
 BOUNDARY_SOURCE_REQUESTED_BBOX = "requested bbox (fetch provenance)"
+#: Rung 1 when the region was drawn as a LASSO. A distinct string, and the
+#: distinction is the disclosure: the query asked Overpass for the polygon, but
+#: everything that judges geometry against an edge — the tail trim, this
+#: rectangle, therefore every :class:`DeadEnd` — is rectangle arithmetic on the
+#: polygon's BOUNDING BOX. A terminal sitting in bbox-minus-polygon is classified
+#: as interior, exactly as it would be for a rectangle fetch of the same box. It
+#: would be cheap and wrong to print the same label for both cases: a reader
+#: comparing two builds must be able to see that one of them was judged against a
+#: shape it was not fetched with.
+BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX = "bounding box of the requested polygon (fetch provenance)"
 BOUNDARY_SOURCE_DECLARED_BOUNDS = "declared <bounds>"
 BOUNDARY_SOURCE_HULL = "extent of the kept geometry"
 
@@ -819,8 +834,15 @@ def boundary_source(extract: OsmExtract) -> str:
     the draft metadata even for a build with no dead end at all — "which
     boundary did this network use?" is a question about the build, not about
     whether anything happened to sit on the edge.
+
+    Rung 1 has TWO labels for one rectangle, and no behaviour turns on which:
+    the rectangle is ``requested_bbox`` either way. The label says whether that
+    rectangle was the shape the user drew or the bounding box of the shape they
+    drew, because those are the same arithmetic and different claims.
     """
     if extract.requested_bbox is not None:
+        if extract.requested_polygon is not None:
+            return BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX
         return BOUNDARY_SOURCE_REQUESTED_BBOX
     if extract.declared_bounds is not None:
         return BOUNDARY_SOURCE_DECLARED_BOUNDS
@@ -844,6 +866,16 @@ def _boundary_rectangle(extract: OsmExtract, xy: dict[int, tuple[float, float]])
        this generator produced was refused by the gate's V3. The trim in
        :func:`services.genesis.osm.trim_ways_to_requested_bbox` then puts the
        cut terminals exactly ON this rectangle, so they are 0.00 m from it.
+       When the region was drawn as a POLYGON, this rung is that polygon's
+       BOUNDING BOX and the label says so
+       (:data:`BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX`). The query really did ask
+       Overpass for the ring — but the trim, this rectangle and the band test are
+       all rectangle arithmetic (Liang–Barsky against axis-aligned edges), so a
+       terminal lying inside the box and outside the ring is classified as an
+       INTERIOR dead end, exactly as it would be for a rectangle fetch of the
+       same box. That is a real gap between the shape asked for and the shape
+       judged, and it is named here, in the compliance report and on the region
+       page rather than being left for a reader to infer from a matching label.
     2. the file's own declared ``<bounds>``, when it has one. Most Overpass
        exports on this machine do not; a JOSM save does.
     3. the extent of the kept geometry. The only boundary a bare file states,

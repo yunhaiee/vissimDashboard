@@ -1486,11 +1486,23 @@ contractTest("B2: the region page ends at the staging door and hands off to B1's
 
   // What of the 0.4 mockup did NOT ship is said on the page, not only in a
   // commit message -- a consultant who read the mockup would otherwise look for
-  // the lasso and conclude the page is broken.
+  // a feature and conclude the page is broken. The LASSO left this list when it
+  // shipped (stage (a)); the two that act on drafted geometry did not, and the
+  // paragraph has to say which is which rather than going quiet.
   pin.match(
     page,
-    /폴리곤 라쏘·도로 개별 선택·블록 제외/,
-    "expected the deferred lasso / per-road / block-exclusion features to be named on the page",
+    /폴리곤 라쏘는 이제 지원합니다/,
+    "expected the page to say the lasso now ships, so a reader is not told it is deferred while using it",
+  );
+  pin.match(
+    page,
+    /도로 개별 선택·블록 제외\(공유 벽 규칙\)는 의도적으로 다음 단계로 미뤘습니다/,
+    "expected the still-deferred per-road / block-exclusion features to stay named on the page",
+  );
+  pin.doesNotMatch(
+    page,
+    /사각형 영역만 지원합니다/,
+    "the page must not still claim rectangles are the only supported shape",
   );
 
   // ko primary with an explicit ja argument on every t().
@@ -1504,6 +1516,102 @@ contractTest("B2: the region page ends at the staging door and hands off to B1's
     `count=${calls.length}`,
     /count=([4-9]\d|\d{3,})/,
     "expected at least 40 t() calls on the region page -- fewer means this extraction went stale",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The lasso (stage (a)) -- one shape at a time, and the bbox gap said out loud
+// ---------------------------------------------------------------------------
+//
+// Its own test, single-concern: the value of the lasso is NOT that a polygon can
+// be drawn, it is that the page tells the truth about which shape gets judged.
+// The query is the polygon; the tail trim and the model boundary are the
+// polygon's BOUNDING BOX (the five rectangle kernels of 85b4bb2 were deliberately
+// not generalised). A page that drew the ring and said nothing would be a page
+// that quietly moved a study-area boundary.
+
+contractTest("B2 lasso: the page sends one shape and names the bounding-box gap on screen", (pin) => {
+  const page = read("app/genesis/region/page.tsx");
+  const map = read("components/genesis/RegionLassoMap.tsx");
+
+  // Two modes, one shape sent. `parsed` is the SAME object the preview measures
+  // and the fetch is started with, so the two can never describe different
+  // regions.
+  pin.match(page, /type RegionMode = "rect" \| "polygon"/, "expected an explicit rectangle/polygon mode");
+  pin.match(page, /aria-pressed=\{mode === value\}/, "expected the mode toggle to say which shape is active");
+  pin.match(
+    page,
+    /return vertices\.length >= 3 \? \{ polygon: vertices \} : null;/,
+    "expected the polygon payload to be the drawn ring, and nothing before three corners",
+  );
+  pin.match(page, /previewRegion\(parsed\)/, "the polygon must be measured by the same server preview");
+  pin.match(
+    page,
+    /startRegionFetch\(\{ \.\.\.parsed, name:/,
+    "expected the fetch to send exactly the shape the preview measured",
+  );
+
+  // THE disclosure. On screen, in Korean, naming both halves: what is queried and
+  // what is judged.
+  pin.match(
+    page,
+    /점선 사각형이 경계 판정 기준입니다/,
+    "expected the page to say on screen that boundary judgment uses the dashed rectangle",
+  );
+  pin.match(
+    page,
+    /내부 막다른 길로 분류됩니다/,
+    "expected the page to name the consequence: a road end between the ring and its box reads as interior",
+  );
+  // And the dashed rectangle is the SERVER's derived box, not a second
+  // computation in the browser -- the same rule the cap numbers already follow.
+  pin.match(
+    page,
+    /bbox=\{measurement\?\.region \?\? null\}/,
+    "expected the dashed rectangle to be the server's own derived bounding box",
+  );
+  pin.match(
+    page,
+    /limits\.max_polygon_vertices/,
+    "expected the corner cap to be read from the server's limits, not written in the browser",
+  );
+  pin.doesNotMatch(
+    page,
+    /(?:maxVertices|MAX_[A-Z_]*VERTICES)\s*=\s*\d/,
+    "the browser must not carry its own copy of the corner cap",
+  );
+
+  // The drawing surface: leaflet client-only, the mockup's own semantics, and no
+  // transform between a click and the query.
+  pin.match(page, /dynamic\(\(\) => import\("@\/components\/genesis\/RegionLassoMap"\), \{\s*\n?\s*ssr: false,?\s*\n?\}\)/, "expected the map to be mounted client-only");
+  pin.match(map, /await import\("leaflet"\)/, "expected leaflet to load inside the effect, as the other maps do");
+  pin.match(map, /doubleClickZoom: false/, "a double click closes the ring, so the map must not also zoom on it");
+  pin.match(map, /map\.on\("dblclick"/, "expected double-click to close the ring, the mockup's decided semantics");
+  pin.match(
+    map,
+    /DOUBLE_CLICK_GRACE_MS/,
+    "expected a single click to be held so closing the ring cannot also drop a duplicate corner",
+  );
+  // Raw WGS84: the click's latlng is what is sent. The pattern is the SHAPE a
+  // georeference takes in this repo (`DashboardMap`'s GEO_PARAMS query string),
+  // not the word, so the component's own "no Helmert here" comment does not
+  // satisfy a pin about its code.
+  pin.doesNotMatch(
+    map,
+    /scale_x=|offset_x=|rotation_deg=/,
+    "the lasso is raw WGS84 -- a fit or offset here would invent a georeference the product refuses",
+  );
+  pin.match(
+    map,
+    /current\.onAddVertex\(event\.latlng\.lat, event\.latlng\.lng\)/,
+    "expected the clicked latitude/longitude to be passed through untransformed",
+  );
+  // ko primary on the map's two strings too: they are passed IN from the page's
+  // t(), so this component must own no user-facing text of its own.
+  pin.doesNotMatch(
+    map,
+    /"[^"]*[가-힣][^"]*"/,
+    "the map component must take its labels from the page's t(), not hard-code Korean",
   );
 });
 
@@ -1564,6 +1672,35 @@ contractTest("B2: the region API bindings carry the workspace header and the mea
   const startBinding = sliceBetween(regionSection, "export async function startRegionFetch", "export async function fetchRegionFetches");
   pin.match(startBinding, /\S/, "expected the startRegionFetch binding (marker moved?)");
   pin.doesNotMatch(startBinding, /endpoint/, "the client must never send an Overpass endpoint");
+
+  // A polygon takes the SAME road as a box: one binding, one mutation helper, one
+  // set of workspace headers. A second "fetch a polygon" call would be a second
+  // place the workspace could be forgotten.
+  pin.match(
+    regionSection,
+    /export type RegionShape =/,
+    "expected one shape union, so a caller cannot send a box and a polygon at once",
+  );
+  pin.match(
+    regionSection,
+    /startRegionFetch\(payload: RegionShape & \{ name\?: string \}\)/,
+    "expected the polygon to go through the SAME startRegionFetch binding as the box",
+  );
+  pin.match(
+    startBinding,
+    /apiMutationFetch\("\/api\/genesis\/region\/fetches"/,
+    "expected the polygon fetch to keep the workspace-header mutation helper",
+  );
+  pin.match(
+    regionSection,
+    /polygon: shape\.polygon\.map\(\(\[lat, lon\]\) => `\$\{lat\},\$\{lon\}`\)\.join\(";"\)/,
+    "expected the preview to carry the ring on the query string, keeping it an open GET",
+  );
+  pin.match(
+    regionSection,
+    /max_polygon_vertices: number/,
+    "expected the corner cap to be served, so the browser never carries its own copy",
+  );
 
   // Discoverable: the upload flow points at the region flow.
   pin.match(genesisPage, /href="\/genesis\/region"/, "expected the genesis page to link to the region extractor");

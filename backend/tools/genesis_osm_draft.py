@@ -161,6 +161,24 @@ def _requested_bbox(osm: Path) -> tuple[float, float, float, float] | None:
         return None
 
 
+def _requested_polygon(osm: Path) -> tuple[tuple[float, float], ...] | None:
+    """The lasso this ``.osm`` was fetched for, when it was drawn as one.
+
+    Read for the same reason as the bbox above and with the opposite effect: it
+    moves nothing, and it is what makes the compliance report this CLI writes say
+    the boundary was the polygon's BOUNDING BOX. Skipping it would give the
+    operator a report that differs from the app's for the same file — in the one
+    sentence that discloses a gap.
+    """
+    from services.genesis.osm import requested_polygon_from_provenance  # noqa: PLC0415
+    from services.osm_fetch import read_provenance  # noqa: PLC0415
+
+    try:
+        return requested_polygon_from_provenance(read_provenance(osm.read_bytes()))
+    except OSError:
+        return None
+
+
 def _make_console_lossy() -> None:
     """A legacy Windows console (cp949 here) cannot encode "§" or Korean text.
 
@@ -190,6 +208,9 @@ def main(argv: list[str] | None = None) -> int:
         osm_path,
         exclude_service=args.exclude_service,
         requested_bbox=None if args.ignore_requested_bbox else _requested_bbox(osm_path),
+        requested_polygon=(
+            None if args.ignore_requested_bbox else _requested_polygon(osm_path)
+        ),
     )
     draft = build_draft(extract, name=name)
 

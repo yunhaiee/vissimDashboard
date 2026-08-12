@@ -9,15 +9,22 @@
 // takes.
 //
 // WHAT SHIPPED AND WHAT DID NOT, stated rather than implied:
-//   * shipped — a bounding box, measured against the cap BEFORE anything is
-//     downloaded, fetched off the request thread, and handed to
-//     `startGenesisJob` as the SAME token an uploaded file produces;
-//   * deferred, deliberately — the polygon lasso, the per-road include/exclude
-//     toggles and the block-exclusion "shared wall" rule. All three need the
-//     network's own geometry to act on, which does not exist until after the
-//     extract has been fetched and drafted; they belong on top of this, not
-//     instead of it. A working narrow thing beats a broad broken one, and the
-//     mockup's own decision record survives untouched for whoever builds them.
+//   * shipped — a bounding box AND the mockup's polygon lasso, each measured
+//     against the cap BEFORE anything is downloaded, fetched off the request
+//     thread, and handed to `startGenesisJob` as the SAME token an uploaded file
+//     produces;
+//   * shipped with a NAMED gap — the lasso is what Overpass is asked for
+//     (`poly:`), but boundary judgment downstream is the polygon's BOUNDING BOX:
+//     the tail trim and the boundary ladder are axis-aligned rectangle arithmetic
+//     (five kernels verified in `85b4bb2`), and generalising them to an arbitrary
+//     ring is its own unit. So the box is drawn on the map as a dashed rectangle,
+//     said in words beside it, and written into the artifact's compliance report.
+//     A gap on screen is a gap; a gap left for the user to discover is a lie;
+//   * deferred, deliberately — the per-road include/exclude toggles and the
+//     block-exclusion "shared wall" rule. Both act on the geometry of a network
+//     that does not exist until after an extract has been fetched and drafted, so
+//     they sit on top of this step rather than replacing it. (The lasso did not
+//     need that geometry, which is why it is no longer on this list.)
 //
 // THE ONE RULE THIS PAGE MUST NOT BREAK: it never starts a generation of its
 // own. A fetch ends at the staging door and the button below calls
@@ -31,6 +38,7 @@
 // cap the browser recomputed could disagree with the cap the server enforces.
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -40,13 +48,24 @@ import {
   RegionFetchError,
   fetchRegionFetch,
   fetchRegionFetches,
+  fetchRegionLimits,
   previewRegion,
   startGenesisJob,
   startRegionFetch,
   type RegionFetch,
   type RegionFetchStatus,
   type RegionMeasurement,
+  type RegionShape,
 } from "@/lib/api";
+
+/** Leaflet reads `window` at module scope, so the drawing surface is mounted
+ * client-only (`01-app/02-guides/lazy-loading.md`), the same way
+ * `app/dashboard/page.tsx` mounts `DashboardMap`. There is nothing to prerender
+ * for a map, and the component itself also defers `import("leaflet")` into its
+ * mount effect. */
+const RegionLassoMap = dynamic(() => import("@/components/genesis/RegionLassoMap"), {
+  ssr: false,
+});
 
 type Translate = (ko: string, en: string, ja: string) => string;
 
@@ -78,6 +97,19 @@ const DEFAULT_BBOX = {
 
 type BoxFields = typeof DEFAULT_BBOX;
 type BoxKey = keyof BoxFields;
+
+/** Rectangle or lasso. Exactly one is ever sent, and which one is what the mode
+ * toggle selects — never both, because a polygon's bounding box is DERIVED by the
+ * backend and a second one computed here could disagree with the rectangle the
+ * fetch is actually judged against. */
+type RegionMode = "rect" | "polygon";
+
+/** Where the map looks before anything is drawn: the same 둔산 default the
+ * rectangle fields carry, so the two modes open on the same ground. */
+const DEFAULT_CENTRE: [number, number] = [
+  (Number(DEFAULT_BBOX.south) + Number(DEFAULT_BBOX.north)) / 2,
+  (Number(DEFAULT_BBOX.west) + Number(DEFAULT_BBOX.east)) / 2,
+];
 
 function parseBox(fields: BoxFields): { south: number; west: number; north: number; east: number } | null {
   const values = (Object.keys(fields) as BoxKey[]).map((key) => Number(fields[key]));
@@ -137,6 +169,18 @@ function refusalHeadline(code: string | null, t: Translate): string {
       );
     case "region_bbox_invalid":
       return t("영역 좌표가 올바르지 않습니다", "The region coordinates are not valid", "領域の座標が正しくありません");
+    case "region_polygon_invalid":
+      return t(
+        "이 폴리곤으로는 영역을 정할 수 없습니다",
+        "This polygon cannot define a region",
+        "このポリゴンでは領域を決められません",
+      );
+    case "region_shape_ambiguous":
+      return t(
+        "영역 모양은 사각형이나 폴리곤 중 하나여야 합니다",
+        "A region must be exactly one shape: a rectangle or a polygon",
+        "領域の形は矩形かポリゴンのどちらか一つでなければなりません",
+      );
     case "region_has_no_roads":
       return t(
         "이 영역에는 도로가 하나도 없습니다",
@@ -216,14 +260,25 @@ function Panel({ title, subtitle, children }: { title: string; subtitle?: string
 }
 
 /**
- * The requested box drawn inside the cap square, both to the same scale.
+ * The requested region's EXTENT drawn inside the cap square, both to the same
+ * scale.
  *
- * Not a map — this app has no basemap tiles and inventing one would be drawing
- * a georeference the product explicitly refuses to claim
- * (services/genesis/project.py: "NOT A GEOREFERENCE"). What it IS is the one
- * comparison that decides whether a fetch can happen: the region against the
- * projection's validity square at this latitude. Over the line, the box turns
- * amber and the cap square is what it is measured against.
+ * Not a map, and not because this app cannot draw one — `RegionLassoMap` beside
+ * it draws CARTO tiles, as four other components in this app already do. It is
+ * not a map because a map answers a different question. This answers the one
+ * comparison that decides whether a fetch can happen at all: the region's
+ * half-extent against the draft projection's validity square at this latitude.
+ * Over the line, the box turns amber and the cap square is what it was measured
+ * against.
+ *
+ * (What the product refuses is a GEOREFERENCE for generated output —
+ * `services/genesis/project.py`: "NOT A GEOREFERENCE" — which is about placing an
+ * emitted .inpx on the earth. Drawing a raw WGS84 region on a basemap is a
+ * different act and makes no such claim.)
+ *
+ * Shape-agnostic on purpose: `width_m`/`height_m` are the extent of whatever was
+ * measured — a rectangle's corners or a lasso's vertices — so a polygon feeds
+ * this gauge unchanged rather than needing a second one.
  */
 function RegionGauge({ measurement, t }: { measurement: RegionMeasurement; t: Translate }) {
   const capSide = 2 * measurement.validity_radius_m;
@@ -264,10 +319,17 @@ export default function GenesisRegionPage() {
   const { lang, t } = useLanguage();
   const router = useRouter();
 
+  const [mode, setMode] = useState<RegionMode>("rect");
   const [box, setBox] = useState<BoxFields>(DEFAULT_BBOX);
+  const [vertices, setVertices] = useState<Array<[number, number]>>([]);
+  const [ringClosed, setRingClosed] = useState(false);
   const [name, setName] = useState("");
   const [measurement, setMeasurement] = useState<RegionMeasurement | null>(null);
   const [measureError, setMeasureError] = useState<string | null>(null);
+  // The corner cap, READ from `GET /region/limits` rather than written here. Same
+  // rule as every other number on this page: a limit the browser carried its own
+  // copy of is a limit that can disagree with the one that actually refuses.
+  const [maxVertices, setMaxVertices] = useState<number | null>(null);
 
   const [fetches, setFetches] = useState<RegionFetch[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
@@ -283,11 +345,32 @@ export default function GenesisRegionPage() {
   const [handOffError, setHandOffError] = useState<GenesisError | Error | null>(null);
 
   const selected = selectedEntry && selectedEntry.id === selectedId ? selectedEntry.record : null;
-  const parsed = useMemo(() => parseBox(box), [box]);
-  const readyToFetch = Boolean(parsed && measurement?.within_region_cap && !submitting);
+  // ONE shape, chosen by the mode — the payload the preview measures and the
+  // payload the fetch is started with are the same object, so the two can never
+  // describe different regions.
+  const parsed = useMemo<RegionShape | null>(() => {
+    if (mode === "polygon") {
+      return vertices.length >= 3 ? { polygon: vertices } : null;
+    }
+    return parseBox(box);
+  }, [mode, box, vertices]);
+  const overVertexCap = mode === "polygon" && maxVertices !== null && vertices.length > maxVertices;
+  const readyToFetch = Boolean(
+    parsed && measurement?.within_region_cap && !overVertexCap && !submitting,
+  );
 
   const setField = useCallback((key: BoxKey, value: string) => {
     setBox((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const addVertex = useCallback((lat: number, lon: number) => {
+    setVertices((current) => [...current, [lat, lon]]);
+    setRingClosed(false);
+  }, []);
+
+  const resetRing = useCallback(() => {
+    setVertices([]);
+    setRingClosed(false);
   }, []);
 
   const loadFetches = useCallback(async () => {
@@ -305,6 +388,22 @@ export default function GenesisRegionPage() {
     void loadFetches();
   }, [loadFetches]);
 
+  // The corner cap comes from the server's own limits call. A failure here is not
+  // an error the user has to see: the cap is enforced by the fetch either way, so
+  // the UI simply stops disabling clicks for it and the refusal arrives with the
+  // server's own wording.
+  useEffect(() => {
+    let cancelled = false;
+    fetchRegionLimits(DEFAULT_CENTRE[0], DEFAULT_CENTRE[1])
+      .then((limits) => {
+        if (!cancelled) setMaxVertices(limits.max_polygon_vertices);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Measure the box on the SERVER, debounced. The browser deliberately computes
   // no limit of its own: the cap is the draft projection's validity radius and
   // it is latitude-dependent, so a second implementation here could disagree
@@ -313,11 +412,17 @@ export default function GenesisRegionPage() {
     if (!parsed) {
       setMeasurement(null);
       setMeasureError(
-        t(
-          "북위가 남위보다, 동경이 서경보다 커야 합니다.",
-          "North must be greater than south, and east greater than west.",
-          "北緯は南緯より、東経は西経より大きくなければなりません。",
-        ),
+        mode === "polygon"
+          ? t(
+              "지도를 눌러 점을 3개 이상 찍고, 두 번 눌러 영역을 닫습니다.",
+              "Click at least three points on the map, then double-click to close the shape.",
+              "地図をクリックして3点以上を打ち、ダブルクリックで領域を閉じます。",
+            )
+          : t(
+              "북위가 남위보다, 동경이 서경보다 커야 합니다.",
+              "North must be greater than south, and east greater than west.",
+              "北緯は南緯より、東経は西経より大きくなければなりません。",
+            ),
       );
       return;
     }
@@ -339,7 +444,7 @@ export default function GenesisRegionPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [parsed, t]);
+  }, [parsed, mode, t]);
 
   // Poll the selected fetch while it is still running.
   useEffect(() => {
@@ -374,6 +479,8 @@ export default function GenesisRegionPage() {
     setSubmitting(true);
     setSubmitError(null);
     try {
+      // The SAME `parsed` the preview measured, spread whole — a rectangle's four
+      // fields or a polygon's ring, never a re-derivation of either.
       const started = await startRegionFetch({ ...parsed, name: name.trim() || undefined });
       setSelectedId(started.id);
       setSelectedEntry({ id: started.id, record: started });
@@ -440,27 +547,123 @@ export default function GenesisRegionPage() {
           "WGS84 十進度。範囲は取得前に上限と比較して表示します — 上限を超えた場合は切り詰めず拒否します。",
         )}
       >
+        {/* ONE shape at a time. Both modes send exactly one region, because a
+          * polygon's bounding box is derived by the server and a second box from
+          * here could disagree with the rectangle the fetch is judged against. */}
+        <div className="mb-3 flex items-center gap-1.5" role="group" aria-label={t("영역 모양", "Region shape", "領域の形")}>
+          {(
+            [
+              ["rect", t("사각형", "Rectangle", "矩形")],
+              ["polygon", t("폴리곤 (라쏘)", "Polygon (lasso)", "ポリゴン（投げ縄）")],
+            ] as Array<[RegionMode, string]>
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={mode === value}
+              onClick={() => setMode(value)}
+              className={`rounded-md border px-3 py-1.5 text-xs font-semibold ${
+                mode === value
+                  ? "border-slate-500 bg-slate-100 text-slate-900"
+                  : "border-slate-300 bg-transparent text-slate-500"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {mode === "polygon" && (
+          <div className="mb-3 flex flex-col gap-2">
+            <RegionLassoMap
+              vertices={vertices}
+              closed={ringClosed}
+              // The dashed rectangle is the SERVER's derived bounding box, taken
+              // from the measurement — not computed here.
+              bbox={measurement?.region ?? null}
+              maxVertices={maxVertices}
+              onAddVertex={addVertex}
+              onClose={() => setRingClosed(true)}
+              onDiscardLastVertex={() => setVertices((current) => current.slice(0, -1))}
+              centre={DEFAULT_CENTRE}
+              ariaLabel={t(
+                "지도에서 영역 그리기",
+                "Draw the region on the map",
+                "地図で領域を描く",
+              )}
+              fitLabel={t("그린 영역으로 이동", "Zoom to shape", "描いた領域へ移動")}
+            />
+            {/* THE GAP, on screen. The query is the polygon; the boundary
+              * judgment is the dashed rectangle. Said here, said again in the
+              * generated compliance report, and never implied. */}
+            <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-900">
+              {t(
+                "점선 사각형이 경계 판정 기준입니다. Overpass에는 그린 폴리곤 그대로 질의하지만, 도로 꼬리 잘라내기와 모형 경계 판정은 폴리곤의 바운딩 박스(점선)로 합니다 — 따라서 점선 안이면서 폴리곤 밖에 있는 도로 끝은 경계가 아니라 내부 막다른 길로 분류됩니다. 이 사실은 생성된 준수 보고서에도 그대로 적힙니다.",
+                "The dashed rectangle is what boundary judgment uses. Overpass is queried with the polygon exactly as drawn, but the way-tail trim and the model-boundary decision use the polygon's BOUNDING BOX (dashed) — so a road end inside the dashes but outside the polygon is classified as an interior dead end, not as the model boundary. The generated compliance report states this too.",
+                "破線の矩形が境界判定の基準です。Overpass には描いたポリゴンのまま問い合わせますが、道路の尾部の切り詰めとモデル境界の判定はポリゴンのバウンディングボックス（破線）で行います — したがって破線の内側でポリゴンの外にある道路端は、モデル境界ではなく内部の行き止まりとして分類されます。この事実は生成される準拠レポートにも記載されます。",
+              )}
+            </p>
+            <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500">
+              <span>
+                {t("점", "Corners", "点")} {vertices.length}
+                {maxVertices !== null && ` / ${maxVertices}`}
+                {ringClosed
+                  ? ` · ${t("닫힘", "closed", "閉じました")}`
+                  : ` · ${t("두 번 눌러 닫기", "double-click to close", "ダブルクリックで閉じる")}`}
+              </span>
+              <button
+                type="button"
+                onClick={resetRing}
+                disabled={vertices.length === 0}
+                className="rounded-md border border-slate-300 px-2.5 py-1 font-semibold text-slate-600 disabled:cursor-not-allowed disabled:text-slate-300"
+              >
+                {t("초기화", "Reset", "初期化")}
+              </button>
+              {maxVertices !== null && vertices.length >= maxVertices && (
+                <span className="text-amber-700">
+                  {t(
+                    `점은 최대 ${maxVertices}개입니다 — 더 찍을 수 없습니다. 모양을 단순하게 그려 주세요(자동으로 줄이지 않습니다).`,
+                    `At most ${maxVertices} corners — no more can be added. Draw the shape with fewer (it is never simplified for you).`,
+                    `点は最大 ${maxVertices} 個です — これ以上は追加できません。形を単純に描いてください（自動では減らしません）。`,
+                  )}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
           <div className="grid min-w-0 flex-1 grid-cols-2 gap-2">
-            {(
-              [
-                ["north", t("북위 (north)", "North", "北緯 (north)")],
-                ["south", t("남위 (south)", "South", "南緯 (south)")],
-                ["west", t("서경 (west)", "West", "西経 (west)")],
-                ["east", t("동경 (east)", "East", "東経 (east)")],
-              ] as Array<[BoxKey, string]>
-            ).map(([key, label]) => (
-              <label key={key} className="flex flex-col gap-1 text-xs text-slate-600">
-                {label}
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={box[key]}
-                  onChange={(event) => setField(key, event.target.value)}
-                  className="rounded-md border border-slate-300 px-2.5 py-1.5 font-mono text-xs text-slate-800"
-                />
-              </label>
-            ))}
+            {mode === "rect" &&
+              (
+                [
+                  ["north", t("북위 (north)", "North", "北緯 (north)")],
+                  ["south", t("남위 (south)", "South", "南緯 (south)")],
+                  ["west", t("서경 (west)", "West", "西経 (west)")],
+                  ["east", t("동경 (east)", "East", "東経 (east)")],
+                ] as Array<[BoxKey, string]>
+              ).map(([key, label]) => (
+                <label key={key} className="flex flex-col gap-1 text-xs text-slate-600">
+                  {label}
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={box[key]}
+                    onChange={(event) => setField(key, event.target.value)}
+                    className="rounded-md border border-slate-300 px-2.5 py-1.5 font-mono text-xs text-slate-800"
+                  />
+                </label>
+              ))}
+            {mode === "polygon" && measurement?.polygon && (
+              /* The ring in numbers, because a shape a user cannot read back is a
+               * shape they cannot check. These are the SERVER's echo of what it
+               * measured, not the local click list. */
+              <p className="col-span-2 max-h-24 overflow-y-auto rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-slate-600">
+                {measurement.polygon.vertices
+                  .map(([lat, lon]) => `${lat.toFixed(5)}, ${lon.toFixed(5)}`)
+                  .join("  ·  ")}
+              </p>
+            )}
             <label className="col-span-2 flex flex-col gap-1 text-xs text-slate-600">
               {t("추출 이름 (선택)", "Extract name (optional)", "抽出名（任意）")}
               <input
@@ -532,6 +735,24 @@ export default function GenesisRegionPage() {
               {t("구속 항", "Binding term", "拘束項")}: {bindingTermLabel(measurement.binding_term, t)} ·{" "}
               {t("투영 오차", "projection error", "投影誤差")} {measurement.planimetric_error_bound_m.toFixed(2)} m
             </p>
+            {measurement.polygon && measurement.estimate_area_km2 !== undefined && (
+              /* Which area is which, said in numbers. The area above is the
+                * polygon's own (what a user means by "my study area"); the byte
+                * estimate below is taken over the BOUNDING BOX, because Overpass
+                * answers with whole ways and their nodes and the response is not
+                * proportional to the ring's area in any way we can defend. */
+              <p className="mt-1">
+                {t("폴리곤 넓이", "Polygon area", "ポリゴンの面積")} {measurement.area_km2.toFixed(2)} km² ·{" "}
+                {t("바운딩 박스 넓이", "bounding-box area", "バウンディングボックスの面積")}{" "}
+                {measurement.estimate_area_km2.toFixed(2)} km² ·{" "}
+                {t("점", "corners", "点")} {measurement.polygon_vertices ?? measurement.polygon.vertices.length} —{" "}
+                {t(
+                  "아래 예상 크기는 폴리곤이 아니라 바운딩 박스 넓이로 계산합니다(Overpass는 way를 통째로 돌려주므로 폴리곤 넓이에 비례하지 않습니다).",
+                  "the size estimate below is taken over the bounding-box area, not the polygon's: Overpass returns WHOLE ways, so the response is not proportional to the ring's area.",
+                  "以下の推定サイズはポリゴンではなくバウンディングボックスの面積で計算します（Overpass は way を丸ごと返すため、ポリゴンの面積に比例しません）。",
+                )}
+              </p>
+            )}
             <p className="mt-1 opacity-80">
               {t("예상 크기(상한 기준)", "Estimated size (upper-ish)", "推定サイズ（上限寄り）")} ≲ {formatBytes(measurement.estimated_bytes)} /{" "}
               {t("응답 한계", "response limit", "応答上限")} {formatBytes(measurement.max_response_bytes)} —{" "}
@@ -599,6 +820,18 @@ export default function GenesisRegionPage() {
               {selected.name} · {selected.region.south}, {selected.region.west} → {selected.region.north},{" "}
               {selected.region.east}
             </p>
+            {selected.polygon && (
+              /* A lasso extract says so, and says which rectangle it was judged
+                * against — the record's `region` is that rectangle in both cases,
+                * so without this line the two would be indistinguishable. */
+              <p className="mt-1">
+                {t(
+                  `폴리곤 ${selected.polygon.vertices.length}점으로 질의했고, 위 사각형(폴리곤의 바운딩 박스)이 경계 판정 기준입니다.`,
+                  `Queried as a ${selected.polygon.vertices.length}-corner polygon; the rectangle above is its bounding box, and that is what boundary judgment used.`,
+                  `ポリゴン ${selected.polygon.vertices.length} 点で問い合わせ、上の矩形（ポリゴンのバウンディングボックス）が境界判定の基準です。`,
+                )}
+              </p>
+            )}
             {!isTerminal(selected.status) && (
               <p className="mt-1">
                 {t("진행", "Phase", "進行")}: {selected.phase} ({Math.round(selected.progress * 100)}%)
@@ -751,14 +984,17 @@ export default function GenesisRegionPage() {
         )}
       </Panel>
 
-      {/* What of the 0.4 mockup is deliberately NOT here. Stated on the page
-        * rather than only in a commit message: a consultant who read the mockup
-        * would otherwise look for the lasso and conclude it is broken. */}
+      {/* What of the 0.4 mockup is deliberately NOT here, and what no longer is.
+        * Stated on the page rather than only in a commit message: a consultant who
+        * read the mockup would otherwise look for a feature and conclude the page
+        * is broken. The lasso left this list when it shipped; the two that remain
+        * have the same reason they always had, which is why the reason is repeated
+        * rather than replaced. */}
       <p className="rounded-xl border border-dashed border-slate-300 px-5 py-4 text-[11px] leading-relaxed text-slate-500">
         {t(
-          "이번 단계에서는 사각형 영역만 지원합니다. 목업의 폴리곤 라쏘·도로 개별 선택·블록 제외(공유 벽 규칙)는 의도적으로 다음 단계로 미뤘습니다 — 셋 다 이미 뽑아낸 도로망의 기하가 있어야 동작하므로, 추출 위에 얹는 기능이지 추출을 대신하는 기능이 아닙니다.",
-          "This step supports a rectangular region only. The mockup's polygon lasso, per-road selection and block exclusion (the shared-wall rule) are deliberately deferred: all three act on the geometry of a network that does not exist until after an extract has been fetched and drafted, so they sit on top of this step rather than replacing it.",
-          "この段階では矩形の領域のみ対応します。モックアップのポリゴン投げ縄・道路ごとの選択・ブロック除外（共有壁ルール）は意図的に次段階へ送りました — いずれも抽出後の道路網の幾何が必要で、抽出の上に載る機能であり、抽出の代わりではありません。",
+          "폴리곤 라쏘는 이제 지원합니다(경계 판정은 바운딩 박스 — 위 설명 참고). 목업의 도로 개별 선택·블록 제외(공유 벽 규칙)는 의도적으로 다음 단계로 미뤘습니다 — 둘 다 이미 뽑아낸 도로망의 기하가 있어야 동작하므로, 추출 위에 얹는 기능이지 추출을 대신하는 기능이 아닙니다. 라쏘는 그 기하가 필요하지 않아 먼저 나왔습니다.",
+          "The polygon lasso is now supported (boundary judgment uses its bounding box — see above). The mockup's per-road selection and block exclusion (the shared-wall rule) are deliberately deferred: both act on the geometry of a network that does not exist until after an extract has been fetched and drafted, so they sit on top of this step rather than replacing it. The lasso needed none of that geometry, which is why it shipped first.",
+          "ポリゴン投げ縄は対応しました（境界判定はバウンディングボックス — 上記参照）。モックアップの道路ごとの選択・ブロック除外（共有壁ルール）は意図的に次段階へ送りました — いずれも抽出後の道路網の幾何が必要で、抽出の上に載る機能であり、抽出の代わりではありません。投げ縄はその幾何を必要としないため先に出しました。",
         )}
       </p>
     </div>

@@ -5764,3 +5764,56 @@ consistency, not gate-worthiness) and now written down. The xlsx decompression-b
 (openpyxl shared-strings expansion, generic to every workbook consumer in the app) was split
 into its own chip (`task_d1d0d66f`). Suite 4421 / 1 (env RAG) / 1 skip; contract 49/49;
 typecheck clean.
+
+## 2026-08-13 — the lasso lands on a real basemap; the builder dies at the finish line and the audit replaces its report
+
+**What.** The 0.4 mockup's polygon lasso is real, as stage (a) of the user's decided boundary
+policy (trim at the requested region, ignore the overhang; polygon-native judgment is the
+stated end goal): a new `RegionPolygon` in `osm_fetch` (≥3 vertices, ≤64, finite/in-range,
+antimeridian, self-intersection, zero-area — each a named refusal), an Overpass
+`(poly:"…")` branch replacing the query's single region token (ring open, Overpass closes
+it), vertex-projected measurement (shoelace area shown as the polygon's own; the byte
+estimate stays on the bbox product, conservative and labeled), and provenance that carries
+`requested_polygon` BESIDE the derived-bbox `requested_region` — so every 85b4bb2 bbox
+consumer works unchanged, and rectangle fetches stay byte-identical. Downstream, the five
+rectangle kernels are untouched: the extract records `requested_polygon` (through all three
+reconstruction sites + the field sentinel), the boundary ladder's rung-1 label becomes
+"bounding box of the requested polygon (fetch provenance)", and the compliance report's
+Model-boundary section states in ko/en/ja that judgment used the polygon's bounding box and
+notch terminals read as interior. The UI: a 사각형|폴리곤 mode toggle on the region page and
+a new `RegionLassoMap` — raw-WGS84 drawing on the same CARTO dark tiles four components
+already use (no Helmert, no georeference claim; `RegionGauge`'s stale "this app has no
+basemap tiles" comment corrected to the accurate distinction), click adds a corner,
+double-click closes, the server's derived bbox drawn as a dashed rectangle with the honesty
+note on screen.
+
+**Process fact, recorded because the protocol worked:** the opus builder finished the entire
+change and DIED before writing its report (output file 0 bytes; last file write 23:26). The
+tree was audited instead of rebuilt — full suite, isolated files, typecheck, contract all
+reproduced green — and the adversarial pass was widened to double as the lost report: its
+file-by-file inventory now stands in for the builder's own.
+
+**Verification: everything conforms; nothing refuted.** 3,000 independently generated simple
+polygons produced zero self-intersection false positives (and true positives on bowtie and
+pentagram shapes); the poly ring convention was checked against Overpass's own documentation;
+rectangle `build_query` output is character-identical to pre-change; an independent
+end-to-end harness proved a polygon fetch and a rectangle fetch of the same bbox produce
+byte-identical trim geometry, and the rendered report carries the disclosure in all three
+languages. Three residual findings, all fixed by the controller before commit: (1) MEDIUM —
+the 220 ms double-click grace window loses the race when the OS double-click interval is
+longer (Windows defaults to 500 ms), committing a stray corner at the close point; fixed
+with a second net (a corner committed within 900 ms and 12 px of the double-click position
+is discarded before the ring closes — `onDiscardLastVertex`), since raising the grace alone
+would either lag the drawing or still be a timing guess. (2) LOW — the polygon vertex cap
+gated the extract button even in rectangle mode (now scoped to the mode). (3) LOW —
+`_requested_bbox_of` was left orphaned beside the new dual reader; it is now a thin view
+over `_requested_region_of` so the two cannot drift. Suite 4451 / 1 (env RAG) / 1 skip;
+contract 50/50; typecheck clean.
+
+**Named limits.** Boundary judgment is the polygon's BOUNDING BOX, disclosed everywhere it
+matters — polygon-native judgment (the user's stated end goal) is the follow-up unit, to be
+scheduled on measurement of how much real lassos' notches misclassify. The stray-corner net
+is reasoned and pinned by review, not reproduced in a live browser (the in-pane browser
+remains unreliable in this session; the B4 demo is the first human look at the lasso). The
+mockup's per-road toggle and block exclusion stay deferred with their original reason on
+screen.

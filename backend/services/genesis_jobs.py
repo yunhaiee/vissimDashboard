@@ -147,7 +147,11 @@ from services.genesis.gate import (
     render_report,
     run_gate,
 )
-from services.genesis.osm import parse_osm_file, requested_bbox_from_provenance
+from services.genesis.osm import (
+    parse_osm_file,
+    requested_bbox_from_provenance,
+    requested_polygon_from_provenance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1188,11 +1192,37 @@ def _requested_bbox_of(osm_path: Path) -> tuple[float, float, float, float] | No
     # import here would be a cycle.
     from services.osm_fetch import read_provenance  # noqa: PLC0415
 
+    # Thin view over ``_requested_region_of`` — ONE reader owns the file I/O and
+    # the OSError posture, so the two cannot drift apart (they briefly did: this
+    # function's body duplicated the read until the 2026-08-13 polygon review
+    # flagged it orphaned).
+    return _requested_region_of(osm_path)[0]
+
+
+def _requested_region_of(
+    osm_path: Path,
+) -> tuple[
+    tuple[float, float, float, float] | None, tuple[tuple[float, float], ...] | None
+]:
+    """The rectangle AND the lasso this job's ``.osm`` was fetched for.
+
+    One read of the file for both, because the provenance comment is read out of
+    the whole document and doing it twice would double the I/O of every job for a
+    fact that arrives in the same JSON blob. The rectangle is the load-bearing
+    one (it moves geometry, through the trim and the boundary ladder); the ring is
+    carried for the LABEL and the artifact metadata — see
+    ``osm.OsmExtract.requested_polygon``.
+    """
+    from services.osm_fetch import read_provenance  # noqa: PLC0415
+
     try:
         provenance = read_provenance(osm_path.read_bytes())
     except OSError:  # pragma: no cover - the parse below reports the same file
-        return None
-    return requested_bbox_from_provenance(provenance)
+        return None, None
+    return (
+        requested_bbox_from_provenance(provenance),
+        requested_polygon_from_provenance(provenance),
+    )
 
 
 def _run_genesis_job_locked(job_id: str) -> dict[str, Any]:
@@ -1204,10 +1234,12 @@ def _run_genesis_job_locked(job_id: str) -> dict[str, Any]:
         osm_path = job_dir(job_id) / str(record["source_osm"]["stored_as"])
         exclude_service = bool((record.get("options") or {}).get("exclude_service"))
 
+        requested_bbox, requested_polygon = _requested_region_of(osm_path)
         extract = parse_osm_file(
             osm_path,
             exclude_service=exclude_service,
-            requested_bbox=_requested_bbox_of(osm_path),
+            requested_bbox=requested_bbox,
+            requested_polygon=requested_polygon,
         )
         if extract.refused:
             raise GenesisRefused(

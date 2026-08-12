@@ -692,6 +692,34 @@ _REPORT_TEXT: dict[str, dict[str, str]] = {
         "en": "Model boundary (which rectangle was the edge, and what was cut)",
         "ja": "モデル境界 (どの矩形を境界としたか・way の切り詰め)",
     },
+    "boundary_polygon_note": {
+        # ONE sentence, not a warning block. The gap is real (a terminal between
+        # the ring and its bounding box is called interior) and it is uncommon;
+        # a paragraph of alarm around it would bury the ordinary case, which is
+        # the same trim and the same band the rectangle road has always used.
+        "ko": (
+            "이 영역은 폴리곤(라쏘)으로 그렸지만, 경계 판정은 그 폴리곤의 "
+            "바운딩 박스(위 requested_bbox_wgs84)를 기준으로 했습니다 — 잘라내기와 "
+            "경계 띠는 축에 정렬된 사각형 연산이기 때문입니다. 따라서 박스 안이면서 "
+            "폴리곤 밖에 있는 도로 끝점은 경계가 아니라 내부 막다른 길로 분류됩니다. "
+            "질의 자체는 폴리곤으로 보냈습니다(requested_polygon_wgs84)"
+        ),
+        "en": (
+            "This region was drawn as a POLYGON (lasso), but the boundary was judged "
+            "against that polygon's BOUNDING BOX (requested_bbox_wgs84 above), because "
+            "the tail trim and the boundary band are axis-aligned rectangle arithmetic. "
+            "A way terminal inside the box but outside the polygon is therefore "
+            "classified as an interior dead end, not as the model boundary. The query "
+            "itself was the polygon (requested_polygon_wgs84)"
+        ),
+        "ja": (
+            "この領域はポリゴン(投げ縄)で描かれましたが、境界の判定はそのポリゴンの"
+            "バウンディングボックス(上記 requested_bbox_wgs84)に対して行いました — "
+            "切り詰めと境界帯が軸に沿った矩形の演算であるためです。したがって、ボックス内で"
+            "ポリゴン外にある way の端点は、モデル境界ではなく内部の行き止まりとして"
+            "分類されます。問い合わせ自体はポリゴンで送っています(requested_polygon_wgs84)"
+        ),
+    },
     "boundary_trim_note": {
         "ko": (
             "Overpass는 way를 통째로 돌려주므로 요청한 사각형 밖으로 뻗은 꼬리는 "
@@ -1095,6 +1123,14 @@ class DraftNetwork(BaseModel):
                     f"- {key}: "
                     + ", ".join(f"{k}={v}" for k, v in sorted(region.items()))
                 )
+        ring = boundary.get("requested_polygon_wgs84")
+        if ring:
+            out.append(
+                f"- requested_polygon_wgs84: {len(ring)} vertices — "
+                + " ".join(f"({v['lat']},{v['lon']})" for v in ring[:8])
+                + (f" (+{len(ring) - 8})" if len(ring) > 8 else "")
+            )
+            out.append(f"- {pick_text(text['boundary_polygon_note'], language)}")
         trims = boundary.get("way_trims", [])
         if trims:
             out.append(f"- {pick_text(text['boundary_trim_note'], language)}")
@@ -2718,9 +2754,17 @@ def _boundary_metadata(extract: OsmExtract) -> dict:
         }
 
     trims = [trim.as_dict() for trim in extract.way_trims]
+    polygon = extract.requested_polygon
     return {
         "source": boundary_source(extract),
         "requested_bbox_wgs84": as_region(extract.requested_bbox),
+        # The LASSO, when there was one — beside the rectangle, never instead of
+        # it. ``requested_bbox_wgs84`` above is the box this build was judged
+        # against; this is the shape it was fetched with, and a reader holding only
+        # the artifact can now see that they are not the same shape.
+        "requested_polygon_wgs84": (
+            [{"lat": lat, "lon": lon} for lat, lon in polygon] if polygon else None
+        ),
         "declared_bounds_wgs84": as_region(extract.declared_bounds),
         "way_trims": trims,
         "way_trims_by_reason": _count_by(trim["reason"] for trim in trims),
@@ -2775,7 +2819,12 @@ def _assumptions() -> list[GeneratorAssumption]:
                 "<bounds>, else the extent of the kept geometry. Overpass returns WHOLE ways, "
                 "so that last one is set by the longest tail hanging out of the study area "
                 "and is not the study area; where a requested bbox exists the overhanging "
-                "tails are cut off at it and the cut terminals sit exactly ON it. The band is "
+                "tails are cut off at it and the cut terminals sit exactly ON it. When the "
+                "region was drawn as a POLYGON the rectangle used is that polygon's BOUNDING "
+                "BOX (the trim and this band are axis-aligned rectangle arithmetic), so a "
+                "terminal inside the box but outside the polygon is an interior dead end and "
+                "not the model boundary; the boundary section names the polygon where one "
+                "exists. The band is "
                 "project.MAX_PLANIMETRIC_ERROR_M, the projection's own budget, i.e. the "
                 "smallest distance distinguishable in this frame at all."
             ),

@@ -156,6 +156,25 @@ def _requested_bbox(osm: Path) -> tuple[float, float, float, float] | None:
         return None
 
 
+def _requested_polygon(osm: Path) -> tuple[tuple[float, float], ...] | None:
+    """The LASSO the ``.osm`` was fetched for, when it was fetched as one.
+
+    It moves no geometry — the trim and the boundary rectangle work on the bbox
+    above — but it decides the boundary LABEL this probe prints
+    (``connectivity.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX``). A probe that
+    skipped it would report a different boundary source for the same file than the
+    build did, which is exactly the split brain the function above exists to
+    prevent, one field over.
+    """
+    from services.osm_fetch import read_provenance  # noqa: PLC0415
+    from services.genesis.osm import requested_polygon_from_provenance  # noqa: PLC0415
+
+    try:
+        return requested_polygon_from_provenance(read_provenance(osm.read_bytes()))
+    except OSError:  # pragma: no cover - the parse below reports the same file
+        return None
+
+
 def _classify_with_osm(inpx: Path, osm: Path, *, use_provenance_bbox: bool = True) -> dict:
     """Read the generator's own dangling-end census off a regenerated draft.
 
@@ -169,7 +188,8 @@ def _classify_with_osm(inpx: Path, osm: Path, *, use_provenance_bbox: bool = Tru
     from services.genesis.osm import parse_osm_file  # noqa: PLC0415
 
     bbox = _requested_bbox(osm) if use_provenance_bbox else None
-    extract = parse_osm_file(osm, requested_bbox=bbox)
+    polygon = _requested_polygon(osm) if use_provenance_bbox else None
+    extract = parse_osm_file(osm, requested_bbox=bbox, requested_polygon=polygon)
     if extract.refused:
         return {"error": "; ".join(f"{r.code}: {r.message}" for r in extract.refusals)}
     draft = build_draft(extract, name=inpx.stem)
@@ -204,6 +224,7 @@ def _classify_with_osm(inpx: Path, osm: Path, *, use_provenance_bbox: bool = Tru
             "(draft.metadata['connectivity']['dangling_approaches'])"
         ),
         "requested_bbox": list(bbox) if bbox else None,
+        "requested_polygon_vertices": len(polygon) if polygon else None,
         "boundary": draft.metadata.get("boundary", {}).get("source", ""),
         "file_matches_regeneration": mismatch is None,
         **({"warning": mismatch} if mismatch else {}),

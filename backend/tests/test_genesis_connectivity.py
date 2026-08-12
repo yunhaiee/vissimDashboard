@@ -2669,6 +2669,122 @@ def test_every_trim_reaches_the_draft_metadata_and_the_compliance_report(
         assert "way 201" in rendered
 
 
+#: An L drawn inside :data:`BBOX`: the full rectangle with its north-west
+#: quadrant cut away. Its BOUNDING BOX is exactly ``BBOX``, which is what makes it
+#: the right fixture for the gap under test — the trim, the boundary rectangle and
+#: every dead-end classification must come out IDENTICAL to the rectangle build,
+#: and only the LABEL (and the disclosure it carries) may differ.
+POLYGON_RING = (
+    (BBOX[0], BBOX[1]),
+    (BBOX[0], BBOX[3]),
+    (BBOX[2], BBOX[3]),
+    (BBOX[2], LON0),
+    (LAT0, LON0),
+    (LAT0, BBOX[1]),
+)
+
+
+def test_a_polygon_region_is_judged_on_its_bounding_box_and_says_so(tmp_path: Path):
+    """The disclosed gap of the lasso, asserted rather than described.
+
+    A polygon fetch writes ``requested_region`` as the ring's own bounding box
+    (``services/osm_fetch.py``) plus ``requested_polygon`` beside it. Everything
+    geometric downstream reads the FIRST one, so:
+
+    * the boundary rectangle, the trims and every classification are **the same**
+      as the rectangle build of the same box — asserted by comparing the two
+      builds' dead ends, because a claim that nothing changed is worth more as a
+      comparison than as a sentence;
+    * the LABEL is different, and it names the bounding box as a bounding box, so
+      no reader can conclude from the artifact that the ring itself was judged;
+    * the compliance report states, in all three languages, that a terminal
+      inside the box and outside the ring is classified as interior.
+    """
+    source = _write(tmp_path, "overhang.osm", overhang_osm())
+    rectangle = build_draft(parse_osm_file(source, requested_bbox=BBOX), name="rect")
+    polygon = build_draft(
+        parse_osm_file(source, requested_bbox=BBOX, requested_polygon=POLYGON_RING),
+        name="poly",
+    )
+
+    assert (
+        polygon.metadata["boundary"]["source"]
+        == conn.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX
+    )
+    assert (
+        rectangle.metadata["boundary"]["source"] == conn.BOUNDARY_SOURCE_REQUESTED_BBOX
+    )
+    assert conn.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX != conn.BOUNDARY_SOURCE_REQUESTED_BBOX
+
+    # The rectangle it was judged against is the ring's bounding box, and the ring
+    # is recorded whole.
+    assert polygon.metadata["boundary"]["requested_bbox_wgs84"] == {
+        "min_lat": BBOX[0],
+        "min_lon": BBOX[1],
+        "max_lat": BBOX[2],
+        "max_lon": BBOX[3],
+    }
+    assert polygon.metadata["boundary"]["requested_polygon_wgs84"] == [
+        {"lat": lat, "lon": lon} for lat, lon in POLYGON_RING
+    ]
+    # A rectangle build must not acquire the key at all.
+    assert rectangle.metadata["boundary"]["requested_polygon_wgs84"] is None
+
+    # NOTHING geometric moved. Same trims, same metres cut, same dead ends —
+    # asserted as a comparison of the two builds, because "the polygon changes no
+    # geometry" is a claim about two artifacts and not about one.
+    assert (
+        polygon.metadata["boundary"]["way_trims"]
+        == rectangle.metadata["boundary"]["way_trims"]
+    )
+    assert (
+        polygon.metadata["boundary"]["metres_cut_total"]
+        == rectangle.metadata["boundary"]["metres_cut_total"]
+    )
+    assert (
+        polygon.metadata["connectivity"]["dead_ends_by_reason"]
+        == rectangle.metadata["connectivity"]["dead_ends_by_reason"]
+    )
+    ends_of = lambda extract: sorted(  # noqa: E731 - one expression, used twice
+        (end.node_id, end.reason) for end in conn.dead_ends(conn.merge_junction_nodes(extract)[0])
+    )
+    assert ends_of(
+        parse_osm_file(source, requested_bbox=BBOX, requested_polygon=POLYGON_RING)
+    ) == ends_of(parse_osm_file(source, requested_bbox=BBOX))
+
+    note = draft_module._REPORT_TEXT["boundary_polygon_note"]
+    for language in ("ko", "en", "ja"):
+        rendered = polygon.render_compliance(language)
+        assert conn.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX in rendered
+        assert "requested_polygon_wgs84" in rendered
+        # The one honest sentence, in THIS language — a ko fallback here would be
+        # the disclosure going missing for the reader it matters to.
+        assert note[language] in rendered
+        assert note[language] not in rectangle.render_compliance(language)
+    assert "requested_polygon_wgs84" not in rectangle.render_compliance("ko")
+
+
+def test_the_boundary_band_assumption_states_the_polygon_rule_too(tmp_path: Path):
+    """The published assumption is where a reader looks for the boundary RULE.
+
+    ``BOUNDARY_BAND_M``'s basis already named the three rungs; a lasso adds a
+    fourth thing to know — the rectangle used is the ring's bounding box — and an
+    assumption that omitted it would be the one place in the artifact that still
+    implied otherwise.
+    """
+    draft = build_draft(
+        parse_osm_file(
+            _write(tmp_path, "overhang.osm", overhang_osm()),
+            requested_bbox=BBOX,
+            requested_polygon=POLYGON_RING,
+        ),
+        name="poly",
+    )
+    basis = next(a for a in draft.assumptions if a.id == "BOUNDARY_BAND_M").basis
+    assert "POLYGON" in basis and "BOUNDING BOX" in basis
+    assert "interior dead end" in basis
+
+
 def test_the_requested_bbox_survives_both_extract_reconstructions(tmp_path: Path):
     """The boundary must not MOVE between isolation rounds.
 
@@ -2679,15 +2795,22 @@ def test_the_requested_bbox_survives_both_extract_reconstructions(tmp_path: Path
     terminal could be a boundary in round 0 and a cul-de-sac in round 1.
     """
     extract = parse_osm_file(
-        _write(tmp_path, "overhang.osm", overhang_osm()), requested_bbox=BBOX
+        _write(tmp_path, "overhang.osm", overhang_osm()),
+        requested_bbox=BBOX,
+        requested_polygon=POLYGON_RING,
     )
     merged, _report = conn.merge_junction_nodes(extract)
     assert merged.requested_bbox == BBOX
+    # And the ring beside it: losing THAT does not move the boundary, it makes the
+    # label stop saying the boundary is a bounding box of something else.
+    assert merged.requested_polygon == POLYGON_RING
+    assert conn.boundary_source(merged) == conn.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX
 
     reduced = extract.without_ways(
         [202], reason=SKIP_ISOLATED_ZONE, detail_for=lambda way_id: f"way {way_id}"
     )
     assert reduced.requested_bbox == BBOX
+    assert reduced.requested_polygon == POLYGON_RING
 
 
 def test_every_extract_reconstruction_carries_every_field_the_dataclass_declares(
@@ -2705,7 +2828,10 @@ def test_every_extract_reconstruction_carries_every_field_the_dataclass_declares
     consulted the empty map). ``requested_bbox`` would have been the second such
     field and would NOT have been harmless, and ``synthesized_node_ids`` the
     third — losing that one un-refuses the merge that welds a boundary marker
-    into a junction.
+    into a junction. ``requested_polygon`` is the fourth: it changes no geometry
+    at all, so losing it breaks nothing a test of behaviour would catch — it just
+    makes the build's own boundary label claim the polygon was judged when its
+    bounding box was.
 
     So this test asks the dataclass what its fields are, fails if the sentinel
     below does not set every one of them, and fails again if any transform loses
@@ -2754,6 +2880,16 @@ def test_every_extract_reconstruction_carries_every_field_the_dataclass_declares
         "non_drivable_node_ids": {7},
         "non_drivable_node_highways": {7: {"footway"}},
         "requested_bbox": (LAT0 - 0.02, LON0 - 0.02, LAT0 + 0.02, LON0 + 0.02),
+        # The lasso the region was drawn as. It moves no geometry (the trim cuts
+        # against the RECTANGLE above), but losing it would silently downgrade the
+        # boundary label from "bounding box of the requested polygon" back to
+        # "requested bbox" mid-build — i.e. the build would start claiming it
+        # judged the shape the user actually drew.
+        "requested_polygon": (
+            (LAT0 - 0.02, LON0 - 0.02),
+            (LAT0 - 0.02, LON0 + 0.02),
+            (LAT0 + 0.02, LON0 + 0.02),
+        ),
         "way_trims": [
             WayTrim(101, "secondary", osm_module.TRIM_TAIL_CUT, "start", 1, 12.5, 555, "s")
         ],

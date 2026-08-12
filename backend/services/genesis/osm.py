@@ -527,6 +527,24 @@ class OsmExtract:
     #: any file that was not fetched by this app — an uploaded ``.osm`` has no
     #: request to remember, and the ladder falls back exactly as before.
     requested_bbox: tuple[float, float, float, float] | None = None
+    #: The LASSO, as ``((lat, lon), …)``, when the region was drawn as a polygon
+    #: rather than as a rectangle — and ``None`` for every rectangle fetch and
+    #: every uploaded file. Set alongside :attr:`requested_bbox`, never instead of
+    #: it: for a polygon fetch that bbox is the polygon's OWN bounding box
+    #: (``osm_fetch.RegionPolygon.bounding_box``), which is what the trim and the
+    #: boundary ladder are actually held to.
+    #:
+    #: **Nothing in this module consumes it, and that is the honest state of the
+    #: unit.** The trim is Liang–Barsky against axis-aligned edges and the
+    #: boundary rectangle is a rectangle; generalising either to an arbitrary ring
+    #: is a separate piece of work. This field exists so the difference is
+    #: RECORDED — ``connectivity.boundary_source`` names the rectangle as "the
+    #: bounding box of the requested polygon", the compliance report says
+    #: terminals in bbox-minus-polygon are classified as interior, and
+    #: ``draft._boundary_metadata`` carries the ring into the artifact. A reader
+    #: can therefore see exactly which shape was asked for and which shape was
+    #: judged, instead of assuming they are the same one.
+    requested_polygon: tuple[tuple[float, float], ...] | None = None
     #: Every decision :func:`trim_ways_to_requested_bbox` took, cuts and
     #: deliberate non-cuts alike. Empty whenever :attr:`requested_bbox` is None.
     way_trims: list[WayTrim] = field(default_factory=list)
@@ -656,6 +674,7 @@ class OsmExtract:
             # forgot it would silently fall back to the hull of the SHRUNKEN
             # geometry — a different boundary on every isolation round.
             requested_bbox=self.requested_bbox,
+            requested_polygon=self.requested_polygon,
             way_trims=list(self.way_trims),
             # Not filtered to the surviving nodes: a node this generator
             # synthesized stays a synthesized node for as long as it is
@@ -913,6 +932,7 @@ def parse_osm_file(
     *,
     exclude_service: bool = False,
     requested_bbox: tuple[float, float, float, float] | None = None,
+    requested_polygon: tuple[tuple[float, float], ...] | None = None,
 ) -> OsmExtract:
     """Read one local ``.osm`` file. Reports, never raises.
 
@@ -937,9 +957,21 @@ def parse_osm_file(
     (jobs, tools, tests) goes through. ``None`` — an uploaded file, a fixture —
     leaves every downstream behaviour byte-identical to what it was before this
     parameter existed.
+
+    ``requested_polygon`` is the LASSO the region was drawn as, when it was drawn
+    as one, and it is likewise only RECORDED (:attr:`OsmExtract.requested_polygon`).
+    It changes no geometry at all — not even through the trim, which cuts against
+    ``requested_bbox`` (for a polygon fetch, the ring's own bounding box). Its
+    whole job is to make the boundary ladder's label, the compliance report and
+    the draft metadata say WHICH shape was judged, so the difference between the
+    shape asked for and the shape judged is visible instead of assumed away.
     """
     file_path = Path(path)
-    extract = OsmExtract(source=str(file_path), requested_bbox=requested_bbox)
+    extract = OsmExtract(
+        source=str(file_path),
+        requested_bbox=requested_bbox,
+        requested_polygon=requested_polygon,
+    )
 
     if not file_path.exists() or file_path.is_dir():
         extract.refusals.append(
@@ -1313,6 +1345,13 @@ def requested_bbox_from_provenance(
     ordered region — an unannotated upload, a truncated comment, a
     hand-edited file. A caller with no window falls back to the behaviour it had
     before there was one.
+
+    **Unchanged by polygon fetches, deliberately.** A lasso's provenance writes
+    ``requested_region`` as the ring's OWN bounding box (``osm_fetch``), so this
+    function keeps answering the one question the trim and the boundary ladder
+    ask — "which rectangle is the study area?" — with the rectangle they are
+    actually held to. The ring travels beside it and is read by
+    :func:`requested_polygon_from_provenance`.
     """
     if not isinstance(provenance, dict):
         return None
@@ -1332,6 +1371,50 @@ def requested_bbox_from_provenance(
     if south >= north or west >= east:
         return None
     return south, west, north, east
+
+
+def requested_polygon_from_provenance(
+    provenance: dict | None,
+) -> tuple[tuple[float, float], ...] | None:
+    """``{"requested_polygon": {"vertices": [[lat, lon], …]}}`` → a vertex tuple.
+
+    The sibling of :func:`requested_bbox_from_provenance`, and deliberately a
+    SEPARATE function rather than a second return value: the bbox reader is on the
+    path of every build (its answer moves geometry), while this one feeds labels
+    and metadata only. Keeping them apart means a caller cannot accidentally make
+    the ring load-bearing by unpacking a tuple.
+
+    ``None`` for anything that is not at least three finite in-range vertices —
+    a rectangle fetch (which writes no such key at all), an unannotated upload, a
+    truncated comment. The ring is NOT re-validated for self-intersection here:
+    ``osm_fetch.RegionPolygon`` refused that before the fetch happened, and a
+    reader of a stored document is recovering what was asked for, not re-deciding
+    whether to allow it.
+    """
+    if not isinstance(provenance, dict):
+        return None
+    payload = provenance.get("requested_polygon")
+    if isinstance(payload, dict):
+        payload = payload.get("vertices")
+    if not isinstance(payload, (list, tuple)):
+        return None
+    vertices: list[tuple[float, float]] = []
+    for pair in payload:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            return None
+        try:
+            lat = float(pair[0])
+            lon = float(pair[1])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(lat) or not math.isfinite(lon):
+            return None
+        if not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
+            return None
+        vertices.append((lat, lon))
+    if len(vertices) < 3:
+        return None
+    return tuple(vertices)
 
 
 def _inside_bbox(lat: float, lon: float, bbox: tuple[float, float, float, float]) -> bool:
@@ -1752,6 +1835,9 @@ def trim_ways_to_requested_bbox(extract: OsmExtract) -> OsmExtract:
             nid: set(values) for nid, values in extract.non_drivable_node_highways.items()
         },
         requested_bbox=extract.requested_bbox,
+        # Carried, never consumed: this transform cuts tails at the RECTANGLE.
+        # The ring is here so the label the boundary ladder prints can say so.
+        requested_polygon=extract.requested_polygon,
         way_trims=list(extract.way_trims) + trims,
         synthesized_node_ids=extract.synthesized_node_ids
         | {nid for nid in synthesized_at.values() if nid in referenced},

@@ -63,6 +63,27 @@ that same peak density is ≈5.8 MB, a third of the cap. A region that genuinely
 exceeds it is refused with its measured byte count and told to shrink — which is
 the honest answer, not a truncation.
 
+Two shapes a region may be, and the one that is judged
+------------------------------------------------------
+A region is either a rectangle (:class:`BoundingBox`) or a lasso
+(:class:`RegionPolygon`), and the choice reaches exactly one place in the query:
+Overpass's own ``(poly:…)`` filter stands where the bbox filter would
+(:func:`build_query`). The lasso is **stage (a)** of the 0.4 mockup's region
+picker, and its boundary is disclosed rather than implied:
+
+* the QUERY is the polygon — Overpass returns the ways the lasso selects, not the
+  ways its bounding box would;
+* the **boundary JUDGMENT is the polygon's BOUNDING BOX**. Everything downstream
+  of the staging door — ``osm.trim_ways_to_requested_bbox``, the boundary
+  ladder's first rung in ``connectivity._boundary_rectangle``, and therefore
+  every dead-end classification — is rectangle arithmetic (Liang–Barsky on
+  axis-aligned edges), and generalising it to an arbitrary ring is a separate
+  unit with its own adversarial rounds. So ``requested_region`` in the provenance
+  is the DERIVED rectangle for a polygon fetch, ``requested_polygon`` records the
+  ring beside it, and the compliance report says in one sentence that a terminal
+  inside bbox-minus-polygon is classified as interior. A gap named on screen and
+  in the artifact is a gap; a gap left for a reader to discover is a lie.
+
 Discipline on the one outbound call
 -----------------------------------
 This is the only place in the backend that reaches the public internet for
@@ -446,6 +467,317 @@ class BoundingBox:
             ) from exc
 
 
+#: The most vertices one lasso may carry. Not a guess about Overpass (its
+#: ``poly:`` filter takes far more) — it is the number past which the O(n²)
+#: self-intersection test below stops being free, and past which a human is no
+#: longer drawing a study area but tracing a coastline. Refused BY NAME with the
+#: count, because a silently-decimated polygon is a study area nobody asked for.
+MAX_POLYGON_VERTICES = 64
+
+
+def _orient(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> int:
+    """Sign of the cross product (b−a)×(c−a): −1, 0 or +1.
+
+    Coordinates are (lat, lon) throughout this module; the sign convention that
+    falls out of that is irrelevant here because only the AGREEMENT of two signs
+    is ever read, never their direction.
+    """
+    value = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    if value > 0.0:
+        return 1
+    if value < 0.0:
+        return -1
+    return 0
+
+
+def _segments_cross(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+    p4: tuple[float, float],
+) -> bool:
+    """Do the two segments meet anywhere? The mockup's own orientation test.
+
+    ``docs/product/mockups/region-selection-mockup.html`` (``segX``) decides the
+    same question in the browser with the same four orientations, and this is
+    deliberately the same test rather than a second opinion — a polygon the
+    mockup's geometry calls self-crossing and this one does not is a lasso that
+    draws one thing and fetches another.
+
+    Collinear overlap is checked separately (:func:`_segments_overlap`): four
+    zero orientations satisfy no strict inequality, so an edge doubling back
+    along its neighbour would slip through this test alone.
+    """
+    o1 = _orient(p1, p2, p3)
+    o2 = _orient(p1, p2, p4)
+    o3 = _orient(p3, p4, p1)
+    o4 = _orient(p3, p4, p2)
+    return o1 != o2 and o3 != o4
+
+
+def _segments_overlap(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+    p4: tuple[float, float],
+) -> bool:
+    """Are the two segments collinear AND sharing more than a single point?
+
+    Two adjacent polygon edges are collinear all the time (a redundant vertex on
+    a straight run) and that is legal; what is not is an edge that runs BACK over
+    its neighbour, which encloses no area on that stretch and would make the
+    inside/outside answer depend on which winding rule the reader used.
+    Projected onto whichever axis the first segment spans further, so a
+    near-vertical run is not compared through a zero denominator.
+    """
+    if any(_orient(p1, p2, point) != 0 for point in (p3, p4)):
+        return False
+    axis = 0 if abs(p2[0] - p1[0]) >= abs(p2[1] - p1[1]) else 1
+    a_low, a_high = sorted((p1[axis], p2[axis]))
+    b_low, b_high = sorted((p3[axis], p4[axis]))
+    return min(a_high, b_high) - max(a_low, b_low) > 0.0
+
+
+@dataclass(frozen=True)
+class RegionPolygon:
+    """A closed WGS84 ring, in (lat, lon) degrees — the lasso, stage (a).
+
+    Validated on construction for the same reason :class:`BoundingBox` is, and
+    then some: a ring that crosses itself has no agreed inside, and Overpass
+    would answer such a ``poly:`` filter with *something* rather than with an
+    error. Refusing it here is the only place the answer can still be "no".
+
+    **The ring is stored OPEN** (the last vertex is not the first): that is the
+    convention Overpass's ``poly:`` filter uses — it closes the ring itself — and
+    carrying one representation everywhere is what keeps the query, the shoelace
+    area and the vertex count from disagreeing by one. A caller may send the
+    closed form; :meth:`from_sequence` drops the repeat.
+
+    What this class does NOT do, stated because the gap is real and disclosed
+    everywhere it surfaces: nothing downstream of the fetch judges geometry
+    against the POLYGON. The trim and the boundary ladder act on
+    :meth:`bounding_box`, so a road inside the bbox but outside the lasso is kept
+    and its terminals are interior. See
+    ``services/genesis/connectivity.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX``.
+    """
+
+    vertices: tuple[tuple[float, float], ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.vertices, tuple) or any(
+            not isinstance(vertex, tuple) or len(vertex) != 2 for vertex in self.vertices
+        ):
+            raise OsmFetchRefused(
+                "region_polygon_invalid",
+                ["A polygon must be a sequence of [latitude, longitude] pairs."],
+            )
+        for index, (lat, lon) in enumerate(self.vertices):
+            for name, value in (("latitude", lat), ("longitude", lon)):
+                if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                    raise OsmFetchRefused(
+                        "region_polygon_invalid",
+                        [f"Vertex {index + 1}: {name}={value!r} is not a finite number."],
+                    )
+            if not -90.0 <= lat <= 90.0:
+                raise OsmFetchRefused(
+                    "region_polygon_invalid",
+                    [f"Vertex {index + 1}: latitude must be within ±90° (got {lat})."],
+                )
+            if not -180.0 <= lon <= 180.0:
+                raise OsmFetchRefused(
+                    "region_polygon_invalid",
+                    [f"Vertex {index + 1}: longitude must be within ±180° (got {lon})."],
+                )
+        if len(self.vertices) < 3:
+            raise OsmFetchRefused(
+                "region_polygon_invalid",
+                [
+                    f"A polygon needs at least 3 corners; this one has "
+                    f"{len(self.vertices)}. Two points describe a line, which encloses no area."
+                ],
+            )
+        if len(self.vertices) > MAX_POLYGON_VERTICES:
+            raise OsmFetchRefused(
+                "region_polygon_invalid",
+                [
+                    f"This polygon has {len(self.vertices)} corners, past the "
+                    f"{MAX_POLYGON_VERTICES}-corner limit. Draw the study area with fewer "
+                    "corners — a boundary traced to this detail is not what the model is "
+                    "held to, and the shape is refused rather than quietly simplified."
+                ],
+            )
+        if len(set(self.vertices)) != len(self.vertices):
+            raise OsmFetchRefused(
+                "region_polygon_invalid",
+                [
+                    "This polygon visits the same corner twice, so it pinches itself and "
+                    "has no single inside. Remove the repeated corner."
+                ],
+            )
+        lons = [lon for _lat, lon in self.vertices]
+        if max(lons) - min(lons) >= 180.0:
+            # Refused rather than wrapped, exactly as BoundingBox refuses an
+            # inverted east/west: a ring with vertices either side of ±180° is
+            # two different shapes depending on which way each edge is assumed to
+            # run, and guessing one is how a study area silently becomes the
+            # whole planet minus itself.
+            raise OsmFetchRefused(
+                "region_polygon_invalid",
+                [
+                    f"This polygon spans {max(lons) - min(lons):.1f}° of longitude. A region "
+                    "crossing the antimeridian is not supported; split it in two."
+                ],
+            )
+        # Collinearity FIRST, and self-intersection before the residual area
+        # check, because two of these three tests fire on the same shapes and only
+        # one of them says anything useful about it. A bow tie has a shoelace area
+        # of exactly zero (its lobes cancel), so an area-first order would tell
+        # somebody who drew a crossing that their polygon "lies on one straight
+        # line" — a refusal with the wrong reason is barely better than no reason.
+        if all(
+            _orient(self.vertices[0], self.vertices[1], vertex) == 0
+            for vertex in self.vertices[2:]
+        ):
+            raise OsmFetchRefused(
+                "region_polygon_invalid",
+                [
+                    "Every corner of this polygon lies on one straight line, so it encloses "
+                    "no area at all. There is nothing to fetch inside it."
+                ],
+            )
+        count = len(self.vertices)
+        for i in range(count):
+            a, b = self.vertices[i], self.vertices[(i + 1) % count]
+            for j in range(i + 1, count):
+                c, d = self.vertices[j], self.vertices[(j + 1) % count]
+                adjacent = j == i + 1 or (i == 0 and j == count - 1)
+                if _segments_overlap(a, b, c, d) or (
+                    not adjacent and _segments_cross(a, b, c, d)
+                ):
+                    raise OsmFetchRefused(
+                        "region_polygon_invalid",
+                        [
+                            f"This polygon crosses itself (edge {i + 1} meets edge {j + 1}). "
+                            "A self-intersecting ring has no agreed inside, so which roads it "
+                            "asks for would depend on the winding rule the reader happens to "
+                            "use. Redraw it without the crossing."
+                        ],
+                    )
+        if self.signed_area_deg2() == 0.0:  # pragma: no cover - residual guard
+            # Not reachable by any shape found so far: a ring that neither is
+            # collinear nor crosses itself is simple, and a simple polygon has
+            # non-zero area. Kept as a hard guarantee for everything downstream
+            # that divides by an area or measures against one.
+            raise OsmFetchRefused(
+                "region_polygon_invalid",
+                ["This polygon encloses no area at all. There is nothing to fetch inside it."],
+            )
+
+    def signed_area_deg2(self) -> float:
+        """The shoelace sum over the ring, in degree². Sign carries the winding.
+
+        Degrees, not metres, and used only for the two questions that do not care
+        about units: is the ring degenerate, and which way round is it.
+        :func:`measure_region` computes the area a human reads from the PROJECTED
+        vertices, because a degree² is a different amount of ground at every
+        latitude.
+
+        The degeneracy test built on this is EXACT (``== 0.0``), which catches
+        every ring whose corners share one latitude or one longitude — the shapes
+        a click-and-drag actually produces by accident. A ring collinear along a
+        slant is zero only up to floating-point noise and is therefore MEASURED
+        rather than refused: it comes out as a very thin region with its own area
+        on screen, which is the honest answer, where a tolerance here would be a
+        number nothing in this product derives.
+        """
+        total = 0.0
+        count = len(self.vertices)
+        for i in range(count):
+            lat_a, lon_a = self.vertices[i]
+            lat_b, lon_b = self.vertices[(i + 1) % count]
+            total += lon_a * lat_b - lon_b * lat_a
+        return total / 2.0
+
+    def bounding_box(self) -> BoundingBox:
+        """The ring's own bounding box — THE single derivation of one from the other.
+
+        Clients never send both: a polygon plus a box a caller computed itself is
+        two claims about one region that can disagree, and the disagreement would
+        surface as a study area whose boundary judgment does not match its query.
+        """
+        lats = [lat for lat, _lon in self.vertices]
+        lons = [lon for _lat, lon in self.vertices]
+        return BoundingBox(
+            south=min(lats), west=min(lons), north=max(lats), east=max(lons)
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"vertices": [[lat, lon] for lat, lon in self.vertices]}
+
+    @classmethod
+    def from_sequence(cls, payload: Any) -> "RegionPolygon":
+        """Build one from whatever arrived on the wire, refusing by name.
+
+        Accepts the closed form (last vertex repeating the first) and stores the
+        open one, so a client that closes its ring and a client that does not
+        produce the SAME polygon rather than two that differ by a vertex count.
+        """
+        if isinstance(payload, dict):
+            payload = payload.get("vertices")
+        if not isinstance(payload, (list, tuple)) or not payload:
+            raise OsmFetchRefused(
+                "region_polygon_invalid",
+                ["A polygon must be a non-empty list of [latitude, longitude] pairs."],
+            )
+        vertices: list[tuple[float, float]] = []
+        for index, raw in enumerate(payload):
+            if isinstance(raw, dict):
+                if "lat" not in raw or "lon" not in raw:
+                    raise OsmFetchRefused(
+                        "region_polygon_invalid",
+                        [f"Vertex {index + 1} is missing lat/lon."],
+                    )
+                pair: Any = (raw["lat"], raw["lon"])
+            else:
+                pair = raw
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                raise OsmFetchRefused(
+                    "region_polygon_invalid",
+                    [
+                        f"Vertex {index + 1} is not a [latitude, longitude] pair "
+                        f"({raw!r})."
+                    ],
+                )
+            try:
+                vertices.append((float(pair[0]), float(pair[1])))
+            except (TypeError, ValueError) as exc:
+                raise OsmFetchRefused(
+                    "region_polygon_invalid",
+                    [f"Vertex {index + 1} coordinates are not numbers ({exc})."],
+                ) from exc
+        if len(vertices) > 1 and vertices[0] == vertices[-1]:
+            vertices.pop()
+        return cls(vertices=tuple(vertices))
+
+
+#: Either shape a caller may ask for. Every function below that measures, queries
+#: or fetches takes this union and derives the bbox it needs through
+#: :func:`region_bbox` rather than being handed one, so there is exactly one
+#: polygon→rectangle derivation in the module.
+RequestedRegion = BoundingBox | RegionPolygon
+
+
+def region_bbox(region: RequestedRegion) -> BoundingBox:
+    """The bounding box of either shape. One line, in one place, on purpose."""
+    return region if isinstance(region, BoundingBox) else region.bounding_box()
+
+
+def region_polygon(region: RequestedRegion) -> RegionPolygon | None:
+    """The lasso, or ``None`` for a rectangle — so callers branch on data, not on
+    ``isinstance`` scattered through the module."""
+    return region if isinstance(region, RegionPolygon) else None
+
+
 @dataclass(frozen=True)
 class RegionMeasurement:
     """What a region measures, against the caps, BEFORE anything is downloaded.
@@ -477,9 +809,29 @@ class RegionMeasurement:
     within_region_cap: bool
     estimated_bytes: int
     max_response_bytes: int
+    #: The lasso, when one was drawn. ``None`` for a rectangle, and then this
+    #: measurement's dict is BYTE-IDENTICAL to what it was before polygons
+    #: existed — a rectangle fetch must not acquire new keys because a different
+    #: shape became possible.
+    polygon: RegionPolygon | None = None
+    #: The area the BYTE estimate was taken over. Equal to :attr:`area_km2` for a
+    #: rectangle; for a polygon it is the area of :attr:`bbox`, which is larger.
+    #: Deliberately the larger one — see :func:`measure_region`.
+    estimate_area_km2: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
+        extra: dict[str, Any] = {}
+        if self.polygon is not None:
+            extra["polygon"] = self.polygon.as_dict()
+            extra["polygon_vertices"] = len(self.polygon.vertices)
+            extra["estimate_area_km2"] = round(
+                self.estimate_area_km2
+                if self.estimate_area_km2 is not None
+                else self.area_km2,
+                4,
+            )
         return {
+            **extra,
             "region": self.bbox.as_dict(),
             "centre_lat": round(self.centre_lat, 6),
             "centre_lon": round(self.centre_lon, 6),
@@ -502,27 +854,61 @@ class RegionMeasurement:
         }
 
 
-def measure_region(bbox: BoundingBox) -> RegionMeasurement:
+def measure_region(region: RequestedRegion) -> RegionMeasurement:
     """Measure a region against cap 1, with no network call and no side effects.
 
     The projection is built about the region's OWN centre, exactly as
     ``draft.origin_for_bounds`` builds it about the extract's centre, so the
-    radius quoted here is the radius the draft will hold the data to.
+    radius quoted here is the radius the draft will hold the data to. For a
+    polygon that centre is the centre of its BOUNDING BOX, not its centroid: the
+    bbox is what the trim and the boundary ladder downstream are held to, and a
+    projection anchored anywhere else would quote a radius against a different
+    rectangle than the one the pipeline uses.
+
+    Three numbers differ for a polygon, and each choice is a claim:
+
+    * **width/height** are the spread of the PROJECTED VERTICES, i.e. the
+      bounding box's own extent in metres. A lasso is as wide as its widest pair
+      of corners.
+    * **half_extent_m** is the largest ``max(|x|, |y|)`` over the vertices, so
+      cap 1 binds on exactly the quantity it binds on for a rectangle: the
+      distance from the projection origin at which the 1 m planimetric budget is
+      spent. A polygon inside a rectangle can never exceed that rectangle's
+      half-extent, so a lasso is never refused where its own bbox would pass.
+    * **area_km2** is the polygon's OWN shoelace area over the projected
+      vertices — the number a human reads as "how big is my study area", and for
+      an L-shape it is strictly smaller than the bbox product.
+
+    ``estimated_bytes`` deliberately uses the BOUNDING-BOX area instead, because
+    that is the area Overpass is actually asked about: the ``poly:`` filter
+    selects fewer ways than the box would, but Overpass answers with WHOLE ways
+    and the recursed nodes of each, so the response is not proportional to the
+    polygon's area in any way this module can defend. The estimate is already
+    labelled an upper-ish bound everywhere it surfaces (see
+    :data:`DAEJEON_CBD_MEASURED_BYTES_PER_KM2` for what happens when it is not
+    conservative), and the area it was taken over is reported beside it as
+    ``estimate_area_km2`` rather than being left for a reader to infer.
     """
+    bbox = region_bbox(region)
+    polygon = region_polygon(region)
     lat0, lon0 = bbox.centre
     plane = LocalTangentPlane(lat0, lon0)
-    corners = [
-        plane.forward(bbox.south, bbox.west),
-        plane.forward(bbox.south, bbox.east),
-        plane.forward(bbox.north, bbox.west),
-        plane.forward(bbox.north, bbox.east),
-    ]
-    xs = [x for x, _ in corners]
-    ys = [y for _, y in corners]
+    if polygon is None:
+        points = [
+            plane.forward(bbox.south, bbox.west),
+            plane.forward(bbox.south, bbox.east),
+            plane.forward(bbox.north, bbox.west),
+            plane.forward(bbox.north, bbox.east),
+        ]
+    else:
+        points = [plane.forward(lat, lon) for lat, lon in polygon.vertices]
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
     width_m = max(xs) - min(xs)
     height_m = max(ys) - min(ys)
-    half_extent_m = max(max(abs(x), abs(y)) for x, y in corners)
-    area_km2 = (width_m / 1000.0) * (height_m / 1000.0)
+    half_extent_m = max(max(abs(x), abs(y)) for x, y in points)
+    bbox_area_km2 = (width_m / 1000.0) * (height_m / 1000.0)
+    area_km2 = bbox_area_km2 if polygon is None else _shoelace_area_km2(points)
     radius = plane.validity_radius_m
     return RegionMeasurement(
         bbox=bbox,
@@ -537,10 +923,24 @@ def measure_region(bbox: BoundingBox) -> RegionMeasurement:
         planimetric_error_bound_m=plane.planimetric_error_bound_m(half_extent_m),
         within_region_cap=half_extent_m <= radius,
         # PEAK, not mean -- see RegionMeasurement's docstring and the Daejeon
-        # counter-example. An estimate that is 20x light is worse than none.
-        estimated_bytes=int(area_km2 * PEAK_BYTES_PER_KM2),
+        # counter-example. An estimate that is 20x light is worse than none. Over
+        # the BOUNDING BOX for a polygon, for the reason in the docstring above.
+        estimated_bytes=int(bbox_area_km2 * PEAK_BYTES_PER_KM2),
         max_response_bytes=MAX_RESPONSE_BYTES,
+        polygon=polygon,
+        estimate_area_km2=bbox_area_km2,
     )
+
+
+def _shoelace_area_km2(points: list[tuple[float, float]]) -> float:
+    """|shoelace| over projected metres, in km². Winding-independent."""
+    total = 0.0
+    count = len(points)
+    for i in range(count):
+        x_a, y_a = points[i]
+        x_b, y_b = points[(i + 1) % count]
+        total += x_a * y_b - x_b * y_a
+    return abs(total) / 2.0 / 1_000_000.0
 
 
 def region_limits(lat: float = 0.0, lon: float = 0.0) -> dict[str, Any]:
@@ -557,6 +957,10 @@ def region_limits(lat: float = 0.0, lon: float = 0.0) -> dict[str, Any]:
         "max_response_bytes": MAX_RESPONSE_BYTES,
         "reference_bytes_per_km2": REFERENCE_BYTES_PER_KM2,
         "peak_bytes_per_km2": PEAK_BYTES_PER_KM2,
+        # Served rather than duplicated in the browser, for the same reason the
+        # radius is: a limit the UI carried its own copy of is a limit that can
+        # disagree with the one that actually refuses.
+        "max_polygon_vertices": MAX_POLYGON_VERTICES,
         "endpoint": _endpoint_for_display(),
         "query_timeout_s": OVERPASS_QUERY_TIMEOUT_S,
         "socket_timeout_s": SOCKET_TIMEOUT_S,
@@ -597,8 +1001,26 @@ def _assert_within_region_cap(measurement: RegionMeasurement) -> None:
 # ---------------------------------------------------------------------------
 
 
-def build_query(bbox: BoundingBox, *, timeout_s: int = OVERPASS_QUERY_TIMEOUT_S) -> str:
+def build_query(
+    region: RequestedRegion, *, timeout_s: int = OVERPASS_QUERY_TIMEOUT_S
+) -> str:
     """The exact Overpass QL sent, and recorded verbatim in the provenance.
+
+    **One region token, whichever shape was asked for.** A rectangle emits the
+    ordinary ``(south,west,north,east)`` bbox filter; a lasso emits
+    ``(poly:"lat lon lat lon …")`` in the SAME position on the same
+    ``way["highway"]`` statement — so there is one place in this module where the
+    region enters the query, and no way for a fetch to carry both filters or
+    neither. Coordinates are ``%.7f`` in both forms (≈1 cm, i.e. finer than any
+    decision made downstream) so the query in the provenance is a query anyone
+    can re-run character for character.
+
+    The ``poly:`` ring is written OPEN — the first vertex is NOT repeated at the
+    end — which is Overpass QL's own convention for that filter: it closes the
+    ring itself, and a repeated last vertex would add a zero-length edge to the
+    shape it is asked to close. :class:`RegionPolygon` stores the open form for
+    the same reason, so what goes into the query is the ring as validated rather
+    than a re-derived one.
 
     Two element families, and no more:
 
@@ -618,9 +1040,16 @@ def build_query(bbox: BoundingBox, *, timeout_s: int = OVERPASS_QUERY_TIMEOUT_S)
     ``out meta`` is deliberately not used: versions and changeset ids would
     inflate the response without the generator reading one of them.
     """
+    if isinstance(region, RegionPolygon):
+        ring = " ".join(f"{lat:.7f} {lon:.7f}" for lat, lon in region.vertices)
+        region_token = f'(poly:"{ring}")'
+    else:
+        region_token = (
+            f"({region.south:.7f},{region.west:.7f},{region.north:.7f},{region.east:.7f})"
+        )
     return (
         f"[out:xml][timeout:{int(timeout_s)}];\n"
-        f"way[\"highway\"]({bbox.south:.7f},{bbox.west:.7f},{bbox.north:.7f},{bbox.east:.7f})->.roads;\n"
+        f"way[\"highway\"]{region_token}->.roads;\n"
         "(\n"
         "  .roads;\n"
         "  rel(bw.roads)[\"type\"=\"restriction\"];\n"
@@ -756,7 +1185,7 @@ def _scan_osm(content: bytes) -> dict[str, Any]:
 
 
 def fetch_region(
-    bbox: BoundingBox,
+    region: RequestedRegion,
     *,
     measurement: RegionMeasurement | None = None,
 ) -> FetchedOsm:
@@ -765,11 +1194,13 @@ def fetch_region(
     Runs on a worker thread (see :func:`run_region_fetch`); nothing in a request
     handler ever calls it.
     """
-    measurement = measurement or measure_region(bbox)
+    bbox = region_bbox(region)
+    polygon = region_polygon(region)
+    measurement = measurement or measure_region(region)
     _assert_within_region_cap(measurement)
 
     endpoint = overpass_endpoint()
-    query = build_query(bbox)
+    query = build_query(region)
     body = query.encode("utf-8")
     requested_at = _now_iso()
     started = time.monotonic()
@@ -895,6 +1326,13 @@ def fetch_region(
         "source": "overpass",
         "endpoint": endpoint,
         "query": query,
+        # ALWAYS the rectangle, polygon or not: every downstream reader of this
+        # key (``services.genesis.osm.requested_bbox_from_provenance`` → the trim
+        # → the boundary ladder's first rung) asks it one question — "which
+        # rectangle is the study area?" — and for a lasso the honest answer is
+        # the lasso's bounding box, because that is what those readers actually
+        # judge geometry against. The lasso itself is recorded BESIDE it under
+        # ``requested_polygon``, so nothing is lost and nothing has to guess.
         "requested_region": bbox.as_dict(),
         "requested_at": requested_at,
         "fetched_at": _now_iso(),
@@ -918,6 +1356,12 @@ def fetch_region(
         "attribution_note": scan.get("note"),
         "measurement": measurement.as_dict(),
     }
+    if polygon is not None:
+        # Added only for a polygon fetch. A rectangle's provenance is byte-for-byte
+        # what it was before lassos existed — a reader diffing two rectangle
+        # extracts must not see a key appear because a different shape became
+        # possible somewhere else.
+        provenance["requested_polygon"] = polygon.as_dict()
     return FetchedOsm(
         content=content,
         provenance=provenance,
@@ -1119,11 +1563,19 @@ def _resolve_name(name: str | None, bbox: BoundingBox) -> str:
 
 def create_region_fetch(
     *,
-    bbox: BoundingBox,
+    bbox: BoundingBox | None = None,
+    polygon: RegionPolygon | None = None,
     name: str | None = None,
     submitted_by: str | None = None,
 ) -> dict[str, Any]:
     """Register a fetch WITHOUT running it.
+
+    **Exactly one of ``bbox`` and ``polygon``.** Never both: a polygon plus a box
+    a caller derived itself is two claims about one region, and the pair that
+    disagrees is the pair that produces a study area whose boundary judgment does
+    not match its query. The rectangle a polygon fetch is judged against is
+    derived HERE, from the polygon, and stored on the record — so ``region`` on
+    every record means the same thing whichever shape was drawn.
 
     The workspace is captured HERE, on the request thread, and stored on the
     record: ContextVars do not cross ``threading.Thread`` boundaries and
@@ -1136,11 +1588,23 @@ def create_region_fetch(
     caller is still looking at the region, with a 400 rather than a job they
     have to poll in order to learn about it.
     """
+    if (bbox is None) == (polygon is None):
+        raise OsmFetchRefused(
+            "region_shape_ambiguous",
+            [
+                "A fetch needs exactly one region shape: a bounding box "
+                "(south/west/north/east) or a polygon, never both and never neither. "
+                "A polygon's bounding box is derived from the polygon, so sending one "
+                "as well would be two claims about the same region."
+            ],
+        )
+    region: RequestedRegion = bbox if bbox is not None else polygon  # type: ignore[assignment]
+    derived_bbox = region_bbox(region)
     workspace_id = workspaces.current_workspace_id()
-    measurement = measure_region(bbox)
+    measurement = measure_region(region)
     _assert_within_region_cap(measurement)
     endpoint = overpass_endpoint()
-    resolved_name = _resolve_name(name, bbox)
+    resolved_name = _resolve_name(name, derived_bbox)
 
     fetch_id = uuid4().hex[:12]
     record = {
@@ -1154,7 +1618,11 @@ def create_region_fetch(
         "started_at": None,
         "completed_at": None,
         "submitted_by": submitted_by,
-        "region": bbox.as_dict(),
+        "region": derived_bbox.as_dict(),
+        # ``None`` for a rectangle. The record's ``region`` is the rectangle in
+        # BOTH cases, so every reader that had one keeps working; this key is what
+        # tells a reader whether that rectangle was drawn or derived.
+        "polygon": polygon.as_dict() if polygon is not None else None,
         "measurement": measurement.as_dict(),
         "endpoint": endpoint,
         # Filled in by the worker.
@@ -1199,8 +1667,17 @@ def _run_region_fetch_locked(fetch_id: str) -> dict[str, Any]:
     record = get_fetch(fetch_id)
     try:
         _update(fetch_id, status=STATUS_RUNNING, phase=PHASE_FETCHING)
-        bbox = BoundingBox.from_mapping(record.get("region"))
-        fetched = fetch_region(bbox)
+        # The POLYGON when the record carries one, so the worker asks Overpass for
+        # the shape the user drew and not for its bounding box. The stored
+        # rectangle is re-derived from it rather than read back, so a hand-edited
+        # record cannot make the query and the boundary disagree.
+        stored_polygon = record.get("polygon")
+        region: RequestedRegion = (
+            RegionPolygon.from_sequence(stored_polygon)
+            if stored_polygon
+            else BoundingBox.from_mapping(record.get("region"))
+        )
+        fetched = fetch_region(region)
 
         _update(fetch_id, phase=PHASE_STAGING)
         # THE hand-off. `stage_osm` is the same function POST /api/genesis/uploads
@@ -1318,6 +1795,7 @@ __all__ = [
     "DEFAULT_OVERPASS_ENDPOINT",
     "FetchedOsm",
     "MAX_ATTEMPTS",
+    "MAX_POLYGON_VERTICES",
     "MAX_REGION_AREA_KM2",
     "MAX_REGION_HALF_EXTENT_M",
     "MAX_RESPONSE_BYTES",
@@ -1332,6 +1810,7 @@ __all__ = [
     "REFERENCE_PEAK_TO_MEAN_DENSITY",
     "RETRYABLE_STATUSES",
     "RegionMeasurement",
+    "RegionPolygon",
     "SOCKET_TIMEOUT_S",
     "STATUS_ERROR",
     "STATUS_QUEUED",
@@ -1351,7 +1830,9 @@ __all__ = [
     "overpass_endpoint",
     "read_provenance",
     "reconcile_interrupted_fetches",
+    "region_bbox",
     "region_limits",
+    "region_polygon",
     "regions_dir",
     "run_region_fetch",
     "start_region_fetch",

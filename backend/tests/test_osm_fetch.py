@@ -112,6 +112,25 @@ SMALL_REGION = osm_fetch.BoundingBox(
     south=LAT0 - 0.002, west=LON0 - 0.002, north=LAT0 + 0.002, east=LON0 + 0.002
 )
 
+#: The lasso, stage (a): :data:`SMALL_REGION` with its north-west quadrant cut
+#: away, so its BOUNDING BOX is exactly ``SMALL_REGION``.
+#:
+#: That equality is the whole point of the fixture. The claim under test is not
+#: "a polygon fetches something different" — it is "a polygon fetches the ring and
+#: is JUDGED on its bounding box", and the only way to assert the second half is
+#: against a rectangle build of the same box, which must come out identical in
+#: every geometric respect and differ only in what the artifact SAYS.
+SMALL_POLYGON = osm_fetch.RegionPolygon.from_sequence(
+    [
+        [SMALL_REGION.south, SMALL_REGION.west],
+        [SMALL_REGION.south, SMALL_REGION.east],
+        [SMALL_REGION.north, SMALL_REGION.east],
+        [SMALL_REGION.north, LON0],
+        [LAT0, LON0],
+        [LAT0, SMALL_REGION.west],
+    ]
+)
+
 OVERPASS_NOTE = (
     "The data included in this document is from www.openstreetmap.org. "
     "The data is made available under ODbL."
@@ -669,7 +688,12 @@ def test_a_misconfigured_endpoint_is_refused_by_name(monkeypatch: pytest.MonkeyP
 
 def test_the_endpoint_is_server_configuration_not_a_request_field():
     """A caller-supplied URL would make this route an SSRF instrument pointed at
-    whatever the server can reach."""
+    whatever the server can reach.
+
+    The field list is enumerated rather than spot-checked so that ANY new wire
+    field has to be added here deliberately — ``polygon`` was, when the lasso
+    shipped, and the next one will be too.
+    """
     from routers.genesis import StartRegionFetchRequest
 
     assert set(StartRegionFetchRequest.model_fields) == {
@@ -677,6 +701,7 @@ def test_the_endpoint_is_server_configuration_not_a_request_field():
         "west",
         "north",
         "east",
+        "polygon",
         "name",
     }
     assert StartRegionFetchRequest.model_config["extra"] == "forbid"
@@ -703,6 +728,204 @@ def test_the_query_asks_for_highway_ways_their_nodes_and_turn_restrictions():
     assert "out skel" not in query, "recursed nodes must keep their tags"
     for value in (SMALL_REGION.south, SMALL_REGION.west, SMALL_REGION.north, SMALL_REGION.east):
         assert f"{value:.7f}" in query
+
+
+def test_the_query_carries_a_polygon_in_the_bbox_filters_own_position():
+    """One region token, whichever shape — so a fetch can never carry both.
+
+    The ``poly:`` ring is written OPEN (Overpass closes it itself) and to the same
+    7 decimals the bbox filter uses, so the query recorded in the provenance is a
+    query anybody can re-run character for character.
+    """
+    query = osm_fetch.build_query(SMALL_POLYGON)
+    assert 'way["highway"](poly:"' in query
+    # The rectangle filter must be GONE, not merely accompanied.
+    assert f"{SMALL_REGION.south:.7f},{SMALL_REGION.west:.7f}" not in query
+    assert query.count("(poly:") == 1
+    ring = query.split('(poly:"', 1)[1].split('"', 1)[0].split(" ")
+    assert len(ring) == 2 * len(SMALL_POLYGON.vertices), "one lat and one lon per corner"
+    assert ring[:2] != ring[-2:], "the ring is not closed by repeating the first corner"
+    for lat, lon in SMALL_POLYGON.vertices:
+        assert f"{lat:.7f} {lon:.7f}" in query
+    # Everything else about the query is unchanged — the two non-negotiables in
+    # `build_query`'s docstring are properties of the whole module, not of the box.
+    assert 'rel(bw.roads)["type"="restriction"]' in query
+    assert "out skel" not in query
+    assert query.count("out body") == 2
+
+
+@pytest.mark.parametrize(
+    ("vertices", "expected"),
+    [
+        # A bow tie. Its shoelace area is exactly zero (the lobes cancel), so an
+        # area-first validator would refuse it for the WRONG reason.
+        ([(0.0, 0.0), (1.0, 1.0), (0.0, 1.0), (1.0, 0.0)], "crosses itself"),
+        # An edge doubling back along its neighbour: no orientation test with a
+        # strict inequality sees this one, which is why the collinear-overlap
+        # check exists beside it.
+        ([(0.0, 0.0), (2.0, 0.0), (1.0, 0.0), (1.0, 1.0)], "crosses itself"),
+        ([(36.0, 127.0), (36.0, 127.1), (36.0, 127.2)], "one straight line"),
+        ([(36.0, 127.0), (36.1, 127.0)], "at least 3 corners"),
+        ([(36.0, 179.0), (36.1, 179.0), (36.1, -179.0)], "antimeridian"),
+        ([(36.0, 127.0), (36.1, 127.0), (91.0, 127.0)], "within ±90°"),
+        ([(36.0, 127.0), (36.1, 127.0), (36.1, 181.0)], "within ±180°"),
+        ([(36.0, 127.0), (36.1, 127.0), (36.1, float("nan"))], "not a finite number"),
+        # A repeated corner that is NOT the closing repeat: the ring pinches
+        # itself at that point and has no single inside.
+        (
+            [(36.0, 127.0), (36.1, 127.0), (36.0, 127.0), (36.1, 127.1)],
+            "same corner twice",
+        ),
+        ([[36.0, 127.0], [36.1], [36.1, 127.1]], "not a [latitude, longitude] pair"),
+        ([[36.0, 127.0], [36.1, "x"], [36.1, 127.1]], "not numbers"),
+    ],
+)
+def test_every_way_a_polygon_can_be_unusable_is_refused_by_name(
+    vertices: list, expected: str
+):
+    """A polygon Overpass would answer *something* for is the dangerous kind.
+
+    A self-intersecting ring has no agreed inside: ``poly:`` would return a set of
+    ways decided by whichever winding rule the instance implements, and nothing
+    downstream could notice. Every one of these is therefore refused BEFORE the
+    fetch, with the reason in the message rather than a code the user must look up.
+    """
+    with pytest.raises(osm_fetch.OsmFetchRefused) as caught:
+        osm_fetch.RegionPolygon.from_sequence(vertices)
+    assert caught.value.code == "region_polygon_invalid"
+    assert expected in " ".join(caught.value.reasons), caught.value.reasons
+
+
+def test_a_polygon_past_the_corner_cap_is_refused_with_its_count():
+    """Refused rather than simplified: a decimated ring is a study area nobody
+    drew, and the user would never be told which corners went."""
+    fan = [(36.0 + index * 0.0001, 127.0 + (index % 2) * 0.001) for index in range(70)]
+    with pytest.raises(osm_fetch.OsmFetchRefused) as caught:
+        osm_fetch.RegionPolygon.from_sequence(fan)
+    assert "70 corners" in caught.value.reasons[0]
+    assert str(osm_fetch.MAX_POLYGON_VERTICES) in caught.value.reasons[0]
+    # And the cap itself is a stated number, not a magic literal in a message.
+    assert osm_fetch.MAX_POLYGON_VERTICES == 64
+
+
+def test_a_closed_ring_and_an_open_one_are_the_same_polygon():
+    """Two clients, one shape. A ring stored closed would also put a zero-length
+    edge into the ``poly:`` filter."""
+    opened = [[lat, lon] for lat, lon in SMALL_POLYGON.vertices]
+    closed = opened + [opened[0]]
+    assert osm_fetch.RegionPolygon.from_sequence(closed) == SMALL_POLYGON
+    assert osm_fetch.RegionPolygon.from_sequence(opened) == SMALL_POLYGON
+    # ... and a dict form, because that is what `as_dict` round-trips as.
+    assert osm_fetch.RegionPolygon.from_sequence(SMALL_POLYGON.as_dict()) == SMALL_POLYGON
+
+
+def test_a_polygon_measures_its_own_area_but_estimates_bytes_from_its_bounding_box():
+    """Three numbers, three different claims, and the estimate is the honest one.
+
+    The L-shape is three quarters of its bounding box, so ``area_km2`` — the "how
+    big is my study area" number — must be smaller than the rectangle's. The BYTE
+    estimate must not be: Overpass answers with WHOLE ways and their recursed
+    nodes, so the response is not proportional to the ring's area in any way this
+    module can defend, and an estimate that is light is exactly the failure
+    ``DAEJEON_CBD_MEASURED_BYTES_PER_KM2`` records.
+    """
+    polygon = osm_fetch.measure_region(SMALL_POLYGON)
+    rectangle = osm_fetch.measure_region(SMALL_REGION)
+
+    assert SMALL_POLYGON.bounding_box() == SMALL_REGION
+    assert polygon.area_km2 == pytest.approx(rectangle.area_km2 * 0.75, rel=1e-3)
+    assert polygon.area_km2 < rectangle.area_km2
+    # The cap binds on the same quantity, so a lasso is never refused where its own
+    # bounding box would pass.
+    assert polygon.half_extent_m == pytest.approx(rectangle.half_extent_m)
+    assert polygon.width_m == pytest.approx(rectangle.width_m)
+    assert polygon.height_m == pytest.approx(rectangle.height_m)
+    assert polygon.estimated_bytes == rectangle.estimated_bytes
+    payload = polygon.as_dict()
+    assert payload["estimate_area_km2"] == round(rectangle.area_km2, 4)
+    assert payload["polygon"] == SMALL_POLYGON.as_dict()
+    assert payload["polygon_vertices"] == 6
+    assert payload["region"] == SMALL_REGION.as_dict()
+
+
+def test_a_polygon_measurement_adds_no_key_to_a_rectangles():
+    """A rectangle's measurement is BYTE-IDENTICAL to what it was before lassos
+    existed. A reader diffing two rectangle extracts must not see a key appear
+    because a different shape became possible somewhere else."""
+    rectangle = osm_fetch.measure_region(SMALL_REGION).as_dict()
+    polygon = osm_fetch.measure_region(SMALL_POLYGON).as_dict()
+    assert set(polygon) - set(rectangle) == {
+        "polygon",
+        "polygon_vertices",
+        "estimate_area_km2",
+    }
+    assert "polygon" not in rectangle
+
+
+def test_a_polygon_past_the_region_cap_is_refused_at_the_rectangles_threshold():
+    """Cap 1 is the projection's validity radius and nothing about that changes
+    for a lasso — the refusal carries the same measured numbers."""
+    huge = osm_fetch.RegionPolygon.from_sequence(
+        [(LAT0 - 0.08, LON0 - 0.08), (LAT0 - 0.08, LON0 + 0.08), (LAT0 + 0.08, LON0 + 0.08)]
+    )
+    measurement = osm_fetch.measure_region(huge)
+    assert measurement.within_region_cap is False
+    with pytest.raises(osm_fetch.OsmFetchRefused) as caught:
+        osm_fetch._assert_within_region_cap(measurement)
+    assert caught.value.code == "region_too_large"
+    assert caught.value.detail["polygon"] == huge.as_dict()
+    # Same threshold as the box it sits in, to the metre.
+    assert measurement.half_extent_m == pytest.approx(
+        osm_fetch.measure_region(huge.bounding_box()).half_extent_m
+    )
+
+
+def test_a_polygon_fetch_records_the_ring_AND_the_rectangle_it_will_be_judged_on(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The disclosed gap, at the one place it is written down permanently.
+
+    ``requested_region`` is the DERIVED rectangle — every downstream reader of the
+    provenance (``osm.requested_bbox_from_provenance`` → the trim → the boundary
+    ladder) asks it "which rectangle is the study area?", and for a lasso the
+    honest answer is the lasso's bounding box, because that is the shape those
+    readers actually judge against. ``requested_polygon`` records what was really
+    asked for, so the two are never confused for each other.
+    """
+    install(monkeypatch, FakeOverpass(ok_response()))
+    fetched = osm_fetch.fetch_region(SMALL_POLYGON)
+
+    assert fetched.provenance["requested_region"] == SMALL_REGION.as_dict()
+    assert fetched.provenance["requested_polygon"] == SMALL_POLYGON.as_dict()
+    assert fetched.provenance["query"] == osm_fetch.build_query(SMALL_POLYGON)
+    assert "(poly:" in fetched.provenance["query"]
+    # It survives into the document, like every other provenance fact.
+    recovered = osm_fetch.read_provenance(fetched.annotated)
+    assert recovered["requested_polygon"] == SMALL_POLYGON.as_dict()
+    from services.genesis.osm import (
+        requested_bbox_from_provenance,
+        requested_polygon_from_provenance,
+    )
+
+    assert requested_bbox_from_provenance(recovered) == (
+        SMALL_REGION.south,
+        SMALL_REGION.west,
+        SMALL_REGION.north,
+        SMALL_REGION.east,
+    )
+    assert requested_polygon_from_provenance(recovered) == SMALL_POLYGON.vertices
+
+
+def test_a_rectangle_fetch_gains_no_provenance_key_because_polygons_exist(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The other half of the same rule, asserted on the fetch rather than on the
+    measurement: pin ``test_the_provenance_records_instance_query_region_time_and_bytes``
+    must keep passing untouched, and it does because nothing is added here."""
+    install(monkeypatch, FakeOverpass(ok_response()))
+    fetched = osm_fetch.fetch_region(SMALL_REGION)
+    assert "requested_polygon" not in fetched.provenance
+    assert "polygon" not in fetched.provenance["measurement"]
 
 
 def test_the_provenance_records_instance_query_region_time_and_bytes(
@@ -913,6 +1136,97 @@ def test_the_region_calculator_and_the_records_stay_open(client: TestClient):
     assert listing.json() == {"fetches": []}
 
 
+def test_the_preview_measures_a_polygon_over_the_same_open_get(client: TestClient):
+    """The lasso has to be measurable BEFORE it is fetched, like the box.
+
+    A polygon travels on the query string as ``lat,lon;lat,lon;…`` so this stays a
+    GET — open, cacheable, no side effect — and the measurement it answers with
+    carries the DERIVED rectangle under ``region``, exactly as the fetch's
+    provenance will. That is the browser's one honest source for the gap: it can
+    draw the ring and the rectangle it will be judged against from one response.
+    """
+    ring = ";".join(f"{lat},{lon}" for lat, lon in SMALL_POLYGON.vertices)
+    response = client.get("/api/genesis/region/preview", params={"polygon": ring})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["region"] == SMALL_REGION.as_dict()
+    assert payload["polygon"] == SMALL_POLYGON.as_dict()
+    assert payload["polygon_vertices"] == 6
+    assert payload["within_region_cap"] is True
+    assert payload["area_km2"] < payload["estimate_area_km2"]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        # Both shapes at once: two claims about one region.
+        {
+            "south": SMALL_REGION.south,
+            "west": SMALL_REGION.west,
+            "north": SMALL_REGION.north,
+            "east": SMALL_REGION.east,
+            "polygon": "36.0,127.0;36.1,127.0;36.1,127.1",
+        },
+        {},  # neither
+        {"south": SMALL_REGION.south},  # half a box
+    ],
+)
+def test_the_preview_refuses_anything_but_exactly_one_shape(
+    client: TestClient, params: dict
+):
+    """A preview that could measure a different shape than the fetch would end up
+    describing is a preview nobody should trust, so the rule is the same rule and
+    the refusal names it."""
+    response = client.get("/api/genesis/region/preview", params=params)
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "region_shape_ambiguous"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {
+            "south": SMALL_REGION.south,
+            "west": SMALL_REGION.west,
+            "north": SMALL_REGION.north,
+            "east": SMALL_REGION.east,
+            "polygon": [[36.0, 127.0], [36.1, 127.0], [36.1, 127.1]],
+        },
+        {"name": "shapeless"},
+        {"south": SMALL_REGION.south, "north": SMALL_REGION.north},
+    ],
+)
+def test_starting_a_fetch_refuses_anything_but_exactly_one_shape(
+    client: TestClient, body: dict
+):
+    """400 with ``{code, reasons}``, not 422 with pydantic's error list: every
+    other refusal on this route answers in that shape and the browser has one
+    renderer for it."""
+    response = client.post(
+        "/api/genesis/region/fetches", json=body, headers=admin_headers()
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "region_shape_ambiguous"
+    assert response.json()["detail"]["reasons"], "a refusal without a reason is a 500"
+
+
+def test_a_self_intersecting_polygon_is_refused_over_http_before_any_fetch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """The caller learns while they are still looking at the shape, and no
+    outbound call is made at all."""
+    fake = install(monkeypatch, FakeOverpass(ok_response()))
+    response = client.post(
+        "/api/genesis/region/fetches",
+        json={"polygon": [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0], [1.0, 0.0]]},
+        headers=admin_headers(),
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "region_polygon_invalid"
+    assert "crosses itself" in " ".join(response.json()["detail"]["reasons"])
+    assert fake.attempts == 0, "nothing may be asked of Overpass for a refused shape"
+
+
 def test_a_non_member_is_403_on_another_projects_region_fetches(client: TestClient):
     """Enforced by ``main.WorkspaceScopeMiddleware``, so it covers these routes
     without either of them asking for it."""
@@ -1024,3 +1338,86 @@ def test_end_to_end_region_to_staged_osm_to_gated_generation(
     assert provenance is not None
     assert provenance["requested_region"]["south"] == SMALL_REGION.south
     assert json.loads(json.dumps(provenance))["query"].startswith("[out:xml]")
+
+
+def test_end_to_end_polygon_region_is_built_and_judged_on_its_bounding_box(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Stage (a)'s acceptance sentence, over HTTP, and its gap in the same breath.
+
+    A LASSO is drawn, the query Overpass receives is the ring, the extract is
+    staged, and the SAME token goes to B1's ``POST /api/genesis/jobs``. The build
+    then:
+
+    * reads ``requested_bbox`` = the ring's BOUNDING BOX (so the trim and the
+      boundary ladder work exactly as they do for a rectangle fetch — the five
+      rectangle kernels are untouched by this unit);
+    * reads ``requested_polygon`` = the ring, and uses it for ONE thing: to say so;
+    * labels its boundary "bounding box of the requested polygon", carries the ring
+      into ``*.genesis.json``, and states in the compliance report that a terminal
+      inside the box and outside the ring is classified as interior;
+    * reaches a gate verdict, like every other generation.
+    """
+    install(monkeypatch, FakeOverpass(ok_response()))
+    headers = admin_headers()
+
+    started = client.post(
+        "/api/genesis/region/fetches",
+        json={
+            "polygon": [[lat, lon] for lat, lon in SMALL_POLYGON.vertices],
+            "name": "e2elasso",
+        },
+        headers=headers,
+    )
+    assert started.status_code == 202, started.text
+    # The record's ``region`` is the DERIVED rectangle in both shapes' case, so
+    # every reader that had one keeps working; ``polygon`` says it was derived.
+    assert started.json()["region"] == SMALL_REGION.as_dict()
+    assert started.json()["polygon"] == SMALL_POLYGON.as_dict()
+
+    fetched = _await_terminal(client, started.json()["id"])
+    assert fetched["status"] == osm_fetch.STATUS_STAGED, fetched
+    assert "(poly:" in fetched["provenance"]["query"]
+    assert fetched["provenance"]["requested_region"] == SMALL_REGION.as_dict()
+    assert fetched["provenance"]["requested_polygon"] == SMALL_POLYGON.as_dict()
+
+    job = client.post(
+        "/api/genesis/jobs",
+        json={"upload_token": fetched["upload_token"], "name": "e2elasso"},
+        headers=headers,
+    )
+    assert job.status_code == 202, job.text
+    record = _await_job(client, job.json()["id"])
+    assert record["status"] == genesis_jobs.STATUS_PROVISIONAL, record
+    assert record["gate"]["verdict"] == "incomplete"
+    assert record["network"]["links"] > 0
+
+    from services.genesis import connectivity as conn
+
+    census = json.loads(
+        genesis_jobs.artifact_path(record["id"], "genesis_json").read_text(
+            encoding="utf-8"
+        )
+    )
+    boundary = census["metadata"]["boundary"]
+    assert boundary["source"] == conn.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX
+    assert boundary["requested_bbox_wgs84"] == {
+        "min_lat": SMALL_REGION.south,
+        "min_lon": SMALL_REGION.west,
+        "max_lat": SMALL_REGION.north,
+        "max_lon": SMALL_REGION.east,
+    }
+    assert boundary["requested_polygon_wgs84"] == [
+        {"lat": lat, "lon": lon} for lat, lon in SMALL_POLYGON.vertices
+    ]
+
+    # The generator's OWN compliance report (not the gate's) is where the
+    # boundary section lives, and the disclosure has to be in the artifact a
+    # client is handed rather than only in a docstring.
+    compliance = client.get(
+        f"/api/genesis/jobs/{record['id']}/artifact/compliance_md", headers=headers
+    )
+    assert compliance.status_code == 200, compliance.text
+    assert conn.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX in compliance.text
+    assert "경계 판정은 그 폴리곤의 " in compliance.text
+    assert "requested_polygon_wgs84" in compliance.text

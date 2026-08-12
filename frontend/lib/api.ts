@@ -3039,8 +3039,31 @@ export function genesisArtifactUrl(jobId: string, kind: GenesisArtifactKind): st
  * area). The byte cap is enforced against the bytes that actually arrive, never
  * against this number, and the UI must say so — an estimate presented as a
  * guarantee is how a "it will fit" turns into a refusal nobody predicted. */
+/** A lasso, as WGS84 `[lat, lon]` corners. The ring may be sent open or closed —
+ * the backend stores it open, which is also the convention Overpass's own
+ * `poly:` filter uses. */
+export type RegionPolygonVertices = Array<[number, number]>;
+
+/** Either shape a region may be. Exactly one, never both: a polygon's bounding
+ * box is DERIVED from the polygon by the backend, and a second box computed here
+ * could disagree with the one the fetch is actually judged against. */
+export type RegionShape =
+  | { south: number; west: number; north: number; east: number }
+  | { polygon: RegionPolygonVertices };
+
 export interface RegionMeasurement {
+  /** For a polygon this is the DERIVED bounding box — the rectangle the trim and
+   * the boundary ladder will be held to, which is not the shape that was drawn.
+   * The page draws it as a dashed rectangle and says so. */
   region: { south: number; west: number; north: number; east: number };
+  /** Present only when a polygon was measured. */
+  polygon?: { vertices: RegionPolygonVertices };
+  polygon_vertices?: number;
+  /** The area `estimated_bytes` was taken over. For a polygon this is the
+   * BOUNDING BOX's area, deliberately larger than `area_km2`: Overpass answers
+   * with whole ways and their recursed nodes, so the response is not
+   * proportional to the ring's own area. */
+  estimate_area_km2?: number;
   centre_lat: number;
   centre_lon: number;
   width_m: number;
@@ -3072,6 +3095,10 @@ export interface RegionLimits {
   max_response_bytes: number;
   reference_bytes_per_km2: number;
   peak_bytes_per_km2: number;
+  /** The corner cap on a lasso, SERVED rather than duplicated here — a limit the
+   * browser carried its own copy of is a limit that can disagree with the one
+   * that actually refuses. */
+  max_polygon_vertices: number;
   /** Which Overpass instance the SERVER is configured to use. Read-only on
    * purpose: a caller-supplied endpoint would make the fetch route an SSRF
    * instrument pointed at whatever the backend can reach. */
@@ -3093,7 +3120,15 @@ export interface RegionFetchProvenance {
   source: string;
   endpoint: string;
   query: string;
+  /** ALWAYS the rectangle, polygon or not: this is the key every downstream
+   * reader asks "which rectangle is the study area?", and for a lasso the honest
+   * answer is the lasso's bounding box, because that is what the trim and the
+   * boundary ladder actually judge against. */
   requested_region: { south: number; west: number; north: number; east: number };
+  /** The lasso itself, recorded beside the rectangle. Absent — not null — on a
+   * rectangle fetch, whose provenance is byte-identical to what it was before
+   * polygons existed. */
+  requested_polygon?: { vertices: RegionPolygonVertices };
   requested_at: string;
   fetched_at: string;
   elapsed_ms: number;
@@ -3122,7 +3157,10 @@ export interface RegionFetch {
   started_at: string | null;
   completed_at: string | null;
   submitted_by: string | null;
+  /** The rectangle in BOTH cases — drawn for a box fetch, derived for a lasso —
+   * so every reader that had one keeps working. `polygon` is what says which. */
   region: { south: number; west: number; north: number; east: number };
+  polygon: { vertices: RegionPolygonVertices } | null;
   measurement: RegionMeasurement;
   endpoint: string;
   /** The hand-off. Non-null exactly when `status === "staged"`. */
@@ -3172,30 +3210,27 @@ export async function fetchRegionLimits(lat: number, lon: number): Promise<Regio
   return r.json();
 }
 
-export async function previewRegion(bbox: {
-  south: number;
-  west: number;
-  north: number;
-  east: number;
-}): Promise<RegionMeasurement> {
-  const query = new URLSearchParams({
-    south: String(bbox.south),
-    west: String(bbox.west),
-    north: String(bbox.north),
-    east: String(bbox.east),
-  });
+/** Measure either shape on the SERVER. Still a GET — a polygon travels as
+ * `lat,lon;lat,lon;…`, which is the format the backend's refusals name literally
+ * — so the preview stays open, cacheable and free of side effects. */
+export async function previewRegion(shape: RegionShape): Promise<RegionMeasurement> {
+  const query =
+    "polygon" in shape
+      ? new URLSearchParams({
+          polygon: shape.polygon.map(([lat, lon]) => `${lat},${lon}`).join(";"),
+        })
+      : new URLSearchParams({
+          south: String(shape.south),
+          west: String(shape.west),
+          north: String(shape.north),
+          east: String(shape.east),
+        });
   const r = await apiFetch(`/api/genesis/region/preview?${query.toString()}`, { cache: "no-store" });
   if (!r.ok) throw await regionError(r);
   return r.json();
 }
 
-export async function startRegionFetch(payload: {
-  south: number;
-  west: number;
-  north: number;
-  east: number;
-  name?: string;
-}): Promise<RegionFetch> {
+export async function startRegionFetch(payload: RegionShape & { name?: string }): Promise<RegionFetch> {
   const r = await apiMutationFetch("/api/genesis/region/fetches", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
