@@ -957,6 +957,27 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
     kind of entrance, and nothing reaches the composer by a filesystem path in a
     job payload.
 
+    **C1-b (roadmap §5.C row C1, option (c)) adds the whole
+    ``/api/genesis/phase-diagrams`` sub-tree — six routes, one reason.**
+    Unlike this router's other reads, nothing in that sub-tree returns a verdict
+    about our own artifact: every route serves CLIENT-CONFIDENTIAL material (the
+    rendered 현시도 band, the intersection's own 교차로명/교차로번호, the
+    extracted sheet text) or the act of confirming it. So the whole sub-tree
+    takes ``current_user`` rather than being split read-by-read:
+
+    * ``GET  /api/genesis/phase-diagrams`` and ``…/{review_id}`` — the reviews
+      and their state;
+    * ``GET  …/{review_id}/image`` — the rendered sheet band itself;
+    * ``GET  …/{review_id}/network-candidates`` — the sheet's name matched
+      against a draft's nodes;
+    * ``POST …/{review_id}/confirmation`` — **the load-bearing one.** An
+      attestation records WHO says the approach→phase mapping is the site's, and
+      the attester is taken from the session, never from the request body. A
+      caller with no identity cannot make one at all.
+    * ``POST …/signals-input`` — confirmed mappings become a staged ``signals``
+      side input, which then steers a generation. Same reason
+      ``POST /api/genesis/side-inputs`` is guarded, one door over.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -985,6 +1006,12 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/genesis/jobs",
         "/api/genesis/jobs/{job_id}/artifact/{kind}",
         "/api/genesis/jobs/{job_id}/live-check",
+        "/api/genesis/phase-diagrams",
+        "/api/genesis/phase-diagrams/signals-input",
+        "/api/genesis/phase-diagrams/{review_id}",
+        "/api/genesis/phase-diagrams/{review_id}/confirmation",
+        "/api/genesis/phase-diagrams/{review_id}/image",
+        "/api/genesis/phase-diagrams/{review_id}/network-candidates",
         "/api/genesis/region/fetches",
         "/api/admin/users",
         "/api/admin/users/{user_id}/password",

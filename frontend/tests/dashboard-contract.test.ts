@@ -1748,3 +1748,95 @@ contractTest("B3: generation comparison stays scoped to gate results and named c
     "expected a named empty state -- never a silent blank -- when the current generation has no gate result yet",
   );
 });
+
+
+// ---------------------------------------------------------------------------
+// Roadmap C1-b -- 현시도 제안+확인. The pins here are the unit's refusal-shaped
+// invariants, not its layout: a restyle must not touch any of them.
+// ---------------------------------------------------------------------------
+
+contractTest("the 현시도 review screen never presents a proposal as a verified fact", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+
+  // The load-bearing sentence. A proposal is a machine READING; the only claim
+  // of correctness on this page belongs to the person who confirms.
+  pin.match(
+    page,
+    /이 앱이 검증한 것이 아닙니다/,
+    "expected the header to state, in ko, that the app has NOT verified the model's reading",
+  );
+  pin.match(
+    page,
+    /모델의 판독 \(제안\)/,
+    "expected the proposal panel to be titled as a reading/proposal, never as a result",
+  );
+  pin.match(
+    page,
+    /phase\.ambiguity && \(/,
+    "expected every phase's ambiguity note to be rendered -- it is the model saying what it could NOT resolve",
+  );
+  // A confidence score would invite a threshold, and a threshold is how a
+  // low-confidence guess gets promoted to a reading.
+  pin.doesNotMatch(page, /confidence/i, "expected no confidence score anywhere on the review screen");
+
+  // The cross-check's three tiers must stay three words. `observation` in
+  // particular corroborates a measurement and must never read as an endorsement.
+  pin.match(page, /findingWord\(/, "expected flag/observation/agrees to be rendered as three distinct words");
+  pin.match(page, /배정의 정오는 여기서 판단하지 않습니다/, "expected the cross-check panel to disclaim judging correctness");
+});
+
+contractTest("the 현시도 review screen keeps confirmation the only road to signal input", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+  const api = read("lib/api.ts");
+
+  // The browser must never assemble a genesis.signals.v1 document: a second
+  // builder could drift from the validator, and "an unconfirmed proposal is
+  // inert" would become a client-side convention instead of a server refusal.
+  pin.doesNotMatch(page, /kind:\s*"genesis\.signals/, "expected the page never to assemble a signals document itself");
+  pin.doesNotMatch(page, /assignments:\s*\[/, "expected the page never to build the assignments array a signals document is made of");
+  pin.match(page, /stagePhaseDiagramSignalsInput\(confirmedIds\)/, "expected staging to send review ids to the server, not a document");
+  pin.match(
+    page,
+    /rows\.filter\(\(row\) => row\.confirmed\)/,
+    "expected only CONFIRMED reviews to be offered for staging",
+  );
+
+  // The attester comes from the session. There is deliberately no field for a
+  // caller to put somebody else's name in.
+  pin.doesNotMatch(
+    sliceBetween(api, "export type PhaseDiagramConfirmation", "/** Record ONE human's attestation"),
+    /attested_by/,
+    "expected the confirmation payload to carry no attester name -- the server takes it from the session",
+  );
+  pin.match(page, /image_sha256: review\.render\.image_sha256/, "expected the confirmation to be bound to the image the human looked at");
+  pin.match(page, /source_sha256: review\.render\.source_sha256/, "expected the confirmation to be bound to the sheet file it was made against");
+  pin.match(page, /changes\.push\(/, "expected what the human changed against the proposal to be recorded");
+});
+
+contractTest("the 현시도 review screen distinguishes stale, unconfirmed and blank-form", (pin) => {
+  const page = read("app/genesis/phases/page.tsx");
+
+  // Three states, three words. `stale` must NOT collapse into "nobody
+  // confirmed": somebody did, and hiding that loses the record.
+  pin.match(page, /재확인 필요/, "expected a stale confirmation to read as 재확인 필요");
+  pin.match(page, /미확인/, "expected an unconfirmed review to have its own word");
+  pin.match(page, /확인됨/, "expected a confirmed review to have its own word");
+  pin.match(
+    page,
+    /review\.stale_reasons\.length > 0 && \(/,
+    "expected the stale reasons to be shown verbatim, not summarised away",
+  );
+
+  // Roadmap C1 option (b): a refused or absent proposal is the SAME screen with
+  // a blank form, not a separate workflow.
+  pin.match(
+    page,
+    /!review\.proposal \|\| review\.proposal\.outcome === "refused"/,
+    "expected a refused OR missing proposal to take the same branch -- the blank manual-entry form",
+  );
+  pin.match(
+    page,
+    /아래 양식에 직접 입력하십시오/,
+    "expected the blank-form branch to say so in ko rather than rendering an empty panel",
+  );
+});

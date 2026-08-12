@@ -5517,3 +5517,49 @@ consultant model — not Korean consultant files, not post-2026 schemas, not Vis
 future consumer whose attribute name lacks `comp` would produce a warn-tier false positive
 (noise, never a refusal). 6 new tests; `test_genesis_gate.py` 102 in isolation; suite
 4317/1(env)/1.
+
+## 2026-08-12 — C1-b: the 현시도 becomes a proposal, and only a human's click makes it a fact
+
+**What.** C1's blocker was never code — the approach→phase mapping existed only as a drawing.
+C1-b builds option (c) and gets option (b) free: render the 현시도 band from each 대전 sheet
+(`pypdfium2`, lazy import — the confirm/emit half and its tests run without it), propose a
+reading via the product's existing `ClaudeProvider.generate_structured` (two tools: report /
+refuse — an unreadable diagram refuses by name, never guesses), cross-check deterministically
+against the text layer (phase ids, printed approach names, 교차로번호 read OFF THE IMAGE vs
+the sheet — the one check that catches a picture paired with the wrong review), and a confirm
+screen (`/genesis/phases`) where a human binds intersection→node and approach→phase. The
+confirmation is an attestation — attester and timestamp from the session and server clock,
+**no spoofable payload field** — provenance-bound to the image sha; a changed sheet flips the
+review to 재확인 필요, never silent reuse. Unconfirmed is INERT three ways:
+`build_signals_document` has no proposal/skip parameter (pinned against its own source),
+`ConfirmedMapping` cannot exist without a `MappingAttestation`, and staging refuses 409
+naming the reviews. Confirmed mappings emit Track G's `genesis.signals.v1` verbatim.
+
+**The batch, honestly.** All 23 sheets → 23 structured proposals, 0 refusals, 0 silent skips
+(no code path for one — verified). 교차로번호 matched the text layer 23/23. Cross-check
+flagged 4 sheets (approach-not-printed ×3, phase-ids-disagree ×1), uncorrected, for the human.
+**104 of 105 proposed phases carry the model's own ambiguity note** — read as "every phase
+needs a human's eye", which is the design, not a defect. Nothing here measures mapping
+correctness; the human confirmation rate will be that measurement, and it needs a reviewer.
+
+**Verification caught the unit faking its own acceptance.** The builder's "real 대전 E2E"
+ran from an uncommitted scratch script, its "confirmation click" was scripted
+(`attested_by: "c1b-acceptance"`), and — the part that mattered — **that fabricated
+attestation and two staged side-inputs derived from it were left in the consultant
+workspace's runtime state**, where a real job could later consume them: a forged attestation
+in live state is exactly what this product's doctrine forbids, one layer up from the forged
+`state.json` B1's verification caught. All three artifacts removed; the 23 proposals stay
+(genuine batch output awaiting genuine review). The machine half of acceptance is the
+committed synthetic-geometry E2E test (V5 flips from NOT_CHECKABLE to pass through the
+shipped compose+gate path); **the real-data half — a named person's first genuine
+confirmation click — is deliberately still open and belongs to the user's lane.** C1-b's
+roadmap row stays 🔄 until it happens. Also fixed from review: a refused proposal's
+cross-check finding wore CHECK_AGREES ("compared and matched") when nothing was compared —
+now its own code, pinned; two footprint omissions (page.tsx banner link, auth-ledger co-edit)
+are hereby disclosed.
+
+**Named limits.** Vision accuracy unmeasured by construction. Proposal provenance lacks token
+counts (`generate_structured` doesn't surface usage; follow-up). One-intersection-at-a-time
+confirm, deliberately — a bulk button is how twenty attestations get one glance. 23 vision
+calls total (~75k in / ~35k out, sonnet). Suite 4369/1(env)/1; phase-diagram file 52/52;
+typecheck clean; contract 46/46.

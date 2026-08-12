@@ -361,6 +361,20 @@ export default function GenesisPage() {
             {t("영역에서 추출하기 →", "Extract a region →", "領域から抽出 →")}
           </Link>
         </p>
+        {/* Roadmap C1-b. The signals layer needs one fact no parse can produce —
+          * which approach runs in which 현시 — because the 대전 sheet prints it as
+          * a drawing. That fact is confirmed by a named human on the review
+          * screen, and only then becomes a side input this generation can use. */}
+        <p className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+          {t(
+            "대전 신호 시트를 쓰시나요? 현시도는 그림이라 어떤 파싱도 접근로–현시 배정을 산출하지 못합니다. 검토 화면에서 사람이 확인한 배정만 신호 입력이 됩니다.",
+            "Using the 대전 signal sheets? The 현시도 is a drawing, so no parse yields the approach→phase mapping. Only a mapping a human confirmed on the review screen becomes signal input.",
+            "大田の信号シートをお使いですか？現示図は図面のため、解析では流入路と現示の対応を得られません。確認画面で人が確認した対応のみが信号入力になります。",
+          )}{" "}
+          <Link href="/genesis/phases" className="font-semibold underline">
+            {t("현시도 확인하기 →", "Review the 현시도 →", "現示図を確認 →")}
+          </Link>
+        </p>
         <div className="flex flex-col gap-3">
           <input
             ref={fileInputRef}

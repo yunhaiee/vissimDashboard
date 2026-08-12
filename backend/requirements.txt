@@ -13,3 +13,12 @@ PyYAML>=6.0
 # read_sheet_text(): the parser itself takes text, so the tests and every
 # consumer that already has extracted text run without it.
 pypdf==6.14.2
+# Rasterises the 현시도 band out of a 대전 sheet page
+# (services/genesis/phase_diagram.py). pypdf reads the TEXT layer; the 현시도 is
+# a vector drawing with no embedded image, so producing a picture of it needs a
+# renderer. pypdfium2 is PDFium's own binding: permissive (Apache-2.0 /
+# BSD-3-Clause), installed from a pip wheel with the engine bundled — no
+# poppler, no system package, no AGPL. Imported LAZILY and only by
+# render_phase_diagram(): everything downstream of the render takes an image, so
+# the confirm/emit half and its whole test suite run without it.
+pypdfium2==5.12.1

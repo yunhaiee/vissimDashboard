@@ -3242,6 +3242,263 @@ export interface AdminUserListResponse {
   roles: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Roadmap C1-b -- 현시도 review: a machine's proposal, a human's confirmation
+// ---------------------------------------------------------------------------
+//
+// The backend renders each 대전 sheet's 현시도 band and (offline) asks a vision
+// model to read it. Nothing here generates a proposal: these calls READ what the
+// offline tool produced and POST the one thing only a human can supply.
+//
+// Two shapes below are load-bearing rather than incidental.
+// `confirmPhaseDiagram` sends no attester name -- the server takes it from the
+// session, so a caller cannot put somebody else's name against a mapping. And
+// `stagePhaseDiagramSignalsInput` returns a staged side-input TOKEN rather than
+// a document: the `genesis.signals.v1` document is assembled server-side, so
+// "an unconfirmed proposal is inert" stays a refusal this client cannot route
+// around instead of a convention it is trusted to honour.
+
+/** Where the sheet PRINTS one text run inside the band, as a fraction of the
+ * rendered image. Measured off the PDF's text layer, not recovered from pixels. */
+export type PhaseDiagramLabel = {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+/** The provenance of one rendered band -- which file, which bytes, which
+ * rectangle, at what scale, hashing to what. The attestation is keyed to
+ * `image_sha256`, which is what makes a confirmation falsifiable. */
+export type PhaseDiagramRender = {
+  source_file: string;
+  source_sha256: string;
+  page_no: number;
+  crop_pt: [number, number, number, number];
+  render_scale: number;
+  image_sha256: string;
+  image_width_px: number;
+  image_height_px: number;
+  renderer: string;
+  renderer_version: string;
+  rendered_at: string;
+  labels: PhaseDiagramLabel[];
+};
+
+export type PhaseDiagramMovement = {
+  approach_label: string;
+  turn: "through" | "left" | "right" | "u_turn" | "pedestrian" | "unknown";
+  note: string | null;
+};
+
+export type PhaseDiagramPhase = {
+  phase_id: string;
+  movements: PhaseDiagramMovement[];
+  serves_pedestrian: boolean | null;
+  /** Written by the model, in Korean, for anything it could NOT resolve. There
+   * is deliberately no confidence score: a number invites a threshold, and a
+   * threshold is how a low-confidence guess gets promoted to a reading. */
+  ambiguity: string | null;
+};
+
+export type PhaseDiagramApproach = {
+  label: string;
+  /** Where the leg is DRAWN. Not a compass bearing -- the sketch states no north. */
+  side: "top" | "right" | "bottom" | "left" | "unknown";
+  note: string | null;
+};
+
+/** A machine's READING. An artifact, never a fact -- no field here asserts
+ * correctness, and no string in this UI may imply one does. */
+export type PhaseDiagramProposal = {
+  outcome: "proposed" | "refused";
+  refusal: { code: string; reason: string } | null;
+  read_intersection_no: string | null;
+  read_intersection_name: string | null;
+  approaches: PhaseDiagramApproach[];
+  phases: PhaseDiagramPhase[];
+  notes: string[];
+  model: string;
+  image_sha256: string;
+  source_file: string;
+  proposed_at: string;
+};
+
+export type PhaseDiagramFinding = {
+  code: string;
+  /** `flag` = a human must look before confirming. `observation` = a measurement
+   * offered as corroboration, which is NOT evidence of correctness. `ok` = the
+   * comparison ran and agreed. */
+  severity: "flag" | "observation" | "ok";
+  message: string;
+  message_en: string;
+  context: Record<string, unknown>;
+};
+
+export type PhaseDiagramCrossCheck = { checked_at: string; findings: PhaseDiagramFinding[] };
+
+/** A named human's claim that this approach-to-phase mapping is the site's.
+ * `attested_by`/`attested_at` come from the session and the server clock. */
+export type PhaseDiagramAttestation = {
+  attested_by: string;
+  attested_at: string;
+  source_file: string;
+  source_sha256: string;
+  image_sha256: string;
+  proposal_sha256: string | null;
+  proposal_outcome: "proposed" | "refused" | "none";
+  node_id: number;
+  approach_links: Record<string, string>;
+  approach_phases: Record<string, string>;
+  level_no: number;
+  plan_id: number;
+  declared_amber_s: number | null;
+  amber_declaration_note: string | null;
+  changes: { field: string; was: string | null; now: string | null }[];
+  note: string | null;
+};
+
+export type PhaseDiagramSheet = {
+  source_file: string;
+  intersection_name: string | null;
+  intersection_no: string | null;
+  parsed: boolean;
+  refusal_codes: string[];
+  phase_ids: string[];
+  plan_choices: { level_no: number; plan_id: number }[];
+};
+
+export type PhaseDiagramReview = {
+  review_id: string;
+  source_file: string;
+  render: PhaseDiagramRender;
+  /** `null` is a real state, never an absent key: a refused or missing proposal
+   * is the SAME screen with a blank form (roadmap C1 option (b)). */
+  proposal: PhaseDiagramProposal | null;
+  proposal_sha256: string | null;
+  cross_check: PhaseDiagramCrossCheck | null;
+  attestation: PhaseDiagramAttestation | null;
+  /** Non-empty when a confirmation exists but was made against a different sheet
+   * or a different render -- 재확인 필요, never a silent reuse. */
+  stale_reasons: string[];
+  confirmed: boolean;
+  sheet: PhaseDiagramSheet;
+};
+
+export type PhaseDiagramSummary = {
+  review_id: string;
+  source_file: string;
+  image_sha256: string;
+  proposal_outcome: "proposed" | "refused" | null;
+  proposal_refusal_code: string | null;
+  flags: string[];
+  confirmed: boolean;
+  attested_by: string | null;
+  attested_at: string | null;
+  stale_reasons: string[];
+};
+
+export type PhaseDiagramApproachCandidate = {
+  link_id: number;
+  name: string;
+  lanes: number;
+  heading_deg: number | null;
+  from_compass: string | null;
+};
+
+export type PhaseDiagramNodeCandidate = {
+  node_id: number;
+  name: string;
+  x: number;
+  y: number;
+  approaches: PhaseDiagramApproachCandidate[];
+  match_score: number;
+  /** Why this node ranked where it did, in Korean. A rank with no reason is an
+   * unexplained verdict, and the binding is the human's to make. */
+  match_reason: string;
+};
+
+export async function fetchPhaseDiagrams(): Promise<PhaseDiagramSummary[]> {
+  const r = await apiFetch("/api/genesis/phase-diagrams", { cache: "no-store" });
+  if (!r.ok) throw await genesisError(r);
+  const payload = (await r.json()) as { reviews: PhaseDiagramSummary[] };
+  return payload.reviews;
+}
+
+export async function fetchPhaseDiagram(reviewId: string): Promise<PhaseDiagramReview> {
+  const r = await apiFetch(`/api/genesis/phase-diagrams/${reviewId}`, { cache: "no-store" });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** The rendered band. Authenticated like every route in this sub-tree -- it is
+ * client-confidential sheet material -- and reached with a plain `<img src>`
+ * because the session rides on a same-site cookie. */
+export function phaseDiagramImageUrl(reviewId: string): string {
+  return apiUrl(`/api/genesis/phase-diagrams/${reviewId}/image`);
+}
+
+export async function fetchPhaseDiagramCandidates(
+  reviewId: string,
+  jobId: string,
+): Promise<{ intersection_name: string | null; candidates: PhaseDiagramNodeCandidate[] }> {
+  const r = await apiFetch(
+    `/api/genesis/phase-diagrams/${reviewId}/network-candidates?job_id=${encodeURIComponent(jobId)}`,
+    { cache: "no-store" },
+  );
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+export type PhaseDiagramConfirmation = {
+  node_id: number;
+  approach_phases: Record<string, string>;
+  approach_links: Record<string, string>;
+  level_no: number;
+  plan_id: number;
+  image_sha256: string;
+  source_sha256: string;
+  proposal_sha256: string | null;
+  proposal_outcome: "proposed" | "refused" | "none";
+  declared_amber_s: number | null;
+  amber_declaration_note: string | null;
+  changes: { field: string; was: string | null; now: string | null }[];
+  note: string | null;
+};
+
+/** Record ONE human's attestation. There is deliberately no `attested_by` field
+ * on `PhaseDiagramConfirmation`: the server takes the attester from the session,
+ * so a caller cannot put somebody else's name against a mapping. */
+export async function confirmPhaseDiagram(
+  reviewId: string,
+  payload: PhaseDiagramConfirmation,
+): Promise<PhaseDiagramReview> {
+  const r = await apiMutationFetch(`/api/genesis/phase-diagrams/${reviewId}/confirmation`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** Confirmed reviews to a staged `signals` side input, ready for
+ * `startGenesisJob`. The document is assembled on the server; an unconfirmed or
+ * stale review is a 409 naming it, never a silent skip. */
+export async function stagePhaseDiagramSignalsInput(
+  reviewIds: string[],
+  filename?: string,
+): Promise<{ token: string; kind: string; summary: Record<string, unknown> }> {
+  const r = await apiMutationFetch("/api/genesis/phase-diagrams/signals-input", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ review_ids: reviewIds, filename: filename ?? null }),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
 /** One row of `GET /api/admin/workspaces/{id}/members`
  * (`services/membership._public_member`). `role` is the USER's global role;
  * `membership_role` is their role INSIDE this project — deliberately separate

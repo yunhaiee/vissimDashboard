@@ -58,7 +58,9 @@ waits on the public internet, so it can never run on the request thread.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -69,7 +71,7 @@ from routers.auth import current_user
 from routers.datasets import MAX_UPLOAD_BYTES, _TOO_LARGE_DETAIL, _reject_oversized_body
 from services import genesis_jobs, osm_fetch
 from services.datasets import DatasetStorageError
-from services.genesis import side_inputs
+from services.genesis import phase_diagram, side_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -669,6 +671,295 @@ def get_region_fetch(fetch_id: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except osm_fetch.OsmFetchError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# 현시도 review — roadmap C1 option (c), the browser half
+# ---------------------------------------------------------------------------
+#
+# The offline tool (``backend/tools/genesis_phase_diagram_batch.py``) renders
+# each 대전 sheet's 현시도 band and asks the vision model for a reading. These
+# routes are where a NAMED HUMAN turns that reading into a fact, and where the
+# confirmed mapping becomes a ``signals`` side input.
+#
+# **Every route here is authenticated, and the whole sub-tree for one reason:**
+# it serves client-confidential material (the rendered sheet image, the
+# intersection's own name and number, the extracted sheet text) and the act of
+# confirming it. Unlike the gate reads above — which return the record of a
+# decision and stay open — there is nothing in this sub-tree that is merely a
+# verdict about our own artifact. And ``POST /confirmation`` is the load-bearing
+# one: an attestation records WHO said the mapping is right, so a caller with no
+# identity cannot make one at all.
+#
+# No proposal is generated here. Vision calls take seconds to tens of seconds
+# and are made by the offline tool, never on a request thread.
+
+
+#: Where reviews live inside a workspace's genesis tree. Matches the offline
+#: tool's ``STORE_DIRNAME`` — the tool writes what these routes read.
+PHASE_DIAGRAM_DIRNAME = "phase-diagrams"
+
+
+def _phase_diagram_store() -> phase_diagram.PhaseDiagramStore:
+    """The review store for the CURRENT workspace, derived per call.
+
+    Same rule as ``genesis_jobs.genesis_dir()``: the workspace is resolved from
+    the bound context on every call rather than captured once, so one project's
+    reviews can never be served under another's binding.
+    """
+    return phase_diagram.PhaseDiagramStore(
+        genesis_jobs.genesis_dir() / PHASE_DIAGRAM_DIRNAME
+    )
+
+
+def _phase_diagram_refusal(exc: phase_diagram.PhaseDiagramRefused) -> HTTPException:
+    """One HTTP shape for every 현시도 refusal, with the status the code means.
+
+    404 for "no such review", 409 for a review that exists but is not in a state
+    the request needs (unconfirmed, stale). Both carry the same
+    ``{code, reasons}`` body every other refusal in this router uses, so a
+    browser translates the CODE and shows the reasons verbatim.
+    """
+    status = 404 if exc.code == "phase_diagram_unknown_review" else 409
+    return HTTPException(status_code=status, detail={"code": exc.code, "reasons": exc.reasons})
+
+
+class ConfirmPhaseDiagramRequest(BaseModel):
+    """One human's confirmation of one intersection's approach→phase mapping.
+
+    ``attested_by`` is NOT here: it is taken from the signed-in session, never
+    from the request body. A caller naming somebody else as the attester is the
+    one thing an attestation must not permit, and the cheapest way to make that
+    impossible is to give the client no field to put a name in.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: int = Field(description="The draft node this sheet's intersection is.")
+    approach_phases: dict[str, str] = Field(
+        description="draft approach link id → plan phase id ('Φ1'). The mapping itself."
+    )
+    approach_links: dict[str, str] = Field(
+        default_factory=dict,
+        description="draft link id → the sheet approach label bound to it, for the record.",
+    )
+    level_no: int = Field(description="Which 수준 (cycle) this mapping is confirmed for.")
+    plan_id: int = Field(description="Which 시간분할 ID this mapping is confirmed for.")
+    image_sha256: str = Field(
+        min_length=64,
+        max_length=64,
+        description="The image the human actually looked at. Checked against the stored render.",
+    )
+    source_sha256: str = Field(min_length=64, max_length=64)
+    proposal_sha256: str | None = Field(
+        default=None, description="None = confirmed with no proposal (blank manual entry)."
+    )
+    proposal_outcome: Literal["proposed", "refused", "none"] = "none"
+    declared_amber_s: float | None = Field(default=None, gt=0)
+    amber_declaration_note: str | None = None
+    changes: list[phase_diagram.MappingChange] = Field(default_factory=list)
+    note: str | None = None
+
+
+class BuildSignalsInputRequest(BaseModel):
+    """Which confirmed reviews become one ``genesis.signals.v1`` side input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    review_ids: list[str] = Field(
+        min_length=1, description="Confirmed reviews. An unconfirmed one is a 409, never a skip."
+    )
+    filename: str | None = Field(default=None, description="Name for the staged document.")
+
+
+@router.get("/phase-diagrams")
+def list_phase_diagrams(user: dict[str, Any] = Depends(current_user)):
+    """Every rendered 현시도 review in this workspace, with its state.
+
+    ``confirmed`` is the only field that means a mapping is usable, and it is
+    false both for "nobody confirmed" and for "the confirmation went stale" —
+    ``stale_reasons`` says which, in Korean, so the UI never has to guess.
+    """
+    return {"reviews": _phase_diagram_store().index_payload()}
+
+
+@router.get("/phase-diagrams/{review_id}")
+def get_phase_diagram(review_id: str, user: dict[str, Any] = Depends(current_user)):
+    """One review: render provenance, the proposal (or null), the cross-check,
+    the attestation (or null), and what the sheet's text layer says."""
+    try:
+        return _phase_diagram_store().review_payload(review_id)
+    except phase_diagram.PhaseDiagramRefused as exc:
+        raise _phase_diagram_refusal(exc) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"The stored review could not be read. [{type(exc).__name__}: {exc}]",
+        ) from exc
+
+
+@router.get("/phase-diagrams/{review_id}/image")
+def get_phase_diagram_image(review_id: str, user: dict[str, Any] = Depends(current_user)):
+    """The rendered 현시도 band, as a PNG. Client-confidential material."""
+    try:
+        path = _phase_diagram_store().image_path(review_id)
+    except phase_diagram.PhaseDiagramRefused as exc:
+        raise _phase_diagram_refusal(exc) from exc
+    return FileResponse(path, media_type="image/png", filename=path.name)
+
+
+@router.get("/phase-diagrams/{review_id}/network-candidates")
+def get_phase_diagram_candidates(
+    review_id: str,
+    job_id: str,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Draft nodes ranked as CANDIDATES for this sheet's intersection.
+
+    A ranked list with its reason attached, never a binding: the ranking is a
+    plain name overlap against 교차로명, and each entry carries ``match_reason``
+    so a reviewer sees why a node is at the top instead of being told it is the
+    right one. Each candidate carries its approach links with a computed
+    bearing, because ``approach_phases`` is keyed by LINK id and a human cannot
+    bind what they cannot see.
+    """
+    from services.genesis.draft import DraftNetwork
+
+    store = _phase_diagram_store()
+    try:
+        sheet = store.sheet(review_id)
+    except phase_diagram.PhaseDiagramRefused as exc:
+        raise _phase_diagram_refusal(exc) from exc
+    try:
+        census = genesis_jobs.artifact_path(job_id, "genesis_json")
+    except genesis_jobs.GenesisJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        import json as _json
+
+        draft = DraftNetwork.model_validate(_json.loads(census.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"That generation's draft could not be read. [{type(exc).__name__}: {exc}]",
+        ) from exc
+    return {
+        "review_id": review_id,
+        "job_id": job_id,
+        "intersection_name": sheet.intersection_name,
+        "candidates": phase_diagram.node_candidates(
+            draft, intersection_name=sheet.intersection_name
+        ),
+    }
+
+
+@router.post("/phase-diagrams/{review_id}/confirmation")
+def confirm_phase_diagram(
+    review_id: str,
+    payload: ConfirmPhaseDiagramRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Record ONE human's attestation for one intersection. The load-bearing act.
+
+    The attester is the signed-in user and the timestamp is the server's — a
+    claim about who said what, dated by the client, is not an attestation. The
+    shas in the body are the ones the human's screen was showing; the store
+    compares them against what is on disk NOW and refuses
+    (``phase_diagram_attestation_stale`` → *재확인 필요*) rather than recording a
+    confirmation of a drawing that has since been re-rendered.
+    """
+    store = _phase_diagram_store()
+    try:
+        attestation = phase_diagram.MappingAttestation(
+            attested_by=str(user.get("username") or user.get("id") or "").strip(),
+            attested_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            source_file=store.render(review_id).source_file,
+            source_sha256=payload.source_sha256,
+            image_sha256=payload.image_sha256,
+            proposal_sha256=payload.proposal_sha256,
+            proposal_outcome=payload.proposal_outcome,
+            node_id=payload.node_id,
+            approach_links=payload.approach_links,
+            approach_phases=payload.approach_phases,
+            level_no=payload.level_no,
+            plan_id=payload.plan_id,
+            declared_amber_s=payload.declared_amber_s,
+            amber_declaration_note=payload.amber_declaration_note,
+            changes=payload.changes,
+            note=payload.note,
+        )
+    except phase_diagram.PhaseDiagramRefused as exc:
+        raise _phase_diagram_refusal(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "phase_diagram_confirmation_invalid", "reasons": [str(exc)]},
+        ) from exc
+    try:
+        store.put_attestation(review_id, attestation)
+    except phase_diagram.PhaseDiagramRefused as exc:
+        raise _phase_diagram_refusal(exc) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The confirmation could not be written. Nothing was recorded. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    return store.review_payload(review_id)
+
+
+@router.post("/phase-diagrams/signals-input")
+def build_phase_diagram_signals_input(
+    payload: BuildSignalsInputRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Confirmed reviews → a staged ``signals`` side input, ready for ``POST /jobs``.
+
+    The document is built HERE and staged through ``genesis_jobs.stage_side_input``
+    — the same door ``POST /side-inputs`` uses, with the same validation — so the
+    browser never assembles a ``genesis.signals.v1`` document itself. Two reasons,
+    and both are the point of this unit: a second implementation in TypeScript
+    could drift from the one ``side_inputs.py`` validates, and more importantly the
+    "an unconfirmed proposal is inert" rule would become a client-side convention
+    instead of a server-side refusal.
+
+    A review that is not confirmed, or whose confirmation is stale, is a 409
+    naming it. It is never skipped, and the remaining reviews are never staged
+    without it: a signals document silently missing one intersection is a network
+    with one junction quietly unsignalised.
+    """
+    store = _phase_diagram_store()
+    confirmed: list[phase_diagram.ConfirmedMapping] = []
+    for review_id in payload.review_ids:
+        try:
+            confirmed.append(store.confirmed_mapping(review_id))
+        except phase_diagram.PhaseDiagramRefused as exc:
+            raise _phase_diagram_refusal(exc) from exc
+    try:
+        document = phase_diagram.build_signals_document(confirmed)
+    except phase_diagram.PhaseDiagramRefused as exc:
+        raise _phase_diagram_refusal(exc) from exc
+
+    import json as _json
+
+    content = _json.dumps(document, ensure_ascii=False).encode("utf-8")
+    name = Path(str(payload.filename or "phase-diagrams.signals.json")).name
+    try:
+        return genesis_jobs.stage_side_input(side_inputs.KIND_SIGNALS, name, content)
+    except genesis_jobs.GenesisRefused as exc:
+        raise HTTPException(
+            status_code=400, detail={"code": exc.code, "reasons": exc.reasons}
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The signals document could not be staged. Nothing was stored. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
 
 
 __all__ = ["router"]
