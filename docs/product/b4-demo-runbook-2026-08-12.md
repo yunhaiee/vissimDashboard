@@ -29,17 +29,21 @@ live check. Either way the demo proves the pipeline.
 3. Enter the bounding box (WGS84 decimal degrees) in **North / South / West / East**.
    - Pick a box ~0.3–0.5 km around ONE intersection you have counts for (e.g. 가람네거리).
    - The limit panel updates live: it must say **Within the limit** before the button enables.
-   - Lesson from your first run (bbox 36.3444–36.3564 / 127.3765–127.3925, REFUSED): a wide
-     CBD box slices arterials mid-block and V3 correctly refuses the silent exits. Smaller,
-     intersection-centred boxes cut fewer arterials. A V3 refusal is a *finding*, not a crash
-     — the map shows you every silent-exit point in red.
+   - UPDATE (B5-1 `85b4bb2`): the old wide-CBD V3 refusal is history — the generator now
+     trims every way to YOUR box and marks the cut points as model boundary, so boundary
+     cuts no longer refuse. V3 fails only on real topology defects (e.g. a pocket the map
+     data itself never connects — the finding names it). NEW honest consequence: **V4 can
+     fail** when an entry road meets a lane drop within ~200 m of your box edge (the trim
+     unmasked a genuinely short runway). The finding names the exact link — widen the box
+     on that side and re-extract.
 4. **영역 추출** → wait for the green **EXTRACTED — ready to generate** card.
 5. Name the network (optional), then start the generation from this page (it hands off to
    the same flow as an uploaded file). Go back via **← Generate from a file / see past
    generations** to watch it.
 6. On **네트워크 생성**: your job appears under **생성 이력**, polls live, and the **Gate
    verdict** panel fills in. Expect on a geometry-only run: V1 · V5 · V6 = 확인 불가 (waiting
-   on live check / signals / demand — by design), V3 = pass or fail depending on your box.
+   on live check / signals / demand — by design); V3 boundary cuts now read as 정상 경계
+   (post-B5-1), so a V3/V4 failure is a real, named defect — read it, don't fight it.
 7. If REFUSED: the **지도에서 보기** map opens itself. Red = refuse-tier findings; click a red
    link → the right panel shows every finding on it. Fix = different box, not a weaker gate.
 8. **Write down the entry link ids** for your counts intersection: zoom (wheel) / pan (drag)
