@@ -200,7 +200,7 @@ export default function GenesisComparisonPanel({
   }, [priorReport, currentReport]);
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-3.5 py-3">
+    <div className="rounded-lg border border-slate-200 bg-surface/90 px-3.5 py-3">
       <p className="text-xs font-bold text-slate-900">
         {t("이전 생성과 비교", "Compare with a previous generation", "以前の生成と比較")}
       </p>

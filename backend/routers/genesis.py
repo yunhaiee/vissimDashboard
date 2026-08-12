@@ -23,6 +23,23 @@ generation must have exactly one kind of entrance. Nothing enters by a
 filesystem path in a job payload, and the job composes only the four-layer shape
 ``services/genesis/compose.py`` extracted from the build a real Vissim opened.
 
+**``/demand-inputs/*`` — the demand side input's own clickable path.** Before
+this pair, building a ``demand`` side input meant hand-writing the
+``genesis.demand.v1`` JSON yourself. ``POST /demand-inputs/parse`` takes ONE
+Daejeon counts workbook, runs it through ``DaejeonCountAdapter`` and stages the
+result under its own ``counts`` kind — a token meaningful to exactly one other
+call. ``POST /demand-inputs/build`` takes that token plus the
+``approach_links`` join a human types in a browser table, checks it against
+the counts with the SAME function ``services.genesis.demand.generate_demand``
+itself calls (``check_approach_link_sites`` — an unknown site or leg refuses
+here, with that module's own reason, rather than three steps later inside a
+job), and stages the assembled document through the SAME
+``genesis_jobs.stage_side_input`` / ``side_inputs.parse_side_input`` the raw
+``POST /side-inputs`` route uses. No second door: this pair only ever produces
+what that route already accepts. ``GET /side-inputs`` lists every staged
+document (kind, filename, summary) so the job-start form can offer pickers
+instead of a browser-typed token.
+
 **Auth.** Every MUTATING route takes ``Depends(current_user)``: a generation
 replaces the project's active dataset, and "who built this network" has to be
 answerable in the audit document that ships with it. Reads stay open, in parity
@@ -175,6 +192,41 @@ class AttachLiveCheckRequest(BaseModel):
     label: str | None = Field(default=None, description="Which run inside that state.json.")
 
 
+class BuildDemandInputRequest(BaseModel):
+    """A staged counts token + the one join a human supplies → a ``demand``
+    side input.
+
+    ``approach_links`` is the SAME shape ``side_inputs.DemandSideInput`` takes
+    (site id → {approach leg id → draft link id}) and is never defaulted here:
+    an empty entry, or a leg left unmapped, stays empty and the underlying
+    validator refuses it — this route invents no link id on a caller's behalf.
+    ``demand_settings``/``fleet_settings`` are passed through as opaque objects
+    rather than re-declared as pydantic models here, so the ONE place that
+    knows their shape stays ``services.genesis.demand``/``fleet`` — the
+    document this route builds is validated by the SAME
+    ``side_inputs.parse_side_input`` the raw ``POST /side-inputs`` route uses,
+    and that validator is the authority on whether they are well-formed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    counts_token: str = Field(
+        min_length=1, description="Token from POST /api/genesis/demand-inputs/parse."
+    )
+    approach_links: dict[str, dict[str, int]] = Field(
+        description="site id → {approach leg id → draft link id}. Required; never guessed."
+    )
+    window_start: datetime | None = Field(
+        default=None, description="Analysis window start. Both ends or neither."
+    )
+    window_end: datetime | None = None
+    demand_settings: dict[str, Any] | None = None
+    fleet_settings: dict[str, Any] | None = None
+    filename: str | None = Field(
+        default=None, description="Name for the staged demand document. Omitted = 'demand.json'."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Mutations — authenticated
 # ---------------------------------------------------------------------------
@@ -285,6 +337,172 @@ async def upload_side_input(
             status_code=409,
             detail=(
                 "Could not write the side input to the staging area. Nothing was stored. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+
+
+_COUNTS_TOO_LARGE_DETAIL = (
+    f"The counts workbook is larger than the "
+    f"{side_inputs.MAX_SIDE_INPUT_BYTES // (1024 * 1024)} MB limit."
+)
+
+
+def _reject_oversized_counts(request: Request) -> None:
+    """413 on the DECLARED length, the same shape ``_reject_oversized_side_input``
+    uses — with the side-input cap, because a counts workbook is fully parsed on
+    the request thread just like a side-input document is."""
+    raw_length = request.headers.get("content-length")
+    if not raw_length:
+        return
+    try:
+        declared = int(raw_length)
+    except ValueError:
+        return
+    if declared > side_inputs.MAX_SIDE_INPUT_BYTES:
+        raise HTTPException(status_code=413, detail=_COUNTS_TOO_LARGE_DETAIL)
+
+
+@router.post("/demand-inputs/parse")
+async def parse_demand_counts(
+    request: Request,
+    x_filename: str | None = Header(None),
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Stage ONE Daejeon counts workbook (``.xlsx``) and return what it read.
+
+    The same two-step upload every mutating route in this router uses (no
+    ``python-multipart`` in this backend): raw bytes as the body, the name in
+    ``X-Filename`` or ``?filename=``. Parsed with
+    ``services.dataimport.adapters.daejeon.DaejeonCountAdapter`` BEFORE a token
+    exists — a caller who uploads the wrong workbook, or one this adapter does
+    not recognise, finds out while they are still looking at the upload.
+
+    This is deliberately NOT ``POST /side-inputs``: a counts workbook carries no
+    ``approach_links`` (only a human can supply that join), so it is not a
+    ``genesis.demand.v1`` document and cannot go through
+    ``side_inputs.parse_side_input``. It stages in the SAME tree, under its own
+    ``counts`` kind, and the token this route returns is meaningful to exactly
+    one caller — ``POST /demand-inputs/build``.
+
+    The adapter's own refusal semantics pass through VERBATIM in the response's
+    ``summary.issues`` — never softened, never re-worded here — including a
+    workbook the adapter reads but refuses entirely (0 sites, 0 counts): the
+    reasons are the point, and a reviewer needs to see them before trying a
+    different file.
+    """
+    query_filename = request.query_params.get("filename")
+    filename = unquote(query_filename or x_filename or "")
+    _reject_oversized_counts(request)
+    content = await request.body()
+    if len(content) > side_inputs.MAX_SIDE_INPUT_BYTES:
+        raise HTTPException(status_code=413, detail=_COUNTS_TOO_LARGE_DETAIL)
+    try:
+        return genesis_jobs.stage_counts(filename, content)
+    except genesis_jobs.GenesisRefused as exc:
+        raise HTTPException(
+            status_code=400, detail={"code": exc.code, "reasons": exc.reasons}
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not write the counts workbook to the staging area. Nothing was stored. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+
+
+@router.post("/demand-inputs/build")
+def build_demand_input(
+    payload: BuildDemandInputRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Staged counts + a caller's approach→link map → a staged ``demand`` side input.
+
+    Three steps, in order:
+
+    1. Read back the staged counts (``POST /demand-inputs/parse``'s token) —
+       404 if the token is unknown, expired, or names a different kind.
+    2. Check ``approach_links`` against the counts THE SAME WAY
+       ``services.genesis.demand.generate_demand`` will at generation time —
+       through ``services.genesis.demand.check_approach_link_sites``, the exact
+       function ``generate_demand`` itself calls, so a site or leg the mapping
+       names that the counts do not contain refuses HERE, with that module's own
+       code and wording, rather than three steps later inside a job whose only
+       output is a refusal. (Whether a mapped LINK exists is not checked here —
+       that needs a draft, which does not exist until a generation runs; the job
+       still catches it.)
+    3. Build the ``genesis.demand.v1`` document — the staged counts verbatim
+       plus this call's ``approach_links``/window/settings — and stage it
+       through ``genesis_jobs.stage_side_input``, which runs it through the SAME
+       ``side_inputs.parse_side_input`` the raw ``POST /side-inputs`` route uses.
+       Nothing here re-implements that validation or pre-empts it.
+    """
+    try:
+        staged = genesis_jobs.staged_counts(payload.counts_token)
+    except genesis_jobs.StagedOsmNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    from services.dataimport.demand import build_demand_seeding
+    from services.genesis.demand import check_approach_link_sites
+
+    window = (
+        (payload.window_start, payload.window_end)
+        if payload.window_start is not None and payload.window_end is not None
+        else None
+    )
+    seeding = build_demand_seeding(staged["result"], window=window)
+    observed_sites = sorted({profile.site_id for profile in seeding.profiles})
+    observed_approaches: dict[str, set[str]] = {}
+    for profile in seeding.profiles:
+        observed_approaches.setdefault(profile.site_id, set()).add(profile.approach_leg_id)
+
+    site_check = check_approach_link_sites(
+        payload.approach_links,
+        observed_sites=observed_sites,
+        observed_approaches=observed_approaches,
+    )
+    if site_check.issues:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": site_check.issues[0].code,
+                "reasons": [
+                    issue.messages.get("ko") or issue.message for issue in site_check.issues
+                ],
+            },
+        )
+
+    document: dict[str, Any] = {
+        "kind": side_inputs.DEMAND_DOC_KIND,
+        "counts": staged["result"].model_dump(mode="json"),
+        "approach_links": payload.approach_links,
+    }
+    if payload.window_start is not None:
+        document["window_start"] = payload.window_start.isoformat()
+    if payload.window_end is not None:
+        document["window_end"] = payload.window_end.isoformat()
+    if payload.demand_settings is not None:
+        document["demand_settings"] = payload.demand_settings
+    if payload.fleet_settings is not None:
+        document["fleet_settings"] = payload.fleet_settings
+
+    import json as _json
+
+    content = _json.dumps(document, ensure_ascii=False).encode("utf-8")
+    name = Path(str(payload.filename or "demand.json")).name
+    try:
+        return genesis_jobs.stage_side_input(side_inputs.KIND_DEMAND, name, content)
+    except genesis_jobs.GenesisRefused as exc:
+        raise HTTPException(
+            status_code=400, detail={"code": exc.code, "reasons": exc.reasons}
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The demand document could not be staged. Nothing was stored. "
                 f"[{type(exc).__name__}: {exc}]"
             ),
         ) from exc
@@ -434,6 +652,32 @@ def attach_live_check(
 # ---------------------------------------------------------------------------
 # Reads
 # ---------------------------------------------------------------------------
+
+
+@router.get("/side-inputs")
+def list_side_inputs(user: dict[str, Any] = Depends(current_user)):
+    """Every side input currently staged in this workspace — the picker data
+    for the job-start form's demand/signals dropdowns.
+
+    AUTHENTICATED, unlike this router's other reads. Every other GET in this
+    file returns the record of a decision this app already made (a job's
+    status, a stored gate verdict) and stays open in parity with
+    ``/api/simulations``. This one is different in the same way the
+    ``phase-diagrams`` sub-tree is: it lists client data BEFORE any decision
+    has been made about it — filenames, per-site leg ids, vehicle-class codes
+    and adapter refusal text taken straight from an uploaded workbook. An
+    anonymous caller has no more business enumerating that than they do
+    downloading a generation's artifact (the reason
+    ``GET /jobs/{job_id}/artifact/{kind}`` is guarded), so this route takes
+    ``current_user`` too.
+
+    Workspace-scoped the same way every staged token already is:
+    ``genesis_jobs.side_staging_dir()`` is derived from the CURRENT bound
+    workspace on every call, so this can only ever list — and a client can
+    only ever resolve a token against — the caller's own project's staging
+    tree.
+    """
+    return {"side_inputs": genesis_jobs.list_staged_side_inputs()}
 
 
 @router.get("/jobs")

@@ -5563,3 +5563,29 @@ counts (`generate_structured` doesn't surface usage; follow-up). One-intersectio
 confirm, deliberately — a bulk button is how twenty attestations get one glance. 23 vision
 calls total (~75k in / ~35k out, sonnet). Suite 4369/1(env)/1; phase-diagram file 52/52;
 typecheck clean; contract 46/46.
+
+## 2026-08-12 — the demand input becomes clickable, and the genesis UI stops being white
+
+**Demand side-input UI (user-directed fast lane).** Three routes — `POST /demand-inputs/parse`
+(counts workbook → adapter summary + staged `counts` token), `POST /demand-inputs/build`
+(counts token + approach_links → validated `genesis.demand.v1` staged via the SAME
+`parse_side_input`/`stage_side_input` entrances; unknown site/leg refuses with
+`generate_demand`'s own extracted check and wording), `GET /side-inputs` (workspace-scoped
+listing) — plus `/genesis/demand` (3-step screen) and token dropdowns on the job-start form.
+15 new tests incl. a build→parse byte-compatibility round trip; suite 4384/1(env)/1; contract
+47/47. **The adversarial refuter pass was SKIPPED on this unit at the user's explicit
+direction (demo timeline)** — recorded here, queued as post-demo debt, and accepted because
+the verified backend guards stand behind it: a mangled document cannot pass `parse_side_input`,
+an unseedable mapping refuses the generation, and V6 judges the result. Named limits: Daejeon
+adapter only (stated in the UI), one workbook per document, link ids typed not map-picked,
+peak reduction labeled as a modelling choice.
+
+**Genesis dark-theme conformance + map loading fix.** Literal `bg-white` (the one class the
+dark theme cannot remap — the token-mapped slate/rose/amber scales render correctly) ghosted
+the B3 map, comparison panel, verdict strip, job rows, and assorted buttons white-on-white;
+all swapped to `bg-surface/90` / `bg-white/[0.0x]` overlays / `bg-transparent`, except the
+현시도 image backdrop which stays white deliberately (paper-rendered diagram). Real bug found
+from the user's screenshot: `GateFindingsMap`'s fetch effect had `loading` in its deps but no
+`loadError` in its guard — a failed fetch (e.g. logged-out artifact 401) cleared its own error
+and retried forever, showing an eternal "loading" instead of the named failure. Guard fixed;
+the error is now terminal per job. typecheck clean, contract 47/47.

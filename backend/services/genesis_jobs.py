@@ -133,7 +133,8 @@ from typing import Any
 from uuid import uuid4
 
 from services import datasets, workspaces
-from services.dataimport.base import IssueSeverity
+from services.dataimport.adapters.daejeon import DaejeonCountAdapter
+from services.dataimport.base import AdapterError, ImportResult, IssueSeverity
 from services.genesis import side_inputs as side_inputs_module
 from services.genesis.compose import NO_LAYERS, ComposedLayers
 from services.genesis.draft import DraftNetwork, build_draft
@@ -175,6 +176,25 @@ LAYERS_JSON_FILENAME = "layers.json"
 
 #: How a staged side input's kind and original name are remembered.
 SIDE_INPUT_META_FILENAME = "meta.json"
+
+#: A third kind staged in the SAME tree as ``demand``/``signals``, one door
+#: over from both — a counts workbook is not itself a ``genesis.demand.v1``
+#: document (it carries no ``approach_links``; only a human can supply the
+#: join), so it cannot be validated by ``side_inputs.parse_side_input`` and is
+#: not one of ``side_inputs.KINDS``. What it shares with the other two is the
+#: staging discipline: authenticated, size-capped, parsed BEFORE a token is
+#: handed out, swept by the same TTL. ``POST /api/genesis/demand-inputs/build``
+#: is the only consumer of a ``counts`` token, and it never forwards the token
+#: itself into a job — it reads the staged ``ImportResult`` back, joins it with
+#: a caller-supplied ``approach_links``, and stages the RESULT as a proper
+#: ``demand`` side input through :func:`stage_side_input`, the one door a job
+#: actually accepts.
+COUNTS_KIND = "counts"
+#: The parsed ``ImportResult`` (``model_dump(mode="json")``), stored beside the
+#: staged workbook's ``meta.json``. Storing the NEUTRAL result rather than
+#: re-parsing the workbook on every build call means "the counts I parsed" and
+#: "the counts I built a demand document from" are provably the same bytes.
+COUNTS_DOC_FILENAME = "counts.json"
 
 #: The frozen copy inside the job's work directory, per kind.
 _SIDE_INPUT_STORED_AS = {
@@ -524,19 +544,25 @@ def stage_side_input(kind: str, filename: str, content: bytes) -> dict[str, Any]
     target_dir.mkdir(parents=True, exist_ok=True)
     (target_dir / name).write_bytes(content)
     digest = hashlib.sha256(content).hexdigest()
+    summary = document.summary()
     meta = {
         "kind": kind,
         "filename": name,
         "bytes": len(content),
         "sha256": digest,
         "staged_at": _now_iso(),
+        # Persisted (not just returned) so GET /api/genesis/side-inputs can
+        # list every staged document's summary without re-parsing it -- a
+        # listing must stay cheap even when a staged demand document carries
+        # 30,000 counts.
+        "summary": summary,
     }
     (target_dir / SIDE_INPUT_META_FILENAME).write_text(
         json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
         newline="",
     )
-    return {"token": token, **meta, "summary": document.summary()}
+    return {"token": token, **meta}
 
 
 def staged_side_input(token: str) -> dict[str, Any]:
@@ -594,6 +620,246 @@ def discard_staged_side_input(token: str) -> None:
     target = root / token
     if target.is_dir() and target.parent == root:
         shutil.rmtree(target, ignore_errors=True)
+
+
+def list_staged_side_inputs() -> list[dict[str, Any]]:
+    """Every currently staged side input (``demand``/``signals``/``counts``) in
+    THIS workspace, newest first.
+
+    Reads each entry's ``meta.json`` rather than re-parsing the staged document
+    — the summary was computed and persisted at stage time (see
+    :func:`stage_side_input` and :func:`stage_counts`), so a listing stays cheap
+    even when a staged demand document carries tens of thousands of counts.
+
+    Best-effort per entry: a token directory whose ``meta.json`` cannot be read
+    (a half-written stage, a concurrent sweep) is skipped rather than failing
+    the whole listing — the same "a listing must not 500 over one bad record"
+    rule :func:`list_jobs` follows. Never raises for a missing staging tree.
+    """
+    root = side_staging_dir()
+    if not root.is_dir():
+        return []
+    entries: list[dict[str, Any]] = []
+    for child in root.iterdir():
+        if not child.is_dir() or not _ID_RE.match(child.name):
+            continue
+        meta_path = child / SIDE_INPUT_META_FILENAME
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        entries.append(
+            {
+                "token": child.name,
+                "kind": str(meta.get("kind") or ""),
+                "filename": str(meta.get("filename") or ""),
+                "bytes": int(meta.get("bytes") or 0),
+                "sha256": str(meta.get("sha256") or ""),
+                "staged_at": str(meta.get("staged_at") or ""),
+                "summary": meta.get("summary") if isinstance(meta.get("summary"), dict) else {},
+            }
+        )
+    entries.sort(key=lambda item: item["staged_at"], reverse=True)
+    return entries
+
+
+# ---------------------------------------------------------------------------
+# Staging a counts workbook — the demand side input's raw half
+# ---------------------------------------------------------------------------
+#
+# A counts workbook is not a `genesis.demand.v1` document (it carries no
+# `approach_links`; the join is a fact only a human can supply), so it does not
+# go through `side_inputs.parse_side_input` and is not one of `side_inputs.KINDS`.
+# It shares the staging tree and the staging discipline with `demand`/`signals`
+# -- authenticated, size-capped, parsed BEFORE a token exists, swept by the same
+# TTL -- and `discard_staged_side_input` already discards it (the function only
+# looks at the token, never the kind).
+
+
+def stage_counts(filename: str, content: bytes) -> dict[str, Any]:
+    """Stage one Daejeon counts workbook and return ``{token, kind, …, summary}``.
+
+    Parsed with :class:`~services.dataimport.adapters.daejeon.DaejeonCountAdapter`
+    BEFORE the token exists, for the same reason :func:`stage_osm` proves the
+    ``.osm`` is OSM XML: a caller who uploads the wrong workbook finds out while
+    they are still looking at the upload. The adapter's own contract is
+    "report, do not raise" (``services/dataimport/base.py``), so a workbook with
+    REFUSE-tier issues still stages -- the summary shows the issues verbatim,
+    unsoftened, so the caller can see exactly what needs fixing before trying a
+    different file. Only a structurally unreadable upload (wrong extension,
+    empty body, an .xlsx openpyxl cannot open at all) is refused outright,
+    without a token -- the same split :func:`stage_side_input` draws between "the
+    bytes are unusable" and "the document is usable but reports problems".
+    """
+    name = Path(str(filename or "")).name.strip()
+    if not name:
+        raise GenesisRefused("genesis_counts_no_filename", ["The upload carries no file name."])
+    if Path(name).suffix.lower() not in (".xlsx", ".xlsm"):
+        raise GenesisRefused(
+            "genesis_counts_not_workbook",
+            [
+                f"{name!r} is not a .xlsx/.xlsm workbook. The Daejeon count adapter reads an "
+                "Excel export, one workbook per intersection."
+            ],
+        )
+    if not content.strip():
+        raise GenesisRefused("genesis_counts_empty", [f"{name!r} is empty."])
+    if len(content) > side_inputs_module.MAX_SIDE_INPUT_BYTES:
+        raise GenesisRefused(
+            "genesis_counts_too_large",
+            [
+                f"{name!r} is {len(content)} bytes; the limit is "
+                f"{side_inputs_module.MAX_SIDE_INPUT_BYTES} bytes "
+                f"({side_inputs_module.MAX_SIDE_INPUT_BYTES // (1024 * 1024)} MB)."
+            ],
+        )
+
+    _purge_stale_staging()
+    token = uuid4().hex
+    target_dir = side_staging_dir() / token
+    target_dir.mkdir(parents=True, exist_ok=True)
+    workbook_path = target_dir / name
+    workbook_path.write_bytes(content)
+
+    try:
+        result = DaejeonCountAdapter().parse([workbook_path])
+    except AdapterError as exc:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise GenesisRefused("genesis_counts_unreadable", [f"{name}: {exc}"]) from exc
+    finally:
+        # The workbook itself is not needed past this point -- only the neutral
+        # ImportResult is staged, so a later build call reads back the SAME
+        # parse rather than a workbook that could read differently a second
+        # time (a different openpyxl version, a file touched on disk).
+        try:
+            if workbook_path.is_file():
+                workbook_path.unlink()
+        except OSError:  # pragma: no cover - best effort
+            pass
+
+    document = result.model_dump(mode="json")
+    (target_dir / COUNTS_DOC_FILENAME).write_text(
+        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="",
+    )
+
+    digest = hashlib.sha256(content).hexdigest()
+    summary = _counts_summary(result)
+    meta = {
+        "kind": COUNTS_KIND,
+        "filename": name,
+        "bytes": len(content),
+        "sha256": digest,
+        "staged_at": _now_iso(),
+        "summary": summary,
+    }
+    (target_dir / SIDE_INPUT_META_FILENAME).write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="",
+    )
+    return {"token": token, **meta}
+
+
+def staged_counts(token: str) -> dict[str, Any]:
+    """A staged counts token's neutral :class:`ImportResult`, validated twice.
+
+    Returns the parsed RESULT, never a path -- the caller (the demand-input
+    build route) joins it with an ``approach_links`` mapping and stages the
+    outcome as a proper ``demand`` side input; it has no reason to touch a
+    server path at all.
+    """
+    if not token or not _ID_RE.match(token):
+        raise StagedOsmNotFoundError(
+            "Unknown or expired counts token. Please upload the workbook again."
+        )
+    root = side_staging_dir()
+    if not root.is_dir():
+        raise StagedOsmNotFoundError(
+            "Unknown or expired counts token. Please upload the workbook again."
+        )
+    resolved_root = root.resolve()
+    target = (resolved_root / token).resolve()
+    try:
+        target.relative_to(resolved_root)
+    except ValueError:  # pragma: no cover - the regex rules this out
+        raise StagedOsmNotFoundError("Unknown or expired counts token.") from None
+    meta_path = target / SIDE_INPUT_META_FILENAME
+    doc_path = target / COUNTS_DOC_FILENAME
+    if not target.is_dir() or not meta_path.is_file() or not doc_path.is_file():
+        raise StagedOsmNotFoundError(
+            "Unknown or expired counts token. Please upload the workbook again."
+        )
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise StagedOsmNotFoundError(
+            "The staged counts record could not be read. Please upload it again."
+        ) from exc
+    kind = str(meta.get("kind") or "")
+    if kind != COUNTS_KIND:
+        raise StagedOsmNotFoundError(
+            f"That token names a {kind or 'unknown'!r} side input, not a counts one."
+        )
+    try:
+        document = json.loads(doc_path.read_text(encoding="utf-8"))
+        result = ImportResult.model_validate(document)
+    except (OSError, ValueError) as exc:
+        raise StagedOsmNotFoundError(
+            "The staged counts could not be read. Please upload the workbook again."
+        ) from exc
+    return {
+        "token": token,
+        "kind": kind,
+        "filename": str(meta.get("filename") or ""),
+        "bytes": int(meta.get("bytes") or 0),
+        "sha256": str(meta.get("sha256") or ""),
+        "result": result,
+    }
+
+
+def _counts_summary(result: ImportResult) -> dict[str, Any]:
+    """What a counts parse produced, COUNTED never sampled -- the same
+    discipline :meth:`side_inputs.DemandSideInput.summary` follows. Sites carry
+    their legs verbatim (never renamed, never reordered by anything but sort)
+    so the mapping UI can build one row per leg with the id `generate_demand`
+    will actually compare against.
+    """
+    sites: list[dict[str, Any]] = []
+    for site in result.sites:
+        legs = sorted({c.approach.leg_id for c in result.counts if c.site_id == site.site_id})
+        sites.append({"site_id": site.site_id, "site_name": site.site_name, "legs": legs})
+    starts = [c.interval_start for c in result.counts]
+    ends = [c.interval_end for c in result.counts]
+    window = (
+        {"start": min(starts).isoformat(), "end": max(ends).isoformat()}
+        if starts and ends
+        else None
+    )
+    return {
+        "adapter": result.adapter.name,
+        "region": result.adapter.region,
+        "source_files": list(result.source_files),
+        "counts": len(result.counts),
+        "sites": sites,
+        "vehicle_classes": sorted({c.vehicle_class.code for c in result.counts}),
+        "window": window,
+        "issues": [
+            {
+                "severity": issue.severity.value,
+                "code": issue.code,
+                "message": issue.message,
+                "subject": issue.subject,
+                "context": issue.context,
+            }
+            for issue in result.issues
+        ],
+        "refusals": result.issue_codes(IssueSeverity.REFUSE),
+        "ok": result.ok,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1743,6 +2009,8 @@ def _now_iso() -> str:
 
 __all__ = [
     "reconcile_interrupted_jobs",
+    "COUNTS_DOC_FILENAME",
+    "COUNTS_KIND",
     "GATED_STATUSES",
     "GATE_JSON_FILENAME",
     "GATE_REPORT_FILENAME",
@@ -1771,11 +2039,14 @@ __all__ = [
     "get_job",
     "job_dir",
     "list_jobs",
+    "list_staged_side_inputs",
     "registry_path",
     "run_genesis_job",
     "side_staging_dir",
+    "stage_counts",
     "stage_osm",
     "stage_side_input",
+    "staged_counts",
     "staged_osm_path",
     "staged_side_input",
     "staging_dir",

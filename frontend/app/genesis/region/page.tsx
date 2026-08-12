@@ -490,7 +490,7 @@ export default function GenesisRegionPage() {
           <div
             className={`mt-3 rounded-lg border px-3.5 py-3 text-xs ${
               measurement.within_region_cap
-                ? "border-slate-200 bg-white text-slate-700"
+                ? "border-slate-200 bg-surface/90 text-slate-700"
                 : "border-amber-300 bg-amber-50 text-amber-900"
             }`}
           >
@@ -659,7 +659,7 @@ export default function GenesisRegionPage() {
               </p>
               <details className="mt-1.5">
                 <summary className="cursor-pointer">{t("보낸 질의", "The query sent", "送信した問い合わせ")}</summary>
-                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-white px-2 py-1.5 font-mono text-[10.5px]">
+                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-white/[0.04] px-2 py-1.5 font-mono text-[10.5px]">
                   {selected.provenance.query}
                 </pre>
               </details>
@@ -730,7 +730,7 @@ export default function GenesisRegionPage() {
                   type="button"
                   onClick={() => setSelectedId(entry.id)}
                   className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left text-xs ${
-                    entry.id === selectedId ? "border-slate-400 bg-slate-50" : "border-slate-200 bg-white"
+                    entry.id === selectedId ? "border-slate-400 bg-slate-50" : "border-slate-200 bg-transparent"
                   }`}
                 >
                   <span className="min-w-0">

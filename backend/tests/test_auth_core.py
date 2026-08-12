@@ -978,6 +978,27 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       side input, which then steers a generation. Same reason
       ``POST /api/genesis/side-inputs`` is guarded, one door over.
 
+    **The demand side-input UI adds three: two mutations and one read.**
+    Before this unit, building a ``demand`` side input meant hand-writing the
+    ``genesis.demand.v1`` JSON and staging it with a bare token — every step
+    but the upload itself required a terminal.
+
+    * ``POST /api/genesis/demand-inputs/parse`` — stages ONE counts workbook,
+      same reason ``POST /api/genesis/uploads`` is guarded: it writes into the
+      project's tree.
+    * ``POST /api/genesis/demand-inputs/build`` — staged counts + a caller's
+      approach→link map become a staged ``demand`` side input, which then
+      steers a generation exactly as ``POST /api/genesis/side-inputs`` does;
+      same reason, one door over.
+    * ``GET /api/genesis/side-inputs`` — unlike this router's other reads
+      (which return the record of a decision this app already made), this one
+      lists CLIENT DATA before any decision has been made about it: staged
+      filenames, per-site leg ids and vehicle-class codes read straight off an
+      uploaded workbook. Same reasoning as the ``phase-diagrams`` sub-tree
+      above and as the artifact-download route: an anonymous caller has no
+      more business enumerating a project's staged uploads than downloading
+      its generated network.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -1003,6 +1024,8 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/workspaces",
         "/api/genesis/uploads",
         "/api/genesis/side-inputs",
+        "/api/genesis/demand-inputs/parse",
+        "/api/genesis/demand-inputs/build",
         "/api/genesis/jobs",
         "/api/genesis/jobs/{job_id}/artifact/{kind}",
         "/api/genesis/jobs/{job_id}/live-check",

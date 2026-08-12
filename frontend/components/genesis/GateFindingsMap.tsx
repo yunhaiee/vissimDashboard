@@ -208,10 +208,15 @@ export default function GateFindingsMap({
   }, [jobId]);
 
   useEffect(() => {
-    if (!open || network || loading || !hasArtifact) return;
+    // `loadError` MUST be in this guard: without it, a failed fetch re-fires
+    // the effect (deps include `loading`), which clears its own error and
+    // retries forever -- the user sees an eternal "loading" instead of the
+    // named failure. Found live 2026-08-12 (logged-out user, auth-required
+    // artifact fetch). The error state is terminal for this job; switching
+    // jobs resets it via the effect above.
+    if (!open || network || loading || loadError !== null || !hasArtifact) return;
     let cancelled = false;
     setLoading(true);
-    setLoadError(null);
     fetchGenesisDraftNetwork(jobId)
       .then((payload) => {
         if (!cancelled) setNetwork(payload);
@@ -225,7 +230,7 @@ export default function GateFindingsMap({
     return () => {
       cancelled = true;
     };
-  }, [open, network, loading, hasArtifact, jobId]);
+  }, [open, network, loading, loadError, hasArtifact, jobId]);
 
   const bbox = useMemo(() => (network ? networkBbox(network) : null), [network]);
   const projection = useMemo(() => (bbox ? fitProjection(bbox) : null), [bbox]);
@@ -457,12 +462,12 @@ export default function GateFindingsMap({
                   <button
                     type="button"
                     onClick={resetView}
-                    className="ml-auto rounded border border-slate-300 bg-white px-2 py-0.5 font-semibold text-slate-600"
+                    className="ml-auto rounded border border-slate-300 bg-white/[0.06] px-2 py-0.5 font-semibold text-slate-600"
                   >
                     {t("보기 초기화", "Reset view", "表示をリセット")}
                   </button>
                 </div>
-                <div className="overflow-hidden rounded-lg border border-slate-200 bg-white" style={{ height: 440 }}>
+                <div className="overflow-hidden rounded-lg border border-slate-200 bg-surface" style={{ height: 440 }}>
                   <svg
                     ref={setSvgRef}
                     viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
@@ -759,7 +764,7 @@ function MapShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-3.5 py-3">
+    <div className="rounded-lg border border-slate-200 bg-surface/90 px-3.5 py-3">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs font-bold text-slate-900">{title}</p>
@@ -769,7 +774,7 @@ function MapShell({
           <button
             type="button"
             onClick={onToggle}
-            className="shrink-0 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700"
+            className="shrink-0 rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-slate-700"
           >
             {open ? t("접기", "Collapse", "折りたたむ") : t("펼치기", "Expand", "展開")}
           </button>
@@ -878,7 +883,7 @@ function DetailPanel({
               {t("링크", "Links", "リンク")} {selected.zone.links} · {t("OSM way", "OSM ways", "OSM way")} {selected.zone.ways}
             </p>
             <p className="mt-1">{selected.zone.street_names.join(", ")}</p>
-            <p className="mt-1.5 rounded border border-slate-300 bg-white px-1.5 py-1 text-[10px] text-slate-500">
+            <p className="mt-1.5 rounded border border-slate-300 bg-white/[0.04] px-1.5 py-1 text-[10px] text-slate-500">
               {t(
                 "이 구역은 최종 좌표가 확정되기 전에 제외되어, 지도에 그릴 좌표가 없습니다.",
                 "This zone was excluded before the final coordinates were fixed -- it has no coordinates left to draw.",
@@ -890,7 +895,7 @@ function DetailPanel({
       </div>
 
       {excludedZones.length > 0 && (
-        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+        <div className="rounded-lg border border-slate-200 bg-surface/90 px-3 py-2.5">
           <p className="text-[11px] font-bold text-slate-800">
             {t("제외된 구역", "Excluded zones", "除外されたゾーン")} ({excludedZones.length})
           </p>
@@ -941,7 +946,7 @@ function DetailPanel({
                 <button
                   type="button"
                   onClick={() => onSelectUnresolved(ref)}
-                  className="w-full truncate rounded border border-amber-200 bg-white px-2 py-1 text-left text-[10.5px]"
+                  className="w-full truncate rounded border border-amber-200 bg-white/[0.04] px-2 py-1 text-left text-[10.5px]"
                 >
                   {ref.checkId} · {ref.finding.subject}
                 </button>

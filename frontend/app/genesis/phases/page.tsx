@@ -394,7 +394,7 @@ export default function PhaseDiagramReviewPage() {
                       className={`w-full rounded-lg border px-3 py-2 text-left text-xs ${
                         row.review_id === selectedId
                           ? "border-sky-400 bg-sky-50"
-                          : "border-slate-200 bg-white hover:bg-slate-50"
+                          : "border-slate-200 bg-transparent hover:bg-slate-50"
                       }`}
                     >
                       <span className="block truncate font-semibold text-slate-900">{row.source_file}</span>
@@ -603,7 +603,7 @@ export default function PhaseDiagramReviewPage() {
                     type="button"
                     onClick={loadCandidates}
                     disabled={!jobId || busy}
-                    className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 disabled:opacity-40"
+                    className="rounded border border-slate-300 bg-white/[0.06] px-3 py-1.5 text-xs font-semibold text-slate-800 disabled:opacity-40"
                   >
                     {t("노드 후보 불러오기", "Load node candidates", "ノード候補を読み込む")}
                   </button>
@@ -624,7 +624,7 @@ export default function PhaseDiagramReviewPage() {
                           className={`w-full rounded border px-2 py-1 text-left text-[11px] ${
                             candidate.node_id === nodeId
                               ? "border-sky-400 bg-sky-50"
-                              : "border-slate-200 bg-white hover:bg-slate-50"
+                              : "border-slate-200 bg-transparent hover:bg-slate-50"
                           }`}
                         >
                           <span className="font-semibold text-slate-900">

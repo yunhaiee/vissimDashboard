@@ -790,6 +790,92 @@ def _class_key(count: TurningCountData) -> str:
     return count.vehicle_class.code
 
 
+@dataclass(frozen=True)
+class ApproachLinkSiteCheck:
+    """The site/leg half of the approach→link join's validation.
+
+    Factored out of :func:`generate_demand` so a caller that has COUNTS but no
+    DRAFT yet — ``routers/genesis.py``'s demand-input build route, which
+    assembles a ``genesis.demand.v1`` document before any generation has run —
+    can run the SAME check, with the SAME codes and the SAME wording, instead
+    of inventing its own "unknown site" sentence that could drift from this
+    one. The link-existence and duplicate-link checks stay inside
+    :func:`generate_demand`: they need ``draft.links``, which a caller with no
+    draft does not have (``services/genesis/side_inputs.py``'s docstring names
+    this exact split — "does NOT check … whether link 7 exists … because the
+    draft does not exist yet").
+    """
+
+    issues: tuple[ImportIssue, ...]
+    unknown_sites: tuple[str, ...]
+    unknown_approaches: tuple[str, ...]
+
+
+def check_approach_link_sites(
+    approach_links: Mapping[str, Mapping[str, int]],
+    *,
+    observed_sites: Sequence[str],
+    observed_approaches: Mapping[str, set[str]],
+) -> ApproachLinkSiteCheck:
+    """Which mapped sites/approaches the counts do not contain, and why that
+    refuses. Pure — no draft, no I/O — so it runs equally before or after a
+    draft exists."""
+    unknown_sites = sorted(set(approach_links) - set(observed_sites))
+    unknown_approaches: list[str] = []
+    for site_id in sorted(approach_links):
+        for leg in sorted(approach_links[site_id]):
+            label = f"{site_id}|{leg}"
+            if site_id in observed_approaches and leg not in observed_approaches[site_id]:
+                unknown_approaches.append(label)
+
+    issues: list[ImportIssue] = []
+    if unknown_sites:
+        issues.append(
+            _issue(
+                IssueSeverity.REFUSE,
+                "genesis_demand_map_names_unknown_site",
+                f"The approach→link map names site(s) {unknown_sites} that the counts do not "
+                "contain. Either the map is another survey's or the window excluded them; "
+                "either way an entry the caller meant to apply somewhere would be silently "
+                "ignored.",
+                messages={
+                    "ko": f"매핑이 카운트에 없는 지점 {unknown_sites}을(를) 지정했습니다. "
+                    "적용될 곳 없는 항목을 조용히 무시하지 않습니다.",
+                    "en": f"The map names site(s) {unknown_sites} absent from the counts; an "
+                    "entry meant to apply somewhere is never silently ignored.",
+                    "ja": f"対応表がカウントに存在しない地点 {unknown_sites} を指定しています。"
+                    "適用先のない項目を黙って無視しません。",
+                },
+                citation=CIT_S5541_VEHICLE_INPUTS,
+                context={"unknown_sites": unknown_sites},
+            )
+        )
+    if unknown_approaches:
+        issues.append(
+            _issue(
+                IssueSeverity.REFUSE,
+                "genesis_demand_map_names_unknown_approach",
+                f"The approach→link map names approach(es) {sorted(unknown_approaches)} that the "
+                "counts do not contain.",
+                messages={
+                    "ko": f"매핑이 카운트에 없는 접근로 {sorted(unknown_approaches)}을(를) "
+                    "지정했습니다.",
+                    "en": f"The map names approach(es) {sorted(unknown_approaches)} absent from "
+                    "the counts.",
+                    "ja": f"対応表がカウントに存在しない流入路 {sorted(unknown_approaches)} を"
+                    "指定しています。",
+                },
+                citation=CIT_S5541_VEHICLE_INPUTS,
+                context={"unknown_approaches": sorted(unknown_approaches)},
+            )
+        )
+    return ApproachLinkSiteCheck(
+        issues=tuple(issues),
+        unknown_sites=tuple(unknown_sites),
+        unknown_approaches=tuple(unknown_approaches),
+    )
+
+
 def generate_demand(
     draft: DraftNetwork,
     result: ImportResult,
@@ -899,69 +985,30 @@ def generate_demand(
         return _bail()
 
     link_by_id = {link.id: link for link in draft.links}
-    unknown_sites = sorted(set(approach_links) - set(observed_sites))
-    unknown_approaches: list[str] = []
+    site_check = check_approach_link_sites(
+        approach_links, observed_sites=observed_sites, observed_approaches=observed_approaches
+    )
+    issues.extend(site_check.issues)
+    unknown_approaches = list(site_check.unknown_approaches)
     unknown_links: list[str] = []
     seen_links: dict[int, str] = {}
     duplicate_links: list[str] = []
     for site_id in sorted(approach_links):
         for leg, link_id in sorted(approach_links[site_id].items()):
             label = f"{site_id}|{leg}"
-            if site_id in observed_approaches and leg not in observed_approaches[site_id]:
-                unknown_approaches.append(label)
             if link_id not in link_by_id:
                 unknown_links.append(f"{label}->link {link_id}")
             if link_id in seen_links and seen_links[link_id] != label:
                 duplicate_links.append(f"link {link_id} <- {seen_links[link_id]}, {label}")
             seen_links.setdefault(link_id, label)
 
-    for site_id in unknown_sites:
+    for site_id in site_check.unknown_sites:
         coverage.add("mapped_sites_absent_from_counts", site_id)
     for label in unknown_approaches:
         coverage.add("mapped_approaches_absent_from_counts", label)
     for label in unknown_links:
         coverage.add("mapped_links_absent_from_draft", label)
 
-    if unknown_sites:
-        issues.append(
-            _issue(
-                IssueSeverity.REFUSE,
-                "genesis_demand_map_names_unknown_site",
-                f"The approach→link map names site(s) {unknown_sites} that the counts do not "
-                "contain. Either the map is another survey's or the window excluded them; "
-                "either way an entry the caller meant to apply somewhere would be silently "
-                "ignored.",
-                messages={
-                    "ko": f"매핑이 카운트에 없는 지점 {unknown_sites}을(를) 지정했습니다. "
-                    "적용될 곳 없는 항목을 조용히 무시하지 않습니다.",
-                    "en": f"The map names site(s) {unknown_sites} absent from the counts; an "
-                    "entry meant to apply somewhere is never silently ignored.",
-                    "ja": f"対応表がカウントに存在しない地点 {unknown_sites} を指定しています。"
-                    "適用先のない項目を黙って無視しません。",
-                },
-                citation=CIT_S5541_VEHICLE_INPUTS,
-                context={"unknown_sites": unknown_sites},
-            )
-        )
-    if unknown_approaches:
-        issues.append(
-            _issue(
-                IssueSeverity.REFUSE,
-                "genesis_demand_map_names_unknown_approach",
-                f"The approach→link map names approach(es) {sorted(unknown_approaches)} that the "
-                "counts do not contain.",
-                messages={
-                    "ko": f"매핑이 카운트에 없는 접근로 {sorted(unknown_approaches)}을(를) "
-                    "지정했습니다.",
-                    "en": f"The map names approach(es) {sorted(unknown_approaches)} absent from "
-                    "the counts.",
-                    "ja": f"対応表がカウントに存在しない流入路 {sorted(unknown_approaches)} を"
-                    "指定しています。",
-                },
-                citation=CIT_S5541_VEHICLE_INPUTS,
-                context={"unknown_approaches": sorted(unknown_approaches)},
-            )
-        )
     if unknown_links:
         issues.append(
             _issue(
@@ -2224,6 +2271,7 @@ __all__ = [
     "REDUCTION_PEAK",
     "REFUSE_CODES",
     "SHARE_SUM_TOLERANCE",
+    "ApproachLinkSiteCheck",
     "CompositionFlow",
     "DemandCoverage",
     "DemandInterval",
@@ -2234,6 +2282,7 @@ __all__ = [
     "VehicleCompositionPlan",
     "VehicleInputPlan",
     "VehicleTypeRef",
+    "check_approach_link_sites",
     "demand_containers",
     "demand_provenance_note",
     "entry_links",

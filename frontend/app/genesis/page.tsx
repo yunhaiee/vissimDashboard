@@ -40,6 +40,7 @@ import {
   fetchGenesisGateReport,
   fetchGenesisJob,
   fetchGenesisJobs,
+  fetchStagedSideInputs,
   genesisArtifactUrl,
   startGenesisJob,
   uploadGenesisOsm,
@@ -47,6 +48,7 @@ import {
   type GenesisGateReport,
   type GenesisJob,
   type GenesisJobStatus,
+  type StagedSideInputEntry,
 } from "@/lib/api";
 import { formatTimestamp, statusLabel } from "@/lib/genesisArtifacts";
 
@@ -168,6 +170,26 @@ function refusalHeadline(code: string | null, t: Translate): string {
   }
 }
 
+/** One dropdown line for a staged side input -- filename plus whatever its
+ * OWN summary already states (never re-derived here, so the picker cannot say
+ * something the staging response did not). `demand`'s summary carries
+ * `sites_mapped`/`approaches_mapped`; `signals`'s carries `assignments`. Falls
+ * back to just the filename for a shape this picker does not recognise, which
+ * covers a future kind without this file needing to know about it first. */
+function sideInputLabel(entry: StagedSideInputEntry): string {
+  const summary = entry.summary ?? {};
+  if (entry.kind === "demand") {
+    const sites = Array.isArray(summary.sites_mapped) ? summary.sites_mapped.length : 0;
+    const approaches = typeof summary.approaches_mapped === "number" ? summary.approaches_mapped : 0;
+    return `${entry.filename} · ${sites}지점/${approaches}접근로`;
+  }
+  if (entry.kind === "signals") {
+    const assignments = Array.isArray(summary.assignments) ? summary.assignments.length : 0;
+    return `${entry.filename} · ${assignments}개 교차로`;
+  }
+  return entry.filename;
+}
+
 function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
     <section className="mb-5 rounded-xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
@@ -190,6 +212,15 @@ export default function GenesisPage() {
   const [excludeService, setExcludeService] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<GenesisError | Error | null>(null);
+
+  // The optional layers' pickers -- staged through /genesis/demand or
+  // /genesis/phases (or the raw POST /side-inputs), listed here by KIND only:
+  // nothing on this page assembles a document, it only names a token
+  // startGenesisJob already accepts. Both default to "" (none), the
+  // geometry-only path this form has always taken.
+  const [sideInputs, setSideInputs] = useState<StagedSideInputEntry[]>([]);
+  const [demandToken, setDemandToken] = useState("");
+  const [signalsToken, setSignalsToken] = useState("");
 
   const [jobs, setJobs] = useState<GenesisJob[]>([]);
   const [jobsError, setJobsError] = useState<string | null>(null);
@@ -227,6 +258,20 @@ export default function GenesisPage() {
   useEffect(() => {
     void loadJobs();
   }, [loadJobs]);
+
+  const loadSideInputs = useCallback(async () => {
+    try {
+      setSideInputs(await fetchStagedSideInputs());
+    } catch {
+      // Best-effort: a picker with nothing in it still lets the geometry-only
+      // path work, so a failed listing must not block the form.
+      setSideInputs([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSideInputs();
+  }, [loadSideInputs]);
 
   // Poll the SELECTED job while it is still running. The job record is the only
   // source of truth for progress; nothing here guesses a percentage the backend
@@ -308,18 +353,27 @@ export default function GenesisPage() {
         upload_token: staged.token,
         name: name.trim() || undefined,
         exclude_service: excludeService,
+        demand_token: demandToken || undefined,
+        signals_token: signalsToken || undefined,
       });
       setSelectedId(started.id);
       setSelectedEntry({ id: started.id, record: started });
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
+      setDemandToken("");
+      setSignalsToken("");
       void loadJobs();
+      // The chosen tokens are discarded server-side once the job owns its
+      // frozen copies (keep_side_inputs defaults to false), so the pickers'
+      // list has to be re-read -- otherwise a used token would keep showing as
+      // available until the next full page load.
+      void loadSideInputs();
     } catch (caught) {
       setSubmitError(caught instanceof Error ? caught : new Error(String(caught)));
     } finally {
       setSubmitting(false);
     }
-  }, [file, name, excludeService, loadJobs]);
+  }, [file, name, excludeService, demandToken, signalsToken, loadJobs, loadSideInputs]);
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
@@ -375,13 +429,27 @@ export default function GenesisPage() {
             {t("현시도 확인하기 →", "Review the 현시도 →", "現示図を確認 →")}
           </Link>
         </p>
+        {/* The demand side-input UI. A counts workbook + a browser-typed
+          * site→leg→link map become a token this form's dropdown below can
+          * pick up -- the same "build once, attach here" shape as the two
+          * hints above. */}
+        <p className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+          {t(
+            "수요(교통량) 카운트가 있으신가요? 대전 스마트교차로 워크북을 올리고 접근로를 링크에 연결하면 아래 목록에서 고를 수 있는 수요 입력이 만들어집니다.",
+            "Have traffic counts? Upload a Daejeon smart-intersection workbook and bind each approach to a link, and a demand input the dropdown below can pick up is built.",
+            "交通量カウントをお持ちですか？大田スマート交差点のワークブックをアップロードし、流入路をリンクに対応付けると、下の一覧で選べる需要入力が作成されます。",
+          )}{" "}
+          <Link href="/genesis/demand" className="font-semibold underline">
+            {t("수요 입력 만들기 →", "Build a demand input →", "需要入力を作成 →")}
+          </Link>
+        </p>
         <div className="flex flex-col gap-3">
           <input
             ref={fileInputRef}
             type="file"
             accept=".osm,.xml"
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-            className="block w-full text-xs text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-700"
+            className="block w-full text-xs text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white/[0.06] file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-700"
           />
 
           <label className="flex flex-col gap-1 text-xs text-slate-600">
@@ -417,6 +485,47 @@ export default function GenesisPage() {
               </span>
             </span>
           </label>
+
+          {/* The optional layers' pickers. Both default to the empty option
+            * (none), which is the geometry-only path this form has always
+            * taken -- picking one only NAMES a token already staged and
+            * validated; nothing here builds or edits a document. */}
+          <div className="flex flex-wrap gap-3">
+            <label className="flex flex-1 flex-col gap-1 text-xs text-slate-600">
+              {t("수요 입력 (선택)", "Demand input (optional)", "需要入力（任意）")}
+              <select
+                value={demandToken}
+                onChange={(event) => setDemandToken(event.target.value)}
+                className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs text-slate-800"
+              >
+                <option value="">{t("없음", "none", "なし")}</option>
+                {sideInputs
+                  .filter((entry) => entry.kind === "demand")
+                  .map((entry) => (
+                    <option key={entry.token} value={entry.token}>
+                      {sideInputLabel(entry)}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="flex flex-1 flex-col gap-1 text-xs text-slate-600">
+              {t("신호 입력 (선택)", "Signals input (optional)", "信号入力（任意）")}
+              <select
+                value={signalsToken}
+                onChange={(event) => setSignalsToken(event.target.value)}
+                className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs text-slate-800"
+              >
+                <option value="">{t("없음", "none", "なし")}</option>
+                {sideInputs
+                  .filter((entry) => entry.kind === "signals")
+                  .map((entry) => (
+                    <option key={entry.token} value={entry.token}>
+                      {sideInputLabel(entry)}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          </div>
 
           <div className="flex items-center gap-3">
             <button
@@ -485,7 +594,7 @@ export default function GenesisPage() {
                   type="button"
                   onClick={() => setSelectedId(job.id)}
                   className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left text-xs ${
-                    job.id === selectedId ? "border-slate-400 bg-slate-50" : "border-slate-200 bg-white"
+                    job.id === selectedId ? "border-slate-400 bg-slate-50" : "border-slate-200 bg-transparent"
                   }`}
                 >
                   <span className="min-w-0">
@@ -642,7 +751,7 @@ export default function GenesisPage() {
 
           {report && (
             <>
-              <div className="mb-3 rounded-lg border border-slate-200 bg-white px-3.5 py-3">
+              <div className="mb-3 rounded-lg border border-slate-200 bg-surface/90 px-3.5 py-3">
                 <p className="text-xs font-bold text-slate-900">{verdictLabel(report.verdict, t)}</p>
                 <p className="mt-1 text-[11px] text-slate-600">
                   {t("통과", "pass", "合格")} {report.counts.pass} · {t("실패", "fail", "不合格")}{" "}
@@ -736,31 +845,31 @@ export default function GenesisPage() {
             <div className="mt-4 flex flex-wrap gap-2 text-[11px]">
               <a
                 href={genesisArtifactUrl(selected.id, "inpx")}
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700"
+                className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700"
               >
                 {t("네트워크 .inpx", "Network .inpx", "ネットワーク .inpx")}
               </a>
               <a
                 href={genesisArtifactUrl(selected.id, "compliance_md")}
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700"
+                className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700"
               >
                 {t("§5 준수 리포트", "§5 compliance report", "§5 準拠レポート")}
               </a>
               <a
                 href={genesisArtifactUrl(selected.id, "gate_report")}
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700"
+                className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700"
               >
                 {t("게이트 리포트", "Gate report", "ゲートレポート")}
               </a>
               <a
                 href={genesisArtifactUrl(selected.id, "gate_json")}
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700"
+                className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700"
               >
                 gate.json
               </a>
               <a
                 href={genesisArtifactUrl(selected.id, "genesis_json")}
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700"
+                className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700"
               >
                 {t("생성기 명부", "Generator census", "生成器の名簿")}
               </a>

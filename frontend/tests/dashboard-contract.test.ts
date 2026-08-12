@@ -1840,3 +1840,68 @@ contractTest("the 현시도 review screen distinguishes stale, unconfirmed and b
     "expected the blank-form branch to say so in ko rather than rendering an empty panel",
   );
 });
+
+contractTest("the demand side-input UI never invents a link id and stays one door", (pin) => {
+  const page = read("app/genesis/demand/page.tsx");
+  const api = read("lib/api.ts");
+  const genesisPage = read("app/genesis/page.tsx");
+
+  // No second door: the browser must never assemble a genesis.demand.v1
+  // document itself -- a second builder in TypeScript could drift from
+  // side_inputs.parse_side_input, the one validator that actually decides
+  // whether a document is usable.
+  pin.doesNotMatch(page, /kind:\s*"genesis\.demand/, "expected the page never to assemble a demand document itself");
+  pin.match(page, /buildDemandInput\(payload\)/, "expected the page to hand the join to the server, not build a document");
+
+  // Every leg starts EMPTY, and only a non-empty cell survives into the
+  // payload -- a link id is never guessed on the caller's behalf.
+  pin.match(
+    page,
+    /site\.legs\.map\(\(leg\) => \[leg, ""\]\)/,
+    "expected every mapping cell to initialise empty, never a default link id",
+  );
+  pin.match(
+    page,
+    /if \(!trimmed\) continue; \/\/ empty stays empty/,
+    "expected an empty cell to stay OUT of the approach_links payload rather than being filled in",
+  );
+
+  // The bindings live ABOVE the admin block, the same discipline the B2 pin
+  // enforces for the region bindings -- the P4 pin slices lib/api.ts from
+  // `adminRequest` to EOF and forbids apiFetch/apiMutationFetch there.
+  const demandSection = sliceBetween(
+    api,
+    "// Demand side-input UI",
+    "/** One row of `GET /api/admin/workspaces/{id}/members`",
+  );
+  pin.match(demandSection, /\S/, "expected the demand side-input bindings in lib/api.ts (marker moved?)");
+  const adminSlice = api.slice(api.indexOf("async function adminRequest"));
+  pin.doesNotMatch(
+    adminSlice,
+    /parseDemandCounts|buildDemandInput|fetchStagedSideInputs/,
+    "demand side-input bindings must stay above the admin block",
+  );
+  pin.match(
+    demandSection,
+    /parseDemandCounts[\s\S]*?apiMutationFetch\(path, \{ method: "POST"/,
+    "expected the counts upload to go through apiMutationFetch, one of the two workspace-header fetch paths",
+  );
+  pin.match(
+    demandSection,
+    /buildDemandInput[\s\S]*?apiMutationFetch\("\/api\/genesis\/demand-inputs\/build"/,
+    "expected building the demand input to go through apiMutationFetch",
+  );
+
+  // The job-start form only ever NAMES a staged token -- it never fabricates
+  // one, and an unpicked dropdown must send nothing (undefined), not "".
+  pin.match(
+    genesisPage,
+    /demand_token: demandToken \|\| undefined/,
+    "expected an unpicked demand dropdown to send undefined, never an empty-string token",
+  );
+  pin.match(
+    genesisPage,
+    /signals_token: signalsToken \|\| undefined/,
+    "expected an unpicked signals dropdown to send undefined, never an empty-string token",
+  );
+});

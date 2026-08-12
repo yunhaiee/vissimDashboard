@@ -2944,6 +2944,12 @@ export async function startGenesisJob(payload: {
   upload_token: string;
   name?: string;
   exclude_service?: boolean;
+  // The optional layers, staged through POST /side-inputs (or, since this
+  // unit, through parseDemandCounts + buildDemandInput /
+  // stagePhaseDiagramSignalsInput). Omitted = the geometry-only path this
+  // field has always taken.
+  demand_token?: string;
+  signals_token?: string;
 }): Promise<GenesisJob> {
   const r = await apiMutationFetch("/api/genesis/jobs", {
     method: "POST",
@@ -3497,6 +3503,153 @@ export async function stagePhaseDiagramSignalsInput(
   });
   if (!r.ok) throw await genesisError(r);
   return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Demand side-input UI — a counts workbook, clicked all the way to a token
+// ---------------------------------------------------------------------------
+//
+// Before this pair, `demand_token` on `startGenesisJob` could only be filled by
+// hand-writing a `genesis.demand.v1` document and staging it with `curl`. Two
+// calls close that gap and nothing else changes: `parseDemandCounts` stages ONE
+// Daejeon counts workbook and returns what the adapter read (sites, legs,
+// classes, refusals -- verbatim, never softened); `buildDemandInput` takes that
+// token plus a browser-typed `approach_links` map and returns the SAME
+// `{token, kind, filename, bytes, sha256, staged_at, summary}` shape
+// `POST /side-inputs?kind=demand` does, because it IS that route under the
+// hood -- the document is validated by the same `side_inputs.parse_side_input`
+// server-side, never re-implemented here.
+
+/** One structured finding from the counts adapter, verbatim -- the adapter's
+ * own refusal semantics, never re-worded by this client. `severity` mirrors
+ * `services.dataimport.base.IssueSeverity`. */
+export interface DemandCountsIssue {
+  severity: "refuse" | "warn" | "info";
+  code: string;
+  message: string;
+  subject: string | null;
+  context: Record<string, unknown>;
+}
+
+/** One site the workbook carries, with its legs VERBATIM (the survey's own
+ * labels) -- these are the row keys a mapping table builds `approach_links`
+ * from, and `generate_demand` compares against these exact strings. */
+export interface DemandCountsSite {
+  site_id: string;
+  site_name: string | null;
+  legs: string[];
+}
+
+export interface DemandCountsSummary {
+  adapter: string;
+  region: string;
+  source_files: string[];
+  counts: number;
+  sites: DemandCountsSite[];
+  vehicle_classes: string[];
+  window: { start: string; end: string } | null;
+  issues: DemandCountsIssue[];
+  refusals: string[];
+  ok: boolean;
+}
+
+export interface StagedDemandCounts {
+  token: string;
+  kind: "counts";
+  filename: string;
+  bytes: number;
+  sha256: string;
+  staged_at: string;
+  summary: DemandCountsSummary;
+}
+
+/** `services.genesis.side_inputs.DemandSideInput.summary()`, verbatim -- the
+ * SAME shape `POST /side-inputs?kind=demand` returns, because `buildDemandInput`
+ * stages through that exact function. */
+export interface DemandInputSummary {
+  doc_kind: string;
+  adapter: string;
+  region: string;
+  source_files: string[];
+  counts: number;
+  sites_in_counts: string[];
+  sites_mapped: string[];
+  approaches_mapped: number;
+  vehicle_classes: string[];
+  counts_refusals: string[];
+  window: { start: string; end: string } | null;
+}
+
+export interface StagedDemandInput {
+  token: string;
+  kind: "demand";
+  filename: string;
+  bytes: number;
+  sha256: string;
+  staged_at: string;
+  summary: DemandInputSummary;
+}
+
+/** Stage ONE Daejeon counts workbook (`.xlsx`). Runs
+ * `DaejeonCountAdapter` server-side and stages the RESULT under its own
+ * `counts` kind -- the token this returns is meaningful only to
+ * `buildDemandInput`, never to `startGenesisJob` directly. */
+export async function parseDemandCounts(file: File): Promise<StagedDemandCounts> {
+  const path = `/api/genesis/demand-inputs/parse?filename=${encodeURIComponent(file.name)}`;
+  const r = await apiMutationFetch(path, { method: "POST", cache: "no-store", body: file });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** Staged counts + a browser-typed `approach_links` join → a staged `demand`
+ * side input. `approach_links` is site id → {leg id → draft link id}; an empty
+ * site entry or a missing leg is never filled in here -- the caller (the
+ * demand page) sends exactly what the reviewer typed, and an incomplete
+ * mapping is refused by the SAME validator `POST /side-inputs` uses, with the
+ * SAME reason `services.genesis.demand.generate_demand` would give at
+ * generation time for an unknown site or leg. */
+export async function buildDemandInput(payload: {
+  counts_token: string;
+  approach_links: Record<string, Record<string, number>>;
+  window_start?: string;
+  window_end?: string;
+  demand_settings?: Record<string, unknown>;
+  fleet_settings?: Record<string, unknown>;
+  filename?: string;
+}): Promise<StagedDemandInput> {
+  const r = await apiMutationFetch("/api/genesis/demand-inputs/build", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** One entry of `GET /api/genesis/side-inputs` -- the picker data for the
+ * job-start form's demand/signals dropdowns. `summary` is whichever shape its
+ * `kind` produces (`DemandCountsSummary`, `DemandInputSummary`, or the signals
+ * document's own summary); read narrowly by `kind` rather than typed as a
+ * union, since a picker only needs `filename`/`staged_at` plus a couple of
+ * summary fields it already knows the name of. */
+export interface StagedSideInputEntry {
+  token: string;
+  kind: string;
+  filename: string;
+  bytes: number;
+  sha256: string;
+  staged_at: string;
+  summary: Record<string, unknown>;
+}
+
+/** Every side input currently staged in this workspace, newest first --
+ * AUTHENTICATED (see the backend router's own docstring: this lists client
+ * data, not the record of a decision). */
+export async function fetchStagedSideInputs(): Promise<StagedSideInputEntry[]> {
+  const r = await apiFetch("/api/genesis/side-inputs", { cache: "no-store" });
+  if (!r.ok) throw await genesisError(r);
+  const payload = (await r.json()) as { side_inputs: StagedSideInputEntry[] };
+  return payload.side_inputs;
 }
 
 /** One row of `GET /api/admin/workspaces/{id}/members`
