@@ -5372,3 +5372,54 @@ mistake being recorded.
 time), and behaviour at cap-sized responses.
 
 **Verification:** full suite **4241 passed, 1 skipped**; typecheck clean; contract 41/41.
+
+## 2026-08-12 — Track G: demand, fleet and signals reach the product pipeline, and a mapped approach can no longer vanish
+
+**What.** `genesis_jobs.py` imported only osm/draft/emit/gate — `demand.py`, `signals.py`,
+`fleet.py` were finished, live-certified modules unreachable from the product surface, so every
+browser-triggered generation was geometry-only and structurally could never reach `published`
+(V3/V5/V6 not-checkable). This unit gives the product a door: `POST /api/genesis/side-inputs`
+(kind `demand`|`signals`, auth + 32 MB cap + workspace-scoped staging, sha256 provenance),
+three optional fields on `StartGenesisJobRequest` (`demand_token`/`signals_token`/
+`keep_side_inputs`), and a new `services/genesis/compose.py::compose_layers` extracted from the
+sequence commit `445477d` live-certified (fleet → demand-off-`fleet.map` → signals) — the
+full-stack live-check tool now calls the same function, and an in-test verbatim copy of the
+original inline sequence pins the extraction byte-for-byte. Side-input payloads are
+`services.dataimport`'s neutral `ImportResult`, verbatim — no new schema; the Daejeon and WA
+SCATS adapters are the producers. A geometry-only generation is byte-identical to before
+(proven twice: by test, and by an adversarial verifier running the pre-change pipeline from a
+temp worktree at `e9d16cf` — same sha256).
+
+**Verdict table, measured not asserted** (crossroads fixture): geometry-only → V3/V5/V6
+not-checkable, `provisional`; +demand+fleet → V3/V6 pass, V5 honestly not-checkable (no signal
+layer exists; the gate cannot and does not guess), still `provisional`; +signals →
+`blocking == ["V1"]`, and after a live-check attestation `published` — the first time any
+product-path generation can reach it. No offline path reaches `published` for any layer set
+(`test_no_layer_set_can_reach_published_offline`).
+
+**The adversarial pass earned its keep again.** Five verifiers: byte-identity, entrances
+(cross-workspace token reuse 404s — probed live with an admin account; `../` traversal lands
+sanitized inside the staging tree; gate call takes nothing a caller controls), and the verdict
+table all held. But the refusals verifier reproduced, twice, with shipped code, **the exact
+failure this product ranks above all others**: a site whose `approach_links` mapped only
+non-entry links got ZERO vehicle inputs, yet `compositions` alone kept `emitting=True`,
+`CODE_LAYER_EMPTY` saw nothing (whole-layer check), and in a two-site document the emitted
+file made the real gate's V6 report PASS — one healthy site masked another site's total drop.
+"A requested layer that produces nothing is a refusal" was true at the layer and false at the
+approach. **Fix: per-approach, not per-layer** — `_dropped_approach_issues` refuses
+(`genesis_compose_mapped_approach_not_seeded`) any caller-mapped (site, leg, link) present in
+neither `demand.inputs` nor `demand.decisions`, keyed on demand's own site/leg attribution so
+the legitimate interior-approach shape (routing decision, no input, by design) never trips it.
+Causality proven by neutralizing the guard's single call site in a copy: both bugs return
+exactly. Gated on `demand.ok` so an already-refused demand isn't double-refused (its own,
+more specific reason is what the caller reads — now pinned by test). Residual polish from
+re-verify: refusal text no longer interpolates a raw Python list repr into ko/en/ja sentences,
+and `gate_and_publish` gained its genuinely third source pin (verdict/report writes indexed
+before the refusal branch in `inspect.getsource`).
+
+**Named limits.** Only geometry-alone and all-four-layers have live LoadNet evidence; the new
+intermediate sets rest on `emit.py`'s additivity and each layer's own pins — safe because V1
+blocks every set equally. No WA SCATS workbook→signals producer exists yet (the adapter's
+Timings/Phase History tabs are an unparsed, named gap). Nothing produces the approach→phase
+mapping (C1) or the site→leg→link join (D1) — this unit is the door, not the data.
+`genesis_osm_draft.py` CLI flags (chip `task_de9e6aed`) remain a follow-up. Suite 4317/1(env)/1.

@@ -254,6 +254,38 @@ def test_the_publish_funnel_cannot_be_handed_a_verdict():
     assert "run_gate(" in inspect.getsource(genesis_jobs.gate_and_publish)
 
 
+def test_the_verdict_and_its_report_are_recorded_before_any_branch():
+    """The third source pin for A4's exit-door claim.
+
+    The function's own docstring states it as a property, not a behaviour:
+    "the full result and its ko report are written beside the artifact
+    unconditionally, before any branch, so a refusal is as durable as a
+    pass." The two pins above check WHO may register a dataset and WHAT the
+    funnel's signature is; neither can catch a refactor that reordered the
+    write past the ``REFUSED`` branch, because a behavioural test of the
+    REFUSED path alone cannot distinguish "written before the branch" from
+    "written inside the branch, on this path, by coincidence". This pins the
+    ordering directly.
+
+    Pinned on the identifiers the write and the branch use
+    (``GATE_JSON_FILENAME`` / ``GATE_REPORT_FILENAME`` / the literal
+    ``GateVerdict.REFUSED`` comparison), never on line numbers or
+    whitespace, so reformatting the function cannot break it — only moving
+    the write past the branch can.
+    """
+    body = inspect.getsource(genesis_jobs.gate_and_publish)
+    json_write_index = body.index("GATE_JSON_FILENAME")
+    report_write_index = body.index("GATE_REPORT_FILENAME")
+    refused_branch_index = body.index("GateVerdict.REFUSED")
+
+    assert json_write_index < refused_branch_index, (
+        "gate.json must be written before the REFUSED branch is even tested"
+    )
+    assert report_write_index < refused_branch_index, (
+        "gate.report.md must be written before the REFUSED branch is even tested"
+    )
+
+
 def test_a_gate_that_cannot_run_publishes_nothing(
     workspace_root: Path, crossroads_osm_file: Path, monkeypatch: pytest.MonkeyPatch
 ):

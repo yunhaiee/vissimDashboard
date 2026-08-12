@@ -32,6 +32,15 @@ Members, in the order row 2.3 runs them:
   ``교차로 운영 DATABASE`` sheet's text layer → neutral ``SignalControllerData``,
   plus a bridge into the ``FixedTimePlan`` ``signals`` takes. Refuses to invent
   the yellow/all-red split the sheet does not state.
+* :mod:`services.genesis.compose` — the ONE order the optional layers are built
+  in (fleet → demand-off-the-fleet's-map → signals) plus the cross-checks that
+  make the set all-or-nothing. Extracted verbatim from the four-layer build a
+  real PTV Vissim 2026 SP09 opened (``445477d``), so the product pipeline and
+  the live check compose identically instead of by two copies of a convention.
+* :mod:`services.genesis.side_inputs` — the DATA a caller adds to a generation
+  (counts + the site→leg→link join; controllers + the approach→phase mapping),
+  as the neutral ``ImportResult`` the adapters already emit. Validated before a
+  token exists; refuses rather than guessing either join.
 * :mod:`services.genesis.emit` — draft (+ optional signals) → ``.inpx``, scoped
   to what ``services.inpx_parser`` can read back, byte-identical across runs.
 * :mod:`services.genesis.diff` — the structural (topology-only) comparison of
@@ -77,6 +86,11 @@ from .benchmark import (
     georeferenced_network,
     local_frame_network,
     render_benchmark_report,
+)
+from .compose import (
+    NO_LAYERS,
+    ComposedLayers,
+    compose_layers,
 )
 from .connectivity import (
     NODE_MERGE_TOLERANCE_M,
@@ -175,6 +189,14 @@ from .signals import (
     generate_signals,
     node_approaches,
 )
+from .side_inputs import (
+    DemandSideInput,
+    SideInputRefused,
+    SignalsSideInput,
+    build_signal_assignments,
+    compose_from_documents,
+    parse_side_input,
+)
 from .signals_daejeon import (
     DaejeonSettings,
     DaejeonSheet,
@@ -195,6 +217,7 @@ __all__ = [
     "ComplianceItem",
     "ComplianceReport",
     "ComplianceState",
+    "ComposedLayers",
     "CompositionFlow",
     "ConnectorDiff",
     "ConnectorRewire",
@@ -205,6 +228,7 @@ __all__ = [
     "DemandCoverage",
     "DemandInterval",
     "DemandSettings",
+    "DemandSideInput",
     "DetectorPlan",
     "DiffFinding",
     "DiffSeverity",
@@ -248,6 +272,7 @@ __all__ = [
     "NODE_MERGE_TOLERANCE_M",
     "NO_DEMAND",
     "NO_FLEET",
+    "NO_LAYERS",
     "NO_SIGNALS",
     "NetworkSummary",
     "NetworkTopology",
@@ -260,10 +285,12 @@ __all__ = [
     "PositionScope",
     "RouteSeed",
     "RoutingDecisionSeed",
+    "SideInputRefused",
     "SignalGroupPlan",
     "SignalHeadPlan",
     "SignalScopeGap",
     "SignalSettings",
+    "SignalsSideInput",
     "StructuralDiff",
     "TopologicalBenchmark",
     "VehicleCompositionPlan",
@@ -273,6 +300,9 @@ __all__ = [
     "benchmark_networks",
     "build_draft",
     "build_fleet",
+    "build_signal_assignments",
+    "compose_from_documents",
+    "compose_layers",
     "daejeon_to_fixed_time_plan",
     "dead_ends",
     "diff_network_files",
@@ -295,6 +325,7 @@ __all__ = [
     "parse_daejeon_signal_sheet",
     "parse_daejeon_signal_zip",
     "parse_osm_file",
+    "parse_side_input",
     "render_benchmark_report",
     "render_diff_report",
     "render_gate_report",

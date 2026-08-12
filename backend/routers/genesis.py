@@ -14,6 +14,15 @@ body with the name in ``X-Filename`` (or ``?filename=``) and returns a token;
 check are IMPORTED from ``routers/datasets.py`` — the same numbers, not a copy
 that can drift.
 
+**Side inputs — Track G's caller wiring.** ``POST /side-inputs`` stages the DATA
+the optional layers need (``?kind=demand`` → counts + the site→leg→link join;
+``?kind=signals`` → controllers + the approach→phase mapping), and ``POST /jobs``
+names those tokens beside the ``.osm``'s. It is the ``.osm``'s own door one tree
+over — authenticated, capped, validated before a token exists — because a
+generation must have exactly one kind of entrance. Nothing enters by a
+filesystem path in a job payload, and the job composes only the four-layer shape
+``services/genesis/compose.py`` extracted from the build a real Vissim opened.
+
 **Auth.** Every MUTATING route takes ``Depends(current_user)``: a generation
 replaces the project's active dataset, and "who built this network" has to be
 answerable in the audit document that ships with it. Reads stay open, in parity
@@ -60,6 +69,7 @@ from routers.auth import current_user
 from routers.datasets import MAX_UPLOAD_BYTES, _TOO_LARGE_DETAIL, _reject_oversized_body
 from services import genesis_jobs, osm_fetch
 from services.datasets import DatasetStorageError
+from services.genesis import side_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +87,10 @@ _ARTIFACT_MEDIA_TYPES = {
     "compliance_md": "text/markdown; charset=utf-8",
     "gate_json": "application/json",
     "gate_report": "text/markdown; charset=utf-8",
+    # The optional layers' full findings. Present only for a generation that
+    # carried side inputs — 404 otherwise, like any other artifact this job
+    # never produced.
+    "layers_json": "application/json",
     "source_osm": "application/xml",
 }
 
@@ -99,6 +113,14 @@ class StartGenesisJobRequest(BaseModel):
     ``highway=service`` way as a NAMED skip. The default is what the generator's
     own policy says (service ways ARE modelled), not what makes the output
     smaller.
+
+    ``demand_token`` / ``signals_token`` are the optional layers, staged through
+    ``POST /side-inputs`` and named here the same way the ``.osm`` is. Both
+    default to ``None``, and a request that names neither takes the geometry
+    -only path this endpoint has always taken, unchanged. Shared by BOTH entry
+    routes on purpose: an upload (B1) and a region fetch (B2) both end at a
+    staged ``.osm`` and this one request model, so neither can be the one that
+    supports demand.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -115,6 +137,24 @@ class StartGenesisJobRequest(BaseModel):
     keep_upload: bool = Field(
         default=False,
         description="Keep the staged .osm after the job starts (default: discard it).",
+    )
+    demand_token: str | None = Field(
+        default=None,
+        description=(
+            "Token from POST /api/genesis/side-inputs?kind=demand. Adds the demand AND the "
+            "§5.2.3 fleet layers (both are read from the one ImportResult)."
+        ),
+    )
+    signals_token: str | None = Field(
+        default=None,
+        description=(
+            "Token from POST /api/genesis/side-inputs?kind=signals. Adds fixed-time "
+            "controllers, groups, heads and detectors."
+        ),
+    )
+    keep_side_inputs: bool = Field(
+        default=False,
+        description="Keep the staged side inputs after the job starts (default: discard them).",
     )
 
 
@@ -169,6 +209,113 @@ async def upload_osm(
         ) from exc
 
 
+_SIDE_INPUT_TOO_LARGE_DETAIL = (
+    f"The side input is larger than the "
+    f"{side_inputs.MAX_SIDE_INPUT_BYTES // (1024 * 1024)} MB limit."
+)
+
+
+def _reject_oversized_side_input(request: Request) -> None:
+    """413 on the DECLARED length, the same shape ``routers/datasets.py`` uses —
+    with this route's own cap, because a side input is fully parsed on the
+    request thread and a 250 MB one would occupy it for minutes."""
+    raw_length = request.headers.get("content-length")
+    if not raw_length:
+        return
+    try:
+        declared = int(raw_length)
+    except ValueError:
+        return
+    if declared > side_inputs.MAX_SIDE_INPUT_BYTES:
+        raise HTTPException(status_code=413, detail=_SIDE_INPUT_TOO_LARGE_DETAIL)
+
+
+@router.post("/side-inputs")
+async def upload_side_input(
+    request: Request,
+    kind: str,
+    x_filename: str | None = Header(None),
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Stage ONE side-input document (``?kind=demand`` or ``?kind=signals``).
+
+    The same two-step shape ``POST /uploads`` uses and for the same reason (no
+    ``python-multipart`` in this backend): the raw JSON bytes are the body, the
+    name arrives in ``X-Filename`` or ``?filename=``, and a token comes back.
+
+    **Not a second door.** Authenticated like every other mutation here, capped
+    (``side_inputs.MAX_SIDE_INPUT_BYTES``, far below the dataset limit because
+    this body is fully parsed on the request thread), and structurally validated
+    before the token exists — so a document that could never build a layer is a
+    400 the uploader sees, not a job to poll. The response carries a COUNTED
+    summary of what was read, so "the counts I sent" and "the counts that
+    arrived" are comparable before a generation is spent.
+    """
+    if kind not in side_inputs.KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "genesis_side_input_unknown_kind",
+                "reasons": [
+                    f"{kind!r} is not a side-input kind. Expected one of: "
+                    + ", ".join(side_inputs.KINDS)
+                ],
+            },
+        )
+    query_filename = request.query_params.get("filename")
+    filename = unquote(query_filename or x_filename or "") or f"{kind}.json"
+    # The declared length is checked against THIS route's own (much smaller)
+    # cap, not the dataset one, so an over-large document is refused before its
+    # bytes are read into the request thread's memory. The byte-level check
+    # below is still needed: a chunked upload carries no Content-Length.
+    _reject_oversized_side_input(request)
+    content = await request.body()
+    if len(content) > side_inputs.MAX_SIDE_INPUT_BYTES:
+        raise HTTPException(status_code=413, detail=_SIDE_INPUT_TOO_LARGE_DETAIL)
+    try:
+        return genesis_jobs.stage_side_input(kind, filename, content)
+    except genesis_jobs.GenesisRefused as exc:
+        raise HTTPException(
+            status_code=400, detail={"code": exc.code, "reasons": exc.reasons}
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not write the side input to the staging area. Nothing was stored. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+
+
+def _resolve_side_input(token: str | None, expected_kind: str):
+    """A staged side-input token → its frozen path, or an HTTP refusal.
+
+    The KIND is checked against what the field meant: a demand document named in
+    ``signals_token`` would otherwise be handed to the signals builder, which
+    would refuse for a reason ("no assignments") that says nothing about the
+    real mistake.
+    """
+    if not token:
+        return None
+    try:
+        staged = genesis_jobs.staged_side_input(token)
+    except genesis_jobs.StagedOsmNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if staged["kind"] != expected_kind:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "genesis_side_input_kind_mismatch",
+                "reasons": [
+                    f"That token names a {staged['kind']!r} side input, but it was given as the "
+                    f"{expected_kind!r} one."
+                ],
+            },
+        )
+    return staged["path"]
+
+
 @router.post("/jobs", status_code=202)
 def start_job(
     payload: StartGenesisJobRequest,
@@ -179,11 +326,21 @@ def start_job(
     Returns the job record immediately; the caller polls ``GET /jobs/{id}``.
     Nothing is registered as a dataset here — ``gate_and_publish`` decides that,
     inside the job, after the gate has run.
+
+    With ``demand_token``/``signals_token`` the generation composes those layers
+    into ONE ``.inpx`` (the shape ``445477d`` proved a real Vissim opens) and the
+    gate judges THAT file — so V5 and V6, which report NOT_CHECKABLE on a
+    geometry-only network, actually run. A side input that refuses refuses the
+    generation: the job lands ``error`` with every reason named, never a network
+    quietly missing the layer somebody supplied data for.
     """
     try:
         osm_path = genesis_jobs.staged_osm_path(payload.upload_token)
     except genesis_jobs.StagedOsmNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    demand_path = _resolve_side_input(payload.demand_token, side_inputs.KIND_DEMAND)
+    signals_path = _resolve_side_input(payload.signals_token, side_inputs.KIND_SIGNALS)
 
     try:
         record = genesis_jobs.start_genesis_job(
@@ -192,6 +349,8 @@ def start_job(
             exclude_service=payload.exclude_service,
             source_filename=osm_path.name,
             submitted_by=str(user.get("username") or ""),
+            demand_input=demand_path,
+            signals_input=signals_path,
         )
     except genesis_jobs.GenesisRefused as exc:
         raise HTTPException(
@@ -213,12 +372,24 @@ def start_job(
 
     if not payload.keep_upload:
         genesis_jobs.discard_staged_osm(payload.upload_token)
+    if not payload.keep_side_inputs:
+        # Only after the job exists: ``create_genesis_job`` has already copied
+        # them into its work directory, so discarding the staged originals
+        # cannot change the input out from under the running generation.
+        for token in (payload.demand_token, payload.signals_token):
+            if token:
+                genesis_jobs.discard_staged_side_input(token)
     logger.info(
-        "genesis: %s started generation %s (%s) in workspace %s",
+        "genesis: %s started generation %s (%s) in workspace %s%s",
         user.get("username"),
         record["id"],
         record["name"],
         record["workspace_id"],
+        (
+            f" with side inputs {sorted(record['side_inputs'])}"
+            if record.get("side_inputs")
+            else ""
+        ),
     )
     return record
 

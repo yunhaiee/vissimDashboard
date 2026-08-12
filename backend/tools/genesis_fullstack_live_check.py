@@ -455,18 +455,23 @@ def build_fullstack_network(target_dir: Path) -> dict[str, Any]:
 
     Writes the four bisect inputs as well: geometry-only, geometry+fleet,
     geometry+fleet+demand and the full four-layer file (the network under test),
-    so a refusal can be located without re-running the build."""
+    so a refusal can be located without re-running the build.
+
+    The three-layer build itself now lives in
+    ``services.genesis.compose.compose_layers`` — extracted, not reimplemented,
+    so the product's generation pipeline composes through the SAME code path
+    this probe measured live rather than through a second copy of the ordering.
+    ``tests/test_genesis_compose.py`` pins the extraction by comparing the
+    emitted BYTES against this function's own inputs."""
     from services.dataimport.base import IssueSeverity
-    from services.genesis import signals as signals_module
-    from services.genesis.demand import DemandSettings, REDUCTION_PEAK, generate_demand
+    from services.genesis.compose import compose_layers
+    from services.genesis.demand import DemandSettings, REDUCTION_PEAK
     from services.genesis.emit import emit_inpx
-    from services.genesis.fleet import build_fleet, observed_vehicle_classes
 
     draft = _crossroads_draft()
     if draft.refused:
         raise RuntimeError(f"crossroads draft was refused: {draft.refusals}")
 
-    # -- signals ------------------------------------------------------------
     plan = build_a2_plan()
     plan_check = {
         "ok": bool(plan.ok),
@@ -478,22 +483,20 @@ def build_fullstack_network(target_dir: Path) -> dict[str, Any]:
         and [row.green_s for row in plan.rows] == A2_GREENS_S
         and [row.start_offset_s for row in plan.rows] == A2_OFFSETS_S,
     }
-    signals = signals_module.generate_signals(draft, {draft.nodes[0].id: (plan, APPROACH_PHASES)})
 
-    # -- fleet --------------------------------------------------------------
+    # -- fleet -> demand (off the fleet's own map) -> signals ----------------
     result = _counts_result()
-    classes = observed_vehicle_classes(result)
-    fleet = build_fleet(classes)
-
-    # -- demand (references the fleet's own type map) -----------------------
     approach_links = {SITE: {LEG_OF_LINK[link_id]: link_id for link_id in LEG_OF_LINK}}
-    demand = generate_demand(
+    layers = compose_layers(
         draft,
-        result,
+        counts=result,
         approach_links=approach_links,
-        vehicle_types=dict(fleet.map),
-        settings=DemandSettings(single_interval_reduction=REDUCTION_PEAK),
+        demand_settings=DemandSettings(single_interval_reduction=REDUCTION_PEAK),
+        signal_assignments={draft.nodes[0].id: (plan, APPROACH_PHASES)},
     )
+    fleet = layers.fleet
+    demand = layers.demand
+    signals = layers.signals
 
     # -- emit ALL FOUR (the network under test) + the three bisect inputs ---
     full = emit_inpx(draft, target_dir / "full.inpx", signals, demand, fleet)
@@ -580,6 +583,10 @@ def build_fullstack_network(target_dir: Path) -> dict[str, Any]:
         "demand_issue_codes": sorted({i.code for i in demand.issues}),
         "demand_input_count": len(demand.inputs),
         "demand_composition_count": len(demand.compositions),
+        # The composition's own verdict, which no individual layer can give:
+        # the fleet→demand cross-check and "a requested layer produced nothing".
+        "compose_ok": bool(layers.ok),
+        "compose_issue_codes": sorted({i.code for i in layers.issues}),
         "expected": expected,
         "b1_models_emitted": b1_emitted,
         "b2_accel_point_emitted": b2_emitted,

@@ -77,6 +77,29 @@ dataset is still byte-identical to this artifact. Someone else's later upload is
 never deleted to tidy up our own bookkeeping; the revocation is recorded on the
 job either way.
 
+**Side inputs — the optional layers, entering by the same door.** A generation
+may carry demand (+ its fleet) and signals, supplied as DATA the geometry cannot
+imply: the site→leg→link join and the approach→phase mapping are the two facts
+``services/genesis``'s own modules refuse to guess. They arrive the way the
+``.osm`` does and no other way — staged through :func:`stage_side_input` (auth,
+size cap, structural validation BEFORE a token exists), frozen into the job's
+work directory at enqueue, and re-read from that frozen copy by the runner. The
+composition itself is ``services.genesis.compose.compose_layers``, the extracted
+form of the four-layer build that a real Vissim 2026 SP09 opened (``445477d``);
+this module chooses none of it.
+
+Two properties matter here and are tested:
+
+* **absent side inputs change nothing.** ``compose_layers`` is not called, the
+  emitter is handed the same three ``None``s it was handed before this feature
+  existed, and a geometry-only generation is byte-identical to what it was;
+* **a side input that refuses refuses the GENERATION.** There is no
+  emit-what-we-can path: a caller who supplied counts and gets back a network
+  with no demand has had their data silently dropped, which is the one failure
+  this project ranks above all others. The job lands ``error`` with
+  ``side_inputs_refused`` and every reason named, and ``layers.json`` beside it
+  carries the full findings even though no artifact exists.
+
 **Workspace discipline.** Every artifact lives under
 ``<workspace>/genesis/``: staged uploads, job work directories, and the job
 registry. Two projects cannot see each other's generations physically, not by
@@ -110,7 +133,10 @@ from typing import Any
 from uuid import uuid4
 
 from services import datasets, workspaces
-from services.genesis.draft import build_draft
+from services.dataimport.base import IssueSeverity
+from services.genesis import side_inputs as side_inputs_module
+from services.genesis.compose import NO_LAYERS, ComposedLayers
+from services.genesis.draft import DraftNetwork, build_draft
 from services.genesis.emit import EmitRefused, emit_inpx
 from services.genesis.gate import (
     CheckState,
@@ -131,11 +157,30 @@ logger = logging.getLogger(__name__)
 GENESIS_DIRNAME = "genesis"
 JOBS_DIRNAME = "jobs"
 STAGING_DIRNAME = "staging"
+#: Staged side inputs (demand / signals). A SEPARATE tree from ``staging``: the
+#: two carry different kinds of file with different caps, and a token minted for
+#: one must never resolve in the other.
+SIDE_STAGING_DIRNAME = "side-inputs"
 REGISTRY_FILENAME = "registry.json"
 
 #: What the gate wrote about this artifact, beside the artifact.
 GATE_JSON_FILENAME = "gate.json"
 GATE_REPORT_FILENAME = "gate.report.md"
+
+#: What the optional layers reported, beside the artifact. A FIXED name — like
+#: the two above and unlike the ``<name>.*`` artifacts — precisely so it exists
+#: for a generation that produced NO artifact: a side input that refused still
+#: has to be able to explain itself, and it explains itself here.
+LAYERS_JSON_FILENAME = "layers.json"
+
+#: How a staged side input's kind and original name are remembered.
+SIDE_INPUT_META_FILENAME = "meta.json"
+
+#: The frozen copy inside the job's work directory, per kind.
+_SIDE_INPUT_STORED_AS = {
+    side_inputs_module.KIND_DEMAND: "demand.input.json",
+    side_inputs_module.KIND_SIGNALS: "signals.input.json",
+}
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
@@ -299,6 +344,10 @@ def staging_dir() -> Path:
     return genesis_dir() / STAGING_DIRNAME
 
 
+def side_staging_dir() -> Path:
+    return genesis_dir() / SIDE_STAGING_DIRNAME
+
+
 def jobs_root() -> Path:
     return genesis_dir() / JOBS_DIRNAME
 
@@ -418,16 +467,133 @@ def discard_staged_osm(token: str) -> None:
 
 
 def _purge_stale_staging(max_age_seconds: int = STAGING_TTL_SECONDS) -> None:
-    root = staging_dir()
-    if not root.is_dir():
-        return
-    now = time.time()
-    for child in root.iterdir():
-        try:
-            if child.is_dir() and now - child.stat().st_mtime > max_age_seconds:
-                shutil.rmtree(child, ignore_errors=True)
-        except OSError:  # pragma: no cover - best effort sweep
+    for root in (staging_dir(), side_staging_dir()):
+        if not root.is_dir():
             continue
+        now = time.time()
+        for child in root.iterdir():
+            try:
+                if child.is_dir() and now - child.stat().st_mtime > max_age_seconds:
+                    shutil.rmtree(child, ignore_errors=True)
+            except OSError:  # pragma: no cover - best effort sweep
+                continue
+
+
+# ---------------------------------------------------------------------------
+# Staging a side input (demand / signals) — the SAME door, one tree over
+# ---------------------------------------------------------------------------
+
+
+def stage_side_input(kind: str, filename: str, content: bytes) -> dict[str, Any]:
+    """Stage one side-input document and return ``{token, kind, …, summary}``.
+
+    Structurally validated BEFORE the token exists, for the reason
+    :func:`stage_osm` proves the ``.osm`` is OSM XML: a caller who uploads the
+    wrong document, or one with a typo in a key, finds out while they are still
+    looking at the upload rather than inside a job whose only output is a
+    refusal. ``services.genesis.side_inputs`` owns what "valid" means; this
+    function owns where the bytes land.
+
+    The ``summary`` in the response is COUNTED from the document, never sampled:
+    a caller has to be able to see that the counts they meant to send are the
+    counts that arrived (30,208 records, four sites, three classes) before they
+    spend a generation finding out.
+    """
+    name = Path(str(filename or "")).name.strip()
+    if not name:
+        raise GenesisRefused(
+            "genesis_side_input_no_filename", ["The upload carries no file name."]
+        )
+    if len(content) > side_inputs_module.MAX_SIDE_INPUT_BYTES:
+        raise GenesisRefused(
+            "genesis_side_input_too_large",
+            [
+                f"{name!r} is {len(content)} bytes; the side-input limit is "
+                f"{side_inputs_module.MAX_SIDE_INPUT_BYTES} bytes "
+                f"({side_inputs_module.MAX_SIDE_INPUT_BYTES // (1024 * 1024)} MB)."
+            ],
+        )
+    try:
+        document = side_inputs_module.parse_side_input(kind, content)
+    except side_inputs_module.SideInputRefused as exc:
+        raise GenesisRefused(exc.code, exc.reasons) from exc
+
+    _purge_stale_staging()
+    token = uuid4().hex
+    target_dir = side_staging_dir() / token
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / name).write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    meta = {
+        "kind": kind,
+        "filename": name,
+        "bytes": len(content),
+        "sha256": digest,
+        "staged_at": _now_iso(),
+    }
+    (target_dir / SIDE_INPUT_META_FILENAME).write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="",
+    )
+    return {"token": token, **meta, "summary": document.summary()}
+
+
+def staged_side_input(token: str) -> dict[str, Any]:
+    """A staged side input's recorded kind, name and path, validated twice.
+
+    Returns the PATH for the caller that copies it into a job (this module and
+    ``routers/genesis.py``), and never puts it on a job record — the record
+    crosses the HTTP boundary and no response of ours publishes a server path.
+    """
+    if not token or not _ID_RE.match(token):
+        raise StagedOsmNotFoundError(
+            "Unknown or expired side-input token. Please upload the document again."
+        )
+    root = side_staging_dir()
+    if not root.is_dir():
+        raise StagedOsmNotFoundError(
+            "Unknown or expired side-input token. Please upload the document again."
+        )
+    resolved_root = root.resolve()
+    target = (resolved_root / token).resolve()
+    try:
+        target.relative_to(resolved_root)
+    except ValueError:  # pragma: no cover - the regex rules this out
+        raise StagedOsmNotFoundError("Unknown or expired side-input token.") from None
+    meta_path = target / SIDE_INPUT_META_FILENAME
+    if not target.is_dir() or not meta_path.is_file():
+        raise StagedOsmNotFoundError(
+            "Unknown or expired side-input token. Please upload the document again."
+        )
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise StagedOsmNotFoundError(
+            "The staged side input's record could not be read. Please upload it again."
+        ) from exc
+    document = target / str(meta.get("filename") or "")
+    if not document.is_file():
+        raise StagedOsmNotFoundError(
+            "Unknown or expired side-input token. Please upload the document again."
+        )
+    return {
+        "token": token,
+        "kind": str(meta.get("kind") or ""),
+        "filename": document.name,
+        "bytes": int(meta.get("bytes") or document.stat().st_size),
+        "sha256": str(meta.get("sha256") or ""),
+        "path": document,
+    }
+
+
+def discard_staged_side_input(token: str) -> None:
+    if not token or not _ID_RE.match(token):
+        return
+    root = side_staging_dir()
+    target = root / token
+    if target.is_dir() and target.parent == root:
+        shutil.rmtree(target, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -614,6 +780,8 @@ def create_genesis_job(
     exclude_service: bool = False,
     source_filename: str | None = None,
     submitted_by: str | None = None,
+    demand_input: Path | None = None,
+    signals_input: Path | None = None,
 ) -> dict[str, Any]:
     """Register a generation job WITHOUT starting it.
 
@@ -626,7 +794,10 @@ def create_genesis_job(
 
     The staged ``.osm`` is COPIED into the job's work directory here, so a
     staging sweep (or a second job reusing the token) cannot change the input
-    out from under a running generation.
+    out from under a running generation. ``demand_input`` and ``signals_input``
+    are frozen the same way and for the same reason: what a generation was
+    JUDGED on has to still be there when somebody asks six months later why the
+    verdict was what it was.
 
     Split from :func:`start_genesis_job` so that "a job exists" and "a job is
     running" are two separable facts: production always does both, and a caller
@@ -641,6 +812,22 @@ def create_genesis_job(
     work_dir.mkdir(parents=True, exist_ok=True)
     frozen_osm = work_dir / f"source{osm_path.suffix.lower() or '.osm'}"
     shutil.copyfile(osm_path, frozen_osm)
+
+    staged_layers: dict[str, dict[str, Any]] = {}
+    for kind, source in (
+        (side_inputs_module.KIND_DEMAND, demand_input),
+        (side_inputs_module.KIND_SIGNALS, signals_input),
+    ):
+        if source is None:
+            continue
+        frozen = work_dir / _SIDE_INPUT_STORED_AS[kind]
+        shutil.copyfile(source, frozen)
+        staged_layers[kind] = {
+            "filename": Path(source).name,
+            "bytes": frozen.stat().st_size,
+            "sha256": _sha256(frozen),
+            "stored_as": frozen.name,
+        }
 
     record = {
         "id": job_id,
@@ -667,8 +854,13 @@ def create_genesis_job(
             "sha256": _sha256(frozen_osm),
             "stored_as": frozen_osm.name,
         },
+        # ``None`` — not ``{}`` — when nobody supplied any, so "this generation
+        # was geometry-only" and "this generation had side inputs that produced
+        # nothing" can never read alike.
+        "side_inputs": staged_layers or None,
         "network": None,
         "artifact": None,
+        "layers": None,
         "gate": None,
         "publication": None,
         "refusal": None,
@@ -727,10 +919,22 @@ def _run_genesis_job_locked(job_id: str) -> dict[str, Any]:
         if draft.refused:
             raise GenesisRefused("draft_refused", list(draft.refusals))
 
+        # The optional layers, when the caller supplied their data. Everything
+        # about them — including the decision to refuse the whole generation
+        # rather than emit a network missing a layer somebody asked for — is in
+        # :func:`_compose_side_layers`.
+        layers = _compose_side_layers(job_id, record, draft)
+
         _update(job_id, phase=PHASE_EMITTING)
         work_dir = job_dir(job_id)
         name = str(record["name"])
-        inpx_path = emit_inpx(draft, work_dir / f"{name}.inpx")
+        inpx_path = emit_inpx(
+            draft,
+            work_dir / f"{name}.inpx",
+            layers.signals,
+            layers.demand,
+            layers.fleet,
+        )
         compliance_path = work_dir / f"{name}.compliance.md"
         compliance_path.write_text(draft.render_compliance("ko"), encoding="utf-8", newline="")
         census_path = work_dir / f"{name}.genesis.json"
@@ -823,6 +1027,73 @@ def _run_genesis_job_locked(job_id: str) -> dict[str, Any]:
             refusal={"code": code, "reasons": [f"{type(exc).__name__}: {exc}"]},
             error=f"{type(exc).__name__}: {exc}",
         )
+
+
+def _compose_side_layers(
+    job_id: str, record: dict[str, Any], draft: DraftNetwork
+) -> ComposedLayers:
+    """The demand/fleet/signal layers for this job, or :data:`NO_LAYERS`.
+
+    Three things happen here and nowhere else:
+
+    1. **Nothing at all when nobody asked.** No side inputs on the record means
+       this returns the empty composition, ``layers.json`` is not written, the
+       record's ``layers`` stays ``None`` and the emitter is handed the same
+       three ``None``s it always was. A geometry-only generation is unchanged
+       down to the byte, which ``tests/test_genesis_job_layers.py`` pins against
+       a file generated by the pre-existing path.
+    2. **The findings are written before the decision.** ``layers.json`` lands
+       whether the composition passed or refused, exactly as the gate's own
+       verdict does: a refusal is a deliverable, and a caller whose counts were
+       rejected needs the coverage tables that say which approach joined and
+       which did not.
+    3. **A refusal refuses the GENERATION.** Never a partial emission. The
+       modules are all-or-nothing individually; this makes the SET of them
+       all-or-nothing, so "I uploaded counts and got a network with no demand"
+       cannot happen.
+    """
+    staged = record.get("side_inputs") or {}
+    if not staged:
+        return NO_LAYERS
+
+    work_dir = job_dir(job_id)
+    documents: dict[str, Any] = {}
+    for kind, entry in staged.items():
+        path = work_dir / str((entry or {}).get("stored_as") or "")
+        if not path.is_file():  # pragma: no cover - written at enqueue
+            raise GenesisRefused(
+                "side_inputs_missing",
+                [
+                    f"The frozen {kind} side input is no longer in this job's work directory; "
+                    "the generation cannot be repeated on the data it was submitted with."
+                ],
+            )
+        try:
+            documents[kind] = side_inputs_module.load_side_input(kind, path)
+        except side_inputs_module.SideInputRefused as exc:
+            raise GenesisRefused(exc.code, exc.reasons) from exc
+
+    layers = side_inputs_module.compose_from_documents(
+        draft,
+        demand=documents.get(side_inputs_module.KIND_DEMAND),
+        signals=documents.get(side_inputs_module.KIND_SIGNALS),
+    )
+
+    (work_dir / LAYERS_JSON_FILENAME).write_text(
+        json.dumps(layers.as_dict("ko"), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="",
+    )
+    _update(job_id, layers=layers.summary())
+
+    if not layers.ok:
+        logger.info(
+            "genesis_jobs: job %s refused its side inputs (%s)",
+            job_id,
+            sorted(set(layers.issue_codes(IssueSeverity.REFUSE))),
+        )
+        raise GenesisRefused("side_inputs_refused", layers.refusal_reasons("ko"))
+    return layers
 
 
 # ---------------------------------------------------------------------------
@@ -1360,6 +1631,11 @@ def gate_payload(job_id: str, language: str = "ko") -> dict[str, Any]:
         "status": record.get("status"),
         "publication": record.get("publication"),
         "revocation": record.get("revocation"),
+        # ``None`` for a geometry-only generation. Carried here so a reader of
+        # "V6 passed" can see WHAT passed (four vehicle inputs, one composition)
+        # without a second request — and so a NOT_CHECKABLE V5 beside an absent
+        # signal layer reads as the one fact it is.
+        "layers": record.get("layers"),
         "live_evidence": (record.get("gate") or {}).get("live_evidence"),
         "checks": checks,
         "report_markdown": render_report(result, language=language),
@@ -1394,7 +1670,13 @@ def artifact_path(job_id: str, kind: str) -> Path:
     name — a client never names a file this function opens.
 
     ``kind`` is one of ``inpx``, ``genesis_json``, ``compliance_md``,
-    ``gate_json``, ``gate_report``, ``source_osm``.
+    ``gate_json``, ``gate_report``, ``layers_json``, ``source_osm``.
+
+    ``layers_json`` resolves by FIXED name rather than through the artifact
+    record, like the two gate files and unlike the ``<name>.*`` ones, because it
+    has to be reachable for a generation that produced no artifact at all — a
+    side input that refused is exactly the case where a caller most needs the
+    findings.
     """
     record = get_job(job_id)
     work_dir = job_dir(job_id)
@@ -1402,6 +1684,8 @@ def artifact_path(job_id: str, kind: str) -> Path:
         candidate = work_dir / GATE_JSON_FILENAME
     elif kind == "gate_report":
         candidate = work_dir / GATE_REPORT_FILENAME
+    elif kind == "layers_json":
+        candidate = work_dir / LAYERS_JSON_FILENAME
     elif kind == "source_osm":
         source = record.get("source_osm") or {}
         candidate = Path(str(source.get("path") or ""))
@@ -1460,6 +1744,9 @@ def _now_iso() -> str:
 __all__ = [
     "reconcile_interrupted_jobs",
     "GATED_STATUSES",
+    "GATE_JSON_FILENAME",
+    "GATE_REPORT_FILENAME",
+    "LAYERS_JSON_FILENAME",
     "GenesisJobError",
     "GenesisJobNotFoundError",
     "GenesisRefused",
@@ -1477,6 +1764,7 @@ __all__ = [
     "attach_live_check",
     "create_genesis_job",
     "discard_staged_osm",
+    "discard_staged_side_input",
     "gate_and_publish",
     "gate_payload",
     "genesis_dir",
@@ -1485,8 +1773,11 @@ __all__ = [
     "list_jobs",
     "registry_path",
     "run_genesis_job",
+    "side_staging_dir",
     "stage_osm",
+    "stage_side_input",
     "staged_osm_path",
+    "staged_side_input",
     "staging_dir",
     "start_genesis_job",
 ]

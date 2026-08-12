@@ -947,6 +947,16 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       The extract itself is not served here; it is reached through the
       generation's authenticated ``artifact/{kind}`` route.
 
+    **The demand/fleet/signals caller-wiring adds exactly ONE:
+    POST /api/genesis/side-inputs.** It stages the DATA a generation composes
+    its optional layers from (counts + the site→leg→link join; controllers +
+    the approach→phase mapping), so it writes into the project's tree and it
+    steers what that project's active dataset becomes — the same two reasons
+    ``POST /api/genesis/uploads`` is guarded. It is deliberately the ``.osm``
+    door one tree over rather than a new kind of entrance: a generation has one
+    kind of entrance, and nothing reaches the composer by a filesystem path in a
+    job payload.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -971,6 +981,7 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/assistant/agent/approve",
         "/api/workspaces",
         "/api/genesis/uploads",
+        "/api/genesis/side-inputs",
         "/api/genesis/jobs",
         "/api/genesis/jobs/{job_id}/artifact/{kind}",
         "/api/genesis/jobs/{job_id}/live-check",
