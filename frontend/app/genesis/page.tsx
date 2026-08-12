@@ -33,6 +33,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import GateFindingsMap from "@/components/genesis/GateFindingsMap";
+import GenesisComparisonPanel from "@/components/genesis/GenesisComparisonPanel";
 import {
   GenesisError,
   fetchGenesisGateReport,
@@ -46,6 +48,7 @@ import {
   type GenesisJob,
   type GenesisJobStatus,
 } from "@/lib/api";
+import { formatTimestamp, statusLabel } from "@/lib/genesisArtifacts";
 
 type Translate = (ko: string, en: string, ja: string) => string;
 
@@ -66,29 +69,12 @@ function isTerminal(status: GenesisJobStatus): boolean {
   return TERMINAL.includes(status);
 }
 
-/** The four terminal states, each said in its own words.
- *
- * `provisional` deliberately does NOT read as success: it means the network was
- * registered AND a refuse-tier check could not run, which is a different thing
- * from a network the gate has cleared. */
-function statusLabel(status: GenesisJobStatus, t: Translate): string {
-  switch (status) {
-    case "queued":
-      return t("대기 중", "Queued", "待機中");
-    case "running":
-      return t("생성 중", "Generating", "生成中");
-    case "refused":
-      return t("거부됨 — 등록하지 않음", "REFUSED — not registered", "拒否 — 登録しません");
-    case "provisional":
-      return t("잠정 등록 — 미확인 검사 있음", "PROVISIONAL — a check could not run", "暫定登録 — 未確認の検査あり");
-    case "published":
-      return t("등록 완료 — 게이트 통과", "PUBLISHED — gate passed", "登録完了 — ゲート通過");
-    case "error":
-      return t("네트워크를 만들지 못함", "No network could be built", "ネットワークを生成できません");
-    default:
-      return status;
-  }
-}
+// `statusLabel` (the four terminal states, each said in its own words --
+// `provisional` deliberately does NOT read as success) and `formatTimestamp`
+// now live in lib/genesisArtifacts.ts -- `GenesisComparisonPanel`'s job picker
+// needs the exact same wording for the exact same fields, and a second,
+// locally-drifting copy is how a picker option ends up showing a raw
+// `job.status`/ISO timestamp next to this page's already-translated ones.
 
 function statusClasses(status: GenesisJobStatus): string {
   switch (status) {
@@ -180,14 +166,6 @@ function refusalHeadline(code: string | null, t: Translate): string {
     default:
       return t("생성이 거부되었습니다", "Generation was refused", "生成が拒否されました");
   }
-}
-
-function formatTimestamp(iso: string | null, lang: "ko" | "en" | "ja"): string {
-  if (!iso) return "—";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  const locale = lang === "ko" ? "ko-KR" : lang === "ja" ? "ja-JP" : "en-US";
-  return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
 }
 
 function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
@@ -722,6 +700,21 @@ export default function GenesisPage() {
                   </li>
                 ))}
               </ul>
+
+              {/* Roadmap v2 §5.B B3 (완결) -- WHERE the gate's findings are,
+                * spatially. Nested inside `report &&` because a highlight is
+                * only meaningful once there is a stored verdict to highlight;
+                * `GateFindingsMap` itself decides whether to auto-open (a
+                * REFUSED verdict does), and fetches the network artifact only
+                * once opened. */}
+              <div className="mt-4">
+                <GateFindingsMap
+                  jobId={selected.id}
+                  report={report}
+                  hasArtifact={Boolean(selected.artifact)}
+                  autoOpen={report.verdict === "refused"}
+                />
+              </div>
             </>
           )}
 
@@ -759,6 +752,29 @@ export default function GenesisPage() {
               </a>
             </div>
           )}
+        </Panel>
+      )}
+
+      {/* Roadmap v2 §5.B B3 (완결) -- prior-generation comparison. Its own
+        * Panel (not nested inside the gate verdict one above) because it
+        * reads a SECOND job's stored gate result, on the user's request --
+        * the gate verdict panel above is about the one job selected in the
+        * history list, and this one is deliberately about two. */}
+      {selected && (
+        <Panel
+          title={t("생성 비교", "Compare generations", "生成の比較")}
+          subtitle={t(
+            "선택한 생성을 다른 생성과 비교합니다 — 게이트 판정과 개수만 비교하며, 네트워크 기하 자체는 비교하지 않습니다.",
+            "Compare the selected generation against another one -- gate results and counts only, never the networks' own geometry.",
+            "選択した生成を別の生成と比較します — ゲート判定と件数のみを比較し、ネットワークの形状自体は比較しません。",
+          )}
+        >
+          <GenesisComparisonPanel
+            jobs={jobs}
+            currentJob={selected}
+            currentReport={report}
+            currentReportError={reportError}
+          />
         </Panel>
       )}
     </div>

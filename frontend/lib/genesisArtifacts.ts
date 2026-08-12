@@ -1,0 +1,518 @@
+// Roadmap v2 §5.B B3 (완결) -- the gate's verdict gets a map, and a generation
+// gets a prior generation to be measured against.
+//
+// Everything below reads ONE more artifact the genesis page did not read yet:
+// `GET /api/genesis/jobs/{id}/artifact/genesis_json` -- the draft network as
+// data (`services/genesis/draft.py`'s `DraftNetwork.model_dump(mode="json")`).
+// The shapes here are NOT re-derived from the pydantic source by inspection;
+// they were checked against a REAL file, produced offline from the cached
+// `client-data/murdoch.osm` with the same two backend tools a consultant runs
+// by hand (`backend/tools/genesis_osm_draft.py` then
+// `backend/tools/genesis_validation_gate.py --json`), never against a live
+// job (this unit may not touch `backend/`, and a live run would also write
+// into a real workspace's runtime/ tree, which is not this unit's to do
+// either). The fields below are exactly what that run wrote to disk.
+//
+// THE ONE THING THIS FILE CANNOT DO HONESTLY: draw an EXCLUDED zone's
+// geometry. `build_draft` (services/genesis/draft.py, `MAX_ISOLATION_ROUNDS`
+// loop) removes an excluded pocket's ways and then REBUILDS the whole network
+// from scratch -- a smaller extent moves the projection origin, which moves
+// every coordinate -- so the ids in `metadata.connectivity.excluded_zones[].
+// link_ids` name links from a draft that was thrown away, not links in the
+// file this page can draw. `isolated_zones_retained` is the other list the
+// same round produces and it is NOT the same claim: a retained zone is one
+// this generator's own connectors left isolated, so R1.5 V3 refuses on it
+// rather than letting it be silently dropped, and it stays IN the returned
+// draft -- its `link_ids` genuinely are ids in `links` below. See
+// `resolveFindingHighlight`'s doc comment for how that distinction is used.
+//
+// THE OTHER HONEST GAP: a gate finding's `subject` (GenesisGateFinding, see
+// lib/api.ts) is a plain string, not a structured reference --
+// `services/genesis/gate.py`'s `gate_payload` ships `{code, subject, message}`
+// per finding and drops the `context` dict that actually carries a bare
+// link/connector id. The full subject-shape inventory, measured by reading
+// every `GateFinding(...)` call site in gate.py (not sampled from one report):
+//   V1  a filename (`Path(oracle.network_path).name`) or a joined filename
+//       list -- never a link/connector id at all.
+//   V2  a reference-path string (`"<parent>/<tag>[<id>]/@<attr>"`) for every
+//       code except `v2_connector_endpoint_dangling`, whose subject is a
+//       free-text sentence from `genesis.diff._dangling_references` -- neither
+//       shape is an id this file can look up.
+//   V3  `_label()` (id, or `"<id> (<name>)"` when the link is named) for every
+//       code except `v3_silent_departure_point`, which writes the link's own
+//       NAME first and only falls back to its bare id when the link has none
+//       (`str(entry.get("link") or entry.get("link_id") or "?")`, gate.py:1820
+//       -- `entry["link"]` is literally `link.name`, draft.py:2386).
+//   V4  three codes (`v4_more_mapped_lanes_than_link_has`,
+//       `v4_lane_reference_malformed`, `v4_lane_index_outside_link`) write a
+//       bare CONNECTOR id with no name at all; `v4_lane_drop_without_runway`
+//       uses `_label()` on a link.
+//   V5  three HEAD-id codes (`v5_head_signal_group_malformed`,
+//       `v5_head_without_controller`, `v5_head_without_signal_group`) write a
+//       bare signal-head number -- a THIRD id space, dense from 1 same as
+//       links and connectors, and never resolvable against either;
+//       `v5_signal_group_without_head` writes a `"{controller} {group}"` pair
+//       string; `v5_approach_reaches_no_head_in_node` uses `_label()`.
+//   V6  eight codes -- four composition-number codes (`v6_composition_empty`,
+//       `v6_composition_relflow_sum_zero`, `v6_composition_relflow_negative`,
+//       and warn-tier `v6_composition_unused`, added 2026-08-12) and four
+//       vehicle-input-number codes (`v6_input_without_volume`,
+//       `v6_input_volume_is_zero`, `v6_input_composition_missing`,
+//       `v6_input_without_routing_coverage`) -- write a bare id from a FOURTH
+//       and FIFTH id space, also dense from 1, also never resolvable against a
+//       link or connector; `v6_link_demand_over_capacity` uses `_label()`.
+//   V7  `v7_link_without_geometry` writes a bare id straight from the shared
+//       link-or-connector namespace (`item.id`, where `item` ranges over both)
+//       -- the one bare-numeric code that is safe by construction; every other
+//       V7 code uses `_label()` on that same shared namespace.
+//   V8  emits no findings at all (gaps only).
+//   V9  `_label()` throughout.
+//
+// So a bare all-digit subject is NOT proof of a link/connector id -- V5's head
+// numbers and V6's composition/input numbers are just as dense and start from
+// 1, so a bare-numeric fallback applied to every code WILL collide with a real
+// link or connector id and highlight the wrong element. `resolveFindingHighlight`
+// therefore takes the finding's `code` too, and only trusts a bare-numeric
+// subject for the codes enumerated above as actually carrying one (see
+// `BARE_ID_RESOLVABLE_CODES`) -- every other bare-numeric subject reports
+// unresolved rather than guessing. The `"<id> (<name>)"` shape needs no such
+// gate: nothing outside `_label()` writes that exact pattern, and `_label()`
+// only ever wraps a link or connector id.
+
+import {
+  apiFetch,
+  GenesisError,
+  type GenesisGateCheck,
+  type GenesisGateFinding,
+  type GenesisGateReport,
+  type GenesisJobStatus,
+} from "@/lib/api";
+
+// ---------------------------------------------------------------------------
+// The draft network -- `*.genesis.json`, DraftNetwork.model_dump(mode="json")
+// ---------------------------------------------------------------------------
+
+/** One directional carriageway. Coordinates are the draft projection's local
+ * tangent-plane METRES (+x east, +y north -- `services/genesis/project.py`),
+ * relative to an origin private to this one generation. Plain 2D, no
+ * georeference -- the same "not a map" disclaimer the region page states for
+ * its own gauge applies here (`RegionGauge`'s own comment). +y is NORTH, so an
+ * on-screen north-up render needs a y-FLIP -- see `fitNetwork` below. */
+export interface GenesisDraftLink {
+  id: number;
+  name: string;
+  osm_way_id: number;
+  segment_index: number;
+  forward: boolean;
+  lanes: number;
+  lane_width_m: number;
+  points: [number, number][];
+  highway: string;
+  from_node_osm_id: number;
+  to_node_osm_id: number;
+  side_offset_m: number;
+  setback_clamped?: boolean;
+}
+
+/** One movement through one intersection. */
+export interface GenesisDraftConnector {
+  id: number;
+  name: string;
+  node_osm_id: number;
+  node_id: number;
+  from_link: number;
+  to_link: number;
+  from_pos_m: number;
+  to_pos_m: number;
+  lanes: number;
+  lane_width_m: number;
+  points: [number, number][];
+  turn: string;
+  heading_change_deg: number;
+  lane_change: string;
+}
+
+export interface GenesisDraftNode {
+  id: number;
+  name: string;
+  osm_id: number;
+  x: number;
+  y: number;
+  polygon: [number, number][];
+}
+
+/** `services/genesis/connectivity.py`'s `IsolatedZone.as_dict()`, verbatim. */
+export interface GenesisIsolatedZone {
+  reason: string;
+  detail: string;
+  links: number;
+  link_ids: number[];
+  ways: number;
+  way_ids: number[];
+  representative: string;
+  street_names: string[];
+}
+
+export interface GenesisConnectivityMetadata {
+  /** NO GEOMETRY -- see this file's header comment. Named-only. */
+  excluded_zones?: GenesisIsolatedZone[];
+  excluded_zones_by_reason?: Record<string, number>;
+  excluded_zone_links?: number;
+  excluded_zones_unresolved?: string;
+  /** HAS geometry -- every id in every zone's `link_ids` is a real id in this
+   * same payload's `links`. */
+  isolated_zones_retained?: GenesisIsolatedZone[];
+  [key: string]: unknown;
+}
+
+export interface GenesisDraftNetwork {
+  name: string;
+  source_osm: string;
+  traffic_regulation?: string;
+  refused: boolean;
+  refusals: string[];
+  metadata: { connectivity?: GenesisConnectivityMetadata; [key: string]: unknown };
+  links: GenesisDraftLink[];
+  connectors: GenesisDraftConnector[];
+  nodes: GenesisDraftNode[];
+  skipped_ways?: Array<Record<string, unknown>>;
+}
+
+/** `GET /jobs/{id}/artifact/genesis_json` -- authenticated, same as every
+ * other artifact download (`routers/genesis.py`'s `download_artifact`: an
+ * anonymous caller must not be able to read a network's geometry, refused or
+ * not). `apiFetch` carries the session cookie and the workspace header for a
+ * same-origin request the way every other genesis read in this app does
+ * (`fetchGenesisJob` etc. in lib/api.ts) -- no new fetch pattern introduced
+ * here. */
+export async function fetchGenesisDraftNetwork(jobId: string): Promise<GenesisDraftNetwork> {
+  const r = await apiFetch(`/api/genesis/jobs/${jobId}/artifact/genesis_json`, { cache: "no-store" });
+  if (!r.ok) {
+    const text = await r.text();
+    let message = text || `${r.status} ${r.statusText}`.trim();
+    try {
+      const data = JSON.parse(text) as { detail?: unknown };
+      if (typeof data.detail === "string" && data.detail.trim()) message = data.detail;
+    } catch {
+      // Plain text errors are still useful.
+    }
+    throw new GenesisError(message, r.status);
+  }
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Finding -> geometry resolution (best-effort; see header comment)
+// ---------------------------------------------------------------------------
+
+/** `"<id> (<name>)"` -- `gate.py`'s own `_label()` format. Nothing outside
+ * `_label()` writes this exact shape, and `_label()` only ever wraps a link or
+ * connector id, so this pattern needs no code-level gate. */
+const LABELED_SUBJECT_RE = /^(\d+)\s*\(/;
+/** A bare id, nothing else. NOT proof of a link/connector id by itself -- see
+ * `BARE_ID_RESOLVABLE_CODES` below and this file's header comment: V5's
+ * signal-head numbers and V6's composition/input numbers are bare digits from
+ * the SAME dense range and would collide silently if trusted for every code. */
+const BARE_ID_RE = /^\d+$/;
+
+/** Gate finding codes whose subject, reading gate.py's own `GateFinding(...)`
+ * call sites end to end, is PROVEN to be a link or connector id whenever it is
+ * a bare digit string -- either because the code never wraps it in a name at
+ * all (the three V4 connector codes, and V7's `v7_link_without_geometry`,
+ * which shares one namespace across links and connectors by construction), or
+ * because it goes through `_label()`, which degrades to a bare id only when
+ * the link/connector has no name and otherwise reads `"<id> (<name>)"` (caught
+ * by `LABELED_SUBJECT_RE` above regardless of this allow-list). Every OTHER
+ * code that can still produce a bare digit string -- V5's three head-id codes,
+ * V6's four composition/input-id codes -- points into a namespace this file
+ * cannot look up, and MUST resolve to `resolved: false` rather than risk
+ * matching an unrelated link or connector by coincidence of id range. */
+const BARE_ID_RESOLVABLE_CODES = new Set<string>([
+  // Bare by construction -- never carry a name.
+  "v4_more_mapped_lanes_than_link_has",
+  "v4_lane_reference_malformed",
+  "v4_lane_index_outside_link",
+  "v7_link_without_geometry",
+  // `_label()`-based -- bare only when the link/connector has no name.
+  "v3_orphan_link",
+  "v3_isolated_zone",
+  "v3_unreachable_zone",
+  "v3_trapped_zone",
+  "v3_broken_zone",
+  "v3_input_cannot_reach_an_exit",
+  "v4_lane_drop_without_runway",
+  "v5_approach_reaches_no_head_in_node",
+  "v6_link_demand_over_capacity",
+  "v7_zero_length_link",
+  "v7_link_below_generator_floor",
+  "v7_links_share_one_polyline",
+  "v9_stop_line_without_queue_counter",
+]);
+
+export interface GenesisFindingHighlight {
+  /** Link ids to draw as this finding's location. When the resolved link is a
+   * member of a RETAINED isolated zone (metadata.connectivity.
+   * isolated_zones_retained), every link of that zone is included -- one
+   * link is where the finding's subject points; the whole zone is what "an
+   * isolated pocket" actually looks like on a map. */
+  linkIds: number[];
+  connectorIds: number[];
+  /** False when `subject` matched neither a link nor a connector by id or by
+   * name -- an honest "could not place this on the map", never a silently
+   * empty highlight. */
+  resolved: boolean;
+}
+
+function findRetainedZoneFor(linkId: number, network: GenesisDraftNetwork): GenesisIsolatedZone | null {
+  const zones = network.metadata.connectivity?.isolated_zones_retained ?? [];
+  for (const zone of zones) {
+    if (zone.link_ids.includes(linkId)) return zone;
+  }
+  return null;
+}
+
+/** Resolve one gate finding's `subject` string to network geometry. Tries, in
+ * order: the leading numeric id in `"<id> (<name>)"`; a bare numeric subject
+ * -- ONLY when `finding.code` is in `BARE_ID_RESOLVABLE_CODES`, since a bare
+ * digit string alone is not proof of a link/connector id (see that constant's
+ * doc comment); an exact name match. Links are tried before connectors at
+ * every step (the two id spaces do not collide in a real generation --
+ * verified: connector ids start at 10001 in the sample generation, link ids
+ * run 1..1828 -- but links are tried first regardless, since most finding
+ * codes are about links). Never throws; an unresolved subject comes back
+ * `resolved: false`. */
+export function resolveFindingHighlight(
+  finding: Pick<GenesisGateFinding, "subject" | "code">,
+  network: GenesisDraftNetwork,
+): GenesisFindingHighlight {
+  const subject = (finding.subject ?? "").trim();
+  if (!subject) return { linkIds: [], connectorIds: [], resolved: false };
+
+  const labeled = subject.match(LABELED_SUBJECT_RE);
+  const bareAllowed = BARE_ID_RE.test(subject) && BARE_ID_RESOLVABLE_CODES.has(finding.code);
+  const idCandidate = labeled ? labeled[1] : bareAllowed ? subject : null;
+  if (idCandidate !== null) {
+    const numericId = Number(idCandidate);
+    const link = network.links.find((candidate) => candidate.id === numericId);
+    if (link) {
+      const zone = findRetainedZoneFor(link.id, network);
+      return { linkIds: zone ? zone.link_ids : [link.id], connectorIds: [], resolved: true };
+    }
+    const connector = network.connectors.find((candidate) => candidate.id === numericId);
+    if (connector) return { linkIds: [], connectorIds: [connector.id], resolved: true };
+  }
+
+  const byName = network.links.find((candidate) => candidate.name === subject);
+  if (byName) {
+    const zone = findRetainedZoneFor(byName.id, network);
+    return { linkIds: zone ? zone.link_ids : [byName.id], connectorIds: [], resolved: true };
+  }
+  const connectorByName = network.connectors.find((candidate) => candidate.name === subject);
+  if (connectorByName) return { linkIds: [], connectorIds: [connectorByName.id], resolved: true };
+
+  return { linkIds: [], connectorIds: [], resolved: false };
+}
+
+// ---------------------------------------------------------------------------
+// Prior-generation comparison -- gate results + summary stats ONLY.
+// ---------------------------------------------------------------------------
+//
+// Deliberately not a geometry diff. `services/genesis/diff.py` (benchmark.py's
+// domain, per this unit's own brief) already owns comparing two networks'
+// actual topology; re-implementing any part of that client-side, over data
+// this page was never given (no from/to endpoints, no signal coverage), would
+// be a second, drifting copy of a comparison the backend already does
+// properly. What CAN be compared honestly from what this page already fetches
+// (GenesisJob + GenesisGateReport, both per job) is the gate's own verdict
+// and finding set, plus the job record's own network summary -- so that is
+// the whole of it, and the UI names that scope rather than implying more.
+
+export type GenesisCheckDelta = {
+  id: string;
+  baseTier: GenesisGateCheck["tier"] | null;
+  targetTier: GenesisGateCheck["tier"] | null;
+  baseState: GenesisGateCheck["state"] | null;
+  targetState: GenesisGateCheck["state"] | null;
+  stateChanged: boolean;
+  /** Refuse/warn-tier findings (`check.findings`) present in target but not in
+   * base, matched by `code + subject` (the only stable identity a finding
+   * carries across two reports) as a MULTISET -- base=[K], target=[K,K] shows
+   * one added, not zero, because gate.py can legitimately emit the same
+   * code+subject twice for one check (V2's per-side connector findings, for
+   * one). A plain Set-based diff would show +0/-0 for that case and silently
+   * undercount. */
+  added: GenesisGateFinding[];
+  removed: GenesisGateFinding[];
+  unchangedCount: number;
+  /** The SAME multiset diff, over `check.warnings` (warn-tier findings a
+   * refuse-tier check still surfaces) -- a separate column, never folded into
+   * `added`/`removed` above, because a warn-tier change is not the same claim
+   * as a refuse-tier one and the UI must be able to show them apart. */
+  addedWarnings: GenesisGateFinding[];
+  removedWarnings: GenesisGateFinding[];
+  unchangedWarningsCount: number;
+  /** Either side's report may have capped the findings/warnings it shipped
+   * (`findings_omitted`/`warnings_omitted` on the check) -- when any of the
+   * four below is nonzero the corresponding added/removed lists are a lower
+   * bound, and the UI must say so rather than imply a complete diff. */
+  baseFindingsOmitted: number;
+  targetFindingsOmitted: number;
+  baseWarningsOmitted: number;
+  targetWarningsOmitted: number;
+  /** True when either side's findings OR warnings for this check repeated the
+   * same `code + subject` more than once. The added/removed counts above stay
+   * exact even so (they are computed as a multiset), but the UI discloses this
+   * so a reader does not assume `code + subject` is always a unique key. */
+  duplicateKeysPresent: boolean;
+};
+
+function findingKey(finding: GenesisGateFinding): string {
+  return `${finding.code} ${finding.subject}`;
+}
+
+/** Multiset diff: counts each `code + subject` occurrence on both sides and
+ * reports the POSITIVE difference as added/removed, rather than a Set-based
+ * membership test that treats a second identical occurrence as a no-op. See
+ * `GenesisCheckDelta.added`'s doc comment for why this matters -- gate.py does
+ * emit duplicate `code + subject` pairs within one check's finding list. */
+function diffFindingLists(
+  base: GenesisGateFinding[],
+  target: GenesisGateFinding[],
+): { added: GenesisGateFinding[]; removed: GenesisGateFinding[]; unchangedCount: number; duplicateKeyPresent: boolean } {
+  const baseCounts = new Map<string, number>();
+  const baseSample = new Map<string, GenesisGateFinding>();
+  for (const finding of base) {
+    const key = findingKey(finding);
+    baseCounts.set(key, (baseCounts.get(key) ?? 0) + 1);
+    if (!baseSample.has(key)) baseSample.set(key, finding);
+  }
+  const targetCounts = new Map<string, number>();
+  const targetSample = new Map<string, GenesisGateFinding>();
+  for (const finding of target) {
+    const key = findingKey(finding);
+    targetCounts.set(key, (targetCounts.get(key) ?? 0) + 1);
+    if (!targetSample.has(key)) targetSample.set(key, finding);
+  }
+
+  const added: GenesisGateFinding[] = [];
+  const removed: GenesisGateFinding[] = [];
+  let unchangedCount = 0;
+  let duplicateKeyPresent = false;
+  for (const key of new Set([...baseCounts.keys(), ...targetCounts.keys()])) {
+    const baseCount = baseCounts.get(key) ?? 0;
+    const targetCount = targetCounts.get(key) ?? 0;
+    if (baseCount > 1 || targetCount > 1) duplicateKeyPresent = true;
+    unchangedCount += Math.min(baseCount, targetCount);
+    if (targetCount > baseCount) {
+      const sample = targetSample.get(key)!;
+      for (let i = 0; i < targetCount - baseCount; i += 1) added.push(sample);
+    } else if (baseCount > targetCount) {
+      const sample = baseSample.get(key)!;
+      for (let i = 0; i < baseCount - targetCount; i += 1) removed.push(sample);
+    }
+  }
+  return { added, removed, unchangedCount, duplicateKeyPresent };
+}
+
+/** Per-check (V1-V9) delta between two stored gate reports. A check absent
+ * from one side (should not happen -- the gate always runs all nine -- but a
+ * report from a differently-versioned gate is not impossible) carries `null`
+ * for that side's tier/state rather than being silently skipped. */
+export function compareGenesisChecks(
+  base: GenesisGateReport,
+  target: GenesisGateReport,
+): GenesisCheckDelta[] {
+  const baseById = new Map(base.checks.map((check) => [check.id, check]));
+  const targetById = new Map(target.checks.map((check) => [check.id, check]));
+  const ids = Array.from(new Set([...baseById.keys(), ...targetById.keys()])).sort();
+  return ids.map((id) => {
+    const b = baseById.get(id) ?? null;
+    const t = targetById.get(id) ?? null;
+    const findingsDiff = diffFindingLists(b?.findings ?? [], t?.findings ?? []);
+    const warningsDiff = diffFindingLists(b?.warnings ?? [], t?.warnings ?? []);
+    return {
+      id,
+      baseTier: b?.tier ?? null,
+      targetTier: t?.tier ?? null,
+      baseState: b?.state ?? null,
+      targetState: t?.state ?? null,
+      stateChanged: (b?.state ?? null) !== (t?.state ?? null),
+      added: findingsDiff.added,
+      removed: findingsDiff.removed,
+      unchangedCount: findingsDiff.unchangedCount,
+      addedWarnings: warningsDiff.added,
+      removedWarnings: warningsDiff.removed,
+      unchangedWarningsCount: warningsDiff.unchangedCount,
+      baseFindingsOmitted: b?.findings_omitted ?? 0,
+      targetFindingsOmitted: t?.findings_omitted ?? 0,
+      baseWarningsOmitted: b?.warnings_omitted ?? 0,
+      targetWarningsOmitted: t?.warnings_omitted ?? 0,
+      duplicateKeysPresent: findingsDiff.duplicateKeyPresent || warningsDiff.duplicateKeyPresent,
+    };
+  });
+}
+
+/** Summary-stat deltas the comparison panel shows beside the check table.
+ * `excludedZones`/`retainedZones` are only present when the caller has fetched
+ * BOTH sides' `genesis_json` (they are not on the job record or the gate
+ * report -- only in the draft artifact's own metadata), so they are optional
+ * on purpose rather than a field the UI can assume is always there. */
+export interface GenesisNetworkStat {
+  label: string;
+  base: number | null;
+  target: number | null;
+}
+
+export function buildNetworkStatDeltas(
+  base: { links: number; connectors: number; nodes: number } | null,
+  target: { links: number; connectors: number; nodes: number } | null,
+  baseExcluded: number | null,
+  targetExcluded: number | null,
+): GenesisNetworkStat[] {
+  return [
+    { label: "links", base: base?.links ?? null, target: target?.links ?? null },
+    { label: "connectors", base: base?.connectors ?? null, target: target?.connectors ?? null },
+    { label: "nodes", base: base?.nodes ?? null, target: target?.nodes ?? null },
+    { label: "excluded_zones", base: baseExcluded, target: targetExcluded },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Shared job-record wording -- ONE ko/en/ja source, used by both the main
+// genesis page (the job history list) and `GenesisComparisonPanel` (the
+// "compare against" picker). Living here rather than duplicated in each
+// caller is what stops the picker from ever showing a raw `job.status` or a
+// raw ISO `job.created_at` next to the history list's already-translated
+// versions of the exact same fields.
+// ---------------------------------------------------------------------------
+
+/** The four terminal states, each said in its own words -- `provisional`
+ * deliberately does NOT read as success: it means the network was registered
+ * AND a refuse-tier check could not run, which is a different thing from a
+ * network the gate has cleared. */
+export function statusLabel(status: GenesisJobStatus, t: (ko: string, en: string, ja: string) => string): string {
+  switch (status) {
+    case "queued":
+      return t("대기 중", "Queued", "待機中");
+    case "running":
+      return t("생성 중", "Generating", "生成中");
+    case "refused":
+      return t("거부됨 — 등록하지 않음", "REFUSED — not registered", "拒否 — 登録しません");
+    case "provisional":
+      return t("잠정 등록 — 미확인 검사 있음", "PROVISIONAL — a check could not run", "暫定登録 — 未確認の検査あり");
+    case "published":
+      return t("등록 완료 — 게이트 통과", "PUBLISHED — gate passed", "登録完了 — ゲート通過");
+    case "error":
+      return t("네트워크를 만들지 못함", "No network could be built", "ネットワークを生成できません");
+    default:
+      return status;
+  }
+}
+
+export function formatTimestamp(iso: string | null, lang: "ko" | "en" | "ja"): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const locale = lang === "ko" ? "ko-KR" : lang === "ja" ? "ja-JP" : "en-US";
+  return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
+}

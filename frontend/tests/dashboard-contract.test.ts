@@ -1277,6 +1277,11 @@ test("U9: safeNextPath only ever returns a same-origin path", () => {
 
 contractTest("genesis view renders the gate's tri-state without collapsing it", (pin) => {
   const page = read("app/genesis/page.tsx");
+  // `statusLabel` (the four terminal job states' own wording) moved to
+  // lib/genesisArtifacts.ts in B3-FIX so `GenesisComparisonPanel`'s job
+  // picker could share the exact same wording instead of re-deriving it --
+  // see that file's own comment. The two full-sentence pins below moved with it.
+  const genesisLib = read("lib/genesisArtifacts.ts");
 
   // The design rule the whole R1.5 gate hangs on: a check that could not RUN is
   // never a pass. Three states, three words, and not_checkable said out loud.
@@ -1295,8 +1300,8 @@ contractTest("genesis view renders the gate's tri-state without collapsing it", 
   for (const status of ["refused", "provisional", "published", "error"]) {
     pin.match(page, new RegExp(`case "${status}":`), `expected the ${status} job state to be named on the genesis page`);
   }
-  pin.match(page, /잠정 등록 — 미확인 검사 있음/, "expected the provisional label to state that a check could not run");
-  pin.match(page, /거부됨 — 등록하지 않음/, "expected the refused label to state that nothing was registered");
+  pin.match(genesisLib, /잠정 등록 — 미확인 검사 있음/, "expected the provisional label to state that a check could not run");
+  pin.match(genesisLib, /거부됨 — 등록하지 않음/, "expected the refused label to state that nothing was registered");
 
   // Every gate sentence comes from the backend payload (gate.py's own ko/en/ja
   // table), never from a dictionary in this file.
@@ -1523,4 +1528,223 @@ contractTest("B2: the region API bindings carry the workspace header and the mea
 
   // Discoverable: the upload flow points at the region flow.
   pin.match(genesisPage, /href="\/genesis\/region"/, "expected the genesis page to link to the region extractor");
+});
+
+// ---------------------------------------------------------------------------
+// Roadmap v2 §5.B B3 (완결) -- the gate's verdict gets a map, and a comparison
+// ---------------------------------------------------------------------------
+
+contractTest("B3: the gate findings map never draws a silent blank and never invents excluded-zone geometry", (pin) => {
+  const map = read("components/genesis/GateFindingsMap.tsx");
+  const lib = read("lib/genesisArtifacts.ts");
+
+  // No artifact, a failed network fetch and an empty network are three
+  // DIFFERENT named states -- never a blank canvas.
+  pin.match(map, /!hasArtifact\s*\)\s*\{[\s\S]*?<EmptyState/, "expected a job with no artifact to render a named empty state");
+  pin.match(map, /loadError &&[\s\S]*?<EmptyState/, "expected a failed network fetch to render a named empty state");
+  pin.match(map, /network\.links\.length === 0[\s\S]*?<EmptyState/, "expected an empty network to render a named empty state");
+
+  // Every finding this page cannot place on the map is LISTED, not dropped.
+  pin.match(map, /unresolvedCount > 0/, "expected unresolved findings to get their own disclosed section");
+  pin.match(
+    lib,
+    /return \{ linkIds: \[\], connectorIds: \[\], resolved: false \};/,
+    "expected an unmatched finding subject to resolve to `resolved: false`, not a guess",
+  );
+
+  // Excluded zones are NAMED but carry NO drawable geometry -- `build_draft`
+  // rebuilds the network from a smaller extent after removing them, so their
+  // recorded link_ids point at a draft that was thrown away. The map must say
+  // that plainly rather than invent a pin location for them.
+  pin.match(
+    lib,
+    /excluded_zones\?: GenesisIsolatedZone\[\];/,
+    "expected excluded zones to be a named field on the connectivity metadata",
+  );
+  pin.match(
+    map,
+    /이 구역은 최종 좌표가 확정되기 전에 제외되어, 지도에 그릴 좌표가 없습니다/,
+    "expected an excluded zone's detail panel to say plainly that it has no coordinates left to draw",
+  );
+
+  // The artifact fetch stays on the same workspace-header/credentials path
+  // every other genesis read in this app uses -- a bare fetch() here would
+  // silently read a different workspace's job.
+  pin.match(
+    lib,
+    /await apiFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/artifact\/genesis_json`/,
+    "expected the draft network to be read through apiFetch",
+  );
+  pin.doesNotMatch(lib, /\n\s*const r = await fetch\(/, "genesis artifact reads must not bypass the workspace-header fetch helper");
+
+  // FIX B3-1: a bare all-digit finding subject is NOT proof of a link/
+  // connector id -- V5's signal-head numbers and V6's composition/input
+  // numbers are just as dense and start from 1 -- so the bare-numeric
+  // fallback must be gated on the finding's OWN code, not applied to every
+  // code alike (which is how a V5 finding used to highlight an unrelated
+  // link that merely shared its numeric id).
+  pin.match(
+    lib,
+    /finding: Pick<GenesisGateFinding, "subject" \| "code">/,
+    "expected resolveFindingHighlight to take the finding's code, not only its subject",
+  );
+  pin.match(
+    lib,
+    /BARE_ID_RE\.test\(subject\) && BARE_ID_RESOLVABLE_CODES\.has\(finding\.code\)/,
+    "expected the bare-numeric fallback to require both a bare digit string AND an allow-listed code",
+  );
+  const bareIdAllowList = sliceBetween(lib, "const BARE_ID_RESOLVABLE_CODES = new Set<string>([", "]);");
+  pin.match(bareIdAllowList, /v7_link_without_geometry/, "expected v7_link_without_geometry in the allow-list -- it shares one id namespace across links and connectors by construction");
+  pin.match(bareIdAllowList, /v4_more_mapped_lanes_than_link_has/, "expected V4's bare connector-id codes in the allow-list");
+  // Re-verification traced EVERY broadened allow-list entry to its GateFinding
+  // call site and confirmed the subject is a link/connector id (bare `_label()`
+  // fallback when the element has no name). Pin each one: an accidental
+  // removal fails nothing at runtime -- that code's findings would just
+  // quietly downgrade to "could not place on the map".
+  for (const code of [
+    "v4_lane_reference_malformed",
+    "v4_lane_index_outside_link",
+    "v3_orphan_link",
+    "v3_isolated_zone",
+    "v3_unreachable_zone",
+    "v3_trapped_zone",
+    "v3_broken_zone",
+    "v3_input_cannot_reach_an_exit",
+    "v4_lane_drop_without_runway",
+    "v5_approach_reaches_no_head_in_node",
+    "v6_link_demand_over_capacity",
+    "v7_zero_length_link",
+    "v7_link_below_generator_floor",
+    "v7_links_share_one_polyline",
+    "v9_stop_line_without_queue_counter",
+  ]) {
+    pin.match(
+      bareIdAllowList,
+      new RegExp(`"${code}"`),
+      `expected ${code} to stay in the bare-id allow-list -- it was traced to a link/connector-id subject at its gate.py call site`,
+    );
+  }
+  pin.doesNotMatch(
+    bareIdAllowList,
+    /v5_head_without_controller|v5_head_signal_group_malformed|v5_head_without_signal_group/,
+    "V5's signal-head-id codes must NEVER be trusted for the bare-numeric fallback -- they are a third id space, not a link/connector id, and this exact collision was the CRITICAL finding",
+  );
+  pin.doesNotMatch(
+    bareIdAllowList,
+    /v6_composition_empty|v6_composition_relflow_sum_zero|v6_composition_relflow_negative|v6_composition_unused|v6_input_without_volume|v6_input_volume_is_zero|v6_input_composition_missing|v6_input_without_routing_coverage/,
+    "V6's composition/input-id codes must NEVER be trusted for the bare-numeric fallback -- a fourth and fifth id space, not a link/connector id (v6_composition_unused added 2026-08-12 with the warn-tier orphan clause)",
+  );
+
+  // FIX B3-3: a clicked link/connector can carry MORE than one finding (three
+  // V4 lane findings on one connector is a real shape) -- the detail panel
+  // must list every finding touching the clicked element, not silently
+  // collapse to the first and hide the rest.
+  pin.match(map, /kind: "finding"; refs: FindingRef\[\]/, "expected a selection to carry EVERY finding on the clicked element, not just one");
+  pin.match(map, /selected\.refs\.map\(/, "expected the detail panel to render the full list of findings for the clicked element");
+  pin.doesNotMatch(map, /if \(refs\[0\]\) setSelected/, "must not collapse a multi-finding element's click down to only its first finding");
+
+  // FIX B3-9: a JSX `onWheel` prop is registered PASSIVE by this app's React
+  // 19, so `event.preventDefault()` inside it is a silent no-op and the page
+  // scrolls underneath an attempted zoom. The fix must be a real, non-passive
+  // DOM listener, not the JSX prop.
+  pin.doesNotMatch(map, /onWheel=\{handleWheel\}/, "a JSX onWheel handler cannot preventDefault under this app's React 19 -- must not be reintroduced");
+  pin.match(
+    map,
+    /addEventListener\("wheel", handleWheelNative, \{ passive: false \}\)/,
+    "expected the wheel handler to be attached as a real, non-passive DOM listener",
+  );
+
+  // FIX B3-10: panning/zooming sets `view` on every pointermove, and the old
+  // inline JSX read `view.scale` per polyline for strokeWidth -- rebuilding
+  // ~5,000 elements on every drag frame. The fix keeps `view` OFF the
+  // polyline layer's props entirely (a memoized component) and uses
+  // `vector-effect="non-scaling-stroke"` for constant on-screen width instead
+  // of a per-render division.
+  pin.match(map, /const NetworkLayer = memo\(function NetworkLayer\(/, "expected the polyline layer to be a component memoized against everything except `view`");
+  pin.match(map, /vectorEffect="non-scaling-stroke"/, "expected constant-width strokes via vector-effect, not a view.scale division read on every element");
+  pin.doesNotMatch(map, /strokeWidth=\{[\d.]+ \/ view\.scale\}/, "must not reintroduce a per-element view.scale read for stroke width");
+});
+
+contractTest("B3: generation comparison stays scoped to gate results and named counts, never geometry", (pin) => {
+  const panel = read("components/genesis/GenesisComparisonPanel.tsx");
+  const lib = read("lib/genesisArtifacts.ts");
+
+  // The scope is stated ON SCREEN, not only in a comment -- "compare with a
+  // previous generation" without this line would read as a full network diff.
+  pin.match(
+    panel,
+    /게이트 판정과 개수만 비교합니다 — 네트워크 기하 자체의 차이는 비교하지 않습니다/,
+    "expected the comparison panel to state its own scope on screen",
+  );
+
+  // Findings are matched by an identity the report actually carries (code +
+  // subject) -- never by array position, which two differently-shaped reports
+  // would silently misalign.
+  pin.match(
+    lib,
+    /function findingKey\(finding: GenesisGateFinding\): string \{\s*\n\s*return `\$\{finding\.code\} \$\{finding\.subject\}`;/,
+    "expected findings to be matched by code+subject identity, not by list position",
+  );
+
+  // A capped finding list is disclosed as a LOWER BOUND, never presented as a
+  // complete diff.
+  pin.match(
+    panel,
+    /baseFindingsOmitted > 0 \|\| d\.targetFindingsOmitted > 0/,
+    "expected a truncated gate report to be disclosed as a lower-bound comparison",
+  );
+
+  // The compared job's verdict comes from the SAME stored-verdict endpoint
+  // the main page reads for the selected job -- no second, re-run gate.
+  pin.match(
+    panel,
+    /fetchGenesisGateReport\(priorId, lang\)/,
+    "expected the compared job's gate report to be read from the stored-verdict endpoint",
+  );
+
+  // FIX B3-7: gate.py can legitimately emit the SAME code+subject twice within
+  // one check (V2's per-side connector findings) -- a Set-based diff shows
+  // +0/-0 for base=[K] vs target=[K,K], silently undercounting. The diff must
+  // be a multiset: count occurrences per key, and disclose when a key
+  // repeated so the reader knows code+subject is not always unique.
+  pin.match(lib, /const baseCounts = new Map<string, number>\(\);/, "expected the finding diff to tally occurrences per code+subject key (multiset), not just Set membership");
+  pin.match(lib, /if \(baseCount > 1 \|\| targetCount > 1\) duplicateKeyPresent = true;/, "expected a repeated code+subject key to be flagged, not silently folded away");
+  pin.match(panel, /duplicateKeysPresent/, "expected the comparison panel to disclose when a check repeated a code+subject key");
+
+  // FIX B3-4: `compareGenesisChecks` used to diff `check.findings` only --
+  // `check.warnings` (which GateFindingsMap already reads) never entered the
+  // comparison at all, so a warn-tier-only change between two generations
+  // rendered as "unchanged". The diff and the table must cover both tiers.
+  pin.match(lib, /addedWarnings: GenesisGateFinding\[\];/, "expected the check delta to carry a warn-tier added/removed diff, separate from the refuse/warn findings diff");
+  pin.match(panel, /delta\.addedWarnings\.length/, "expected the comparison table to render warn-tier deltas, not silently drop them");
+
+  // FIX B3-5: a job with no artifact and a job whose artifact fetch FAILED
+  // used to collapse into the same `null` -> "—", so "no excluded zones" was
+  // indistinguishable from "could not check". They must render differently.
+  pin.match(panel, /status: "error"; message: string/, "expected a failed excluded-zone fetch to be a distinct, named outcome from 'no artifact'");
+  pin.match(panel, /불러오지 못함/, "expected a failed excluded-zone fetch to render its own marker, not the same em dash as 'no artifact'");
+
+  // FIX B3-8 residual (re-verify): a current job that HAS a gate but whose
+  // report fetch FAILED must branch to its own named error before the
+  // "loading…" message -- otherwise the failure reads as pending forever.
+  // page.tsx owns that fetch and its error state, so it must forward it.
+  pin.match(panel, /currentReportError \? \(/, "expected a failed current-report fetch to branch to a named error state before the loading message");
+  pin.match(panel, /현재 생성의 게이트 결과를 불러오지 못해 비교할 수 없습니다/, "expected the failed current-report state to be named on screen");
+  pin.match(read("app/genesis/page.tsx"), /currentReportError=\{reportError\}/, "expected page.tsx to forward its report-fetch error into the comparison panel");
+
+  // FIX B3-6: the "compare against" picker showed a raw `job.status` and a
+  // raw ISO `job.created_at` next to the job history list's already-
+  // translated versions of the exact same two fields.
+  pin.match(panel, /statusLabel\(job\.status, t\)/, "expected the comparison picker to translate job.status instead of showing it raw");
+  pin.match(panel, /formatTimestamp\(job\.created_at, lang\)/, "expected the comparison picker to format job.created_at instead of showing a raw ISO string");
+
+  // FIX B3-8: the panel used to gate its whole result block on `currentReport`
+  // with no branch naming the case where it is null -- a queued/running
+  // selected job (no gate at all, ever, until terminal) rendered nothing.
+  pin.match(panel, /!currentJob\.gate \?/, "expected the panel to name the case where the currently-selected job has no gate at all");
+  pin.match(
+    panel,
+    /이 생성에는 아직 게이트 결과가 없어 비교할 수 없습니다/,
+    "expected a named empty state -- never a silent blank -- when the current generation has no gate result yet",
+  );
 });

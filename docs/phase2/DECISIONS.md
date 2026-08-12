@@ -5423,3 +5423,51 @@ blocks every set equally. No WA SCATS workbook→signals producer exists yet (th
 Timings/Phase History tabs are an unparsed, named gap). Nothing produces the approach→phase
 mapping (C1) or the site→leg→link join (D1) — this unit is the door, not the data.
 `genesis_osm_draft.py` CLI flags (chip `task_de9e6aed`) remain a follow-up. Suite 4317/1(env)/1.
+
+## 2026-08-12 — B3 completes: the refusal gets a map, and every absence gets a name
+
+**What.** The gate's verdict could already be read as a list; now it can be *seen*. A new SVG
+map overlay (`GateFindingsMap`) renders the draft network from `genesis_json` (local
+tangent-plane metres, y-flipped), with refuse-tier findings in rose, warn-tier in amber,
+click-to-detail listing EVERY finding on the clicked element, drag-pan and cursor-anchored
+wheel zoom, and — for a REFUSED generation — the panel opens itself: the acceptance line
+"거부된 생성물이 '왜'를 화면에서 설명" is literal. Excluded zones render as a named list, never
+map pins, because that is a real property of `build_draft`'s rebuild-after-exclusion design:
+their `link_ids` reference a pre-rebuild draft that is discarded. A comparison panel diffs two
+generations' gate results — per-check V1–V9 transitions, multiset finding counts, warn-tier
+columns, links/connectors/nodes/excluded-zone stats — and states on screen that it compares
+gate results and counts only, never geometry (that is `benchmark.py`'s domain).
+
+**The verify pass found the invented-location sin before any user saw it.** The builder's
+finding→geometry resolver trusted ANY bare all-digit subject as a link/connector id. But
+gate.py emits bare numerics from three OTHER id spaces — V5 signal-head numbers, V6
+composition and vehicle-input numbers — all dense from 1, so a V5 finding would have
+highlighted an unrelated road in refuse-red, marked `resolved`, absent from the
+could-not-place list. Fix: the resolver takes the finding's `code` and gates the bare-numeric
+fallback on `BARE_ID_RESOLVABLE_CODES`, an allow-list built by enumerating every
+`GateFinding(...)` call site in gate.py and traced entry-by-entry in re-verify (the `_label()`
+bare fallback IS a bare id when the element has no name — confirmed at `_label()`'s
+definition). Anything else lands honestly in "지도에 표시하지 못한 발견". Each allow-list
+entry is pinned individually; V5/V6 codes (including the new `v6_composition_unused`) are
+pinned OUT.
+
+**Nine more confirmed defects, all fixed and pinned**: multi-finding elements no longer
+collapse to `refs[0]`; warn-tier changes enter the comparison (they were silently absent);
+Set-based diffing undercounted duplicate code+subject keys (now multiset, duplicates
+disclosed); a failed artifact fetch is no longer the same "—" as a legitimately absent
+artifact; a current job with no gate report shows a named state instead of a silent blank —
+and a job WHOSE REPORT FETCH FAILED shows a named error instead of an eternal "loading…"
+(`reportError` forwarded from the page); the job picker speaks through `statusLabel`/
+`formatTimestamp` (now shared from `genesisArtifacts.ts`); React 19 registers JSX `onWheel`
+passive so `preventDefault()` was a no-op — the listener is now a real
+`addEventListener(..., {passive:false})`; and pan/zoom no longer rebuilds ~5,000 polylines
+per pointermove (`NetworkLayer` memo, transform-only view, `vector-effect:
+non-scaling-stroke` — every prop traced referentially stable).
+
+**Named limits.** Finding→geometry matching is a client-side heuristic because the gate
+payload ships no structured link reference (`context` is dropped) — a future backend field
+would retire it. Comparison fetches `genesis_json` once per side for zone counts (absent
+artifact → "—", failed fetch → its own marker). The in-pane browser visual pass could not run
+(the pane's navigate wedged — a tooling failure, named, not waived): rendering claims rest on
+typecheck + 43/43 contract pins + three re-verify traces, and the B4 demo is the first human
+look. Verified: `npm run typecheck` clean, contract 43/43.
