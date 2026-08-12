@@ -58,6 +58,7 @@ import pytest
 from services.genesis import connectivity as conn
 from services.genesis import diff as diff_module
 from services.genesis import draft as draft_module
+from services.genesis import osm as osm_module
 from services.genesis.draft import (
     _segment_skip,
     LANE_WIDTH_M,
@@ -2375,3 +2376,1196 @@ def test_the_r15_gate_finds_no_isolated_zone_in_what_the_generator_now_emits(
     assert [f.code for f in v3.findings if f.code.endswith("_zone")] == []
     assert v3.evidence["links_in_a_broken_zone"] == 0
     assert v3.evidence["plain_links"] == len(draft.links)
+
+
+# ---------------------------------------------------------------------------
+# 8. The requested bbox: the study area the download was asked for
+#
+# Overpass answers a bbox query with WHOLE ways, so the geometry that comes back
+# overhangs the request — 100 m to 2300 m, measured on this project's own
+# Daejeon fetches. Before this unit the hull of that geometry WAS the model
+# boundary, so it was set by the longest tail rather than by the study area, and
+# every legitimate boundary cut sat hundreds of metres inside it: outside the
+# 1 m band, classified as an interior dead end, and refused by the R1.5 gate's
+# V3 as a silent departure point. Every bbox extraction the generator produced
+# was refused for that one reason.
+#
+# The fix is the RECTANGLE, never the band (see BOUNDARY_BAND_M's own note): the
+# requested bbox becomes the boundary, and every overhanging tail is cut off AT
+# it with a node synthesized exactly on the line, so a boundary terminal is
+# 0.00 m from the edge by construction.
+#
+# The fixture frame below is the same Perth frame the rest of this file uses.
+# 1 degree of longitude here = 94 406 m and 1 degree of latitude = 110 887 m, so
+# every distance in these docstrings is checkable with a calculator.
+# ---------------------------------------------------------------------------
+
+#: The study rectangle these tests ask for: +/-0.002 deg lat (+/-221.8 m) and
+#: +/-0.002 deg lon (+/-188.8 m) about the frame's centre.
+BBOX = (LAT0 - 0.002, LON0 - 0.002, LAT0 + 0.002, LON0 + 0.002)
+
+
+def overhang_osm() -> str:
+    """A crossroads inside the study area whose east-west arm runs far outside it.
+
+    * way 201 "Main St", nodes ``10-1-2-3-11``. Nodes 10 and 11 sit at
+      ``LON0 -/+ 0.005`` = **472.0 m** from the centre, i.e. **283.2 m** outside
+      the +/-188.8 m rectangle. Nodes 1, 2, 3 are inside it.
+    * way 202 "First Ave", nodes ``4-2-5``, entirely inside: 4 and 5 sit
+      110.9 m north/south of the centre and therefore 110.9 m from the nearest
+      edge of the rectangle — nowhere near the 1.0 m band, so they are genuine
+      interior cul-de-sacs and MUST keep their U-turns.
+
+    So the trim has exactly two tails to cut and two dead ends it must not
+    touch, which is the pair of claims that make this a test of the rule rather
+    than of the geometry.
+    """
+    return _osm_text(
+        [
+            (10, LAT0, LON0 - 0.005),
+            (1, LAT0, LON0 - 0.001),
+            (2, LAT0, LON0),
+            (3, LAT0, LON0 + 0.001),
+            (11, LAT0, LON0 + 0.005),
+            (4, LAT0 - 0.001, LON0),
+            (5, LAT0 + 0.001, LON0),
+        ],
+        [
+            (201, [10, 1, 2, 3, 11], {"highway": "secondary", "name": "Main St"}),
+            (202, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+        ],
+    )
+
+
+def _trims_of(extract, way_id: int) -> list[dict]:
+    return [t.as_dict() for t in extract.way_trims if t.way_id == way_id]
+
+
+def test_the_requested_bbox_beats_declared_bounds_beats_the_hull(tmp_path: Path):
+    """The three-rung ladder, on ONE file, read off node 3's classification.
+
+    The frame's node 3 sits at ``LON0 + 0.003`` = 283.2 m east of the centre.
+
+    * **hull** — node 3 IS the eastmost geometry, so it is ON the boundary and
+      reads ``model_boundary``. (That is the rung-3 test at the top of this
+      file, restated here so all three rungs are compared side by side.)
+    * **declared <bounds>** of +/-0.01 deg — node 3 is 660 m inside it, so it
+      reads ``cul_de_sac_u_turn``. That is the rung-2 test's own claim.
+    * **requested bbox** equal to the frame — node 3 is back exactly ON the east
+      edge and reads ``model_boundary`` again, WITH the wide ``<bounds>`` still
+      in the file. Only a ladder that believes the request over the declaration
+      can produce that, which is why the third case keeps the second's
+      ``<bounds>`` rather than dropping it.
+    """
+    wide = (LAT0 - 0.01, LON0 - 0.01, LAT0 + 0.01, LON0 + 0.01)
+    frame = (LAT0 - 0.002, LON0 - 0.003, LAT0 + 0.002, LON0 + 0.003)
+    ways = [
+        (101, [1, 2, 3], {"highway": "secondary", "name": "Main St"}),
+        (102, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+        (103, [2, 6], {"highway": "residential", "name": "Dead End Rd"}),
+    ]
+    nodes = _FRAME + [(6, LAT0 + 0.001, LON0 + 0.001)]
+
+    hull = parse_osm_file(_write(tmp_path, "hull.osm", _osm_text(nodes, ways)))
+    declared = parse_osm_file(
+        _write(tmp_path, "declared.osm", _osm_text(nodes, ways, bounds=wide))
+    )
+    requested = parse_osm_file(
+        _write(tmp_path, "requested.osm", _osm_text(nodes, ways, bounds=wide)),
+        requested_bbox=frame,
+    )
+
+    assert conn.boundary_source(hull) == conn.BOUNDARY_SOURCE_HULL
+    assert conn.boundary_source(declared) == conn.BOUNDARY_SOURCE_DECLARED_BOUNDS
+    assert conn.boundary_source(requested) == conn.BOUNDARY_SOURCE_REQUESTED_BBOX
+
+    def reason_at_node_3(extract) -> str:
+        ends = {e.node_id: e for e in conn.dead_ends(conn.merge_junction_nodes(extract)[0])}
+        return ends[3].reason
+
+    assert reason_at_node_3(hull) == conn.DEAD_END_MODEL_BOUNDARY
+    assert reason_at_node_3(declared) == conn.DEAD_END_U_TURN
+    assert reason_at_node_3(requested) == conn.DEAD_END_MODEL_BOUNDARY
+
+
+def test_an_overhanging_tail_is_cut_at_the_requested_boundary(tmp_path: Path):
+    """The measured failure, and its fix, in one assertion chain.
+
+    Way 201's two tails are cut, one node is synthesized on each edge at
+    ``LON0 -/+ 0.002`` exactly, and the resulting terminals are **0.00 m** from
+    the boundary — inside the 1.0 m band by construction rather than by luck.
+    Both therefore read ``model_boundary`` and get NO U-turn, which is the whole
+    point: a U-turn there would make the study edge a reflecting wall.
+
+    The 283.2 m of overhang per side is the number the old hull boundary was
+    being set by.
+    """
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    source = _write(tmp_path, "overhang.osm", overhang_osm())
+    trimmed = trim_ways_to_requested_bbox(parse_osm_file(source, requested_bbox=BBOX))
+
+    way = next(w for w in trimmed.ways if w.id == 201)
+    assert way.node_ids[1:-1] == (1, 2, 3), "the inside nodes are untouched"
+    west, east = trimmed.nodes[way.node_ids[0]], trimmed.nodes[way.node_ids[-1]]
+    assert (west.lat, west.lon) == (LAT0, LON0 - 0.002)
+    assert (east.lat, east.lon) == (LAT0, LON0 + 0.002)
+    assert way.node_ids[0] not in {10, 11} and way.node_ids[-1] not in {10, 11}
+
+    cuts = _trims_of(trimmed, 201)
+    assert [c["reason"] for c in cuts] == [osm_module.TRIM_TAIL_CUT] * 2
+    assert [c["end"] for c in cuts] == ["start", "end"]
+    assert all(c["nodes_cut"] == 1 for c in cuts)
+    assert all(c["metres_cut"] == pytest.approx(283.2, abs=1.0) for c in cuts)
+
+    ends = {e.node_id: e for e in conn.dead_ends(conn.merge_junction_nodes(trimmed)[0])}
+    for node_id in (way.node_ids[0], way.node_ids[-1]):
+        assert ends[node_id].reason == conn.DEAD_END_MODEL_BOUNDARY
+        assert ends[node_id].emit_u_turn is False
+        assert "0.00 m from the model boundary" in ends[node_id].detail
+        assert conn.BOUNDARY_SOURCE_REQUESTED_BBOX in ends[node_id].detail
+
+    # ...and the two genuine interior cul-de-sacs are untouched by all of it.
+    assert ends[4].reason == conn.DEAD_END_U_TURN
+    assert ends[5].reason == conn.DEAD_END_U_TURN
+
+    draft = build_draft(parse_osm_file(source, requested_bbox=BBOX), name="overhang")
+    boundary_links = {
+        link.id
+        for link in draft.links
+        if link.to_node_osm_id in (way.node_ids[0], way.node_ids[-1])
+    }
+    leaving = {c.from_link for c in draft.connectors}
+    assert boundary_links and not (boundary_links & leaving), (
+        "a link ending on the requested boundary must have no connector leaving it"
+    )
+
+
+def test_an_interior_excursion_out_of_the_bbox_is_kept_whole_and_named(tmp_path: Path):
+    """v1 scope, stated as a test rather than as a comment.
+
+    Way 203 runs ``1 -> 2 -> 20 -> 3``: inside, inside, OUTSIDE, inside. Both
+    TERMINALS are already inside, so there is no tail to cut; the only thing
+    outside is an interior excursion. Cutting that would either delete node 20's
+    leg — a road the study area really does contain on both sides of — or split
+    one OSM way into two ids, and a silent partial edit of a way is exactly what
+    this pass exists not to do. So the way is kept ENTIRE, and the fact is
+    recorded by name, because absence from the trim list would be
+    indistinguishable from "nothing happened here".
+
+    The sibling case — a re-entrant way whose TERMINALS hang outside — is
+    ``test_a_way_that_leaves_and_re_enters_still_has_its_tails_cut`` in §9: those
+    tails ARE cut, because a terminal outside the rectangle is one the boundary
+    band cannot honestly judge.
+    """
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    text = _osm_text(
+        [
+            (1, LAT0, LON0 - 0.001),
+            (2, LAT0, LON0),
+            (20, LAT0 + 0.004, LON0),
+            (3, LAT0, LON0 + 0.001),
+            (4, LAT0 - 0.001, LON0),
+        ],
+        [
+            (203, [1, 2, 20, 3], {"highway": "residential", "name": "Loop Rd"}),
+            (204, [4, 2], {"highway": "residential", "name": "First Ave"}),
+        ],
+    )
+    trimmed = trim_ways_to_requested_bbox(
+        parse_osm_file(_write(tmp_path, "reenter.osm", text), requested_bbox=BBOX)
+    )
+
+    way = next(w for w in trimmed.ways if w.id == 203)
+    assert way.node_ids == (1, 2, 20, 3), "kept whole, not cut and not split"
+    assert 20 in trimmed.nodes
+    record = _trims_of(trimmed, 203)
+    assert [r["reason"] for r in record] == [osm_module.TRIM_KEPT_WHOLE_REENTRANT]
+    assert record[0]["end"] == "whole"
+    assert "re-enters" in record[0]["detail"]
+
+
+def test_a_way_entirely_outside_the_requested_bbox_is_dropped_by_name(tmp_path: Path):
+    """Two ways outside the study area, and they are NOT the same fact.
+
+    * way 301 is 665 m north of the rectangle and never touches it. It came back
+      only because Overpass returns whole ways, and it is dropped as
+      ``entirely_outside_the_requested_bbox``.
+    * way 302 has both of its nodes outside the rectangle but the segment
+      between them cuts across a corner of it. It is REAL road inside the study
+      area, and it is still dropped — under its OWN reason — because every
+      terminal a trim could give it would be a terminal this generator
+      invented, and a carriageway all of whose vertices are invented is the
+      mirror image of one silently deleted. Measured on job d31961abd950:
+      keeping such a way whole put a 144 m link entirely outside the study area
+      into the network, joined to nothing, and the gate refused it as
+      ``v3_orphan_link``.
+
+    Both are NAMED skips, so both are counted in ``skipped_summary()`` and both
+    reach the section 5 compliance report.
+    """
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    text = _osm_text(
+        [
+            (1, LAT0, LON0 - 0.001),
+            (2, LAT0, LON0),
+            (30, LAT0 + 0.006, LON0 - 0.001),
+            (31, LAT0 + 0.006, LON0 + 0.001),
+            # 40 -> 41 crosses the north-east corner of the rectangle without a
+            # node inside it: 40 is north of the box, 41 is east of it, and the
+            # straight line between them is inside the rectangle for the middle
+            # half of its length (t in [0.25, 0.75] — a real chord, not a
+            # single-point touch at the corner, which no float would agree on).
+            (40, LAT0 + 0.0025, LON0 + 0.0005),
+            (41, LAT0 + 0.0005, LON0 + 0.0025),
+        ],
+        [
+            (201, [1, 2], {"highway": "secondary", "name": "Main St"}),
+            (301, [30, 31], {"highway": "residential", "name": "Far Rd"}),
+            (302, [40, 41], {"highway": "residential", "name": "Corner Rd"}),
+        ],
+    )
+    trimmed = trim_ways_to_requested_bbox(
+        parse_osm_file(_write(tmp_path, "outside.osm", text), requested_bbox=BBOX)
+    )
+
+    assert [w.id for w in trimmed.ways] == [201]
+    by_way = {s.id: s.reason for s in trimmed.skipped}
+    assert by_way[301] == osm_module.SKIP_OUTSIDE_REQUESTED_BBOX
+    assert by_way[302] == osm_module.SKIP_ONLY_GRAZES_REQUESTED_BBOX
+    assert trimmed.skipped_summary()[osm_module.SKIP_OUTSIDE_REQUESTED_BBOX] == 1
+    # Their nodes leave with them: a node no surviving way references would
+    # still size bounds(), and bounds() is the projection origin.
+    assert set(trimmed.nodes) == {1, 2}
+
+
+def test_every_trim_reaches_the_draft_metadata_and_the_compliance_report(
+    tmp_path: Path,
+):
+    """A geometry edit a reader cannot find is the same to them as a silent one."""
+    draft = build_draft(
+        parse_osm_file(
+            _write(tmp_path, "overhang.osm", overhang_osm()), requested_bbox=BBOX
+        ),
+        name="overhang",
+    )
+    boundary = draft.metadata["boundary"]
+    assert boundary["source"] == conn.BOUNDARY_SOURCE_REQUESTED_BBOX
+    assert boundary["requested_bbox_wgs84"] == {
+        "min_lat": BBOX[0],
+        "min_lon": BBOX[1],
+        "max_lat": BBOX[2],
+        "max_lon": BBOX[3],
+    }
+    assert boundary["way_trims_by_reason"] == {osm_module.TRIM_TAIL_CUT: 2}
+    assert boundary["metres_cut_total"] == pytest.approx(566.4, abs=2.0)
+
+    for language in ("ko", "en", "ja"):
+        rendered = draft.render_compliance(language)
+        assert conn.BOUNDARY_SOURCE_REQUESTED_BBOX in rendered
+        assert osm_module.TRIM_TAIL_CUT in rendered
+        assert "way 201" in rendered
+
+
+def test_the_requested_bbox_survives_both_extract_reconstructions(tmp_path: Path):
+    """The boundary must not MOVE between isolation rounds.
+
+    ``merge_junction_nodes`` and ``without_ways`` each rebuild the extract field
+    by field, and a field either of them forgets is gone for the rest of the
+    build. Forgetting this one would drop the boundary back to the hull of the
+    SHRUNKEN geometry — a different rectangle on every round, so the same
+    terminal could be a boundary in round 0 and a cul-de-sac in round 1.
+    """
+    extract = parse_osm_file(
+        _write(tmp_path, "overhang.osm", overhang_osm()), requested_bbox=BBOX
+    )
+    merged, _report = conn.merge_junction_nodes(extract)
+    assert merged.requested_bbox == BBOX
+
+    reduced = extract.without_ways(
+        [202], reason=SKIP_ISOLATED_ZONE, detail_for=lambda way_id: f"way {way_id}"
+    )
+    assert reduced.requested_bbox == BBOX
+
+
+def test_every_extract_reconstruction_carries_every_field_the_dataclass_declares(
+    tmp_path: Path,
+):
+    """Mechanical, and deliberately not a list of the fields anyone remembered.
+
+    All THREE reconstruction sites — ``connectivity.merge_junction_nodes``,
+    ``osm.OsmExtract.without_ways`` and ``osm.trim_ways_to_requested_bbox`` —
+    write a fresh ``OsmExtract`` out field by field, and there is no
+    language-level reason any of them has to be complete. One was not:
+    ``non_drivable_node_highways`` was dropped by the merge from the day the
+    field was added, and it was harmless only by accident
+    (``diagnose_isolated_zones`` reads the PRE-merge extract, so nobody ever
+    consulted the empty map). ``requested_bbox`` would have been the second such
+    field and would NOT have been harmless, and ``synthesized_node_ids`` the
+    third — losing that one un-refuses the merge that welds a boundary marker
+    into a junction.
+
+    So this test asks the dataclass what its fields are, fails if the sentinel
+    below does not set every one of them, and fails again if any transform loses
+    one. A future field cannot be silently dropped without breaking this test
+    twice.
+
+    ``refusals`` is the one exemption, and it is structural rather than a
+    convenience: all three transforms return the input UNCHANGED for a refused
+    extract, so an extract carrying a refusal cannot exercise any of them. Its
+    carry is asserted separately at the end.
+    """
+    from dataclasses import fields
+
+    from services.genesis.osm import (
+        OsmExtract,
+        OsmRefusal,
+        RestrictionRefusal,
+        SkippedWay,
+        TurnRestriction,
+        WayTrim,
+        trim_ways_to_requested_bbox,
+    )
+
+    text = _osm_text(
+        _FRAME + [(7, LAT0, LON0 + NEAR_TOUCH_LON), (8, LAT0 + 0.001, LON0 + 0.002)],
+        [
+            (101, [1, 2, 3], {"highway": "secondary", "name": "Main St"}),
+            (102, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+            (103, [7, 8], {"highway": "residential", "name": "Near Rd"}),
+        ],
+    )
+    extract = parse_osm_file(_write(tmp_path, "sentinel.osm", text))
+
+    sentinel = {
+        "source": extract.source,
+        "ways": extract.ways,
+        "nodes": extract.nodes,
+        "ways_seen": 7,
+        "skipped": [SkippedWay(999, osm_module.SKIP_NO_HIGHWAY_TAG, "", "sentinel")],
+        "refusals": [],
+        "declared_bounds": (LAT0 - 0.01, LON0 - 0.01, LAT0 + 0.01, LON0 + 0.01),
+        "restrictions": [TurnRestriction(9001, "no_left_turn", 101, 2, 102)],
+        "restriction_refusals": [
+            RestrictionRefusal(8001, osm_module.RESTRICTION_KIND_UNKNOWN, "sentinel")
+        ],
+        "non_drivable_node_ids": {7},
+        "non_drivable_node_highways": {7: {"footway"}},
+        "requested_bbox": (LAT0 - 0.02, LON0 - 0.02, LAT0 + 0.02, LON0 + 0.02),
+        "way_trims": [
+            WayTrim(101, "secondary", osm_module.TRIM_TAIL_CUT, "start", 1, 12.5, 555, "s")
+        ],
+        "synthesized_node_ids": frozenset({555}),
+    }
+    declared = {field.name for field in fields(OsmExtract)}
+    assert set(sentinel) == declared, (
+        "OsmExtract grew a field this test does not set — set it, then check that "
+        "ALL THREE reconstruction sites carry it"
+    )
+    for name, value in sentinel.items():
+        setattr(extract, name, value)
+
+    merged, report = conn.merge_junction_nodes(extract)
+    assert report.merges, "the fixture must actually merge, or nothing is proved"
+    reduced = extract.without_ways(
+        [103], reason=SKIP_ISOLATED_ZONE, detail_for=lambda way_id: f"way {way_id}"
+    )
+    # The requested bbox above is far wider than this fixture, so the trim cuts
+    # nothing — which is exactly what this assertion wants: a transform that
+    # changes nothing must still carry everything.
+    trimmed = trim_ways_to_requested_bbox(extract)
+    assert [w.node_ids for w in trimmed.ways] == [w.node_ids for w in extract.ways]
+
+    for name in sorted(declared - {"refusals"}):
+        assert getattr(merged, name), f"merge_junction_nodes dropped {name}"
+        assert getattr(reduced, name), f"without_ways dropped {name}"
+        assert getattr(trimmed, name), f"trim_ways_to_requested_bbox dropped {name}"
+
+    extract.refusals = [OsmRefusal(osm_module.REFUSE_UNREADABLE, "sentinel")]
+    assert (
+        extract.without_ways(
+            [103], reason=SKIP_ISOLATED_ZONE, detail_for=lambda way_id: ""
+        ).refusals
+        == extract.refusals
+    )
+    assert conn.merge_junction_nodes(extract)[0] is extract
+    assert trim_ways_to_requested_bbox(extract) is extract
+
+
+def test_the_node_merge_remaps_the_non_drivable_class_map_it_used_to_drop(
+    tmp_path: Path,
+):
+    """The latent defect this unit killed on the way past, with its own test.
+
+    Node 7 carries ``highway=footway`` and merges into junction node 2. The map
+    must survive the merge AND move to the cluster's canonical id — the same
+    remapping ``non_drivable_node_ids`` already got — because after the merge
+    node 7 does not exist and a class map keyed on it answers no question. Two
+    nodes that merge into one junction have their classes UNIONED: both footways
+    really do touch the junction that now exists.
+    """
+    text = _osm_text(
+        _FRAME + [(7, LAT0, LON0 + NEAR_TOUCH_LON), (8, LAT0 + 0.001, LON0 + 0.002)],
+        [
+            (101, [1, 2, 3], {"highway": "secondary", "name": "Main St"}),
+            (102, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+            (103, [7, 8], {"highway": "residential", "name": "Near Rd"}),
+        ],
+    )
+    extract = parse_osm_file(_write(tmp_path, "classes.osm", text))
+    extract.non_drivable_node_ids = {2, 7}
+    extract.non_drivable_node_highways = {2: {"path"}, 7: {"footway"}}
+
+    merged, report = conn.merge_junction_nodes(extract)
+    assert any(2 in merge.member_ids and 7 in merge.member_ids for merge in report.merges)
+    assert merged.non_drivable_node_ids == {2}
+    assert merged.non_drivable_node_highways == {2: {"footway", "path"}}
+
+
+def test_two_builds_with_a_requested_bbox_are_byte_identical(tmp_path: Path):
+    """Determinism, re-proved for the path the trim added.
+
+    The synthesized node ids are ``max(every node id the extract mentions) + 1``
+    and upwards, handed out in visit order — ways ascending by id, and within a
+    way ``start`` before ``end``. The offset makes a collision with a real OSM
+    id impossible by construction (every real id is at most ``base - 1``), and
+    the order is a pure function of the file, so the same ``.osm`` synthesizes
+    the same ids twice. If it did not, the emitted bytes would differ here.
+    """
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    path = _write(tmp_path, "overhang.osm", overhang_osm())
+    first = to_xml_text(build_draft(parse_osm_file(path, requested_bbox=BBOX), name="ov"))
+    second = to_xml_text(build_draft(parse_osm_file(path, requested_bbox=BBOX), name="ov"))
+    assert first == second
+
+    extract = parse_osm_file(path, requested_bbox=BBOX)
+    trimmed = trim_ways_to_requested_bbox(extract)
+    synthesized = sorted(nid for nid in trimmed.nodes if nid not in extract.nodes)
+    assert max(extract.nodes) == 11
+    assert synthesized == [12, 13], "deterministic ids, above the highest real id"
+
+
+def test_a_build_without_a_requested_bbox_is_untouched_by_any_of_this(tmp_path: Path):
+    """The no-bbox path must be the path it was before this unit existed.
+
+    Asserted as an IDENTITY rather than as an equality: with no requested bbox
+    the trim returns the very object it was given, so there is no second code
+    path that could drift. The two rungs of the ladder that existed before still
+    decide the boundary, and no trim record exists to change any report.
+    """
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    extract = parse_osm_file(_write(tmp_path, "overhang.osm", overhang_osm()))
+    assert extract.requested_bbox is None
+    assert trim_ways_to_requested_bbox(extract) is extract
+    assert conn.boundary_source(extract) == conn.BOUNDARY_SOURCE_HULL
+
+    draft = build_draft(extract, name="ov")
+    assert draft.metadata["boundary"]["way_trims"] == []
+    assert draft.metadata["boundary"]["requested_bbox_wgs84"] is None
+
+
+def test_the_r15_gate_passes_v3_on_a_bbox_extraction_with_overhanging_tails(
+    tmp_path: Path,
+):
+    """The unit's whole reason for existing, end to end and judged by the gate.
+
+    The same fixture built twice: once as the generator used to see it (the hull
+    of the received geometry is the boundary) and once with the bbox that was
+    requested. The gate is the real one, run over the real emitted file with the
+    real census.
+
+    Without the bbox, way 203 is a ONE-WAY arm whose far end is an interior dead
+    end, so there is no second carriageway to turn into, the generator refuses to
+    invent one, and V3 fails with ``one_way_dead_end_unfixable`` — the exact code
+    that refused every bbox extraction this project made before this unit.
+
+    With the bbox the tails are cut at the rectangle, the terminals are 0.00 m
+    from it, every dangling cause is ``model_boundary_correct`` — which the gate
+    filters as BENIGN — and V3 reports nothing.
+    """
+    from services.genesis.gate import run_gate
+
+    text = _osm_text(
+        [
+            (10, LAT0, LON0 - 0.005),
+            (1, LAT0, LON0 - 0.001),
+            (2, LAT0, LON0),
+            (3, LAT0, LON0 + 0.001),
+            (11, LAT0, LON0 + 0.005),
+            (4, LAT0 - 0.001, LON0),
+            (5, LAT0 + 0.001, LON0),
+            (12, LAT0 + 0.0005, LON0 + 0.004),
+        ],
+        [
+            (201, [10, 1, 2, 3, 11], {"highway": "secondary", "name": "Main St"}),
+            (202, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+            (
+                203,
+                [3, 12],
+                {"highway": "secondary", "name": "Slip Rd", "oneway": "yes"},
+            ),
+        ],
+    )
+    source = _write(tmp_path, "bbox.osm", text)
+
+    def v3_of(bbox):
+        draft = build_draft(parse_osm_file(source, requested_bbox=bbox), name="bbox")
+        path = emit_inpx(draft, tmp_path / f"{'with' if bbox else 'without'}.inpx")
+        census = json.loads(json.dumps(draft.model_dump(mode="json")))
+        return draft, run_gate(path, draft_metadata=census).check("V3")
+
+    _hull_draft, hull_v3 = v3_of(None)
+    assert [f.code for f in hull_v3.findings] == ["v3_silent_departure_point"]
+    assert hull_v3.findings[0].context["cause"] == conn.DANGLING_ONE_WAY
+
+    draft, v3 = v3_of(BBOX)
+    assert [f.code for f in v3.findings] == []
+    causes = draft.metadata["connectivity"]["dangling_approaches_by_cause"]
+    assert set(causes) <= set(conn.BENIGN_DANGLING_CAUSES), causes
+    assert causes[conn.DANGLING_MODEL_BOUNDARY] >= 2
+
+
+def test_the_isolation_pass_may_remove_a_pocket_and_never_the_network(tmp_path: Path):
+    """A pocket is a PART of a network. A network is not a pocket of itself.
+
+    With no entry and no exit anywhere — every arm closed by a cul-de-sac U-turn
+    — ``isolated_zones``'s "unreachable from any entry" is vacuously true of
+    every link, so it reports the WHOLE network as one zone. That answer is
+    correct and it stays; what must not happen is REMOVING it, because the
+    rebuild then has no ways and the caller is handed ``osm_no_nodes: no node
+    coordinates to project`` — a refusal about a network that does not exist,
+    for a network that did.
+
+    Measured 2026-08-12 on the region end-to-end fixture: 8 links in, 0 links
+    back, no artifact, and the reason in no report at all. The zones are now
+    RETAINED under their own name and the network is emitted for the gate to
+    judge, because a network that exists and is refused beats a refusal about
+    nothing.
+    """
+    text = _osm_text(
+        _FRAME,
+        [
+            (101, [1, 2, 3], {"highway": "residential", "name": "Main St"}),
+            (102, [4, 2, 5], {"highway": "residential", "name": "First Ave"}),
+        ],
+    )
+    # A requested bbox far wider than the geometry: every arm end is interior,
+    # so every one of them gains a U-turn and the model closes.
+    wide = (LAT0 - 0.02, LON0 - 0.02, LAT0 + 0.02, LON0 + 0.02)
+    draft = build_draft(
+        parse_osm_file(_write(tmp_path, "closed.osm", text), requested_bbox=wide),
+        name="closed",
+    )
+
+    assert not draft.refused and draft.links, "the network must survive"
+    connectivity = draft.metadata["connectivity"]
+    assert connectivity["network_has_no_entry_or_exit"] is True
+    assert connectivity["excluded_zones"] == []
+    assert [z["reason"] for z in connectivity["isolated_zones_retained"]] == [
+        draft_module.ISOLATION_WOULD_EMPTY_THE_NETWORK
+    ]
+
+
+def test_the_provenance_region_maps_onto_the_bbox_tuple_without_transposing():
+    """south/west/north/east -> (min_lat, min_lon, max_lat, max_lon), asserted.
+
+    The fetch provenance names its window with compass words and this package's
+    bbox tuples are ``(lat, lon, lat, lon)``. A transposition would rotate every
+    study area onto its side and nothing downstream could tell, so the mapping is
+    a named function with a test rather than four subscripts in a caller.
+    """
+    from services.genesis.osm import requested_bbox_from_provenance
+
+    assert requested_bbox_from_provenance(
+        {"requested_region": {"south": 1.0, "west": 2.0, "north": 3.0, "east": 4.0}}
+    ) == (1.0, 2.0, 3.0, 4.0)
+
+    # Nothing usable is never guessed at: a caller with no window falls back to
+    # the behaviour it had before there was one.
+    assert requested_bbox_from_provenance(None) is None
+    assert requested_bbox_from_provenance({}) is None
+    assert requested_bbox_from_provenance({"requested_region": {"south": 1.0}}) is None
+    assert (
+        requested_bbox_from_provenance(
+            {"requested_region": {"south": 3.0, "west": 2.0, "north": 1.0, "east": 4.0}}
+        )
+        is None
+    )
+
+
+def test_the_job_runner_reads_the_bbox_out_of_the_frozen_source_osm(tmp_path: Path):
+    """The requested bbox survives a fetch only as a comment in the .osm itself.
+
+    The job record crosses the HTTP boundary and carries no region, so the file's
+    own leading ``<!-- prism-osm-fetch -->`` comment is the only place the study
+    area still exists by the time a generation runs. Until this unit nothing read
+    it during a job.
+
+    The upload road has no such comment and must be completely unaffected — that
+    is what keeps every uploaded ``.osm`` building exactly as it did.
+    """
+    from services import genesis_jobs
+    from services.osm_fetch import annotate
+
+    plain = _write(tmp_path, "plain.osm", overhang_osm())
+    assert genesis_jobs._requested_bbox_of(plain) is None
+
+    annotated = tmp_path / "annotated.osm"
+    annotated.write_bytes(
+        annotate(
+            plain.read_bytes(),
+            {
+                "requested_region": {
+                    "south": BBOX[0],
+                    "west": BBOX[1],
+                    "north": BBOX[2],
+                    "east": BBOX[3],
+                }
+            },
+        )
+    )
+    assert genesis_jobs._requested_bbox_of(annotated) == BBOX
+
+
+def test_the_probe_reads_the_same_bbox_the_generator_does(tmp_path: Path):
+    """One seam, or the tool measures a network the file is not.
+
+    The probe regenerates the draft to attribute causes. If it rebuilt WITHOUT
+    the requested bbox while the generator built WITH it, every number it printed
+    would describe a different network — the split brain its own module docstring
+    forbids. The ``--ignore-requested-bbox`` half of this test proves the two
+    networks really are different, so the first half is not asserting a
+    coincidence.
+    """
+    from services.osm_fetch import annotate
+
+    source = tmp_path / "probe.osm"
+    source.write_bytes(
+        annotate(
+            overhang_osm().encode("utf-8"),
+            {
+                "requested_region": {
+                    "south": BBOX[0],
+                    "west": BBOX[1],
+                    "north": BBOX[2],
+                    "east": BBOX[3],
+                }
+            },
+        )
+    )
+    draft = build_draft(parse_osm_file(source, requested_bbox=BBOX), name="probe")
+    inpx = emit_inpx(draft, tmp_path / "probe.inpx")
+
+    code, out = _run_probe("--inpx", str(inpx), "--osm", str(source), "--json")
+    assert code == 0, out
+    measured = json.loads(out)
+    assert measured["requested_bbox"] == list(BBOX)
+    assert measured["boundary"] == conn.BOUNDARY_SOURCE_REQUESTED_BBOX
+    assert measured["file_matches_regeneration"] is True
+    assert measured["links"] == len(draft.links)
+
+    ignored = json.loads(
+        _run_probe(
+            "--inpx",
+            str(inpx),
+            "--osm",
+            str(source),
+            "--json",
+            "--ignore-requested-bbox",
+        )[1]
+    )
+    assert ignored["file_matches_regeneration"] is False, (
+        "dropping the bbox must produce a DIFFERENT network, or this test proves nothing"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9. What adversarial review found in section 8, and what now stops it
+#
+# Every test below is a construction a refuter built to break the trim, kept as
+# a regression. Two of them were CRITICAL: the first silently deleted a boundary
+# exit and invented a turning movement, the second reported terminals 23 m and
+# 103 m OUTSIDE the study rectangle as "model_boundary_correct" — a cause the
+# R1.5 gate filters out as benign, so V3 passed over them without a word.
+#
+# Metre conversions, as everywhere else in this file: 1 deg of longitude here =
+# 94 406 m, 1 deg of latitude = 110 887 m.
+# ---------------------------------------------------------------------------
+
+#: 6.0 m west of BBOX's east edge, in degrees of longitude: 6 / 94 406.
+_SIX_M_LON = 6.0 / 94406.0
+#: 1.921 m of latitude: 1.921 / 110 887. With the 6.0 m above it makes a
+#: hypotenuse of sqrt(6.0^2 + 1.921^2) = 6.30 m — inside the 7.0 m node-merge
+#: tolerance, and therefore a genuine merge candidate.
+_OFFSET_LAT = 1.921 / 110887.0
+
+
+def test_a_synthesized_boundary_node_is_never_merged_into_a_real_junction(
+    tmp_path: Path,
+):
+    """CRITICAL. The refuter's construction, kept exactly.
+
+    A T-junction the source DECLARES sits 6.0 m inside the east edge of the
+    requested rectangle. An unrelated way crosses that edge 1.921 m further
+    north, so the node the trim synthesizes there is **6.30 m** from the
+    junction — inside the 7.0 m node-merge tolerance, and the merge's
+    no-junction guard does not stop it because that guard passes as soon as ONE
+    side is a declared junction, which this one is.
+
+    Merged, three things went wrong at once and none of them was visible in a
+    count. The cluster position is the MEAN of its members, so the boundary node
+    moved **4.501 m off the rectangle** against a 1.0 m band. The terminal's
+    occurrences rose to 3, so ``dead_ends`` stopped treating it as a terminal at
+    all and the boundary exit vanished from every report. And the network gained
+    a turning movement between two roads the source never joins.
+
+    A synthesized node is a truncation MARKER, not a surveyed meeting point, so
+    it is refused by name.
+
+    Way 404 exists to make the end-to-end half of this test mean something. It
+    joins the T-junction's pocket to way 403 the long way round — through nodes
+    3 and 4, nowhere near the boundary — so the pocket is reachable and survives
+    ``build_draft``'s isolated-zone removal. Without it the pocket was excluded
+    before the merge ever ran and the "no connector between 403 and 401/402"
+    assertion below was vacuously true of a network that no longer contained
+    401 or 402.
+    """
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    text = _osm_text(
+        [
+            # the declared T-junction, 6.0 m inside the east edge
+            (1, LAT0, LON0 + 0.002 - _SIX_M_LON),
+            (2, LAT0, LON0 - 0.001),
+            (3, LAT0 + 0.001, LON0 + 0.002 - _SIX_M_LON),
+            # the unrelated way, crossing the east edge 1.921 m further north
+            (4, LAT0 + _OFFSET_LAT, LON0 + 0.001),
+            (5, LAT0 + _OFFSET_LAT, LON0 + 0.004),
+        ],
+        [
+            (401, [2, 1], {"highway": "residential", "name": "Stem St"}),
+            (402, [1, 3], {"highway": "residential", "name": "Cross St"}),
+            (403, [4, 5], {"highway": "residential", "name": "Unrelated Rd"}),
+            (404, [3, 4], {"highway": "residential", "name": "Long Way Round"}),
+        ],
+    )
+    trimmed = trim_ways_to_requested_bbox(
+        parse_osm_file(_write(tmp_path, "weld.osm", text), requested_bbox=BBOX)
+    )
+    synthesized = sorted(trimmed.synthesized_node_ids)
+    assert len(synthesized) == 1
+    marker = synthesized[0]
+    assert trimmed.nodes[marker].lon == LON0 + 0.002, "on the rectangle, exactly"
+
+    merged, report = conn.merge_junction_nodes(trimmed)
+    refusals = [r for r in report.refusals if r.code == conn.REFUSE_SYNTHESIZED_BOUNDARY_NODE]
+    assert len(refusals) == 1, [r.code for r in report.refusals]
+    refusal = refusals[0]
+    assert {refusal.node_a, refusal.node_b} == {1, marker}
+    assert refusal.separation_m == pytest.approx(6.30, abs=0.05), (
+        "the pair must really be inside the tolerance, or this proves nothing"
+    )
+    assert refusal.separation_m < conn.NODE_MERGE_TOLERANCE_M
+    assert "truncation marker" in refusal.detail
+
+    # Nothing moved, and the boundary exit is still reported as one.
+    assert report.merges == []
+    assert merged.nodes[marker] == trimmed.nodes[marker]
+    ends = {e.node_id: e for e in conn.dead_ends(merged)}
+    assert ends[marker].reason == conn.DEAD_END_MODEL_BOUNDARY
+    assert ends[marker].emit_u_turn is False
+    assert "0.00 m from the model boundary" in ends[marker].detail
+
+    # …and no movement was invented between the two roads the source keeps apart.
+    draft = build_draft(
+        parse_osm_file(tmp_path / "weld.osm", requested_bbox=BBOX), name="weld"
+    )
+    ways_of = {link.id: link.osm_way_id for link in draft.links}
+    assert {401, 402, 403, 404} <= set(ways_of.values()), (
+        "every way must survive to the merge, or the assertion below proves nothing"
+    )
+    assert draft.metadata["connectivity"]["excluded_zones"] == []
+    crossings = [
+        c
+        for c in draft.connectors
+        if {ways_of[c.from_link], ways_of[c.to_link]} in ({403, 401}, {403, 402})
+    ]
+    assert crossings == [], (
+        "the source joins way 403 to 401/402 only the long way round, through way 404; "
+        "a merge at the boundary would have joined them directly at node 1"
+    )
+    assert [c for c in draft.connectors if c.node_osm_id == marker] == []
+
+
+def test_a_way_that_leaves_and_re_enters_still_has_its_tails_cut(tmp_path: Path):
+    """CRITICAL. Keeping a re-entrant way WHOLE left terminals outside the model.
+
+    Way 405 runs OUTSIDE → inside → OUTSIDE → inside: node 10 hangs 283.2 m west
+    of the rectangle, node 12 is an interior excursion 443.5 m north of the
+    centre (outside the lat band), and nodes 11 and 13 are inside.
+
+    The rule is stated on the FIRST and LAST inside node, not on "is there
+    exactly one run of them", so:
+
+    * the leading tail (node 10) is CUT and a node is synthesized on the west
+      edge — because a terminal outside the rectangle is one the boundary band
+      cannot honestly judge;
+    * the interior excursion (node 12) is KEPT, because cutting it would delete
+      road the study area contains on both sides of, or split one way into two.
+
+    Measured on job d31961abd950 before this: two re-entrant ways kept whole
+    left terminals 23 m and 103 m outside the rectangle, and both were reported
+    ``model_boundary_correct`` — benign to the gate — because the band test is a
+    SIGNED distance that goes negative out there.
+    """
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    text = _osm_text(
+        [
+            (10, LAT0, LON0 - 0.005),
+            (11, LAT0, LON0 - 0.001),
+            (12, LAT0 + 0.004, LON0),
+            (13, LAT0, LON0 + 0.001),
+            (14, LAT0 - 0.001, LON0 + 0.001),
+        ],
+        [
+            (405, [10, 11, 12, 13], {"highway": "residential", "name": "Wiggle Rd"}),
+            (406, [13, 14], {"highway": "residential", "name": "Anchor Rd"}),
+        ],
+    )
+    trimmed = trim_ways_to_requested_bbox(
+        parse_osm_file(_write(tmp_path, "wiggle.osm", text), requested_bbox=BBOX)
+    )
+
+    way = next(w for w in trimmed.ways if w.id == 405)
+    assert way.node_ids[0] not in {10, 11, 12, 13}, "the tail was cut, not kept"
+    assert way.node_ids[1:] == (11, 12, 13), "the interior excursion stays whole"
+    assert trimmed.nodes[way.node_ids[0]].lon == LON0 - 0.002
+    assert 10 not in trimmed.nodes
+
+    reasons = sorted(t.reason for t in trimmed.way_trims if t.way_id == 405)
+    assert reasons == [
+        osm_module.TRIM_KEPT_WHOLE_REENTRANT,
+        osm_module.TRIM_TAIL_CUT,
+    ], "both facts about this way are recorded, not one of them"
+
+    # The invariant, asserted directly: every TERMINAL is inside or on the
+    # rectangle. Interior nodes may be outside; nothing classifies those.
+    min_lat, min_lon, max_lat, max_lon = BBOX
+    for kept in trimmed.ways:
+        for node_id in (kept.node_ids[0], kept.node_ids[-1]):
+            node = trimmed.nodes[node_id]
+            assert min_lat <= node.lat <= max_lat and min_lon <= node.lon <= max_lon
+
+    ends = {e.node_id: e for e in conn.dead_ends(conn.merge_junction_nodes(trimmed)[0])}
+    assert ends[way.node_ids[0]].reason == conn.DEAD_END_MODEL_BOUNDARY
+
+
+def test_a_terminal_outside_the_boundary_is_never_called_a_boundary(tmp_path: Path):
+    """Defense in depth, fed the shape the trim now makes impossible.
+
+    ``edge = min(x - minx, maxx - x, y - miny, maxy - y)`` is a SIGNED distance
+    to the nearest edge. Outside the rectangle it is NEGATIVE, so ``edge <=
+    BOUNDARY_BAND_M`` is satisfied 100 m out exactly as it is 0.1 m in — which
+    is how two terminals 23 m and 103 m outside job d31961abd950's study area
+    came to be reported as ``model_boundary_correct``, a cause the gate filters
+    out as benign.
+
+    ``dead_ends`` is called here directly on an UNTRIMMED extract whose
+    requested bbox is smaller than its geometry, which is the only way to
+    produce the shape now that the trim removes it. The classification must be
+    the new non-benign one, so that if the geometry rule ever regresses the gate
+    FAILS loudly instead of passing quietly.
+    """
+    text = _osm_text(
+        [
+            (1, LAT0, LON0 - 0.001),
+            (2, LAT0, LON0),
+            (3, LAT0, LON0 + 0.006),
+            (4, LAT0 - 0.001, LON0),
+        ],
+        [
+            (501, [1, 2, 3], {"highway": "residential", "name": "Long Rd"}),
+            (502, [4, 2], {"highway": "residential", "name": "Stub Rd"}),
+        ],
+    )
+    extract = parse_osm_file(_write(tmp_path, "outside.osm", text), requested_bbox=BBOX)
+    ends = {e.node_id: e for e in conn.dead_ends(extract)}
+
+    # Node 3 is at LON0 + 0.006 = 566.4 m east of the centre, i.e. 377.6 m
+    # OUTSIDE the +/-188.8 m rectangle.
+    assert ends[3].reason == conn.DEAD_END_BEYOND_REQUESTED_BBOX
+    assert ends[3].emit_u_turn is False
+    assert "377.6" in ends[3].detail or "OUTSIDE the model boundary" in ends[3].detail
+
+    cause = conn.DEAD_END_REASON_TO_DANGLING_CAUSE[conn.DEAD_END_BEYOND_REQUESTED_BBOX]
+    assert cause == conn.DANGLING_BEYOND_MODEL_BOUNDARY
+    assert cause not in conn.BENIGN_DANGLING_CAUSES, (
+        "a terminal beyond the study area is a defect, and the gate must see it as one"
+    )
+
+
+def test_two_ways_sharing_a_cut_segment_share_one_synthesized_node(tmp_path: Path):
+    """Given one node each they became two coincident disconnected stubs.
+
+    Ways 601 and 602 both contain the segment ``11 -> 12`` that leaves the
+    rectangle. Keyed by the WAY, the trim gave each its own synthesized node at
+    the identical point; the node merge then REFUSED to join them (they are both
+    synthesized, and before that rule they were two lone terminals with no
+    declared junction), so the emitted network carried two carriageways lying on
+    top of each other with nothing between them.
+
+    Keyed by the SOURCE SEGMENT, they share one node — which is not tidiness but
+    the truth: both ways really do contain that segment, so they really do meet
+    where it crosses the boundary. The shared node then has two occurrences and
+    flows through the ordinary junction machinery.
+    """
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    text = _osm_text(
+        [
+            (10, LAT0 - 0.001, LON0),
+            (11, LAT0, LON0 + 0.001),
+            (12, LAT0, LON0 + 0.004),
+            (13, LAT0 + 0.001, LON0),
+        ],
+        [
+            (601, [10, 11, 12], {"highway": "residential", "name": "South App"}),
+            (602, [13, 11, 12], {"highway": "residential", "name": "North App"}),
+        ],
+    )
+    source = _write(tmp_path, "shared.osm", text)
+    trimmed = trim_ways_to_requested_bbox(parse_osm_file(source, requested_bbox=BBOX))
+
+    synthesized = sorted(trimmed.synthesized_node_ids)
+    assert len(synthesized) == 1, "one crossing segment, one synthesized node"
+    marker = synthesized[0]
+    assert [w.node_ids for w in trimmed.ways] == [(10, 11, marker), (13, 11, marker)]
+    assert trimmed.nodes[marker].lon == LON0 + 0.002
+    assert marker in trimmed.intersection_node_ids(), (
+        "two ways end there, so it is a junction and the junction machinery owns it"
+    )
+
+    # The merge still refuses to weld it to anything real, and determinism and
+    # the emitted bytes are unaffected by the sharing.
+    _merged, report = conn.merge_junction_nodes(trimmed)
+    assert [r for r in report.refusals if r.code == conn.REFUSE_SYNTHESIZED_BOUNDARY_NODE] == []
+    first = to_xml_text(build_draft(parse_osm_file(source, requested_bbox=BBOX), name="sh"))
+    second = to_xml_text(build_draft(parse_osm_file(source, requested_bbox=BBOX), name="sh"))
+    assert first == second
+
+    # --- and NOTHING is modelled across it -------------------------------
+    # Sharing the node gives it two occurrences, which is what the boundary
+    # rule had to be taught about: the "is this a terminal?" test asks whether
+    # a vehicle can arrive and not leave, and at a shared boundary node the
+    # sibling way looks like an exit. Blinded to ``synthesized_node_ids`` this
+    # exact fixture produced NO model_boundary dead end, no dangling approach at
+    # all, and two same-way FWD→REV U-turns AT the boundary node (connectors
+    # 10013 and 10014, both named in ``stranded_approach_u_turns``) — a
+    # reflecting wall at the study edge that no gate check can see. So the
+    # assertions below are on ``draft.connectors``, not on a count.
+    draft = build_draft(parse_osm_file(source, requested_bbox=BBOX), name="sh")
+    assert [c.name for c in draft.connectors if c.node_osm_id == marker] == [], (
+        "no movement may be modelled at a node this generator invented on the edge"
+    )
+    ways_of = {link.id: link.osm_way_id for link in draft.links}
+    ends_at_marker = {
+        link.id for link in draft.links if link.to_node_osm_id == marker
+    }
+    starts_at_marker = {
+        link.id for link in draft.links if link.from_node_osm_id == marker
+    }
+    assert ends_at_marker and starts_at_marker
+    assert [
+        c.name
+        for c in draft.connectors
+        if c.from_link in ends_at_marker
+        and c.to_link in starts_at_marker
+        and ways_of[c.from_link] == ways_of[c.to_link]
+    ] == [], "no same-way U-turn at the boundary — that is the reflecting wall"
+
+    connectivity = draft.metadata["connectivity"]
+    assert connectivity["stranded_approach_u_turns"] == []
+    dangling = {
+        entry["link_id"]: entry
+        for entry in connectivity["dangling_approaches"]
+        if entry["node_osm_id"] == marker
+    }
+    assert set(dangling) == ends_at_marker, "both approaches dangle, and are named"
+    assert {entry["cause"] for entry in dangling.values()} == {
+        conn.DANGLING_MODEL_BOUNDARY
+    }
+    assert connectivity["dead_ends_by_reason"][conn.DEAD_END_MODEL_BOUNDARY] == 2
+
+
+def test_a_restriction_whose_via_node_was_trimmed_is_refused_by_name(tmp_path: Path):
+    """An unapplied ban is a movement that stays legal although the map forbids it.
+
+    The relation's ``via`` node sits on a tail the trim cut off, so the junction
+    the ban applies at is no longer in the network. Both the ``from`` and ``to``
+    ways SURVIVE — that is what makes this a different fact from
+    ``RESTRICTION_WAY_NOT_KEPT`` and what makes it this generator's doing rather
+    than the extract's edge — so it gets its own reason code, its own count, and
+    a line in the compliance report.
+    """
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    text = _osm_text(
+        [
+            (1, LAT0, LON0 - 0.001),
+            (2, LAT0, LON0 + 0.001),
+            (3, LAT0, LON0 + 0.003),
+            (4, LAT0 + 0.001, LON0 + 0.001),
+            (5, LAT0 + 0.001, LON0 - 0.001),
+        ],
+        [
+            (701, [1, 2, 3], {"highway": "residential", "name": "From Rd"}),
+            (702, [3, 4, 5], {"highway": "residential", "name": "To Rd"}),
+        ],
+        relations=(
+            (
+                9001,
+                (("way", 701, "from"), ("node", 3, "via"), ("way", 702, "to")),
+                {"type": "restriction", "restriction": "no_left_turn"},
+            ),
+        ),
+    )
+    source = _write(tmp_path, "viacut.osm", text)
+    parsed = parse_osm_file(source, requested_bbox=BBOX)
+    assert [r.id for r in parsed.restrictions] == [9001], "the relation must parse first"
+
+    trimmed = trim_ways_to_requested_bbox(parsed)
+    assert {w.id for w in trimmed.ways} == {701, 702}, "both named ways survive"
+    assert 3 not in trimmed.nodes, "the via node left with the tail"
+    assert trimmed.restrictions == []
+    refusals = {r.id: r for r in trimmed.restriction_refusals}
+    assert refusals[9001].reason == osm_module.RESTRICTION_VIA_NODE_TRIMMED
+    assert "outside the requested bbox" in refusals[9001].detail
+
+    draft = build_draft(parse_osm_file(source, requested_bbox=BBOX), name="viacut")
+    connectivity = draft.metadata["connectivity"]
+    assert connectivity["osm_turn_restrictions_refused_by_reason"] == {
+        osm_module.RESTRICTION_VIA_NODE_TRIMMED: 1
+    }
+    rendered = draft.render_compliance("ko")
+    assert f"not applied / {osm_module.RESTRICTION_VIA_NODE_TRIMMED}: 1" in rendered
+
+
+def test_the_gate_sees_the_lane_drop_the_requested_boundary_shortens(tmp_path: Path):
+    """The honest consequence of trimming, pinned so it cannot silently vanish.
+
+    Way 801 enters the study area from the west carrying 4 lanes per direction
+    and drops to 2 at the junction with way 802. Its approach used to include
+    283 m of road OUTSIDE the requested rectangle; cut at the boundary, the
+    runway is what the MODEL actually contains — well under the 200 m the file's
+    own ``lnChgDist`` says a lane change needs — and V4 says so.
+
+    That finding is true of the emitted network and was previously masked by
+    geometry nobody asked for. Nothing in the gate is touched here and nothing
+    about V4 is being defended as ideal: a boundary-aware V4 is a stage-2
+    question. This test exists so that the answer to it cannot be "the finding
+    quietly went away".
+    """
+    from services.genesis.gate import run_gate
+
+    text = _osm_text(
+        [
+            (1, LAT0, LON0 - 0.005),
+            (2, LAT0, LON0 - 0.0005),
+            (3, LAT0, LON0 + 0.001),
+            (4, LAT0 - 0.001, LON0 - 0.0005),
+        ],
+        [
+            (801, [1, 2], {"highway": "secondary", "name": "Wide St", "lanes": "8"}),
+            (802, [2, 3], {"highway": "secondary", "name": "Narrow St", "lanes": "4"}),
+            (803, [4, 2], {"highway": "residential", "name": "Side Rd"}),
+        ],
+    )
+    source = _write(tmp_path, "drop.osm", text)
+    draft = build_draft(parse_osm_file(source, requested_bbox=BBOX), name="drop")
+    path = emit_inpx(draft, tmp_path / "drop.inpx")
+    census = json.loads(json.dumps(draft.model_dump(mode="json")))
+
+    v4 = run_gate(path, draft_metadata=census).check("V4")
+    drops = [f for f in v4.findings if f.code == "v4_lane_drop_without_runway"]
+    assert drops, [f.code for f in v4.findings]
+    assert drops[0].context["available_m"] < drops[0].context["required_m"]
+    assert v4.state.value == "fail"
+
+
+def test_a_declared_bounds_window_narrower_than_its_geometry_is_not_a_fault(
+    tmp_path: Path,
+):
+    """The tripwire is scoped to the rung that has a remedy, and only that one.
+
+    A file whose ``<bounds>`` window is narrower than the geometry inside it is
+    the NORMAL shape of a whole-way extract — Overpass and JOSM both produce it
+    — and it was read as a (benign) model boundary long before this unit
+    existed. There is no trim on that rung, so grading it a fault would refuse
+    such files permanently with nothing the user could do about it. Trimming
+    rung 2 as well is a deliberate non-goal here and a named follow-up.
+
+    What DOES change on that rung is the sentence: the old text printed the
+    signed distance, so a terminal 377 m outside the window was reported as
+    "-377.61 m from the model boundary". It now says how far OUTSIDE, and says
+    which window.
+
+    The same geometry with a REQUESTED bbox is a different fact — this
+    generator cut every tail at that rectangle, so a terminal beyond it is its
+    own defect — and there the tripwire still fires, non-benign.
+    """
+    nodes = [
+        (1, LAT0, LON0 - 0.001),
+        (2, LAT0, LON0),
+        (3, LAT0, LON0 + 0.006),
+        (4, LAT0 - 0.001, LON0),
+    ]
+    ways = [
+        (501, [1, 2, 3], {"highway": "residential", "name": "Long Rd"}),
+        (502, [4, 2], {"highway": "residential", "name": "Stub Rd"}),
+    ]
+    # Node 3 is 566.4 m east of the centre; the window's east edge is 188.8 m
+    # east of it, so the terminal is 377.6 m OUTSIDE the declared window.
+    declared = parse_osm_file(
+        _write(tmp_path, "narrow.osm", _osm_text(nodes, ways, bounds=BBOX))
+    )
+    assert declared.requested_bbox is None
+    assert conn.boundary_source(declared) == conn.BOUNDARY_SOURCE_DECLARED_BOUNDS
+
+    ends = {e.node_id: e for e in conn.dead_ends(declared)}
+    assert ends[3].reason == conn.DEAD_END_MODEL_BOUNDARY
+    assert ends[3].emit_u_turn is False
+    assert conn.DEAD_END_REASON_TO_DANGLING_CAUSE[ends[3].reason] in (
+        conn.BENIGN_DANGLING_CAUSES
+    )
+    assert "-" not in ends[3].detail.split("—")[0], (
+        "a distance printed as negative is a number no reader can act on"
+    )
+    assert "377.6" in ends[3].detail
+    assert "outside the declared <bounds> window" in ends[3].detail
+    assert "overhangs the window it declares" in ends[3].detail
+
+    # V3 is unaffected: the cause is benign, so the gate has nothing to say.
+    from services.genesis.gate import run_gate
+
+    draft = build_draft(declared, name="narrow")
+    path = emit_inpx(draft, tmp_path / "narrow.inpx")
+    census = json.loads(json.dumps(draft.model_dump(mode="json")))
+    v3 = run_gate(path, draft_metadata=census).check("V3")
+    assert [f.code for f in v3.findings if f.code == "v3_silent_departure_point"] == []
+
+    # …and the identical geometry judged against a REQUESTED rectangle is a
+    # fault, because that rung comes with a trim that should have prevented it.
+    requested = parse_osm_file(
+        _write(tmp_path, "requested.osm", _osm_text(nodes, ways)), requested_bbox=BBOX
+    )
+    fired = {e.node_id: e for e in conn.dead_ends(requested)}
+    assert fired[3].reason == conn.DEAD_END_BEYOND_REQUESTED_BBOX
+    assert (
+        conn.DEAD_END_REASON_TO_DANGLING_CAUSE[fired[3].reason]
+        not in conn.BENIGN_DANGLING_CAUSES
+    )

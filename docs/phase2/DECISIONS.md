@@ -5622,3 +5622,94 @@ fixed panel. Informational, deliberately not fixed: the reset effect leaves `loa
 a job switch (masked by React's same-value setState bailout), and four clamp-style effects
 elsewhere share the state-in-own-deps shape without any async involvement. typecheck clean,
 contract 47/47 (48 pins counting the new marker guard).
+
+## 2026-08-12 — B5 stage 1: the boundary becomes the one the user asked for, and three critical defects die in verification
+
+**What.** Every bbox extraction was REFUSED by V3, measured the night before the demo: the
+boundary rectangle was the extent of *received* geometry, but Overpass returns whole ways —
+tails overhang the requested window by 100–2,300 m (measured per job), so the hull is set by
+the longest tail, legitimate boundary cuts sit far inside it, miss the 1.0 m band, and read as
+interior dead ends. The fix keeps the band (its derivation is a projection epsilon and was
+never the problem) and replaces the rectangle: the requested bbox rides the frozen
+`source.osm`'s own provenance comment into parsing (`OsmExtract.requested_bbox`, read at the
+job runner with a function-local import — `osm_fetch` imports `genesis_jobs`, so a top-level
+one would cycle), `_boundary_rectangle` becomes a three-rung ladder (requested bbox >
+declared `<bounds>` > hull), and ways are trimmed to the requested window in WGS84 *before any
+projection* (the plane origin derives from the geometry, so a post-projection trim would move
+every coordinate): leading/trailing outside runs cut with a terminal synthesized exactly ON
+the rectangle (Liang–Barsky; the binding axis written bit-exact to the edge so the band test
+cannot turn on a float's last bit), interior excursions kept whole and named, entirely-outside
+and merely-grazing ways dropped under two distinct names, every cut a `WayTrim` record that
+reaches `*.genesis.json` and a new "Model boundary" section of the ko/en/ja compliance report.
+`gate.py` untouched: V3 imports the generator's own cause vocabulary, so correcting the
+classification is sufficient — and `BENIGN_DANGLING_CAUSES` was deliberately NOT extended,
+because widening the benign set is judge-weakening through the import backdoor.
+
+**Acceptance, measured on the two jobs the demo refused** (fresh rebuilds of their frozen
+`source.osm`; the runtime artifacts are deliberately untouched — they are the *before*
+evidence the byte-identity proof compares against, and the *after* evidence will be the next
+real in-app generation): `d31961abd950` V3 findings 2→**0** (the two
+`one_way_dead_end_unfixable` refusals are now `model_boundary_correct`; departures and
+reachability clauses pass; the check reads not_checkable offline only because geometry-only
+runs have no vehicle inputs — unchanged), 14 trims / 1,414 m cut. `30a1f2d61dce` V3 4→**2**,
+and the 2 that remain are `v3_orphan_link` on a service car-park ring the *source itself*
+never connects to any kept way — including yesterday's one `unattributed` mystery, now
+diagnosed as that same object. Real findings stay; nothing was forced clear. The no-bbox path
+is byte-identical (emitted `.inpx` sha-matches the pre-change runtime artifacts on both jobs)
+and the with-bbox build is deterministic across processes.
+
+**Verification earned its keep three times over.** Round 1 (four adversarial lenses, nine
+findings) caught two criticals **both firing in the production data**: (1)
+`merge_junction_nodes` welded a synthesized boundary node into a real declared junction
+within its 7.0 m tolerance — position averaged 4.5 m off the rectangle, the terminal's
+occurrences became 3 so `dead_ends` dropped the boundary fact entirely, and a turning
+movement was fabricated where the source asserts none (1 real weld in the small job, 2 in the
+big one). Fixed by making synthesized nodes a named protected category the merge refuses
+(`REFUSE_SYNTHESIZED_BOUNDARY_NODE`, disclosed through the existing refusals-by-code
+plumbing). (2) Re-entrant (outside-in-out-in) ways kept whole left terminals 23–103 m
+OUTSIDE the rectangle, and the signed edge distance — negative out there — satisfied
+`edge <= band` at ANY magnitude: 2 of the small job's 8 "benign" entries were exactly this.
+Fixed in the geometry (re-entrant ways lose their tails like any other way; only interior
+excursions stay whole) plus a tripwire: a strictly-outside terminal on the requested-bbox
+rung is now `DEAD_END_BEYOND_REQUESTED_BBOX`, a cause NOT in the benign set, so if it ever
+reappears V3 fails loudly instead of silently passing. Round 2 re-verification then caught a
+**third critical hiding inside a round-1 fix**: deduped synthesized nodes (two ways sharing
+one cut segment) became occurrences-2 junctions that `dead_ends` skipped, so the last-resort
+stranded pass supplied same-way U-turns AT the boundary — the reflecting wall this unit
+exists to prevent, reintroduced gate-invisibly. Fixed at the source (any way terminal at a
+synthesized node is a model-boundary dead end regardless of occurrences, so the existing
+ban-list — built from `dead_ends` output, the single source of truth — covers it), with the
+counterfactual measured: blinding the synthesized set reproduces exactly 2 reflecting-wall
+U-turns; the shipped code emits 0. The same round rolled back a scope creep: the outside-
+terminal tripwire had leaked onto the declared-`<bounds>` rung, permanently refusing a
+legitimate class of no-bbox files (declared window narrower than geometry) with no remedy —
+now scoped to rung 1, with the rung-2 detail text made honest ("N m outside the declared
+window", never a negative distance) and rung-2 trimming a named non-goal.
+
+**The honest consequence, disclosed rather than absorbed: V4 now fails on both jobs (it
+passed before).** Trimming removes the 1.3–3.5 km of out-of-study road that had been masking
+real lane-drop runways — the small job gives a boundary-entering vehicle 47.87 m before a
+4→3 drop that declares 200 m. True of the emitted network, pinned by a test, deliberately not
+repaired: whether a boundary-cut entry should count as a continuing corridor is a
+boundary-practice design question (professor Q①) that belongs to stage 2. Both jobs therefore
+still end `refused` overall — V3 clean or reduced-and-named, V4 honest.
+
+**Also fixed, same defect class as the unit:** `merge_junction_nodes`' reconstruction had
+silently dropped `non_drivable_node_highways` since its creation (now remapped and unioned,
+with a regression test); the isolation pass could delete an ENTIRE network and report only
+`osm_no_nodes` (found when the end-to-end fixture's request was wider than its geometry —
+zones are now retained under `ISOLATION_WOULD_EMPTY_THE_NETWORK`, the largest silent deletion
+this package could commit); and the field-completeness sentinel now covers all THREE
+`OsmExtract` reconstruction sites so the next added field cannot be dropped by any of them.
+The `test_osm_fetch` end-to-end fixture was shrunk (±0.002) so it overhangs its request the
+way real Overpass output does — its old shape (geometry short of the request) is one no real
+response has. Tools (`genesis_connectivity_probe`, `genesis_osm_draft`) read the same bbox
+seam with an `--ignore-requested-bbox` escape, and the probe now *detects* the split brain it
+used to commit. Suite 4406 / 1 (env RAG) / 1 skip; `test_genesis_connectivity.py` 92/92.
+
+**Named limits.** Interior excursions of re-entrant ways are kept whole (bulges outside the
+window survive — countable via `TRIM_KEPT_WHOLE_REENTRANT`). Rung-2 (`declared <bounds>`)
+trimming is deliberately not done. The V4/boundary-runway question is open by design (stage
+2 + professor Q①). Live LoadNet of a trimmed network has not run — the offline emit is
+byte-conservative and V1 blocks every set equally, but the B4 demo remains the first live
+proof. 사각형 폴리곤이 아닌 임의 폴리곤 트림은 별도 유닛(§5.B 폴리곤 선택)과 함께 온다.

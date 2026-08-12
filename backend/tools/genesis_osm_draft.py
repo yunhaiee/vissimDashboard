@@ -125,7 +125,40 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "policy and why the default is what it is."
         ),
     )
+    parser.add_argument(
+        "--ignore-requested-bbox",
+        action="store_true",
+        help=(
+            "build WITHOUT the study rectangle recorded in the .osm's fetch provenance, "
+            "so the model boundary falls back to the extent of the received geometry. "
+            "Off by default because the app itself uses the recorded bbox; this flag is "
+            "for measuring what the boundary rule changed, not for ordinary use."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def _requested_bbox(osm: Path) -> tuple[float, float, float, float] | None:
+    """The bbox this ``.osm`` was FETCHED for, out of its own leading comment.
+
+    The same seam ``services/genesis_jobs.py`` uses, for the same reason: it
+    MOVES the model boundary, so a CLI that skipped it would build a different
+    network from the same file than the app does and hand the operator numbers
+    the job never produced. An ``.osm`` with no ``<!-- prism-osm-fetch -->``
+    comment — anything not fetched by this app — yields ``None``.
+
+    Function-local import: this script binds no workspace and touches no
+    ``runtime/``, and ``services.osm_fetch`` is a workspace-aware module, so it
+    is pulled in only for one pure bytes → dict call, and only when there is a
+    file to read.
+    """
+    from services.genesis.osm import requested_bbox_from_provenance  # noqa: PLC0415
+    from services.osm_fetch import read_provenance  # noqa: PLC0415
+
+    try:
+        return requested_bbox_from_provenance(read_provenance(osm.read_bytes()))
+    except OSError:
+        return None
 
 
 def _make_console_lossy() -> None:
@@ -153,7 +186,11 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out_dir)
     name = args.name or osm_path.stem or "genesis_draft"
 
-    extract = parse_osm_file(osm_path, exclude_service=args.exclude_service)
+    extract = parse_osm_file(
+        osm_path,
+        exclude_service=args.exclude_service,
+        requested_bbox=None if args.ignore_requested_bbox else _requested_bbox(osm_path),
+    )
     draft = build_draft(extract, name=name)
 
     if draft.refused:

@@ -56,7 +56,7 @@ from __future__ import annotations
 import math
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 EXTRACT = "docs/product/reference/mrwa-section5-extract.md"
@@ -156,6 +156,13 @@ SKIP_SERVICE_EXCLUDED_BY_POLICY = "service_excluded_by_policy"
 #: pocket is unreachable. The detail string of each skip carries that reason, so
 #: the exclusion is legible from the skip list alone.
 SKIP_ISOLATED_ZONE = "isolated_zone_unreachable_in_the_source"
+#: Every node of the way — and every segment between them — lies outside the
+#: bbox that was ASKED for. Overpass returns whole ways, so a query for a
+#: 450 m square routinely brings back a way whose far end is a kilometre away
+#: and whose near end never enters the square at all. Produced only by
+#: :func:`trim_ways_to_requested_bbox`, i.e. only when the caller supplied a
+#: :attr:`OsmExtract.requested_bbox`.
+SKIP_OUTSIDE_REQUESTED_BBOX = "entirely_outside_the_requested_bbox"
 
 #: Reason codes for a ``type=restriction`` relation this module could not read.
 #: Recorded rather than ignored: an unread restriction is a movement that stays
@@ -165,6 +172,30 @@ RESTRICTION_VIA_NOT_A_NODE = "restriction_via_is_not_a_node"
 RESTRICTION_MEMBERS_INCOMPLETE = "restriction_members_incomplete"
 RESTRICTION_KIND_UNKNOWN = "restriction_kind_not_understood"
 RESTRICTION_WAY_NOT_KEPT = "restriction_names_a_way_this_network_does_not_contain"
+#: The ``via`` node of the relation was on a tail this generator cut off at the
+#: requested bbox, so the junction the ban applies at is no longer in the
+#: network. Refused BY NAME for the same reason as every other unapplied
+#: restriction: a ban the model silently forgets is a movement that stays legal
+#: in the model although the map forbids it.
+RESTRICTION_VIA_NODE_TRIMMED = "restriction_via_node_trimmed_at_the_requested_bbox"
+
+#: No node of the way lies inside the requested bbox, but a segment of it clips
+#: the rectangle between two mapped vertices — Overpass's bbox filter returns a
+#: way that merely INTERSECTS the box, so a road grazing a corner comes back
+#: whole. Dropped, and counted apart from :data:`SKIP_OUTSIDE_REQUESTED_BBOX`
+#: because the two are different facts: this one really does touch the study
+#: area. See :func:`trim_ways_to_requested_bbox` for why it is dropped anyway.
+SKIP_ONLY_GRAZES_REQUESTED_BBOX = "grazes_the_requested_bbox_with_no_node_inside_it"
+
+#: Reason codes for :class:`WayTrim`.
+#: A leading or trailing run of nodes outside the requested bbox was cut off and
+#: the way now terminates ON the bbox edge.
+TRIM_TAIL_CUT = "tail_outside_requested_bbox_cut"
+#: The way leaves the requested bbox and comes back. Cutting it would either
+#: delete a middle section that is genuinely inside the study area or split one
+#: OSM way into two, and both are edits this v1 will not make silently — so the
+#: way is kept WHOLE and named here.
+TRIM_KEPT_WHOLE_REENTRANT = "leaves_and_re_enters_the_requested_bbox_kept_whole"
 
 #: The ``restriction=*`` values this generator enforces. ``no_*`` bans the named
 #: movement; ``only_*`` bans every movement from that approach except the named
@@ -399,6 +430,53 @@ class RestrictionRefusal:
         return {"relation_id": self.id, "reason": self.reason, "detail": self.detail}
 
 
+@dataclass(frozen=True)
+class WayTrim:
+    """One decision :func:`trim_ways_to_requested_bbox` took about one way.
+
+    Emitted for the ways that were CUT and for the ways that were deliberately
+    left whole — never only for the cuts. A geometry edit a reader cannot find
+    is the same to them as a silent deletion, and "this way overhangs the study
+    area by 1.4 km and was left whole" is a line a reviewer can act on, whereas
+    the way's silent absence from the trim list is not.
+
+    A way cut at both ends produces TWO records, one per end, because the two
+    ends are two independent facts about two different roads leaving the study
+    area. Ways dropped entirely leave a :class:`SkippedWay`
+    (:data:`SKIP_OUTSIDE_REQUESTED_BBOX`) instead, so they reach the compliance
+    report through the machinery every other skip already uses.
+    """
+
+    way_id: int
+    highway: str
+    reason: str
+    #: ``"start"`` / ``"end"`` for a cut, ``"whole"`` for a way left intact.
+    end: str
+    nodes_cut: int
+    #: How far past the new terminal this way used to reach: the straight-line
+    #: distance from the terminal to the FARTHEST node that was cut, projected on
+    #: the plane of the untrimmed extract. A report figure, not an input to any
+    #: geometry — "this road ran 236 m outside the study area" is the sentence a
+    #: reviewer needs, and it is deliberately not a polyline length, which would
+    #: read as a claim about road length rather than about overhang.
+    metres_cut: float
+    #: The node synthesized on the bbox edge, or ``0`` where none was.
+    synthesized_node_id: int
+    detail: str
+
+    def as_dict(self) -> dict:
+        return {
+            "way_id": self.way_id,
+            "highway": self.highway,
+            "reason": self.reason,
+            "end": self.end,
+            "nodes_cut": self.nodes_cut,
+            "metres_cut": round(self.metres_cut, 3),
+            "synthesized_node_id": self.synthesized_node_id,
+            "detail": self.detail,
+        }
+
+
 @dataclass
 class OsmExtract:
     """Everything read out of one ``.osm`` file."""
@@ -433,6 +511,37 @@ class OsmExtract:
     #: *"this pocket is isolated"* is not. Values are the raw ``highway=*``
     #: strings, with ``""`` for a way that carries no ``highway`` tag at all.
     non_drivable_node_highways: dict[int, set[str]] = field(default_factory=dict)
+    #: ``(min_lat, min_lon, max_lat, max_lon)`` — the window the CALLER ASKED
+    #: FOR, which is a third fact again, different from both
+    #: :attr:`declared_bounds` (what the file says it is) and :meth:`bounds`
+    #: (the extent of what came back). Overpass answers a bbox query with WHOLE
+    #: ways, so the geometry routinely overhangs the request by hundreds of
+    #: metres — measured on this project's own Daejeon fetches: 100 m to 2300 m.
+    #: The hull of that geometry is therefore NOT the study area, and using it
+    #: as the model boundary put every legitimate boundary cut hundreds of
+    #: metres inside the rectangle, where the 1 m band could not see it and the
+    #: cut read as an interior dead end. Provenance-derived (the ``<!--
+    #: prism-osm-fetch -->`` comment names ``requested_region`` as
+    #: south/west/north/east; the mapping to this tuple's order is made
+    #: explicitly by :func:`requested_bbox_from_provenance`) and ``None`` for
+    #: any file that was not fetched by this app — an uploaded ``.osm`` has no
+    #: request to remember, and the ladder falls back exactly as before.
+    requested_bbox: tuple[float, float, float, float] | None = None
+    #: Every decision :func:`trim_ways_to_requested_bbox` took, cuts and
+    #: deliberate non-cuts alike. Empty whenever :attr:`requested_bbox` is None.
+    way_trims: list[WayTrim] = field(default_factory=list)
+    #: The nodes THIS GENERATOR put on the requested rectangle when it cut a
+    #: tail. They are truncation MARKERS — "the road left the study area here" —
+    #: and not places the source says anything meets, which is a distinction
+    #: with teeth: ``connectivity.merge_junction_nodes`` refuses to weld one into
+    #: a nearby real junction (:data:`
+    #: ~services.genesis.connectivity.REFUSE_SYNTHESIZED_BOUNDARY_NODE`).
+    #: Measured on a declared T-junction 6 m inside the edge with an unrelated
+    #: way cut 6.3 m from it: the merge averaged the two positions, moved the
+    #: boundary node **4.501 m off the rectangle** — against a 1.0 m band — so
+    #: the terminal stopped being reported as a boundary exit at all, and it
+    #: fabricated a turning movement between two roads the source never joins.
+    synthesized_node_ids: frozenset[int] = field(default_factory=frozenset)
 
     @property
     def refused(self) -> bool:
@@ -542,6 +651,17 @@ class OsmExtract:
             non_drivable_node_highways={
                 nid: set(values) for nid, values in self.non_drivable_node_highways.items()
             },
+            # Carried, not re-derived: the request the caller made does not
+            # change because this generator removed a pocket, and a rebuild that
+            # forgot it would silently fall back to the hull of the SHRUNKEN
+            # geometry — a different boundary on every isolation round.
+            requested_bbox=self.requested_bbox,
+            way_trims=list(self.way_trims),
+            # Not filtered to the surviving nodes: a node this generator
+            # synthesized stays a synthesized node for as long as it is
+            # mentioned anywhere, and the merge's refusal must not depend on
+            # which isolation round is asking.
+            synthesized_node_ids=self.synthesized_node_ids,
         )
         _drop_restrictions_naming_absent_ways(reduced)
         return reduced
@@ -788,7 +908,12 @@ def _dedupe_consecutive(node_ids: list[int]) -> tuple[int, ...]:
 # ---------------------------------------------------------------------------
 
 
-def parse_osm_file(path: str | Path, *, exclude_service: bool = False) -> OsmExtract:
+def parse_osm_file(
+    path: str | Path,
+    *,
+    exclude_service: bool = False,
+    requested_bbox: tuple[float, float, float, float] | None = None,
+) -> OsmExtract:
     """Read one local ``.osm`` file. Reports, never raises.
 
     Pass 1 streams ``<way>`` elements (classifying, lane-reading, and recording
@@ -801,9 +926,20 @@ def parse_osm_file(path: str | Path, *, exclude_service: bool = False) -> OsmExt
     documented at :data:`SERVICE_HIGHWAY`: every ``highway=service`` way becomes
     a named skip (:data:`SKIP_SERVICE_EXCLUDED_BY_POLICY`) instead of a
     carriageway. Default ``False`` — service ways are modelled and connected.
+
+    ``requested_bbox`` is ``(min_lat, min_lon, max_lat, max_lon)`` — the window
+    the caller ASKED Overpass for. It is only RECORDED here
+    (:attr:`OsmExtract.requested_bbox`); nothing about parsing changes, and the
+    geometry is not touched. :func:`trim_ways_to_requested_bbox`, called once at
+    :func:`services.genesis.draft.build_draft` entry, is what acts on it. That
+    split is deliberate: the parse stays a faithful reading of the file, and the
+    one geometric edit derived from the request happens at one seam every caller
+    (jobs, tools, tests) goes through. ``None`` — an uploaded file, a fixture —
+    leaves every downstream behaviour byte-identical to what it was before this
+    parameter existed.
     """
     file_path = Path(path)
-    extract = OsmExtract(source=str(file_path))
+    extract = OsmExtract(source=str(file_path), requested_bbox=requested_bbox)
 
     if not file_path.exists() or file_path.is_dir():
         extract.refusals.append(
@@ -1126,6 +1262,537 @@ def _drop_restrictions_naming_absent_ways(extract: OsmExtract) -> None:
             )
             continue
         applicable.append(restriction)
+    extract.restrictions = applicable
+
+
+# ---------------------------------------------------------------------------
+# Trimming a whole-way extract back to the window that was asked for
+#
+# Overpass answers a bbox query with WHOLE ways: ask for a 450 m square and a
+# way whose far end is 2.3 km away comes back entire (both numbers measured on
+# this project's own Daejeon fetches). That is correct of Overpass and fatal for
+# a boundary rule read off the geometry, because the hull of the RECEIVED
+# geometry is then set by the longest tail and every legitimate boundary cut
+# sits hundreds of metres inside it — far outside the 1 m
+# ``connectivity.BOUNDARY_BAND_M`` — so the cut reads as an interior dead end,
+# gets a reflecting-wall U-turn or an unfixable-one-way refusal, and the gate
+# refuses the network for a fault that is an artifact of the download.
+#
+# The fix is to make the geometry match the request rather than to widen the
+# band: cut each overhanging tail AT the requested rectangle and put a node
+# exactly on it. A terminal ON the rectangle is 0.00 m from the boundary, so it
+# lands inside the band by construction rather than by tuning.
+#
+# Why this is an extract→extract transform in WGS84 and not a link edit: the
+# projection origin is derived from the extract's own extent
+# (``project.origin_for_bounds`` over ``OsmExtract.bounds()``), so removing
+# geometry MOVES the origin and therefore every coordinate in the emitted file.
+# The trim has to happen before anything is projected, or the numbers in the
+# report are not the numbers in the file.
+#
+# What it will NOT do: split one OSM way into two. A way that leaves the window
+# and comes back is kept WHOLE and named (:data:`TRIM_KEPT_WHOLE_REENTRANT`),
+# because the alternatives are deleting a middle section that is genuinely
+# inside the study area or inventing a second way id, and a v1 that silently
+# does either is the failure this package exists to prevent.
+# ---------------------------------------------------------------------------
+
+
+def requested_bbox_from_provenance(
+    provenance: dict | None,
+) -> tuple[float, float, float, float] | None:
+    """``{"south","west","north","east"}`` → ``(min_lat, min_lon, max_lat, max_lon)``.
+
+    The two orderings are written out side by side ON PURPOSE. The fetch
+    provenance names its window with compass words and this module's bbox tuples
+    are ``(lat, lon, lat, lon)``; a mapping that lived only in a caller would be
+    one transposition away from a study area rotated onto its side, and nothing
+    downstream could tell.
+
+    Returns ``None`` for anything that is not a complete, finite, correctly
+    ordered region — an unannotated upload, a truncated comment, a
+    hand-edited file. A caller with no window falls back to the behaviour it had
+    before there was one.
+    """
+    if not isinstance(provenance, dict):
+        return None
+    region = provenance.get("requested_region")
+    if not isinstance(region, dict):
+        return None
+    try:
+        south = float(region["south"])
+        west = float(region["west"])
+        north = float(region["north"])
+        east = float(region["east"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    values = (south, west, north, east)
+    if not all(math.isfinite(v) for v in values):
+        return None
+    if south >= north or west >= east:
+        return None
+    return south, west, north, east
+
+
+def _inside_bbox(lat: float, lon: float, bbox: tuple[float, float, float, float]) -> bool:
+    min_lat, min_lon, max_lat, max_lon = bbox
+    return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+
+
+def _clip_parameters(
+    lat_a: float,
+    lon_a: float,
+    lat_b: float,
+    lon_b: float,
+    bbox: tuple[float, float, float, float],
+) -> tuple[float, float] | None:
+    """Liang–Barsky in (lat, lon): the ``[t0, t1]`` of A→B inside ``bbox``.
+
+    Straight in lat/lon is straight in projected metres — ``LocalTangentPlane``
+    is affine and separable (x depends only on lon, y only on lat) — and the
+    bbox edges are axis-aligned in both frames, so an intersection solved here
+    is exactly the intersection the projected frame sees. That is what lets this
+    run before the plane exists.
+
+    ``None`` when the segment misses the rectangle entirely.
+    """
+    min_lat, min_lon, max_lat, max_lon = bbox
+    t0, t1 = 0.0, 1.0
+    for delta, low, high, start in (
+        (lat_b - lat_a, min_lat, max_lat, lat_a),
+        (lon_b - lon_a, min_lon, max_lon, lon_a),
+    ):
+        if delta == 0.0:
+            if start < low or start > high:
+                return None
+            continue
+        enter = (low - start) / delta
+        leave = (high - start) / delta
+        if enter > leave:
+            enter, leave = leave, enter
+        t0 = max(t0, enter)
+        t1 = min(t1, leave)
+        if t0 > t1:
+            return None
+    return t0, t1
+
+
+def _crossing_point(
+    inside: OsmNode, outside: OsmNode, bbox: tuple[float, float, float, float]
+) -> tuple[float, float] | None:
+    """Where the inside→outside segment leaves ``bbox``, ON the rectangle.
+
+    Solved per axis and the SMALLEST crossing parameter taken, which is the edge
+    nearest the inside node. That is the corner case stated explicitly: a
+    segment leaving diagonally past a corner crosses two edge LINES within one
+    segment, at two different points, and only the nearer one is on the
+    rectangle. Snapping to the far one would put the terminal outside the study
+    area, where the boundary band would not see it — the exact failure this
+    whole trim exists to remove.
+
+    The coordinate of the BINDING axis is then written EXACTLY to its edge value
+    rather than left as the interpolation's residual, so the projected distance
+    to that edge is exactly 0.0 and the band decision cannot turn on the last
+    bit of a float. The free coordinate is clamped into range.
+
+    ``None`` when the crossing coincides with the inside node — i.e. that node
+    is already ON the edge — because synthesizing a second node at the same
+    place would add a zero-length piece of polyline to say something the
+    existing node already says.
+    """
+    min_lat, min_lon, max_lat, max_lon = bbox
+    d_lat = outside.lat - inside.lat
+    d_lon = outside.lon - inside.lon
+
+    best_t: float | None = None
+    best_axis = ""
+    best_edge = 0.0
+    for delta, start, low, high, axis in (
+        (d_lat, inside.lat, min_lat, max_lat, "lat"),
+        (d_lon, inside.lon, min_lon, max_lon, "lon"),
+    ):
+        if delta == 0.0:
+            continue
+        edge = high if delta > 0.0 else low
+        t = (edge - start) / delta
+        if t < 0.0 or t > 1.0:
+            continue
+        if best_t is None or t < best_t:
+            best_t, best_axis, best_edge = t, axis, edge
+
+    if best_t is None:  # pragma: no cover - the outside node IS outside
+        return None
+    if best_t <= 0.0:
+        return None
+
+    lat = inside.lat + best_t * d_lat
+    lon = inside.lon + best_t * d_lon
+    if best_axis == "lat":
+        lat = best_edge
+        lon = min(max(lon, min_lon), max_lon)
+    else:
+        lon = best_edge
+        lat = min(max(lat, min_lat), max_lat)
+    if (lat, lon) == (inside.lat, inside.lon):
+        return None
+    return lat, lon
+
+
+def _inside_runs(flags: list[bool]) -> list[tuple[int, int]]:
+    """The maximal runs of ``True`` in ``flags``, as inclusive ``(first, last)``."""
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, flag in enumerate(flags):
+        if flag and start is None:
+            start = index
+        elif not flag and start is not None:
+            runs.append((start, index - 1))
+            start = None
+    if start is not None:
+        runs.append((start, len(flags) - 1))
+    return runs
+
+
+def trim_ways_to_requested_bbox(extract: OsmExtract) -> OsmExtract:
+    """Cut every way's overhanging tails back to ``extract.requested_bbox``.
+
+    Returns a NEW extract; never mutates the input, so a caller keeps the
+    untrimmed one to diagnose against. With no ``requested_bbox`` the input is
+    returned unchanged and *by identity*, which is what makes the no-bbox path
+    byte-identical to the behaviour that existed before this function did.
+
+    Four outcomes per way, and every one of them is named:
+
+    * any node inside → the leading and trailing runs of OUTSIDE nodes are CUT
+      and a node is synthesized exactly on the rectangle
+      (:data:`TRIM_TAIL_CUT`, one :class:`WayTrim` per cut end). This is decided
+      from the FIRST and LAST inside node, never from "is there exactly one run
+      of them", so a way that leaves and re-enters still gets its overhanging
+      tails cut;
+    * an INTERIOR excursion — a bulge that leaves the rectangle and comes back
+      between two inside nodes — is kept whole and recorded
+      (:data:`TRIM_KEPT_WHOLE_REENTRANT`). Cutting one would either delete a
+      middle section the study area really does contain on both sides of, or
+      split one OSM way into two ids;
+    * no node inside at all, but a segment clipping the rectangle → dropped
+      (:data:`SKIP_ONLY_GRAZES_REQUESTED_BBOX`). Overpass's bbox filter returns
+      ways that merely INTERSECT the box, so a road cutting a corner arrives
+      whole with every vertex outside the study area. It cannot be trimmed:
+      both of its terminals would have to be synthesized, and a carriageway all
+      of whose vertices this generator invented is the mirror image of a
+      carriageway it silently deleted. Keeping it whole is no better —
+      *measured*: on job d31961abd950 that put a 144 m link entirely outside
+      the study area into the network, joined to nothing, and the gate refused
+      it as ``v3_orphan_link``. So it leaves by the named-skip door, and the
+      skip says it touched the study area;
+    * nothing of it inside and nothing crossing → dropped as a named skip
+      (:data:`SKIP_OUTSIDE_REQUESTED_BBOX`).
+
+    Way ids and tags are preserved in every case — only ``node_ids`` ever
+    shrinks — because ``TurnRestriction`` matches ways by id and a re-id would
+    silently un-enforce every ban naming a trimmed road.
+
+    **The invariant this function establishes**, and the reason the two rules
+    above are stated in terms of the first and last inside node: after it runs,
+    every way TERMINAL is inside or exactly ON the rectangle. Interior nodes may
+    still be outside (a bulge), and that is fine — nothing classifies an
+    interior node. Terminals are what ``connectivity.dead_ends`` reads, and its
+    band test is ``min(x - minx, maxx - x, …) <= BOUNDARY_BAND_M``, which goes
+    NEGATIVE outside the rectangle and is therefore satisfied at ANY distance
+    out there. Measured on job d31961abd950 before this rule was stated this
+    way: two re-entrant ways kept whole left terminals 23 m and 103 m OUTSIDE
+    the study rectangle, and both were reported as ``model_boundary_correct`` —
+    a cause the gate treats as benign. ``connectivity.dead_ends`` now also
+    refuses to call an outside terminal a boundary (see
+    :data:`~services.genesis.connectivity.DEAD_END_BEYOND_REQUESTED_BBOX`), so
+    the invariant is defended from both sides rather than trusted from one.
+
+    Synthesized node ids, and why they are safe
+    -------------------------------------------
+    ``base = max(every node id this extract mentions) + 1``, and the cuts take
+    ``base``, ``base + 1``, … in the order they are visited: ways ascending by
+    id, and within a way ``start`` before ``end``. Both halves matter. The
+    OFFSET makes a collision with a real OSM id impossible by construction
+    rather than by a probability argument — every real id is ``<= base - 1``.
+    The ORDER is a pure function of the extract's contents, which are a pure
+    function of the file, so two runs over the same ``.osm`` synthesize the same
+    ids and the byte-identical-rebuild invariant holds with a bbox exactly as it
+    does without one. (A hash of ``(way id, end)`` would also be deterministic
+    but could collide with a real id, and OSM node ids are not bounded by
+    anything this generator controls.)
+
+    Ids are keyed by the SOURCE SEGMENT that was cut — the ordered pair
+    ``(last inside node, first outside node)`` — not by the way. Two ways that
+    share a crossing segment therefore share ONE synthesized node, and that is
+    not an optimisation: it is the true topology. Both ways really do contain
+    that segment, so they really do meet where it leaves the rectangle. Given
+    two distinct nodes instead, they became two coincident terminals at the same
+    point that the node merge then REFUSED to join (see
+    :attr:`OsmExtract.synthesized_node_ids`), i.e. two disconnected stubs lying
+    on top of each other.
+
+    Every synthesized id is recorded in :attr:`OsmExtract.synthesized_node_ids`,
+    which ``connectivity.merge_junction_nodes`` reads to refuse merging one into
+    a real junction. A synthesized node is a truncation MARKER, not a surveyed
+    place; averaging its position with a junction 6 m away would move it off the
+    rectangle (measured 4.501 m off, against a 1.0 m band) and invent a turning
+    movement the source never asserted.
+    """
+    bbox = extract.requested_bbox
+    if bbox is None or extract.refused:
+        # Refused short-circuits for the same reason ``merge_junction_nodes``
+        # and ``without_ways`` do: there is no network here to cut, and a second
+        # refusal appended to the first would say the same thing twice under a
+        # different name.
+        return extract
+
+    # Metres are for the REPORT only, so they are measured on the plane of the
+    # untrimmed extract: it is deterministic, it exists here, and nothing
+    # geometric downstream consumes it.
+    from .project import origin_for_bounds  # noqa: PLC0415 - keeps osm.py leaf-ish
+
+    source_bounds = extract.bounds()
+    plane = origin_for_bounds(*source_bounds) if source_bounds else None
+
+    def metres(a: OsmNode | tuple[float, float], b: OsmNode | tuple[float, float]) -> float:
+        if plane is None:  # pragma: no cover - a parsed extract always has nodes
+            return 0.0
+        a_lat, a_lon = (a.lat, a.lon) if isinstance(a, OsmNode) else a
+        b_lat, b_lon = (b.lat, b.lon) if isinstance(b, OsmNode) else b
+        ax, ay = plane.forward(a_lat, a_lon)
+        bx, by = plane.forward(b_lat, b_lon)
+        return math.hypot(bx - ax, by - ay)
+
+    mentioned = set(extract.nodes) | {nid for way in extract.ways for nid in way.node_ids}
+    next_synthetic = (max(mentioned) + 1) if mentioned else 1
+
+    nodes = dict(extract.nodes)
+    kept: list[OsmWay] = []
+    trims: list[WayTrim] = []
+    dropped: list[OsmWay] = []
+    grazing: list[OsmWay] = []
+    too_short: list[OsmWay] = []
+    #: ``(inside node id, outside node id)`` → the synthesized node on that
+    #: segment. The key is the SOURCE SEGMENT, so two ways that share it share
+    #: one node — see the docstring for why that is topology and not tidiness.
+    synthesized_at: dict[tuple[int, int], int] = {}
+
+    for way in sorted(extract.ways, key=lambda w: w.id):
+        if any(nid not in nodes for nid in way.node_ids):
+            # ``_drop_ways_with_unresolvable_nodes`` runs in the parser, so a
+            # parsed extract never reaches this. A hand-built one might, and
+            # geometry we do not have is not geometry to cut against.
+            kept.append(way)  # pragma: no cover
+            continue  # pragma: no cover
+        flags = [_inside_bbox(nodes[nid].lat, nodes[nid].lon, bbox) for nid in way.node_ids]
+        runs = _inside_runs(flags)
+
+        if len(runs) == 1 and runs[0] == (0, len(flags) - 1):
+            kept.append(way)
+            continue
+
+        if not runs:
+            crosses = any(
+                _clip_parameters(
+                    nodes[nid_a].lat,
+                    nodes[nid_a].lon,
+                    nodes[nid_b].lat,
+                    nodes[nid_b].lon,
+                    bbox,
+                )
+                is not None
+                for nid_a, nid_b in zip(way.node_ids, way.node_ids[1:])
+            )
+            (grazing if crosses else dropped).append(way)
+            continue
+
+        # The first and last INSIDE node bound what is kept. Everything between
+        # them travels with the way — including a bulge that leaves the
+        # rectangle and comes back, which is an interior excursion and not a
+        # tail. Everything before the first and after the last is a tail, and it
+        # is cut whether or not the way re-enters, because a terminal outside
+        # the rectangle is one the boundary band cannot honestly judge.
+        first, last = runs[0][0], runs[-1][1]
+        node_ids = list(way.node_ids[first : last + 1])
+        trims_before = len(trims)
+        if len(runs) > 1:
+            trims.append(
+                WayTrim(
+                    way.id,
+                    way.highway,
+                    TRIM_KEPT_WHOLE_REENTRANT,
+                    "whole",
+                    0,
+                    0.0,
+                    0,
+                    f"this way leaves the requested bbox and re-enters it "
+                    f"({len(runs) - 1} interior excursion(s) between its first and last "
+                    "node inside); those middle sections are kept whole, because cutting "
+                    "one would either delete road the study area contains on both sides "
+                    "of or split one OSM way into two ids. Its overhanging TAILS are cut "
+                    "like any other way's",
+                )
+            )
+        # "start" first, then "end" — the visit order the synthesized-id scheme
+        # documents. The start cut prepends, so the end cut's append is still
+        # the end of the list.
+        for end, cut, neighbour_index in (
+            ("start", list(range(first - 1, -1, -1)), first),
+            ("end", list(range(last + 1, len(flags))), last),
+        ):
+            if not cut:
+                continue
+            inside_node = nodes[way.node_ids[neighbour_index]]
+            outside_node = nodes[way.node_ids[cut[0]]]
+            crossing = _crossing_point(inside_node, outside_node, bbox)
+            synthetic_id = 0
+            terminal: OsmNode | tuple[float, float] = inside_node
+            if crossing is not None:
+                segment = (inside_node.id, outside_node.id)
+                synthetic_id = synthesized_at.get(segment, 0)
+                if not synthetic_id:
+                    synthetic_id = next_synthetic
+                    next_synthetic += 1
+                    synthesized_at[segment] = synthetic_id
+                    nodes[synthetic_id] = OsmNode(synthetic_id, crossing[0], crossing[1])
+                terminal = crossing
+                if end == "start":
+                    node_ids.insert(0, synthetic_id)
+                else:
+                    node_ids.append(synthetic_id)
+            overhang = max(
+                metres(inside_node, nodes[way.node_ids[cut[-1]]])
+                - metres(inside_node, terminal),
+                0.0,
+            )
+            trims.append(
+                WayTrim(
+                    way.id,
+                    way.highway,
+                    TRIM_TAIL_CUT,
+                    end,
+                    len(cut),
+                    overhang,
+                    synthetic_id,
+                    f"{len(cut)} node(s) of this way's {end} lay outside the requested "
+                    f"bbox, overhanging it by {overhang:.1f} m; the way now terminates "
+                    + (
+                        f"at node {synthetic_id}, synthesized ON the requested boundary"
+                        if synthetic_id
+                        else f"at node {inside_node.id}, which is already ON the "
+                        "requested boundary"
+                    ),
+                )
+            )
+        if len(node_ids) < 2:
+            # One node inside and no crossing to synthesize at either end: the
+            # way touches the rectangle at a single mapped point. There is no
+            # carriageway left to model, and a one-node way would break every
+            # geometry pass downstream, so it leaves by the named-skip door
+            # every other undrawable way already uses — and the trim records
+            # written a moment ago are withdrawn with it, because "the way now
+            # terminates at node N" is not true of a way that is not there.
+            del trims[trims_before:]
+            too_short.append(way)
+            continue
+        kept.append(replace(way, node_ids=tuple(node_ids)))
+
+    skipped = list(extract.skipped)
+    for way in sorted(dropped, key=lambda w: w.id):
+        skipped.append(
+            SkippedWay(
+                way.id,
+                SKIP_OUTSIDE_REQUESTED_BBOX,
+                way.highway,
+                "no part of this way is inside the bbox that was requested; Overpass "
+                "returns whole ways, so a way entirely outside the window is a road "
+                "the query reached past rather than a road of the study area",
+            )
+        )
+    for way in sorted(grazing, key=lambda w: w.id):
+        skipped.append(
+            SkippedWay(
+                way.id,
+                SKIP_ONLY_GRAZES_REQUESTED_BBOX,
+                way.highway,
+                "this way clips the requested bbox between two mapped vertices but has "
+                "no node inside it, so every terminal a trim could give it would be one "
+                "this generator invented; measured on the study area it cuts a corner "
+                "of, and dropped rather than modelled from invented geometry alone",
+            )
+        )
+    for way in sorted(too_short, key=lambda w: w.id):
+        skipped.append(
+            SkippedWay(
+                way.id,
+                SKIP_TOO_FEW_NODES,
+                way.highway,
+                "only one node of this way is inside the requested bbox and it is "
+                "already on the boundary, so the trim leaves no two points to draw a "
+                "carriageway between",
+            )
+        )
+
+    referenced = {nid for way in kept for nid in way.node_ids}
+    trimmed = OsmExtract(
+        source=extract.source,
+        ways=kept,
+        # Same pruning semantics as ``without_ways``: a node no surviving way
+        # references would still size ``bounds()``, and ``bounds()`` is the
+        # projection origin, i.e. every coordinate in the emitted file.
+        nodes={nid: node for nid, node in nodes.items() if nid in referenced},
+        skipped=skipped,
+        refusals=list(extract.refusals),
+        ways_seen=extract.ways_seen,
+        declared_bounds=extract.declared_bounds,
+        restrictions=list(extract.restrictions),
+        restriction_refusals=list(extract.restriction_refusals),
+        non_drivable_node_ids=set(extract.non_drivable_node_ids),
+        non_drivable_node_highways={
+            nid: set(values) for nid, values in extract.non_drivable_node_highways.items()
+        },
+        requested_bbox=extract.requested_bbox,
+        way_trims=list(extract.way_trims) + trims,
+        synthesized_node_ids=extract.synthesized_node_ids
+        | {nid for nid in synthesized_at.values() if nid in referenced},
+    )
+    _drop_restrictions_naming_absent_ways(trimmed)
+    _drop_restrictions_whose_via_node_was_trimmed(trimmed, referenced)
+    if not trimmed.ways:
+        trimmed.refusals.append(
+            OsmRefusal(
+                REFUSE_NO_DRIVABLE_WAYS,
+                f"{Path(extract.source).name}: no drivable way survives the requested "
+                f"bbox {bbox}. Skips by reason: {trimmed.skipped_summary()}",
+            )
+        )
+    return trimmed
+
+
+def _drop_restrictions_whose_via_node_was_trimmed(
+    extract: OsmExtract, referenced: set[int]
+) -> None:
+    """A ban at a junction the trim removed is refused BY NAME, never forgotten.
+
+    Same discipline as :func:`_drop_restrictions_naming_absent_ways`, and for
+    the same reason: an unapplied restriction is a movement that stays legal in
+    the model although the map forbids it, and the only unacceptable version of
+    that is the one no report mentions.
+    """
+    applicable: list[TurnRestriction] = []
+    for restriction in extract.restrictions:
+        if restriction.via_node in referenced:
+            applicable.append(restriction)
+            continue
+        extract.restriction_refusals.append(
+            RestrictionRefusal(
+                restriction.id,
+                RESTRICTION_VIA_NODE_TRIMMED,
+                f"restriction={restriction.kind} applies at node {restriction.via_node}, "
+                "which lay outside the requested bbox and was cut off with the tail it "
+                "was on",
+            )
+        )
     extract.restrictions = applicable
 
 

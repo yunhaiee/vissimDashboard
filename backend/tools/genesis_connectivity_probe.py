@@ -135,7 +135,28 @@ def _read_inpx(path: Path) -> tuple[dict, list[tuple[str, str]]]:
     return plain, connectors
 
 
-def _classify_with_osm(inpx: Path, osm: Path) -> dict:
+def _requested_bbox(osm: Path) -> tuple[float, float, float, float] | None:
+    """The bbox the ``.osm`` was fetched for, read out of the file's own bytes.
+
+    The generator reads this (``genesis_jobs._requested_bbox_of``) and it MOVES
+    the model boundary, so a probe that did not would rebuild a different
+    network from the same file and report its numbers under this file's name —
+    the split brain this tool's docstring forbids. Same function, same seam.
+
+    Function-local import: ``services.osm_fetch`` is a workspace-aware module
+    and this tool touches no workspace, so it is pulled in only on the path that
+    actually needs the parser, and only to run a pure bytes → dict function.
+    """
+    from services.osm_fetch import read_provenance  # noqa: PLC0415
+    from services.genesis.osm import requested_bbox_from_provenance  # noqa: PLC0415
+
+    try:
+        return requested_bbox_from_provenance(read_provenance(osm.read_bytes()))
+    except OSError:  # pragma: no cover - the parse below reports the same file
+        return None
+
+
+def _classify_with_osm(inpx: Path, osm: Path, *, use_provenance_bbox: bool = True) -> dict:
     """Read the generator's own dangling-end census off a regenerated draft.
 
     No classification happens here. ``draft.build_draft`` writes every link no
@@ -147,7 +168,8 @@ def _classify_with_osm(inpx: Path, osm: Path) -> dict:
     from services.genesis.draft import build_draft  # noqa: PLC0415
     from services.genesis.osm import parse_osm_file  # noqa: PLC0415
 
-    extract = parse_osm_file(osm)
+    bbox = _requested_bbox(osm) if use_provenance_bbox else None
+    extract = parse_osm_file(osm, requested_bbox=bbox)
     if extract.refused:
         return {"error": "; ".join(f"{r.code}: {r.message}" for r in extract.refusals)}
     draft = build_draft(extract, name=inpx.stem)
@@ -181,6 +203,8 @@ def _classify_with_osm(inpx: Path, osm: Path) -> dict:
             "the generator's own census "
             "(draft.metadata['connectivity']['dangling_approaches'])"
         ),
+        "requested_bbox": list(bbox) if bbox else None,
+        "boundary": draft.metadata.get("boundary", {}).get("source", ""),
         "file_matches_regeneration": mismatch is None,
         **({"warning": mismatch} if mismatch else {}),
         "links": len(draft.links),
@@ -251,6 +275,10 @@ def render(result: dict, baseline: dict | None = None) -> str:
     if "error" in result:
         return f"REFUSED: {result['error']}"
     lines = [f"source          : {result['source']}"]
+    if result.get("boundary"):
+        lines.append(f"model boundary  : {result['boundary']}")
+    if result.get("requested_bbox"):
+        lines.append(f"requested bbox  : {result['requested_bbox']}")
     if result.get("warning"):
         lines.append(f"WARNING         : {result['warning']}")
     lines += [
@@ -340,6 +368,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--ignore-requested-bbox",
+        action="store_true",
+        help=(
+            "rebuild WITHOUT the bbox recorded in the .osm's fetch provenance. Off by "
+            "default because the generator uses it: this flag is for measuring what the "
+            "boundary rule changed, not for ordinary use."
+        ),
+    )
+    parser.add_argument(
         "--json", action="store_true", help="emit the measurement as JSON on stdout"
     )
     parser.add_argument(
@@ -378,7 +415,9 @@ def main(argv: list[str] | None = None) -> int:
             if not osm.is_file():
                 print(f"no such .osm: {osm}", file=sys.stderr)
                 return EXIT_UNREADABLE
-            result = _classify_with_osm(inpx, osm)
+            result = _classify_with_osm(
+                inpx, osm, use_provenance_bbox=not args.ignore_requested_bbox
+            )
         else:
             result = _classify_from_inpx(inpx)
     except ET.ParseError as exc:

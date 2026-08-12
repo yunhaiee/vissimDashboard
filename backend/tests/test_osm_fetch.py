@@ -84,8 +84,32 @@ def no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 
 #: A small region well inside every cap. Centred on the synthetic crossroads so
 #: the coordinates in the fixture and the coordinates in the request agree.
+#:
+#: **+/-0.002 deg, not +/-0.004, and the difference is the point.** Overpass
+#: answers a bbox query with WHOLE ways, so a real response ALWAYS overhangs the
+#: window it was asked for — measured 100 m to 2300 m on this project's own
+#: fetches. At +/-0.004 this fixture did the opposite: the crossroads' four arm
+#: ends sat 94-222 m INSIDE the requested rectangle, which is a shape no
+#: Overpass response has. Once ``services/genesis/connectivity.py`` started
+#: believing the requested bbox over the hull of the received geometry (the
+#: boundary ladder's first rung), those four ends became interior cul-de-sacs,
+#: each gained a U-turn, the model closed — no entry and no exit anywhere — and
+#: the gate refused it. The fixture was testing a situation that cannot arise.
+#:
+#: At +/-0.002 the geometry straddles the request the way real data does, and it
+#: exercises BOTH halves of the boundary rule in one response:
+#:
+#: * the east-west arm (nodes 1 and 3 at ``LON0 -/+ 0.003``) hangs 94.4 m
+#:   outside the +/-188.8 m window, so way 101 is TRIMMED at both ends and two
+#:   nodes are synthesized exactly on the rectangle;
+#: * the north-south arm (nodes 4 and 5 at ``LAT0 -/+ 0.002``) lands exactly ON
+#:   the +/-221.8 m window, so way 102 is not trimmed at all and its terminals
+#:   are on the boundary already.
+#:
+#: All four terminals therefore read ``model_boundary``, no U-turn is emitted at
+#: any of them, and the network keeps the entries and exits a model needs.
 SMALL_REGION = osm_fetch.BoundingBox(
-    south=LAT0 - 0.004, west=LON0 - 0.004, north=LAT0 + 0.004, east=LON0 + 0.004
+    south=LAT0 - 0.002, west=LON0 - 0.002, north=LAT0 + 0.002, east=LON0 + 0.002
 )
 
 OVERPASS_NOTE = (

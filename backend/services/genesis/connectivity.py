@@ -149,11 +149,18 @@ MAX_CLUSTER_DIAMETER_M = 2.0 * NODE_MERGE_TOLERANCE_M
 
 #: How close to the model's own boundary a way terminal must be before it counts
 #: as "the road leaves the model" rather than "the road ends". The boundary is
-#: the extract's declared ``<bounds>`` when the file has one and the extent of
-#: the kept geometry when it does not; either way this band is
+#: whichever rung of :func:`_boundary_rectangle`'s ladder the extract can offer
+#: — the REQUESTED bbox, else the file's declared ``<bounds>``, else the extent
+#: of the kept geometry — and this band is the same on all three:
 #: :data:`services.genesis.project.MAX_PLANIMETRIC_ERROR_M`, the projection's
 #: own budget, because that is the smallest distance at which two points in this
 #: frame are distinguishable at all.
+#:
+#: The band is deliberately NOT widened to cover a boundary that is in the wrong
+#: place. A band big enough to swallow a 300 m overhang would also swallow every
+#: real cul-de-sac within 300 m of the edge and turn it into a hole traffic
+#: leaves through — so when the rectangle was wrong the RECTANGLE was fixed
+#: (rung 1, plus the trim that puts the cut terminals exactly on it).
 BOUNDARY_BAND_M = MAX_PLANIMETRIC_ERROR_M
 
 #: Highway classes on which a cul-de-sac is surprising enough to be named in the
@@ -184,6 +191,11 @@ REFUSE_WOULD_COLLAPSE_WAY = "would_collapse_a_way"
 #: Neither node of the pair is a junction the source file already describes, so
 #: joining them would invent a junction rather than reconcile one.
 REFUSE_NO_JUNCTION_TO_RECONCILE = "no_junction_to_reconcile"
+#: One side of the pair is a node THIS GENERATOR synthesized on the requested
+#: bbox when it cut a tail (:attr:`services.genesis.osm.OsmExtract.
+#: synthesized_node_ids`). See :func:`merge_junction_nodes` for the argument and
+#: the measurement.
+REFUSE_SYNTHESIZED_BOUNDARY_NODE = "synthesized_boundary_node"
 
 # --- dead-end reason codes -------------------------------------------------
 
@@ -199,6 +211,29 @@ DEAD_END_U_TURN_NON_DRIVABLE_CONTINUATION = "cul_de_sac_u_turn_non_drivable_cont
 #: world; a vehicle reaching it should LEAVE the network, and a U-turn here
 #: would turn the study boundary into a reflecting wall.
 DEAD_END_MODEL_BOUNDARY = "model_boundary"
+#: The terminal is strictly OUTSIDE the boundary rectangle. Not the same thing
+#: as :data:`DEAD_END_MODEL_BOUNDARY` and deliberately not benign: a road that
+#: leaves the model at its edge is correct, and a link end sitting in space
+#: beyond the study area is a generator defect. The distinction has to be drawn
+#: here because the band test is a SIGNED distance to the nearest edge —
+#: ``min(x - minx, maxx - x, …)`` — which goes negative outside and so satisfies
+#: ``<= BOUNDARY_BAND_M`` at any distance out there. Measured on job
+#: d31961abd950: two re-entrant ways kept whole left terminals 23 m and 103 m
+#: outside the rectangle and both were reported ``model_boundary_correct``, a
+#: cause the R1.5 gate filters out as benign, so V3 passed over them in silence.
+#:
+#: **Scoped to the requested-bbox rung, and only there.** On that rung
+#: ``osm.trim_ways_to_requested_bbox`` cuts every tail at the rectangle, so an
+#: outside terminal is a defect in this generator's own geometry, the reason
+#: should be unreachable, and if the trim ever regresses the gate must FAIL
+#: loudly rather than pass quietly — which is exactly what this code is for. On
+#: the declared-``<bounds>`` rung there is no trim and therefore no remedy: a
+#: whole-way extract overhanging the window it declares is the normal shape of
+#: such a file, and grading it a fault would permanently refuse uploads nothing
+#: is wrong with. Those keep :data:`DEAD_END_MODEL_BOUNDARY` (with an honest
+#: detail that never prints a negative distance). Trimming rung 2 as well is a
+#: deliberate non-goal of this unit and a named follow-up.
+DEAD_END_BEYOND_REQUESTED_BBOX = "terminal_outside_the_model_boundary"
 #: A one-way way that ends nowhere. No U-turn is possible — there is only one
 #: carriageway — so this is reported, never fixed. Usually a break in the map.
 DEAD_END_ONE_WAY = "one_way_dead_end_unfixable"
@@ -231,6 +266,10 @@ DANGLING_NO_EXIT_AT_JUNCTION = "junction_with_no_exit_link"
 DANGLING_ALL_MOVEMENTS_U = "junction_where_every_movement_is_a_u_turn"
 #: The approach's node belongs to no other way — a merge that did not happen.
 DANGLING_UNMERGED_NEIGHBOUR = "unmerged_node_of_another_way"
+#: The link ends OUTSIDE the model boundary — beyond the study area rather than
+#: on its edge. Deliberately absent from :data:`BENIGN_DANGLING_CAUSES`: this is
+#: a generator defect, not a road correctly leaving the model.
+DANGLING_BEYOND_MODEL_BOUNDARY = "terminal_outside_the_model_boundary"
 #: No cause could be established. Named rather than omitted: a dangling end the
 #: generator cannot explain is the one a reviewer most needs to see.
 DANGLING_UNATTRIBUTED = "unattributed"
@@ -242,6 +281,7 @@ BENIGN_DANGLING_CAUSES = frozenset({DANGLING_MODEL_BOUNDARY, DANGLING_RESTRICTED
 #: be dangling, so the two reports use one vocabulary.
 DEAD_END_REASON_TO_DANGLING_CAUSE = {
     DEAD_END_MODEL_BOUNDARY: DANGLING_MODEL_BOUNDARY,
+    DEAD_END_BEYOND_REQUESTED_BBOX: DANGLING_BEYOND_MODEL_BOUNDARY,
     DEAD_END_ONE_WAY: DANGLING_ONE_WAY,
     DEAD_END_U_TURN_RESTRICTED: DANGLING_RESTRICTED,
     DEAD_END_U_TURN: DANGLING_CUL_DE_SAC,
@@ -478,6 +518,41 @@ def merge_junction_nodes(extract: OsmExtract) -> tuple[OsmExtract, MergeReport]:
     members: dict[int, list[int]] = {}
 
     for distance, a, b in pairs:
+        synthesized = sorted(
+            {a, b} & set(extract.synthesized_node_ids)
+        )
+        if synthesized:
+            # A node this generator put ON the requested rectangle to mark where
+            # a road leaves the study area is not a surveyed place. The merge's
+            # licence — "two junctions cannot be closer than one carriageway" —
+            # is a statement about junctions the SOURCE describes, and it says
+            # nothing about a truncation marker that happens to land near one.
+            #
+            # The no-junction guard above cannot catch this, because it passes
+            # as soon as ONE side is a declared junction, and the dangerous case
+            # is exactly a real junction 6 m inside the edge. Measured on that
+            # construction: the cluster position is the MEAN of its members, so
+            # the boundary node moved 4.501 m off the rectangle — against a
+            # 1.0 m band — and three things went wrong at once. The terminal's
+            # occurrences became 3, so ``dead_ends`` stopped seeing it as a
+            # terminal at all and the boundary exit vanished from every report;
+            # the network gained a turning movement between two roads the source
+            # never joins; and neither was visible in any count.
+            report.refusals.append(
+                MergeRefusal(
+                    a,
+                    b,
+                    distance,
+                    REFUSE_SYNTHESIZED_BOUNDARY_NODE,
+                    f"node(s) {synthesized} were synthesized by this generator on the "
+                    "requested bbox to mark where a road leaves the study area — a "
+                    "truncation marker, not an independently-mapped meeting point. "
+                    "Merging one would move it off the model boundary and invent a "
+                    "movement the source does not describe",
+                )
+            )
+            continue
+
         sig_a = {_vertical_signature(w) for w in ways_at.get(a, ())}
         sig_b = {_vertical_signature(w) for w in ways_at.get(b, ())}
         if sig_a and sig_b and not (sig_a & sig_b):
@@ -642,6 +717,29 @@ def merge_junction_nodes(extract: OsmExtract) -> tuple[OsmExtract, MergeReport]:
         non_drivable_node_ids={
             canonical.get(n, n) for n in extract.non_drivable_node_ids
         },
+        # Every field of OsmExtract is listed here deliberately, and
+        # ``test_genesis_connectivity`` asserts mechanically that they all are.
+        # ``non_drivable_node_highways`` was silently dropped by this
+        # constructor from the day the field was added: harmless only by
+        # accident (``diagnose_isolated_zones`` reads the PRE-merge extract, so
+        # the empty map was never consulted), and the same defect class this
+        # unit exists to kill. Its keys are node ids, so they are remapped
+        # through the merge exactly as ``non_drivable_node_ids`` is — and the
+        # values of two nodes that merged into one junction are UNIONED rather
+        # than one of them winning, because both footways really do touch the
+        # junction that now exists.
+        non_drivable_node_highways=_remap_node_classes(
+            extract.non_drivable_node_highways, canonical
+        ),
+        requested_bbox=extract.requested_bbox,
+        way_trims=list(extract.way_trims),
+        # Remapped like every other node-id-keyed field. It cannot actually
+        # change — a synthesized node is never a merge candidate, by the refusal
+        # above — but a field whose correctness rests on another rule staying
+        # true is a field that breaks the day that rule moves.
+        synthesized_node_ids=frozenset(
+            canonical.get(n, n) for n in extract.synthesized_node_ids
+        ),
     )
     for way_id in collapsed:
         out.skipped.append(
@@ -654,6 +752,16 @@ def merge_junction_nodes(extract: OsmExtract) -> tuple[OsmExtract, MergeReport]:
         )
     report.collapsed_way_ids = tuple(collapsed)
     return out, report
+
+
+def _remap_node_classes(
+    classes: dict[int, set[str]], canonical: dict[int, int]
+) -> dict[int, set[str]]:
+    """``{node id: highway classes}`` with every key moved to its cluster root."""
+    out: dict[int, set[str]] = {}
+    for node_id, values in classes.items():
+        out.setdefault(canonical.get(node_id, node_id), set()).update(values)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -695,18 +803,86 @@ class DeadEnd:
         }
 
 
+#: The three rungs of the boundary ladder, most authoritative first. Stable
+#: strings: they are printed in every :class:`DeadEnd` detail, in the published
+#: ``BOUNDARY_BAND_M`` assumption and in the draft metadata, and a reader
+#: comparing two builds needs to be able to tell which boundary each used.
+BOUNDARY_SOURCE_REQUESTED_BBOX = "requested bbox (fetch provenance)"
+BOUNDARY_SOURCE_DECLARED_BOUNDS = "declared <bounds>"
+BOUNDARY_SOURCE_HULL = "extent of the kept geometry"
+
+
+def boundary_source(extract: OsmExtract) -> str:
+    """Which rung of the ladder this extract's boundary comes from.
+
+    Split out from :func:`_boundary_rectangle` so the label can be recorded in
+    the draft metadata even for a build with no dead end at all — "which
+    boundary did this network use?" is a question about the build, not about
+    whether anything happened to sit on the edge.
+    """
+    if extract.requested_bbox is not None:
+        return BOUNDARY_SOURCE_REQUESTED_BBOX
+    if extract.declared_bounds is not None:
+        return BOUNDARY_SOURCE_DECLARED_BOUNDS
+    return BOUNDARY_SOURCE_HULL
+
+
 def _boundary_rectangle(extract: OsmExtract, xy: dict[int, tuple[float, float]]):
     """The model's edge, in projected metres, and where it came from.
 
-    An ``.osm`` file MAY declare the window it was cut from (``<bounds>``); most
-    Overpass exports on this machine do not. When it does, that window is the
-    honest boundary — Overpass returns whole ways, so a terminal outside the
-    window is a road leaving the study area. When it does not, the extent of the
-    kept geometry is the only boundary the file states, and only a terminal
-    exactly ON it can be shown to be one.
+    A three-rung ladder, most authoritative first:
+
+    1. **the bbox that was REQUESTED**, when the file carries this app's fetch
+       provenance. This is the study area — the thing the modeller asked for —
+       and it is believed over both alternatives below. Overpass answers a bbox
+       query with WHOLE ways, so the geometry that comes back overhangs the
+       request by whatever the longest tail happens to be (100 m to 2300 m,
+       measured on this project's own fetches). Before this rung existed the
+       hull of that geometry WAS the boundary, so every legitimate boundary cut
+       sat hundreds of metres inside the rectangle, missed the 1 m band, and was
+       classified as an interior dead end — which is why every bbox extraction
+       this generator produced was refused by the gate's V3. The trim in
+       :func:`services.genesis.osm.trim_ways_to_requested_bbox` then puts the
+       cut terminals exactly ON this rectangle, so they are 0.00 m from it.
+    2. the file's own declared ``<bounds>``, when it has one. Most Overpass
+       exports on this machine do not; a JOSM save does.
+    3. the extent of the kept geometry. The only boundary a bare file states,
+       and only a terminal exactly ON it can be shown to be one.
+
+    Rungs 1 and 2 are projected with the same plane construction, and it is the
+    plane of the extract's OWN geometry (``origin_for_bounds(*extract.bounds())``)
+    in both cases — the same plane :func:`dead_ends` projects the nodes with, so
+    the comparison is between two quantities in one frame.
+
+    How much to trust a terminal inside the band, on rung 1
+    ------------------------------------------------------
+    Two different things land inside the band on the requested-bbox rung, and
+    they do not deserve equal confidence.
+
+    * A terminal this generator SYNTHESIZED
+      (:attr:`~services.genesis.osm.OsmExtract.synthesized_node_ids`) is 0.00 m
+      from the rectangle **by construction** — the cut solves for the crossing
+      and writes the binding coordinate exactly to the edge value. Its
+      classification is as sound as the arithmetic.
+    * Any OTHER terminal inside the band is one that a mapped OSM node happens
+      to place within 1.0 m of the rectangle, and that is only as trustworthy as
+      the rectangle itself. The requested bbox is a USER-SUPPLIED number, drawn
+      on a map or typed to four decimals; unlike the hull and unlike a declared
+      ``<bounds>``, nothing in the data derives it. A rectangle placed a metre
+      differently would classify such a terminal the other way.
+
+    This is stated rather than warned about on purpose: the second case is
+    uncommon, the honest response to it is a reader who knows how the rectangle
+    was chosen, and a per-terminal warning would bury the first case — which is
+    the overwhelming majority and is exact — in noise.
     """
-    if extract.declared_bounds is not None:
-        min_lat, min_lon, max_lat, max_lon = extract.declared_bounds
+    declared = (
+        extract.requested_bbox
+        if extract.requested_bbox is not None
+        else extract.declared_bounds
+    )
+    if declared is not None:
+        min_lat, min_lon, max_lat, max_lon = declared
         plane = origin_for_bounds(*extract.bounds())
         corners = [
             plane.forward(min_lat, min_lon),
@@ -716,10 +892,10 @@ def _boundary_rectangle(extract: OsmExtract, xy: dict[int, tuple[float, float]])
         ]
         xs = [p[0] for p in corners]
         ys = [p[1] for p in corners]
-        return (min(xs), max(xs), min(ys), max(ys)), "declared <bounds>"
+        return (min(xs), max(xs), min(ys), max(ys)), boundary_source(extract)
     xs = [p[0] for p in xy.values()]
     ys = [p[1] for p in xy.values()]
-    return (min(xs), max(xs), min(ys), max(ys)), "extent of the kept geometry"
+    return (min(xs), max(xs), min(ys), max(ys)), BOUNDARY_SOURCE_HULL
 
 
 def _departs(way: OsmWay, node_id: int) -> bool:
@@ -785,7 +961,7 @@ def dead_ends(extract: OsmExtract) -> list[DeadEnd]:
         return out
     plane = origin_for_bounds(*bounds)
     xy = {nid: plane.forward(n.lat, n.lon) for nid, n in extract.nodes.items()}
-    (minx, maxx, miny, maxy), boundary_source = _boundary_rectangle(extract, xy)
+    (minx, maxx, miny, maxy), boundary_label = _boundary_rectangle(extract, xy)
 
     occurrences: dict[int, int] = {}
     ways_at: dict[int, list[OsmWay]] = {}
@@ -805,18 +981,77 @@ def dead_ends(extract: OsmExtract) -> list[DeadEnd]:
         for node_id in (way.node_ids[0], way.node_ids[-1]):
             if node_id not in xy:
                 continue
+            # A node THIS GENERATOR synthesized on the requested rectangle is a
+            # terminal however many ways end at it. The two tests below ask
+            # "can a vehicle arrive here and not leave?", and at a shared
+            # synthesized node the answer they compute is "no" — the sibling way
+            # counts as an exit — so the node was skipped entirely, produced no
+            # DeadEnd, and therefore never reached the ban list
+            # ``draft._stranded_approach_connectors`` builds from this function's
+            # output. Measured: every movement across such a node is antiparallel
+            # (both ways carry the SAME source segment, so the approach and every
+            # departure lie on one centreline), the junction pass suppressed them
+            # all under §5.3.3, both approaches ended up stranded, and the
+            # last-resort pass then emitted a same-way FWD→REV U-turn on EACH of
+            # them — a reflecting wall at the study edge, the exact failure the
+            # boundary band exists to prevent, and invisible to the gate.
+            #
+            # The fix belongs here rather than in that pass: this function is the
+            # single source of truth for "may a U-turn be emitted at this way
+            # terminal?", and a synthesized node is on the rectangle BY
+            # CONSTRUCTION, so any way ending there is a road leaving the model
+            # and any movement modelled there is fabricated.
+            synthesized = node_id in extract.synthesized_node_ids
             # Two shapes of dead end, not one: a terminal nobody else touches,
             # and a terminal several ways share where every one of them is
             # one-way inbound. Both are places a vehicle arrives and cannot
             # leave; only the first was visible before.
-            if occurrences.get(node_id, 0) != 1 and not _is_trapped_terminal(
-                way, node_id, ways_at
+            if (
+                not synthesized
+                and occurrences.get(node_id, 0) != 1
+                and not _is_trapped_terminal(way, node_id, ways_at)
             ):
                 continue
             x, y = xy[node_id]
             edge = min(x - minx, maxx - x, y - miny, maxy - y)
             arterial = way.highway in ARTERIAL_CLASSES
-            if edge <= BOUNDARY_BAND_M:
+            if not synthesized and edge < 0.0:
+                # STRICTLY outside, and therefore never "at the boundary" — the
+                # band test below is a SIGNED distance, so outside the rectangle
+                # it is satisfied 100 m out exactly as it is 0.1 m in.
+                #
+                # Which of the two answers that deserves depends on the RUNG,
+                # because only one of them comes with a remedy. On the requested
+                # bbox this generator cut every tail at the rectangle, so an
+                # outside terminal is a defect in its own geometry and is
+                # reported as one. On a declared ``<bounds>`` there is no trim
+                # and no remedy: a whole-way extract overhanging the window it
+                # declares is the NORMAL shape of such a file, it was read as a
+                # (benign) boundary before this unit existed, and turning that
+                # into a permanent refusal would refuse files nothing is wrong
+                # with. Rung-2 trimming is a deliberate non-goal here and a
+                # named follow-up, not an oversight. The hull rung cannot reach
+                # this branch at all: it IS the extent of ``xy``, so every
+                # ``edge`` there is >= 0 by construction.
+                if extract.requested_bbox is not None:
+                    out.append(
+                        DeadEnd(
+                            node_id,
+                            way.id,
+                            way.highway,
+                            DEAD_END_BEYOND_REQUESTED_BBOX,
+                            False,
+                            warn_arterial=arterial,
+                            detail=(
+                                f"{-edge:.2f} m OUTSIDE the model boundary "
+                                f"({boundary_label}); a terminal beyond the study area is "
+                                "not a road leaving the model, it is geometry this "
+                                "generator should have cut at the edge — reported as a "
+                                "fault, never as a boundary"
+                            ),
+                        )
+                    )
+                    continue
                 out.append(
                     DeadEnd(
                         node_id,
@@ -825,8 +1060,34 @@ def dead_ends(extract: OsmExtract) -> list[DeadEnd]:
                         DEAD_END_MODEL_BOUNDARY,
                         False,
                         detail=(
-                            f"{edge:.2f} m from the model boundary ({boundary_source}); the "
-                            "road continues outside the model, so a vehicle here leaves it"
+                            f"{-edge:.2f} m outside the {boundary_label} window — the "
+                            "file's geometry overhangs the window it declares, which is "
+                            "normal for a whole-way extract; the road continues outside "
+                            "the model, so a vehicle here leaves it"
+                        ),
+                    )
+                )
+                continue
+            if synthesized or edge <= BOUNDARY_BAND_M:
+                out.append(
+                    DeadEnd(
+                        node_id,
+                        way.id,
+                        way.highway,
+                        DEAD_END_MODEL_BOUNDARY,
+                        False,
+                        detail=(
+                            f"{max(edge, 0.0):.2f} m from the model boundary "
+                            f"({boundary_label}); the road continues outside the model, "
+                            "so a vehicle here leaves it"
+                            + (
+                                " — and this node is one this generator SYNTHESIZED on "
+                                "the rectangle, so it is a terminal for every way that "
+                                "ends at it and no movement across it is one the source "
+                                "describes"
+                                if synthesized
+                                else ""
+                            )
                         ),
                     )
                 )
@@ -1014,6 +1275,17 @@ def isolated_zones(links, connectors) -> list[tuple[int, ...]]:
     both are real faults, both are named elsewhere by the dangling census, and
     NEITHER is excluded here — a link a vehicle can reach is a link that
     simulates something. Only the pocket that fails both tests is inert.
+
+    A network with NO entry and NO exit anywhere — every arm closed by a
+    cul-de-sac U-turn — makes "unreachable from any entry" vacuously true of
+    every link, so this function reports the WHOLE network as one zone. That is
+    the honest answer to the question asked (nothing can be in any of it), and
+    it is deliberately still reported: what must not happen is *removing* it,
+    and that decision belongs to :func:`services.genesis.draft.build_draft`,
+    which refuses to let the isolation pass empty a network. Measured
+    2026-08-12: without that refusal a synthetic crossroads whose four arms end
+    inside the requested study rectangle had all 8 of its links excluded as one
+    pocket and the generation produced no network at all.
     """
     link_ids = [link.id for link in links]
     out_edges: dict[int, list[int]] = {lid: [] for lid in link_ids}
@@ -1203,6 +1475,9 @@ __all__ = [
     "ARTERIAL_CLASSES",
     "BENIGN_DANGLING_CAUSES",
     "BOUNDARY_BAND_M",
+    "BOUNDARY_SOURCE_DECLARED_BOUNDS",
+    "BOUNDARY_SOURCE_HULL",
+    "BOUNDARY_SOURCE_REQUESTED_BBOX",
     "DANGLING_ALL_MOVEMENTS_U",
     "DANGLING_CUL_DE_SAC",
     "DANGLING_MODEL_BOUNDARY",
@@ -1211,7 +1486,9 @@ __all__ = [
     "DANGLING_RESTRICTED",
     "DANGLING_UNATTRIBUTED",
     "DANGLING_UNMERGED_NEIGHBOUR",
+    "DANGLING_BEYOND_MODEL_BOUNDARY",
     "DEAD_END_REASON_TO_DANGLING_CAUSE",
+    "DEAD_END_BEYOND_REQUESTED_BBOX",
     "DEAD_END_MODEL_BOUNDARY",
     "DEAD_END_ONE_WAY",
     "DEAD_END_U_TURN",
@@ -1229,12 +1506,14 @@ __all__ = [
     "REFUSE_CLUSTER_TOO_WIDE",
     "REFUSE_GRADE_SEPARATED",
     "REFUSE_NO_JUNCTION_TO_RECONCILE",
+    "REFUSE_SYNTHESIZED_BOUNDARY_NODE",
     "REFUSE_WOULD_COLLAPSE_WAY",
     "TOLERANCE_BASIS",
     "ZONE_NON_DRIVABLE_ACCESS",
     "ZONE_SEVERED_BY_THIS_GENERATOR",
     "ZONE_SEVERED_IN_SOURCE",
     "ZONE_TRUNCATED_AT_BOUNDARY",
+    "boundary_source",
     "dead_ends",
     "diagnose_isolated_zones",
     "isolated_zones",

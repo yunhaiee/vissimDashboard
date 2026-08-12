@@ -72,6 +72,7 @@ from .connectivity import (
     EXCLUDABLE_ZONE_REASONS,
     IsolatedZone,
     MergeReport,
+    boundary_source,
     dead_ends,
     diagnose_isolated_zones,
     merge_junction_nodes,
@@ -85,6 +86,7 @@ from .osm import (
     OsmExtract,
     OsmWay,
     left_normal,
+    trim_ways_to_requested_bbox,
 )
 from .project import (
     MAX_PLANIMETRIC_ERROR_M,
@@ -683,6 +685,27 @@ _REPORT_TEXT: dict[str, dict[str, str]] = {
         "en": "Connectivity (junction merge, cul-de-sac U-turns, turn bans)",
         "ja": "接続性 (同一交差点の統合・行き止まりUターン・右左折禁止)",
     },
+    "boundary": {
+        "ko": "모형 경계 (어느 사각형을 경계로 삼았는가 · way 잘라내기)",
+        "en": "Model boundary (which rectangle was the edge, and what was cut)",
+        "ja": "モデル境界 (どの矩形を境界としたか・way の切り詰め)",
+    },
+    "boundary_trim_note": {
+        "ko": (
+            "Overpass는 way를 통째로 돌려주므로 요청한 사각형 밖으로 뻗은 꼬리는 "
+            "요청 경계에서 잘라내고 그 자리에 노드를 만들었습니다. 잘라낸 내역은 전부 "
+            "아래에 이름으로 남습니다"
+        ),
+        "en": (
+            "Overpass returns WHOLE ways, so tails hanging outside the requested "
+            "rectangle were cut at the requested boundary and a node was synthesized "
+            "there. Every cut is named below"
+        ),
+        "ja": (
+            "Overpass は way を丸ごと返すため、要求した矩形の外へ伸びる尾部は要求境界で "
+            "切り詰め、その位置にノードを生成しました。切り詰めはすべて下記に名前で残ります"
+        ),
+    },
     "connectivity_dangling": {
         "ko": (
             "커넥터가 나가지 않는 링크 끝(차량이 조용히 네트워크를 이탈하는 지점) — "
@@ -1051,6 +1074,40 @@ class DraftNetwork(BaseModel):
             f"restrictions this generator could not apply: "
             f"{len(connectivity.get('osm_turn_restrictions_refused', []))}"
         )
+        # BY REASON, for the same reason the node-merge refusals are: an
+        # unapplied ban is a movement that stays legal in the model although the
+        # map forbids it, and which KIND of unapplied changes what a reviewer
+        # does about it.
+        for reason, count in sorted(
+            connectivity.get("osm_turn_restrictions_refused_by_reason", {}).items()
+        ):
+            out.append(f"  - not applied / {reason}: {count}")
+        out.append("")
+        out.append(f"## {pick_text(text['boundary'], language)}")
+        boundary = self.metadata.get("boundary", {})
+        out.append(f"- source: {boundary.get('source', '')}")
+        for key in ("requested_bbox_wgs84", "declared_bounds_wgs84"):
+            region = boundary.get(key)
+            if region:
+                out.append(
+                    f"- {key}: "
+                    + ", ".join(f"{k}={v}" for k, v in sorted(region.items()))
+                )
+        trims = boundary.get("way_trims", [])
+        if trims:
+            out.append(f"- {pick_text(text['boundary_trim_note'], language)}")
+            out.append(f"- metres cut in total: {boundary.get('metres_cut_total', 0)}")
+            for reason, count in sorted(boundary.get("way_trims_by_reason", {}).items()):
+                shown = [
+                    f"way {t['way_id']}"
+                    + (f" ({t['end']}, {t['metres_cut']} m)" if t["end"] != "whole" else "")
+                    for t in trims
+                    if t["reason"] == reason
+                ]
+                more = f" (+{len(shown) - 12})" if len(shown) > 12 else ""
+                out.append(f"  - {reason}: {count} — {', '.join(shown[:12])}{more}")
+        else:
+            out.append("- way trims: (0)")
         out.append("")
         out.append(f"## {pick_text(text['skipped'], language)}")
         if self.skipped_ways:
@@ -1547,6 +1604,12 @@ MAX_ISOLATION_ROUNDS = 3
 #: Recorded when the cap above is hit. Never a silence.
 ISOLATION_ROUNDS_EXHAUSTED = "isolated_zone_removal_did_not_converge"
 
+#: Recorded when the zones the pass would remove are the WHOLE network. The pass
+#: removes pockets; a pocket is a part of a network, and a network is not a
+#: pocket of itself — so these are retained under this name and the network is
+#: emitted for the gate to judge. See the branch in :func:`build_draft`.
+ISOLATION_WOULD_EMPTY_THE_NETWORK = "isolated_zone_removal_would_empty_the_network"
+
 
 def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
     """OSM extract → draft network + §5 compliance report. Reports, never raises.
@@ -1566,7 +1629,21 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
     origin, which moves every coordinate — so the second pass is a full rebuild
     rather than a deletion from the first pass's output. That is the only way
     the numbers in the report can be the numbers in the file.
+
+    Before any of that, ONCE: if the extract remembers the bbox that was
+    requested, every way's overhang outside it is cut off
+    (:func:`~services.genesis.osm.trim_ways_to_requested_bbox`). Here rather
+    than in the parser, so that the parse stays a faithful reading of the file
+    and every caller — the job runner, the tools, the tests — shares one seam;
+    and before the loop rather than inside it, so the isolation rounds operate
+    on geometry that already matches the request. With no requested bbox the
+    call returns the same object and this build is byte-for-byte the build it
+    was before the trim existed.
     """
+    # A trim that leaves nothing drivable appends its own OsmRefusal, and
+    # ``_build_once`` turns a refused extract into a refused draft on the first
+    # pass below — no second refusal path to keep in step with the first.
+    extract = trim_ways_to_requested_bbox(extract)
     excluded: list[IsolatedZone] = []
     retained: list[IsolatedZone] = []
     current = extract
@@ -1585,6 +1662,33 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
         ]
         removable = [zone for zone in zones if zone.reason in EXCLUDABLE_ZONE_REASONS]
         if not removable:
+            break
+        if not {way.id for way in current.ways} - {
+            way_id for zone in removable for way_id in zone.way_ids
+        }:
+            # Removing these would leave NO ways at all: what was found is not a
+            # pocket of the network, it is the network. That happens exactly
+            # when the model has no entry and no exit anywhere — every arm
+            # closed by a cul-de-sac U-turn — because "unreachable from any
+            # entry" is then vacuously true of everything
+            # (``connectivity.isolated_zones`` says so in its own docstring).
+            #
+            # The pass removes POCKETS. A pass that can delete the whole network
+            # commits the largest silent deletion this package could possibly
+            # commit, dressed as tidiness — and the caller sees only
+            # "osm_no_nodes: no node coordinates to project" from the rebuild,
+            # which tells them nothing about what happened. Measured 2026-08-12
+            # on the region end-to-end fixture: 8 links out, 0 links back, no
+            # artifact, and the reason nowhere in any report.
+            #
+            # So they are RETAINED and named, exactly as the round cap's zones
+            # are, ``network_has_no_entry_or_exit`` is recorded below, and the
+            # gate gets to refuse a network that exists rather than a reader
+            # getting a refusal about a network that does not.
+            retained = retained + [
+                replace(zone, reason=ISOLATION_WOULD_EMPTY_THE_NETWORK)
+                for zone in removable
+            ]
             break
         if round_index == MAX_ISOLATION_ROUNDS - 1:
             # Cap exhausted with zones still removable. They were NOT removed,
@@ -1615,6 +1719,13 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
             ),
         )
     connectivity = draft.metadata.setdefault("connectivity", {})
+    # Written ONLY when true, so an ordinary build's census is byte-for-byte the
+    # census it was before this key existed. A model with no entry and no exit
+    # is one whose demand can never be placed and whose vehicles can never
+    # leave; ``connectivity.isolated_zones`` deliberately refuses to "fix" it by
+    # deleting the network, so this is where it gets said out loud.
+    if draft.links and not _network_entries_and_exits(draft.links, draft.connectors):
+        connectivity["network_has_no_entry_or_exit"] = True
     connectivity["excluded_zones"] = [zone.as_dict() for zone in excluded]
     connectivity["excluded_zones_by_reason"] = _count_by(
         zone.reason for zone in excluded
@@ -1626,6 +1737,22 @@ def build_draft(extract: OsmExtract, *, name: str) -> DraftNetwork:
     if excluded or retained:
         draft.compliance = _compliance_with_exclusions(draft, excluded, retained)
     return draft
+
+
+def _network_entries_and_exits(
+    links: list[DraftLink], connectors: list[DraftConnector]
+) -> bool:
+    """Does this network have anywhere traffic can enter AND anywhere it can leave?
+
+    An ENTRY is a link no connector arrives at, an EXIT one no connector leaves
+    — the same definition ``connectivity.isolated_zones`` and the gate's V3 both
+    use, so the three cannot drift.
+    """
+    arriving = {connector.to_link for connector in connectors}
+    leaving = {connector.from_link for connector in connectors}
+    has_entry = any(link.id not in arriving for link in links)
+    has_exit = any(link.id not in leaving for link in links)
+    return has_entry and has_exit
 
 
 def _count_by(values) -> dict[str, int]:
@@ -2281,6 +2408,20 @@ def _stranded_approach_connectors(
     # without this line a boundary link on Hope Road gained a U-turn and the
     # study edge became a reflecting wall, which is the exact failure the
     # boundary band exists to prevent.
+    #
+    # This is a ban list DERIVED from ``connectivity.dead_ends``, and that is
+    # the whole mechanism: it covers exactly the terminals that function
+    # decided about, so the two passes cannot hold different opinions. It is
+    # also why the second reflecting wall was fixed THERE rather than here.
+    # A node the trim synthesized and two ways ended at was not a "terminal" by
+    # that function's occurrence test — the sibling way looked like an exit — so
+    # it produced no DeadEnd, appeared in no ban list, and both approaches
+    # reached this pass stranded (every movement across such a node is
+    # antiparallel and had already been suppressed). This pass then supplied a
+    # same-way U-turn on each: a reflecting wall at the study edge that no gate
+    # check could see. ``dead_ends`` now returns a DeadEnd for every way ending
+    # at a synthesized node, so those pairs arrive here already banned and this
+    # pass needs no knowledge of the boundary at all.
     banned |= {(end.way_id, end.node_id) for end in ends if not end.emit_u_turn}
 
     out: list[DraftConnector] = []
@@ -2452,6 +2593,14 @@ def _connectivity_metadata(
         "osm_turn_restrictions_refused": [
             refusal.as_dict() for refusal in extract.restriction_refusals
         ],
+        # BY REASON, like every other refusal list here. A count alone cannot
+        # tell "this ban names a way outside the extract" (routine) from "the
+        # junction this ban applies at was cut off at the study boundary" —
+        # different facts, different repairs, and only the second is something
+        # this generator did.
+        "osm_turn_restrictions_refused_by_reason": _count_by(
+            refusal.reason for refusal in extract.restriction_refusals
+        ),
         "movements_suppressed_by_restriction": sorted(restriction_suppressed),
         # Lane allocation read from the file rather than derived — and, just as
         # importantly, every approach where the derivation starved a lane and
@@ -2489,6 +2638,11 @@ def _metadata(
             "max_lat": bounds[2],
             "max_lon": bounds[3],
         },
+        # WHICH boundary this build used, written down. ``bounds_wgs84`` above
+        # is the extent of the geometry and MOVES between isolation rounds; the
+        # study area does not, and a reader comparing two builds needs to see
+        # which of the two the dead-end pass was measuring against.
+        "boundary": _boundary_metadata(extract),
         "projection": {**plane.metadata(), **check.as_dict()},
         "georeferenced": False,
         "verified_against": [
@@ -2496,6 +2650,34 @@ def _metadata(
             "services.genesis.diff.load_topology",
         ],
         "not_verified_against": ["a real PTV Vissim installation"],
+    }
+
+
+def _boundary_metadata(extract: OsmExtract) -> dict:
+    """Which rung of the boundary ladder this build stood on, plus its rectangle.
+
+    Reader-visible provenance: ``*.genesis.json`` records the study area it was
+    built against, so "why is this terminal a boundary?" is answerable from the
+    artifact alone rather than by re-running the generator.
+    """
+    def as_region(box: tuple[float, float, float, float] | None) -> dict | None:
+        if box is None:
+            return None
+        return {
+            "min_lat": box[0],
+            "min_lon": box[1],
+            "max_lat": box[2],
+            "max_lon": box[3],
+        }
+
+    trims = [trim.as_dict() for trim in extract.way_trims]
+    return {
+        "source": boundary_source(extract),
+        "requested_bbox_wgs84": as_region(extract.requested_bbox),
+        "declared_bounds_wgs84": as_region(extract.declared_bounds),
+        "way_trims": trims,
+        "way_trims_by_reason": _count_by(trim["reason"] for trim in trims),
+        "metres_cut_total": round(sum(trim["metres_cut"] for trim in trims), 3),
     }
 
 
@@ -2539,12 +2721,16 @@ def _assumptions() -> list[GeneratorAssumption]:
             value=BOUNDARY_BAND_M,
             basis=(
                 "§5 states no model-boundary rule. A way terminal this close to the model's "
-                "edge — the file's declared <bounds> when it has one, otherwise the extent of "
-                "the kept geometry — is treated as a road LEAVING the model rather than a "
-                "cul-de-sac, so no U-turn is emitted there and the study boundary does not "
-                "become a reflecting wall. The band is project.MAX_PLANIMETRIC_ERROR_M, the "
-                "projection's own budget, i.e. the smallest distance distinguishable in this "
-                "frame at all."
+                "edge is treated as a road LEAVING the model rather than a cul-de-sac, so no "
+                "U-turn is emitted there and the study boundary does not become a reflecting "
+                "wall. The edge is the first of these the extract can offer: the bbox that "
+                "was REQUESTED (this app's fetch provenance), else the file's declared "
+                "<bounds>, else the extent of the kept geometry. Overpass returns WHOLE ways, "
+                "so that last one is set by the longest tail hanging out of the study area "
+                "and is not the study area; where a requested bbox exists the overhanging "
+                "tails are cut off at it and the cut terminals sit exactly ON it. The band is "
+                "project.MAX_PLANIMETRIC_ERROR_M, the projection's own budget, i.e. the "
+                "smallest distance distinguishable in this frame at all."
             ),
         ),
         GeneratorAssumption(

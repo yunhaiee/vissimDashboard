@@ -147,7 +147,7 @@ from services.genesis.gate import (
     render_report,
     run_gate,
 )
-from services.genesis.osm import parse_osm_file
+from services.genesis.osm import parse_osm_file, requested_bbox_from_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -1165,6 +1165,36 @@ def run_genesis_job(job_id: str, workspace_id: str) -> dict[str, Any]:
         return _run_genesis_job_locked(job_id)
 
 
+def _requested_bbox_of(osm_path: Path) -> tuple[float, float, float, float] | None:
+    """The window this job's ``.osm`` was FETCHED for, out of its own bytes.
+
+    The requested bbox survives a fetch only as the leading ``<!--
+    prism-osm-fetch -->`` comment ``services/osm_fetch.py`` writes into the
+    frozen ``source.osm``. Until this function existed nothing read it during a
+    run, so the generator had no idea what study area it had been asked for and
+    fell back to the hull of the geometry Overpass sent — which is set by the
+    longest way tail hanging out of the area, not by the area. See
+    ``connectivity._boundary_rectangle`` for what that cost.
+
+    Read from the FILE rather than from the job record on purpose: the record
+    crosses the HTTP boundary and carries no region, and the file is the thing
+    the artifact was actually built from. A file with no provenance comment — an
+    upload — yields ``None``, and the build behaves exactly as it did before.
+    Never raises: an unreadable sidecar fact must not fail a generation that the
+    ``.osm`` itself can still support.
+    """
+    # Function-local: ``services.osm_fetch`` imports THIS module at module
+    # level (it stages fetched extracts through ``stage_osm``), so a top-level
+    # import here would be a cycle.
+    from services.osm_fetch import read_provenance  # noqa: PLC0415
+
+    try:
+        provenance = read_provenance(osm_path.read_bytes())
+    except OSError:  # pragma: no cover - the parse below reports the same file
+        return None
+    return requested_bbox_from_provenance(provenance)
+
+
 def _run_genesis_job_locked(job_id: str) -> dict[str, Any]:
     record = get_job(job_id)
     try:
@@ -1174,7 +1204,11 @@ def _run_genesis_job_locked(job_id: str) -> dict[str, Any]:
         osm_path = job_dir(job_id) / str(record["source_osm"]["stored_as"])
         exclude_service = bool((record.get("options") or {}).get("exclude_service"))
 
-        extract = parse_osm_file(osm_path, exclude_service=exclude_service)
+        extract = parse_osm_file(
+            osm_path,
+            exclude_service=exclude_service,
+            requested_bbox=_requested_bbox_of(osm_path),
+        )
         if extract.refused:
             raise GenesisRefused(
                 "osm_unreadable", [refusal.message for refusal in extract.refusals]
