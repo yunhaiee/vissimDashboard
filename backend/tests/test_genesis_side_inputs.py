@@ -170,6 +170,29 @@ def test_a_window_is_carried_as_a_pair_not_two_loose_fields():
     assert document.summary()["window"]["start"].startswith("2026-04-08T07:00")
 
 
+def test_a_document_with_no_built_against_fields_still_parses():
+    """CRITICAL fix, byte-compat half: the two new fields are OPTIONAL — an
+    adapter/API producer (WA SCATS, Track G staging) that never looked at a
+    specific draft legitimately omits both, and that document must keep
+    parsing exactly as it did before this fix existed."""
+    document = parse(si.KIND_DEMAND, demand_document())
+    assert document.built_against_job is None
+    assert document.built_against_link_table_sha256 is None
+
+
+def test_built_against_fields_round_trip_through_parse_side_input():
+    """CRITICAL fix, byte-compat half: when the fields ARE present, they
+    survive parsing unchanged — the fingerprint `POST /demand-inputs/build`
+    stamps has to be the SAME string `generate_demand` compares against."""
+    fingerprint = "b" * 64
+    document = parse(
+        si.KIND_DEMAND,
+        demand_document(built_against_job="job-a", built_against_link_table_sha256=fingerprint),
+    )
+    assert document.built_against_job == "job-a"
+    assert document.built_against_link_table_sha256 == fingerprint
+
+
 # ---------------------------------------------------------------------------
 # §2 Structural refusals — every one of them before a token exists
 # ---------------------------------------------------------------------------
@@ -231,6 +254,17 @@ def test_a_site_that_maps_no_approach_is_refused():
 def test_half_a_window_is_refused():
     caught = refusal(si.KIND_DEMAND, demand_document(window_start="2026-04-08T07:00:00"))
     assert any("window_start and window_end" in reason for reason in caught.reasons)
+
+
+def test_half_a_built_against_pair_is_refused():
+    """Same both-or-neither discipline as the window pair: a job id with no
+    fingerprint (or the reverse) cannot be checked against a draft, so it is
+    refused here rather than reaching `generate_demand` as a half-fact."""
+    caught = refusal(si.KIND_DEMAND, demand_document(built_against_job="job-a"))
+    assert any("built_against_job and built_against_link_table_sha256" in reason for reason in caught.reasons)
+
+    caught = refusal(si.KIND_DEMAND, demand_document(built_against_link_table_sha256="c" * 64))
+    assert any("built_against_job and built_against_link_table_sha256" in reason for reason in caught.reasons)
 
 
 def test_a_window_that_ends_before_it_starts_is_refused():
@@ -437,6 +471,51 @@ def test_compose_from_documents_matches_composing_from_the_raw_inputs():
     assert to_xml_text(
         draft, via_documents.signals, via_documents.demand, via_documents.fleet
     ) == to_xml_text(draft, direct.signals, direct.demand, direct.fleet)
+
+
+def test_a_stale_built_against_fingerprint_refuses_the_whole_composition():
+    """End-to-end wiring: a demand document's ``built_against_*`` fields reach
+    ``generate_demand`` through ``compose_from_documents`` → ``compose_layers``,
+    and a fingerprint that does not match the draft being composed refuses the
+    whole thing with the CRITICAL fix's named code — never a silent, wrong
+    load through this seam either."""
+    from services.genesis.draft import link_table_fingerprint
+
+    draft = _crossroads_draft()
+    stale = "f" * 64
+    assert stale != link_table_fingerprint(draft)
+
+    composed = si.compose_from_documents(
+        draft,
+        demand=parse(
+            si.KIND_DEMAND,
+            demand_document(built_against_job="job-a", built_against_link_table_sha256=stale),
+        ),
+        job_id="job-b",
+    )
+
+    assert not composed.ok
+    codes = composed.issue_codes(IssueSeverity.REFUSE)
+    assert "genesis_demand_stale_link_numbering" in codes
+    assert composed.demand is not None and not composed.demand.emitting
+
+
+def test_a_built_against_fingerprint_matching_the_draft_composes_normally():
+    from services.genesis.draft import link_table_fingerprint
+
+    draft = _crossroads_draft()
+    matching = link_table_fingerprint(draft)
+
+    composed = si.compose_from_documents(
+        draft,
+        demand=parse(
+            si.KIND_DEMAND,
+            demand_document(built_against_job="job-a", built_against_link_table_sha256=matching),
+        ),
+    )
+
+    assert composed.ok, composed.refusal_reasons()
+    assert composed.demand is not None and composed.demand.emitting
 
 
 def test_a_plan_that_could_not_be_built_refuses_the_whole_composition():

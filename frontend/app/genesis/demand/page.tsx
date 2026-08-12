@@ -25,17 +25,20 @@
 // depends on an entry landing in the generated lib/i18n-ja.ts dictionary.
 
 import Link from "next/link";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import {
   GenesisError,
   buildDemandInput,
+  fetchGenesisJobs,
   parseDemandCounts,
   type DemandCountsIssue,
+  type GenesisJob,
   type StagedDemandCounts,
   type StagedDemandInput,
 } from "@/lib/api";
+import { formatTimestamp, statusLabel } from "@/lib/genesisArtifacts";
 
 type Translate = (ko: string, en: string, ja: string) => string;
 
@@ -43,6 +46,19 @@ type Translate = (ko: string, en: string, ja: string) => string;
  * this map, or present with an empty string, is left OUT of the payload --
  * never filled with a guess. */
 type MappingState = Record<string, Record<string, string>>;
+
+/** A link id is a positive integer, and NOTHING else -- `Number.parseInt`
+ * truncates at the first non-digit ("1e5" -> 1, "12.5" -> 12) while the cell
+ * keeps showing the typed text, so a different, plausible link id gets built
+ * with zero warning. Every cell is checked against this before 만들기 will
+ * run; anything that fails it is a visible per-cell error, never a silent
+ * coercion. */
+const LINK_ID_PATTERN = /^\d+$/;
+
+function isValidLinkIdCell(raw: string): boolean {
+  const trimmed = raw.trim();
+  return trimmed === "" || LINK_ID_PATTERN.test(trimmed);
+}
 
 function Panel({
   title,
@@ -111,7 +127,7 @@ function refusalHeadline(code: string | null, t: Translate): string {
 }
 
 export default function DemandInputPage() {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -124,9 +140,27 @@ export default function DemandInputPage() {
   const [windowEnd, setWindowEnd] = useState("");
   const [reduction, setReduction] = useState<"peak" | "mean" | "">("peak");
 
+  // The generation whose link ids the reviewer is reading off -- REQUIRED
+  // before 만들기, because a link id means nothing without the generation
+  // that assigned it (draft.py resets the id counter on every build).
+  const [jobs, setJobs] = useState<GenesisJob[]>([]);
+  const [builtAgainstJob, setBuiltAgainstJob] = useState("");
+
   const [building, setBuilding] = useState(false);
   const [buildError, setBuildError] = useState<GenesisError | Error | null>(null);
   const [built, setBuilt] = useState<StagedDemandInput | null>(null);
+
+  useEffect(() => {
+    // Deferred for the react-hooks `set-state-in-effect` rule, the same
+    // pattern the phases review page and the dashboard page use.
+    void Promise.resolve().then(async () => {
+      try {
+        setJobs(await fetchGenesisJobs());
+      } catch {
+        setJobs([]);
+      }
+    });
+  }, []);
 
   const upload = useCallback(async () => {
     if (!file) return;
@@ -162,7 +196,13 @@ export default function DemandInputPage() {
   }, []);
 
   const build = useCallback(async () => {
-    if (!staged) return;
+    if (!staged || !builtAgainstJob) return;
+    // Belt-and-suspenders: the button is already disabled while an invalid
+    // cell exists, but `build` refuses too rather than trusting the caller.
+    const hasInvalidCell = Object.values(mapping).some((legs) =>
+      Object.values(legs).some((value) => !isValidLinkIdCell(value)),
+    );
+    if (hasInvalidCell) return;
     setBuilding(true);
     setBuildError(null);
     try {
@@ -172,8 +212,12 @@ export default function DemandInputPage() {
         for (const [leg, raw] of Object.entries(legs)) {
           const trimmed = raw.trim();
           if (!trimmed) continue; // empty stays empty -- never a guessed link id
-          const linkId = Number.parseInt(trimmed, 10);
-          if (Number.isFinite(linkId)) entries[leg] = linkId;
+          // A link id is a positive integer and nothing else -- no
+          // Number.parseInt here, since it truncates at the first
+          // non-digit ("1e5" -> 1) while the cell keeps showing the typed
+          // text. isValidLinkIdCell (checked above and per-cell on screen)
+          // is the only gate; this is now a plain, lossless conversion.
+          entries[leg] = Number(trimmed);
         }
         if (Object.keys(entries).length > 0) approachLinks[siteId] = entries;
       }
@@ -184,6 +228,7 @@ export default function DemandInputPage() {
       const payload: Parameters<typeof buildDemandInput>[0] = {
         counts_token: staged.token,
         approach_links: approachLinks,
+        built_against_job: builtAgainstJob,
       };
       if (windowStart && windowEnd) {
         payload.window_start = windowStart;
@@ -199,10 +244,14 @@ export default function DemandInputPage() {
     } finally {
       setBuilding(false);
     }
-  }, [staged, mapping, windowStart, windowEnd, reduction]);
+  }, [staged, mapping, windowStart, windowEnd, reduction, builtAgainstJob]);
 
   const mappedApproachCount = Object.values(mapping).reduce(
     (total, legs) => total + Object.values(legs).filter((value) => value.trim() !== "").length,
+    0,
+  );
+  const invalidCellCount = Object.values(mapping).reduce(
+    (total, legs) => total + Object.values(legs).filter((value) => !isValidLinkIdCell(value)).length,
     0,
   );
 
@@ -317,6 +366,37 @@ export default function DemandInputPage() {
             "リンクIDは推測しません -- 空欄はそのまま空欄となり、対応付けのない流入路がある地点はサーバーが拒否します。リンクIDは、以前のジオメトリのみの生成のゲート地図（ネットワーク生成 → ゲート判定 → 地図）で確認できます。",
           )}
         >
+          <div className="mb-4">
+            <label className="text-xs text-slate-700">
+              <span className="block font-semibold">
+                {t(
+                  "링크 ID를 읽은 생성 (필수)",
+                  "Generation the link ids were read from (required)",
+                  "リンクIDを読み取った生成（必須）",
+                )}
+              </span>
+              <select
+                value={builtAgainstJob}
+                onChange={(event) => setBuiltAgainstJob(event.target.value)}
+                className="mt-1 w-full max-w-md rounded border border-slate-300 px-2 py-1 text-xs"
+              >
+                <option value="">{t("선택", "select", "選択")}</option>
+                {jobs.map((job) => (
+                  <option key={job.id} value={job.id}>
+                    {job.name} · {statusLabel(job.status, t)} · {formatTimestamp(job.created_at, lang)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="mt-1 text-[11px] text-slate-400">
+              {t(
+                "링크 ID는 이 생성이 매긴 번호입니다. 재생성마다(bbox 변경 등) 번호가 바뀔 수 있어 서버가 이 생성의 번호와 대조합니다 -- 선택 없이는 만들 수 없습니다.",
+                "Link ids are numbers THIS generation assigned. A rebuild (a bbox change, a re-extract) can renumber them, so the server checks the mapping against this generation's own numbers -- required before 만들기.",
+                "リンクIDはこの生成が振った番号です。再生成（bbox変更など）で番号が変わることがあるため、サーバーはこの生成の番号と照合します -- 選択なしでは作成できません。",
+              )}
+            </p>
+          </div>
+
           {staged.summary.sites.length === 0 ? (
             <p className="text-xs text-slate-500">
               {t(
@@ -341,21 +421,39 @@ export default function DemandInputPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {site.legs.map((leg) => (
-                        <tr key={leg} className="border-t border-slate-100">
-                          <td className="py-1 font-mono">{leg}</td>
-                          <td className="py-1">
-                            <input
-                              type="number"
-                              inputMode="numeric"
-                              value={mapping[site.site_id]?.[leg] ?? ""}
-                              onChange={(event) => setCell(site.site_id, leg, event.target.value)}
-                              placeholder={t("비워두면 매핑 안 됨", "empty = unmapped", "空欄=未対応")}
-                              className="w-32 rounded border border-slate-300 px-2 py-1 text-xs"
-                            />
-                          </td>
-                        </tr>
-                      ))}
+                      {site.legs.map((leg) => {
+                        const raw = mapping[site.site_id]?.[leg] ?? "";
+                        const invalid = !isValidLinkIdCell(raw);
+                        return (
+                          <tr key={leg} className="border-t border-slate-100">
+                            <td className="py-1 font-mono">{leg}</td>
+                            <td className="py-1">
+                              <input
+                                type="number"
+                                inputMode="numeric"
+                                value={raw}
+                                onChange={(event) => setCell(site.site_id, leg, event.target.value)}
+                                placeholder={t("비워두면 매핑 안 됨", "empty = unmapped", "空欄=未対応")}
+                                aria-invalid={invalid}
+                                className={`w-32 rounded border px-2 py-1 text-xs ${
+                                  invalid
+                                    ? "border-rose-400 bg-rose-50 text-rose-900"
+                                    : "border-slate-300"
+                                }`}
+                              />
+                              {invalid && (
+                                <p className="mt-0.5 max-w-[8rem] text-[10px] leading-tight text-rose-700">
+                                  {t(
+                                    "숫자만 입력 -- 만들기 불가",
+                                    "digits only -- blocks 만들기",
+                                    "数字のみ -- 作成不可",
+                                  )}
+                                </p>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -423,10 +521,10 @@ export default function DemandInputPage() {
             )}
           </p>
 
-          <div className="mt-4 flex items-center gap-3">
+          <div className="mt-4 flex flex-wrap items-center gap-3">
             <button
               type="button"
-              disabled={building}
+              disabled={building || !builtAgainstJob || invalidCellCount > 0}
               onClick={() => void build()}
               className="rounded-md bg-sky-700 px-3.5 py-1.5 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
             >
@@ -439,6 +537,24 @@ export default function DemandInputPage() {
                 `現在 ${mappedApproachCount} 件の流入路が対応付けられています`,
               )}
             </span>
+            {!builtAgainstJob && (
+              <span className="text-[11px] font-semibold text-amber-700">
+                {t(
+                  "2단계에서 생성을 선택해야 만들기가 활성화됩니다",
+                  "Pick step 2's generation to enable 만들기",
+                  "手順2で生成を選ぶと作成が有効になります",
+                )}
+              </span>
+            )}
+            {invalidCellCount > 0 && (
+              <span className="text-[11px] font-semibold text-rose-700">
+                {t(
+                  `잘못된 링크 ID ${invalidCellCount}건 -- 숫자만 입력하세요`,
+                  `${invalidCellCount} invalid link id cell(s) -- digits only`,
+                  `無効なリンクID ${invalidCellCount}件 -- 数字のみ入力してください`,
+                )}
+              </span>
+            )}
           </div>
 
           {buildError && (

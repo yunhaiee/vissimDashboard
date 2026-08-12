@@ -52,9 +52,11 @@ default. All of them are listed in the report.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import replace
 from enum import Enum
+from typing import Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -1127,6 +1129,51 @@ class DraftNetwork(BaseModel):
         out.append("")
         out.append(f"> {pick_text(text['not_opened_by_vissim'], language)}")
         return "\n".join(out) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Link-table fingerprint — CRITICAL fix, roadmap v2 §5.B/G
+# ---------------------------------------------------------------------------
+#
+# ``next_link_id`` (the link-building loop above) is a counter reset to 1 on
+# every build and assigned by walking ``ways`` SORTED BY OSM WAY ID — so any
+# change that reorders, adds or removes ways (a bbox trim, a re-extract, a
+# newly-excluded service way) renumbers every link after the change point. A
+# ``genesis.demand.v1`` document's ``approach_links`` carries bare draft link
+# ids with NO reference to which generation they were read off, so the SAME
+# mapping applied to a renumbered draft attaches one approach's observed
+# volumes to whatever link now holds that number — silently, with ``ok=True``
+# (measured: a swapped-id draft loads the north approach's observed volumes
+# onto the south approach). This fingerprint is what a caller stamps at build
+# time (``side_inputs.DemandSideInput.built_against_link_table_sha256``, set by
+# ``routers/genesis.py``'s ``POST /demand-inputs/build``) and
+# ``demand.generate_demand`` compares against the draft it is actually asked
+# to seed, refusing when they disagree rather than seeding blind.
+#
+# Deterministic and independent of build-time iteration order: two
+# byte-identical rebuilds produce the same digest (rows are re-sorted by id
+# here rather than trusting ``links`` to already be in that order), and it
+# changes whenever numbering does.
+
+
+def link_table_fingerprint(links: "DraftNetwork | Sequence[DraftLink]") -> str:
+    """sha256 over the ordered ``(id, osm_way_id, segment_index, forward)``
+    tuples of every link — the whole identity ``approach_links`` relies on
+    without ever restating it.
+
+    Takes a :class:`DraftNetwork` or its ``links`` directly: the generation
+    pipeline has the network in hand, and a caller re-deriving a fingerprint
+    from a stored ``genesis_json`` artifact (``routers/genesis.py``'s build
+    route) loads one too, so either form is accepted rather than forcing one
+    extra ``.links`` at every call site.
+    """
+    network_links = links.links if isinstance(links, DraftNetwork) else links
+    rows = sorted(network_links, key=lambda link: link.id)
+    payload = "\n".join(
+        f"{link.id}\t{link.osm_way_id}\t{link.segment_index}\t{int(link.forward)}"
+        for link in rows
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------

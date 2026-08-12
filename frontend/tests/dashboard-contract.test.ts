@@ -1961,3 +1961,90 @@ contractTest("the demand side-input UI never invents a link id and stays one doo
     "expected an unpicked signals dropdown to send undefined, never an empty-string token",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Adversarial pass on commit b3318ab -- CRITICAL: demand tokens silently
+// portable across generations with renumbered links; MEDIUM B: silent link-id
+// truncation in the mapping table.
+// ---------------------------------------------------------------------------
+
+contractTest(
+  "the demand page requires a generation pick and never silently truncates a link id",
+  (pin) => {
+    const page = read("app/genesis/demand/page.tsx");
+    const api = read("lib/api.ts");
+
+    // MEDIUM B: Number.parseInt truncates at the first non-digit
+    // ("1e5" -> 1, "12.5" -> 12) while the cell keeps showing the typed text,
+    // so a different, plausible link id was built with zero warning. A
+    // strict digits-only pattern is now the only thing allowed to decide
+    // whether a cell becomes a link id.
+    pin.match(
+      page,
+      /const LINK_ID_PATTERN = \/\^\\d\+\$\/;/,
+      "expected a strict digits-only link id pattern to exist",
+    );
+    pin.doesNotMatch(
+      page,
+      /Number\.parseInt\(trimmed, 10\)/,
+      "expected parseInt's silent truncation to be gone -- LINK_ID_PATTERN must be the only gate on a link id cell",
+    );
+    pin.match(
+      page,
+      /isValidLinkIdCell\(value\)/,
+      "expected the invalid-cell count to be derived from the same validator the build guard uses",
+    );
+
+    // A cell that fails the pattern is a NAMED, VISIBLE, per-cell error, and
+    // it blocks 만들기 -- never a silent coercion, and never lost among the
+    // other cells.
+    pin.match(
+      page,
+      /invalid\s*\n\s*\? "border-rose-400 bg-rose-50 text-rose-900"\s*\n\s*: "border-slate-300"/,
+      "expected an invalid link-id cell to render its own error style",
+    );
+    pin.match(
+      page,
+      /disabled=\{building \|\| !builtAgainstJob \|\| invalidCellCount > 0\}/,
+      "expected 만들기 to stay disabled while any cell fails the link-id pattern or no generation is picked",
+    );
+
+    // CRITICAL: a draft link id is a sequential counter draft.py resets on
+    // every build, so a mapping means nothing without the generation it was
+    // read from -- the picker is required, and the build payload must always
+    // carry it.
+    pin.match(
+      page,
+      /built_against_job: builtAgainstJob,/,
+      "expected the build payload to carry built_against_job",
+    );
+    pin.match(
+      page,
+      /statusLabel\(job\.status, t\)/,
+      "expected the generation picker to reuse statusLabel rather than a hand-rolled job.status label",
+    );
+    pin.match(
+      page,
+      /formatTimestamp\(job\.created_at, lang\)/,
+      "expected the generation picker to reuse formatTimestamp rather than a raw ISO string",
+    );
+    pin.doesNotMatch(
+      page,
+      /\{job\.name\} · \{job\.status\}/,
+      "expected the picker not to hand-roll job.status the way the 현시도 page's own picker still does",
+    );
+
+    // The client binding declares the field required, not optional -- an
+    // omitted pick must fail typecheck, not silently post nothing.
+    const demandSection = sliceBetween(
+      api,
+      "// Demand side-input UI",
+      "/** One row of `GET /api/admin/workspaces/{id}/members`",
+    );
+    pin.match(
+      demandSection,
+      /built_against_job: string;/,
+      "expected buildDemandInput's payload type to require built_against_job",
+    );
+  },
+);

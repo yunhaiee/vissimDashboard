@@ -240,6 +240,7 @@ from .draft import (
     DraftConnector,
     DraftLink,
     DraftNetwork,
+    link_table_fingerprint,
 )
 from .osm import EXTRACT
 
@@ -345,6 +346,7 @@ REFUSE_CODES: frozenset[str] = frozenset(
         "genesis_demand_profile_needs_interval_reduction",
         "genesis_demand_interval_length_mismatch",
         "genesis_demand_turn_has_multiple_connectors",
+        "genesis_demand_stale_link_numbering",
     }
 )
 
@@ -884,6 +886,9 @@ def generate_demand(
     vehicle_types: Mapping[str, VehicleTypeRef],
     window: tuple[datetime, datetime] | None = None,
     settings: DemandSettings | None = None,
+    built_against_job: str | None = None,
+    built_against_link_table_sha256: str | None = None,
+    target_job_id: str | None = None,
 ) -> DraftDemand:
     """A draft's vehicle inputs, compositions and static routes from counts.
 
@@ -898,6 +903,24 @@ def generate_demand(
     the counts this module sums for the routing weights, so the two arms can
     never describe different hours.
 
+    ``built_against_job``/``built_against_link_table_sha256`` are the CRITICAL
+    fix: ``approach_links`` names draft link ids, and ``draft.py`` reassigns
+    them from a sequential counter on every build, so a bbox change or any
+    other rebuild renumbers every link after the change point. When a
+    fingerprint is supplied (``side_inputs.DemandSideInput.built_against_*``,
+    stamped by ``routers/genesis.py``'s ``POST /demand-inputs/build`` off the
+    generation the mapping was actually read from), it is compared against
+    THIS draft's own :func:`~.draft.link_table_fingerprint` before anything
+    else runs — a mismatch refuses the whole generation
+    (``genesis_demand_stale_link_numbering``) rather than silently attaching
+    one approach's observed volumes to whatever link now holds its old number.
+    Absent, nothing is refused, but ``_disclosures`` names the absence on every
+    successful run — see the module docstring's "always report" doctrine —
+    because "this mapping's portability was never checked" is not the same
+    claim as "it was checked and holds". ``target_job_id`` names THIS
+    generation in that refusal's message; optional, since most callers (tests,
+    ``tools/*``) have none.
+
     Returns a :class:`DraftDemand` **always** — the import layer's "report, do
     not raise" contract. ``result.ok`` is false and every collection is empty
     when any check refused.
@@ -910,6 +933,53 @@ def generate_demand(
         return DraftDemand(
             issues=tuple(issues), coverage=coverage, settings=settings
         )
+
+    # -- 0. link-table fingerprint (CRITICAL) ---------------------------------
+    if built_against_link_table_sha256 is not None:
+        draft_fingerprint = link_table_fingerprint(draft)
+        if draft_fingerprint != built_against_link_table_sha256:
+            target_label = f"job {target_job_id!r}'s" if target_job_id else "this generation's"
+            issues.append(
+                _issue(
+                    IssueSeverity.REFUSE,
+                    "genesis_demand_stale_link_numbering",
+                    f"approach_links was built against job {built_against_job!r} (link-table "
+                    f"fingerprint {built_against_link_table_sha256}), but {target_label} draft "
+                    f"has link-table fingerprint {draft_fingerprint} instead. Draft link ids are "
+                    "a sequential counter reassigned on every build (draft.py resets it to 1 and "
+                    "walks sorted OSM ways), so any bbox change or re-extract renumbers them; "
+                    "applying the old mapping to the new numbers would silently attach one "
+                    "approach's observed volumes to a different link. Refusing rather than "
+                    "seeding demand the mapping was never checked against.",
+                    messages={
+                        "ko": f"접근로 매핑은 작업 {built_against_job!r}(링크 표 지문 "
+                        f"{built_against_link_table_sha256})을 기준으로 만들어졌지만, "
+                        f"{'작업 ' + repr(target_job_id) + '의' if target_job_id else '이번 생성의'} "
+                        f"초안은 지문 {draft_fingerprint}을(를) 갖습니다. 초안 링크 id는 "
+                        "빌드마다 재설정되는 순차 번호이므로 bbox 변경이나 재추출이 있으면 "
+                        "번호가 바뀝니다. 예전 매핑을 새 번호에 적용하면 한 접근로의 관측 "
+                        "교통량이 다른 링크에 조용히 붙습니다.",
+                        "en": f"approach_links was built against job {built_against_job!r} "
+                        f"(fingerprint {built_against_link_table_sha256}), but {target_label} "
+                        f"draft has fingerprint {draft_fingerprint} instead; link ids are "
+                        "renumbered on every build, so an old mapping would silently attach "
+                        "demand to the wrong link.",
+                        "ja": f"approach_links はジョブ {built_against_job!r}"
+                        f"(リンク表指紋 {built_against_link_table_sha256}) を基準に作成されまし"
+                        f"たが、{'ジョブ ' + repr(target_job_id) + ' の' if target_job_id else '今回の生成の'}"
+                        f"草案の指紋は {draft_fingerprint} です。リンク id はビルドごとに振り"
+                        "直されるため、古い対応表を適用すると需要が別のリンクへ黙って付与され"
+                        "ます。",
+                    },
+                    context={
+                        "built_against_job": built_against_job,
+                        "built_against_link_table_sha256": built_against_link_table_sha256,
+                        "draft_link_table_sha256": draft_fingerprint,
+                        "target_job_id": target_job_id,
+                    },
+                )
+            )
+            return _bail()
 
     # -- 1. the 1.2 bridge must have produced a seeding at all ---------------
     seeding = build_demand_seeding(result, window=window)
@@ -1188,7 +1258,14 @@ def generate_demand(
         return _bail()
 
     # -- 7. always-on disclosures -------------------------------------------
-    _disclosures(inputs, compositions, decisions, settings, issues)
+    _disclosures(
+        inputs,
+        compositions,
+        decisions,
+        settings,
+        issues,
+        link_numbering_verified=built_against_link_table_sha256 is not None,
+    )
 
     return DraftDemand(
         inputs=tuple(inputs),
@@ -1654,8 +1731,36 @@ def _disclosures(
     decisions: Sequence[RoutingDecisionSeed],
     settings: DemandSettings,
     issues: list[ImportIssue],
+    *,
+    link_numbering_verified: bool,
 ) -> None:
     """What this module decided for itself, said out loud on every run."""
+    if not link_numbering_verified:
+        issues.append(
+            _issue(
+                IssueSeverity.INFO,
+                "genesis_demand_link_numbering_unverified",
+                "approach_links carries no built_against link-table fingerprint, so this run "
+                "could not check the mapping against this draft's own link numbering. Draft link "
+                "ids are reassigned on every build; a document from an adapter/API path that "
+                "never looked at a specific draft (WA SCATS, Track G staging) legitimately has "
+                "none, but that means this mapping's portability to THIS generation is "
+                "UNVERIFIABLE, not proven — stated so it is never mistaken for the latter.",
+                messages={
+                    "ko": "approach_links에 built_against 링크 표 지문이 없어 이 초안의 링크 "
+                    "번호와 매핑을 대조하지 못했습니다. 특정 초안을 보지 않은 어댑터/API 경로"
+                    "(WA SCATS, Track G 스테이징)에서 온 문서는 정당하게 지문이 없을 수 있지만, "
+                    "그 경우 이 매핑이 이번 생성에 대해 이식 가능한지는 검증되지 않은 것이지 "
+                    "증명된 것이 아닙니다.",
+                    "en": "approach_links carries no built_against link-table fingerprint, so it "
+                    "could not be checked against this draft's own link numbering; portability "
+                    "to THIS generation is unverifiable, not proven.",
+                    "ja": "approach_links に built_against のリンク表指紋がないため、この草案の"
+                    "リンク番号との照合ができませんでした。この対応表が今回の生成に移植可能かは"
+                    "未検証であり、証明されたわけではありません。",
+                },
+            )
+        )
     issues.append(
         _issue(
             IssueSeverity.INFO,

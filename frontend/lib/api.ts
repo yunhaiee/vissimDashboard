@@ -3607,10 +3607,19 @@ export async function parseDemandCounts(file: File): Promise<StagedDemandCounts>
  * demand page) sends exactly what the reviewer typed, and an incomplete
  * mapping is refused by the SAME validator `POST /side-inputs` uses, with the
  * SAME reason `services.genesis.demand.generate_demand` would give at
- * generation time for an unknown site or leg. */
+ * generation time for an unknown site or leg.
+ *
+ * `built_against_job` is REQUIRED -- the generation whose gate map the
+ * reviewer read link ids off. The server resolves that job's own draft,
+ * fingerprints its link table, and stamps the fingerprint into the staged
+ * document; `generate_demand` refuses at generation time if the target
+ * draft's link numbering has since shifted (a bbox change, a re-extract --
+ * draft link ids are a sequential counter reset on every build), instead of
+ * silently attaching one approach's observed demand to a different link. */
 export async function buildDemandInput(payload: {
   counts_token: string;
   approach_links: Record<string, Record<string, number>>;
+  built_against_job: string;
   window_start?: string;
   window_end?: string;
   demand_settings?: Record<string, unknown>;

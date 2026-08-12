@@ -90,6 +90,7 @@ from services.genesis.draft import (
     DraftLink,
     DraftNetwork,
     DraftNode,
+    link_table_fingerprint,
 )
 from services.genesis.osm import EXTRACT
 from services.inpx_parser import (
@@ -807,6 +808,130 @@ def test_a_refused_1_2_seeding_refuses_here_too(tee):
     assert "demand_volume_unit_not_vehicles" in issue.context["seeding_refusals"]
 
 
+# ---------------------------------------------------------------------------
+# 4b. The link-table fingerprint — CRITICAL fix (adversarial pass, b3318ab)
+#
+# Draft link ids are a sequential counter draft.py resets on every build
+# (``next_link_id = 1``, walking ``ways`` sorted by OSM way id), so any bbox
+# change or re-extract renumbers them. A ``genesis.demand.v1`` document's
+# ``approach_links`` carries bare link ids with NO reference to the generation
+# they were read off — proven below by literally reproducing the bug (swap two
+# link ids and watch the old mapping load one approach's demand onto the
+# other), then proving the fingerprint check refuses exactly that case while
+# leaving a matching or absent fingerprint alone.
+# ---------------------------------------------------------------------------
+
+
+def _swap_link_ids(draft: DraftNetwork, a: int, b: int) -> DraftNetwork:
+    """A draft identical to ``draft`` except link ids ``a``/``b`` are swapped —
+    the shape a bbox change (draft.py's ``next_link_id`` counter, reset on
+    every build) produces when it changes which OSM way sorts first."""
+
+    def swap(link_id: int) -> int:
+        if link_id == a:
+            return b
+        if link_id == b:
+            return a
+        return link_id
+
+    links = [link.model_copy(update={"id": swap(link.id)}) for link in draft.links]
+    connectors = [
+        connector.model_copy(
+            update={"from_link": swap(connector.from_link), "to_link": swap(connector.to_link)}
+        )
+        for connector in draft.connectors
+    ]
+    return draft.model_copy(update={"links": links, "connectors": connectors})
+
+
+def test_swapped_link_ids_load_the_wrong_approachs_demand_without_a_fingerprint(
+    two_entry_draft, result
+):
+    """The exact adversarial repro the CRITICAL fix targets: applying a
+    mapping read off one generation's numbering to a DIFFERENT generation
+    whose ids were reassigned attaches one approach's observed demand to a
+    different link — silently, with ``ok=True`` — unless a fingerprint is
+    supplied. ``APPROACH_LINKS`` (link 1 = the north leg) was implicitly "read
+    off" the ORIGINAL ``two_entry_draft``; after swapping ids 1 and 7, link 1
+    is the SOUTH approach instead, and this test calls ``generate_demand``
+    with no ``built_against_*`` at all — today's behaviour before this fix
+    existed, and still legal (unverifiable, not refused) after it."""
+    renumbered = _swap_link_ids(two_entry_draft, 1, 7)
+    demand = _generate(renumbered, result)
+    assert demand.ok, demand.issue_codes(IssueSeverity.REFUSE)
+    plan = demand.input_for(1)
+    assert plan is not None
+    # The NORTH leg's 360 veh/h, seeded onto link 1 — which is now the SOUTH
+    # approach's link. Wrong link, no refusal, no warning: the bug.
+    assert plan.emitted_volume_vph == EXPECTED_INPUT_VPH
+
+
+def test_a_fingerprint_matching_the_draft_permits_generation(two_entry_draft, result):
+    fingerprint = link_table_fingerprint(two_entry_draft)
+    demand = _generate(
+        two_entry_draft,
+        result,
+        built_against_job="job-a",
+        built_against_link_table_sha256=fingerprint,
+    )
+    assert demand.ok, demand.issue_codes(IssueSeverity.REFUSE)
+    assert demand.input_for(1) is not None
+    # Verified, so the "could not check" disclosure must NOT fire.
+    assert "genesis_demand_link_numbering_unverified" not in demand.issue_codes(IssueSeverity.INFO)
+
+
+def test_a_stale_fingerprint_refuses_and_blocks_the_wrong_load(two_entry_draft, result):
+    """The fix applied to the exact repro above: the SAME renumbered draft and
+    the SAME old mapping — but now stamped with the ORIGINAL draft's
+    fingerprint — refuses instead of silently mis-seeding link 1."""
+    fingerprint = link_table_fingerprint(two_entry_draft)
+    renumbered = _swap_link_ids(two_entry_draft, 1, 7)
+    demand = _generate(
+        renumbered,
+        result,
+        built_against_job="job-a",
+        built_against_link_table_sha256=fingerprint,
+        target_job_id="job-b",
+    )
+    issue = _assert_refused_and_empty(demand, "genesis_demand_stale_link_numbering")
+    assert issue.context["built_against_job"] == "job-a"
+    assert issue.context["target_job_id"] == "job-b"
+    assert issue.context["built_against_link_table_sha256"] == fingerprint
+    assert issue.context["draft_link_table_sha256"] == link_table_fingerprint(renumbered)
+    assert issue.context["draft_link_table_sha256"] != fingerprint
+    assert "job-a" in issue.message and "job-b" in issue.message
+
+
+def test_no_fingerprint_at_all_still_generates_but_names_the_gap(two_entry_draft, result):
+    """Absence is not a refusal — an adapter/API document that never looked at
+    a specific draft (WA SCATS, Track G staging) legitimately has none — but
+    it is never silent: an INFO names exactly what could not be checked, on
+    every successful run (the module's existing always-on disclosure
+    channel, ``_disclosures``)."""
+    demand = _generate(two_entry_draft, result)
+    assert demand.ok, demand.issue_codes(IssueSeverity.REFUSE)
+    infos = [
+        issue for issue in demand.infos if issue.code == "genesis_demand_link_numbering_unverified"
+    ]
+    assert infos, demand.issue_codes(IssueSeverity.INFO)
+    assert set(infos[0].messages) == {"ko", "en", "ja"}
+    assert all(infos[0].messages[language].strip() for language in ("ko", "en", "ja"))
+
+
+def test_link_table_fingerprint_is_deterministic_and_sensitive_to_renumbering(two_entry_draft):
+    """Pure function contract: the same draft twice gives the same digest, a
+    renumbered draft gives a DIFFERENT one, and it is a real sha256 hex
+    digest — the identity ``approach_links`` relies on without restating it."""
+    first = link_table_fingerprint(two_entry_draft)
+    second = link_table_fingerprint(two_entry_draft)
+    assert first == second
+    assert len(first) == 64
+    assert all(c in "0123456789abcdef" for c in first)
+
+    renumbered = _swap_link_ids(two_entry_draft, 1, 7)
+    assert link_table_fingerprint(renumbered) != first
+
+
 def test_every_declared_refuse_code_has_a_test_above():
     """``REFUSE_CODES`` is data so this claim is testable rather than prose:
     every code the module declares is exercised by one of the tests in this
@@ -827,6 +952,7 @@ def test_every_declared_refuse_code_has_a_test_above():
         "genesis_demand_profile_needs_interval_reduction",
         "genesis_demand_interval_length_mismatch",
         "genesis_demand_turn_has_multiple_connectors",
+        "genesis_demand_stale_link_numbering",
     }
     assert raised == REFUSE_CODES
 

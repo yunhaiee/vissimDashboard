@@ -5713,3 +5713,54 @@ trimming is deliberately not done. The V4/boundary-runway question is open by de
 2 + professor Q①). Live LoadNet of a trimmed network has not run — the offline emit is
 byte-conservative and V1 blocks every set equally, but the B4 demo remains the first live
 proof. 사각형 폴리곤이 아닌 임의 폴리곤 트림은 별도 유닛(§5.B 폴리곤 선택)과 함께 온다.
+
+## 2026-08-12 — the demand-UI debt is repaid, and the pass finds a token that travels to the wrong road
+
+**The debt.** b3318ab shipped the demand side-input UI with its adversarial pass SKIPPED at
+the user's explicit direction (demo timeline) — recorded then, repaid now, in full.
+
+**What held (reproduced live, not read).** Auth (anonymous 401 ×3); workspace isolation is
+physical (staging dirs re-derived per call), proven with an admin caller so no membership
+check could be hiding it; path traversal dead (`_ID_RE` + resolve/relative_to containment);
+every hostile workbook (oversized both by body and by declared length, wrong format, junk
+bytes, empty) refuses by name with NO token issued; the build route's site/leg refusal really
+is `generate_demand`'s own extracted check; the build→parse byte round trip holds under
+hostile Korean/parenthesis/slash names; the "모델링 선택" disclosure is on screen; empty cells
+are omitted keys, never `""`. Named design facts, not defects: counts tokens are not
+single-use; the 24 h staging TTL only purges when something else stages; link existence /
+duplicate checks are deliberately deferred to generation time (the route has no draft).
+
+**The critical: a demand token carried bare link ids with no memory of which generation they
+came from.** Draft link ids are a sequential counter reset every build, so any bbox change —
+exactly what B5-1 introduced the same day — renumbers them. Both existing nets have holes
+(`…unknown_link` fires only when the id is ABSENT; `…mapped_approach_not_seeded` only when
+the reassigned link cannot seed), and the pass proved it end-to-end: the same
+`approach_links` applied to a swapped-id draft loaded the north approach's observed 360 veh/h
+onto the SOUTH approach with `ok=True` — silent wrong numbers inside the validation layer
+itself. **Fix:** `link_table_fingerprint` (sha256 over the sorted link table's
+id/way/segment/direction tuples); the UI build route now requires `built_against_job`
+(link ids are by definition read off one specific generation's map — the picker mirrors the
+현시도 screen's), resolves that job's artifact in the caller's workspace and stamps the
+fingerprint into the document; `generate_demand` refuses all-or-nothing
+`genesis_demand_stale_link_numbering` on mismatch, naming both jobs and both hashes.
+Documents without the fields (adapter/API producers) still generate but the absence is a
+disclosure (`genesis_demand_link_numbering_unverified`) that lands in `layers.json` on disk —
+unverifiable portability is visible, never silent. Fixed alongside: the build route's
+refusal reasons followed `_language(request)` like every sibling route instead of hardcoded
+Korean, and the mapping table's `Number.parseInt` silently truncated ("1e5"→1, "12.5"→12 —
+the typed text stayed on screen while a different integer shipped) — now strict `/^\d+$/`
+with a per-cell named error that blocks 만들기.
+
+**Re-verification: 0 refuted.** The independent pass hand-built documents that bypass the
+build route entirely (staged via the raw side-inputs door onto real jobs): stale fingerprint
+refuses through the FULL job pipeline; the target fingerprint is computed fresh from the
+target draft (nothing cached to spoof); permuting two link ids changes the hash by
+construction; foreign-workspace jobs 404 without leaking existence; the frontend gate is a
+single derived boolean with no alternate path. Named low-severity leftovers, all fail-closed:
+a 64-char non-hex hash is accepted (can only refuse, never falsely match); a whitespace-only
+job id passes the raw-staging validator (the router's own resolve rejects it); and a token
+may be built against a REFUSED generation — judged sane (the fingerprint is about numbering
+consistency, not gate-worthiness) and now written down. The xlsx decompression-bomb question
+(openpyxl shared-strings expansion, generic to every workbook consumer in the app) was split
+into its own chip (`task_d1d0d66f`). Suite 4421 / 1 (env RAG) / 1 skip; contract 49/49;
+typecheck clean.

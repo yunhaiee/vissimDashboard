@@ -33,10 +33,33 @@ from fastapi.testclient import TestClient
 from conftest import admin_headers
 from services import genesis_jobs
 from services.genesis import side_inputs as si
+from services.genesis.draft import link_table_fingerprint
 
 from tests.test_dataimport_daejeon import _approach_rows, _write_workbook
-from tests.test_genesis_jobs import client, workspace_root  # noqa: F401 - fixtures
+from tests.test_genesis_jobs import (  # noqa: F401 - fixtures
+    _generate,
+    client,
+    crossroads_osm_file,
+    workspace_root,
+)
 from tests.test_genesis_side_inputs import as_bytes, signals_document
+
+# ---------------------------------------------------------------------------
+# A real generation, for `built_against_job` — CRITICAL fix (roadmap v2 §5.B/G)
+#
+# `built_against_job` names the generation `approach_links`' link ids were read
+# off, so these tests use an ACTUAL job with a real `genesis_json` artifact
+# (the same synchronous `_generate` helper `tests/test_genesis_jobs.py` uses)
+# rather than a placeholder token the build route would have to fake its way
+# past.
+# ---------------------------------------------------------------------------
+
+
+def _built_against_job(crossroads_osm_file: Path) -> str:
+    record = _generate(crossroads_osm_file)
+    assert record["status"] != genesis_jobs.STATUS_ERROR, record
+    return record["id"]
+
 
 # ---------------------------------------------------------------------------
 # A small synthetic counts workbook — invented data, real export shape
@@ -158,23 +181,51 @@ def test_an_oversized_counts_workbook_is_refused_with_the_limit(client: TestClie
 def test_anonymous_cannot_build_a_demand_input(client: TestClient):
     response = client.post(
         "/api/genesis/demand-inputs/build",
-        json={"counts_token": "0" * 32, "approach_links": {"S": {"L": 1}}},
+        json={
+            "counts_token": "0" * 32,
+            "approach_links": {"S": {"L": 1}},
+            "built_against_job": "x" * 12,
+        },
     )
     assert response.status_code == 401
 
 
+def test_build_refuses_without_built_against_job(client: TestClient, tmp_path: Path):
+    """CRITICAL fix: a link id means nothing without the generation that
+    assigned it, so the field is REQUIRED at the schema level -- omitting it
+    refuses (FastAPI's own named "field required" error), never silently
+    building a document with no provenance for its numbering."""
+    staged_counts = _stage_counts(client, tmp_path)
+    site = staged_counts["summary"]["sites"][0]
+    response = client.post(
+        "/api/genesis/demand-inputs/build",
+        json={
+            "counts_token": staged_counts["token"],
+            "approach_links": {site["site_id"]: {site["legs"][0]: 1}},
+        },
+        headers=admin_headers(),
+    )
+    assert response.status_code == 422
+    assert any(
+        error.get("loc") == ["body", "built_against_job"]
+        for error in response.json()["detail"]
+    )
+
+
 def test_build_stages_a_demand_document_byte_compatible_with_the_raw_route(
-    client: TestClient, tmp_path: Path
+    client: TestClient, tmp_path: Path, crossroads_osm_file: Path
 ):
     staged_counts = _stage_counts(client, tmp_path)
     site = staged_counts["summary"]["sites"][0]
     site_id, leg = site["site_id"], site["legs"][0]
+    job_id = _built_against_job(crossroads_osm_file)
 
     response = client.post(
         "/api/genesis/demand-inputs/build",
         json={
             "counts_token": staged_counts["token"],
             "approach_links": {site_id: {leg: 7}},
+            "built_against_job": job_id,
         },
         headers=admin_headers(),
     )
@@ -196,9 +247,100 @@ def test_build_stages_a_demand_document_byte_compatible_with_the_raw_route(
     reparsed = si.parse_side_input(si.KIND_DEMAND, staged_path.read_bytes())
     assert reparsed.summary() == summary
 
+    # CRITICAL fix: the fingerprint round-trips through parse_side_input --
+    # the SAME string generate_demand will compare against at generation
+    # time -- and it is this job's OWN link-table fingerprint, not a copy
+    # computed some other way.
+    assert reparsed.built_against_job == job_id
+    census = json.loads(genesis_jobs.artifact_path(job_id, "genesis_json").read_text(encoding="utf-8"))
+    from services.genesis.draft import DraftNetwork
+
+    expected_fingerprint = link_table_fingerprint(DraftNetwork.model_validate(census))
+    assert reparsed.built_against_link_table_sha256 == expected_fingerprint
+
+
+def test_build_404s_on_an_unknown_built_against_job(client: TestClient, tmp_path: Path):
+    staged_counts = _stage_counts(client, tmp_path)
+    site = staged_counts["summary"]["sites"][0]
+    response = client.post(
+        "/api/genesis/demand-inputs/build",
+        json={
+            "counts_token": staged_counts["token"],
+            "approach_links": {site["site_id"]: {site["legs"][0]: 1}},
+            "built_against_job": "0" * 12,
+        },
+        headers=admin_headers(),
+    )
+    assert response.status_code == 404
+
+
+def test_build_404s_when_built_against_job_has_no_genesis_json_artifact(
+    client: TestClient, tmp_path: Path
+):
+    """An errored generation ("there is no artifact") is a different answer
+    from "the artifact has a fault" -- and either way, a job with no
+    genesis_json is a named refusal (404), never a fingerprint computed from
+    nothing."""
+    broken = tmp_path / "broken.osm"
+    broken.write_text("<osm><way></osm>", encoding="utf-8")
+    record = _generate(broken)
+    assert record["status"] == genesis_jobs.STATUS_ERROR
+    assert record["artifact"] is None
+
+    staged_counts = _stage_counts(client, tmp_path)
+    site = staged_counts["summary"]["sites"][0]
+    response = client.post(
+        "/api/genesis/demand-inputs/build",
+        json={
+            "counts_token": staged_counts["token"],
+            "approach_links": {site["site_id"]: {site["legs"][0]: 1}},
+            "built_against_job": record["id"],
+        },
+        headers=admin_headers(),
+    )
+    assert response.status_code == 404
+
+
+def test_build_404s_when_built_against_job_belongs_to_another_workspace(
+    client: TestClient, tmp_path: Path, crossroads_osm_file: Path
+):
+    """Physically isolated, the same discipline
+    ``tests/test_genesis_jobs.py::test_a_job_in_one_project_does_not_exist_in_another``
+    proves at the service layer -- here proven through the HTTP route: a job
+    id from the DEFAULT workspace is unknown from a DIFFERENT one, so the
+    build route 404s rather than fingerprinting a foreign job's draft."""
+    job_id = _built_against_job(crossroads_osm_file)  # lands in the DEFAULT workspace
+
+    created = client.post(
+        "/api/workspaces", json={"name": "다른 프로젝트"}, headers=admin_headers()
+    )
+    assert created.status_code == 200, created.text
+    other_headers = {"X-Workspace-Id": created.json()["id"], **admin_headers()}
+
+    filename, content = _counts_workbook(tmp_path)
+    staged_counts_response = client.post(
+        f"/api/genesis/demand-inputs/parse?filename={quote(filename)}",
+        content=content,
+        headers=other_headers,
+    )
+    assert staged_counts_response.status_code == 200, staged_counts_response.text
+    staged_counts = staged_counts_response.json()
+    site = staged_counts["summary"]["sites"][0]
+
+    response = client.post(
+        "/api/genesis/demand-inputs/build",
+        json={
+            "counts_token": staged_counts["token"],
+            "approach_links": {site["site_id"]: {site["legs"][0]: 1}},
+            "built_against_job": job_id,
+        },
+        headers=other_headers,
+    )
+    assert response.status_code == 404
+
 
 def test_build_refuses_an_unknown_site_with_the_underlying_modules_own_reason(
-    client: TestClient, tmp_path: Path
+    client: TestClient, tmp_path: Path, crossroads_osm_file: Path
 ):
     staged_counts = _stage_counts(client, tmp_path)
     response = client.post(
@@ -206,6 +348,7 @@ def test_build_refuses_an_unknown_site_with_the_underlying_modules_own_reason(
         json={
             "counts_token": staged_counts["token"],
             "approach_links": {"이런지점없음": {"어떤접근로": 1}},
+            "built_against_job": _built_against_job(crossroads_osm_file),
         },
         headers=admin_headers(),
     )
@@ -215,7 +358,9 @@ def test_build_refuses_an_unknown_site_with_the_underlying_modules_own_reason(
     assert any("이런지점없음" in reason for reason in detail["reasons"])
 
 
-def test_build_refuses_an_unknown_leg_at_a_real_site(client: TestClient, tmp_path: Path):
+def test_build_refuses_an_unknown_leg_at_a_real_site(
+    client: TestClient, tmp_path: Path, crossroads_osm_file: Path
+):
     staged_counts = _stage_counts(client, tmp_path)
     site_id = staged_counts["summary"]["sites"][0]["site_id"]
     response = client.post(
@@ -223,6 +368,7 @@ def test_build_refuses_an_unknown_leg_at_a_real_site(client: TestClient, tmp_pat
         json={
             "counts_token": staged_counts["token"],
             "approach_links": {site_id: {"없는접근로": 1}},
+            "built_against_job": _built_against_job(crossroads_osm_file),
         },
         headers=admin_headers(),
     )
@@ -232,10 +378,43 @@ def test_build_refuses_an_unknown_leg_at_a_real_site(client: TestClient, tmp_pat
     assert any("없는접근로" in reason for reason in detail["reasons"])
 
 
+def test_build_refusal_reasons_come_back_in_the_requests_language(
+    client: TestClient, tmp_path: Path, crossroads_osm_file: Path
+):
+    """MEDIUM A: the route used to hard-code ``.get("ko")`` even though the
+    file already has ``_language(request)`` (used by the gate/report routes)
+    -- so an English caller got Korean prose back. One language pair
+    (English) suffices to prove the fix picks the caller's language."""
+    staged_counts = _stage_counts(client, tmp_path)
+    response = client.post(
+        "/api/genesis/demand-inputs/build?language=en",
+        json={
+            "counts_token": staged_counts["token"],
+            "approach_links": {"이런지점없음": {"어떤접근로": 1}},
+            "built_against_job": _built_against_job(crossroads_osm_file),
+        },
+        headers=admin_headers(),
+    )
+    assert response.status_code == 400
+    reasons = response.json()["detail"]["reasons"]
+    # The en message's own wording -- and NOT the ko sentence's wording
+    # ("카운트에 없는"), which would show up here if the route still hard-coded
+    # `.get("ko")` regardless of `?language=en`. (The site id itself,
+    # "이런지점없음", is echoed back verbatim inside the en sentence too --
+    # that is the caller's own input, not a translation, so it is not what
+    # this assertion checks.)
+    assert any("The map names site(s)" in reason and "absent from the counts" in reason for reason in reasons)
+    assert not any("카운트에 없는" in reason for reason in reasons)
+
+
 def test_build_refuses_an_unknown_counts_token(client: TestClient):
     response = client.post(
         "/api/genesis/demand-inputs/build",
-        json={"counts_token": "0" * 32, "approach_links": {"S": {"L": 1}}},
+        json={
+            "counts_token": "0" * 32,
+            "approach_links": {"S": {"L": 1}},
+            "built_against_job": "x" * 12,
+        },
         headers=admin_headers(),
     )
     assert response.status_code == 404
@@ -257,7 +436,11 @@ def test_build_refuses_a_token_staged_as_a_different_kind(client: TestClient):
 
     response = client.post(
         "/api/genesis/demand-inputs/build",
-        json={"counts_token": signals_token, "approach_links": {"S": {"L": 1}}},
+        json={
+            "counts_token": signals_token,
+            "approach_links": {"S": {"L": 1}},
+            "built_against_job": "x" * 12,
+        },
         headers=admin_headers(),
     )
     assert response.status_code == 404
@@ -272,7 +455,9 @@ def test_anonymous_cannot_list_staged_side_inputs(client: TestClient):
     assert client.get("/api/genesis/side-inputs").status_code == 401
 
 
-def test_listing_shows_every_staged_kind_with_its_summary(client: TestClient, tmp_path: Path):
+def test_listing_shows_every_staged_kind_with_its_summary(
+    client: TestClient, tmp_path: Path, crossroads_osm_file: Path
+):
     staged_counts = _stage_counts(client, tmp_path)
     site = staged_counts["summary"]["sites"][0]
     built = client.post(
@@ -280,6 +465,7 @@ def test_listing_shows_every_staged_kind_with_its_summary(client: TestClient, tm
         json={
             "counts_token": staged_counts["token"],
             "approach_links": {site["site_id"]: {site["legs"][0]: 3}},
+            "built_against_job": _built_against_job(crossroads_osm_file),
         },
         headers=admin_headers(),
     )

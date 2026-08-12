@@ -206,6 +206,18 @@ class BuildDemandInputRequest(BaseModel):
     document this route builds is validated by the SAME
     ``side_inputs.parse_side_input`` the raw ``POST /side-inputs`` route uses,
     and that validator is the authority on whether they are well-formed.
+
+    ``built_against_job`` is REQUIRED — link ids in ``approach_links`` are by
+    definition read off ONE generation's map (a screen showing that job's
+    draft), and ``draft.py`` reassigns them from a sequential counter on every
+    build, so there is no such thing as a mapping that was not built against
+    some specific generation. The route resolves that job's ``genesis_json``
+    artifact IN THE CALLER'S WORKSPACE (404 on an unknown/foreign job, or one
+    with no artifact — e.g. it errored), computes
+    ``services.genesis.draft.link_table_fingerprint`` over it, and stamps both
+    onto the document it stages. ``generate_demand`` compares this fingerprint
+    against the draft it is actually asked to seed at generation time and
+    refuses the whole generation on a mismatch — see roadmap v2 §5.B/G.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -215,6 +227,13 @@ class BuildDemandInputRequest(BaseModel):
     )
     approach_links: dict[str, dict[str, int]] = Field(
         description="site id → {approach leg id → draft link id}. Required; never guessed."
+    )
+    built_against_job: str = Field(
+        min_length=1,
+        description=(
+            "The generation job whose link ids approach_links was read off. Required: a link id "
+            "means nothing without the generation that assigned it."
+        ),
     )
     window_start: datetime | None = Field(
         default=None, description="Analysis window start. Both ends or neither."
@@ -416,11 +435,12 @@ async def parse_demand_counts(
 @router.post("/demand-inputs/build")
 def build_demand_input(
     payload: BuildDemandInputRequest,
+    request: Request,
     user: dict[str, Any] = Depends(current_user),
 ):
     """Staged counts + a caller's approach→link map → a staged ``demand`` side input.
 
-    Three steps, in order:
+    Four steps, in order:
 
     1. Read back the staged counts (``POST /demand-inputs/parse``'s token) —
        404 if the token is unknown, expired, or names a different kind.
@@ -429,23 +449,33 @@ def build_demand_input(
        through ``services.genesis.demand.check_approach_link_sites``, the exact
        function ``generate_demand`` itself calls, so a site or leg the mapping
        names that the counts do not contain refuses HERE, with that module's own
-       code and wording, rather than three steps later inside a job whose only
-       output is a refusal. (Whether a mapped LINK exists is not checked here —
-       that needs a draft, which does not exist until a generation runs; the job
-       still catches it.)
-    3. Build the ``genesis.demand.v1`` document — the staged counts verbatim
-       plus this call's ``approach_links``/window/settings — and stage it
-       through ``genesis_jobs.stage_side_input``, which runs it through the SAME
-       ``side_inputs.parse_side_input`` the raw ``POST /side-inputs`` route uses.
-       Nothing here re-implements that validation or pre-empts it.
+       code and wording, rendered in the CALLER'S language via ``_language``
+       (the same convention the gate/report routes use). (Whether a mapped LINK
+       exists is not checked here — that needs a draft, which does not exist
+       until a generation runs; the job still catches it.)
+    3. Resolve ``built_against_job``'s ``genesis_json`` artifact IN THE CALLER'S
+       WORKSPACE (``genesis_jobs.artifact_path`` — 404 on an unknown/foreign job
+       or one with no artifact at all, e.g. it errored) and compute its
+       ``services.genesis.draft.link_table_fingerprint`` — the CRITICAL fix:
+       draft link ids are a sequential counter reassigned on every build, so a
+       mapping is only ever meaningful against the ONE generation it was read
+       from.
+    4. Build the ``genesis.demand.v1`` document — the staged counts verbatim
+       plus this call's ``approach_links``/window/settings/fingerprint — and
+       stage it through ``genesis_jobs.stage_side_input``, which runs it through
+       the SAME ``side_inputs.parse_side_input`` the raw ``POST /side-inputs``
+       route uses. Nothing here re-implements that validation or pre-empts it.
     """
     try:
         staged = genesis_jobs.staged_counts(payload.counts_token)
     except genesis_jobs.StagedOsmNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    import json as _json
+
     from services.dataimport.demand import build_demand_seeding
     from services.genesis.demand import check_approach_link_sites
+    from services.genesis.draft import DraftNetwork, link_table_fingerprint
 
     window = (
         (payload.window_start, payload.window_end)
@@ -464,20 +494,41 @@ def build_demand_input(
         observed_approaches=observed_approaches,
     )
     if site_check.issues:
+        language = _language(request)
         raise HTTPException(
             status_code=400,
             detail={
                 "code": site_check.issues[0].code,
                 "reasons": [
-                    issue.messages.get("ko") or issue.message for issue in site_check.issues
+                    issue.messages.get(language) or issue.message for issue in site_check.issues
                 ],
             },
         )
+
+    try:
+        census_path = genesis_jobs.artifact_path(payload.built_against_job, "genesis_json")
+    except genesis_jobs.GenesisJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        built_against_draft = DraftNetwork.model_validate(
+            _json.loads(census_path.read_text(encoding="utf-8"))
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Job {payload.built_against_job}'s genesis_json artifact could not be read as a "
+                f"draft network. [{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    link_table_sha256 = link_table_fingerprint(built_against_draft)
 
     document: dict[str, Any] = {
         "kind": side_inputs.DEMAND_DOC_KIND,
         "counts": staged["result"].model_dump(mode="json"),
         "approach_links": payload.approach_links,
+        "built_against_job": payload.built_against_job,
+        "built_against_link_table_sha256": link_table_sha256,
     }
     if payload.window_start is not None:
         document["window_start"] = payload.window_start.isoformat()
@@ -487,8 +538,6 @@ def build_demand_input(
         document["demand_settings"] = payload.demand_settings
     if payload.fleet_settings is not None:
         document["fleet_settings"] = payload.fleet_settings
-
-    import json as _json
 
     content = _json.dumps(document, ensure_ascii=False).encode("utf-8")
     name = Path(str(payload.filename or "demand.json")).name

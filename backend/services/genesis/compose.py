@@ -415,9 +415,12 @@ def compose_layers(
     approach_links: Mapping[str, Mapping[str, int]] | None = None,
     demand_window: tuple[datetime, datetime] | None = None,
     demand_settings: DemandSettings | None = None,
+    demand_built_against_job: str | None = None,
+    demand_built_against_link_table_sha256: str | None = None,
     fleet_settings: FleetSettings | None = None,
     signal_assignments: Mapping[int, tuple[FixedTimePlan, Mapping[int, str]]] | None = None,
     signal_settings: SignalSettings | None = None,
+    job_id: str | None = None,
 ) -> ComposedLayers:
     """Build a draft's optional layers in the order that was proved to load.
 
@@ -425,6 +428,13 @@ def compose_layers(
     one import, and splitting them into two arguments would let a caller pair a
     demand with a fleet built from other classes. ``approach_links`` is the
     site→leg→draft-link join ``generate_demand`` requires and refuses to guess.
+
+    ``demand_built_against_job``/``demand_built_against_link_table_sha256`` are
+    the CRITICAL link-numbering check's inputs (``side_inputs.DemandSideInput``'s
+    fields of the same name, minus the ``demand_`` prefix): when the fingerprint
+    is present, ``generate_demand`` refuses rather than seeding a draft whose
+    link ids have since been renumbered out from under the mapping. ``job_id``
+    is THIS generation's own id, used only to name it in that refusal's message.
 
     ``signal_assignments`` maps draft node id → ``(plan, {approach link id →
     phase id})``. The mapping is DATA the caller supplies:
@@ -456,6 +466,9 @@ def compose_layers(
             vehicle_types=dict(fleet.map),
             window=demand_window,
             settings=demand_settings,
+            built_against_job=demand_built_against_job,
+            built_against_link_table_sha256=demand_built_against_link_table_sha256,
+            target_job_id=job_id,
         )
 
         # -- the per-approach guarantee: a mapping that seeded nothing -------

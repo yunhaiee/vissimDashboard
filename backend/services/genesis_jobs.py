@@ -1377,6 +1377,7 @@ def _compose_side_layers(
         draft,
         demand=documents.get(side_inputs_module.KIND_DEMAND),
         signals=documents.get(side_inputs_module.KIND_SIGNALS),
+        job_id=job_id,
     )
 
     (work_dir / LAYERS_JSON_FILENAME).write_text(

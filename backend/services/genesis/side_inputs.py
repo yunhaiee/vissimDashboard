@@ -155,6 +155,31 @@ class DemandSideInput(BaseModel):
     window_end: datetime | None = None
     demand_settings: DemandSettings | None = None
     fleet_settings: FleetSettings | None = None
+    #: Which generation ``approach_links``' ids were read off, and that
+    #: generation's own link-table fingerprint (:func:`~.draft.link_table_fingerprint`).
+    #: Both or neither (:meth:`_built_against_is_whole`) — the same shape
+    #: ``window_start``/``window_end`` use. Optional because an adapter/API
+    #: producer that never looked at a specific draft (the WA SCATS path, Track
+    #: G staging) legitimately has neither; ``generate_demand`` does not refuse
+    #: for their absence, but names it rather than staying silent (module
+    #: docstring's CRITICAL fix: draft link ids are a sequential counter reset
+    #: on every build, so a bbox trim or any other rebuild renumbers them, and
+    #: an unfingerprinted mapping applied to a renumbered draft can silently
+    #: attach one approach's observed volumes to a different link).
+    built_against_job: str | None = Field(default=None, min_length=1)
+    built_against_link_table_sha256: str | None = Field(
+        default=None, min_length=64, max_length=64
+    )
+
+    @model_validator(mode="after")
+    def _built_against_is_whole(self) -> "DemandSideInput":
+        if (self.built_against_job is None) != (self.built_against_link_table_sha256 is None):
+            raise ValueError(
+                "built_against_job and built_against_link_table_sha256 must be given together "
+                "— a job id with no fingerprint (or a fingerprint with no job id) cannot be "
+                "checked against a draft's own numbering."
+            )
+        return self
 
     @field_validator("approach_links")
     @classmethod
@@ -607,6 +632,7 @@ def compose_from_documents(
     *,
     demand: DemandSideInput | None = None,
     signals: SignalsSideInput | None = None,
+    job_id: str | None = None,
 ) -> ComposedLayers:
     """Validated side-input documents + a draft → the composed layers.
 
@@ -616,6 +642,11 @@ def compose_from_documents(
     ``issues`` rather than being returned separately, so a caller has ONE place
     to look for "why was this generation refused" and a plan that failed to
     convert cannot be lost between two result objects.
+
+    ``job_id`` is THIS generation's own job id (``genesis_jobs._compose_side_layers``
+    has it) — used only to name the target side of the CRITICAL link-numbering
+    check in a mismatch's refusal message; optional because most callers (tests,
+    ``tools/*``) never have one.
     """
     plan_build = (
         build_signal_assignments(signals) if signals is not None else SignalPlanBuild({})
@@ -626,9 +657,14 @@ def compose_from_documents(
         approach_links=None if demand is None else demand.approach_links,
         demand_window=None if demand is None else demand.window(),
         demand_settings=None if demand is None else demand.demand_settings,
+        demand_built_against_job=None if demand is None else demand.built_against_job,
+        demand_built_against_link_table_sha256=(
+            None if demand is None else demand.built_against_link_table_sha256
+        ),
         fleet_settings=None if demand is None else demand.fleet_settings,
         signal_assignments=None if signals is None else plan_build.assignments,
         signal_settings=None if signals is None else signals.signal_settings,
+        job_id=job_id,
     )
     if not plan_build.issues:
         return composed
