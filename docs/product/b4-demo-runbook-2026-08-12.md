@@ -1,136 +1,117 @@
-# B4 데모 런북 — 생성 → 게이트 → 시뮬 → 리포트 (대전 소규모 실지역 1건)
+# B4 데모 런북 v2 — 클릭 단위 (2026-08-12, 전 단계 브라우저)
 
-2026-08-12. Prereq commits: `144ff96` (Track G wiring), `63e5579` (B3 UI), `0d13102` (V6 warn).
-This is the user/COM lane — every step below runs on the Windows box with real Vissim.
-**Honest endpoint, stated up front:** signals stay OFF (C1 — 현시도 not yet in machine-readable
-form; C1-b queued), so V5 is honestly NOT_CHECKABLE and the generation lands at
-**`provisional` after your V1 attestation, not `published`**. `published` needs the full layer
-set. The demo still proves the Phase 3 exit sentence end-to-end: real region → gated build →
-simulation → report.
+Rewritten after `144ff96`+`63e5579`+`0d13102`+`eae4686`+`b3318ab`: every step is a browser
+click except the one Vissim live-check (Part D), which is a single tool run on your box.
+**No zip file anywhere in this flow** — the zip upload on the dashboard is the OLD dataset
+path. Genesis needs only: a map region you draw numbers for (no file at all), and your 대전
+counts workbook (`.xlsx`).
 
-## 0. Preconditions
+**Honest endpoint:** with demand only → `provisional` (V5 waits for signals). If you also do
+Part E (현시도 confirm — 2 minutes), signals switch on and `published` is reachable after the
+live check. Either way the demo proves the pipeline.
 
-- Backend on 8001, frontend on 3000 (`.claude/launch.json` configs `backend`/`frontend`).
-- You are logged in (`/login`) with your operator account. All staging/start/attach calls are
-  authenticated; keep the browser session, and for the API steps capture a bearer token.
-- **Use a demo workspace, not the consultant workspace** (`bfc69251bd04` holds the client's
-  calibrated dataset — publishing a generated network there would replace its active dataset).
-  Create/select a demo workspace in the admin UI (P④) and note its `X-Workspace-Id`.
+## Part 0 — before you start (once)
 
-## 1. Region → .osm (browser, B2 page)
+1. Both servers up. If a page won't load: backend `cd backend` →
+   `.venv\Scripts\python.exe -m uvicorn main:app --port 8001`; frontend `cd frontend` →
+   `npm run dev`. Hard-refresh (`Ctrl+Shift+R`) any tab that looks white-on-white — the theme
+   fix landed today.
+2. **Log in as yourself** (your real account — not any `*-acceptance` account). Left sidebar
+   bottom, or `/login`.
+3. Top-right **프로젝트** selector → **새 프로젝트** → make a demo project (e.g. `B4-데모`).
+   **Never run this demo in the consultant project** — publishing replaces a project's active
+   dataset.
 
-1. Open `http://localhost:3000/genesis/region`.
-2. Enter a small central-Daejeon bounding box. The page shows the derived caps
-   (`GET /api/genesis/region/limits`); the proven live fetch (`e9d16cf`) was ~0.36 km².
-   **If you want demand attached later, choose a bbox containing one of the 11 Daejeon
-   count-workbook intersections** (스마트교차로 drop).
-3. Fetch. The Overpass result is staged as an upload token and lands in the same job-start
-   flow B1 uses. Provenance (query, endpoint, date, ODbL) is embedded in the .osm itself.
+## Part A — generate the geometry (browser, ~3 min + generation time)
 
-## 2. First generation — geometry-only (browser)
+1. Left sidebar → **네트워크 생성**.
+2. In the first hint box, click **영역에서 추출하기 →**.
+3. Enter the bounding box (WGS84 decimal degrees) in **North / South / West / East**.
+   - Pick a box ~0.3–0.5 km around ONE intersection you have counts for (e.g. 가람네거리).
+   - The limit panel updates live: it must say **Within the limit** before the button enables.
+   - Lesson from your first run (bbox 36.3444–36.3564 / 127.3765–127.3925, REFUSED): a wide
+     CBD box slices arterials mid-block and V3 correctly refuses the silent exits. Smaller,
+     intersection-centred boxes cut fewer arterials. A V3 refusal is a *finding*, not a crash
+     — the map shows you every silent-exit point in red.
+4. **영역 추출** → wait for the green **EXTRACTED — ready to generate** card.
+5. Name the network (optional), then start the generation from this page (it hands off to
+   the same flow as an uploaded file). Go back via **← Generate from a file / see past
+   generations** to watch it.
+6. On **네트워크 생성**: your job appears under **생성 이력**, polls live, and the **Gate
+   verdict** panel fills in. Expect on a geometry-only run: V1 · V5 · V6 = 확인 불가 (waiting
+   on live check / signals / demand — by design), V3 = pass or fail depending on your box.
+7. If REFUSED: the **지도에서 보기** map opens itself. Red = refuse-tier findings; click a red
+   link → the right panel shows every finding on it. Fix = different box, not a weaker gate.
+8. **Write down the entry link ids** for your counts intersection: zoom (wheel) / pan (drag)
+   to the intersection, click each approach link that *enters* it, and note the link id shown
+   in the detail panel. You need one id per approach leg (~4 numbers).
 
-Start the generation from the region page. This run is deliberately geometry-only:
+## Part B — build the demand input (browser, ~2 min)
 
-- Watch it on `/genesis`: verdict panel renders V1–V9 tri-state; **if REFUSED, the B3 map
-  opens itself** — rose = refuse-tier findings, amber = warn, excluded zones as a named list.
-  This is your first look at the B3 UI on live data (the in-pane browser check was blocked by
-  tooling on the dev box, so this step doubles as its visual verification).
-- Expected verdict: `incomplete` → job `provisional`, blocking includes V1·V3·V5·V6
-  (geometry-only can check none of the demand/signal-side refuse checks). V3 may fail on
-  genuine base-map breaks — those are named per street; repairs would be road invention.
+1. Back on **네트워크 생성**, click **수요 입력 만들기 →**.
+2. **1. 카운트 워크북 업로드**: **파일 선택** → your 대전 스마트교차로 15-minute counts
+   workbook — one `.xlsx` from the Daejeon drop, named like
+   `가람네거리_15분_집계 주기.xlsx`. Click **업로드**.
+   - The parsed summary appears: site, legs (e.g. 가람방면), vehicle classes, time window,
+     and any per-row refusals by name. A wrong file refuses with a named reason — nothing
+     proceeds on a bad parse.
+3. **2. 접근로 → 링크 연결**: for each leg row, type the entry link id you noted in A-8.
+   Empty cells stay empty — the build refuses rather than guessing.
+4. Leave 구간 대푯값 at **peak** (labeled as a modelling choice) unless you know better.
+5. **만들기** → a demand token card appears (with the document summary). If it refuses
+   naming an unknown site/leg — a typo'd link id — fix the cell and click again.
+6. **← 네트워크 생성으로**.
 
-Use this run to read the **entry link ids** for your count site's approaches: click the
-approaches on the map, note link ids (or download `genesis_json` from the artifact list).
+## Part C — the composed generation (browser, ~2 min)
 
-## 3. Demand side-input (API — the UI form is a queued follow-up)
+1. Repeat A-2..A-4 for the SAME box (each generation consumes a fresh extract).
+2. Before starting: in the job form, open **수요 입력 (선택)** and pick the token you built
+   in Part B. (If you did Part E first, also pick the signals token here.)
+3. **생성 시작**. On the finished job expect: **V3 pass, V6 pass**, V5 확인 불가 (no signals)
+   — or, with signals attached, **blocking = V1 only**.
+4. Open **Compare generations**, pick the Part-A job: watch V3/V6 flip from 확인 불가/fail —
+   that's your before/after slide.
+5. If the generation refuses naming `…mapped_approach_not_seeded`: one of your link ids
+   points at a link that can't receive vehicles — re-read the map, fix that cell in Part B,
+   rebuild the token, re-generate. The refusal names the exact site/leg/link.
 
-Build the demand document from the real Daejeon counts:
+## Part D — the live check (your Vissim box, ~5 min)
 
-```python
-# backend venv; produces demand-doc.json
-from services.dataimport.adapters.daejeon import DaejeonCountAdapter
-import json
-counts = DaejeonCountAdapter().parse(["<path to the site's count workbook>"]).model_dump(mode="json")
-doc = {
-  "kind": "genesis.demand.v1",
-  "counts": counts,
-  # the human join, step 2's link ids: site -> leg -> ENTRY link id
-  "approach_links": {"<site_id>": {"서측": 1, "동측": 3, "남측": 5, "북측": 7}},
-  "demand_settings": {"single_interval_reduction": "peak"},
-}
-json.dump(doc, open("demand-doc.json", "w", encoding="utf-8"), ensure_ascii=False)
-```
+1. On the job, click **네트워크 .inpx** to download the artifact.
+2. Close any open Vissim GUI (the tool opens its own instance; never attaches to yours).
+3. In a terminal: `cd backend` then
+   `.venv\Scripts\python.exe tools\genesis_open_live_check.py --help` — run it against the
+   downloaded `.inpx`; it LoadNets the file, checks the `.err`, and writes a `state.json`.
+4. Attach that `state.json` through the job's live-check control on the genesis page. This is
+   recorded as YOUR attestation (name + timestamp, `rests_on_attestation` shown everywhere).
+5. Verdict updates: demand-only → **provisional**; with signals too → **published**.
 
-Stage it (PowerShell; `$tok` = your bearer token, `$ws` = demo workspace id):
+## Part E — optional but recommended: switch signals on (browser, ~3 min)
 
-```powershell
-$r = Invoke-RestMethod -Method Post `
-  -Uri "http://localhost:8001/api/genesis/side-inputs?kind=demand&filename=demand-doc.json" `
-  -Headers @{ Authorization = "Bearer $tok"; "X-Workspace-Id" = $ws } `
-  -ContentType "application/json" -InFile demand-doc.json
-$r.summary   # sites_mapped / approaches_mapped must be non-zero
-$demandToken = $r.token
-```
+This is also, deliberately, C1-b's open acceptance: the first *real* confirmation click.
 
-A malformed document 400s with named reasons (`genesis_side_input_invalid_demand`); a mapped
-approach that cannot be seeded **refuses the whole generation** later, naming site/leg/link —
-that is the compose guard, working as intended. Fix the mapping, don't fight the refusal.
+1. **네트워크 생성** → second hint box → **Review the 현시도 →** (`/genesis/phases`).
+2. Left list: 23 intersections, each with the vision model's proposed reading. Pick yours
+   (e.g. 가람네거리 if listed; any of the 20 plan-bearing ones works).
+3. Check the proposal against the diagram image shown beside it — the model flagged its own
+   uncertainty on nearly every phase; your eye is the judge. Correct anything wrong.
+4. In the **확인** form: pick your Part-A/C generation → **노드 후보 불러오기** → pick the
+   node → per-approach phase dropdowns → declare the amber (3.0 s per the sheets, with its
+   basis) → **이 배정을 확인합니다**.
+5. Left rail → **확인된 N건으로 만들기** → a signals token appears. Use it in Part C-2 on
+   your next generation.
 
-## 4. Second generation — composed (API)
+## Part F — simulate and report (browser)
 
-Re-stage the same .osm (or fetch again) to get a fresh `upload_token`, then:
+1. The provisional/published network is now this project's active dataset. Go to
+   **대시보드** and run a simulation exactly as you normally do.
+2. **보고서 작성** → export the DOCX (ko/en/ja). The gate report, §5 compliance report, and
+   `layers.json` are downloadable next to the artifact for appendices.
+3. Done = one real Daejeon region went region→build→gate→(attested) →sim→report. Flip **B4 →
+   ✅** in roadmap v2 §5.B with the date and region, and C1-b → ✅ if you did Part E.
 
-```powershell
-Invoke-RestMethod -Method Post -Uri "http://localhost:8001/api/genesis/jobs" `
-  -Headers @{ Authorization = "Bearer $tok"; "X-Workspace-Id" = $ws } `
-  -ContentType "application/json" -Body (@{
-    upload_token = "<osm upload token>"
-    name         = "daejeon_b4_demo"
-    demand_token = $demandToken
-  } | ConvertTo-Json)
-```
+## If anything refuses
 
-On `/genesis`: the job record now carries `layers` (fleet/demand emitted, counts, refusals).
-Expected gate: **V3 pass, V6 pass, V5 NOT_CHECKABLE** (no signals — honest), verdict
-`incomplete` → `provisional`. Use the B3 **comparison panel** against the geometry-only run:
-you should see V3/V6 flip from not-checkable, and any warn-tier deltas (including
-`v6_composition_unused` if a composition ended up unreferenced — that would itself be a bug
-report; expected 0).
-
-## 5. V1 attestation — real Vissim opens the file (your COM lane)
-
-1. Download the `.inpx` artifact from `/genesis` (authenticated).
-2. Run the live check against it (closed Vissim GUI, no human dataset open — the tool uses
-   `attach_to_running=False` discipline): see `backend/tools/genesis_open_live_check.py --help`
-   for the artifact-path invocation; it LoadNets the file, checks `.err`, and writes
-   `state.json` whose sha256 must match the gated artifact.
-3. Attach it: `POST /api/genesis/jobs/{id}/live-check` with the `state.json` (auth). This is
-   recorded as **operator attestation** — your name, the timestamp, `rests_on_attestation`
-   visible wherever the verdict renders. V1 goes green; verdict stays `provisional`
-   (V5 still not-checkable — correct).
-
-## 6. Simulate
-
-The provisional publish registered the network as the demo workspace's active dataset. From
-the dashboard, run a simulation on it (the normal run flow — job queue, RunContinuous). An
-unsignalized geometry+demand network simulates; vehicle inputs carry the real Daejeon counts
-(peak-reduced single interval — D2's 15-min profiles remain measured-and-waiting).
-
-## 7. Report
-
-Export the audit-trail DOCX (1.3 flow, ko/en/ja) from the dashboard. It carries the run and
-its decisions; the gate's ko report and `layers.json` are downloadable beside the artifact for
-the appendix. (Style-from-sample, 2.6, is still open — this is the current report surface.)
-
-## What "done" looks like
-
-One real Daejeon region went: polygon → Overpass .osm (provenance embedded) → composed
-geometry+demand+fleet .inpx → R1.5 gate verdict rendered and explained on a map → your
-attested live LoadNet → provisional dataset → simulation results → DOCX. When this has run
-once, flip **B4 → ✅** in roadmap v2 §5.B with the date and the region used.
-
-## If something refuses
-
-That is the product working. Read the named reason (job record `refusal.reasons`, ko), fix
-the input it names, and re-run. Do not weaken a gate, do not skip a step — and if a refusal
-looks WRONG, that is a finding: record it in DECISIONS.md before touching anything.
+Read the named reason — every refusal names its cause (file, site, leg, link, or check). Fix
+the named input and rerun that part. A refusal you believe is WRONG is a finding: stop and
+record it before touching anything.
