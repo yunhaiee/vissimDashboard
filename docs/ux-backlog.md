@@ -21,6 +21,13 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   (every refusal named on screen), so text density is a *doctrine artifact* — the enhancement must
   reduce visible text without deleting the named-refusal guarantees (progressive disclosure, not
   removal).
+  **FIRST PASS DONE 2026-08-13 (`cb27da1`), user-directed, palette/theme frozen:** hint boxes
+  demoted below the primary flow; V1–V9 collapsed with severity auto-open; region measurement
+  3 lines + disclosure; phases state-gated; Panel/refusalHeadline ×4 merged into
+  `components/genesis/ui.tsx`; assistant run-hint folded (U-2 light only — D4 changes the
+  proposal shape). REMAINING for the user's detailed review: the amber-neutral question below,
+  `.ui-button-primary` adoption on the other three CTAs, FloatingAssistant structural work
+  (post-D4), and whatever the elaboration surfaces.
 - [ ] **U-2 — Calibration-loop UI/UX enhancement.** Same feedback applied to the calibration loop
   surfaces (approval flow, anomaly→proposal→approve→re-run). Note: D4 (roadmap §5.D, professor's
   direction reversal) will change what the loop's proposals even look like — sequence the UX pass
