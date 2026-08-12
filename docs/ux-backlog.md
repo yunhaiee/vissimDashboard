@@ -28,11 +28,12 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
 
 Pre-audit facts (read-only terrain pass, 2026-08-12 — measured, not designed):
 
-- **Objective defect, fix independent of elaboration:** the five genesis primary CTAs are the ONLY
+- [x] **Objective defect — FIXED 2026-08-12 (`de0a667`):** the five genesis primary CTAs were the ONLY
   `bg-slate-900 … text-white` pairs in the app (`app/genesis/page.tsx:535`, `region:552,676`,
   `demand:247`, `phases:435`); the dark palette remaps slate-900 to ivory (`globals.css:184`) and its
   own lock comment says call sites must pair it with `text-ink` — every non-genesis call site does.
-  The primary action on each genesis screen is near-invisible. `.ui-button-primary` already exists.
+  Fixed minimally (`text-ink`), reintroduction pinned by contract test "genesis primary CTAs stay
+  legible on the inverted dark palette"; adopting `.ui-button-primary` remains a U-1 design option.
 - **Doctrine-relevant defect:** `globals.css:199-211` remaps the amber family to neutral, so
   NOT_CHECKABLE / 재확인 필요 / rests-on-attestation — the states that must NOT read as neutral —
   render grey while PASS/FAIL keep real color.
