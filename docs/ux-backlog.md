@@ -26,6 +26,29 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   direction reversal) will change what the loop's proposals even look like — sequence the UX pass
   after D4's proposal-shape change lands, or design them together.
 
+Pre-audit facts (read-only terrain pass, 2026-08-12 — measured, not designed):
+
+- **Objective defect, fix independent of elaboration:** the five genesis primary CTAs are the ONLY
+  `bg-slate-900 … text-white` pairs in the app (`app/genesis/page.tsx:535`, `region:552,676`,
+  `demand:247`, `phases:435`); the dark palette remaps slate-900 to ivory (`globals.css:184`) and its
+  own lock comment says call sites must pair it with `text-ink` — every non-genesis call site does.
+  The primary action on each genesis screen is near-invisible. `.ui-button-primary` already exists.
+- **Doctrine-relevant defect:** `globals.css:199-211` remaps the amber family to neutral, so
+  NOT_CHECKABLE / 재확인 필요 / rests-on-attestation — the states that must NOT read as neutral —
+  render grey while PASS/FAIL keep real color.
+- Worst text volume: `/genesis` (17 always-visible prose blocks; 3 cross-nav hint boxes BEFORE the
+  file input; V1–V9 always fully expanded), `/genesis/region` (5 stacked paragraphs per measurement),
+  `/genesis/phases` (6 panels open at once, no state gating). `/genesis/demand` and `/health` are the
+  well-behaved models (state-gated sections; per-row 상세/접기).
+- Redundancies: comparison scope line stated twice in one card (`genesis/page.tsx:889` +
+  `GenesisComparisonPanel.tsx:207`); `Panel` copy-pasted ×4 with drift; `refusalHeadline` ×4;
+  3 hand-rolled `<details>`; two approve-strips and two progress bars in `FloatingAssistant.tsx`.
+- Existing primitives to build on: severity-driven auto-open (`GateFindingsMap` `autoOpen`),
+  plain/expert toggle (`CurationBar.tsx:200`, consumed nowhere in genesis), `MapShell` 펼치기/접기,
+  truncation-with-disclosure convention. Absent: tabs/accordion/popover/stepper — no `components/ui/`.
+- Type hierarchy: two effective sizes (h1 22px → everything else 10–14px); panels have no fill
+  contrast vs page (`bg-surface/90` == page background, hairline borders only).
+
 ## High severity — residuals after 77b0dc6
 
 - [x] **#7 — CLOSED 2026-08-05 (7cfe8eb, unit 1.5).** Per-approach delay is now a VEHS-weighted mean of
