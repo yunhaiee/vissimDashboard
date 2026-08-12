@@ -214,7 +214,18 @@ export default function GateFindingsMap({
     // named failure. Found live 2026-08-12 (logged-out user, auth-required
     // artifact fetch). The error state is terminal for this job; switching
     // jobs resets it via the effect above.
-    if (!open || network || loading || loadError !== null || !hasArtifact) return;
+    //
+    // `loading` must NOT be a dependency of this effect, because the effect
+    // is what sets it: with `loading` in deps, `setLoading(true)` re-fires
+    // the effect, and React runs the *previous* run's cleanup first, cancelling
+    // the fetch that same call just started. Measured against react-dom
+    // 19.2.4: a near-instant response (~<2 ms, cache/loopback) could lose the
+    // race outright -- every write discarded, `loading` stuck `true` forever;
+    // anything slower survived but paid for a wasted duplicate fetch whose
+    // first result was thrown away. Removing the dependency is race-free at
+    // every delay tested, including 0-1 ms. Found live 2026-08-12, second
+    // finding on this same effect; re-verified empirically 2026-08-12.
+    if (!open || network || loadError !== null || !hasArtifact) return;
     let cancelled = false;
     setLoading(true);
     fetchGenesisDraftNetwork(jobId)
@@ -230,7 +241,7 @@ export default function GateFindingsMap({
     return () => {
       cancelled = true;
     };
-  }, [open, network, loading, loadError, hasArtifact, jobId]);
+  }, [open, network, loadError, hasArtifact, jobId]);
 
   const bbox = useMemo(() => (network ? networkBbox(network) : null), [network]);
   const projection = useMemo(() => (bbox ? fitProjection(bbox) : null), [bbox]);

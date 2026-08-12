@@ -1663,6 +1663,23 @@ contractTest("B3: the gate findings map never draws a silent blank and never inv
   pin.match(map, /const NetworkLayer = memo\(function NetworkLayer\(/, "expected the polyline layer to be a component memoized against everything except `view`");
   pin.match(map, /vectorEffect="non-scaling-stroke"/, "expected constant-width strokes via vector-effect, not a view.scale division read on every element");
   pin.doesNotMatch(map, /strokeWidth=\{[\d.]+ \/ view\.scale\}/, "must not reintroduce a per-element view.scale read for stroke width");
+
+  // FIX B3-11: `loading` was ALSO a dependency of the fetch effect above --
+  // `setLoading(true)` (inside the effect) then re-fired the effect on the
+  // very next render, and React runs the PREVIOUS run's cleanup first, which
+  // cancelled the fetch that same call had just started. Measured (react-dom
+  // 19.2.4): a near-instant response could lose the race outright (stuck
+  // `loading`); anything slower survived but paid for a wasted duplicate
+  // fetch. Removing the dependency is race-free at every delay tested.
+  // Found live 2026-08-12, second finding on this same effect; re-verified
+  // empirically 2026-08-12.
+  const fetchEffectDeps = sliceBetween(map, "}, [open, network,", "]);\n\n  const bbox");
+  pin.match(fetchEffectDeps, /\S/, "expected the fetch effect's dependency array in GateFindingsMap.tsx (markers moved? the doesNotMatch below would pass vacuously on empty input)");
+  pin.doesNotMatch(
+    fetchEffectDeps,
+    /\bloading\b/,
+    "the fetch effect must not depend on `loading` -- it sets `loading` itself, so a dependency on it makes the effect cancel its own in-flight fetch via cleanup, producing an eternal spinner",
+  );
 });
 
 contractTest("B3: generation comparison stays scoped to gate results and named counts, never geometry", (pin) => {

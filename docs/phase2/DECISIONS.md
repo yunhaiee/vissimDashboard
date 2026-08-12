@@ -5589,3 +5589,36 @@ from the user's screenshot: `GateFindingsMap`'s fetch effect had `loading` in it
 `loadError` in its guard — a failed fetch (e.g. logged-out artifact 401) cleared its own error
 and retried forever, showing an eternal "loading" instead of the named failure. Guard fixed;
 the error is now terminal per job. typecheck clean, contract 47/47.
+
+## 2026-08-12 — the map's spinner had a second cause, and the refuter cut the diagnosis down to what was measured
+
+**What.** The 지도 panel's "네트워크를 불러오는 중…" persisted past the b3318ab guard fix
+(reported live: logged in, server answering in 104 ms). Second cause found by reading, then
+fixed: the fetch effect listed `loading` in its own dependency array while calling
+`setLoading(true)` inside — React runs the previous run's cleanup when a dep changes, so the
+effect set `cancelled = true` on the very fetch it had just started, and every write
+(`setNetwork`/`setLoadError`/`setLoading(false)`) sat behind `!cancelled`. Fix: `loading` out
+of the guard and the deps (the effect's lifecycle already self-terminates through `network`/
+`loadError` landing in deps). Contract pin FIX B3-11 slices the dep array and fails if
+`loading` returns, with a `/\S/` marker guard so a reformat cannot make the slice empty and
+the pin vacuously green.
+
+**The adversarial pass held the fix and refuted the diagnosis's prose.** An empirical harness
+against the installed react-dom 19.2.4 (hundreds of trials, 0–104 ms latencies, with and
+without StrictMode) confirmed the self-cancellation race is real and the fixed effect
+race-free at every tested delay — and refuted the shipped comment's claim that a 104 ms
+response was discarded: at ≥2 ms the old code survived by paying for a duplicate fetch whose
+first result was thrown away; only near-instant (<2 ms) responses lost every write. Prose
+stronger than measurement is a defect in this repo, so both comments now state the measured
+story only. It also verified the pin fails against the reconstructed pre-fix line, that no
+sibling effect in the frontend couples an async cancellation guard to its own loading flag,
+and that a stale fetch cannot land on another job's screen after a jobId switch.
+
+**Named limit.** The live report is only PARTIALLY explained: the sub-2 ms race cannot have
+fired at 104 ms. Leading candidate, not proven: a pre-b3318ab bundle still in the browser tab
+(that code's 401-retry loop was latency-independent, and the B4 runbook already warns to
+hard-refresh stale tabs). Named rather than waived; the B4 demo is the first live look at the
+fixed panel. Informational, deliberately not fixed: the reset effect leaves `loading` alone on
+a job switch (masked by React's same-value setState bailout), and four clamp-style effects
+elsewhere share the state-in-own-deps shape without any async involvement. typecheck clean,
+contract 47/47 (48 pins counting the new marker guard).
