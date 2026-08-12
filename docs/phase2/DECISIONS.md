@@ -5471,3 +5471,49 @@ artifact → "—", failed fetch → its own marker). The in-pane browser visual
 (the pane's navigate wedged — a tooling failure, named, not waived): rendering claims rest on
 typecheck + 43/43 contract pins + three re-verify traces, and the B4 demo is the first human
 look. Verified: `npm run typecheck` clean, contract 43/43.
+
+## 2026-08-12 — V6 learns to see an orphaned composition, and the corpus keeps it a warning
+
+**Origin.** Track G's verification built a two-site file where one site's demand was entirely
+dropped — and the real gate's V6 read PASS, because V6 only gapped out when vehicle inputs
+were GLOBALLY empty; an orphaned `<vehicleComposition>` was the only trace, and nothing looked
+at it. The generator side got the compose-layer refusal (same day, above); this is the judge
+side, and it applies to ANY judged `.inpx` including foreign consultant files.
+
+**Measured first, tier second.** New probe `backend/tools/probe_orphaned_compositions.py`
+(A5 pattern, same corpus): 825 real `.inpx`, all parsed; 300 applicable (≥1 composition AND
+≥1 input); **39 (13.0 %) declare a composition no vehicle input names; 32 (10.7 %) declare one
+nothing references at all** — PTV's own flagship examples among them (`Karlsruhe 3D`,
+`Toll plaza`, `BRT Priority Texas`), and the consultant's calibrated Murdoch model with 3 of
+its 6. A refuse-tier clause would fabricate a defect on one real file in ten including the
+client's own — the A5 failure verbatim — so the incident's severity did not get a vote:
+**warn tier**, at every provenance. "Used" could not be answered by a value sweep (coincidence
+floor: 297,080 matching values across 454 unrelated sites), so consumers are hand-registered
+A5-style with per-site measurements: `timeIntervalVehVolume/@vehComp`,
+`parkingLot/@initOccupComp`, `dynAssignDemand/@vehComp`; six candidate sites rejected with
+reasons (pedestrian id space, compliance rate, attribute computations). An attribute matching
+`comp` at an UNREGISTERED site raises `v6_composition_consumer_not_measured` — the clause goes
+NOT_CHECKABLE naming the site, emits no orphan warnings, and V6 cannot PASS over it; the
+refuse-tier `v6_structure` clause deliberately does not inherit that gap. 0 of 825 corpus
+files trigger it today.
+
+**Independently re-derived, then corrected.** Review reproduced every number exactly (fresh
+probe run; exhaustive candidate-site sweep matches the registry verbatim), re-ran old-vs-new
+`run_gate` as subprocesses over both Murdoch files — consultant delta is exactly +3
+`v6_composition_unused` warnings (subjects 4/5/6), everything else byte-identical; our
+geometry-only baseline zero-diff — and independently confirmed the promote-to-finding
+mutation is caught (2/18 tests red, on a mutated copy in `sys.modules`, never the shared
+tree). It also caught prose stronger than code: the docstring cited `Mainz - Static Routes`
+among the warning-firing examples, but Mainz's compositions are consumed by
+`dynAssignDemand/@vehComp` — a registered consumer — and the shipped code correctly does NOT
+warn on it. The docstring now says which population Mainz belongs to (the 39, not the 32);
+the probe's swapped local names were renamed the same pass. Frontend inventory + pins updated
+in the B3 lane (`v6_composition_unused` pinned OUT of the bare-id allow-list; warnings render
+in the verdict panel and land in the could-not-place list on the map — the honest placement
+for a composition-space id).
+
+**Named limits.** Measured population: PTV 2024/2026 libraries, our own output, one WA
+consultant model — not Korean consultant files, not post-2026 schemas, not Visum exports. A
+future consumer whose attribute name lacks `comp` would produce a warn-tier false positive
+(noise, never a refusal). 6 new tests; `test_genesis_gate.py` 102 in isolation; suite
+4317/1(env)/1.

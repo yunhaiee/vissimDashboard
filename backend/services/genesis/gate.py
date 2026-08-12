@@ -2420,6 +2420,103 @@ def _reaches_a_head_inside_node(
 # V6 — demand coverage (refuse on structure, warn on capacity)
 # ---------------------------------------------------------------------------
 
+#: ``(parent tag, element tag, attribute)`` sites that USE a vehicle
+#: composition. A composition named at any of them is in service, whatever the
+#: vehicle inputs say. Measured 2026-08-12 by
+#: ``backend/tools/probe_orphaned_compositions.py`` over the A5 corpus of 825
+#: real ``.inpx`` (PTV Examples Demo/Training 2024 + 2026, this repository's
+#: live-check networks, ``data/``), cross-checked against
+#: ``probe_reference_contexts.py --min-distinct 1``, and REGISTERED BY HAND like
+#: every other reference in this module — a value-only sweep cannot decide this,
+#: because composition ids are small integers and collide with ~297,000 values
+#: across 454 unrelated sites in that same corpus.
+#:
+#: Counts are values that collide with a composition id the same file declares,
+#: over the files carrying them.
+#:
+#: Deliberately NOT here, each with the measurement that rejected it:
+#: ``ptLineStop/@alightComp`` (146 / 18) and ``partialPTLineStop/@alightComp``
+#: (88 / 16) resolve to **pedestrian**Composition — alighting passengers are
+#: pedestrians, and "Comp" is the whole of the resemblance;
+#: ``timeIntervalPedVolume/@pedComp`` (330 / 47) is that same pedestrian id
+#: space; ``signalHead/@complRate`` (2,848 / 123) is a compliance RATE;
+#: ``@attributeComputation`` (45 across three sites) is an
+#: attribute-computation id. Admitting any of them would silence real orphans.
+_COMPOSITION_CONSUMERS: frozenset[tuple[str, str, str]] = frozenset(
+    {
+        # The demand layer itself — also ``_SIMPLE_REFERENCES``' one registered
+        # composition reference (557 values over 300 files).
+        ("timeIntVehVols", "timeIntervalVehVolume", "vehComp"),
+        # 131 / 38; the reference probe resolves it unanimously to
+        # ``vehicleComposition``.
+        ("parkingLots", "parkingLot", "initOccupComp"),
+        # 42 / 28; a dynamic assignment's demand names the composition it
+        # releases.
+        ("dynAssignDemands", "dynAssignDemand", "vehComp"),
+    }
+)
+
+#: Composition-NAMED sites the corpus contains that are not consumers, kept
+#: explicitly so that a spelling PTV adds in a future schema is NAMED as
+#: unmeasured (``v6_composition_consumer_not_measured``) instead of being
+#: silently treated as "nothing uses this composition". The A5 rule: an
+#: unmeasured context is named, never guessed.
+_NOT_COMPOSITION_CONSUMERS: frozenset[tuple[str, str, str]] = frozenset(
+    {
+        ("signalHeads", "signalHead", "complRate"),
+        ("timeIntPedVols", "timeIntervalPedVolume", "pedComp"),
+        ("lineStops", "ptLineStop", "alightComp"),
+        ("partLineStops", "partialPTLineStop", "alightComp"),
+        ("vehicleAttributeDecisions", "vehicleAttributeDecision", "attributeComputation"),
+        (
+            "pedestrianAttributeDecisions",
+            "pedestrianAttributeDecision",
+            "attributeComputation",
+        ),
+        ("attributeModifications", "attributeModification", "attributeComputation"),
+    }
+)
+
+#: Gap codes V6 raises that are NOT about its structural half, so the structure
+#: clause does not inherit them.
+_V6_NON_STRUCTURE_GAPS: frozenset[str] = frozenset(
+    {"v6_zero_volume_is_not_our_import", "v6_composition_consumer_not_measured"}
+)
+
+
+def _composition_use(
+    facts: _Facts, declared: set[str]
+) -> tuple[set[str], list[str]]:
+    """Which declared compositions does something in this file USE, and did any
+    site claim to name a composition in a spelling we have never measured?
+
+    Both halves in one pass over the document. A value counts as a use only at
+    a REGISTERED consumer site; a composition-named attribute that is neither
+    registered nor registered-as-rejected is returned as an unmeasured site, and
+    the caller turns it into a gap rather than concluding "unused" from a
+    surface it has not measured.
+    """
+    used: set[str] = set()
+    unmeasured: set[tuple[str, str, str]] = set()
+    if not declared:
+        return used, []
+    for element in facts.root.iter():
+        if element.tag == "vehicleComposition":
+            continue  # its own declaration, not a use
+        parent = facts.parent_tag.get(element, "")
+        for attribute, value in element.attrib.items():
+            if attribute == "no":
+                continue
+            token = (value or "").strip()
+            if not token or token not in declared:
+                continue
+            site = (parent, element.tag, attribute)
+            if site in _COMPOSITION_CONSUMERS:
+                used.add(token)
+            elif "comp" in attribute.lower() and site not in _NOT_COMPOSITION_CONSUMERS:
+                unmeasured.add(site)
+    return used, sorted(f"{p}/{tag}/@{attr}" for p, tag, attr in unmeasured)
+
 
 def _check_v6(facts: _Facts) -> CheckResult:
     """Does every vehicle input carry a volume, a composition that adds up, and
@@ -2445,6 +2542,27 @@ def _check_v6(facts: _Facts) -> CheckResult:
     three-lane road: six intervals of a perfectly ordinary ~1,980 veh/h, added
     up. Six of that model's warn-tier capacity findings were that arithmetic and
     nothing else.
+
+    A composition NOTHING uses is the second warn observation, and it exists
+    because the "no demand at all" gap above is GLOBAL: a multi-site model whose
+    second site lost its whole demand still has the first site's inputs, V6
+    passes, and the orphaned ``<vehicleComposition>`` is the only trace left in
+    the file. It is reported and never refused, because the corpus says so —
+    measured 2026-08-12 over the A5 corpus of 825 real ``.inpx``
+    (``backend/tools/probe_orphaned_compositions.py``): of the 300 files where
+    the pattern can appear at all (>= 1 composition AND >= 1 input), **39
+    (13.0 %) declare a composition no vehicle input names**, and 32 (10.7 %)
+    declare one nothing in the file names — 7 of 139 applicable PTV 2024 library
+    files, 19 of 153 PTV 2026, and the consultant's own calibrated Murdoch model
+    with 3 of its 6 compositions. PTV ships genuine orphans in its flagship
+    examples (``Karlsruhe 3D``, ``Toll plaza``, ``BRT Priority Texas``).
+    ``Mainz - Static Routes`` carries only the LOOSER shape — compositions no
+    vehicle input names but ``dynAssignDemand/@vehComp`` does — which the
+    consumer registry resolves as used, so this clause correctly does NOT warn
+    on it (re-verified by hand 2026-08-12; it belongs to the 39, not the 32).
+    Keeping a template composition around is an ordinary modelling idiom, so
+    refusing on it would fabricate a defect on one real file in ten — the A5
+    failure this gate exists not to repeat.
     """
     tier = CheckTier.REFUSE
     findings: list[GateFinding] = []
@@ -2570,6 +2688,42 @@ def _check_v6(facts: _Facts) -> CheckResult:
                 )
             )
 
+    # -- orphaned compositions: the warn observation the GLOBAL demand gap
+    # cannot make ----------------------------------------------------------
+    # ``v6_no_demand_layer`` fires only when the file has NO input at all, so a
+    # site whose demand was dropped from a multi-site model leaves nothing
+    # behind but a composition nobody references. Warn tier, on the corpus
+    # measurement in this function's docstring — 13.0 % of the real files where
+    # the pattern can occur carry one, PTV's own library included.
+    used_compositions, unmeasured_consumers = _composition_use(
+        facts, {comp_no for comp_no in composition_flows if comp_no}
+    )
+    orphans = [
+        comp_no
+        for comp_no in sorted(composition_flows, key=_id_sort_key)
+        if comp_no and comp_no not in used_compositions
+    ]
+    if unmeasured_consumers:
+        # A site that NAMES a composition in a spelling this module has never
+        # measured means "used" is not a question we can answer here, and an
+        # unanswered question is never a pass — the clause reports it and
+        # ``CheckResult.build`` carries it up to the check.
+        gaps.append(
+            GateGap(
+                code="v6_composition_consumer_not_measured",
+                context={"sites": ", ".join(unmeasured_consumers)},
+            )
+        )
+    else:
+        for comp_no in orphans:
+            warnings.append(
+                GateFinding(
+                    code="v6_composition_unused",
+                    subject=comp_no,
+                    context={"inputs": len(facts.vehicle_inputs)},
+                )
+            )
+
     # A zero-volume vehicle input contributes nothing, which contradicts a
     # demand layer THIS generator built (it emits an input only where it has a
     # count) and is an ordinary modelling idiom in a file it did not: a
@@ -2596,13 +2750,26 @@ def _check_v6(facts: _Facts) -> CheckResult:
         _clause(
             "v6_structure",
             findings=[f for f in findings if f.code != "v6_input_volume_is_zero"],
-            gaps=[g for g in gaps if g.code != "v6_zero_volume_is_not_our_import"],
+            gaps=[g for g in gaps if g.code not in _V6_NON_STRUCTURE_GAPS],
         ),
         _clause(
             "v6_every_input_generates_traffic",
             findings=provenance_findings if strict else (),
             gaps=() if strict
             else (GateGap(code="v6_zero_volume_is_not_our_import"),),
+        ),
+        # Warn tier, so its findings never enter the clause: the clause states
+        # whether the question was ANSWERED, and the answer rides in
+        # ``warnings``. It can only be NOT_CHECKABLE (an unmeasured consumer
+        # spelling) or PASS (asked and answered) — never FAIL, because an
+        # unused composition is not a fault in a real ``.inpx``.
+        _clause(
+            "v6_composition_use_is_named",
+            gaps=(
+                (GateGap(code="v6_composition_consumer_not_measured"),)
+                if unmeasured_consumers
+                else ()
+            ),
         ),
     ]
     evidence = {
@@ -2620,6 +2787,14 @@ def _check_v6(facts: _Facts) -> CheckResult:
         ),
         "rough_lane_capacity_veh_per_h": ROUGH_LANE_CAPACITY_VEH_PER_H,
     }
+    # A count of orphans is only evidence when the "used" surface was fully
+    # measured; otherwise the honest evidence is WHICH surface was not.
+    if unmeasured_consumers:
+        evidence["composition_consumer_sites_not_measured"] = ", ".join(
+            unmeasured_consumers
+        )
+    else:
+        evidence["compositions_unused"] = len(orphans)
     return CheckResult.build(
         "V6",
         tier,
@@ -3655,6 +3830,36 @@ _TEXT: dict[str, dict[str, str]] = {
         "ja": "{subject}: 区間 {interval} で車線 {lanes} 本の概略容量 {capacity_vph} veh/h を同時需要 "
         "{volume_vph} veh/h が超えています(全 {intervals} 区間の最大) — 超過分は不可視の潜在需要"
         "として待機します。",
+    },
+    "v6_composition_unused": {
+        "ko": "vehicle composition {subject}: 이 파일의 vehicle input {inputs}개 중 어느 것도(주차장 "
+        "초기 점유·동적 배정 수요 포함) 이 composition을 사용하지 않습니다 — 한 지점의 수요가 통째로 "
+        "빠졌다면 파일에 남는 유일한 흔적이 이것입니다. 쓰지 않는 템플릿 composition은 실제 모델에서 "
+        "흔하므로 거부가 아닌 관찰입니다.",
+        "en": "Vehicle composition {subject}: none of this file's {inputs} vehicle input(s) uses it, "
+        "nor does a parking lot's initial occupancy or a dynamic-assignment demand — if a whole "
+        "site's demand was dropped, this is the only trace left in the file. Unused template "
+        "compositions are common in real models, so this is an observation, not a refusal.",
+        "ja": "vehicle composition {subject}: このファイルの vehicle input {inputs} 件のいずれも"
+        "(駐車場の初期占有・動的配分需要を含む)これを使用していません — ある地点の需要が丸ごと"
+        "抜けた場合、ファイルに残る唯一の痕跡がこれです。未使用のテンプレート composition は実際の"
+        "モデルでは珍しくないため、拒否ではなく観察として報告します。",
+    },
+    "v6_composition_consumer_not_measured": {
+        "ko": "composition을 참조한다고 이름 붙은 위치 {sites}는 측정된 적이 없습니다 — 어떤 "
+        "composition이 실제로 쓰이지 않는지 이 파일에서는 판단할 수 없습니다.",
+        "en": "The site(s) {sites} name a composition in a spelling that has never been measured, so "
+        "which compositions are genuinely unused cannot be decided for this file.",
+        "ja": "composition を参照すると名乗る位置 {sites} は測定されたことがありません — どの "
+        "composition が実際に未使用かをこのファイルでは判断できません。",
+    },
+    "v6_composition_use_is_named": {
+        "ko": "선언된 모든 vehicle composition의 사용 여부를 확인했다 — 쓰이지 않는 것은 경고로 "
+        "이름을 붙인다",
+        "en": "every declared vehicle composition was checked for use — the unused ones are named as "
+        "warnings",
+        "ja": "宣言された全 vehicle composition の使用有無を確認した — 未使用のものは警告として名前を"
+        "付ける",
     },
     "v6_structure": {
         "ko": "구조 — composition 합, 참조, 그리고 모든 input이 분기 전에 라우팅 결정을 만난다",

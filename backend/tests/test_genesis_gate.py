@@ -1515,6 +1515,116 @@ def test_v6_capacity_uses_the_same_constant_the_edit_time_guardrail_does():
     assert ROUGH_LANE_CAPACITY_VEH_PER_H is _ROUGH_LANE_CAPACITY_VEH_PER_H
 
 
+def _two_compositions(*, used: tuple[int, ...] = (1,)) -> str:
+    """Two compositions declared, and one vehicle input per ``used`` id."""
+    return _demand(
+        compositions=[(1, [(1, 50, 1.0)]), (2, [(1, 50, 1.0)])],
+        inputs=[(no, 1, comp, 100) for no, comp in enumerate(used, start=1)],
+    )
+
+
+def test_v6_names_a_composition_that_no_vehicle_input_uses(tmp_path):
+    """The trace a whole site's dropped demand leaves behind.
+
+    ``v6_no_demand_layer`` is GLOBAL — it fires only when the file has no input
+    at all — so a multi-site model that lost one site's demand entirely still
+    has the other site's inputs and passed V6 with nothing said."""
+    result = gate(write(tmp_path, network(links=straight_pair(), extra=_two_compositions())))
+    check = result.check("V6")
+    warning = next(w for w in check.warnings if w.code == "v6_composition_unused")
+    assert warning.subject == "2"
+    assert warning.context == {"inputs": 1}
+    assert check.evidence["compositions_unused"] == 1
+
+
+def test_v6_treats_an_unused_composition_as_an_observation_not_a_refusal(tmp_path):
+    """Measured 2026-08-12 (``backend/tools/probe_orphaned_compositions.py``)
+    over the 825-file A5 corpus: 39 of the 300 files where the pattern can occur
+    — 13.0 %, PTV's own ``Mainz``, ``Karlsruhe 3D``, ``Toll plaza`` and ``BRT
+    Priority Texas`` among them — keep a composition no input uses. Refusing on
+    it would fabricate a defect on one real file in ten. Warn tier EVEN WHEN the
+    file is provably ours, because the corpus, not the provenance, is what says
+    the pattern is ordinary."""
+    xml = network(links=straight_pair(), extra=_two_compositions())
+    result = gate(write(tmp_path, xml), draft_metadata=_census([], xml))
+    check = result.check("V6")
+    assert result.provenance.state is Provenance.OURS
+    assert check.state is CheckState.PASS
+    assert "v6_composition_unused" not in codes(result, "V6")
+    assert [c.state for c in check.clauses if c.code == "v6_composition_use_is_named"] == [
+        CheckState.PASS
+    ]
+
+
+def test_v6_says_nothing_about_a_file_whose_compositions_are_all_used(tmp_path):
+    result = gate(
+        write(tmp_path, network(links=straight_pair(), extra=_two_compositions(used=(1, 2))))
+    )
+    check = result.check("V6")
+    assert [w.code for w in check.warnings] == []
+    assert check.evidence["compositions_unused"] == 0
+
+
+def test_v6_does_not_call_a_composition_unused_when_a_parking_lot_uses_it(tmp_path):
+    """A vehicle input is not the only consumer. Measured over the same corpus:
+    ``parkingLot/@initOccupComp`` (131 values / 38 files) and
+    ``dynAssignDemand/@vehComp`` (42 / 28) name a composition that is in service,
+    and counting those as orphans is the fabricated-finding failure A5 exists to
+    prevent."""
+    consumers = (
+        "<parkingLots><parkingLot initOccupComp='2' no='1'/></parkingLots>",
+        "<dynAssignDemands><dynAssignDemand no='1' vehComp='2'/></dynAssignDemands>",
+    )
+    for index, extra in enumerate(consumers):
+        xml = network(links=straight_pair(), extra=_two_compositions() + extra)
+        result = gate(write(tmp_path, xml, f"consumer_{index}.inpx"))
+        assert [w.code for w in result.check("V6").warnings] == [], extra
+        assert result.check("V6").evidence["compositions_unused"] == 0, extra
+
+
+def test_v6_cannot_judge_composition_use_through_an_unmeasured_consumer(tmp_path):
+    """A site that names a composition in a spelling this module has never
+    measured means "unused" is not a question the file can be asked — so it is
+    NAMED, never guessed at, and the clause reports NOT_CHECKABLE rather than
+    reporting an orphan it cannot prove. The fixture uses the most plausible
+    future spelling: the composition moved onto the vehicle input itself."""
+    xml = network(
+        links=straight_pair(),
+        extra=_two_compositions().replace(
+            "<vehicleInput link='1'", "<vehicleInput vehComp='2' link='1'"
+        ),
+    )
+    result = gate(write(tmp_path, xml))
+    check = result.check("V6")
+    assert check.state is CheckState.NOT_CHECKABLE
+    assert "v6_composition_consumer_not_measured" in gap_codes(result, "V6")
+    assert [c.state for c in check.clauses if c.code == "v6_composition_use_is_named"] == [
+        CheckState.NOT_CHECKABLE
+    ]
+    # Nothing is claimed about use, and the evidence says which surface is missing.
+    assert [w.code for w in check.warnings] == []
+    assert "compositions_unused" not in check.evidence
+    assert (
+        check.evidence["composition_consumer_sites_not_measured"]
+        == "vehicleInputs/vehicleInput/@vehComp"
+    )
+
+
+def test_v6_structure_clause_does_not_inherit_the_composition_use_gap(tmp_path):
+    """The structural half is a REFUSE-tier question and stays answered; only
+    the warn-tier clause goes grey. Same separation the zero-volume gap has."""
+    xml = network(
+        links=straight_pair(),
+        extra=_two_compositions().replace(
+            "<vehicleInput link='1'", "<vehicleInput vehComp='2' link='1'"
+        ),
+    )
+    result = gate(write(tmp_path, xml))
+    assert [c.state for c in result.check("V6").clauses if c.code == "v6_structure"] == [
+        CheckState.PASS
+    ]
+
+
 # ---------------------------------------------------------------------------
 # §8 V7 — geometry sanity (warn)
 # ---------------------------------------------------------------------------
