@@ -1359,6 +1359,45 @@ contractTest("genesis API surface keeps its workspace and refusal contract", (pi
   pin.match(shell, /href: "\/genesis"/, "expected the genesis page to be reachable from the main navigation");
 });
 
+// Style pin, quarantined for the same reason as the base-model layout test
+// above: it goes stale on any restyle of these buttons, so it stays isolated
+// from behavioural checks.
+//
+// globals.css inverts the dark palette so `bg-slate-900` (and `bg-slate-800`)
+// render as ivory, not near-black -- see the "Dark remap" comment at
+// app/globals.css:153-164. A chip on that background must pair with
+// `text-ink` (kept dark) for its label to read; pairing it with `text-white`
+// instead renders white-on-ivory, effectively invisible. Every compliant call
+// site in the app already follows this (app/health/page.tsx,
+// app/downloads/page.tsx, app/base-model/page.tsx); these four genesis
+// primary CTAs were the only violations found in a full-app sweep on
+// 2026-08-12.
+contractTest("genesis primary CTAs stay legible on the inverted dark palette", (pin) => {
+  const violation =
+    /className="[^"]*bg-slate-900[^"]*text-white[^"]*"|className="[^"]*text-white[^"]*bg-slate-900[^"]*"/;
+
+  pin.doesNotMatch(
+    read("app/genesis/page.tsx"),
+    violation,
+    "expected the 생성 시작 button not to pair bg-slate-900 with text-white (renders ivory-on-ivory; use text-ink)",
+  );
+  pin.doesNotMatch(
+    read("app/genesis/region/page.tsx"),
+    violation,
+    "expected the region-extract buttons not to pair bg-slate-900 with text-white (renders ivory-on-ivory; use text-ink)",
+  );
+  pin.doesNotMatch(
+    read("app/genesis/demand/page.tsx"),
+    violation,
+    "expected the demand upload button not to pair bg-slate-900 with text-white (renders ivory-on-ivory; use text-ink)",
+  );
+  pin.doesNotMatch(
+    read("app/genesis/phases/page.tsx"),
+    violation,
+    "expected the phases signal-staging button not to pair bg-slate-900 with text-white (renders ivory-on-ivory; use text-ink)",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Roadmap v2 §5.B B2 -- the region picker, and where it deliberately stops
 // ---------------------------------------------------------------------------

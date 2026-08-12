@@ -244,7 +244,7 @@ export default function DemandInputPage() {
             type="button"
             disabled={!file || parsing}
             onClick={() => void upload()}
-            className="rounded-md bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="rounded-md bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             {parsing ? t("읽는 중…", "Reading…", "読み込み中…") : t("업로드", "Upload", "アップロード")}
           </button>

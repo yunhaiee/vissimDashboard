@@ -549,7 +549,7 @@ export default function GenesisRegionPage() {
             type="button"
             disabled={!readyToFetch}
             onClick={() => void submit()}
-            className="rounded-md bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="rounded-md bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             {submitting
               ? t("요청하는 중…", "Requesting…", "要求中…")
@@ -673,7 +673,7 @@ export default function GenesisRegionPage() {
                   type="button"
                   disabled={handingOff}
                   onClick={() => void handOff()}
-                  className="rounded-md bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                  className="rounded-md bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
                   {handingOff
                     ? t("시작하는 중…", "Starting…", "開始中…")

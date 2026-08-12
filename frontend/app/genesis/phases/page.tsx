@@ -432,7 +432,7 @@ export default function PhaseDiagramReviewPage() {
               type="button"
               onClick={stageSignals}
               disabled={confirmedCount === 0 || busy}
-              className="w-full rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white disabled:opacity-40"
+              className="w-full rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-ink disabled:opacity-40"
             >
               {t(
                 `확인된 ${confirmedCount}건으로 만들기`,

@@ -532,7 +532,7 @@ export default function GenesisPage() {
               type="button"
               disabled={!file || submitting}
               onClick={() => void submit()}
-              className="rounded-md bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="rounded-md bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               {submitting
                 ? t("시작하는 중…", "Starting…", "開始中…")
