@@ -808,6 +808,16 @@ def test_a_polygon_past_the_corner_cap_is_refused_with_its_count():
     assert osm_fetch.MAX_POLYGON_VERTICES == 64
 
 
+def test_the_corner_cap_is_SERVED_so_no_browser_has_to_carry_its_own_copy():
+    """The same rule the validity radius already follows.
+
+    The region page disables further clicks at this number; a copy written into
+    the browser is a copy that can disagree with the cap that actually refuses,
+    which is how a UI ends up letting somebody draw a shape it then rejects.
+    """
+    assert osm_fetch.region_limits()["max_polygon_vertices"] == osm_fetch.MAX_POLYGON_VERTICES
+
+
 def test_a_closed_ring_and_an_open_one_are_the_same_polygon():
     """Two clients, one shape. A ring stored closed would also put a zero-length
     edge into the ``poly:`` filter."""

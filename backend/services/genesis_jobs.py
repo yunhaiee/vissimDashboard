@@ -1187,11 +1187,6 @@ def _requested_bbox_of(osm_path: Path) -> tuple[float, float, float, float] | No
     Never raises: an unreadable sidecar fact must not fail a generation that the
     ``.osm`` itself can still support.
     """
-    # Function-local: ``services.osm_fetch`` imports THIS module at module
-    # level (it stages fetched extracts through ``stage_osm``), so a top-level
-    # import here would be a cycle.
-    from services.osm_fetch import read_provenance  # noqa: PLC0415
-
     # Thin view over ``_requested_region_of`` — ONE reader owns the file I/O and
     # the OSError posture, so the two cannot drift apart (they briefly did: this
     # function's body duplicated the read until the 2026-08-13 polygon review
@@ -1213,6 +1208,9 @@ def _requested_region_of(
     carried for the LABEL and the artifact metadata — see
     ``osm.OsmExtract.requested_polygon``.
     """
+    # Function-local: ``services.osm_fetch`` imports THIS module at module level
+    # (it stages fetched extracts through ``stage_osm``), so a top-level import
+    # here would be a cycle.
     from services.osm_fetch import read_provenance  # noqa: PLC0415
 
     try:

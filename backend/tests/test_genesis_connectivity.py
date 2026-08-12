@@ -3143,28 +3143,36 @@ def test_the_job_runner_reads_the_bbox_out_of_the_frozen_source_osm(tmp_path: Pa
 
     The upload road has no such comment and must be completely unaffected — that
     is what keeps every uploaded ``.osm`` building exactly as it did.
+
+    Both facts come out of ONE read of the file (``_requested_region_of``): the
+    rectangle, which moves geometry, and the lasso, which moves only the label.
+    A polygon fetch writes BOTH keys, and the rectangle it writes is the ring's
+    own bounding box — so the pair asserted here is the pair the boundary ladder
+    and its disclosure are built from.
     """
     from services import genesis_jobs
     from services.osm_fetch import annotate
 
+    region = {"south": BBOX[0], "west": BBOX[1], "north": BBOX[2], "east": BBOX[3]}
     plain = _write(tmp_path, "plain.osm", overhang_osm())
-    assert genesis_jobs._requested_bbox_of(plain) is None
+    assert genesis_jobs._requested_region_of(plain) == (None, None)
 
     annotated = tmp_path / "annotated.osm"
-    annotated.write_bytes(
+    annotated.write_bytes(annotate(plain.read_bytes(), {"requested_region": region}))
+    # A RECTANGLE fetch: a bbox and no ring, exactly as before polygons existed.
+    assert genesis_jobs._requested_region_of(annotated) == (BBOX, None)
+
+    lassoed = tmp_path / "lassoed.osm"
+    lassoed.write_bytes(
         annotate(
             plain.read_bytes(),
             {
-                "requested_region": {
-                    "south": BBOX[0],
-                    "west": BBOX[1],
-                    "north": BBOX[2],
-                    "east": BBOX[3],
-                }
+                "requested_region": region,
+                "requested_polygon": {"vertices": [list(v) for v in POLYGON_RING]},
             },
         )
     )
-    assert genesis_jobs._requested_bbox_of(annotated) == BBOX
+    assert genesis_jobs._requested_region_of(lassoed) == (BBOX, POLYGON_RING)
 
 
 def test_the_probe_reads_the_same_bbox_the_generator_does(tmp_path: Path):

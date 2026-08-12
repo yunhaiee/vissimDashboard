@@ -5787,11 +5787,17 @@ basemap tiles" comment corrected to the accurate distinction), click adds a corn
 double-click closes, the server's derived bbox drawn as a dashed rectangle with the honesty
 note on screen.
 
-**Process fact, recorded because the protocol worked:** the opus builder finished the entire
-change and DIED before writing its report (output file 0 bytes; last file write 23:26). The
-tree was audited instead of rebuilt — full suite, isolated files, typecheck, contract all
-reproduced green — and the adversarial pass was widened to double as the lost report: its
-file-by-file inventory now stands in for the builder's own.
+**Process fact, recorded because the protocol worked:** the opus builder went silent for
+eight-plus hours with a 0-byte output file and was judged dead; the tree was audited instead
+of rebuilt — full suite, isolated files, typecheck, contract all reproduced green — and the
+adversarial pass was widened to double as the lost report. CORRECTION, same day: the builder
+was not dead but glacial — it delivered its report ~10 h after dispatch, AFTER the audit-based
+commit, and its report matches the audited tree. Its three small post-commit residuals
+(the dead provenance import moved to its real consumer, a pin that the vertex cap is SERVED
+not browser-copied, and the job-runner test re-pointed at the dual reader for both shapes)
+were verified (210/210 on the touched files) and committed as the follow-up below. Lesson
+kept: judge an agent by its tree, not its silence — and the audit protocol produced the
+correct result either way.
 
 **Verification: everything conforms; nothing refuted.** 3,000 independently generated simple
 polygons produced zero self-intersection false positives (and true positives on bowtie and
