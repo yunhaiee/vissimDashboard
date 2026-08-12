@@ -43,6 +43,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import { Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   RegionFetchError,
@@ -149,81 +150,15 @@ function statusClasses(status: RegionFetchStatus): string {
   }
 }
 
-/** ko/en/ja for the backend's stable refusal codes. The `reasons` array is still
- * shown verbatim underneath — it carries the endpoint, the measured metres and
- * the byte counts, and rewriting a backend refusal client-side is how a UI
- * starts lying about why something did not happen. */
-function refusalHeadline(code: string | null, t: Translate): string {
-  switch (code) {
-    case "region_too_large":
-      return t(
-        "이 영역은 생성기의 투영 한계를 넘습니다",
-        "This region is past the generator's projection limit",
-        "この領域は生成器の投影限界を超えています",
-      );
-    case "region_response_too_large":
-      return t(
-        "응답이 이 앱의 용량 한계를 넘었습니다 — 잘라내지 않고 중단했습니다",
-        "The response passed this app's size limit — it was stopped, never truncated",
-        "応答がこのアプリの容量上限を超えました — 切り詰めず中断しました",
-      );
-    case "region_bbox_invalid":
-      return t("영역 좌표가 올바르지 않습니다", "The region coordinates are not valid", "領域の座標が正しくありません");
-    case "region_polygon_invalid":
-      return t(
-        "이 폴리곤으로는 영역을 정할 수 없습니다",
-        "This polygon cannot define a region",
-        "このポリゴンでは領域を決められません",
-      );
-    case "region_shape_ambiguous":
-      return t(
-        "영역 모양은 사각형이나 폴리곤 중 하나여야 합니다",
-        "A region must be exactly one shape: a rectangle or a polygon",
-        "領域の形は矩形かポリゴンのどちらか一つでなければなりません",
-      );
-    case "region_has_no_roads":
-      return t(
-        "이 영역에는 도로가 하나도 없습니다",
-        "There is no road in this region at all",
-        "この領域には道路が一つもありません",
-      );
-    case "overpass_rate_limited":
-      return t(
-        "Overpass가 요청 빈도를 제한했습니다 (429) — 재시도하지 않았습니다",
-        "Overpass rate-limited us (429) — nothing was retried",
-        "Overpass がリクエスト頻度を制限しました (429) — 再試行していません",
-      );
-    case "overpass_unavailable":
-      return t("Overpass 인스턴스가 응답하지 않았습니다", "The Overpass instance did not answer", "Overpass インスタンスが応答しませんでした");
-    case "overpass_timeout":
-    case "overpass_unreachable":
-      return t("Overpass에 닿지 못했습니다", "Overpass could not be reached", "Overpass に到達できませんでした");
-    case "overpass_query_failed":
-      return t(
-        "Overpass가 200을 주었지만 문서 안에서 실패를 보고했습니다",
-        "Overpass answered 200 but reported a failure inside the document",
-        "Overpass は 200 を返しましたが、文書内で失敗を報告しました",
-      );
-    case "overpass_bad_response":
-      return t(
-        "OpenStreetMap 문서가 아닌 응답이 왔습니다",
-        "What came back is not an OpenStreetMap document",
-        "OpenStreetMap 文書ではない応答が返りました",
-      );
-    case "overpass_endpoint_misconfigured":
-      return t("Overpass 주소 설정이 잘못되었습니다", "The Overpass endpoint is misconfigured", "Overpass のアドレス設定が誤っています");
-    case "region_bad_name":
-      return t("추출 이름으로 쓸 수 없는 문자가 있습니다", "That extract name cannot be used", "抽出名に使えない文字があります");
-    case "interrupted_by_restart":
-      return t(
-        "서버가 재시작되어 이 요청은 끝나지 못했습니다",
-        "The server restarted before this request finished",
-        "サーバーが再起動したため、この要求は完了しませんでした",
-      );
-    default:
-      return t("요청이 거부되었습니다", "The request was refused", "要求が拒否されました");
-  }
-}
+// `refusalHeadline` (ko/en/ja for the backend's stable refusal codes, this
+// page's `region_*`/`overpass_*` half included) now lives in
+// components/genesis/ui.tsx: four genesis screens each carried their own copy
+// switching on a different slice of one globally-unique code space. The rule it
+// was written under has not changed and is restated there -- the `reasons` array
+// is still rendered verbatim underneath every headline, because it carries the
+// endpoint, the measured metres and the byte counts, and rewriting a backend
+// refusal client-side is how a UI starts lying about why something did not
+// happen.
 
 function bindingTermLabel(term: string, t: Translate): string {
   if (term === "meridian_convergence") {
@@ -247,16 +182,6 @@ function formatTimestamp(iso: string | null, lang: "ko" | "en" | "ja"): string {
   if (Number.isNaN(date.getTime())) return iso;
   const locale = lang === "ko" ? "ko-KR" : lang === "ja" ? "ja-JP" : "en-US";
   return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
-}
-
-function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
-  return (
-    <section className="mb-5 rounded-xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
-      <h2 className="text-sm font-bold text-slate-900">{title}</h2>
-      {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
-      <div className="mt-3">{children}</div>
-    </section>
-  );
 }
 
 /**
@@ -396,7 +321,13 @@ export default function GenesisRegionPage() {
     let cancelled = false;
     fetchRegionLimits(DEFAULT_CENTRE[0], DEFAULT_CENTRE[1])
       .then((limits) => {
-        if (!cancelled) setMaxVertices(limits.max_polygon_vertices);
+        // CHECKED rather than trusted, and the check earned itself: measured
+        // against a backend older than this field, the raw value landed on screen
+        // as "점 0 / undefined". A limit the UI cannot state is a limit the UI
+        // must not mention -- `null` keeps the counter honest and lets the
+        // server's own refusal do the talking.
+        const cap = Number(limits.max_polygon_vertices);
+        if (!cancelled) setMaxVertices(Number.isFinite(cap) && cap > 0 ? cap : null);
       })
       .catch(() => undefined);
     return () => {
@@ -726,42 +657,57 @@ export default function GenesisRegionPage() {
                 )
               </span>
             </p>
-            <p className="mt-1 leading-relaxed">
-              {t(
-                "한계는 생성기의 투영이 1 m 오차 예산에 도달하는 반경입니다 — 이 선을 넘으면 생성기가 어차피 projection_out_of_range로 거부하므로, 내려받기 전에 거부합니다.",
-                "The limit is the half-extent at which the generator's projection reaches its 1 m error budget. Past that line the generator refuses outright (projection_out_of_range), so it is refused before the download rather than after.",
-                "上限は、生成器の投影が 1 m の誤差予算に達する半径です。この線を越えると生成器がいずれにせよ projection_out_of_range で拒否するため、取得前に拒否します。",
-              )}{" "}
+            {/* The binding TERM stays visible: it names WHY the cap binds where
+              * it does, and it is the one number here a differently-shaped
+              * region can move. What moved into the disclosure below is the
+              * REASONING behind figures already on screen -- UX pass U-1, after
+              * a valid box was measured to fire five stacked paragraphs at
+              * once. Collapsed, never dropped: the estimate still says it is an
+              * estimate, and the bounding-box caveat still says which area the
+              * bytes were guessed from. */}
+            <p className="mt-1">
               {t("구속 항", "Binding term", "拘束項")}: {bindingTermLabel(measurement.binding_term, t)} ·{" "}
               {t("투영 오차", "projection error", "投影誤差")} {measurement.planimetric_error_bound_m.toFixed(2)} m
             </p>
-            {measurement.polygon && measurement.estimate_area_km2 !== undefined && (
-              /* Which area is which, said in numbers. The area above is the
-                * polygon's own (what a user means by "my study area"); the byte
-                * estimate below is taken over the BOUNDING BOX, because Overpass
-                * answers with whole ways and their nodes and the response is not
-                * proportional to the ring's area in any way we can defend. */
-              <p className="mt-1">
-                {t("폴리곤 넓이", "Polygon area", "ポリゴンの面積")} {measurement.area_km2.toFixed(2)} km² ·{" "}
-                {t("바운딩 박스 넓이", "bounding-box area", "バウンディングボックスの面積")}{" "}
-                {measurement.estimate_area_km2.toFixed(2)} km² ·{" "}
-                {t("점", "corners", "点")} {measurement.polygon_vertices ?? measurement.polygon.vertices.length} —{" "}
+            <details className="mt-1.5">
+              <summary className="cursor-pointer opacity-80">
+                {t("자세한 근거", "The reasoning in full", "詳しい根拠")}
+              </summary>
+              <p className="mt-1 leading-relaxed">
                 {t(
-                  "아래 예상 크기는 폴리곤이 아니라 바운딩 박스 넓이로 계산합니다(Overpass는 way를 통째로 돌려주므로 폴리곤 넓이에 비례하지 않습니다).",
-                  "the size estimate below is taken over the bounding-box area, not the polygon's: Overpass returns WHOLE ways, so the response is not proportional to the ring's area.",
-                  "以下の推定サイズはポリゴンではなくバウンディングボックスの面積で計算します（Overpass は way を丸ごと返すため、ポリゴンの面積に比例しません）。",
+                  "한계는 생성기의 투영이 1 m 오차 예산에 도달하는 반경입니다 — 이 선을 넘으면 생성기가 어차피 projection_out_of_range로 거부하므로, 내려받기 전에 거부합니다.",
+                  "The limit is the half-extent at which the generator's projection reaches its 1 m error budget. Past that line the generator refuses outright (projection_out_of_range), so it is refused before the download rather than after.",
+                  "上限は、生成器の投影が 1 m の誤差予算に達する半径です。この線を越えると生成器がいずれにせよ projection_out_of_range で拒否するため、取得前に拒否します。",
                 )}
               </p>
-            )}
-            <p className="mt-1 opacity-80">
-              {t("예상 크기(상한 기준)", "Estimated size (upper-ish)", "推定サイズ（上限寄り）")} ≲ {formatBytes(measurement.estimated_bytes)} /{" "}
-              {t("응답 한계", "response limit", "応答上限")} {formatBytes(measurement.max_response_bytes)} —{" "}
-              {t(
-                "예상치일 뿐이며, 한계는 실제로 도착한 바이트에 대해 적용됩니다.",
-                "an estimate only; the cap is enforced against the bytes that actually arrive.",
-                "あくまで推定であり、上限は実際に到着したバイトに対して適用されます。",
+              {measurement.polygon && measurement.estimate_area_km2 !== undefined && (
+                /* Which area is which, said in numbers. The area above is the
+                  * polygon's own (what a user means by "my study area"); the byte
+                  * estimate below is taken over the BOUNDING BOX, because Overpass
+                  * answers with whole ways and their nodes and the response is not
+                  * proportional to the ring's area in any way we can defend. */
+                <p className="mt-1">
+                  {t("폴리곤 넓이", "Polygon area", "ポリゴンの面積")} {measurement.area_km2.toFixed(2)} km² ·{" "}
+                  {t("바운딩 박스 넓이", "bounding-box area", "バウンディングボックスの面積")}{" "}
+                  {measurement.estimate_area_km2.toFixed(2)} km² ·{" "}
+                  {t("점", "corners", "点")} {measurement.polygon_vertices ?? measurement.polygon.vertices.length} —{" "}
+                  {t(
+                    "아래 예상 크기는 폴리곤이 아니라 바운딩 박스 넓이로 계산합니다(Overpass는 way를 통째로 돌려주므로 폴리곤 넓이에 비례하지 않습니다).",
+                    "the size estimate below is taken over the bounding-box area, not the polygon's: Overpass returns WHOLE ways, so the response is not proportional to the ring's area.",
+                    "以下の推定サイズはポリゴンではなくバウンディングボックスの面積で計算します（Overpass は way を丸ごと返すため、ポリゴンの面積に比例しません）。",
+                  )}
+                </p>
               )}
-            </p>
+              <p className="mt-1 opacity-80">
+                {t("예상 크기(상한 기준)", "Estimated size (upper-ish)", "推定サイズ（上限寄り）")} ≲ {formatBytes(measurement.estimated_bytes)} /{" "}
+                {t("응답 한계", "response limit", "応答上限")} {formatBytes(measurement.max_response_bytes)} —{" "}
+                {t(
+                  "예상치일 뿐이며, 한계는 실제로 도착한 바이트에 대해 적용됩니다.",
+                  "an estimate only; the cap is enforced against the bytes that actually arrive.",
+                  "あくまで推定であり、上限は実際に到着したバイトに対して適用されます。",
+                )}
+              </p>
+            </details>
           </div>
         )}
 
@@ -989,14 +935,29 @@ export default function GenesisRegionPage() {
         * read the mockup would otherwise look for a feature and conclude the page
         * is broken. The lasso left this list when it shipped; the two that remain
         * have the same reason they always had, which is why the reason is repeated
-        * rather than replaced. */}
-      <p className="rounded-xl border border-dashed border-slate-300 px-5 py-4 text-[11px] leading-relaxed text-slate-500">
-        {t(
+        * rather than replaced.
+        *
+        * UX pass U-1 collapsed it IN PLACE — same position, same dashed card, but
+        * a summary that names what is inside instead of a closing paragraph the
+        * eye has to read to discover it is about absent features. The disclosure
+        * is a question a reader can go looking for; deleting it would be the
+        * silent drop this page exists to refuse. */}
+      <details className="rounded-xl border border-dashed border-slate-300 px-5 py-4 text-[11px] leading-relaxed text-slate-500">
+        <summary className="cursor-pointer font-semibold">
+          {t(
+            "이 화면에 일부러 넣지 않은 것",
+            "What is deliberately not on this screen",
+            "この画面に意図的に入れていないもの",
+          )}
+        </summary>
+        <p className="mt-2">
+          {t(
           "폴리곤 라쏘는 이제 지원합니다(경계 판정은 바운딩 박스 — 위 설명 참고). 목업의 도로 개별 선택·블록 제외(공유 벽 규칙)는 의도적으로 다음 단계로 미뤘습니다 — 둘 다 이미 뽑아낸 도로망의 기하가 있어야 동작하므로, 추출 위에 얹는 기능이지 추출을 대신하는 기능이 아닙니다. 라쏘는 그 기하가 필요하지 않아 먼저 나왔습니다.",
           "The polygon lasso is now supported (boundary judgment uses its bounding box — see above). The mockup's per-road selection and block exclusion (the shared-wall rule) are deliberately deferred: both act on the geometry of a network that does not exist until after an extract has been fetched and drafted, so they sit on top of this step rather than replacing it. The lasso needed none of that geometry, which is why it shipped first.",
           "ポリゴン投げ縄は対応しました（境界判定はバウンディングボックス — 上記参照）。モックアップの道路ごとの選択・ブロック除外（共有壁ルール）は意図的に次段階へ送りました — いずれも抽出後の道路網の幾何が必要で、抽出の上に載る機能であり、抽出の代わりではありません。投げ縄はその幾何を必要としないため先に出しました。",
-        )}
-      </p>
+          )}
+        </p>
+      </details>
     </div>
   );
 }

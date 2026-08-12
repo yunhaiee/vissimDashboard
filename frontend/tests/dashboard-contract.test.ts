@@ -1372,6 +1372,13 @@ contractTest("genesis API surface keeps its workspace and refusal contract", (pi
 // app/downloads/page.tsx, app/base-model/page.tsx); these four genesis
 // primary CTAs were the only violations found in a full-app sweep on
 // 2026-08-12.
+//
+// UX pass U-1 (2026-08-13) went one better on app/genesis/page.tsx's 생성 시작
+// button specifically: it now uses `.ui-button-primary`, globals.css's own
+// sanctioned primitive, which carries the correct foreground for the inverted
+// palette (and its own `:disabled` opacity) instead of a hand-rolled
+// bg-slate-900/text-ink/disabled:bg-slate-300 triple. The pin below is
+// unchanged and still guards the other three pages' hand-rolled CTAs.
 contractTest("genesis primary CTAs stay legible on the inverted dark palette", (pin) => {
   const violation =
     /className="[^"]*bg-slate-900[^"]*text-white[^"]*"|className="[^"]*text-white[^"]*bg-slate-900[^"]*"/;
@@ -1396,6 +1403,120 @@ contractTest("genesis primary CTAs stay legible on the inverted dark palette", (
     violation,
     "expected the phases signal-staging button not to pair bg-slate-900 with text-white (renders ivory-on-ivory; use text-ink)",
   );
+});
+
+// ---------------------------------------------------------------------------
+// UX pass U-1 (docs/ux-backlog.md) -- progressive disclosure on the genesis
+// screens. These are NOT layout pins: what they hold is the doctrine that
+// survived the density pass. "Nothing is silently dropped" is this product's
+// whole thesis, and the only way to reduce what a screen shows without
+// breaking it is to make COLLAPSE the reduction and to let SEVERITY, not the
+// reader, decide what starts open.
+// ---------------------------------------------------------------------------
+
+contractTest("U-1: the R1.5 checklist collapses by default and opens itself by severity", (pin) => {
+  const page = read("app/genesis/page.tsx");
+
+  // The rule, in code: only a clean pass with nothing recorded starts closed.
+  // `fail` opens because it is a proven fault; `not_checkable` opens because
+  // R1.5's own design rule is that a check which could not RUN is never a
+  // pass, and a row the reader has to click would let it read like one.
+  pin.match(page, /function checkAutoOpens\(check: GenesisGateCheck\): boolean \{/, "expected a named severity rule deciding which checks start open");
+  pin.match(
+    page,
+    /if \(check\.state !== "pass"\) return true;/,
+    "expected EVERY non-pass check -- fail and not_checkable alike -- to open itself",
+  );
+  pin.match(
+    page,
+    /check\.gaps\.length > 0 \|\|\s*\n?\s*check\.findings\.length > 0 \|\|\s*\n?\s*check\.warnings\.length > 0 \|\|\s*\n?\s*check\.findings_omitted > 0/,
+    "expected a passing check that still CARRIES something (gap, finding, warning, omitted count) to open itself too",
+  );
+  pin.match(
+    page,
+    /useState\(\(\) => checkAutoOpens\(check\)\)/,
+    "expected the row's initial open state to be seeded from severity rather than from a constant",
+  );
+
+  // Collapsed is not hidden: id, state word, tier and title stay on screen for
+  // every check, and the toggle says what it is.
+  pin.match(
+    page,
+    /\{check\.id\}[\s\S]{0,400}checkStateLabel\(check\.state, t\)[\s\S]{0,400}\{check\.title\}/,
+    "expected the id, the tri-state word and the title to stay visible on a COLLAPSED row",
+  );
+  pin.match(page, /aria-expanded=\{open\}/, "expected the collapse toggle to expose its state to assistive tech");
+  pin.match(page, /\{open && \(/, "expected the check body to render only while the row is open");
+  // A pass with nothing inside still opens, and says so rather than expanding
+  // onto a blank.
+  pin.match(
+    page,
+    /이 검사에 기록된 항목이 없습니다/,
+    "expected an empty check to name its emptiness when opened, not render a blank body",
+  );
+});
+
+contractTest("U-1: the comparison's scope sentence has exactly one source", (pin) => {
+  const page = read("app/genesis/page.tsx");
+  const panel = read("components/genesis/GenesisComparisonPanel.tsx");
+
+  // The scope was stated TWICE inside one card: the page's Panel subtitle and
+  // the panel's own first line, in slightly different words. The panel owns it
+  // (the B3 test pins it there); the page must not restate it.
+  pin.doesNotMatch(
+    page,
+    /게이트 판정과 개수만/,
+    "expected the genesis page to stop restating the comparison panel's own scope line one line above it",
+  );
+  pin.match(
+    panel,
+    /게이트 판정과 개수만 비교합니다/,
+    "the scope line must still exist -- the page dropped its duplicate, not the sentence",
+  );
+});
+
+contractTest("U-1: the four genesis screens share one Panel and one refusalHeadline", (pin) => {
+  const ui = read("components/genesis/ui.tsx");
+  const pages = [
+    "app/genesis/page.tsx",
+    "app/genesis/region/page.tsx",
+    "app/genesis/demand/page.tsx",
+    "app/genesis/phases/page.tsx",
+  ];
+
+  pin.match(ui, /export function Panel\(/, "expected the shared Panel to live in components/genesis/ui.tsx");
+  pin.match(ui, /export function refusalHeadline\(/, "expected the shared refusalHeadline to live beside it");
+
+  for (const relativePath of pages) {
+    const page = read(relativePath);
+    pin.doesNotMatch(
+      page,
+      /\bfunction Panel\(/,
+      `${relativePath} must not carry a fifth local Panel -- four copies with two different paddings is what this extraction removed`,
+    );
+    pin.doesNotMatch(
+      page,
+      /\bfunction refusalHeadline\(/,
+      `${relativePath} must not carry its own refusalHeadline -- the backend's codes are one namespace, so they get one table`,
+    );
+    pin.match(
+      page,
+      /from "@\/components\/genesis\/ui"/,
+      `expected ${relativePath} to take its Panel/refusalHeadline from the shared module`,
+    );
+  }
+
+  // Each screen's own refusal codes survived the merge -- one from each of the
+  // four call sites, so a half-copied table fails here rather than in front of
+  // a user holding a refusal with no headline.
+  for (const code of [
+    "genesis_upload_not_osm",
+    "region_too_large",
+    "phase_diagram_attestation_stale",
+    "genesis_counts_not_workbook",
+  ]) {
+    pin.match(ui, new RegExp(`case "${code}":`), `expected ${code} to survive into the shared refusal table`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1579,6 +1700,15 @@ contractTest("B2 lasso: the page sends one shape and names the bounding-box gap 
     page,
     /(?:maxVertices|MAX_[A-Z_]*VERTICES)\s*=\s*\d/,
     "the browser must not carry its own copy of the corner cap",
+  );
+  // MEASURED against the running app: a backend older than that field put "점 0 /
+  // undefined" on screen. A limit the UI cannot state is a limit it must not
+  // mention -- the counter falls back to null and the server's refusal does the
+  // talking.
+  pin.match(
+    page,
+    /Number\.isFinite\(cap\) && cap > 0 \? cap : null/,
+    "expected a served corner cap to be checked before it is shown, never rendered raw",
   );
 
   // The drawing surface: leaflet client-only, the mockup's own semantics, and no

@@ -28,6 +28,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import { Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   buildDemandInput,
@@ -60,24 +61,6 @@ function isValidLinkIdCell(raw: string): boolean {
   return trimmed === "" || LINK_ID_PATTERN.test(trimmed);
 }
 
-function Panel({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="mb-4 rounded-xl border border-slate-200 bg-surface/90 px-4 py-3 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
-      <h2 className="text-sm font-bold text-slate-900">{title}</h2>
-      {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
-      <div className="mt-3">{children}</div>
-    </section>
-  );
-}
-
 function issueClasses(severity: DemandCountsIssue["severity"]): string {
   if (severity === "refuse") return "border-rose-300 bg-rose-50 text-rose-900";
   if (severity === "warn") return "border-amber-300 bg-amber-50 text-amber-900";
@@ -90,41 +73,12 @@ function issueWord(severity: DemandCountsIssue["severity"], t: Translate): strin
   return t("정보", "INFO", "情報");
 }
 
-/** ko/en/ja for the backend's stable refusal codes. The reasons array is still
- * shown verbatim underneath -- rewriting a backend refusal client-side is how
- * a UI starts lying. */
-function refusalHeadline(code: string | null, t: Translate): string {
-  switch (code) {
-    case "genesis_counts_not_workbook":
-      return t(
-        "Excel(.xlsx) 카운트 워크북이 아닙니다",
-        "Not an Excel (.xlsx) counts workbook",
-        "Excel(.xlsx)のカウントワークブックではありません",
-      );
-    case "genesis_counts_empty":
-      return t("파일이 비어 있습니다", "The file is empty", "ファイルが空です");
-    case "genesis_counts_unreadable":
-      return t(
-        "이 워크북을 읽을 수 없습니다",
-        "This workbook could not be read",
-        "このワークブックを読み取れません",
-      );
-    case "genesis_demand_map_names_unknown_site":
-      return t(
-        "매핑이 카운트에 없는 지점을 지정했습니다",
-        "The mapping names a site the counts do not contain",
-        "対応表がカウントに存在しない地点を指定しています",
-      );
-    case "genesis_demand_map_names_unknown_approach":
-      return t(
-        "매핑이 카운트에 없는 접근로를 지정했습니다",
-        "The mapping names an approach the counts do not contain",
-        "対応表がカウントに存在しない流入路を指定しています",
-      );
-    default:
-      return t("요청이 거부되었습니다", "The request was refused", "要求が拒否されました");
-  }
-}
+// `refusalHeadline` (ko/en/ja for the backend's stable refusal codes, this
+// page's `genesis_counts_*`/`genesis_demand_*` ones included) moved to
+// components/genesis/ui.tsx together with the other three genesis screens'
+// partial copies. Its rule is unchanged and restated there: the reasons array is
+// still shown verbatim underneath, because rewriting a backend refusal
+// client-side is how a UI starts lying.
 
 export default function DemandInputPage() {
   const { t, lang } = useLanguage();
@@ -274,6 +228,7 @@ export default function DemandInputPage() {
       </header>
 
       <Panel
+        density="compact"
         title={t("1. 카운트 워크북 업로드", "1. Upload the counts workbook", "1. カウントワークブックのアップロード")}
         subtitle={t(
           "대전 스마트교차로 15분 집계 .xlsx 파일 하나. 대전 어댑터 전용이며, WA SCATS 등 다른 형식은 아직 이 화면을 지원하지 않습니다.",
@@ -359,6 +314,7 @@ export default function DemandInputPage() {
 
       {staged && (
         <Panel
+          density="compact"
           title={t("2. 접근로 → 링크 매핑", "2. Bind each approach to a link", "2. 流入路 → リンクの対応付け")}
           subtitle={t(
             "링크 ID는 추측하지 않습니다 -- 비워두면 그대로 비어 있고, 매핑되지 않은 접근로가 있는 지점은 서버가 거부합니다. 링크 ID는 지오메트리만으로 만든 이전 생성의 게이트 지도(네트워크 생성 → 게이트 판정 → 지도)에서 확인할 수 있습니다.",
@@ -465,6 +421,7 @@ export default function DemandInputPage() {
 
       {staged && (
         <Panel
+          density="compact"
           title={t("3. 수요 설정 (선택)", "3. Demand settings (optional)", "3. 需要設定（任意）")}
         >
           <div className="flex flex-wrap items-end gap-4">

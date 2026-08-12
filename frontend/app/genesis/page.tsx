@@ -35,6 +35,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
 import GateFindingsMap from "@/components/genesis/GateFindingsMap";
 import GenesisComparisonPanel from "@/components/genesis/GenesisComparisonPanel";
+import { Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   fetchGenesisGateReport,
@@ -131,43 +132,15 @@ function verdictLabel(verdict: GenesisGateReport["verdict"], t: Translate): stri
   }
 }
 
-/** ko/en/ja for the backend's stable refusal codes. The reasons array is still
- * shown verbatim underneath as the evidence line — it carries the file name and
- * the numbers, and rewriting a backend refusal client-side is how a UI starts
- * lying. */
-function refusalHeadline(code: string | null, t: Translate): string {
-  switch (code) {
-    case "genesis_upload_not_osm":
-      return t(
-        "OpenStreetMap 추출 파일(.osm)이 아닙니다",
-        "Not an OpenStreetMap extract (.osm)",
-        "OpenStreetMap抽出ファイル(.osm)ではありません",
-      );
-    case "genesis_upload_empty":
-      return t("파일이 비어 있습니다", "The file is empty", "ファイルが空です");
-    case "genesis_upload_no_filename":
-      return t("파일 이름이 없습니다", "The upload carries no file name", "ファイル名がありません");
-    case "genesis_bad_name":
-      return t(
-        "네트워크 이름으로 쓸 수 없는 문자가 있습니다",
-        "That network name cannot be used",
-        "ネットワーク名に使えない文字があります",
-      );
-    case "osm_unreadable":
-      return t(
-        "이 추출 파일에서는 네트워크를 읽을 수 없습니다",
-        "No network could be read from this extract",
-        "この抽出ファイルからネットワークを読み取れません",
-      );
-    case "draft_refused":
-      return t(
-        "생성기가 초안을 거부했습니다",
-        "The generator refused to build a draft",
-        "生成器が下書きを拒否しました",
-      );
-    default:
-      return t("생성이 거부되었습니다", "Generation was refused", "生成が拒否されました");
-  }
+/** The generation form's own unknown-code sentence, handed to the shared
+ * `refusalHeadline` as its fallback: on THIS screen the refused request is a
+ * generation, so the generic "요청이 거부되었습니다" would be a step vaguer than
+ * the page can afford. Every known code (including the four
+ * `genesis_upload_*`/`osm_unreadable`/`draft_refused` ones this page raises)
+ * lives in components/genesis/ui.tsx now -- see that file for why four copies
+ * became one. */
+function generationRefusalFallback(t: Translate): string {
+  return t("생성이 거부되었습니다", "Generation was refused", "生成が拒否されました");
 }
 
 /** One dropdown line for a staged side input -- filename plus whatever its
@@ -190,13 +163,130 @@ function sideInputLabel(entry: StagedSideInputEntry): string {
   return entry.filename;
 }
 
-function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+/**
+ * COLLAPSED BY DEFAULT, OPENED BY SEVERITY. UX pass U-1: all nine R1.5 checks
+ * used to render fully expanded -- id, title, tier, every gap, every finding,
+ * every warning -- so a PUBLISHED generation (nine passes, nothing to read)
+ * produced the same wall of text as a refused one, and the two or three rows
+ * that actually decided the verdict had no more visual weight than the six that
+ * did not.
+ *
+ * Nothing is dropped: the header line (id + state chip + tier + title) is
+ * ALWAYS on screen for every check, and the body is one click away for the
+ * checks that collapse. What decides the default is the state, not the reader:
+ *
+ *   * `fail` opens -- a refuse-tier fault is why this screen exists;
+ *   * `not_checkable` opens -- R1.5's own rule is that a check which could not
+ *     RUN is never a pass, and a closed row would let it read like one;
+ *   * anything carrying gaps, findings, warnings or an omitted-findings count
+ *     opens -- a warn-tier finding on a passing check is still a finding.
+ *
+ * Only a clean pass with nothing recorded starts closed, and it still opens on
+ * click (saying so, rather than expanding into a blank).
+ *
+ * This is `GateFindingsMap`'s `autoOpen` precedent applied per row: the same
+ * "collapse by default, auto-open on the state that matters" shape, not a
+ * second disclosure idea.
+ */
+/** The cross-navigation chip. One constant so the three read as one row and a
+ * fourth entry cannot drift into its own shape. */
+const CROSS_CHIP =
+  "rounded-full border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700";
+
+function checkAutoOpens(check: GenesisGateCheck): boolean {
+  if (check.state !== "pass") return true;
   return (
-    <section className="mb-5 rounded-xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
-      <h2 className="text-sm font-bold text-slate-900">{title}</h2>
-      {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
-      <div className="mt-3">{children}</div>
-    </section>
+    check.gaps.length > 0 ||
+    check.findings.length > 0 ||
+    check.warnings.length > 0 ||
+    check.findings_omitted > 0
+  );
+}
+
+function GateCheckRow({ check, t }: { check: GenesisGateCheck; t: Translate }) {
+  const [open, setOpen] = useState(() => checkAutoOpens(check));
+  const hasBody =
+    check.gaps.length > 0 ||
+    check.findings.length > 0 ||
+    check.warnings.length > 0 ||
+    check.findings_omitted > 0;
+
+  return (
+    <li className={`rounded-lg border px-3.5 py-2.5 text-xs ${checkStateClasses(check.state)}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        className="flex w-full items-baseline gap-2 text-left"
+      >
+        <span className="font-mono text-[11px] font-bold">{check.id}</span>
+        <span className="rounded-full border border-current/30 px-1.5 py-0.5 text-[10px] font-bold uppercase">
+          {checkStateLabel(check.state, t)}
+        </span>
+        <span className="text-[10px] opacity-70">
+          {check.tier === "refuse"
+            ? t("거부 등급", "refuse tier", "拒否ティア")
+            : t("경고 등급", "warn tier", "警告ティア")}
+        </span>
+        <span className="min-w-0 flex-1 font-semibold">{check.title}</span>
+        <span aria-hidden className="shrink-0 text-[10px] opacity-60">
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+
+      {open && (
+        <div className="mt-1.5">
+          {check.gaps.length > 0 && (
+            <ul className="space-y-0.5">
+              {check.gaps.map((gap) => (
+                <li key={gap.code} className="text-[11px] leading-relaxed">
+                  {t("실행 불가", "could not run", "実行不可")}: {gap.message}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {check.findings.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5">
+              {check.findings.map((finding, index) => (
+                <li key={`${finding.code}-${index}`} className="text-[11px] leading-relaxed">
+                  {finding.message}
+                </li>
+              ))}
+            </ul>
+          )}
+          {check.findings_omitted > 0 && (
+            <p className="mt-1 text-[11px] opacity-80">
+              {t(
+                `이 화면에 표시되지 않은 항목 ${check.findings_omitted}건 — gate.json 전체 내려받기에 모두 들어 있습니다.`,
+                `${check.findings_omitted} more not shown here — all of them are in the gate.json download.`,
+                `この画面に表示されていない項目 ${check.findings_omitted} 件 — gate.json のダウンロードにすべて含まれています。`,
+              )}
+            </p>
+          )}
+
+          {check.warnings.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5">
+              {check.warnings.map((warning, index) => (
+                <li key={`w-${warning.code}-${index}`} className="text-[11px] leading-relaxed">
+                  warn / {warning.message}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {!hasBody && (
+            <p className="text-[11px] leading-relaxed opacity-70">
+              {t(
+                "이 검사에 기록된 항목이 없습니다.",
+                "Nothing was recorded for this check.",
+                "この検査に記録された項目はありません。",
+              )}
+            </p>
+          )}
+        </div>
+      )}
+    </li>
   );
 }
 
@@ -375,6 +465,35 @@ export default function GenesisPage() {
     }
   }, [file, name, excludeService, demandToken, signalsToken, loadJobs, loadSideInputs]);
 
+  // The three cross-navigations, each label paired with the sentence that says
+  // WHY that screen exists. Declared once and read twice (the chip's `title`
+  // and the disclosure list below it) so the hover text and the disclosed text
+  // can never say two different things.
+  const regionHint = {
+    label: t("영역에서 추출하기 →", "Extract a region →", "領域から抽出 →"),
+    note: t(
+      ".osm 파일이 없으신가요? 지도 영역을 직접 지정해 OpenStreetMap에서 받아올 수 있습니다 — 받은 추출은 여기 업로드한 파일과 똑같은 경로를 탑니다.",
+      "No .osm file? Name a map region and it is fetched from OpenStreetMap for you — the extract then takes exactly the same road as a file uploaded here.",
+      ".osm ファイルがありませんか？地図の領域を指定して OpenStreetMap から取得できます — 取得した抽出はここでアップロードしたファイルとまったく同じ経路を通ります。",
+    ),
+  };
+  const phasesHint = {
+    label: t("현시도 확인하기 →", "Review the 현시도 →", "現示図を確認 →"),
+    note: t(
+      "대전 신호 시트를 쓰시나요? 현시도는 그림이라 어떤 파싱도 접근로–현시 배정을 산출하지 못합니다. 검토 화면에서 사람이 확인한 배정만 신호 입력이 됩니다.",
+      "Using the 대전 signal sheets? The 현시도 is a drawing, so no parse yields the approach→phase mapping. Only a mapping a human confirmed on the review screen becomes signal input.",
+      "大田の信号シートをお使いですか？現示図は図面のため、解析では流入路と現示の対応を得られません。確認画面で人が確認した対応のみが信号入力になります。",
+    ),
+  };
+  const demandHint = {
+    label: t("수요 입력 만들기 →", "Build a demand input →", "需要入力を作成 →"),
+    note: t(
+      "수요(교통량) 카운트가 있으신가요? 대전 스마트교차로 워크북을 올리고 접근로를 링크에 연결하면 아래 목록에서 고를 수 있는 수요 입력이 만들어집니다.",
+      "Have traffic counts? Upload a Daejeon smart-intersection workbook and bind each approach to a link, and a demand input the dropdown below can pick up is built.",
+      "交通量カウントをお持ちですか？大田スマート交差点のワークブックをアップロードし、流入路をリンクに対応付けると、下の一覧で選べる需要入力が作成されます。",
+    ),
+  };
+
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
       <header className="mb-6">
@@ -401,48 +520,6 @@ export default function GenesisPage() {
           "ローカルの .osm ファイルを選んでください。ネットワークはジョブキューで作成され、Vissim COM は使いません。",
         )}
       >
-        {/* Roadmap v2 §5.B B2. The region page ENDS at the staging area and
-          * hands its extract to this same flow, so the two entry points differ
-          * only in where the .osm came from -- generation, gating and
-          * publishing are one road. */}
-        <p className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
-          {t(
-            ".osm 파일이 없으신가요? 지도 영역을 직접 지정해 OpenStreetMap에서 받아올 수 있습니다 — 받은 추출은 여기 업로드한 파일과 똑같은 경로를 탑니다.",
-            "No .osm file? Name a map region and it is fetched from OpenStreetMap for you — the extract then takes exactly the same road as a file uploaded here.",
-            ".osm ファイルがありませんか？地図の領域を指定して OpenStreetMap から取得できます — 取得した抽出はここでアップロードしたファイルとまったく同じ経路を通ります。",
-          )}{" "}
-          <Link href="/genesis/region" className="font-semibold underline">
-            {t("영역에서 추출하기 →", "Extract a region →", "領域から抽出 →")}
-          </Link>
-        </p>
-        {/* Roadmap C1-b. The signals layer needs one fact no parse can produce —
-          * which approach runs in which 현시 — because the 대전 sheet prints it as
-          * a drawing. That fact is confirmed by a named human on the review
-          * screen, and only then becomes a side input this generation can use. */}
-        <p className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
-          {t(
-            "대전 신호 시트를 쓰시나요? 현시도는 그림이라 어떤 파싱도 접근로–현시 배정을 산출하지 못합니다. 검토 화면에서 사람이 확인한 배정만 신호 입력이 됩니다.",
-            "Using the 대전 signal sheets? The 현시도 is a drawing, so no parse yields the approach→phase mapping. Only a mapping a human confirmed on the review screen becomes signal input.",
-            "大田の信号シートをお使いですか？現示図は図面のため、解析では流入路と現示の対応を得られません。確認画面で人が確認した対応のみが信号入力になります。",
-          )}{" "}
-          <Link href="/genesis/phases" className="font-semibold underline">
-            {t("현시도 확인하기 →", "Review the 현시도 →", "現示図を確認 →")}
-          </Link>
-        </p>
-        {/* The demand side-input UI. A counts workbook + a browser-typed
-          * site→leg→link map become a token this form's dropdown below can
-          * pick up -- the same "build once, attach here" shape as the two
-          * hints above. */}
-        <p className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
-          {t(
-            "수요(교통량) 카운트가 있으신가요? 대전 스마트교차로 워크북을 올리고 접근로를 링크에 연결하면 아래 목록에서 고를 수 있는 수요 입력이 만들어집니다.",
-            "Have traffic counts? Upload a Daejeon smart-intersection workbook and bind each approach to a link, and a demand input the dropdown below can pick up is built.",
-            "交通量カウントをお持ちですか？大田スマート交差点のワークブックをアップロードし、流入路をリンクに対応付けると、下の一覧で選べる需要入力が作成されます。",
-          )}{" "}
-          <Link href="/genesis/demand" className="font-semibold underline">
-            {t("수요 입력 만들기 →", "Build a demand input →", "需要入力を作成 →")}
-          </Link>
-        </p>
         <div className="flex flex-col gap-3">
           <input
             ref={fileInputRef}
@@ -532,7 +609,13 @@ export default function GenesisPage() {
               type="button"
               disabled={!file || submitting}
               onClick={() => void submit()}
-              className="rounded-md bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
+              /* `.ui-button-primary` (app/globals.css's sanctioned button
+               * primitive, `@layer components`) instead of a fourth hand-rolled
+               * chip: it already carries the inverted palette's correct
+               * foreground and its own `:disabled` opacity, which is what the
+               * old `bg-slate-900 + text-ink + disabled:bg-slate-300` triple
+               * was reimplementing by hand. */
+              className="ui-button-primary px-3.5 py-1.5 text-xs disabled:cursor-not-allowed"
             >
               {submitting
                 ? t("시작하는 중…", "Starting…", "開始中…")
@@ -551,7 +634,7 @@ export default function GenesisPage() {
             <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
               <p className="font-semibold">
                 {submitError instanceof GenesisError
-                  ? refusalHeadline(submitError.code, t)
+                  ? refusalHeadline(submitError.code, t, generationRefusalFallback(t))
                   : t("생성을 시작하지 못했습니다", "Could not start the generation", "生成を開始できませんでした")}
               </p>
               <p className="mt-1 whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
@@ -559,6 +642,67 @@ export default function GenesisPage() {
               </p>
             </div>
           )}
+        </div>
+
+        {/* UX pass U-1: these three used to be full-paragraph notice boxes
+          * stacked ABOVE the file input -- three secondary navigations
+          * outranking the primary control, and the first thing a first-time
+          * user read on this page. They are now a chip row BELOW the flow
+          * they support, with every sentence kept (one click away, and on
+          * hover) rather than rewritten or dropped:
+          *   * /genesis/region  -- roadmap v2 §5.B B2. The region page ENDS at
+          *     the staging area and hands its extract to this same flow, so
+          *     the two entry points differ only in where the .osm came from;
+          *     generation, gating and publishing are one road.
+          *   * /genesis/phases  -- roadmap C1-b. The signals layer needs one
+          *     fact no parse can produce (which approach runs in which 현시),
+          *     because the 대전 sheet prints it as a drawing; a named human
+          *     confirms it, and only then does it become a side input.
+          *   * /genesis/demand  -- a counts workbook + a browser-typed
+          *     site→leg→link map become a token the dropdown above can pick
+          *     up: the same "build once, attach here" shape.
+          * Each `note` is used TWICE (the chip's title and the disclosure
+          * body) from one constant, so the two can never drift apart. */}
+        <div className="mt-4 border-t border-slate-200 pt-3">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11px]">
+            <span className="text-slate-500">
+              {t("입력이 더 필요하신가요?", "Need another input?", "他の入力が必要ですか？")}
+            </span>
+            {/* `title` sits on the WRAPPER, never on the anchor. Measured in
+              * the running app: a `title` on a link with its own visible text
+              * becomes that link's accessible NAME, so screen-reader and
+              * voice-control users would hear/have to say the whole paragraph
+              * instead of the label they can see (WCAG 2.5.3, label in name).
+              * On the span it is a plain hover tooltip and the link keeps its
+              * own label. */}
+            <span title={regionHint.note}>
+              <Link href="/genesis/region" className={CROSS_CHIP}>
+                {regionHint.label}
+              </Link>
+            </span>
+            <span title={phasesHint.note}>
+              <Link href="/genesis/phases" className={CROSS_CHIP}>
+                {phasesHint.label}
+              </Link>
+            </span>
+            <span title={demandHint.note}>
+              <Link href="/genesis/demand" className={CROSS_CHIP}>
+                {demandHint.label}
+              </Link>
+            </span>
+          </div>
+          <details className="mt-2">
+            <summary className="cursor-pointer text-[11px] text-slate-500">
+              {t("각각 무엇인가요?", "What is each of these?", "それぞれ何ですか？")}
+            </summary>
+            <ul className="mt-1.5 space-y-1">
+              {[regionHint, phasesHint, demandHint].map((entry) => (
+                <li key={entry.label} className="text-[11px] leading-relaxed text-slate-600">
+                  <span className="font-semibold text-slate-700">{entry.label}</span> — {entry.note}
+                </li>
+              ))}
+            </ul>
+          </details>
         </div>
       </Panel>
 
@@ -678,7 +822,9 @@ export default function GenesisPage() {
             )}
             {selected.refusal && (
               <div className="mt-1.5">
-                <p className="font-semibold">{refusalHeadline(selected.refusal.code, t)}</p>
+                <p className="font-semibold">
+                  {refusalHeadline(selected.refusal.code, t, generationRefusalFallback(t))}
+                </p>
                 <ul className="mt-1 space-y-0.5">
                   {selected.refusal.reasons.map((reason, index) => (
                     <li key={index} className="font-mono text-[11px] leading-relaxed">
@@ -765,62 +911,12 @@ export default function GenesisPage() {
 
               <ul className="space-y-2">
                 {report.checks.map((check) => (
-                  <li
-                    key={check.id}
-                    className={`rounded-lg border px-3.5 py-2.5 text-xs ${checkStateClasses(check.state)}`}
-                  >
-                    <div className="flex items-baseline gap-2">
-                      <span className="font-mono text-[11px] font-bold">{check.id}</span>
-                      <span className="rounded-full border border-current/30 px-1.5 py-0.5 text-[10px] font-bold uppercase">
-                        {checkStateLabel(check.state, t)}
-                      </span>
-                      <span className="text-[10px] opacity-70">
-                        {check.tier === "refuse"
-                          ? t("거부 등급", "refuse tier", "拒否ティア")
-                          : t("경고 등급", "warn tier", "警告ティア")}
-                      </span>
-                    </div>
-                    <p className="mt-1 font-semibold">{check.title}</p>
-
-                    {check.gaps.length > 0 && (
-                      <ul className="mt-1.5 space-y-0.5">
-                        {check.gaps.map((gap) => (
-                          <li key={gap.code} className="text-[11px] leading-relaxed">
-                            {t("실행 불가", "could not run", "実行不可")}: {gap.message}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-
-                    {check.findings.length > 0 && (
-                      <ul className="mt-1.5 space-y-0.5">
-                        {check.findings.map((finding, index) => (
-                          <li key={`${finding.code}-${index}`} className="text-[11px] leading-relaxed">
-                            {finding.message}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {check.findings_omitted > 0 && (
-                      <p className="mt-1 text-[11px] opacity-80">
-                        {t(
-                          `이 화면에 표시되지 않은 항목 ${check.findings_omitted}건 — gate.json 전체 내려받기에 모두 들어 있습니다.`,
-                          `${check.findings_omitted} more not shown here — all of them are in the gate.json download.`,
-                          `この画面に表示されていない項目 ${check.findings_omitted} 件 — gate.json のダウンロードにすべて含まれています。`,
-                        )}
-                      </p>
-                    )}
-
-                    {check.warnings.length > 0 && (
-                      <ul className="mt-1.5 space-y-0.5">
-                        {check.warnings.map((warning, index) => (
-                          <li key={`w-${warning.code}-${index}`} className="text-[11px] leading-relaxed">
-                            warn / {warning.message}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </li>
+                  // Keyed on the VERDICT, not only the check id: the auto-open
+                  // default is computed once per mount, and a re-gate (which
+                  // changes `checked_at` while the job id stays put) is exactly
+                  // when a row's default has to be recomputed rather than
+                  // inherited from the verdict it just replaced.
+                  <GateCheckRow key={`${selected.id}-${gateCheckedAt ?? ""}-${check.id}`} check={check} t={t} />
                 ))}
               </ul>
 
@@ -882,16 +978,16 @@ export default function GenesisPage() {
         * Panel (not nested inside the gate verdict one above) because it
         * reads a SECOND job's stored gate result, on the user's request --
         * the gate verdict panel above is about the one job selected in the
-        * history list, and this one is deliberately about two. */}
+        * history list, and this one is deliberately about two.
+        *
+        * It carries NO `subtitle` by design. The page used to restate the
+        * comparison's SCOPE -- gate results and counts only, never the
+        * networks' geometry -- one line above `GenesisComparisonPanel`'s own
+        * scope line, which says that in slightly different words: two sources
+        * for one sentence, and the kind of duplication that drifts. The panel
+        * owns that line (it is pinned there), so the page stops repeating it. */}
       {selected && (
-        <Panel
-          title={t("생성 비교", "Compare generations", "生成の比較")}
-          subtitle={t(
-            "선택한 생성을 다른 생성과 비교합니다 — 게이트 판정과 개수만 비교하며, 네트워크 기하 자체는 비교하지 않습니다.",
-            "Compare the selected generation against another one -- gate results and counts only, never the networks' own geometry.",
-            "選択した生成を別の生成と比較します — ゲート判定と件数のみを比較し、ネットワークの形状自体は比較しません。",
-          )}
-        >
+        <Panel title={t("생성 비교", "Compare generations", "生成の比較")}>
           <GenesisComparisonPanel
             jobs={jobs}
             currentJob={selected}

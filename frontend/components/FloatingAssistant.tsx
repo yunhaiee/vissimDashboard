@@ -1408,41 +1408,53 @@ function AgentRunDashboardHint({ steps }: { steps?: AgentStep[] }) {
       )
     : null;
 
-  if (pathname.startsWith("/dashboard")) {
+  // UX pass U-2 (light): this block is appended to EVERY successful run turn,
+  // and it used to arrive as two paragraphs plus up to two links, fully
+  // expanded, in a chat column that is already the densest surface in the app.
+  // The HEADLINE sentence -- the one fact the user needs, that the run landed
+  // in the scenario list -- is now the summary line, and the navigations it
+  // offers sit one click behind it. Nothing was removed: collapse is allowed
+  // here, deletion is not, so when there is nothing to disclose (on /dashboard
+  // with no trajectory recorded) the sentence renders as a plain line rather
+  // than as a disclosure that opens onto nothing.
+  const onDashboard = pathname.startsWith("/dashboard");
+  const replayLine = replayMessage ? (
+    <p className={onDashboard ? undefined : "mt-1"}>
+      {replayMessage}{" "}
+      {!pathname.startsWith("/network") && (
+        <Link href="/network" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
+          {t("네트워크 프리뷰로 이동", "Go to network preview", "ネットワークプレビューへ")}
+        </Link>
+      )}
+    </p>
+  ) : null;
+
+  const disclosed = onDashboard ? (
+    replayLine
+  ) : (
+    <>
+      <p>
+        <Link href="/dashboard" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
+          {t("대시보드에서 보기", "View in dashboard", "ダッシュボードで見る")}
+        </Link>
+      </p>
+      {replayLine}
+    </>
+  );
+
+  if (!disclosed) {
     return (
       <div className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">
         <p>{message}</p>
-        {replayMessage && (
-          <p className="mt-1">
-            {replayMessage}{" "}
-            <Link href="/network" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
-              {t("네트워크 프리뷰로 이동", "Go to network preview", "ネットワークプレビューへ")}
-            </Link>
-          </p>
-        )}
       </div>
     );
   }
 
   return (
-    <div className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">
-      <p>
-        {message}{" "}
-        <Link href="/dashboard" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
-          {t("대시보드에서 보기", "View in dashboard", "ダッシュボードで見る")}
-        </Link>
-      </p>
-      {replayMessage && (
-        <p className="mt-1">
-          {replayMessage}{" "}
-          {!pathname.startsWith("/network") && (
-            <Link href="/network" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
-              {t("네트워크 프리뷰로 이동", "Go to network preview", "ネットワークプレビューへ")}
-            </Link>
-          )}
-        </p>
-      )}
-    </div>
+    <details className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">
+      <summary className="cursor-pointer">{message}</summary>
+      <div className="mt-1">{disclosed}</div>
+    </details>
   );
 }
 

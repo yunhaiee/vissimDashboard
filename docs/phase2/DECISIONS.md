@@ -5823,3 +5823,47 @@ is reasoned and pinned by review, not reproduced in a live browser (the in-pane 
 remains unreliable in this session; the B4 demo is the first human look at the lasso). The
 mockup's per-road toggle and block exclusion stay deferred with their original reason on
 screen.
+
+## 2026-08-13 — the first UX pass: the doctrine keeps every word, and the screen stops showing them all at once
+
+**What (U-1/U-2, user-directed: "fix problems without changing the color palette or the
+general universal style and theme").** The user's verdict on the genesis and calibration UIs
+— too much visible text, under-considered UI — is answered with progressive disclosure, not
+deletion: every named-refusal and doctrine string stays in source and reachable; what changes
+is what the first paint shows. `app/genesis`: the three cross-nav hint boxes that sat ABOVE
+the file input (three secondary navigations outranking the primary control) become one chip
+row BELOW the flow plus one collapsed 각각 무엇인가요?; the V1–V9 checklist collapses by
+default with **severity deciding what opens itself** — `fail` and `not_checkable` ALWAYS
+auto-open (a not-checkable check must never read as fine), a clean `pass` opens on click to
+a named empty sentence, never a blank; the comparison-scope sentence loses its duplicate
+(one source, in the panel). `region`: the five-paragraph measurement readout becomes three
+always-visible lines (verdict · dimensions · binding term) + a collapsed 자세한 근거; the
+deferred-features paragraph collapses in place. `phases`: the right column is state-gated —
+empty state until an intersection is chosen; cross-check auto-opens only when it FLAGGED
+something (keyed per review so severity re-computes per intersection); the stale banner stays
+unconditional. `FloatingAssistant` (U-2, deliberately light — D4 will change the proposal
+shape): only `AgentRunDashboardHint` collapses behind a one-line details. Four drifted copies
+of `Panel` and of `refusalHeadline` merge into `components/genesis/ui.tsx` (30 refusal codes,
+each ko/en/ja byte-identical to the removed originals; both shipped padding densities
+preserved exactly); panel titles step one notch (text-sm→text-[15px]) and panels take the
+app's existing `bg-white/[0.03]` overlay fill. `globals.css` untouched; the amber question
+stays open; zero new color literals or classes (every class verified pre-existing in the app).
+
+**Verification.** The builder verified live against the running dev server (DOM + accessibility
+tree; an a11y catch of its own — `title` on a Link replaced the accessible name, moved to a
+wrapping span). The adversarial pass then held every claim: the auto-open rule traced state by
+state and confirmed on a real refused generation on screen (V2/V4 closed, everything carrying
+anything open); the 30-code merge diffed case-by-case with zero drops or wording drift; both
+Panel densities byte-match; the FloatingAssistant diff is a single hunk inside the one
+component; zero palette drift; the 3 new contract tests (28 pins) reconstructed against
+pre-change source and shown non-vacuous. Its only findings were arithmetic in the builder's
+own prose (30 codes, not 34; 28 pins plus one extra real pin on the lasso test, not 26+
+comment-only) — corrected here, the code untouched. typecheck clean; contract **53/53**.
+Process note, disclosed: the builder ran one `git stash`/`pop` against the no-git rule (to
+get a lint baseline) — no damage, flagged by the builder itself.
+
+**Named limits.** This is a FIRST pass: `.ui-button-primary` adopted on the genesis hub CTA
+only (the other three keep the minimal fix + pin); no vertex-level restyling of
+FloatingAssistant's approval/progress cards (D4's territory); `/health` and `/demand`
+untouched as the model screens; the amber-neutral design question still awaits the user's
+detailed U-1 review, which this pass exists to precede.

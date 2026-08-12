@@ -36,6 +36,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import { Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   confirmPhaseDiagram,
@@ -66,24 +67,6 @@ type ApproachRow = {
   phaseId: string;
 };
 
-function Panel({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="mb-4 rounded-xl border border-slate-200 bg-surface/90 px-4 py-3 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
-      <h2 className="text-sm font-bold text-slate-900">{title}</h2>
-      {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
-      <div className="mt-3">{children}</div>
-    </section>
-  );
-}
-
 /** 확인됨 / 재확인 필요 / 미확인 — three states, three words, never two.
  * `stale` deliberately does NOT read as unconfirmed: somebody did confirm, and
  * the reason it no longer applies is shown beside it. */
@@ -111,35 +94,13 @@ function findingWord(severity: PhaseDiagramFinding["severity"], t: Translate): s
   return t("관측", "OBSERVATION", "観測");
 }
 
-/** ko/en/ja for the backend's stable refusal codes. The `reasons` array is still
- * rendered verbatim underneath — it carries the file name and the shas, and
- * rewriting a backend refusal client-side is how a UI starts lying. */
-function refusalHeadline(code: string | null, t: Translate): string {
-  switch (code) {
-    case "phase_diagram_attestation_stale":
-      return t(
-        "확인 이후 도면 또는 시트가 바뀌었습니다 — 재확인이 필요합니다",
-        "The drawing or the sheet changed after this confirmation — re-confirm",
-        "確認後に図面またはシートが変更されました — 再確認が必要です",
-      );
-    case "phase_diagram_not_confirmed":
-      return t(
-        "아직 확인되지 않은 교차로가 있습니다",
-        "An intersection has not been confirmed yet",
-        "未確認の交差点があります",
-      );
-    case "phase_diagram_unknown_review":
-      return t("해당 검토가 없습니다", "No such review", "該当のレビューがありません");
-    case "phase_diagram_duplicate_node":
-      return t(
-        "같은 노드에 두 개의 확인이 있습니다",
-        "Two confirmations name the same node",
-        "同じノードに確認が二つあります",
-      );
-    default:
-      return t("요청이 거부되었습니다", "The request was refused", "要求が拒否されました");
-  }
-}
+// `refusalHeadline` (ko/en/ja for the backend's stable refusal codes, this
+// page's four `phase_diagram_*` ones included) moved to
+// components/genesis/ui.tsx, where the four genesis screens' four partial copies
+// became one table over one globally-unique code space. Its rule is unchanged
+// and restated there: the `reasons` array is still rendered verbatim underneath
+// the headline, because it carries the file name and the shas, and rewriting a
+// backend refusal client-side is how a UI starts lying.
 
 export default function PhaseDiagramReviewPage() {
   const { t } = useLanguage();
@@ -369,6 +330,7 @@ export default function PhaseDiagramReviewPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
         <div>
           <Panel
+            density="compact"
             title={t("교차로", "Intersections", "交差点")}
             subtitle={t(
               `${rows.length}건 중 ${confirmedCount}건 확인됨`,
@@ -421,6 +383,7 @@ export default function PhaseDiagramReviewPage() {
           </Panel>
 
           <Panel
+            density="compact"
             title={t("signals 입력 만들기", "Stage the signals input", "signals入力の作成")}
             subtitle={t(
               "확인된 교차로만 포함됩니다.",
@@ -448,16 +411,33 @@ export default function PhaseDiagramReviewPage() {
           </Panel>
         </div>
 
+        {/* UX pass U-1: the right column used to render SIX panels open at once
+          * (image, stale banner, proposal, cross-check, confirm form,
+          * attestation record) in one scroll, with nothing selected producing a
+          * panel whose only content was "pick one on the left". It is now
+          * state-gated and severity-gated, in that order:
+          *   * nothing selected -> one empty-state line, no panel chrome;
+          *   * selected -> the image and the model's reading are OPEN (they are
+          *     what a reviewer reads before deciding), and the confirm form is
+          *     OPEN because confirming IS the purpose of this page;
+          *   * the machine cross-check opens only when it FLAGGED something --
+          *     the same "collapse by default, auto-open on the state that
+          *     matters" rule GateFindingsMap's `autoOpen` already sets, keyed on
+          *     the review so switching intersections recomputes it;
+          *   * the attestation record starts collapsed: it is a record of a
+          *     decision already made, not an input to the next one.
+          * The stale banner stays ALWAYS visible when present -- a confirmation
+          * that no longer applies is exactly the thing that must not be one
+          * click away. */}
         <div>
           {!review ? (
-            <Panel title={t("현시도", "The 현시도", "現示図")}>
-              <p className="text-xs text-slate-500">
-                {t("왼쪽에서 교차로를 선택하십시오.", "Pick an intersection on the left.", "左で交差点を選択してください。")}
-              </p>
-            </Panel>
+            <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-xs text-slate-500">
+              {t("왼쪽에서 교차로를 선택하십시오.", "Pick an intersection on the left.", "左で交差点を選択してください。")}
+            </p>
           ) : (
             <>
               <Panel
+                density="compact"
                 title={`${review.sheet.intersection_name ?? review.source_file} ${
                   review.sheet.intersection_no ? `(교차로번호 ${review.sheet.intersection_no})` : ""
                 }`}
@@ -492,6 +472,7 @@ export default function PhaseDiagramReviewPage() {
               )}
 
               <Panel
+                density="compact"
                 title={t("모델의 판독 (제안)", "The model's reading (a proposal)", "モデルの判読(提案)")}
                 subtitle={
                   review.proposal
@@ -549,6 +530,13 @@ export default function PhaseDiagramReviewPage() {
               </Panel>
 
               <Panel
+                // Keyed on the review so the severity default is recomputed
+                // when a different intersection is selected, not inherited from
+                // whichever one was open before.
+                key={`cross-check-${review.review_id}`}
+                density="compact"
+                collapsible
+                defaultOpen={flags.length > 0}
                 title={t("시트 텍스트와의 기계 대조", "Machine cross-check against the sheet text", "シート本文との機械照合")}
                 subtitle={t(
                   "시트가 스스로 밝히는 사실(현시 수, 인쇄된 접근로 이름, 교차로번호)만 비교합니다. 배정의 정오는 여기서 판단하지 않습니다.",
@@ -576,6 +564,7 @@ export default function PhaseDiagramReviewPage() {
               </Panel>
 
               <Panel
+                density="compact"
                 title={t("확인 — 접근로와 현시 배정", "Confirm — approach to phase", "確認 — 流入路と現示の対応")}
                 subtitle={t(
                   "이 화면에서 확인한 내용만 신호 입력이 됩니다. 제안은 확인 전에는 사용되지 않습니다.",
@@ -765,7 +754,17 @@ export default function PhaseDiagramReviewPage() {
               </Panel>
 
               {review.attestation && (
-                <Panel title={t("확인 기록", "The attestation", "確認記録")}>
+                <Panel
+                  // A record of a decision already made, not an input to the
+                  // next one -- collapsed by default, and re-keyed per review so
+                  // it does not carry one intersection's open state onto
+                  // another's record.
+                  key={`attestation-${review.review_id}`}
+                  density="compact"
+                  collapsible
+                  defaultOpen={false}
+                  title={t("확인 기록", "The attestation", "確認記録")}
+                >
                   <p className="text-xs text-slate-800">
                     {t("확인자", "attested by", "確認者")}: <b>{review.attestation.attested_by}</b> ·{" "}
                     {review.attestation.attested_at}
