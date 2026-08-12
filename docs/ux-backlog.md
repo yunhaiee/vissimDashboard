@@ -10,6 +10,22 @@ on screen anymore.
 Ranks refer to the original audit numbering. File refs may drift as `dashboard/page.tsx` evolves —
 re-grep the quoted identifiers rather than trusting line numbers.
 
+## 2026-08-12 user intake — awaiting elaboration (do not spec yet)
+
+Direct user feedback, recorded verbatim in intent, details to follow from the user:
+
+- [ ] **U-1 — Genesis UI/UX enhancement.** "The UI is so confusing right now. Too much text visible,
+  lack of UX consideration as well as UI." Scope when elaborated: the 네트워크 생성 page family
+  (`app/genesis/**` — job form, gate verdict panel, findings map, comparison, demand builder, 현시도
+  review). Known contributing fact: these screens were built unit-by-unit with disclosure-first copy
+  (every refusal named on screen), so text density is a *doctrine artifact* — the enhancement must
+  reduce visible text without deleting the named-refusal guarantees (progressive disclosure, not
+  removal).
+- [ ] **U-2 — Calibration-loop UI/UX enhancement.** Same feedback applied to the calibration loop
+  surfaces (approval flow, anomaly→proposal→approve→re-run). Note: D4 (roadmap §5.D, professor's
+  direction reversal) will change what the loop's proposals even look like — sequence the UX pass
+  after D4's proposal-shape change lands, or design them together.
+
 ## High severity — residuals after 77b0dc6
 
 - [x] **#7 — CLOSED 2026-08-05 (7cfe8eb, unit 1.5).** Per-approach delay is now a VEHS-weighted mean of
