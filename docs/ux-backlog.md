@@ -127,6 +127,16 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   NAMED QUEUED UNIT from the same review: genesis tile map draws lines only — clickable
   components at 도식 parity = the item-8 shared-preview convergence, deliberately NOT in
   #18's shell scope.
+  **#18 LANDED `b74f99d` (2026-08-13): variant B is live.** Pipeline sidebar (selector on
+  top + ① 네트워크 ② 데이터 ③ 시뮬·보정 ④ 보고서 + unnumbered 관리), route-only stepper
+  (mockup's status/done-dot rejected as fabricated progress, pinned absent), item 6
+  finished (extract beside the file input, makers on the dropdown label rows, chip row
+  retired, all notes kept in the disclosure). Adversarial pass refuted 4 claims — fixed in
+  the same commit, headline: **project switch = full reload** (the sidebar picker made
+  switching possible on seven pages with no change listener; broadcast = stale data under
+  a new header). Item 8 residuals still open: 변경 비교 as a mode of the network view, and
+  the shared-preview convergence (queued as its own unit). 실측 관측 has no route to list
+  under ② — mockup drew three data entries, two exist. Narrative: DECISIONS 2026-08-13.
 - [ ] **U-2 — Calibration-loop UI/UX enhancement.** Same feedback applied to the calibration loop
   surfaces (approval flow, anomaly→proposal→approve→re-run). Note: D4 (roadmap §5.D, professor's
   direction reversal) will change what the loop's proposals even look like — sequence the UX pass
