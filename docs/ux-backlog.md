@@ -75,7 +75,11 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   pattern (small muted label above, large bold value below) for the verdict counts, region
   measurement and history scale numbers; 생성 이력 as a clean table (muted column headers,
   borderless hover rows, right-aligned verdict chips); pill-style filter chips from the
-  existing .ui-button-ghost vocabulary.
+  existing .ui-button-ghost vocabulary. LIST REFERENCE (user, 2026-08-13, Console Skills
+  page — better than API keys since it has many rows): muted column headers (이름/생성일/
+  영역/규모/판정), monospace ids and coordinates, no row borders — row height carries the
+  separation, verdict as a small right-side tag chip (the "Anthropic" chip style),
+  pagination arrows when the list grows, ONE primary action top-right of the section.
   (14) LAYOUT: adopt the Console's split — left rail = controls/history/verdict list, right =
   sticky map/network + detail. ALL of 9–14 fold into the #13 U-1-map unit (one rebuild of
   app/genesis/page.tsx rather than two); choice-hierarchy/stepper stays in the #14 mockup.
