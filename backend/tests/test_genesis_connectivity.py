@@ -2670,10 +2670,12 @@ def test_every_trim_reaches_the_draft_metadata_and_the_compliance_report(
 
 
 #: An L drawn inside :data:`BBOX`: the full rectangle with its north-west
-#: quadrant cut away. Its BOUNDING BOX is exactly ``BBOX``, which is what makes it
-#: the right fixture for the gap under test — the trim, the boundary rectangle and
-#: every dead-end classification must come out IDENTICAL to the rectangle build,
-#: and only the LABEL (and the disclosure it carries) may differ.
+#: quadrant cut away — so the NOTCH is ``lat > LAT0 and lon < LON0``. Its BOUNDING
+#: BOX is exactly ``BBOX``, which is what makes it the right fixture for both
+#: halves of the polygon-native trim: ``overhang_osm``'s geometry lies on the
+#: ring's own edges or inside them, so that build must come out IDENTICAL to the
+#: rectangle build, while ``notch_osm`` below puts a way INTO the notch and must
+#: come out different.
 POLYGON_RING = (
     (BBOX[0], BBOX[1]),
     (BBOX[0], BBOX[3]),
@@ -2683,22 +2685,243 @@ POLYGON_RING = (
     (LAT0, BBOX[1]),
 )
 
+#: The user's own lasso, as drawn on the region page 2026-08-13 — the shape that
+#: exposed the bounding-box trim. Kept as a fixture for the point-in-polygon
+#: tests specifically because it is NOT synthetic: a hand-drawn ring has vertices
+#: that share no coordinate, edges that are neither axis-aligned nor evenly
+#: spaced, and a reflex corner where the two legs meet, which is exactly the
+#: family of inputs a ray cast written against tidy rectangles gets wrong. (It is
+#: a region of Daejeon, a public map area, not client geometry: no count, no
+#: signal timing and no network of anyone's is derivable from six corners.)
+USER_LASSO = (
+    (36.35407, 127.38414),
+    (36.35400, 127.38178),
+    (36.34819, 127.38186),
+    (36.34826, 127.38847),
+    (36.34985, 127.38843),
+    (36.34975, 127.38409),
+)
 
-def test_a_polygon_region_is_judged_on_its_bounding_box_and_says_so(tmp_path: Path):
-    """The disclosed gap of the lasso, asserted rather than described.
+#: A "U" opening north, in bare ``(lat, lon)`` units — the kernel fixtures are
+#: unit-scale on purpose, because a ray cast is scale-free and degrees would only
+#: make the expected answers harder to derive by hand. The base spans
+#: ``lat 0..4`` at full width; two prongs rise from it to ``lat 10`` over
+#: ``lon 0..4`` and ``lon 6..10``; the SLOT between them (``lon 4..6``,
+#: ``lat 4..10``) is outside. It has what a rectangle cannot give: two horizontal
+#: edges at the same latitude as its own vertices, an open mouth, and a straight
+#: line that can leave and re-enter it twice.
+U_RING = (
+    (0.0, 0.0),
+    (0.0, 10.0),
+    (10.0, 10.0),
+    (10.0, 6.0),
+    (4.0, 6.0),
+    (4.0, 4.0),
+    (10.0, 4.0),
+    (10.0, 0.0),
+)
+
+
+def test_point_in_polygon_is_boundary_inclusive_on_a_concave_ring():
+    """The inside test, on the shape the bbox version cannot express.
+
+    Boundary-INCLUSIVE, matching ``_inside_bbox``'s ``<=``/``>=``: a node exactly
+    on the requested edge is a node the request contains. That is not a nicety —
+    the trim SYNTHESIZES its cut terminals on the edge, so an exclusive test would
+    classify this module's own output as outside and cut the same way twice.
+
+    The reflex vertex is the assertion that matters most: it is the corner a
+    convex-only test gets wrong, and on :data:`POLYGON_RING` it is the crossroads
+    centre ``(LAT0, LON0)``.
+    """
+    inside = lambda lat, lon: osm_module._inside_polygon(lat, lon, POLYGON_RING)  # noqa: E731
+
+    assert inside(LAT0 - 0.001, LON0 + 0.001), "the south-east body of the L"
+    assert inside(LAT0 + 0.001, LON0 + 0.001), "the north-east arm"
+    assert inside(LAT0 - 0.001, LON0 - 0.001), "the south-west arm"
+    assert not inside(LAT0 + 0.001, LON0 - 0.001), "THE NOTCH — inside the bbox"
+    assert not inside(LAT0, LON0 + 0.005), "outside the bounding box entirely"
+
+    # On the ring, every way it can be on.
+    assert inside(LAT0, LON0), "the reflex vertex itself"
+    assert inside(*POLYGON_RING[0]), "a convex vertex"
+    assert inside(LAT0, LON0 - 0.001), "on the notch's horizontal edge"
+    assert inside(LAT0 + 0.001, LON0), "on the notch's vertical edge"
+    assert inside(BBOX[0], LON0), "on the outer south edge"
+
+
+def test_point_in_polygon_reads_a_slanted_edge_the_way_the_crossing_writes_one():
+    """A hand-drawn ring has no axis-aligned edges, so this is the ordinary case.
+
+    A point ON a slanted edge is inside, to within ``osm.ON_RING_EPS_DEG`` —
+    ~0.1 mm, a FLOAT-NOISE tolerance and deliberately not the 1.0 m boundary band,
+    which would silently widen the study area by a metre. The tolerance exists
+    because ``_polygon_crossing_point`` cannot write a slanted crossing
+    bit-exactly onto its edge the way the rectangle version writes a coordinate to
+    an edge value, so a node this generator just placed on the ring has to still
+    read as being on it.
+
+    Asserted in both directions: 0.1 nano-degree off is still on, a metre off is
+    not.
+    """
+    triangle = ((0.0, 0.0), (0.0, 10.0), (10.0, 0.0))  # hypotenuse (0,10) -> (10,0)
+    inside = lambda lat, lon: osm_module._inside_polygon(lat, lon, triangle)  # noqa: E731
+
+    assert inside(5.0, 5.0), "exactly on the hypotenuse"
+    assert inside(0.0, 10.0), "on a vertex"
+    assert inside(1.0, 1.0), "well inside"
+    assert not inside(5.1, 5.0), "just past the hypotenuse"
+
+    eps = osm_module.ON_RING_EPS_DEG
+    assert inside(5.0 + eps / 4, 5.0), "within the float-noise tolerance"
+    assert not inside(5.0 + 1e-5, 5.0), (
+        "1e-5 deg is ~1 m — the on-ring tolerance must not become a boundary band"
+    )
+
+
+def test_the_ray_cast_survives_horizontal_edges_and_vertices_at_its_own_latitude():
+    """The two cases a naive crossing count gets wrong, on :data:`U_RING`.
+
+    The half-open rule ``(a_lat > lat) != (b_lat > lat)`` is what handles both:
+
+    * a HORIZONTAL edge satisfies neither side, so it is skipped instead of
+      contributing a division by zero;
+    * a VERTEX at the ray's own latitude belongs to the edge whose other end is
+      above it, so it is counted ONCE — not twice (which flips parity back and
+      reports an interior point as outside) and not zero times.
+
+    ``lat = 10`` is the U's whole top: four of its eight vertices sit there and
+    two edges run along it. ``lat = 4`` is the slot's floor.
+    """
+    inside = lambda lat, lon: osm_module._inside_polygon(lat, lon, U_RING)  # noqa: E731
+
+    assert inside(5.0, 2.0), "the left prong"
+    assert inside(5.0, 8.0), "the right prong"
+    assert not inside(5.0, 5.0), "the slot between them"
+    assert inside(2.0, 5.0), "the base, below the slot"
+
+    # lat == the latitude of four vertices and two edges.
+    assert inside(10.0, 2.0), "on the left prong's top edge"
+    assert inside(10.0, 8.0), "on the right prong's top edge"
+    assert not inside(10.0, 5.0), "the slot's open mouth is not inside"
+    assert not inside(10.0, -1.0), "west of everything, at the vertices' latitude"
+
+    # lat == the slot floor: on the edge is inside, a hair above it is the slot.
+    assert inside(4.0, 5.0), "on the slot's floor edge"
+    assert not inside(4.0 + 1e-6, 5.0), "just above the floor, in the slot"
+    assert inside(4.0 - 1e-6, 5.0), "just below the floor, in the base"
+
+
+def test_a_segment_crossing_the_ring_three_times_is_cut_at_the_first():
+    """The concave analogue of the rectangle's corner rule, and its whole point.
+
+    One straight segment can leave a concave ring, come back and leave again.
+    ``(5, 2) -> (5, 12)`` on :data:`U_RING` crosses at ``lon = 4`` (into the
+    slot), ``lon = 6`` (back into the right prong) and ``lon = 10`` (out for
+    good). Only the FIRST is where this way leaves the study area; snapping to
+    either of the others would put the terminal on the far side of the slot — i.e.
+    outside the shape the user drew, which is the failure the whole trim exists to
+    remove.
+    """
+    from services.genesis.osm import OsmNode
+
+    inside = OsmNode(1, 5.0, 2.0)
+    outside = OsmNode(2, 5.0, 12.0)
+
+    parameters = sorted(
+        osm_module._ring_crossing_parameters(5.0, 2.0, 5.0, 12.0, U_RING)
+    )
+    assert parameters == pytest.approx([0.2, 0.4, 0.8]), (
+        "three crossings, or this fixture is not testing what it says"
+    )
+    assert osm_module._polygon_crossing_point(inside, outside, U_RING) == pytest.approx(
+        (5.0, 4.0)
+    )
+
+    # And a node already ON the ring, leaving immediately, gets NO second node at
+    # the same place — the same rule ``_crossing_point`` states for the rectangle.
+    on_ring = OsmNode(3, 5.0, 4.0)
+    assert osm_module._polygon_crossing_point(on_ring, outside, U_RING) is None
+
+
+def test_a_segment_running_along_the_ring_is_cut_where_it_actually_departs():
+    """The bug the smallest-crossing rule had, kept as a test rather than a note.
+
+    Way 101 of the crossroads fixture starts at ``(LAT0, LON0)`` — which on
+    :data:`POLYGON_RING` is the REFLEX VERTEX — and runs 0.003 deg due west. Its
+    first 0.002 deg lie exactly ALONG the ring's horizontal notch edge; only at
+    the ring's south-west corner does it actually leave.
+
+    Taking the smallest crossing parameter read the ``t = 0`` meeting at the
+    vertex the way starts on as "this node is already on the edge, nothing to
+    synthesize", so the way kept ONE node, fell under the two-node minimum and was
+    dropped whole. Measured 2026-08-13 on ``crossroads_osm`` + ``SMALL_POLYGON``:
+    8 links became 2, and the only sign of it was a ``fewer_than_two_resolvable
+    _nodes`` skip.
+
+    The exit is now the first interval whose MIDPOINT is outside, so a run along
+    the boundary counts as inside (the inside test is boundary-inclusive) and the
+    cut lands where the road really departs — the same point the bounding box
+    would have given, which is what makes this assertable against a number.
+    """
+    from services.genesis.osm import OsmNode
+
+    reflex = OsmNode(1, LAT0, LON0)
+    west = OsmNode(2, LAT0, LON0 - 0.003)
+    crossing = osm_module._polygon_crossing_point(reflex, west, POLYGON_RING)
+    assert crossing == pytest.approx((LAT0, LON0 - 0.002), abs=1e-12)
+    assert osm_module._crossing_point(reflex, west, BBOX) == pytest.approx(
+        (LAT0, LON0 - 0.002), abs=1e-12
+    ), "the rectangle kernel agrees, which is why this number is not arbitrary"
+
+
+def test_the_users_own_lasso_is_read_as_the_shape_they_drew():
+    """The ring from the region page on 2026-08-13, asserted as a shape.
+
+    Six corners, an L lying on its side: a north-west leg and a full-width
+    southern band, with the notch in the NORTH-EAST. Every vertex must read as
+    inside (boundary-inclusive), the notch must read as outside, and a point in
+    each leg must read as inside — which is the whole of what the trim asks the
+    kernel.
+    """
+    inside = lambda lat, lon: osm_module._inside_polygon(lat, lon, USER_LASSO)  # noqa: E731
+
+    for lat, lon in USER_LASSO:
+        assert inside(lat, lon), f"the user's own corner ({lat}, {lon}) must be inside"
+
+    assert inside(36.3520, 127.3830), "the north-west leg"
+    assert inside(36.3490, 127.3870), "the southern band's east end"
+    assert not inside(36.3535, 127.3860), "THE NOTCH — inside the bbox, outside the ring"
+    assert not inside(36.3600, 127.3830), "north of everything"
+
+
+def test_a_polygon_region_reproduces_the_rectangle_where_the_shapes_coincide(
+    tmp_path: Path,
+):
+    """The polygon path, on a fixture with NOTHING in the notch.
 
     A polygon fetch writes ``requested_region`` as the ring's own bounding box
-    (``services/osm_fetch.py``) plus ``requested_polygon`` beside it. Everything
-    geometric downstream reads the FIRST one, so:
+    (``services/osm_fetch.py``) plus ``requested_polygon`` beside it. Since the
+    trim became polygon-native the ring is what cuts, so this test's job is the
+    other half of that claim: where the ring and its bounding box coincide along
+    the geometry, the answer must be the SAME one.
 
-    * the boundary rectangle, the trims and every classification are **the same**
+    ``overhang_osm`` is exactly such a fixture against :data:`POLYGON_RING` —
+    every node of it is inside the L or on the L's own edges (node 5 sits on the
+    notch's vertical edge, nodes 1/2/3 on its horizontal one), so:
+
+    * the trims, the metres cut and every dead-end classification are **the same**
       as the rectangle build of the same box — asserted by comparing the two
-      builds' dead ends, because a claim that nothing changed is worth more as a
-      comparison than as a sentence;
-    * the LABEL is different, and it names the bounding box as a bounding box, so
-      no reader can conclude from the artifact that the ring itself was judged;
-    * the compliance report states, in all three languages, that a terminal
-      inside the box and outside the ring is classified as interior.
+      builds, because a claim that two paths agree is worth more as a comparison
+      than as a sentence;
+    * the LABEL is still different, because the metre band really is measured
+      against the bounding box and a reader has to be able to see which build was
+      which;
+    * the compliance report states, in all three languages, what followed the
+      polygon and what is still a rectangle.
+
+    The case where they do NOT coincide is
+    ``test_a_way_running_into_the_polygon_notch_is_cut_at_the_ring``.
     """
     source = _write(tmp_path, "overhang.osm", overhang_osm())
     rectangle = build_draft(parse_osm_file(source, requested_bbox=BBOX), name="rect")
@@ -2716,8 +2939,8 @@ def test_a_polygon_region_is_judged_on_its_bounding_box_and_says_so(tmp_path: Pa
     )
     assert conn.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX != conn.BOUNDARY_SOURCE_REQUESTED_BBOX
 
-    # The rectangle it was judged against is the ring's bounding box, and the ring
-    # is recorded whole.
+    # The rectangle the metre band is measured against is the ring's bounding box,
+    # and the ring — the shape that cut — is recorded whole beside it.
     assert polygon.metadata["boundary"]["requested_bbox_wgs84"] == {
         "min_lat": BBOX[0],
         "min_lon": BBOX[1],
@@ -2730,12 +2953,28 @@ def test_a_polygon_region_is_judged_on_its_bounding_box_and_says_so(tmp_path: Pa
     # A rectangle build must not acquire the key at all.
     assert rectangle.metadata["boundary"]["requested_polygon_wgs84"] is None
 
-    # NOTHING geometric moved. Same trims, same metres cut, same dead ends —
-    # asserted as a comparison of the two builds, because "the polygon changes no
-    # geometry" is a claim about two artifacts and not about one.
-    assert (
-        polygon.metadata["boundary"]["way_trims"]
-        == rectangle.metadata["boundary"]["way_trims"]
+    # Nothing geometric moved FOR THIS FIXTURE. Same trims, same metres cut, same
+    # dead ends — asserted as a comparison of the two builds, because "the two
+    # kernels agree where the shapes coincide" is a claim about two artifacts and
+    # not about one. (Both cut terminals here sit at LAT0 on the box's east and
+    # west edges, which are also the L's own edges.)
+    #
+    # The DETAIL string is compared apart, and it is the one field that must
+    # differ: a record of a cut made at a ring may not tell a reader it was made
+    # at a bbox. Everything a count or a coordinate is read from is identical.
+    without_detail = lambda trims: [  # noqa: E731 - one expression, used twice
+        {k: v for k, v in trim.items() if k != "detail"} for trim in trims
+    ]
+    assert without_detail(polygon.metadata["boundary"]["way_trims"]) == without_detail(
+        rectangle.metadata["boundary"]["way_trims"]
+    )
+    assert all(
+        "requested polygon" in trim["detail"]
+        for trim in polygon.metadata["boundary"]["way_trims"]
+    )
+    assert all(
+        "requested bbox" in trim["detail"]
+        for trim in rectangle.metadata["boundary"]["way_trims"]
     )
     assert (
         polygon.metadata["boundary"]["metres_cut_total"]
@@ -2757,20 +2996,249 @@ def test_a_polygon_region_is_judged_on_its_bounding_box_and_says_so(tmp_path: Pa
         rendered = polygon.render_compliance(language)
         assert conn.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX in rendered
         assert "requested_polygon_wgs84" in rendered
-        # The one honest sentence, in THIS language — a ko fallback here would be
+        # The one honest paragraph, in THIS language — a ko fallback here would be
         # the disclosure going missing for the reader it matters to.
         assert note[language] in rendered
         assert note[language] not in rectangle.render_compliance(language)
     assert "requested_polygon_wgs84" not in rectangle.render_compliance("ko")
+    # And it says the NEW truth, not the old one. Both halves, because a note that
+    # named only the polygon would hide the residual and a note that named only the
+    # bounding box would be the sentence this unit deleted.
+    assert "tails were cut AT the polygon edge" in note["en"]
+    assert "BOUNDING BOX" in note["en"] and "BOUNDARY_BAND_M" in note["en"]
+    assert "폴리곤 변에서 잘랐고" in note["ko"]
+    assert "ポリゴンの辺で切り詰め" in note["ja"]
+
+
+def notch_osm() -> str:
+    """The user's failure class, reduced to five nodes: a way INTO the notch.
+
+    :data:`POLYGON_RING` cuts the north-west quadrant out of :data:`BBOX`, so the
+    notch is ``lat > LAT0 and lon < LON0`` — inside the bounding box and outside
+    the ring.
+
+    * way 501 "Main St" runs ``10-1-2-3-11`` along the south and east of the L,
+      with both ends hanging outside the box (nodes 10 and 11 at
+      ``LON0 -/+ 0.005``). Its tails are cut at ``LON0 -/+ 0.002`` under EITHER
+      shape, because those crossings lie on edges the ring and the box share. It
+      is the control: whatever the polygon changes, it must not change this;
+    * way 502 "Notch Slip" is ONE-WAY and runs ``1 -> 20 -> 21``, from the
+      junction at node 1 north-west into the notch. Node 20 is at
+      ``(LAT0 + 0.001, LON0 - 0.001)`` and node 21 at
+      ``(LAT0 + 0.0015, LON0 - 0.0015)`` — both inside the box, both outside the
+      ring.
+
+    One-way on purpose: an interior dead end on a TWO-way road is repaired with a
+    U-turn and the gate never sees it, so the fixture would prove nothing about
+    V3. A one-way arm has no second carriageway to turn into, the generator
+    refuses to invent one, and the finding reaches the gate — which is the shape
+    the real lasso produced.
+
+    Node 21's distance to the bounding box is ``min(0.0005° lat, 0.0005° lon)`` =
+    **47.2 m**, far outside the 1.0 m band, so before this unit it was an interior
+    dead end and nothing about the boundary could see it.
+    """
+    return _osm_text(
+        [
+            (10, LAT0 - 0.001, LON0 - 0.005),
+            (1, LAT0 - 0.001, LON0 - 0.001),
+            (2, LAT0 - 0.001, LON0 + 0.001),
+            (3, LAT0 + 0.001, LON0 + 0.001),
+            (11, LAT0 + 0.001, LON0 + 0.005),
+            (20, LAT0 + 0.001, LON0 - 0.001),
+            (21, LAT0 + 0.0015, LON0 - 0.0015),
+        ],
+        [
+            (501, [10, 1, 2, 3, 11], {"highway": "secondary", "name": "Main St"}),
+            (
+                502,
+                [1, 20, 21],
+                {"highway": "secondary", "name": "Notch Slip", "oneway": "yes"},
+            ),
+        ],
+    )
+
+
+def test_a_way_running_into_the_polygon_notch_is_cut_at_the_ring(tmp_path: Path):
+    """THE ACCEPTANCE. The measured failure of the bounding-box trim, and its fix.
+
+    Both builds are of ONE file with ONE bounding box; the only difference is
+    whether the ring is passed, which is exactly what changed in this unit —
+    before it, ``requested_polygon`` was carried and never consumed.
+
+    **Without the ring** (what a lasso got until now) way 502 is inside the box
+    at every node, so nothing is trimmed: it survives whole and DEAD-ENDS at node
+    21, 47.2 m from the box and hundreds of metres from anything the user drew.
+    One-way, so no U-turn exists to emit; the cause is
+    ``one_way_dead_end_unfixable``, which is NOT in
+    :data:`~services.genesis.connectivity.BENIGN_DANGLING_CAUSES`, and the real
+    gate refuses it as ``v3_silent_departure_point``. Measured on the user's own
+    L-shaped lasso of 2026-08-13, and the reason this unit exists.
+
+    **With the ring** the tail is cut where the segment ``1 -> 20`` crosses the
+    notch's southern edge — at ``(LAT0, LON0 - 0.001)``, i.e. ON the shape the
+    user drew — the synthesized terminal is classified ``model_boundary`` through
+    ``synthesized_node_ids`` (no distance is consulted; it is 47.2 m from the
+    bounding box and that never comes up), every dangling cause is benign, and V3
+    reports nothing.
+
+    Way 501 is asserted IDENTICAL across the two builds, so the difference above
+    cannot be a whole-network change wearing a local disguise.
+    """
+    from services.genesis.gate import run_gate
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    source = _write(tmp_path, "notch.osm", notch_osm())
+
+    def built(polygon):
+        extract = parse_osm_file(source, requested_bbox=BBOX, requested_polygon=polygon)
+        trimmed = trim_ways_to_requested_bbox(extract)
+        draft = build_draft(
+            parse_osm_file(source, requested_bbox=BBOX, requested_polygon=polygon),
+            name="notch",
+        )
+        path = emit_inpx(draft, tmp_path / f"{'poly' if polygon else 'box'}.inpx")
+        census = json.loads(json.dumps(draft.model_dump(mode="json")))
+        return trimmed, draft, run_gate(path, draft_metadata=census).check("V3")
+
+    box_trimmed, box_draft, box_v3 = built(None)
+    ring_trimmed, ring_draft, ring_v3 = built(POLYGON_RING)
+
+    # --- before: the notch way survives whole and dead-ends inside the notch ---
+    assert next(w for w in box_trimmed.ways if w.id == 502).node_ids == (1, 20, 21)
+    box_ends = {
+        e.node_id: e for e in conn.dead_ends(conn.merge_junction_nodes(box_trimmed)[0])
+    }
+    assert box_ends[21].reason == conn.DEAD_END_ONE_WAY
+    assert box_ends[21].emit_u_turn is False
+    assert [f.code for f in box_v3.findings] == ["v3_silent_departure_point"]
+    assert box_v3.findings[0].context["cause"] == conn.DANGLING_ONE_WAY
+    assert conn.DANGLING_ONE_WAY not in conn.BENIGN_DANGLING_CAUSES
+
+    # --- after: it is cut AT the ring, and the cut is the model boundary --------
+    kept = next(w for w in ring_trimmed.ways if w.id == 502)
+    assert len(kept.node_ids) == 2 and kept.node_ids[0] == 1
+    marker = kept.node_ids[1]
+    assert marker in ring_trimmed.synthesized_node_ids
+    cut_node = ring_trimmed.nodes[marker]
+    # ON the ring's southern notch edge: the segment 1 -> 20 is vertical at
+    # LON0 - 0.001 and that edge is horizontal at LAT0, so the crossing is exact.
+    assert (cut_node.lat, cut_node.lon) == pytest.approx((LAT0, LON0 - 0.001), abs=1e-12)
+    assert 20 not in ring_trimmed.nodes and 21 not in ring_trimmed.nodes
+
+    trim = next(t for t in ring_trimmed.way_trims if t.way_id == 502)
+    assert trim.reason == osm_module.TRIM_TAIL_CUT and trim.end == "end"
+    assert trim.nodes_cut == 2
+    # 1->21 is 281.2 m (0.0025 deg lat = 277.2 m, 0.0005 deg lon = 47.2 m); the kept
+    # stub 1->marker is 110.9 m. 281.2 - 110.9 = 170.3 m of overhang.
+    assert trim.metres_cut == pytest.approx(170.3, abs=1.0)
+    assert "requested polygon" in trim.detail, "the record must not say bbox"
+
+    ring_ends = {
+        e.node_id: e for e in conn.dead_ends(conn.merge_junction_nodes(ring_trimmed)[0])
+    }
+    assert ring_ends[marker].reason == conn.DEAD_END_MODEL_BOUNDARY
+    assert ring_ends[marker].emit_u_turn is False
+    # The residual, asserted rather than hoped for: this terminal sits at
+    # (LAT0, LON0 - 0.001), i.e. 0.001 deg of longitude = **94.4 m** from the
+    # nearest edge of the BOUNDING BOX — a hundred times the 1.0 m band — and it is
+    # still called the boundary, because a synthesized node is classified by set
+    # membership before any distance is read. Under the old bbox trim there was no
+    # node here at all; under a band-only rule there would be no boundary here.
+    assert "94.4" in ring_ends[marker].detail
+
+    assert [f.code for f in ring_v3.findings] == []
+    causes = ring_draft.metadata["connectivity"]["dangling_approaches_by_cause"]
+    assert set(causes) <= set(conn.BENIGN_DANGLING_CAUSES), causes
+
+    # --- and the control way is untouched by any of it -------------------------
+    def way_501(extract):
+        way = next(w for w in extract.ways if w.id == 501)
+        return [(round(extract.nodes[n].lat, 12), round(extract.nodes[n].lon, 12)) for n in way.node_ids]
+
+    assert way_501(ring_trimmed) == way_501(box_trimmed)
+    assert (
+        ring_draft.metadata["boundary"]["metres_cut_total"]
+        > box_draft.metadata["boundary"]["metres_cut_total"]
+    ), "the ring must cut MORE than the box, and the difference is the notch tail"
+
+
+def test_two_polygon_builds_are_byte_identical(tmp_path: Path):
+    """Determinism, re-proved for the path the polygon trim added.
+
+    The crossing on a slanted ring edge is not written bit-exactly to anything
+    (there is no axis-aligned coordinate to snap to — see
+    ``osm._polygon_crossing_point``), so the emitted numbers are whatever the
+    intersection arithmetic produced. That is fine and it is the point of this
+    test: the arithmetic is a pure function of two nodes and a ring, so it
+    produces the same bits twice, and the byte-identical-rebuild invariant holds
+    with a polygon exactly as it does with a rectangle.
+    """
+    source = _write(tmp_path, "notch.osm", notch_osm())
+    build = lambda: to_xml_text(  # noqa: E731 - one expression, used twice
+        build_draft(
+            parse_osm_file(source, requested_bbox=BBOX, requested_polygon=POLYGON_RING),
+            name="notch",
+        )
+    )
+    assert build() == build()
+
+    # The ids are the same scheme the rectangle path uses: above every real id,
+    # handed out in visit order.
+    extract = parse_osm_file(source, requested_bbox=BBOX, requested_polygon=POLYGON_RING)
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    trimmed = trim_ways_to_requested_bbox(extract)
+    assert max(extract.nodes) == 21
+    assert sorted(trimmed.synthesized_node_ids) == [22, 23, 24]
+
+
+def test_a_rectangle_request_is_byte_identical_to_the_path_before_polygons(
+    tmp_path: Path,
+):
+    """The pin B5-1 left behind, re-armed for this unit.
+
+    ``trim_ways_to_requested_bbox`` now chooses between two sets of kernels. A
+    rectangle request must take the ones it always took, so the emitted bytes of a
+    bbox build are the bytes it produced before the polygon path existed — the
+    same claim ``test_two_builds_with_a_requested_bbox_are_byte_identical`` makes
+    about determinism, made here about the SHAPE branch.
+
+    Asserted three ways, because "the branch is not taken" is the thing under
+    test: the trimmed extracts compare equal field for field, the emitted XML is
+    identical, and the compliance report — which is where the wording of every
+    skip and trim record ends up — is identical too.
+    """
+    from services.genesis.osm import trim_ways_to_requested_bbox
+
+    source = _write(tmp_path, "notch.osm", notch_osm())
+    first, second = (
+        trim_ways_to_requested_bbox(parse_osm_file(source, requested_bbox=BBOX))
+        for _ in range(2)
+    )
+    assert [w.node_ids for w in first.ways] == [w.node_ids for w in second.ways]
+    assert {n: (v.lat, v.lon) for n, v in first.nodes.items()} == {
+        n: (v.lat, v.lon) for n, v in second.nodes.items()
+    }
+    assert [t.as_dict() for t in first.way_trims] == [t.as_dict() for t in second.way_trims]
+    # Every trim record of a rectangle build still says "requested bbox" — the
+    # wording is parameterised by shape and this is the half that must not move.
+    assert all("requested bbox" in t.detail for t in first.way_trims)
+
+    draft = lambda: build_draft(  # noqa: E731 - one expression, used twice
+        parse_osm_file(source, requested_bbox=BBOX), name="notch"
+    )
+    assert to_xml_text(draft()) == to_xml_text(draft())
+    assert draft().render_compliance("ko") == draft().render_compliance("ko")
 
 
 def test_the_boundary_band_assumption_states_the_polygon_rule_too(tmp_path: Path):
     """The published assumption is where a reader looks for the boundary RULE.
 
-    ``BOUNDARY_BAND_M``'s basis already named the three rungs; a lasso adds a
-    fourth thing to know — the rectangle used is the ring's bounding box — and an
-    assumption that omitted it would be the one place in the artifact that still
-    implied otherwise.
+    ``BOUNDARY_BAND_M``'s basis already named the three rungs; a lasso adds two
+    more things to know — the tails were cut at the POLYGON, and this band is
+    still measured against its BOUNDING BOX — and an assumption that omitted
+    either would be the one place in the artifact that still implied otherwise.
     """
     draft = build_draft(
         parse_osm_file(
@@ -2828,10 +3296,11 @@ def test_every_extract_reconstruction_carries_every_field_the_dataclass_declares
     consulted the empty map). ``requested_bbox`` would have been the second such
     field and would NOT have been harmless, and ``synthesized_node_ids`` the
     third — losing that one un-refuses the merge that welds a boundary marker
-    into a junction. ``requested_polygon`` is the fourth: it changes no geometry
-    at all, so losing it breaks nothing a test of behaviour would catch — it just
-    makes the build's own boundary label claim the polygon was judged when its
-    bounding box was.
+    into a junction. ``requested_polygon`` is the fourth, and since the trim
+    became polygon-native it is the worst of them to lose: the trim cuts at the
+    RING when it is set, so a transform that drops it mid-build silently re-trims
+    the network against the ring's bounding box — a bigger study area than the one
+    the user drew, with the notch put back.
 
     So this test asks the dataclass what its fields are, fails if the sentinel
     below does not set every one of them, and fails again if any transform loses
@@ -2880,15 +3349,21 @@ def test_every_extract_reconstruction_carries_every_field_the_dataclass_declares
         "non_drivable_node_ids": {7},
         "non_drivable_node_highways": {7: {"footway"}},
         "requested_bbox": (LAT0 - 0.02, LON0 - 0.02, LAT0 + 0.02, LON0 + 0.02),
-        # The lasso the region was drawn as. It moves no geometry (the trim cuts
-        # against the RECTANGLE above), but losing it would silently downgrade the
-        # boundary label from "bounding box of the requested polygon" back to
-        # "requested bbox" mid-build — i.e. the build would start claiming it
-        # judged the shape the user actually drew.
+        # The lasso the region was drawn as, and since the polygon-native trim it
+        # MOVES GEOMETRY: when it is present the trim cuts tails at the RING and
+        # not at the rectangle above. Losing it between transforms therefore
+        # re-trims the network against a bigger shape halfway through a build —
+        # a strictly worse failure than the label downgrade this field used to
+        # risk. Drawn here as the full rectangle's own ring (four corners, same
+        # numbers as ``requested_bbox``) so it contains every fixture node: this
+        # test's claim is that a transform which changes NOTHING still carries
+        # everything, and a ring that cut something would be testing the trim
+        # instead.
         "requested_polygon": (
             (LAT0 - 0.02, LON0 - 0.02),
             (LAT0 - 0.02, LON0 + 0.02),
             (LAT0 + 0.02, LON0 + 0.02),
+            (LAT0 + 0.02, LON0 - 0.02),
         ),
         "way_trims": [
             WayTrim(101, "secondary", osm_module.TRIM_TAIL_CUT, "start", 1, 12.5, 555, "s")

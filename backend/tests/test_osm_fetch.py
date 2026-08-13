@@ -1358,23 +1358,30 @@ def test_end_to_end_region_to_staged_osm_to_gated_generation(
     assert json.loads(json.dumps(provenance))["query"].startswith("[out:xml]")
 
 
-def test_end_to_end_polygon_region_is_built_and_judged_on_its_bounding_box(
+def test_end_to_end_polygon_region_is_built_and_trimmed_at_the_ring(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
-    """Stage (a)'s acceptance sentence, over HTTP, and its gap in the same breath.
+    """Stage (a)'s acceptance sentence, over HTTP, and its residual in the same breath.
 
     A LASSO is drawn, the query Overpass receives is the ring, the extract is
     staged, and the SAME token goes to B1's ``POST /api/genesis/jobs``. The build
     then:
 
-    * reads ``requested_bbox`` = the ring's BOUNDING BOX (so the trim and the
-      boundary ladder work exactly as they do for a rectangle fetch — the five
-      rectangle kernels are untouched by this unit);
-    * reads ``requested_polygon`` = the ring, and uses it for ONE thing: to say so;
-    * labels its boundary "bounding box of the requested polygon", carries the ring
-      into ``*.genesis.json``, and states in the compliance report that a terminal
-      inside the box and outside the ring is classified as interior;
+    * reads ``requested_polygon`` = the ring, and TRIMS against it — the tail cut
+      and every terminal classification follow the shape that was drawn;
+    * reads ``requested_bbox`` = the ring's BOUNDING BOX, which is what the metre
+      band, the beyond-the-boundary check and the isolated-zone cause still
+      measure against;
+    * labels its boundary accordingly, carries the ring into ``*.genesis.json``,
+      and states both halves in the compliance report;
     * reaches a gate verdict, like every other generation.
+
+    ``SMALL_POLYGON``'s notch is empty of geometry (every node of the crossroads
+    is inside the L or on its edges), so this build is byte-comparable with the
+    rectangle one — which is the property that makes the HTTP assertions below
+    about the ROAD and not about the fixture. The case where the notch is NOT
+    empty is ``test_a_way_running_into_the_polygon_notch_is_cut_at_the_ring`` in
+    ``test_genesis_connectivity.py``.
     """
     install(monkeypatch, FakeOverpass(ok_response()))
     headers = admin_headers()
@@ -1445,5 +1452,8 @@ def test_end_to_end_polygon_region_is_built_and_judged_on_its_bounding_box(
     )
     assert compliance.status_code == 200, compliance.text
     assert conn.BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX in compliance.text
-    assert "경계 판정은 그 폴리곤의 " in compliance.text
+    # Both halves, in the language the report is written in: what the ring cut,
+    # and what is still measured against the box.
+    assert "도로 꼬리는 폴리곤 변에서 잘랐고" in compliance.text
+    assert "바운딩 박스(위 requested_bbox_wgs84)" in compliance.text
     assert "requested_polygon_wgs84" in compliance.text

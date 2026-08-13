@@ -60,10 +60,14 @@ export interface RegionLassoMapProps {
   vertices: LatLon[];
   /** Whether the ring has been closed by a double click. */
   closed: boolean;
-  /** The rectangle boundary judgment will actually use. It comes from the
-   * SERVER's measurement (`RegionMeasurement.region`) rather than being derived
-   * here, so the dashed rectangle on screen is the same rectangle the pipeline
-   * is held to and not a second computation of it. */
+  /** The ring's bounding box. Since the trim became polygon-native this is NO
+   * LONGER what the study area is cut to — the cyan ring is — and the rectangle
+   * is drawn only because it is still the frame the residual metre band and the
+   * size estimate are measured against. Hence its demotion below from a solid
+   * amber dash to a faint hairline. It comes from the SERVER's measurement
+   * (`RegionMeasurement.region`) rather than being derived here, so the shape on
+   * screen is the same rectangle the pipeline uses and not a second computation
+   * of it. */
   bbox: { south: number; west: number; north: number; east: number } | null;
   /** `null` while the limit has not been read from `GET /region/limits`. When a
    * number, further clicks are ignored at it — the cap is the server's. */
@@ -203,7 +207,7 @@ export default function RegionLassoMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Redraw the ring, its corners and the DASHED rectangle whenever any of them
+  // Redraw the ring, its corners and the faint bounding box whenever any of them
   // changes. One layer group, replaced wholesale: a lasso is at most 64 corners,
   // so diffing would be more code than it saves.
   useEffect(() => {
@@ -220,9 +224,12 @@ export default function RegionLassoMap({
 
       const layer = L.layerGroup();
       if (bbox) {
-        // The honest rectangle: what the trim and the boundary ladder judge
-        // against, drawn in the SAME frame as the ring so the difference between
-        // the two shapes is visible rather than described.
+        // DEMOTED, and the demotion is the point. This rectangle used to be the
+        // shape the study area was cut to, so it was drawn as loudly as the ring;
+        // the trim now follows the ring, and the box is only the frame the
+        // residual metre band and the size estimate use. A hairline at 45%
+        // opacity keeps that fact visible without competing with the shape the
+        // user actually drew — deleting it would hide the residual instead.
         L.rectangle(
           [
             [bbox.south, bbox.west],
@@ -230,8 +237,9 @@ export default function RegionLassoMap({
           ],
           {
             color: "#f59e0b",
-            weight: 1.5,
-            dashArray: "6 5",
+            weight: 1,
+            opacity: 0.45,
+            dashArray: "3 6",
             fill: false,
             interactive: false,
           },

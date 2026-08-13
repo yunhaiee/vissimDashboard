@@ -5965,6 +5965,48 @@ endpoint test uploads it with a 200 first, then asserts the ingest 400). The onl
 adapter call in the chain (`select_adapter`) is safe by construction — every `sniff()`
 exception scores 0.0 and cannot propagate. Suite **4531 / 1 (env RAG) / 1 skip** (+2).
 
+## 2026-08-13 — the trim follows the ring: the user's own lasso becomes the acceptance test, and a measured counter-case rewrites the spec's rule
+
+**What.** The user drew a real L-shaped lasso and hit stage (a)'s disclosed gap: trimming ran
+on the polygon's bounding box, so way tails in the notch survived and dead-ended mid-notch as
+interior V3 findings. Now the trim is polygon-native when a ring is present: point-in-polygon
+(ray cast, half-open rule so horizontal edges and shared vertices count once; boundary-
+inclusive with `ON_RING_EPS_DEG = 1e-9` — a float-noise epsilon, deliberately NOT the 1 m
+survey tolerance, since answering a float question with a survey band would widen the study
+area by a metre), segment×ring crossings, and ONE branch on shape — every rule below the
+kernels is written once. Classification needed zero new machinery: cut terminals land in
+`synthesized_node_ids`, which B5-1's FIX-A already classifies as model boundary regardless of
+distance. gate.py untouched; the distance formulas stay rectangular as a named residual
+(polygon ⊆ bbox so the tripwire cannot false-positive; the one visible case — a SOURCE node
+ending on the ring far from the box — is stated in code, report, assumption and page).
+
+**The spec's crossing rule was wrong, and measurement rewrote it.** The controller specified
+min-t-from-the-inside-node. A segment departing a reflex vertex ALONG a ring edge broke it:
+min-t reads t=0 as "already on the edge", synthesizes nothing, and the way collapses under
+the two-node minimum — a measured 8→2-link SILENT deletion, the exact failure class this
+package refuses. The shipped rule treats crossings as interval boundaries and cuts at the
+first interval whose MIDPOINT is outside — identical to min-t in the ordinary case, correct
+for collinear runs and vertex touches. The builder implemented rather than stopped (against
+instruction), disclosed it first, and pinned the counter-case; the deviation is accepted
+because it preserved the stated intent against its own letter.
+
+**Verification (one refuter, serial).** Ran the kernels adversarially: the 3-crossing U-ring,
+an epsilon-wide notch band pierced correctly (masking only appears at a physically absurd
+~0.01 mm), t=0/t=1 double-endpoint cases, tangent-at-vertex (no spurious cut), determinism
+under all ring rotations AND reversal. Byte-identity of the rectangle path proven on REAL
+production data — the 08-12 job rebuilt with pre-diff and post-diff code from separate
+import roots: identical shas. The L-notch acceptance's "before" side is the current code's
+own rectangle branch (legitimate: that branch is proven byte-identical to pre-change), and
+the after side clears the real gate with the control way coordinate-identical. Epsilon
+anisotropy measured (~19% lat/lon skew at 36°N, both sub-millimetre — immaterial in this
+product's scope, named). One builder-prose correction: its "sentinel fixture widened from a
+triangle" claim does not match the diff — no such triangle existed; the actual change renamed
+a coincide-case test honestly and ADDED the genuinely-cutting notch test beside it, so
+coverage strengthened rather than weakened. Suite **4543 / 1 (env RAG) / 1 skip** (+9);
+contract **56/56**; typecheck clean. UI: the dashed bbox demoted to a hairline with the sky
+statement that the drawn polygon is queried, trimmed and judged; the superseded gap sentences
+are pinned ABSENT — a disclosure kept past its own fix misleads as much as a missing one.
+
 ## 2026-08-13 — U-1-quick: one line had broken every artifact button three ways, and the checklist becomes a grid
 
 **What (four items of the user's approved U-1 elaboration).** ① The dead artifact row's root

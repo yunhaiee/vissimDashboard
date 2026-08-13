@@ -1814,8 +1814,8 @@ contractTest("B2: the region page ends at the staging door and hands off to B1's
   // paragraph has to say which is which rather than going quiet.
   pin.match(
     page,
-    /폴리곤 라쏘는 이제 지원합니다/,
-    "expected the page to say the lasso now ships, so a reader is not told it is deferred while using it",
+    /폴리곤 라쏘는 이제 지원하고, 잘라내기도 그린 폴리곤 기준입니다/,
+    "expected the page to say the lasso ships AND that the trim follows the drawn ring",
   );
   pin.match(
     page,
@@ -1843,17 +1843,18 @@ contractTest("B2: the region page ends at the staging door and hands off to B1's
 });
 
 // ---------------------------------------------------------------------------
-// The lasso (stage (a)) -- one shape at a time, and the bbox gap said out loud
+// The lasso (stage (a)) -- one shape at a time, and what it is judged as
 // ---------------------------------------------------------------------------
 //
 // Its own test, single-concern: the value of the lasso is NOT that a polygon can
 // be drawn, it is that the page tells the truth about which shape gets judged.
-// The query is the polygon; the tail trim and the model boundary are the
-// polygon's BOUNDING BOX (the five rectangle kernels of 85b4bb2 were deliberately
-// not generalised). A page that drew the ring and said nothing would be a page
-// that quietly moved a study-area boundary.
+// That truth CHANGED when the trim became polygon-native: the query, the tail
+// trim and the model-boundary decision are all the drawn ring now, and only the
+// residual metre band and the size estimate are still its bounding box. So the
+// pins below moved with it, and the old sentence is pinned ABSENT -- a
+// disclosure kept past its own fix misleads exactly as much as a missing one.
 
-contractTest("B2 lasso: the page sends one shape and names the bounding-box gap on screen", (pin) => {
+contractTest("B2 lasso: the page sends one shape and says the polygon is what gets cut", (pin) => {
   const page = read("app/genesis/region/page.tsx");
   const map = read("components/genesis/RegionLassoMap.tsx");
 
@@ -1874,24 +1875,45 @@ contractTest("B2 lasso: the page sends one shape and names the bounding-box gap 
     "expected the fetch to send exactly the shape the preview measured",
   );
 
-  // THE disclosure. On screen, in Korean, naming both halves: what is queried and
-  // what is judged.
+  // THE disclosure. On screen, in Korean, naming both halves: the drawn polygon
+  // is what is queried AND what is cut, and the box is what is left over.
   pin.match(
     page,
-    /점선 사각형이 경계 판정 기준입니다/,
-    "expected the page to say on screen that boundary judgment uses the dashed rectangle",
+    /그린 폴리곤이 그대로 기준입니다/,
+    "expected the page to say on screen that the drawn polygon is the boundary",
   );
   pin.match(
     page,
-    /내부 막다른 길로 분류됩니다/,
-    "expected the page to name the consequence: a road end between the ring and its box reads as interior",
+    /폴리곤 변에서 자르고 그 자리에 노드를 만듭니다/,
+    "expected the page to name the mechanism: a road past the ring is cut AT the ring",
   );
-  // And the dashed rectangle is the SERVER's derived box, not a second
+  pin.match(
+    page,
+    /거리 기반 경계 띠와 용량 추정에만 쓰입니다/,
+    "expected the page to name what the bounding box is still used for, rather than dropping it",
+  );
+  // The SUPERSEDED sentence, pinned absent. It was true until the trim became
+  // polygon-native (backend: osm.trim_ways_to_requested_bbox chooses its kernels
+  // by shape); leaving it on screen would tell a user their notch is judged as
+  // interior when it is now cut at the ring.
+  pin.doesNotMatch(
+    page,
+    /점선 사각형이 경계 판정 기준입니다|내부 막다른 길로 분류됩니다/,
+    "the superseded bounding-box disclosure must not survive its own fix",
+  );
+  // And the rectangle drawn is the SERVER's derived box, not a second
   // computation in the browser -- the same rule the cap numbers already follow.
   pin.match(
     page,
     /bbox=\{measurement\?\.region \?\? null\}/,
-    "expected the dashed rectangle to be the server's own derived bounding box",
+    "expected the drawn rectangle to be the server's own derived bounding box",
+  );
+  // Demoted, not deleted: a hairline keeps the residual visible without competing
+  // with the shape the user drew.
+  pin.match(
+    map,
+    /weight: 1,\s*\n\s*opacity: 0\.45,\s*\n\s*dashArray: "3 6",/,
+    "expected the bounding box to be drawn as a demoted hairline, still present",
   );
   pin.match(
     page,

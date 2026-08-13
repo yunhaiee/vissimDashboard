@@ -814,15 +814,26 @@ class DeadEnd:
 #: comparing two builds needs to be able to tell which boundary each used.
 BOUNDARY_SOURCE_REQUESTED_BBOX = "requested bbox (fetch provenance)"
 #: Rung 1 when the region was drawn as a LASSO. A distinct string, and the
-#: distinction is the disclosure: the query asked Overpass for the polygon, but
-#: everything that judges geometry against an edge — the tail trim, this
-#: rectangle, therefore every :class:`DeadEnd` — is rectangle arithmetic on the
-#: polygon's BOUNDING BOX. A terminal sitting in bbox-minus-polygon is classified
-#: as interior, exactly as it would be for a rectangle fetch of the same box. It
-#: would be cheap and wrong to print the same label for both cases: a reader
-#: comparing two builds must be able to see that one of them was judged against a
-#: shape it was not fetched with.
-BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX = "bounding box of the requested polygon (fetch provenance)"
+#: distinction is still the disclosure — but the disclosure has CHANGED, because
+#: the trim is now polygon-native (``osm.trim_ways_to_requested_bbox``):
+#:
+#: * the query, the tail trim and therefore every synthesized terminal follow the
+#:   RING. A way running into a concave notch is cut where it leaves the shape the
+#:   user drew, and the cut node is classified as the model boundary by membership
+#:   in ``synthesized_node_ids`` — no distance is consulted;
+#: * this RECTANGLE — the ring's bounding box — is what the metre band
+#:   (:data:`BOUNDARY_BAND_M`), :data:`DEAD_END_BEYOND_REQUESTED_BBOX` and the
+#:   isolated-zone cause still measure against, because those are rectangle
+#:   arithmetic. The label names it as a bounding box for that reason: it is the
+#:   residual, and a terminal the SOURCE ends on the ring far from the box (nothing
+#:   synthesized it, so only the band can judge it) still reads as an interior dead
+#:   end.
+#:
+#: Printing the same string as a rectangle fetch would hide both halves, so the two
+#: labels stay distinct.
+BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX = (
+    "bounding box of the requested polygon (fetch provenance; the trim followed the polygon)"
+)
 BOUNDARY_SOURCE_DECLARED_BOUNDS = "declared <bounds>"
 BOUNDARY_SOURCE_HULL = "extent of the kept geometry"
 
@@ -835,10 +846,13 @@ def boundary_source(extract: OsmExtract) -> str:
     boundary did this network use?" is a question about the build, not about
     whether anything happened to sit on the edge.
 
-    Rung 1 has TWO labels for one rectangle, and no behaviour turns on which:
-    the rectangle is ``requested_bbox`` either way. The label says whether that
-    rectangle was the shape the user drew or the bounding box of the shape they
-    drew, because those are the same arithmetic and different claims.
+    Rung 1 has TWO labels for one rectangle, and no behaviour IN THIS MODULE
+    turns on which: the rectangle is ``requested_bbox`` either way. The label
+    says whether that rectangle was the shape the user drew or the bounding box
+    of the shape they drew — the same arithmetic here, and different claims,
+    because for a lasso the geometry reaching this function was already cut at
+    the RING (``osm.trim_ways_to_requested_bbox``) and this rectangle is only the
+    residual metre band.
     """
     if extract.requested_bbox is not None:
         if extract.requested_polygon is not None:
@@ -868,14 +882,15 @@ def _boundary_rectangle(extract: OsmExtract, xy: dict[int, tuple[float, float]])
        cut terminals exactly ON this rectangle, so they are 0.00 m from it.
        When the region was drawn as a POLYGON, this rung is that polygon's
        BOUNDING BOX and the label says so
-       (:data:`BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX`). The query really did ask
-       Overpass for the ring — but the trim, this rectangle and the band test are
-       all rectangle arithmetic (Liang–Barsky against axis-aligned edges), so a
-       terminal lying inside the box and outside the ring is classified as an
-       INTERIOR dead end, exactly as it would be for a rectangle fetch of the
-       same box. That is a real gap between the shape asked for and the shape
-       judged, and it is named here, in the compliance report and on the region
-       page rather than being left for a reader to infer from a matching label.
+       (:data:`BOUNDARY_SOURCE_REQUESTED_POLYGON_BBOX`). The TRIM is not this
+       rectangle any more: it cuts at the ring, so the geometry arriving here has
+       no terminal in box-minus-polygon left to misjudge, and each cut terminal is
+       read as the model boundary through ``synthesized_node_ids`` before any
+       distance is taken. What remains rectangular is this band — a terminal the
+       SOURCE ends on the ring, in a notch far from the box, is 100 m+ from this
+       rectangle and reads as an interior dead end. That residual is named here,
+       in the compliance report and on the region page rather than being left for
+       a reader to infer from a matching label.
     2. the file's own declared ``<bounds>``, when it has one. Most Overpass
        exports on this machine do not; a JOSM save does.
     3. the extent of the kept geometry. The only boundary a bare file states,
@@ -1114,8 +1129,11 @@ def dead_ends(extract: OsmExtract) -> list[DeadEnd]:
                             "so a vehicle here leaves it"
                             + (
                                 " — and this node is one this generator SYNTHESIZED on "
-                                "the rectangle, so it is a terminal for every way that "
-                                "ends at it and no movement across it is one the source "
+                                "the requested region's own edge (which is why the metre "
+                                "above is only the distance to the boundary RECTANGLE, "
+                                "and is not what classified it), so it is a terminal for "
+                                "every way that ends at it and no movement across it is "
+                                "one the source "
                                 "describes"
                                 if synthesized
                                 else ""

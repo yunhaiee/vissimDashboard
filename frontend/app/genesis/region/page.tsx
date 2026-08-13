@@ -13,13 +13,16 @@
 //     against the cap BEFORE anything is downloaded, fetched off the request
 //     thread, and handed to `startGenesisJob` as the SAME token an uploaded file
 //     produces;
-//   * shipped with a NAMED gap — the lasso is what Overpass is asked for
-//     (`poly:`), but boundary judgment downstream is the polygon's BOUNDING BOX:
-//     the tail trim and the boundary ladder are axis-aligned rectangle arithmetic
-//     (five kernels verified in `85b4bb2`), and generalising them to an arbitrary
-//     ring is its own unit. So the box is drawn on the map as a dashed rectangle,
+//   * shipped, and since the polygon-native trim the lasso is judged as the shape
+//     it is: Overpass is asked for the ring (`poly:`), the way-tail trim CUTS at
+//     the ring, and a terminal it synthesizes there is the model boundary. What
+//     remains rectangular is the residual metre band and the size estimate, both
+//     measured on the ring's bounding box — drawn on the map as a faint hairline,
 //     said in words beside it, and written into the artifact's compliance report.
-//     A gap on screen is a gap; a gap left for the user to discover is a lie;
+//     This block used to describe the opposite as a NAMED gap, and that gap was
+//     real until it was closed; the sentence is replaced rather than softened,
+//     because a disclosure kept past its own fix misleads exactly as much as a
+//     missing one;
 //   * deferred, deliberately — the per-road include/exclude toggles and the
 //     block-exclusion "shared wall" rule. Both act on the geometry of a network
 //     that does not exist until after an extract has been fetched and drafted, so
@@ -524,14 +527,20 @@ export default function GenesisRegionPage() {
               )}
               fitLabel={t("그린 영역으로 이동", "Zoom to shape", "描いた領域へ移動")}
             />
-            {/* THE GAP, on screen. The query is the polygon; the boundary
-              * judgment is the dashed rectangle. Said here, said again in the
-              * generated compliance report, and never implied. */}
-            <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-900">
+            {/* WHAT IS CUT, on screen. The query, the tail trim and the model
+              * boundary are all the drawn polygon; the faint rectangle is the
+              * residual — the metre band and the size estimate. Said here, said
+              * again in the generated compliance report, and never implied.
+              *
+              * This card used to say the opposite (the rectangle judged, the ring
+              * only queried) and it was true when it said it. It is replaced
+              * rather than softened: a disclosure kept past its own fix is the
+              * same lie as one that was never written. */}
+            <p className="rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-[11px] leading-relaxed text-sky-900">
               {t(
-                "점선 사각형이 경계 판정 기준입니다. Overpass에는 그린 폴리곤 그대로 질의하지만, 도로 꼬리 잘라내기와 모형 경계 판정은 폴리곤의 바운딩 박스(점선)로 합니다 — 따라서 점선 안이면서 폴리곤 밖에 있는 도로 끝은 경계가 아니라 내부 막다른 길로 분류됩니다. 이 사실은 생성된 준수 보고서에도 그대로 적힙니다.",
-                "The dashed rectangle is what boundary judgment uses. Overpass is queried with the polygon exactly as drawn, but the way-tail trim and the model-boundary decision use the polygon's BOUNDING BOX (dashed) — so a road end inside the dashes but outside the polygon is classified as an interior dead end, not as the model boundary. The generated compliance report states this too.",
-                "破線の矩形が境界判定の基準です。Overpass には描いたポリゴンのまま問い合わせますが、道路の尾部の切り詰めとモデル境界の判定はポリゴンのバウンディングボックス（破線）で行います — したがって破線の内側でポリゴンの外にある道路端は、モデル境界ではなく内部の行き止まりとして分類されます。この事実は生成される準拠レポートにも記載されます。",
+                "그린 폴리곤이 그대로 기준입니다. Overpass 질의도, 도로 꼬리 잘라내기도, 모형 경계 끝점 판정도 모두 이 폴리곤으로 합니다 — 폴리곤 밖으로 뻗은 도로는 폴리곤 변에서 자르고 그 자리에 노드를 만듭니다. 옅은 점선 사각형은 폴리곤의 바운딩 박스로, 이제는 거리 기반 경계 띠와 용량 추정에만 쓰입니다. 이 내용은 생성된 준수 보고서에도 그대로 적힙니다.",
+                "The polygon you drew is the boundary. Overpass is queried with it, the way-tail trim cuts at it, and a road end is judged against it — a road running past the polygon is cut AT its edge and a node is placed there. The faint dashed rectangle is the polygon's bounding box, and it is now used only for the distance-based boundary band and the size estimate. The generated compliance report states this too.",
+                "描いたポリゴンがそのまま基準です。Overpass の問い合わせも、道路の尾部の切り詰めも、モデル境界の端点判定も、すべてこのポリゴンで行います — ポリゴンの外へ伸びる道路はその辺で切り詰め、そこにノードを作ります。薄い破線の矩形はポリゴンのバウンディングボックスで、いまは距離ベースの境界帯と規模の見積りにのみ使います。この内容は生成される準拠レポートにも記載されます。",
               )}
             </p>
             <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500">
@@ -767,14 +776,15 @@ export default function GenesisRegionPage() {
               {selected.region.east}
             </p>
             {selected.polygon && (
-              /* A lasso extract says so, and says which rectangle it was judged
-                * against — the record's `region` is that rectangle in both cases,
-                * so without this line the two would be indistinguishable. */
+              /* A lasso extract says so, and says what the rectangle printed
+                * above it actually is — the record's `region` is that bounding
+                * box in both shapes' case, so without this line a lasso and a
+                * rectangle fetch would be indistinguishable in the history. */
               <p className="mt-1">
                 {t(
-                  `폴리곤 ${selected.polygon.vertices.length}점으로 질의했고, 위 사각형(폴리곤의 바운딩 박스)이 경계 판정 기준입니다.`,
-                  `Queried as a ${selected.polygon.vertices.length}-corner polygon; the rectangle above is its bounding box, and that is what boundary judgment used.`,
-                  `ポリゴン ${selected.polygon.vertices.length} 点で問い合わせ、上の矩形（ポリゴンのバウンディングボックス）が境界判定の基準です。`,
+                  `폴리곤 ${selected.polygon.vertices.length}점으로 질의했고 잘라내기도 그 폴리곤 기준입니다. 위 사각형은 폴리곤의 바운딩 박스입니다.`,
+                  `Queried as a ${selected.polygon.vertices.length}-corner polygon, and trimmed at that polygon too; the rectangle above is its bounding box.`,
+                  `ポリゴン ${selected.polygon.vertices.length} 点で問い合わせ、切り詰めもそのポリゴン基準です。上の矩形はポリゴンのバウンディングボックスです。`,
                 )}
               </p>
             )}
@@ -952,9 +962,9 @@ export default function GenesisRegionPage() {
         </summary>
         <p className="mt-2">
           {t(
-          "폴리곤 라쏘는 이제 지원합니다(경계 판정은 바운딩 박스 — 위 설명 참고). 목업의 도로 개별 선택·블록 제외(공유 벽 규칙)는 의도적으로 다음 단계로 미뤘습니다 — 둘 다 이미 뽑아낸 도로망의 기하가 있어야 동작하므로, 추출 위에 얹는 기능이지 추출을 대신하는 기능이 아닙니다. 라쏘는 그 기하가 필요하지 않아 먼저 나왔습니다.",
-          "The polygon lasso is now supported (boundary judgment uses its bounding box — see above). The mockup's per-road selection and block exclusion (the shared-wall rule) are deliberately deferred: both act on the geometry of a network that does not exist until after an extract has been fetched and drafted, so they sit on top of this step rather than replacing it. The lasso needed none of that geometry, which is why it shipped first.",
-          "ポリゴン投げ縄は対応しました（境界判定はバウンディングボックス — 上記参照）。モックアップの道路ごとの選択・ブロック除外（共有壁ルール）は意図的に次段階へ送りました — いずれも抽出後の道路網の幾何が必要で、抽出の上に載る機能であり、抽出の代わりではありません。投げ縄はその幾何を必要としないため先に出しました。",
+          "폴리곤 라쏘는 이제 지원하고, 잘라내기도 그린 폴리곤 기준입니다(바운딩 박스는 거리 띠에만 — 위 설명 참고). 목업의 도로 개별 선택·블록 제외(공유 벽 규칙)는 의도적으로 다음 단계로 미뤘습니다 — 둘 다 이미 뽑아낸 도로망의 기하가 있어야 동작하므로, 추출 위에 얹는 기능이지 추출을 대신하는 기능이 아닙니다. 라쏘는 그 기하가 필요하지 않아 먼저 나왔습니다.",
+          "The polygon lasso is supported and the trim now follows the drawn polygon (its bounding box is left only for the distance band — see above). The mockup's per-road selection and block exclusion (the shared-wall rule) are deliberately deferred: both act on the geometry of a network that does not exist until after an extract has been fetched and drafted, so they sit on top of this step rather than replacing it. The lasso needed none of that geometry, which is why it shipped first.",
+          "ポリゴン投げ縄に対応し、切り詰めも描いたポリゴン基準です（バウンディングボックスは距離帯のみ — 上記参照）。モックアップの道路ごとの選択・ブロック除外（共有壁ルール）は意図的に次段階へ送りました — いずれも抽出後の道路網の幾何が必要で、抽出の上に載る機能であり、抽出の代わりではありません。投げ縄はその幾何を必要としないため先に出しました。",
           )}
         </p>
       </details>
