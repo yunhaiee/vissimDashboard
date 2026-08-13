@@ -207,6 +207,17 @@ class RealityCheckNodeTarget(BaseModel):
         default=None,
         description="That input's CURRENT volume in veh/h; the proposal scales it by observed/modelled.",
     )
+    vehicle_input_link_no: str | None = Field(
+        default=None,
+        description=(
+            "The LINK that vehicle input feeds (get_vehicle_inputs returns it as 'link'). Supply "
+            "it: it is what lets the loop tell an entrance the counts were TAKEN AT from one they "
+            "were not. A measured entrance's volume is data to match, not a knob, so the demand "
+            "edit is REFUSED there and the routing/behaviour levers are proposed instead; without "
+            "this the entrance cannot be checked and any demand proposal comes back explicitly "
+            "labelled a demand ESTIMATE for you to confirm or replace."
+        ),
+    )
     movement: str | None = Field(
         default=None,
         description=(
@@ -365,6 +376,12 @@ def _reality_check_targets(
             node["vehicle_input"] = {
                 "input_no": entry.vehicle_input_no,
                 "current_volume": entry.vehicle_input_current_volume,
+                # Unit D4: the link is what fixes.entrance_measurement joins
+                # the observed rows against. Passed straight through, absence
+                # and all -- an absent link is an UNVERIFIED entrance, which is
+                # a named state with its own labelling, never a licence to
+                # treat the volume as a free parameter.
+                "link_no": entry.vehicle_input_link_no,
                 "interval_no": entry.interval_no,
             }
         if entry.movement is not None:
@@ -638,7 +655,7 @@ def build_reality_check_report(
     params=RunRealityCheckParams,
 )
 def run_reality_check(params: RunRealityCheckParams) -> dict[str, Any]:
-    """Compare a completed run against the observed counts node by node (GEH) and return, per node, either a concrete fix proposal or an evidenced refusal -- the modelled side is read from the RUN's own movement volumes, never from the workbook's pasted model column, and every node id that fails to join is named rather than dropped. The observed side is the base counts workbook by default, or a stored observation set when observation_set_id is given (that path also needs site_nodes, because survey site ids are not Vissim node ids and are never matched by guesswork). Read-only: it applies nothing, and any proposal it returns still goes through the normal approval loop. Supply targets (the vehicle input / routing decision per node, from get_vehicle_inputs and get_routing_decisions) to get concrete proposals; without them a real miss still comes back, as a refusal naming what was missing."""
+    """Compare a completed run against the observed counts node by node (GEH) and return, per node, either a concrete fix proposal or an evidenced refusal -- the modelled side is read from the RUN's own movement volumes, never from the workbook's pasted model column, and every node id that fails to join is named rather than dropped. The observed side is the base counts workbook by default, or a stored observation set when observation_set_id is given (that path also needs site_nodes, because survey site ids are not Vissim node ids and are never matched by guesswork). Read-only: it applies nothing, and any proposal it returns still goes through the normal approval loop. Supply targets (the vehicle input / routing decision per node, from get_vehicle_inputs and get_routing_decisions) to get concrete proposals; without them a real miss still comes back, as a refusal naming what was missing. Include each vehicle input's LINK (vehicle_input_link_no): an entrance the counts were taken at is data to match, not a knob, so its volume edit is refused by name and the turn-split lever is proposed instead."""
     report = build_reality_check_report(
         params.scenario_id,
         period=params.period,

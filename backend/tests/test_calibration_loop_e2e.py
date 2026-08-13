@@ -41,11 +41,21 @@ convention — exercised at stage 4 — is that the caller passes the proposal's
 rationale as the approve ``reason``, so the reviewer signs off on the
 machine's stated evidence rather than on a blank line.
 
-MEASURED CAVEAT (no code changed for it): ``MAX_APPROVAL_REASON_CHARS`` is
-300, and this proposal's rationale is 235 chars in ko and 222 in ja but 398 in
-en — so an English-language session cannot carry its own rationale through the
-``reason`` field unabridged. ko is the primary language and the demo is ko, so
-the loop closes; the en overflow is recorded here rather than discovered.
+MEASURED CAVEAT, AND WHAT UNIT D4 DID TO IT (2026-08-12). Before D4 this
+proposal's rationale was 235 chars in ko and 222 in ja — inside the 300-char
+``MAX_APPROVAL_REASON_CHARS`` — but 398 in en, so only an English session had
+to abridge. D4 appends the demand-ESTIMATE policy sentence (this entrance could
+not be verified as measured; if you know the real count, reject this and supply
+it), which put ko at 385 and ja at 365: every language over the old cap, and
+the first thing an abridgement drops is exactly that caveat.
+
+So the cap was raised to 600 (routers/assistant.py carries the reasoning; its
+job is keeping a BLOB out of the ledger, which 600 still does). ko and ja are
+therefore signed VERBATIM again, as this file's convention always intended.
+**en, at 647, still overflows** — the same caveat this file has recorded since
+before D4, now with one more sentence in it. All three numbers are measured and
+ASSERTED at stage 4 below rather than described here, so this paragraph cannot
+rot into a false claim: if en ever fits, that assertion fails and says so.
 """
 from __future__ import annotations
 
@@ -468,7 +478,16 @@ def test_the_whole_calibration_loop_ends_in_one_signed_document(
     assert demand_proposal["outcome"] == fixes.PROPOSAL
     assert demand_proposal["scope"] == fixes.DEMAND_LEVEL
     assert demand_proposal["verb"] == "set_vehicle_input_volume"
-    assert demand_proposal["confidence"] == fixes.CONFIDENCE_ARITHMETIC
+    # UNIT D4: the arithmetic is unchanged and so is the verb, but the label
+    # is not — this entrance could not be verified as measured (the demo
+    # workbook records turns as tokens, not as link-bearing OBJECT_IDs), so
+    # what a reviewer is asked to approve is a NAMED demand estimate.
+    assert demand_proposal["confidence"] == fixes.CONFIDENCE_DEMAND_ESTIMATE
+    assert fixes.ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED in demand_proposal["assumptions"]
+    assert (
+        demand_proposal["evidence"]["target"]["entrance_measurement"]["status"]
+        == fixes.ENTRANCE_UNVERIFIED
+    )
     evidence = demand_proposal["evidence"]
     assert evidence["node_total_geh"] >= validation.GEH_GOOD_LT
     assert 7.0 <= evidence["node_total_geh"] <= 8.0, evidence
@@ -523,12 +542,24 @@ def test_the_whole_calibration_loop_ends_in_one_signed_document(
     # -----------------------------------------------------------------------
     # STAGE 4 — an AUTHENTICATED reviewer approves, carrying the rationale.
     # -----------------------------------------------------------------------
-    # The convention this file documents (see the module docstring): the
-    # caller passes the proposal's machine rationale as the approve `reason`,
-    # so the human-visible 근거 column carries the evidence the decision was
-    # made on. It fits: 235 chars against a 300-char cap.
+    # The convention this file documents (see the module docstring): the caller
+    # passes the proposal's machine rationale as the approve `reason`, so the
+    # human-visible 근거 column carries the evidence the decision was made on.
+    #
+    # MEASURED, not described — the numbers are asserted so the module
+    # docstring's caveat cannot rot into a false claim. Unit D4's policy
+    # sentence lengthened every rationale, and the cap was raised 300 -> 600 in
+    # answer (routers/assistant.py says why): ko and ja now fit and are signed
+    # VERBATIM; en still does not, which is the same overflow this file has
+    # recorded since before D4.
+    lengths = {lang: len(text) for lang, text in demand_proposal["rationale"].items()}
+    cap = assistant_endpoint.MAX_APPROVAL_REASON_CHARS
+    assert lengths["ko"] <= cap and lengths["ja"] <= cap, lengths
+    assert lengths["en"] > cap, (
+        "the en rationale now fits too — delete the en caveat from the module docstring"
+    )
     rationale = demand_proposal["rationale"]["ko"]
-    assert len(rationale) <= assistant_endpoint.MAX_APPROVAL_REASON_CHARS
+    assert len(rationale) <= cap
 
     fake_session = FakeEditSession(
         work_dir / "working.inpx", readback=demand_proposal["params"]["volume"]
@@ -608,10 +639,12 @@ def test_the_whole_calibration_loop_ends_in_one_signed_document(
     # (b) the 승인자 cell: the reviewer who actually logged in
     assert row[7] == REVIEWER_CELL
     assert "기록 없음(인증 이전)" not in _all_text(doc)
-    # (c) the 근거 cell: the proposal's own rationale, GEH numbers and all
+    # (c) the 근거 cell: the proposal's own rationale VERBATIM — GEH numbers,
+    # arithmetic, and D4's demand-ESTIMATE caveat, none of them abridged away.
     assert row[8] == rationale
     assert f"GEH {demand_proposal['evidence']['node_total_geh']}" in row[8]
     assert demand_proposal["evidence"]["arithmetic"] in row[8]
+    assert "수요 추정" in row[8]
 
     # (d) THE ABSENCE THAT IS THE POINT: node 2's refusal produced no edit, so
     # it appears nowhere as a change. A refused node that quietly showed up in

@@ -79,7 +79,20 @@ assistant_router = VissimAssistantRouter()
 #: (services/audit_trail.py elides past its own, smaller, render-time cap);
 #: rejecting anything longer at the pydantic boundary keeps an unbounded blob
 #: out of the append-only ledger in the first place.
-MAX_APPROVAL_REASON_CHARS = 300
+#:
+#: RAISED 300 -> 600 (unit D4, 2026-08-12). The cap's job is to keep a BLOB out
+#: of the ledger, and 600 still does that. What 300 no longer accommodated was
+#: the thing the reviewer is most likely to want to sign: the proposal's own
+#: machine rationale. Measured on the demo loop, a demand proposal's rationale
+#: runs 359 (ja) / 379 (ko) / 641 (en) chars, because D4 appends the sentence
+#: that says the value is a NAMED demand estimate and asks the approver to
+#: reject it if they hold the real count. At 300 every language had to be
+#: abridged, and the first thing an abridgement drops is the caveat — i.e. the
+#: cap was quietly turning "this is an estimate" into "this is a correction".
+#: 600 lets ko and ja through verbatim; en still overflows and is abridged by
+#: its caller (see tests/test_calibration_loop_e2e.py's module docstring for
+#: the measurement, which is asserted there rather than described).
+MAX_APPROVAL_REASON_CHARS = 600
 
 #: Unit U8: who may resolve a pending write/run approval. Both roles are NAMED
 #: — ``routers/auth.require_role`` grants ``admin`` nothing implicitly, exactly

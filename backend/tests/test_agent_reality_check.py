@@ -164,7 +164,12 @@ def targets(
 
     * node 1's demand target is vehicle input 1 (link 101, the EB approach);
       its current volume is the demand that approach carries, i.e. the sum of
-      its three movements' base volumes.
+      its three movements' base volumes. Its LINK is passed too (unit D4): it
+      is what lets the mapping ask whether the counts were taken AT that
+      entrance. On this fixture the answer is "cannot tell" — the demo
+      workbook records turns as tokens (``W-E``), not as link-bearing
+      OBJECT_IDs — which is a NAMED absence, not a pass; see
+      ``test_exit_1_...`` below.
     * node 2's routing target is decision 2 route 1 — the WB through movement
       (207 -> 141), which is the E-W turn the fixture drains — WITH the scope
       that decision governs (its three E-approach turns), because the observed
@@ -182,6 +187,7 @@ def targets(
             "vehicle_input": {
                 "input_no": "1",
                 "current_volume": eb_approach_volume,
+                "link_no": "101",
                 "interval_no": 1,
             }
         },
@@ -249,7 +255,20 @@ def test_the_run_evidence_is_u1s_own_and_carries_the_node_token(run_result: dict
 
 
 def test_exit_1_demand_miss_yields_a_schema_valid_vehicle_input_proposal(am_report: dict):
-    """(1) auto-propose one real fix: the node TOTAL misses -> demand."""
+    """(1) auto-propose one real fix: the node TOTAL misses -> demand.
+
+    UNIT D4 (2026-08-12): this entrance is UNVERIFIED, so the proposal stands —
+    and stands LABELLED. The demo workbook records its turns as tokens
+    (``W-E``) rather than as link-bearing Vissim OBJECT_IDs, so even with
+    input 1's link supplied there is no row that can be resolved to link 101,
+    and the mapping cannot tell whether the counts were taken at that
+    entrance. Policy for that state is ask-the-user-first and the approval
+    card is the ask, so the fix is still proposed — as a NAMED demand
+    estimate, with the reason it could not be verified travelling in the
+    evidence. (The MEASURED case, where the workbook DOES carry OBJECT_IDs and
+    the demand edit is refused outright, is pinned in test_agent_fixes.py's
+    D4 section against the real demo intersection's numbers.)
+    """
     assert am_report["status"] == reality_check.CHECKED
 
     node = _node(am_report, "1")
@@ -274,7 +293,16 @@ def test_exit_1_demand_miss_yields_a_schema_valid_vehicle_input_proposal(am_repo
     )
     assert outcome["params"]["volume"] == expected
     assert outcome["params"]["input_no"] == "1"
-    assert outcome["confidence"] == fixes.CONFIDENCE_ARITHMETIC
+    assert outcome["confidence"] == fixes.CONFIDENCE_DEMAND_ESTIMATE
+
+    # ... and the D4 label rides all the way into the report a human reads.
+    assert fixes.ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED in outcome["assumptions"]
+    entrance = evidence["target"]["entrance_measurement"]
+    assert entrance["status"] == fixes.ENTRANCE_UNVERIFIED
+    assert entrance["why"] == fixes.ENTRANCE_NO_LINK_KEYED_ROWS
+    assert entrance["link_no"] == "101"
+    assert "DEMAND ESTIMATE" in outcome["rationale"]["en"]
+    assert "수요 추정" in outcome["rationale"]["ko"]
     # (Whether it survives the approval loop's own preflight gate is pinned
     # separately, by test_proposals_are_preflight_clean below.)
 
@@ -732,7 +760,10 @@ def test_the_tool_params_translate_into_u4s_target_shape():
     targets, movement_ids = _reality_check_targets(
         [
             RealityCheckNodeTarget(
-                node_id="1", vehicle_input_no="7", vehicle_input_current_volume=800.0
+                node_id="1",
+                vehicle_input_no="7",
+                vehicle_input_current_volume=800.0,
+                vehicle_input_link_no="620",
             ),
             RealityCheckNodeTarget(
                 node_id="2",
@@ -746,9 +777,19 @@ def test_the_tool_params_translate_into_u4s_target_shape():
             ),
         ]
     )
+    # Unit D4: the input's LINK travels with the rest of the demand target —
+    # it is the join fixes.entrance_measurement uses to tell an entrance the
+    # counts were taken at from one they were not.
     assert targets["1"]["vehicle_input"] == {
-        "input_no": "7", "current_volume": 800.0, "interval_no": 1,
+        "input_no": "7", "current_volume": 800.0, "link_no": "620", "interval_no": 1,
     }
+    # ... and a caller that omits it gets an explicit None, the same way
+    # decision_movements does: "not supplied" must stay distinguishable from
+    # "supplied as nothing", because D4 reads the first as UNVERIFIED.
+    linkless, _ = _reality_check_targets(
+        [RealityCheckNodeTarget(node_id="1", vehicle_input_no="7")]
+    )
+    assert linkless["1"]["vehicle_input"]["link_no"] is None
     assert targets["2"]["routes"]["E-W"]["decision_no"] == "2"
     # The decision's SCOPE survives the params -> U4 target translation; it is
     # the denominator U4's routing arithmetic refuses to proceed without.

@@ -25,6 +25,16 @@ would make this unit a lie if they rotted:
    asserted "this key maps to that verb name" would pass against a hardcoded
    dict and would therefore have tested nothing.
 
+4bis. **An observed entrance's volume is never proposed as an edit** (unit
+   D4, 2026-08-12). Where the counts were taken AT the entrance a vehicle
+   input feeds, the demand edit is refused by name and the loop keeps grading
+   so the knobs that ARE ours still get proposed; where measured-ness cannot
+   be verified, the proposal survives but is labelled a demand ESTIMATE. The
+   regression case is the real demo intersection's own numbers (node 8, 922
+   observed vs 707 modelled, input 113 on link 617), because that exact
+   configuration produced the historic 2.1 demand proposal this doctrine
+   reverses — so the test asserts the old number appears NOWHERE.
+
 4. **A routing proposal's DENOMINATOR is the decision's, or there is no
    proposal.** The observed share a relFlow is derived from must be taken
    against the movements the decision actually governs
@@ -84,6 +94,12 @@ def _node(
     }
 
 
+#: The demand target as most of this file uses it: NO ``link_no``. Unit D4
+#: reads that as an UNVERIFIED entrance — the loop cannot check whether the
+#: counts were taken there — so the demand proposal survives, relabelled as a
+#: named demand ESTIMATE. That is the branch these fixtures exercise; the
+#: MEASURED branch (which refuses) needs a link and OBJECT_ID-keyed observed
+#: rows, and has its own fixtures at the end of this file.
 _VEHICLE_INPUT_TARGET = {"input_no": "7", "current_volume": 800.0, "interval_no": 1}
 #: The routing target, WITH the scope the observed share is taken against.
 #: ``decision_movements`` names every movement decision 3 governs — here both
@@ -178,6 +194,18 @@ def test_outcome_a_node_total_miss_yields_a_demand_side_proposal():
     The movements are scaled by the same 1.17 so the split is NOT the story:
     300/351 and 700/819 each carry GEH 2.83 and 4.32 (both < 5). The mapping
     must still answer at the DEMAND level, because the total is what missed.
+
+    UNIT D4 (2026-08-12) — why this is still a proposal, and what changed.
+    The entrance here is UNVERIFIED, not measured: the target names no link
+    and the movement ids are workbook tokens (``m1``/``m2``) rather than
+    OBJECT_IDs, so nothing in this evidence can say whether the counts were
+    taken at input 7's entrance. Policy for that state is ask-the-user-first,
+    and the approval card IS the ask — so the proposal survives, with its
+    arithmetic unchanged, but relabelled as a named demand ESTIMATE:
+    ``CONFIDENCE_DEMAND_ESTIMATE`` instead of ``CONFIDENCE_ARITHMETIC``, the
+    ``ENTRANCE_NOT_VERIFIED_MEASURED`` token, the verdict in the evidence, and
+    a rationale sentence telling the approver to reject it and supply the real
+    count if they have one.
     """
     total_geh = validation.geh(1170.0, 1000.0)
     assert total_geh == pytest.approx(5.1610, abs=5e-4)
@@ -200,8 +228,20 @@ def test_outcome_a_node_total_miss_yields_a_demand_side_proposal():
     assert proposal.evidence["geh_threshold"] == validation.GEH_GOOD_LT
     # U1's key name is echoed so the audit trail records what was relied on.
     assert proposal.evidence["run_result_keys"] == ["movement_volumes"]
-    assert proposal.confidence == fixes.CONFIDENCE_ARITHMETIC
     assert fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL in proposal.assumptions
+
+    # -- unit D4: the same number, labelled as the estimate it is ------------
+    assert proposal.confidence == fixes.CONFIDENCE_DEMAND_ESTIMATE
+    assert fixes.ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED in proposal.assumptions
+    entrance = proposal.evidence["target"]["entrance_measurement"]
+    assert entrance["status"] == fixes.ENTRANCE_UNVERIFIED
+    assert entrance["why"] == fixes.ENTRANCE_NO_LINK_ON_TARGET
+    assert entrance["basis"]
+    for language, text in proposal.rationale().items():
+        assert ("수요 추정" if language == "ko" else "推定" if language == "ja"
+                else "DEMAND ESTIMATE") in text, language
+        assert ("거절" if language == "ko" else "拒否" if language == "ja"
+                else "REJECT") in text, language
 
 
 def test_a_demand_proposal_built_from_an_observation_store_node_carries_the_real_origin():
@@ -237,6 +277,17 @@ def test_a_demand_proposal_built_from_an_observation_store_node_carries_the_real
     assert proposal.evidence["sources"]["observed"] != "validation_workbook"
     assert "services.observations" in proposal.evidence["sources"]["observed"]
     assert proposal.evidence["sources"]["count_basis"] == "detector_counts"
+
+    # UNIT D4: a store-sourced node is UNVERIFIED by construction — its
+    # movement ids are approach-leg LABELS with no link↔leg edge anywhere in
+    # this system — so the proposal survives and says so, and the verdict
+    # carries the observed origin it was judged against.
+    entrance = proposal.evidence["target"]["entrance_measurement"]
+    assert entrance["status"] == fixes.ENTRANCE_UNVERIFIED
+    assert "services.observations" in entrance["observed_source"]
+    assert entrance["count_basis"] == "detector_counts"
+    assert fixes.ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED in proposal.assumptions
+    assert proposal.confidence == fixes.CONFIDENCE_DEMAND_ESTIMATE
 
 
 def test_outcome_b_split_miss_with_reconciling_total_yields_a_routing_proposal():
@@ -1185,6 +1236,480 @@ def test_build_fix_report_carries_the_node_verdict_the_findings_and_the_edges():
     assert report["unmapped_anomalies"] == []
     assert set(report["coverage"]) == {m.key for m in fixes.get_fix_registry()}
     assert report["geh_threshold"] == validation.GEH_GOOD_LT
+
+
+# ---------------------------------------------------------------------------
+# UNIT D4 — an observed entrance is DATA TO MATCH, not a knob
+#
+# The numbers below are the REAL demo intersection's, read out of
+# client-data/데모-교차로/DEMO_실측데이터_2026-08-07.xlsx (node 8's five movement
+# rows and its Total, node 5's total) and DEMO_캘리브레이션_보정전_GEH753.inpx
+# (vehicle input 113: link 617, volume 2063.4). They are transcribed rather
+# than loaded because that workbook is client data and is git-ignored — the
+# regression must run on any checkout, including CI.
+# ---------------------------------------------------------------------------
+
+#: Node 8 as the demo workbook writes it: the Direction column carries the
+#: run's own movement OBJECT_ID, so every row names the link it enters from.
+_DEMO_NODE_8 = {
+    "node_id": "8",
+    "node_name": "8: DEMO 합성 실측 노드8",
+    "observed_total": 922.0,
+    "modelled_total": 707.0,
+    "movements": [
+        {"id": "8-12075-168.594386-12075-286.637577", "direction": None,
+         "observed": 249.0, "modelled": 191.0},
+        {"id": "8-12075-168.594386-758-13.532567", "direction": None,
+         "observed": 17.0, "modelled": 13.0},
+        {"id": "8-617-1229.801336-617-1286.072980", "direction": None,
+         "observed": 649.0, "modelled": 498.0},
+        {"id": "8-759-297.829013-12075-286.637577", "direction": None,
+         "observed": 3.0, "modelled": 2.0},
+        {"id": "8-759-297.829013-617-1286.072980", "direction": None,
+         "observed": 4.0, "modelled": 3.0},
+    ],
+    "sources": {"observed": "validation_workbook", "modelled": "run_result",
+                "run_result_keys": ["movement_volumes"]},
+}
+
+#: Node 5, the control: observed IS the modelled value, and link 617 does not
+#: reach it at all (a forward walk of the connector graph from 617 reaches
+#: nodes 3, 4 and 8 — never 5).
+_DEMO_NODE_5 = {
+    "node_id": "5",
+    "node_name": "5: DEMO 합성 실측 노드5",
+    "observed_total": 593.0,
+    "modelled_total": 593.0,
+    "movements": [
+        {"id": "5-754-67.884582-773-5.167527", "direction": None,
+         "observed": 84.0, "modelled": 84.0},
+        {"id": "5-772-639.253155-774-8.441768", "direction": None,
+         "observed": 170.0, "modelled": 170.0},
+        {"id": "5-776-537.864515-773-5.167527", "direction": None,
+         "observed": 312.0, "modelled": 312.0},
+    ],
+    "sources": {"observed": "validation_workbook", "modelled": "run_result",
+                "run_result_keys": ["movement_volumes"]},
+}
+
+#: What ``get_vehicle_inputs`` says about input 113 in the demo network, plus
+#: the link — which is the whole join unit D4's predicate rests on.
+_DEMO_INPUT_113 = {
+    "input_no": "113",
+    "current_volume": 2063.4,
+    "link_no": "617",
+    "interval_no": 1,
+}
+
+#: The volume the pre-D4 mapping proposed for input 113 on this evidence:
+#: 2063.4 * 922/707. The historic live demo applied exactly this
+#: (runtime/calibration-loop-live-check/artifacts/before_after_geh.json).
+_HISTORIC_PROPOSED_VOLUME = "2690.88"
+
+
+def test_d4_regression_the_demo_intersections_measured_entrance_is_refused():
+    """THE unit D4 regression: the proposal that made the historic live demo.
+
+    Node 8's TOTAL misses badly (observed 922 vs modelled 707, GEH 7.53 — over
+    the 5.0 threshold), and vehicle input 113 was named as the demand target,
+    so the pre-D4 mapping emitted ``set_vehicle_input_volume`` at 2690.88
+    veh/h and the live check applied it through real COM.
+
+    That input feeds link 617 — and the workbook's own row
+    ``8-617-1229.801336-617-1286.072980`` says 649 vehicles were COUNTED
+    entering node 8 from link 617. So the number the edit would overwrite is
+    the measurement. Rewriting it so the model's downstream totals agree is
+    calibration run backwards, and it is now refused structurally: no
+    threshold, no confidence knob, no override.
+    """
+    total_geh = validation.geh(707.0, 922.0)
+    assert total_geh == pytest.approx(7.5334, abs=5e-4)
+    assert total_geh >= validation.GEH_GOOD_LT, "the total must MISS or this proves nothing"
+
+    # The predicate bites on the workbook's own shape, and names the row.
+    verdict = fixes.entrance_measurement(_DEMO_NODE_8, _DEMO_INPUT_113)
+    assert verdict["status"] == fixes.ENTRANCE_MEASURED
+    assert verdict["why"] == fixes.ENTRANCE_ROW_ON_INPUT_LINK
+    assert verdict["observed_row"]["movement_id"] == "8-617-1229.801336-617-1286.072980"
+    assert verdict["observed_row"]["observed"] == 649.0
+    assert verdict["link_no"] == "617"
+
+    outcome = fixes.map_node_counts(_DEMO_NODE_8, targets={"vehicle_input": _DEMO_INPUT_113})
+
+    # No demand edit reaches the approval card, in any shape.
+    assert outcome.outcome == fixes.REFUSAL
+    payload = outcome.to_dict()
+    text = json.dumps(payload, ensure_ascii=False)
+    assert "set_vehicle_input_volume" not in text
+    assert _HISTORIC_PROPOSED_VOLUME not in text, "the historic 2.1 proposal must not survive"
+    assert "proposed_volume" not in _keys_anywhere(payload)
+
+    # The refusal is the D4 one, and it is reachable from the report: here it
+    # rides on ``also_refused`` because grading fell through to the split.
+    d4 = outcome if outcome.reason_code == fixes.INPUT_VOLUME_IS_OBSERVED_DATA else outcome.also_refused
+    assert d4 is not None and d4.reason_code == fixes.INPUT_VOLUME_IS_OBSERVED_DATA
+    assert d4.verb is None and d4.params is None
+    assert d4.scope == fixes.NOT_APPLICABLE
+    assert d4.evidence["target"]["entrance_measurement"]["status"] == fixes.ENTRANCE_MEASURED
+
+    # The rationale states the doctrine POSITIVELY and lists what remains, in
+    # all three languages, naming the counted row it relied on.
+    for language, message in d4.rationale().items():
+        assert "8-617-1229.801336-617-1286.072980" in message, language
+        assert "649" in message, language
+        assert "relFlow" in message, language  # the knob that IS still ours
+
+
+def test_d4_the_refusal_does_not_stop_the_grading_the_split_is_still_examined():
+    """The fall-through: refusing the demand edit must not mean refusing all.
+
+    Before D4 a node-total miss RETURNED from arm (a), so movement grading
+    never ran on it. With the demand side off the table that would have made
+    "the demand is not ours to change" mean "nothing is" — false, and the
+    opposite of what the doctrine says. Node 8's 617 through-movement misses
+    on its own (649 counted vs 498 modelled, GEH 6.31), and the report must
+    show that it was graded.
+    """
+    assert validation.geh(498.0, 649.0) == pytest.approx(6.3054, abs=5e-4)
+
+    outcome = fixes.map_node_counts(_DEMO_NODE_8, targets={"vehicle_input": _DEMO_INPUT_113})
+
+    # Grading ran: the answer is keyed on the SPLIT, with the movement's own
+    # GEH in evidence -- reachable only past the arm (a) return D4 removed.
+    assert outcome.key == fixes.MOVEMENT_SPLIT_MISS
+    assert outcome.evidence["movement_id"] == "8-617-1229.801336-617-1286.072980"
+    assert outcome.evidence["movement_geh"] == 6.31
+    # No routing target was named here, so the split answer is itself a
+    # refusal -- naming what was missing, and still carrying the D4 refusal.
+    assert outcome.reason_code == fixes.NO_TARGET_OBJECT
+    assert outcome.also_refused.reason_code == fixes.INPUT_VOLUME_IS_OBSERVED_DATA
+
+
+def test_d4_the_control_node_is_untouched_by_any_of_this():
+    """Node 5 reconciles (593 == 593) and link 617 never reaches it. Its
+    answer must be the same MODEL_REPRODUCES_OBSERVED refusal it always was —
+    a doctrine that changed the verdict on a node it does not apply to would
+    be a regression dressed as a fix."""
+    outcome = fixes.map_node_counts(_DEMO_NODE_5, targets={"vehicle_input": _DEMO_INPUT_113})
+
+    assert outcome.outcome == fixes.REFUSAL
+    assert outcome.reason_code == fixes.MODEL_REPRODUCES_OBSERVED
+    assert outcome.evidence["node_total_geh"] == 0.0
+    assert outcome.also_refused is None
+
+    # And the predicate itself says the honest thing about this node: its rows
+    # exist and are link-keyed, and none of them is link 617.
+    verdict = fixes.entrance_measurement(_DEMO_NODE_5, _DEMO_INPUT_113)
+    assert verdict["status"] == fixes.ENTRANCE_UNVERIFIED
+    assert verdict["why"] == fixes.ENTRANCE_NO_ROW_ON_INPUT_LINK
+    assert "617" not in verdict["node_from_links"]
+
+
+def test_d4_a_routing_proposal_carries_the_measured_entrance_refusal():
+    """(e) The fall-through's product: a real non-input proposal, with the
+    demand refusal riding on ``also_refused`` — the NODE_TOTAL_RECONCILES
+    precedent, reused for a refusal that means something different.
+
+    Hand arithmetic: observed total 1000 vs modelled 1170 → GEH 5.16 ≥ 5, so
+    the total MISSES (which is what makes this the D4 branch and not the
+    classic arm (b)). The link-620 entrance carries a counted row, so the
+    demand edit refuses. Movement A (300 counted vs 420 modelled) has GEH
+    6.32 ≥ 5, decision 3 governs both of the approach's movements
+    (300 + 700 = 1000), so p = 0.3 and relFlow = 58 * 0.3/0.7 = 24.86.
+    """
+    node = {
+        "node_id": "9",
+        "observed_total": 1000.0,
+        "modelled_total": 1170.0,
+        "movements": [
+            {"id": "9-620-10.0-621-20.0", "direction": None, "observed": 300.0, "modelled": 420.0},
+            {"id": "9-620-10.0-622-30.0", "direction": None, "observed": 700.0, "modelled": 750.0},
+        ],
+        "sources": {"observed": "validation_workbook", "modelled": "run_result"},
+    }
+    assert validation.geh(1170.0, 1000.0) >= validation.GEH_GOOD_LT
+    assert validation.geh(420.0, 300.0) >= validation.GEH_GOOD_LT
+
+    outcome = fixes.map_node_counts(
+        node,
+        targets={
+            "vehicle_input": {"input_no": "5", "current_volume": 800.0, "link_no": "620",
+                              "interval_no": 1},
+            "routes": {
+                "9-620-10.0-621-20.0": {
+                    "decision_no": "3",
+                    "route_no": "2",
+                    "current_rel_flow": 42.0,
+                    "sibling_rel_flow_total": 58.0,
+                    "decision_movements": ["9-620-10.0-621-20.0", "9-620-10.0-622-30.0"],
+                    "interval_no": 1,
+                }
+            },
+        },
+    )
+
+    assert outcome.outcome == fixes.PROPOSAL
+    assert outcome.verb == "set_route_relative_flow"
+    assert outcome.params["rel_flow"] == 24.86
+    assert outcome.also_refused.reason_code == fixes.INPUT_VOLUME_IS_OBSERVED_DATA
+
+    # THE SENTENCE THAT MUST NOT BE WRITTEN: the pre-D4 routing rationale
+    # opened with "the node total reconciles", which is FALSE here (GEH 5.16).
+    # A proposal whose first clause is a lie is worse than no proposal.
+    for language, message in outcome.rationale().items():
+        assert "5.16" in message, language
+        assert "4.87" not in message, language
+    assert "reconciles with observation" not in outcome.rationale_en
+    assert "실측과 합치하지만" not in outcome.rationale_ko
+    assert "実測と一致していますが" not in outcome.rationale_ja
+
+
+def test_d4_an_unverified_entrance_is_labelled_an_estimate_not_silently_edited():
+    """(c) The store path's shape: leg-keyed movement labels (U10's
+    ``"<approach leg>|<turn>"``) that no link can be resolved from. The
+    proposal survives — the approval card IS the ask-the-user step — but it
+    says what it is, in the token, the confidence, the evidence and the
+    prose."""
+    node = {
+        "node_id": "1",
+        "observed_total": 1000.0,
+        "modelled_total": 1170.0,
+        "movements": [
+            {"id": "북측방면|left", "direction": "북측방면|left", "observed": 300.0,
+             "modelled": 351.0},
+            {"id": "북측방면|through", "direction": "북측방면|through", "observed": 700.0,
+             "modelled": 819.0},
+        ],
+        "sources": {"observed": "services.observations (count_basis=turning_counts)",
+                    "count_basis": "turning_counts"},
+    }
+    outcome = fixes.map_node_counts(
+        node,
+        targets={"vehicle_input": {"input_no": "7", "current_volume": 800.0, "link_no": "620",
+                                   "interval_no": 1}},
+    )
+
+    assert outcome.outcome == fixes.PROPOSAL
+    assert outcome.verb == "set_vehicle_input_volume"
+    assert outcome.confidence == fixes.CONFIDENCE_DEMAND_ESTIMATE
+    assert fixes.ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED in outcome.assumptions
+
+    verdict = outcome.evidence["target"]["entrance_measurement"]
+    assert verdict["status"] == fixes.ENTRANCE_UNVERIFIED
+    # The link WAS supplied — this is the store's own named absence, not a
+    # caller mistake, and the two must not be conflated.
+    assert verdict["why"] == fixes.ENTRANCE_NO_LINK_KEYED_ROWS
+    assert verdict["link_no"] == "620"
+    assert "OBJECT_ID" in verdict["basis"]
+
+    for language, message in outcome.rationale().items():
+        assert ("수요 추정" if language == "ko" else "需要推定" if language == "ja"
+                else "DEMAND ESTIMATE") in message, language
+
+
+@pytest.mark.parametrize(
+    "case, node, target, status, why",
+    [
+        (
+            "workbook OBJECT_ID row on the input's own link",
+            _DEMO_NODE_8,
+            _DEMO_INPUT_113,
+            fixes.ENTRANCE_MEASURED,
+            fixes.ENTRANCE_ROW_ON_INPUT_LINK,
+        ),
+        (
+            "U10 store: leg-keyed labels, no link<->leg edge exists anywhere",
+            {"node_id": "1", "movements": [{"id": "북측방면|left", "observed": 300.0}],
+             "sources": {"count_basis": "turning_counts"}},
+            {"input_no": "7", "link_no": "620"},
+            fixes.ENTRANCE_UNVERIFIED,
+            fixes.ENTRANCE_NO_LINK_KEYED_ROWS,
+        ),
+        (
+            "detector basis: directions [] by construction, so no rows at all",
+            {"node_id": "1", "movements": [], "sources": {"count_basis": "detector_counts"}},
+            {"input_no": "7", "link_no": "620"},
+            fixes.ENTRANCE_UNVERIFIED,
+            fixes.ENTRANCE_NO_MOVEMENT_ROWS,
+        ),
+        (
+            "link-keyed rows, but none of them on THIS input's link",
+            _DEMO_NODE_8,
+            {"input_no": "999", "link_no": "12345"},
+            fixes.ENTRANCE_UNVERIFIED,
+            fixes.ENTRANCE_NO_ROW_ON_INPUT_LINK,
+        ),
+        (
+            "the target named no link, so there is nothing to match against",
+            _DEMO_NODE_8,
+            {"input_no": "113"},
+            fixes.ENTRANCE_UNVERIFIED,
+            fixes.ENTRANCE_NO_LINK_ON_TARGET,
+        ),
+        (
+            "a row on the link exists but carries no observed count",
+            {"node_id": "8", "movements": [{"id": "8-617-1.0-617-2.0", "observed": None}]},
+            {"input_no": "113", "link_no": "617"},
+            fixes.ENTRANCE_UNVERIFIED,
+            fixes.ENTRANCE_ROW_HAS_NO_OBSERVED,
+        ),
+    ],
+)
+def test_entrance_measurement_states_its_verdict_and_why(case, node, target, status, why):
+    """The predicate's own unit test. Every UNVERIFIED case is a DIFFERENT
+    named absence: a function that collapsed them into one "unknown" would be
+    unable to tell "we have no link↔leg edge yet" (a scheduled unit) from
+    "this caller forgot a field" (a caller bug) from "there really is no row
+    here" (the data's own shape)."""
+    verdict = fixes.entrance_measurement(node, target)
+    assert verdict["status"] == status, case
+    assert verdict["why"] == why, case
+    assert verdict["basis"], case
+    assert verdict["status"] in fixes.ENTRANCE_STATUSES
+    # "unverified" is never spelled as "unmeasured" anywhere in the payload:
+    # the whole point is that this function does not make that second claim.
+    assert "unmeasured" not in json.dumps(verdict, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "supplied_link",
+    ["617", "617.0", " 617 ", "00617", "0617"],
+)
+def test_a_link_id_spelled_differently_still_finds_the_measurement(supplied_link):
+    """THE FALSE-NEGATIVE THAT WOULD UNDO THIS UNIT.
+
+    The join is a string comparison between two numbers that arrive by
+    different roads, and COM hands numeric attributes back as floats often
+    enough that ``vissim_com`` already casts the sibling ``No`` field through
+    ``int()`` for exactly this reason. If ``"617.0"`` read as a different link
+    from ``"617"``, the verdict would fall to UNVERIFIED — and UNVERIFIED is
+    the branch that ALLOWS the demand edit as a labelled estimate. So a
+    spelling mismatch would not lose a refusal, it would silently license
+    overwriting a measurement: the exact inversion D4 exists to refuse.
+    """
+    verdict = fixes.entrance_measurement(
+        _DEMO_NODE_8, {**_DEMO_INPUT_113, "link_no": supplied_link}
+    )
+    assert verdict["status"] == fixes.ENTRANCE_MEASURED, supplied_link
+    assert verdict["observed_on_input_link"] == 649.0
+    # The join used the canonical spelling; what the caller actually handed
+    # over is kept beside it rather than silently rewritten.
+    assert verdict["link_no"] == "617"
+    assert verdict["link_no_supplied"] == supplied_link.strip()
+
+    outcome = fixes.map_node_counts(
+        _DEMO_NODE_8,
+        targets={"vehicle_input": {**_DEMO_INPUT_113, "link_no": supplied_link}},
+    )
+    d4 = outcome if outcome.reason_code == fixes.INPUT_VOLUME_IS_OBSERVED_DATA else outcome.also_refused
+    assert d4 is not None and d4.reason_code == fixes.INPUT_VOLUME_IS_OBSERVED_DATA
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("617", "617"),
+        ("617.0", "617"),
+        ("00617", "617"),
+        (617, "617"),
+        (617.0, "617"),
+        ("  617  ", "617"),
+        # NOT truncated: inventing a match is worse than missing one, because
+        # a false MEASURED verdict refuses an edit that was legitimate.
+        ("617.5", "617.5"),
+        # A genuinely non-numeric id still compares as itself.
+        ("Murdoch Dr_NB", "Murdoch Dr_NB"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_canonical_link_id_normalizes_only_what_it_was_written_for(value, expected):
+    assert fixes.canonical_link_id(value) == expected
+
+
+def test_the_cited_count_is_every_row_on_the_link_not_the_first():
+    """An approach fans out into several movements, and citing one of them
+    understates the measurement the refusal is defending. The demo node's link
+    12075 carries two counted rows — 249 + 17 — so the number quoted must be
+    266, with the row count stated and every row id kept in evidence.
+
+    (Link 617, the actual D4 regression target, happens to carry ONE row, which
+    is why the single-row path alone would have looked correct forever.)
+    """
+    verdict = fixes.entrance_measurement(_DEMO_NODE_8, {"input_no": "X", "link_no": "12075"})
+
+    assert verdict["status"] == fixes.ENTRANCE_MEASURED
+    assert verdict["observed_on_input_link"] == 266.0
+    assert len(verdict["observed_rows"]) == 2
+    assert verdict["rows_on_input_link"] == [
+        "8-12075-168.594386-12075-286.637577",
+        "8-12075-168.594386-758-13.532567",
+    ]
+    assert "266" in verdict["basis"] and "2 observed movement rows" in verdict["basis"]
+
+    # ... and the refusal QUOTES the sum, in all three languages, saying that
+    # it is a sum rather than presenting it as one row's count.
+    outcome = fixes.map_node_counts(
+        _DEMO_NODE_8,
+        targets={"vehicle_input": {"input_no": "X", "current_volume": 500.0, "link_no": "12075"}},
+    )
+    d4 = outcome if outcome.reason_code == fixes.INPUT_VOLUME_IS_OBSERVED_DATA else outcome.also_refused
+    assert d4.reason_code == fixes.INPUT_VOLUME_IS_OBSERVED_DATA
+    for language, message in d4.rationale().items():
+        assert "266" in message, language
+        assert "2" in message, language  # the row count is stated, not implied
+        assert "249" not in message, f"{language} must not quote one row as the entrance total"
+
+
+@pytest.mark.parametrize(
+    "movement_id, expected",
+    [
+        ("8-617-1229.801336-617-1286.072980", "617"),
+        ("1-508-100.779980-510-62.109716", "508"),
+        # Positions can be negative, which is exactly why splitting on "-" is
+        # not safe and the leading integer runs are read instead.
+        ("2-207-250.0-141--5.0", "207"),
+        ("E-W", None),          # a workbook turn token
+        ("북측방면|left", None),   # a U10 store leg label
+        ("8", None),            # Vissim's node-level aggregate row
+        ("", None),
+        (None, None),
+    ],
+)
+def test_movement_from_link_reads_object_ids_and_refuses_labels(movement_id, expected):
+    assert fixes.movement_from_link(movement_id) == expected
+
+
+def test_d4_latent_demand_overflow_labels_its_ceiling_an_estimate_too():
+    """The mapping's OTHER ``set_vehicle_input_volume`` proposal is under the
+    same doctrine — and this builder's evidence can never contain an observed
+    row (a preflight finding has no counts and no run behind it), so its
+    verdict is ALWAYS unverified. It says so instead of implying the check ran
+    and passed."""
+    shadow = {
+        "links": [{"id": "620", "name": "L", "lanes": 1, "length": 240.0}],
+        "vehicle_inputs": [
+            {"no": "107", "name": "A", "link": "620", "volume": 100.0},
+            {"no": "207", "name": "B", "link": "620", "volume": 500.0},
+        ],
+    }
+    finding = _latent_demand_finding(shadow, input_no="107", volume=6000.0)
+    proposal = fixes.propose_for_finding(
+        finding,
+        action={"tool": "set_vehicle_input_volume", "params": {"input_no": "107",
+                                                              "volume": 6000.0}},
+    )
+
+    assert proposal.outcome == fixes.PROPOSAL
+    assert proposal.params["volume"] == 1400.0  # still the constraint's own ceiling
+    verdict = proposal.evidence["entrance_measurement"]
+    assert verdict["status"] == fixes.ENTRANCE_UNVERIFIED
+    assert verdict["why"] == fixes.ENTRANCE_NO_MOVEMENT_ROWS
+    assert verdict["link_no"] == "620"  # the constraint DID resolve the link
+    assert fixes.ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED in proposal.assumptions
+    for language, message in proposal.rationale().items():
+        assert ("수요 추정" if language == "ko" else "需要推定" if language == "ja"
+                else "DEMAND ESTIMATE") in message, language
 
 
 # ---------------------------------------------------------------------------

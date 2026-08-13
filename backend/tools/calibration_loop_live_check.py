@@ -58,6 +58,37 @@ The workbook's ``Movement``/``Direction`` columns carry the node label and the
 run's OWN Vissim movement OBJECT_ID, so every observed number joins back to the
 row it was derived from.
 
+WHAT THIS PROBE NOW PROVES, AND WHAT IT NO LONGER DOES (unit D4, 2026-08-12)
+---------------------------------------------------------------------------
+**The demand edit at the heart of the 2026-08-07 run is now REFUSED, by
+design, and this script asserts the refusal instead of the proposal.**
+
+Node 8's demand arrives on link 617, and the observed workbook's own row
+``8-617-1229.801336-617-1286.072980`` is a COUNT at that entrance (649 veh).
+An observed entrance volume is the calibration TARGET, not a knob: vehicle
+input 113's volume IS the measurement, so rewriting it to 2690.88 veh/h so the
+model's downstream total agrees is calibration run backwards. The generator
+now refuses that structurally (``fixes.INPUT_VOLUME_IS_OBSERVED_DATA``) and
+keeps grading, so the turn-split lever still comes back.
+
+Consequences, stated plainly:
+
+* stage 3 succeeds when it produces the REFUSAL (with its evidence and its
+  ko/en/ja rationale), and FAILS if a demand proposal appears;
+* stages 4-6 (approve → real COM write → re-run → DOCX) have nothing to apply
+  on this node and are not reached in a full run; the script stops with
+  ``RefusedByDesign``, which the RESULT banner reports as such rather than as
+  a failure;
+* the historic apply and its measured before/after GEH are NOT deleted —
+  ``runtime/calibration-loop-live-check/artifacts/before_after_geh.json``
+  records what that edit did, and it is now evidence of the failure mode the
+  refusal exists to prevent;
+* to exercise the write/re-run legs live again, this probe needs a target that
+  is NOT a count site — an entrance with no observed row, or a non-demand knob
+  (routing relFlow is already produced by the fall-through). That is a design
+  change to this script, deliberately not a flag on it: a switch that turned
+  the doctrine off for a demo is exactly what must not exist.
+
 TWO MEASURED BLOCKERS, BOTH HIT ON THE FIRST LIVE ATTEMPT (2026-08-07)
 ----------------------------------------------------------------------
 1. ``LoadNet`` refused the raw uploaded ``.inpx`` -- "The network file could
@@ -1115,7 +1146,9 @@ def stage_2_workbook(client) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _reality_check(scenario_id: str, current_volume: float) -> dict[str, Any]:
+def _reality_check(
+    scenario_id: str, current_volume: float, link_no: str | None = None
+) -> dict[str, Any]:
     import services.agent.tools_metrics  # noqa: F401 - registers run_reality_check
     from services.agent.toolkit import default_registry, dispatch
 
@@ -1129,6 +1162,12 @@ def _reality_check(scenario_id: str, current_volume: float) -> dict[str, Any]:
                     "node_id": DEMAND_NODE,
                     "vehicle_input_no": DEMAND_INPUT_NO,
                     "vehicle_input_current_volume": current_volume,
+                    # Unit D4: the link is read straight off the shadow model's
+                    # own vehicle input (stage 3 already has it), so the loop
+                    # can tell whether the counts were taken AT this entrance.
+                    # Withholding it would only produce an unverified verdict
+                    # -- a quieter answer, not a truer one.
+                    "vehicle_input_link_no": link_no,
                     "interval_no": 1,
                 }
             ],
@@ -1144,6 +1183,31 @@ def _node_entry(report: dict[str, Any], node_id: str) -> dict[str, Any] | None:
     for node in report.get("nodes") or []:
         if str(node.get("node_id")) == str(node_id):
             return node
+    return None
+
+
+class RefusedByDesign(SystemExit):
+    """The probe reached a REFUSAL it is designed to reach -- not a failure.
+
+    Unit D4 made the demand edit on node 8 refusable on purpose (the entrance
+    is a count site), so the loop's apply/re-run legs have nothing to do there.
+    A plain ``SystemExit`` would print that outcome as ``FAILED``, which would
+    be exactly the wrong lesson: the refusal IS the product.
+    """
+
+
+def _d4_refusal(outcome: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The INPUT_VOLUME_IS_OBSERVED_DATA refusal in an outcome, if present.
+
+    It is either the outcome itself, or -- when grading fell through to the
+    movement split, which is D4's other half -- the refusal carried on that
+    answer's ``also_refused``.
+    """
+    from services.agent import fixes
+
+    for candidate in (outcome, (outcome or {}).get("also_refused")):
+        if candidate and candidate.get("reason_code") == fixes.INPUT_VOLUME_IS_OBSERVED_DATA:
+            return candidate
     return None
 
 
@@ -1171,7 +1235,7 @@ def stage_3_reality_check() -> None:
 
     scenario_id = _state["baseline"]["scenario_result_id"]
     _log(f"[3.2] scenario_id = {scenario_id} (the baseline job's own runtime scenario)")
-    report = _reality_check(scenario_id, current_volume)
+    report = _reality_check(scenario_id, current_volume, link_no=str(vi.get("link") or "") or None)
     _state["_before_report"] = report
 
     entry["status"] = report.get("status")
@@ -1198,7 +1262,7 @@ def stage_3_reality_check() -> None:
     entry["refusal_node"] = refusal_node
     _state["_proposal"] = proposal
 
-    _banner("[STAGE 3] THE PROPOSAL (verbatim)")
+    _banner("[STAGE 3] THE DEMAND NODE'S OUTCOME (verbatim)")
     _log(f"  node            : {demand_node['node_id']} ({demand_node.get('node_name')})")
     _log(f"  observed_total  : {demand_node.get('observed_total')}")
     _log(f"  modelled_total  : {demand_node.get('modelled_total')}")
@@ -1224,47 +1288,62 @@ def stage_3_reality_check() -> None:
     for lang in ("ko", "en", "ja"):
         _log(f"  rationale[{lang}]: {(refusal.get('rationale') or {}).get(lang, '')}")
 
-    if proposal.get("outcome") != "PROPOSAL" or proposal.get("verb") != "set_vehicle_input_volume":
+    # -- UNIT D4 (2026-08-12): THIS IS NOW A REFUSAL, BY DESIGN --------------
+    # Node 8's demand comes in on link 617, and the observed workbook's own row
+    # `8-617-1229.801336-617-1286.072980` is a COUNT taken at that entrance
+    # (649 veh). So vehicle input 113's volume is the measurement, and the
+    # 2690.88 veh/h edit this probe used to apply -- and did apply, on
+    # 2026-08-07; the before/after GEH table is preserved in
+    # artifacts/before_after_geh.json -- was calibration run backwards: the
+    # data being rewritten to fit the model.
+    #
+    # The proposal generator now refuses it structurally
+    # (fixes.INPUT_VOLUME_IS_OBSERVED_DATA) and keeps grading, so the split /
+    # behaviour / signal levers stay available. What this probe measures from
+    # here is therefore that refusal, not an apply: stages 4-6 have nothing to
+    # approve on THIS node, and inventing something for them to approve would
+    # be the probe telling itself a story. It stops here, with the refusal on
+    # the record.
+    #
+    # To exercise the apply-and-re-run legs again, the honest way is a demand
+    # target whose entrance is NOT a count site (or a knob other than demand);
+    # that is a design change to this probe, not a flag on it.
+    d4 = _d4_refusal(proposal)
+    entry["d4_refusal"] = d4
+    entry["d4_refusal_present"] = d4 is not None
+    if d4 is None:
         entry["ok"] = False
         _save_state()
-        raise SystemExit("The demand node did not produce a demand-level proposal. Stopping.")
+        raise SystemExit(
+            f"Node {DEMAND_NODE}'s demand target is a MEASURED entrance (link 617 carries an "
+            "observed count row), so unit D4's INPUT_VOLUME_IS_OBSERVED_DATA refusal was "
+            "expected and did not appear. Either the workbook lost its OBJECT_ID Direction "
+            "column, the link was not passed to the target, or the doctrine regressed. "
+            "Stopping: this probe is no longer measuring what it claims."
+        )
 
-    # The prediction, stated BEFORE the re-run (stage 5 measures it).
-    modelled = float(demand_node["modelled_total"])
-    observed = float(demand_node["observed_total"])
-    proposed = float(proposal["params"]["volume"])
-    ratio = observed / modelled
-    predicted_modelled = modelled * (1.0 + DEMAND_INPUT_SHARE * (ratio - 1.0))
-    prediction = {
-        "input_share_of_node_feed": DEMAND_INPUT_SHARE,
-        "requested_demand_ratio": round(ratio, 6),
-        "before_geh": demand_node.get("node_total_geh"),
-        "predicted_after_modelled_total": round(predicted_modelled, 2),
-        "predicted_after_geh": _geh(predicted_modelled, observed),
-        "direction": "DOWN (toward reconciliation)",
-        "why_not_zero": (
-            f"the proposal scales ONE vehicle input ({DEMAND_INPUT_NO}) by {ratio:.4f}, but that "
-            f"input supplies only ~{DEMAND_INPUT_SHARE*100:.1f}% of what can reach node "
-            f"{DEMAND_NODE}; the arithmetic assumes 100% "
-            "(fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL), so the node total is expected to move "
-            "toward the observed count without fully reaching it."
-        ),
-        "control_node": REFUSAL_NODE,
-        "control_expectation": (
-            f"node {REFUSAL_NODE} is not forward-reachable from link 617, so its GEH should stay "
-            "below the 5.0 threshold; any movement is Vissim's global RNG stream shifting, not "
-            "the edit propagating."
-        ),
-    }
-    entry["prediction"] = prediction
-    _banner("[STAGE 3] PREDICTION, recorded BEFORE the edit and the re-run")
-    for key, value in prediction.items():
-        _log(f"  {key}: {value}")
-    _log(f"  proposed volume: {proposed} veh/h (from {_state['demand_input_before_volume']} veh/h)")
+    _banner("[STAGE 3] THE MEASURED-ENTRANCE REFUSAL (unit D4) -- the designed outcome")
+    _log(f"  reason_code     : {d4.get('reason_code')}")
+    _log(f"  verb/params     : {d4.get('verb')!r} / {d4.get('params')!r}")
+    entrance = ((d4.get("evidence") or {}).get("target") or {}).get("entrance_measurement") or {}
+    _log(f"  entrance status : {entrance.get('status')} ({entrance.get('why')})")
+    _log(f"  entrance basis  : {entrance.get('basis')}")
+    for lang in ("ko", "en", "ja"):
+        _log(f"  rationale[{lang}]: {(d4.get('rationale') or {}).get(lang, '')}")
+    _log("")
+    _log(f"  the node's own outcome is {proposal.get('outcome')} / {proposal.get('reason_code')} "
+         f"(key={proposal.get('key')}) -- grading continued past the demand refusal, which is the "
+         "half of D4 that keeps the loop useful")
+    _log(f"  historic contrast: this probe applied {2063.4 * 922 / 707:.2f} veh/h here on "
+         "2026-08-07 (artifacts/before_after_geh.json). That apply is now refusable BY DESIGN.")
 
     entry["elapsed_s"] = round(time.monotonic() - started, 2)
     entry["ok"] = True
     _save_state()
+    raise RefusedByDesign(
+        f"unit D4: node {DEMAND_NODE}'s entrance is measured, so the demand edit is refused and "
+        "stages 4-6 have nothing to apply on it. This is the designed outcome, not a failure."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1428,14 +1507,25 @@ def stage_4_approval(client) -> None:
             entry["reason_is_verbatim_rationale"] = True
         else:
             evidence = proposal.get("evidence") or {}
+            # Unit D4: an abridged reason must keep the ESTIMATE caveat, not
+            # just the numbers. Any proposal that reaches this leg is one whose
+            # entrance could not be verified as measured (a measured one is
+            # refused at stage 3 and never gets here), so a signed reason that
+            # dropped the caveat while keeping the arithmetic would read as a
+            # measurement -- the one thing the rationale is careful not to
+            # claim. Kept in step with test_calibration_loop_e2e's own
+            # abridgement so the two cannot drift apart silently.
+            entrance = (evidence.get("target") or {}).get("entrance_measurement") or {}
             reason = (
                 f"실측 대조 결과 노드 {DEMAND_NODE} 총량 GEH {evidence.get('node_total_geh')} "
-                f">= 기준 {evidence.get('geh_threshold')}. 수요 보정: {evidence.get('arithmetic')}"
+                f">= 기준 {evidence.get('geh_threshold')}. 수요 보정: {evidence.get('arithmetic')} "
+                f"(수요 추정 — 진입부 실측 여부 미확인: {entrance.get('why')})"
             )[:max_chars]
             entry["reason_is_verbatim_rationale"] = False
             entry["reason_overflow_note"] = (
                 f"the ko rationale is {len(rationale)} chars against a {max_chars}-char cap, so a "
-                "compact reason carrying the same GEH numbers and arithmetic was signed instead"
+                "compact reason carrying the same GEH numbers, the same arithmetic and D4's "
+                "demand-ESTIMATE caveat was signed instead"
             )
             _log(f"      !! MEASURED CAVEAT: {entry['reason_overflow_note']}")
         entry["approval_reason"] = reason
@@ -1865,6 +1955,7 @@ def main() -> int:
     from fastapi.testclient import TestClient
 
     failure: str | None = None
+    refused_by_design: str | None = None
     try:
         from services import workspaces
 
@@ -1892,6 +1983,11 @@ def main() -> int:
                     stage_5_rerun(args.duration)
             if 6 in stages:
                 stage_6_artifact(client)
+    except RefusedByDesign as exc:
+        # A refusal the doctrine requires is the probe SUCCEEDING at its job.
+        refused_by_design = str(exc)
+        _log("")
+        _log(f"== STOPPED BY DESIGN: {refused_by_design}")
     except SystemExit as exc:
         failure = str(exc)
         _log("")
@@ -1902,6 +1998,7 @@ def main() -> int:
         _log(f"!! EXCEPTION:\n{failure}")
     finally:
         _state["failure"] = failure
+        _state["refused_by_design"] = refused_by_design
         _save_state()
         if 7 in stages:
             try:
@@ -1912,7 +2009,13 @@ def main() -> int:
     _banner("RESULT")
     for key, value in sorted((_state.get("stages") or {}).items()):
         _log(f"  {key}: ok={value.get('ok')} elapsed={value.get('elapsed_s')}s")
-    _log(f"  overall: {'FAILED -- ' + failure.splitlines()[0] if failure else 'COMPLETE'}")
+    if failure:
+        overall = "FAILED -- " + failure.splitlines()[0]
+    elif refused_by_design:
+        overall = "REFUSED BY DESIGN (not a failure) -- " + refused_by_design.splitlines()[0]
+    else:
+        overall = "COMPLETE"
+    _log(f"  overall: {overall}")
     _log(f"  evidence: {STATE_PATH}")
     _save_state()
     return 1 if failure else 0

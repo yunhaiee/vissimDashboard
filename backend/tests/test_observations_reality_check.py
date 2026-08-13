@@ -244,11 +244,25 @@ def test_the_store_path_reaches_the_same_outcome_as_the_workbook_path(
 
     This is the property that makes the new path safe to use: U10 changed where
     the observed side comes from and nothing about how it is graded.
+
+    UNIT D4 (2026-08-12) keeps that property and adds one to it: the demand
+    proposal is now labelled a demand ESTIMATE on both paths, because neither
+    can verify that the counts were taken at input 7's entrance. The store's
+    movements are approach-LEG labels (``"가람방면|left"``) with no link↔leg
+    edge anywhere in this system, and the only link-bearing rows here are the
+    RUN's own — which carry no observed count and therefore can never make an
+    entrance "measured". The link is supplied deliberately below so that this
+    test pins the second half: a run row on the very link named is still
+    UNVERIFIED, not measured.
     """
     run = _run_result({"1": modelled})
     targets = [
         tools_metrics.RealityCheckNodeTarget(
-            node_id="1", vehicle_input_no="7", vehicle_input_current_volume=800.0
+            node_id="1",
+            vehicle_input_no="7",
+            vehicle_input_current_volume=800.0,
+            # The link the synthetic run's own movement rows enter from.
+            vehicle_input_link_no="1",
         )
     ]
 
@@ -264,7 +278,16 @@ def test_the_store_path_reaches_the_same_outcome_as_the_workbook_path(
         run,
         _observed_workbook_payload({"1": SITE_TOTAL}),
         period="AM",
-        targets={"1": {"vehicle_input": {"input_no": "7", "current_volume": 800.0, "interval_no": 1}}},
+        targets={
+            "1": {
+                "vehicle_input": {
+                    "input_no": "7",
+                    "current_volume": 800.0,
+                    "link_no": "1",
+                    "interval_no": 1,
+                }
+            }
+        },
     )
 
     assert from_store["status"] == from_workbook["status"] == reality_check.CHECKED
@@ -276,6 +299,27 @@ def test_the_store_path_reaches_the_same_outcome_as_the_workbook_path(
     assert store_node["outcome"]["outcome"] == expected_outcome
     # And neither path used the workbook's 999999 model column.
     assert store_node["modelled_total"] == workbook_node["modelled_total"] == modelled
+
+    if expected_outcome != fixes.PROPOSAL:
+        return
+
+    # -- unit D4: same label on both paths, and it is not a silent one -------
+    for label, node in (("store", store_node), ("workbook", workbook_node)):
+        outcome = node["outcome"]
+        assert outcome["verb"] == "set_vehicle_input_volume", label
+        assert outcome["confidence"] == fixes.CONFIDENCE_DEMAND_ESTIMATE, label
+        assert fixes.ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED in outcome["assumptions"], label
+        entrance = outcome["evidence"]["target"]["entrance_measurement"]
+        assert entrance["status"] == fixes.ENTRANCE_UNVERIFIED, label
+        # THE ASSERTION THAT MATTERS: a movement row the RUN produced sits on
+        # exactly the link named, and it still does not count as a
+        # measurement — the observed side is what makes an entrance measured,
+        # never the model's own output.
+        assert entrance["why"] == fixes.ENTRANCE_ROW_HAS_NO_OBSERVED, label
+        assert entrance["link_no"] == "1", label
+        assert "수요 추정" in outcome["rationale"]["ko"], label
+        assert "DEMAND ESTIMATE" in outcome["rationale"]["en"], label
+        assert "需要推定" in outcome["rationale"]["ja"], label
 
 
 def test_the_report_names_the_store_as_the_observed_source(
@@ -400,7 +444,12 @@ def test_the_tool_dispatches_the_store_path_end_to_end(
             "observation_period": "AM",
             "site_nodes": [{"site_id": SITE_A, "node_id": "1"}],
             "targets": [
-                {"node_id": "1", "vehicle_input_no": "7", "vehicle_input_current_volume": 800.0}
+                {
+                    "node_id": "1",
+                    "vehicle_input_no": "7",
+                    "vehicle_input_current_volume": 800.0,
+                    "vehicle_input_link_no": "620",
+                }
             ],
         },
     )
@@ -408,8 +457,18 @@ def test_the_tool_dispatches_the_store_path_end_to_end(
     assert envelope["status"] == "ok", envelope
     report = envelope["data"]["reality_check"]
     assert report["status"] == reality_check.CHECKED
-    assert report["nodes"][0]["outcome"]["outcome"] == fixes.PROPOSAL
-    assert report["nodes"][0]["outcome"]["verb"] == "set_vehicle_input_volume"
+    outcome = report["nodes"][0]["outcome"]
+    assert outcome["outcome"] == fixes.PROPOSAL
+    assert outcome["verb"] == "set_vehicle_input_volume"
+    # Unit D4: the new tool param reaches U4 through the registry dispatch, and
+    # the verdict it produced reaches the report a human reads. A store-sourced
+    # node is UNVERIFIED (leg labels, no link↔leg edge), so the demand fix is
+    # proposed AS AN ESTIMATE rather than refused or silently applied.
+    entrance = outcome["evidence"]["target"]["entrance_measurement"]
+    assert entrance["status"] == fixes.ENTRANCE_UNVERIFIED
+    assert entrance["link_no"] == "620"
+    assert outcome["confidence"] == fixes.CONFIDENCE_DEMAND_ESTIMATE
+    assert "수요 추정" in outcome["rationale"]["ko"]
     assert report["coverage"]["observation_sites"]["sites_joined"] == [f"{SITE_A}->1"]
 
 

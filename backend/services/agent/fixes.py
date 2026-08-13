@@ -29,6 +29,18 @@ Two rules follow from that, and they are what the tests pin hardest:
   routing-level proposal therefore carries the demand-level refusal it
   displaced, in :attr:`FixProposal.also_refused`, rather than quietly
   dropping it.
+* **An observed entrance volume is DATA TO MATCH, not a knob** (unit D4,
+  professor 2026-08-12 + the user's decided policy). Where the counts were
+  taken AT the entrance a vehicle input feeds, rewriting that input's volume
+  so the model's downstream numbers agree inverts the direction of
+  calibration and destroys the measurement the run is graded against. The
+  mapping refuses structurally (:data:`INPUT_VOLUME_IS_OBSERVED_DATA`) and
+  keeps grading, so the knobs that ARE ours — the turn split, and beyond this
+  module behaviour, speeds and signals — still get proposed. Where
+  measured-ness cannot be VERIFIED, the demand proposal survives (the
+  approval card is the "ask the user first" step) but is relabelled as what
+  it is: a named demand ESTIMATE, never an unnamed guess. The verdict itself
+  is :func:`entrance_measurement`, which states its own reach.
 
 Three outcomes, one shape
 -------------------------
@@ -115,6 +127,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
@@ -212,6 +225,13 @@ VERB_NOT_IN_REGISTRY = "VERB_NOT_IN_REGISTRY"
 PARAMS_REJECTED_BY_SCHEMA = "PARAMS_REJECTED_BY_SCHEMA"
 #: No entry is registered for this key at all.
 NO_MAPPING_REGISTERED = "NO_MAPPING_REGISTERED"
+#: Unit D4 ("보정 방향 역전"). The vehicle input this edit would rewrite feeds
+#: an entrance the observed counts were TAKEN AT: an entrance-level observed
+#: row resolves to that input's own link. An observed entrance volume is the
+#: calibration TARGET, not a knob — rewriting it so the model's downstream
+#: numbers agree inverts the direction of calibration and destroys the very
+#: measurement the run is graded against. Structural refusal, not a threshold.
+INPUT_VOLUME_IS_OBSERVED_DATA = "INPUT_VOLUME_IS_OBSERVED_DATA"
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +244,15 @@ CONFIDENCE_ARITHMETIC = "ARITHMETIC_FROM_OBSERVED_COUNTS"
 #: Taken verbatim from a constraint's own computed ceiling
 #: (``Finding.suggested_fix``), not re-derived here.
 CONFIDENCE_CONSTRAINT_CEILING = "CONSTRAINT_COMPUTED_CEILING"
+#: Unit D4. The SAME closed-form arithmetic as
+#: :data:`CONFIDENCE_ARITHMETIC`, deliberately one notch lower because of what
+#: the arithmetic is being applied TO: an entrance whose volume this system
+#: could not verify as measured (:data:`ENTRANCE_UNVERIFIED`). The number is
+#: exact under its stated assumptions; what is unverified is the premise that
+#: the value it replaces was ever free to be replaced. Naming that in the
+#: confidence field — not only in the rationale — keeps a consumer that ranks
+#: proposals by confidence from ranking an estimate alongside a measurement.
+CONFIDENCE_DEMAND_ESTIMATE = "DEMAND_ESTIMATE_FROM_UNVERIFIED_ENTRANCE"
 #: No value proposed (refusal / no automated fix).
 CONFIDENCE_NONE = "NONE"
 
@@ -250,6 +279,14 @@ ASSUME_DECISION_MOVEMENTS_COMPLETE = "DECISION_MOVEMENTS_COMPLETE"
 #: The caller's ``interval_no`` addresses the interval the observed counts
 #: were measured in. Never guessed from a period name here.
 ASSUME_INTERVAL_MATCHES_COUNT_PERIOD = "INTERVAL_MATCHES_COUNT_PERIOD"
+#: Unit D4. This proposal rewrites a vehicle input whose volume could NOT be
+#: verified as measured (:func:`entrance_measurement` returned
+#: :data:`ENTRANCE_UNVERIFIED`), so the value it proposes is a NAMED demand
+#: ESTIMATE rather than a correction of a knob. The token is the machine half
+#: of the same statement the rationale makes in prose: approving adopts an
+#: estimate; if the real entrance count is known, the proposal should be
+#: rejected and that count supplied instead.
+ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED = "ENTRANCE_NOT_VERIFIED_MEASURED"
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +864,325 @@ def _fmt(value: float | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Is the entrance MEASURED? — unit D4 ("보정 방향 역전")
+# ---------------------------------------------------------------------------
+
+#: An entrance-level observed row resolves to the target vehicle input's OWN
+#: link: what that input carries IS the measurement. Data to match, not a knob.
+ENTRANCE_MEASURED = "measured"
+#: The evidence in hand could not establish measured-ness in EITHER direction.
+#: A category of its own, on purpose: "not verified as measured" is NOT
+#: "verified as unmeasured, and therefore free to edit".
+ENTRANCE_UNVERIFIED = "unverified"
+
+ENTRANCE_STATUSES = (ENTRANCE_MEASURED, ENTRANCE_UNVERIFIED)
+
+#: WHY a verdict landed where it did — machine-readable, so a consumer can
+#: tell "we looked and found the measurement" from each distinct way of not
+#: being able to look at all.
+ENTRANCE_ROW_ON_INPUT_LINK = "ROW_ON_INPUT_LINK"
+ENTRANCE_NO_LINK_ON_TARGET = "NO_LINK_ON_TARGET"
+ENTRANCE_NO_MOVEMENT_ROWS = "NO_MOVEMENT_ROWS"
+ENTRANCE_NO_LINK_KEYED_ROWS = "NO_LINK_KEYED_ROWS"
+ENTRANCE_NO_ROW_ON_INPUT_LINK = "NO_ROW_ON_INPUT_LINK"
+ENTRANCE_ROW_HAS_NO_OBSERVED = "ROW_HAS_NO_OBSERVED"
+
+#: The ko/en/ja phrase each ``why`` contributes to a RATIONALE — deliberately
+#: terse. The full sentence, with the ids and the numbers, lives in the
+#: verdict's ``basis`` and travels in the evidence; a rationale that inlined it
+#: would push an already-long text further past the approval card's own
+#: ``reason`` cap (routers/assistant.MAX_APPROVAL_REASON_CHARS = 300) for the
+#: sake of a detail the evidence block already carries.
+_ENTRANCE_WHY_PHRASES: dict[str, dict[str, str]] = {
+    ENTRANCE_NO_LINK_ON_TARGET: {
+        "ko": "이 입력의 링크가 주어지지 않음",
+        "en": "the input's link was not supplied",
+        "ja": "このインプットのリンクが未指定",
+    },
+    ENTRANCE_NO_MOVEMENT_ROWS: {
+        "ko": "이 노드에 실측 이동류 행이 없음",
+        "en": "no observed movement rows on this node",
+        "ja": "このノードに実測移動の行がない",
+    },
+    ENTRANCE_NO_LINK_KEYED_ROWS: {
+        "ko": "실측 이동류가 링크를 알 수 없는 접근로 라벨로만 기록됨",
+        "en": "the observed movements are approach labels, not link-bearing OBJECT_IDs",
+        "ja": "実測移動がリンクを特定できない流入部ラベルのみ",
+    },
+    ENTRANCE_NO_ROW_ON_INPUT_LINK: {
+        "ko": "이 링크에서 진입하는 실측 행이 없음",
+        "en": "no observed row enters from this link",
+        "ja": "このリンクから流入する実測行がない",
+    },
+    ENTRANCE_ROW_HAS_NO_OBSERVED: {
+        "ko": "해당 행에 실측값이 없음",
+        "en": "that row carries no observed count",
+        "ja": "当該行に実測値がない",
+    },
+}
+
+#: node, FROM link, from position, to link, to position — and positions can be
+#: negative, so splitting on "-" is not safe. Two leading integer runs are
+#: (``results_evidence.node_token`` takes the first for the same reason).
+_OBJECT_ID_FROM_LINK_RE = re.compile(r"^(\d+)-(\d+)-")
+
+
+def canonical_link_id(value: Any) -> str:
+    """A link id in the ONE spelling both sides of the D4 join are compared in.
+
+    The join is a string comparison between two numbers that reached this
+    module by different roads: the vehicle input's link (COM →
+    ``vissim_com.get_vehicle_input`` → the caller's target, or the shadow
+    model's ``link`` field) and a movement OBJECT_ID's own from-link digits.
+    Those roads disagree about spelling. COM hands numeric attributes back as
+    floats often enough that ``vissim_com`` already casts the sibling ``No``
+    field through ``int()`` for exactly this reason (see its comment: a
+    float-typed ``No`` renders ``"13.0"`` and misses every id keyed ``"13"``);
+    ``"00617"`` is the same failure with a different cause.
+
+    Left uncanonicalized, ``"617.0" != "617"`` would make a MEASURED entrance
+    read as UNVERIFIED — and UNVERIFIED is the branch that ALLOWS the demand
+    edit, as a labelled estimate. So the failure is not a missing refusal, it
+    is a silent licence to overwrite a measurement, which is precisely what
+    unit D4 exists to prevent. Canonicalizing is therefore the safe direction.
+
+    An integral number becomes its integer spelling; everything else is
+    returned verbatim, so a genuinely non-numeric link id still compares as
+    itself. A NON-integral number is deliberately NOT truncated: turning
+    ``"617.5"`` into ``"617"`` would manufacture a match, and a false MEASURED
+    verdict refuses an edit that was legitimate — the opposite error, but
+    still an error made up by this function rather than found in the data.
+    """
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return ""
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return text
+    if not math.isfinite(number) or number != int(number):
+        return text
+    return str(int(number))
+
+
+def movement_from_link(movement_id: Any) -> str | None:
+    """The FROM-link of a Vissim movement OBJECT_ID, or ``None``.
+
+    ``"8-617-1229.801336-617-1286.072980"`` → ``"617"``: node 8, from link 617
+    at 1229.80, to link 617 at 1286.07. ``None`` for anything that is not an
+    OBJECT_ID — a workbook turn token (``"E-W"``), an observation-store leg
+    label (``"북측방면|left"``), a bare node id — because guessing a link out
+    of a label is exactly the confident-wrong join this module refuses to make.
+    """
+    match = _OBJECT_ID_FROM_LINK_RE.match(str(movement_id or "").strip())
+    return match.group(2) if match else None
+
+
+def entrance_measurement(
+    node: Mapping[str, Any] | None, target: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Is the target vehicle input's entrance volume OBSERVED DATA? (unit D4)
+
+    The professor's doctrine, made machine-checkable: an observed entrance
+    count is the calibration TARGET, not a parameter. So before any proposal
+    rewrites a vehicle input's volume, this asks whether the evidence in hand
+    shows that volume was itself measured.
+
+    Verdict is :data:`ENTRANCE_MEASURED` or :data:`ENTRANCE_UNVERIFIED` —
+    never "unmeasured". The two are not the same claim and this function is
+    not permitted to make the second one.
+
+    WHAT IT CAN SEE (v1, evidence-level)
+    ------------------------------------
+    Exactly one join, and it is an identity rather than a guess: an observed
+    movement row whose id is a Vissim movement OBJECT_ID names the link the
+    movement ENTERS FROM (:func:`movement_from_link`), and the caller's target
+    names the link its vehicle input feeds (``link_no``, read from
+    ``get_vehicle_inputs``). Same link + a non-empty observed count on that row
+    ⇒ the counts were taken AT this entrance ⇒ :data:`ENTRANCE_MEASURED`. That
+    is the shape the real demo workbook has: node 8's row
+    ``8-617-1229.801336-617-1286.072980`` carries 649 observed vehicles
+    entering from link 617, which is the link vehicle input 113 feeds.
+
+    Both sides go through :func:`canonical_link_id` first — ``"617.0"`` and
+    ``"00617"`` must not read as a different link from ``"617"``, because that
+    mismatch does not merely lose a refusal, it silently licenses the demand
+    edit as an "unverified" estimate. And the cited count is the SUM over every
+    counted row on that link, not the first: an approach usually fans out into
+    several movements, and naming one of them would understate what was
+    measured at the entrance being defended.
+
+    WHAT IT CANNOT SEE — named absences, not silent passes
+    ------------------------------------------------------
+    * **The observation store's leg-keyed rows** (``services.observations``
+      aggregates turning counts under ``"<approach leg>|<turn>"``, its own
+      ``MOVEMENT_ID_SEPARATOR``). There is no link↔leg edge anywhere in this
+      system today, so a store-sourced node cannot be resolved to a link at
+      all. Building that edge is the named follow-up; until it exists these
+      nodes are :data:`ENTRANCE_UNVERIFIED` with
+      :data:`ENTRANCE_NO_LINK_KEYED_ROWS`.
+    * **Detector-basis nodes**, whose ``directions`` are ``[]`` by
+      construction (a loop counts a site total, not a turn) — no rows at all,
+      :data:`ENTRANCE_NO_MOVEMENT_ROWS`.
+    * **An aliased workbook**: when the caller supplies ``movement_object_id``
+      aliases, ``reality_check._aliased_run_view`` renames the run's
+      OBJECT_IDs to the workbook's own turn tokens BEFORE the evidence reaches
+      here, so the link is no longer recoverable from the row id. Same verdict
+      and same named follow-up as the store path.
+    * **A target with no ``link_no``**: nothing to match against
+      (:data:`ENTRANCE_NO_LINK_ON_TARGET`). This is a reach limit worth
+      stating plainly — a caller who omits the link gets the estimation-
+      labelled proposal rather than the refusal, so the label, the assumption
+      token and this verdict are what keep that from being silent.
+
+    No I/O, no COM, no network read: it answers from the two payloads it is
+    handed, like everything else in this module.
+    """
+    node = node or {}
+    target = target or {}
+    input_no = target.get("input_no")
+    # ``link_no`` is this module's spelling; ``link`` is the shadow model's own
+    # field name, accepted so a caller that passes a vehicle input straight
+    # through is not silently downgraded to UNVERIFIED. ``or`` rather than a
+    # default, so an explicit ``link_no: None`` (what tools_metrics sends when
+    # the caller omitted it) still falls back rather than short-circuiting.
+    raw_link = target.get("link_no") or target.get("link")
+    supplied_link = None if raw_link in (None, "") else str(raw_link).strip()
+    link = None if supplied_link is None else canonical_link_id(supplied_link)
+    sources = dict(node.get("sources") or {})
+    node_id = str(node.get("node_id") or "")
+
+    verdict: dict[str, Any] = {
+        "status": ENTRANCE_UNVERIFIED,
+        "why": ENTRANCE_NO_LINK_ON_TARGET,
+        "basis": "",
+        "input_no": None if input_no in (None, "") else str(input_no),
+        # The CANONICAL form is what the join used, so it is what the evidence
+        # reports; what the caller actually handed over is kept beside it,
+        # because a provenance block that silently rewrote its input would be
+        # unauditable exactly where auditing matters.
+        "link_no": link,
+        "link_no_supplied": supplied_link,
+        "observed_row": None,
+        "observed_on_input_link": None,
+        "rows_on_input_link": [],
+        "observed_source": sources.get("observed"),
+        "count_basis": sources.get("count_basis"),
+        "predicate": (
+            "fixes.entrance_measurement v1 — an observed movement OBJECT_ID whose FROM-link is "
+            "the vehicle input's own link (unit D4)"
+        ),
+    }
+
+    if link is None:
+        verdict["basis"] = (
+            f"the target for vehicle input {verdict['input_no'] or '?'} named no link, so no "
+            "observed row could be matched to this entrance"
+        )
+        return verdict
+
+    movements = list(node.get("movements") or [])
+    if not movements:
+        verdict["why"] = ENTRANCE_NO_MOVEMENT_ROWS
+        verdict["basis"] = (
+            f"node {node_id or '?'}'s observed evidence carries no movement rows "
+            f"(count_basis={sources.get('count_basis')!r}), so it cannot say whether link {link} "
+            "was counted"
+        )
+        return verdict
+
+    from_links: list[str] = []
+    on_link: list[Mapping[str, Any]] = []
+    for movement in movements:
+        token = str(movement.get("id") or movement.get("direction") or "")
+        from_link = movement_from_link(token)
+        if from_link is None:
+            continue
+        from_link = canonical_link_id(from_link)
+        if from_link not in from_links:
+            from_links.append(from_link)
+        if from_link == link:
+            on_link.append(movement)
+
+    verdict["node_from_links"] = from_links
+    if not from_links:
+        sample = [str(m.get("id") or m.get("direction") or "") for m in movements[:3]]
+        verdict["why"] = ENTRANCE_NO_LINK_KEYED_ROWS
+        verdict["basis"] = (
+            f"none of node {node_id or '?'}'s {len(movements)} observed movement rows is a Vissim "
+            f"movement OBJECT_ID (e.g. {sample}), so no row can be resolved to a link"
+        )
+        return verdict
+
+    verdict["rows_on_input_link"] = [
+        str(m.get("id") or m.get("direction") or "") for m in on_link
+    ]
+
+    if not on_link:
+        verdict["why"] = ENTRANCE_NO_ROW_ON_INPUT_LINK
+        verdict["basis"] = (
+            f"node {node_id or '?'}'s observed rows enter from links {from_links}; none of them is "
+            f"link {link}, the link vehicle input {verdict['input_no'] or '?'} feeds"
+        )
+        return verdict
+
+    # EVERY counted row on that link, not the first one. An approach normally
+    # fans out into several movements (the demo node's link 12075 carries
+    # 249 + 17, its link 759 carries 3 + 4), so citing one row would understate
+    # what was measured at this entrance -- and understating the measurement is
+    # how a refusal that is right turns into a refusal an approver disbelieves.
+    counted = [m for m in on_link if _number(m.get("observed")) is not None]
+    if not counted:
+        verdict["why"] = ENTRANCE_ROW_HAS_NO_OBSERVED
+        verdict["basis"] = (
+            f"node {node_id or '?'} has {len(on_link)} row(s) entering from link {link}, but none "
+            "of them carries an observed count"
+        )
+        return verdict
+
+    observed_total = _round(sum(float(_number(m.get("observed")) or 0.0) for m in counted))
+    first = counted[0]
+    row_id = str(first.get("id") or first.get("direction") or "")
+    verdict["status"] = ENTRANCE_MEASURED
+    verdict["why"] = ENTRANCE_ROW_ON_INPUT_LINK
+    verdict["observed_on_input_link"] = observed_total
+    verdict["observed_rows"] = [
+        {
+            "movement_id": str(m.get("id") or m.get("direction") or ""),
+            "observed": _number(m.get("observed")),
+            "modelled": _number(m.get("modelled")),
+        }
+        for m in counted
+    ]
+    #: The first counted row, kept as the example a sentence can name. The
+    #: NUMBER to quote is ``observed_on_input_link``, which is all of them.
+    verdict["observed_row"] = {
+        "movement_id": row_id,
+        "from_link": link,
+        "observed": _number(first.get("observed")),
+        "modelled": _number(first.get("modelled")),
+    }
+    rows_note = (
+        f"observed movement row {row_id!r}"
+        if len(counted) == 1
+        else f"{len(counted)} observed movement rows (e.g. {row_id!r})"
+    )
+    verdict["basis"] = (
+        f"{rows_note} enter node {node_id or '?'} from link {link} — the link vehicle input "
+        f"{verdict['input_no'] or '?'} feeds — carrying {_fmt(observed_total)} counted vehicles "
+        "in total"
+    )
+    return verdict
+
+
+def _entrance_phrase(verdict: Mapping[str, Any], language: str) -> str:
+    """The short ko/en/ja phrase for a verdict's ``why``."""
+    return _ENTRANCE_WHY_PHRASES.get(str(verdict.get("why") or ""), {}).get(
+        language, str(verdict.get("basis") or "")
+    )
+
+
+# ---------------------------------------------------------------------------
 # Refusal construction
 # ---------------------------------------------------------------------------
 
@@ -946,11 +1302,28 @@ def _build_demand_proposal(
     threshold: float,
     registry: ToolRegistry | None = None,
 ) -> FixProposal:
-    """The node TOTAL misses: the demand feeding it is what is wrong.
+    """The node TOTAL misses — but WHICH demand, and is it ours to change?
 
     The value is the current volume scaled by observed/modelled — the same
     arithmetic a practitioner does by hand, stated in ``evidence["arithmetic"]``
     so the audit trail can re-check it.
+
+    Unit D4 put a gate in front of that arithmetic (professor, 2026-08-12; the
+    user's decided policy). An observed entrance volume is the calibration
+    TARGET, not a knob:
+
+    * :data:`ENTRANCE_MEASURED` — an observed row resolves to this input's own
+      link — is a REFUSAL (:data:`INPUT_VOLUME_IS_OBSERVED_DATA`). No
+      threshold, no override: rewriting the count to make downstream numbers
+      agree inverts the direction of calibration.
+    * :data:`ENTRANCE_UNVERIFIED` still proposes, because the approval card IS
+      the "ask the user first" step — but the proposal is relabelled as what
+      it is, a NAMED demand ESTIMATE: the assumption token
+      :data:`ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED`, the lowered confidence
+      :data:`CONFIDENCE_DEMAND_ESTIMATE`, the verdict in
+      ``evidence["target"]["entrance_measurement"]`` and a rationale sentence
+      that tells the approver to reject it and supply the real count if they
+      have one. Never an unnamed guess.
     """
     key, kind = NODE_TOTAL_VOLUME_MISS, KEY_VALIDATION
     observed = _number(node.get("observed_total"))
@@ -986,11 +1359,68 @@ def _build_demand_proposal(
     input_no = target.get("input_no")
     current_volume = _number(target.get("current_volume"))
     interval_no = target.get("interval_no", 1)
+    entrance = entrance_measurement(node, target)
     base_evidence["target"] = {
         "input_no": input_no,
         "current_volume": current_volume,
         "interval_no": interval_no,
+        # Unit D4: the verdict AND its basis ride in the evidence, so the
+        # approval card and the audit DOCX (both of which render evidence
+        # generically) carry "why this was, or was not, ours to edit".
+        "entrance_measurement": entrance,
     }
+
+    if input_no not in (None, "") and entrance["status"] == ENTRANCE_MEASURED:
+        row = entrance["observed_row"] or {}
+        # The number quoted is every counted row on that link, not just the
+        # example row named beside it -- an entrance normally fans out into
+        # several movements.
+        counted_here = _fmt(_number(entrance.get("observed_on_input_link")))
+        rows_here = len(entrance.get("observed_rows") or [])
+        rows_ko = "" if rows_here <= 1 else f"(이 링크 진입 실측 행 {rows_here}건 합계) "
+        rows_en = "" if rows_here <= 1 else f"(summed over {rows_here} counted rows on that link) "
+        rows_ja = "" if rows_here <= 1 else f"(このリンクからの実測行 {rows_here} 件の合計) "
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=INPUT_VOLUME_IS_OBSERVED_DATA,
+            evidence=base_evidence,
+            ko=f"노드 {node_id}의 총 교통량이 실측과 어긋납니다(GEH {_round(node_total_geh)} ≥ "
+            f"{threshold}). 그러나 이 제안이 바꾸려는 차량 입력 {input_no}은(는) 링크 "
+            f"{entrance['link_no']}의 진입부이고, 그 진입부가 바로 실측이 이루어진 지점입니다: "
+            f"실측 이동류 {row.get('movement_id')}이(가) 링크 {entrance['link_no']}에서 진입하며 "
+            f"{rows_ko}{counted_here}대로 계측되었습니다. 실측된 진입 교통량은 "
+            "보정의 '목표값'이지 조절 손잡이가 아닙니다 — 모델의 하류 수치를 맞추려고 실측값 자체를 "
+            "고쳐 쓰면 보정의 방향이 뒤집히고, 이 실행을 채점하는 기준 자체가 사라집니다. 따라서 "
+            "이 편집은 거부합니다. 같은 불일치를 좁히기 위해 이 루프가 여전히 바꿀 수 있는 것: "
+            "회전 배분(경로 결정의 relFlow), 주행 행태·희망 속도, 신호 시간, 링크 기하·차로(용량). "
+            "그리고 모델에 차량이 부족한 이유가 다른 '실측되지 않은' 진입부라면, 수요 추정은 이 "
+            "입력이 아니라 그쪽에서 이루어져야 합니다.",
+            en=f"Node {node_id}'s total volume misses the observed count (GEH "
+            f"{_round(node_total_geh)} >= {threshold}). But vehicle input {input_no}, the object "
+            f"this edit would rewrite, feeds link {entrance['link_no']} — and that entrance is "
+            f"where the counts were TAKEN: observed movement row {row.get('movement_id')} enters "
+            f"from link {entrance['link_no']} carrying {rows_en}{counted_here} "
+            "counted vehicles. An observed entrance volume is the calibration TARGET, not a knob: "
+            "rewriting the measurement so the model's downstream numbers agree inverts the "
+            "direction of calibration and destroys the very evidence this run is graded against. "
+            "Refused. What this loop CAN still change to close the same gap: the turn "
+            "distribution (a routing decision's relFlow), driving behaviour and desired speeds, "
+            "signal timing, and link geometry/lanes (capacity) — and where the model is short of "
+            "vehicles because some OTHER, unmeasured entrance is too low, that entrance is where "
+            "demand may be estimated, not this one.",
+            ja=f"ノード {node_id} の総交通量が実測と乖離しています(GEH {_round(node_total_geh)} ≥ "
+            f"{threshold})。しかし、この編集が書き換えようとする車両インプット {input_no} はリンク "
+            f"{entrance['link_no']} の流入部であり、その流入部こそ実測が行われた地点です: 実測移動 "
+            f"{row.get('movement_id')} がリンク {entrance['link_no']} から流入し "
+            f"{rows_ja}{counted_here} 台として計測されています。実測された流入交通量は"
+            "キャリブレーションの「目標値」であってつまみではありません — モデルの下流の数値を"
+            "合わせるために実測値そのものを書き換えれば、キャリブレーションの向きが反転し、この実行"
+            "を採点する基準自体が失われます。よってこの編集は拒否します。同じ乖離を縮めるためにこの"
+            "ループが依然として変更できるもの: 回転配分(経路決定のrelFlow)、走行挙動・希望速度、"
+            "信号時間、リンク幾何・車線数(容量)。そして車両が不足している原因が別の「実測されて"
+            "いない」流入部であるなら、需要の推定はこのインプットではなくそちらで行うべきです。",
+        )
 
     if input_no in (None, "") or current_volume is None or not modelled or not observed:
         return _refuse(
@@ -1022,6 +1452,29 @@ def _build_demand_proposal(
         "run_result_keys": list((node.get("sources") or {}).get("run_result_keys") or []),
     }
 
+    # Unit D4: the entrance survived the measured gate only as UNVERIFIED, so
+    # what follows is a demand ESTIMATE and says so — in the rationale, in the
+    # assumption token, and in the confidence. The estimation clause is
+    # APPENDED to the unchanged proposal text rather than replacing it: the
+    # arithmetic and its evidence are exactly what they were, and it is the
+    # premise (that this entrance was ever ours to rewrite) that is unverified.
+    estimate_ko = (
+        f" ※ 수요 추정(demand estimation): 이 진입부가 실측 지점인지 확인하지 못했습니다"
+        f"({_entrance_phrase(entrance, 'ko')}). 실제 진입 교통량을 아시면 이 제안을 거절하고 그 "
+        "값을 넣어 주십시오 — 승인하면 위 비율로 산출한 명시적 추정치를 채택하는 것입니다."
+    )
+    estimate_en = (
+        f" NB DEMAND ESTIMATE, not a measurement: this entrance could not be verified as a "
+        f"measured one ({_entrance_phrase(entrance, 'en')}). If you know the real entrance count, "
+        "REJECT this and supply it — approving adopts the ratio above as a named estimate."
+    )
+    estimate_ja = (
+        f" ※ 需要推定(demand estimation): この流入部が実測地点かを確認できませんでした"
+        f"({_entrance_phrase(entrance, 'ja')})。実際の流入交通量をご存知であれば、この提案を拒否して"
+        "その値をご指定ください — 承認する場合、上記の比率による明示的な推定値を採用することに"
+        "なります。"
+    )
+
     return _emit(
         key=key,
         key_kind=kind,
@@ -1037,20 +1490,26 @@ def _build_demand_proposal(
         f"{_fmt(modelled)}, GEH {_round(node_total_geh)} ≥ 기준 {threshold}. 회전 배분이 아니라 "
         f"수요(Vehicle Input) 수준의 문제이므로, 차량 입력 {input_no}의 구간 {interval_no} 볼륨을 "
         f"{_fmt(current_volume)} → {new_volume} veh/h로 조정할 것을 제안합니다({arithmetic}). "
-        "이 값은 해당 차량 입력이 이 노드 총량을 좌우한다는 전제 하에서 정확합니다.",
+        "이 값은 해당 차량 입력이 이 노드 총량을 좌우한다는 전제 하에서 정확합니다." + estimate_ko,
         en=f"Node {node_id}'s TOTAL volume itself misses the observed count: observed "
         f"{_fmt(observed)} vs modelled {_fmt(modelled)}, GEH {_round(node_total_geh)} >= "
         f"threshold {threshold}. That is a demand-level problem (Vehicle Input), not a turn-"
         f"distribution one, so the proposal is to change vehicle input {input_no}'s interval "
         f"{interval_no} volume from {_fmt(current_volume)} to {new_volume} veh/h ({arithmetic}). "
-        "The value is exact under the assumption that this input drives the node's total.",
+        "The value is exact under the assumption that this input drives the node's total."
+        + estimate_en,
         ja=f"ノード {node_id} の総交通量自体が実測と乖離しています: 実測 {_fmt(observed)} 対 モデル "
         f"{_fmt(modelled)}、GEH {_round(node_total_geh)} ≥ 閾値 {threshold}。これは回転配分ではなく"
         f"需要(車両インプット)レベルの問題のため、車両インプット {input_no} の区間 {interval_no} の"
         f"ボリュームを {_fmt(current_volume)} → {new_volume} veh/h に変更することを提案します"
-        f"({arithmetic})。この値は当該インプットがノード総量を左右するという前提のもとで正確です。",
-        confidence=CONFIDENCE_ARITHMETIC,
-        assumptions=(ASSUME_INPUT_DRIVES_NODE_TOTAL, ASSUME_INTERVAL_MATCHES_COUNT_PERIOD),
+        f"({arithmetic})。この値は当該インプットがノード総量を左右するという前提のもとで正確です。"
+        + estimate_ja,
+        confidence=CONFIDENCE_DEMAND_ESTIMATE,
+        assumptions=(
+            ASSUME_INPUT_DRIVES_NODE_TOTAL,
+            ASSUME_INTERVAL_MATCHES_COUNT_PERIOD,
+            ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED,
+        ),
         registry=registry,
     )
 
@@ -1088,6 +1547,79 @@ def _demand_refusal_note(
         f"{_fmt(modelled)}、GEH {_round(geh)} < {threshold})。したがってこれは需要の誤りではなく"
         "回転配分の問題であり、車両インプットのボリューム変更は提案しません。",
     )
+
+
+def _total_clause(
+    *, node_id: str, movement_id: str, geh: float, threshold: float, reconciles: bool
+) -> dict[str, dict[str, str]]:
+    """The leading clause a routing rationale opens with, in ko/en/ja.
+
+    Two states, and the difference is load-bearing rather than cosmetic:
+
+    * ``reconciles`` — the classic arm (b): the node total agrees with the
+      count, so the split is the only thing wrong. Wording preserved verbatim
+      from before unit D4, because it is what every existing consumer, test
+      and audit document already carries.
+    * not ``reconciles`` — D4's fall-through: the total misses too, and the
+      demand that would fix it is an OBSERVED entrance count this loop refuses
+      to rewrite. Saying "the total reconciles" here would be a plain false
+      statement in the text an approver signs, so it says the true thing and
+      points at the refusal riding on ``also_refused``.
+
+    ``short`` opens a refusal, ``long`` opens the proposal, ``because`` is the
+    mid-sentence connective before the relFlow value itself.
+    """
+    if reconciles:
+        return {
+            "short": {
+                "ko": f"노드 {node_id}의 총량은 맞지만 이동류 {movement_id}의 배분이 어긋납니다",
+                "en": f"Node {node_id}'s total is right but movement {movement_id}'s split misses",
+                "ja": f"ノード {node_id} の総量は合っていますが、移動 {movement_id} の配分が乖離しています",
+            },
+            "long": {
+                "ko": f"노드 {node_id}의 총량은 실측과 합치하지만(GEH {_round(geh)} < {threshold}) "
+                f"이동류 {movement_id}의 배분이 어긋납니다",
+                "en": f"Node {node_id}'s total reconciles with observation (GEH {_round(geh)} < "
+                f"{threshold}) but movement {movement_id}'s split misses",
+                "ja": f"ノード {node_id} の総量は実測と一致していますが(GEH {_round(geh)} < "
+                f"{threshold})、移動 {movement_id} の配分が乖離しています",
+            },
+            "because": {
+                "ko": "수요가 아니라 회전 배분 문제이므로",
+                "en": "This is a routing-split problem, not a demand one, so",
+                "ja": "需要ではなく回転配分の問題のため、",
+            },
+        }
+    return {
+        "short": {
+            "ko": f"노드 {node_id}의 총량도 실측과 어긋나지만(GEH {_round(geh)} ≥ {threshold}) 그 "
+            f"수요는 실측된 진입 교통량이라 편집 대상이 아니며(함께 실린 거부 참조), 이동류 "
+            f"{movement_id}의 배분 또한 어긋납니다",
+            "en": f"Node {node_id}'s total misses too (GEH {_round(geh)} >= {threshold}), but its "
+            "demand is an OBSERVED entrance count and therefore not this loop's to edit (see the "
+            f"refusal carried alongside); movement {movement_id}'s split also misses",
+            "ja": f"ノード {node_id} の総量も実測と乖離していますが(GEH {_round(geh)} ≥ "
+            f"{threshold})、その需要は実測された流入交通量であり編集対象ではありません(併記された"
+            f"拒否を参照)。移動 {movement_id} の配分も乖離しています",
+        },
+        "long": {
+            "ko": f"노드 {node_id}의 총량도 실측과 어긋나지만(GEH {_round(geh)} ≥ {threshold}) 그 "
+            f"수요는 실측된 진입 교통량이므로 바꿀 수 없고(함께 실린 거부 참조), 이동류 "
+            f"{movement_id}의 배분 또한 어긋납니다",
+            "en": f"Node {node_id}'s total misses too (GEH {_round(geh)} >= {threshold}), but that "
+            "demand is an OBSERVED entrance count and cannot be rewritten (see the refusal carried "
+            f"alongside); movement {movement_id}'s split also misses",
+            "ja": f"ノード {node_id} の総量も実測と乖離していますが(GEH {_round(geh)} ≥ "
+            f"{threshold})、その需要は実測された流入交通量のため書き換えられません(併記された拒否を"
+            f"参照)。移動 {movement_id} の配分も乖離しています",
+        },
+        "because": {
+            "ko": "실측된 수요는 손댈 수 없고 남은 지렛대는 회전 배분이므로",
+            "en": "The measured demand is not a knob, so the remaining lever is the turn "
+            "distribution:",
+            "ja": "実測された需要は調整対象ではなく、残るレバーは回転配分のため、",
+        },
+    }
 
 
 def _decision_movement_tokens(target: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1159,6 +1691,7 @@ def _build_routing_proposal(
     node_total_geh: float,
     threshold: float,
     target: Mapping[str, Any] | None,
+    demand_note: FixProposal | None = None,
     registry: ToolRegistry | None = None,
 ) -> FixProposal:
     """The total reconciles but one movement's SPLIT misses.
@@ -1194,6 +1727,19 @@ def _build_routing_proposal(
     passing every one of its movements, not by a flag; the emitted proposal
     then carries :data:`ASSUME_DECISION_MOVEMENTS_COMPLETE`, which is the
     assumption the list encodes.
+
+    ``demand_note`` — unit D4's fall-through
+    ---------------------------------------
+    Normally this builder is reached only when the node total RECONCILES, and
+    it says so: it builds :func:`_demand_refusal_note`
+    (:data:`NODE_TOTAL_RECONCILES`) itself and carries it on ``also_refused``.
+    D4 opened a SECOND way in — the total misses, but the demand edit was
+    refused because that entrance is measured
+    (:data:`INPUT_VOLUME_IS_OBSERVED_DATA`) — and there "the total reconciles"
+    would be a false sentence in the one text an approver actually reads. So
+    the caller passes the refusal it already made as ``demand_note``, and the
+    rationale states what is really true: the total misses as well, and the
+    turn distribution is the knob that remains.
     """
     key, kind = MOVEMENT_SPLIT_MISS, KEY_VALIDATION
     node_id = str(node.get("node_id") or "")
@@ -1203,12 +1749,21 @@ def _build_routing_proposal(
     modelled = _number(movement.get("modelled"))
     movement_id = str(movement.get("id") or movement.get("direction") or "")
 
-    demand_note = _demand_refusal_note(
+    total_reconciles = demand_note is None
+    if demand_note is None:
+        demand_note = _demand_refusal_note(
+            node_id=node_id,
+            observed=observed_total,
+            modelled=modelled_total,
+            geh=node_total_geh,
+            threshold=threshold,
+        )
+    total_clause = _total_clause(
         node_id=node_id,
-        observed=observed_total,
-        modelled=modelled_total,
+        movement_id=movement_id,
         geh=node_total_geh,
         threshold=threshold,
+        reconciles=total_reconciles,
     )
 
     base_evidence: dict[str, Any] = {
@@ -1232,13 +1787,13 @@ def _build_routing_proposal(
             reason_code=NO_TARGET_OBJECT,
             evidence=base_evidence,
             also_refused=demand_note,
-            ko=f"노드 {node_id}의 총량은 맞지만 이동류 {movement_id}의 배분이 어긋납니다"
+            ko=f"{total_clause['short']['ko']}"
             f"(GEH {_round(movement_geh)} ≥ {threshold}). 다만 어느 경로 결정/경로를 조정할지 "
             "지목되지 않아 제안을 만들 수 없습니다.",
-            en=f"Node {node_id}'s total is right but movement {movement_id}'s split misses "
+            en=f"{total_clause['short']['en']} "
             f"(GEH {_round(movement_geh)} >= {threshold}). No routing decision/route was named "
             "as the target, so no proposal can be made.",
-            ja=f"ノード {node_id} の総量は合っていますが、移動 {movement_id} の配分が乖離しています"
+            ja=f"{total_clause['short']['ja']}"
             f"(GEH {_round(movement_geh)} ≥ {threshold})。調整対象の経路決定/経路が指定されて"
             "いないため、提案を作成できません。",
         )
@@ -1427,29 +1982,27 @@ def _build_routing_proposal(
             "interval_no": int(interval_no or 1),
         },
         evidence=evidence,
-        ko=f"노드 {node_id}의 총량은 실측과 합치하지만(GEH {_round(node_total_geh)} < {threshold}) "
-        f"이동류 {movement_id}의 배분이 어긋납니다: 실측 {_fmt(observed)} vs 모델 {_fmt(modelled)}, "
-        f"GEH {_round(movement_geh)} ≥ {threshold}. 수요가 아니라 회전 배분 문제이므로 경로 결정 "
+        ko=f"{total_clause['long']['ko']}"
+        f": 실측 {_fmt(observed)} vs 모델 {_fmt(modelled)}, "
+        f"GEH {_round(movement_geh)} ≥ {threshold}. {total_clause['because']['ko']} 경로 결정 "
         f"{decision_no}의 경로 {route_no}(구간 {interval_no}) relFlow를 {_fmt(current_rel_flow)} → "
         f"{new_rel_flow}로 조정할 것을 제안합니다({arithmetic}). relFlow는 백분율이 아니라 원시 "
         f"가중치이며, 형제 경로가 현재 값을 유지하면 이 경로의 실제 배분은 {share_pct}%가 됩니다 — "
         f"이는 노드 전체가 아니라 경로 결정 {decision_no}이(가) 관장하는 이동류 "
         f"{movement_list}의 실측 합계 {_fmt(decision_total)}대 중 이 이동류의 {_fmt(observed)}대가 "
         f"차지하는 비율입니다.",
-        en=f"Node {node_id}'s total reconciles with observation (GEH {_round(node_total_geh)} < "
-        f"{threshold}) but movement {movement_id}'s split misses: observed {_fmt(observed)} vs "
-        f"modelled {_fmt(modelled)}, GEH {_round(movement_geh)} >= {threshold}. This is a "
-        f"routing-split problem, not a demand one, so the proposal is to change decision "
+        en=f"{total_clause['long']['en']}: observed {_fmt(observed)} vs "
+        f"modelled {_fmt(modelled)}, GEH {_round(movement_geh)} >= {threshold}. "
+        f"{total_clause['because']['en']} the proposal is to change decision "
         f"{decision_no} route {route_no} (interval {interval_no}) relFlow from "
         f"{_fmt(current_rel_flow)} to {new_rel_flow} ({arithmetic}). relFlow is a RAW weight, not "
         f"a percentage: with the sibling routes left at their current values this route's actual "
         f"share becomes {share_pct}% — the share observed WITHIN decision {decision_no}, i.e. "
         f"{_fmt(observed)} of the {_fmt(decision_total)} vehicles counted across the movements it "
         f"governs ({movement_list}), not its share of the node total.",
-        ja=f"ノード {node_id} の総量は実測と一致していますが(GEH {_round(node_total_geh)} < "
-        f"{threshold})、移動 {movement_id} の配分が乖離しています: 実測 {_fmt(observed)} 対 モデル "
-        f"{_fmt(modelled)}、GEH {_round(movement_geh)} ≥ {threshold}。需要ではなく回転配分の問題"
-        f"のため、経路決定 {decision_no} の経路 {route_no}(区間 {interval_no})のrelFlowを "
+        ja=f"{total_clause['long']['ja']}: 実測 {_fmt(observed)} 対 モデル "
+        f"{_fmt(modelled)}、GEH {_round(movement_geh)} ≥ {threshold}。{total_clause['because']['ja']}"
+        f"経路決定 {decision_no} の経路 {route_no}(区間 {interval_no})のrelFlowを "
         f"{_fmt(current_rel_flow)} → {new_rel_flow} に変更することを提案します({arithmetic})。"
         f"relFlowは百分率ではなく生の重みであり、兄弟経路が現在値を維持すれば、この経路の実配分は "
         f"{share_pct}% になります — これはノード全体ではなく、経路決定 {decision_no} が管轄する移動"
@@ -1487,16 +2040,49 @@ def _build_latent_demand_overflow_proposal(
     ``fixable_by_reducing_this_input: False``, no volume for THIS input can
     help, and the mapping refuses instead of proposing one that would fail
     the very check it came from.
+
+    Unit D4, and the honest statement of where its predicate reaches
+    ----------------------------------------------------------------
+    This is the mapping's OTHER ``set_vehicle_input_volume`` proposal, so it
+    is subject to the same doctrine: an observed entrance volume is data to
+    match, not a knob. :func:`entrance_measurement` is therefore called here
+    too — but a ``latent_demand_overflow`` finding carries NO observed counts
+    at all (its evidence is the link's capacity, the sibling inputs' volumes
+    and the requested value; a preflight check has no counts workbook and no
+    run behind it), so today the verdict is ALWAYS
+    :data:`ENTRANCE_UNVERIFIED` / :data:`ENTRANCE_NO_MOVEMENT_ROWS`. That is
+    stated rather than pretended: the call is real so this builder gains the
+    refusal for free the day a caller does hand it observed evidence, and
+    until then every proposal from here is labelled as the demand ESTIMATE it
+    is (:data:`ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED`, and the rationale
+    sentence that tells the approver to reject it and supply the real count).
+
+    Note what this means for a MEASURED entrance that overflows its link: the
+    right answer is not to shave the count down to capacity, it is more lanes
+    or a capacity that reflects reality — and the rationale says so, so an
+    approver holding real counts is told which side to fix. The confidence
+    stays :data:`CONFIDENCE_CONSTRAINT_CEILING`: that field says how the
+    NUMBER was obtained (the constraint computed it), and that has not
+    changed; the estimation caveat is about the premise, and it rides in the
+    assumption token, the rationale and the evidence.
     """
     key, kind = "latent_demand_overflow", KEY_CONSTRAINT
     suggested_fix, details = _finding_parts(finding)
     params = dict((action or {}).get("params") or {})
     input_no = params.get("input_no") or details.get("input_no")
     interval_no = params.get("interval_no", details.get("interval_no", 1))
+    entrance = entrance_measurement(
+        # No node evidence exists on this path -- see the docstring. The link
+        # IS known (the constraint resolved it), so the verdict's own basis
+        # names the missing half rather than the missing target.
+        None,
+        {"input_no": input_no, "link_no": details.get("link_id")},
+    )
     evidence: dict[str, Any] = {
         "constraint_id": key,
         "input_no": input_no,
         "interval_no": interval_no,
+        "entrance_measurement": entrance,
         "suggested_fix": dict(suggested_fix) if isinstance(suggested_fix, Mapping) else suggested_fix,
         "details": {
             k: details.get(k)
@@ -1555,6 +2141,37 @@ def _build_latent_demand_overflow_proposal(
             ja="変更対象の車両インプット番号が不明なため、提案を作成できません。",
         )
 
+    # Unit D4's gate on the mapping's OTHER demand-level verb. Unreachable
+    # today (see the docstring: this finding carries no observed counts), and
+    # deliberately here anyway -- the day this builder is handed observed
+    # evidence, a measured entrance must refuse here exactly as it does on the
+    # node-total path, rather than needing somebody to remember to add it.
+    if entrance["status"] == ENTRANCE_MEASURED:
+        row = entrance["observed_row"] or {}
+        return _refuse(
+            key=key,
+            key_kind=kind,
+            reason_code=INPUT_VOLUME_IS_OBSERVED_DATA,
+            evidence=evidence,
+            ko=f"차량 입력 {input_no}의 볼륨이 링크 {entrance['link_no']}의 용량을 넘습니다. 그러나 "
+            f"이 진입부는 실측이 이루어진 지점입니다(실측 이동류 {row.get('movement_id')}). 실측된 "
+            "진입 교통량을 용량에 맞춰 깎는 것은 데이터를 모델에 맞추는 일이며, 보정의 방향이 "
+            "뒤집힙니다 — 실측 수요가 용량을 넘는다면 고쳐야 할 쪽은 용량(차로 수·기하)이거나 "
+            "같은 링크의 다른 입력이지, 실측값이 아닙니다.",
+            en=f"Vehicle input {input_no}'s volume exceeds link {entrance['link_no']}'s capacity. "
+            f"But this entrance is where counts were taken (observed movement row "
+            f"{row.get('movement_id')}). Shaving an OBSERVED entrance volume down to capacity "
+            "fits the data to the model and inverts the direction of calibration — if the "
+            "measured demand exceeds capacity, what needs fixing is the capacity (lanes, "
+            "geometry) or the other inputs on that link, not the measurement.",
+            ja=f"車両インプット {input_no} のボリュームがリンク {entrance['link_no']} の容量を"
+            f"超えています。しかしこの流入部は実測が行われた地点です(実測移動 "
+            f"{row.get('movement_id')})。実測された流入交通量を容量に合わせて削ることはデータを"
+            "モデルに合わせる行為であり、キャリブレーションの向きが反転します — 実測需要が容量を"
+            "超えるなら、直すべきは容量(車線数・幾何)か同じリンクの他のインプットであって、実測値"
+            "ではありません。",
+        )
+
     return _emit(
         key=key,
         key_kind=kind,
@@ -1569,17 +2186,35 @@ def _build_latent_demand_overflow_proposal(
         ko=f"차량 입력 {input_no}의 구간 {interval_no} 볼륨이 링크 용량을 넘어 잠재 수요를 "
         f"발생시킵니다. 제약이 직접 계산한 권장 상한 {ceiling} veh/h를 그대로 제안합니다"
         "(이 값은 이 제약이 링크 용량과 형제 입력 볼륨으로 산출한 것이며, 여기서 다시 "
-        "계산하지 않습니다).",
+        "계산하지 않습니다)."
+        f" 주의 — 이것은 수요 추정(demand estimation)입니다: 이 진입부의 볼륨이 실측값인지 확인할 "
+        f"수 없었습니다({_entrance_phrase(entrance, 'ko')}). 이 값이 실측 교통량이라면 이 제안을 "
+        "거절하십시오 — 실측 수요가 용량을 넘는 상황에서 고쳐야 할 쪽은 용량(차로 수·기하)이지 "
+        "실측값이 아닙니다.",
         en=f"Vehicle input {input_no}'s interval {interval_no} volume exceeds the link's capacity "
         f"and creates latent demand. The proposal is the ceiling the constraint itself computed, "
         f"{ceiling} veh/h — derived there from the link capacity and the sibling inputs' volumes, "
-        "and not re-derived here.",
+        "and not re-derived here."
+        f" NOTE — this is a DEMAND ESTIMATE: this entrance's volume could not be verified as "
+        f"measured ({_entrance_phrase(entrance, 'en')}). If that volume IS an observed count, "
+        "REJECT this proposal — when measured demand exceeds capacity, what needs fixing is the "
+        "capacity (lanes, geometry), not the measurement.",
         ja=f"車両インプット {input_no} の区間 {interval_no} のボリュームがリンク容量を超え、潜在"
         f"需要を生じさせています。制約自身が算出した推奨上限 {ceiling} veh/h をそのまま提案します"
         "(この値は当該制約がリンク容量と兄弟インプットのボリュームから算出したもので、ここでは"
-        "再計算しません)。",
+        "再計算しません)。"
+        f" 注意 — これは需要推定(demand estimation)です: この流入部のボリュームが実測値であるかを"
+        f"確認できませんでした({_entrance_phrase(entrance, 'ja')})。その値が実測交通量である場合は"
+        "この提案を拒否してください — 実測需要が容量を超える場合に直すべきは容量(車線数・幾何)で"
+        "あって実測値ではありません。",
+        # The NUMBER is still the constraint's own computed ceiling, which is
+        # what this field reports; the estimation caveat is about the premise
+        # and rides in the assumption token, the rationale and the evidence.
         confidence=CONFIDENCE_CONSTRAINT_CEILING,
-        assumptions=(ASSUME_INTERVAL_MATCHES_COUNT_PERIOD,),
+        assumptions=(
+            ASSUME_INTERVAL_MATCHES_COUNT_PERIOD,
+            ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED,
+        ),
         registry=registry,
     )
 
@@ -1639,12 +2274,22 @@ def map_node_counts(
 
     The branch, in order, and each arm is one of the three graded outcomes:
 
-    (a) node-total GEH >= threshold → ``set_vehicle_input_volume``;
-    (b) node-total GEH < threshold AND some movement GEH >= threshold →
-        ``set_route_relative_flow``, carrying the demand-level refusal;
-    (c) node-total GEH < threshold AND no movement misses → REFUSAL,
-        :data:`MODEL_REPRODUCES_OBSERVED`, rationale naming the GEH values
-        and the threshold.
+    (a) node-total GEH >= threshold → ``set_vehicle_input_volume`` —
+        **unless** unit D4's gate refuses it because that entrance is where
+        the counts were taken (:data:`INPUT_VOLUME_IS_OBSERVED_DATA`), in
+        which case the refusal is HELD and grading continues into (b);
+    (b) some movement GEH >= threshold → ``set_route_relative_flow``,
+        carrying the demand-level refusal it displaced (either
+        :data:`NODE_TOTAL_RECONCILES` or D4's);
+    (c) no movement misses → the held D4 refusal if there is one, else
+        REFUSAL :data:`MODEL_REPRODUCES_OBSERVED`, rationale naming the GEH
+        values and the threshold.
+
+    Before D4, arm (a) returned unconditionally on a node-total miss, so a
+    node whose total missed never reached movement grading. That was harmless
+    while the demand edit was always available; with a measured entrance it
+    would have collapsed "the demand is not ours to change" into "nothing is",
+    which is false — routing, behaviour, speeds and signals remain.
     """
     targets = targets or {}
     node_id = str(node.get("node_id") or "")
@@ -1677,17 +2322,28 @@ def map_node_counts(
         )
 
     # -- (a) the node TOTAL itself misses ----------------------------------
+    demand_refusal: FixProposal | None = None
     if total_geh >= geh_threshold:
-        return _build_demand_proposal(
+        demand = _build_demand_proposal(
             node=node,
             target=targets.get("vehicle_input"),
             node_total_geh=total_geh,
             threshold=geh_threshold,
             registry=registry,
         )
+        if demand.reason_code != INPUT_VOLUME_IS_OBSERVED_DATA:
+            return demand
+        # Unit D4: the demand edit was refused because that entrance IS the
+        # observed data. Before D4 this branch returned unconditionally, so a
+        # node-total miss never reached movement grading at all -- and on a
+        # measured entrance that made "no demand edit" mean "no edit", which
+        # is the wrong lesson: the split, the behaviour and the signals are
+        # still ours to change. So the refusal is held and the grading below
+        # runs; it rides on the routing proposal's ``also_refused`` (the
+        # NODE_TOTAL_RECONCILES precedent) or stands alone if nothing else
+        # can be proposed.
+        demand_refusal = demand
 
-    # The total reconciles. From here on a DEMAND change is off the table --
-    # this is the approved refusal shape (roadmap row 2.1, 2026-08-06).
     graded, ungradable = _grade_movements(node)
     worst = graded[0] if graded else None
 
@@ -1705,8 +2361,16 @@ def map_node_counts(
             node_total_geh=total_geh,
             threshold=geh_threshold,
             target=target,
+            demand_note=demand_refusal,
             registry=registry,
         )
+
+    if demand_refusal is not None:
+        # The total misses, the demand is measured, and no movement split
+        # misses either: the D4 refusal is the whole answer and stands alone.
+        # Arm (c) below must NOT be reached -- its rationale says the total
+        # reconciles, which here it does not.
+        return demand_refusal
 
     # -- (c) the model already reproduces observed behaviour ---------------
     worst_text = "-" if worst is None else f"{_round(worst['geh'])}"
@@ -1992,12 +2656,21 @@ def _register_catalogue() -> None:
             label_en="Node total volume miss",
             label_ja="ノード総交通量の不一致",
             reason_ko="노드 총량 자체가 실측과 어긋나면 회전 배분이 아니라 수요가 원인입니다 — "
-            "해당 접근로의 Vehicle Input 볼륨(veh/h)이 조정 대상 파라미터입니다.",
+            "해당 접근로의 Vehicle Input 볼륨(veh/h)이 조정 대상 파라미터입니다. 단(D4), 그 "
+            "진입부에서 실측이 이루어졌다면 그 볼륨은 '맞춰야 할 데이터'이지 손잡이가 아니므로 "
+            "편집을 거부하고, 실측 여부를 확인할 수 없는 진입부의 제안은 '수요 추정'으로 명시해 "
+            "승인자에게 되묻습니다.",
             reason_en="When the node TOTAL itself misses, the cause is demand, not turn "
             "distribution — the approach's Vehicle Input volume (veh/h) is the parameter to "
-            "adjust.",
+            "adjust. With one structural exception (D4): where the counts were taken AT that "
+            "entrance, its volume is data to match rather than a knob, so the edit is refused; "
+            "and where measured-ness cannot be verified, the proposal is labelled a demand "
+            "ESTIMATE and put back to the approver.",
             reason_ja="ノード総量自体が実測と乖離する場合、原因は回転配分ではなく需要です — "
-            "当該流入部のVehicle Inputのボリューム(veh/h)が調整対象のパラメータです。",
+            "当該流入部のVehicle Inputのボリューム(veh/h)が調整対象のパラメータです。ただし(D4)、"
+            "その流入部で実測が行われている場合、そのボリュームは合わせるべきデータであってつまみ"
+            "ではないため編集を拒否し、実測かどうかを確認できない場合は提案を「需要推定」と明示して"
+            "承認者に問い返します。",
         )
     )
 
@@ -2241,20 +2914,32 @@ def build_fix_report(
 __all__ = [
     "ANOMALY_ARMING_DRIFTED",
     "ASSUME_DECISION_MOVEMENTS_COMPLETE",
+    "ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED",
     "ASSUME_INPUT_DRIVES_NODE_TOTAL",
     "ASSUME_INTERVAL_MATCHES_COUNT_PERIOD",
     "ASSUME_SIBLING_ROUTES_UNCHANGED",
     "AUTOMATABLE",
     "CONFIDENCE_ARITHMETIC",
     "CONFIDENCE_CONSTRAINT_CEILING",
+    "CONFIDENCE_DEMAND_ESTIMATE",
     "CONFIDENCE_NONE",
     "COUNT_VALIDATION",
     "DEMAND_LEVEL",
+    "ENTRANCE_MEASURED",
+    "ENTRANCE_NO_LINK_KEYED_ROWS",
+    "ENTRANCE_NO_LINK_ON_TARGET",
+    "ENTRANCE_NO_MOVEMENT_ROWS",
+    "ENTRANCE_NO_ROW_ON_INPUT_LINK",
+    "ENTRANCE_ROW_HAS_NO_OBSERVED",
+    "ENTRANCE_ROW_ON_INPUT_LINK",
+    "ENTRANCE_STATUSES",
+    "ENTRANCE_UNVERIFIED",
     "EVIDENCE_CANNOT_DISCRIMINATE",
     "EVIDENCE_INSUFFICIENT",
     "FIX_CANNOT_HELP",
     "FixMapping",
     "FixProposal",
+    "INPUT_VOLUME_IS_OBSERVED_DATA",
     "KEY_ANOMALY",
     "KEY_CONSTRAINT",
     "KEY_VALIDATION",
@@ -2280,7 +2965,9 @@ __all__ = [
     "VERB_NOT_IN_REGISTRY",
     "VERB_UNREGISTERED",
     "build_fix_report",
+    "canonical_link_id",
     "effective_status",
+    "entrance_measurement",
     "get_fix",
     "get_fix_coverage",
     "get_fix_registry",
@@ -2288,6 +2975,7 @@ __all__ = [
     "map_node_counts",
     "merge_modelled_from_run_result",
     "modelled_from_run_result",
+    "movement_from_link",
     "node_evidence_from_real_counts",
     "preflight_findings",
     "propose_fix",

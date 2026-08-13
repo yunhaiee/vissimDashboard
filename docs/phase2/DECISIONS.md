@@ -5867,3 +5867,54 @@ only (the other three keep the minimal fix + pin); no vertex-level restyling of
 FloatingAssistant's approval/progress cards (D4's territory); `/health` and `/demand`
 untouched as the model screens; the amber-neutral design question still awaits the user's
 detailed U-1 review, which this pass exists to precede.
+
+## 2026-08-13 — D4: the loop stops turning observed inputs into knobs, and its own historic demo becomes the regression test
+
+**What (professor 2026-08-12 + the user's decided policy).** The calibration loop's one
+GEH win (7.53→4.19) came from editing vehicle input 113 to match a downstream count — the
+direction the professor called backwards. Now: a new pure `entrance_measurement(node,
+target)` judges the target entrance MEASURED when the node's observed evidence carries a
+counted movement row whose OBJECT-ID FROM-link equals the input's own link (summed over every
+counted row on that link — a first-row-only citation understated a split approach and was
+caught in review), and everything else is ENTRANCE_UNVERIFIED under one of six named
+why-codes — never "unmeasured", because the store's leg-keyed rows, detector-basis nodes and
+aliased workbook ids are absences of verification, not licences. MEASURED → structural
+refusal `INPUT_VOLUME_IS_OBSERVED_DATA` whose ko/en/ja rationale states the doctrine
+positively and lists the knobs that remain; the old short-circuit is gone, so movement
+grading continues and the refusal rides the routing proposal's `also_refused` or stands
+alone — with the "node total reconciles" clause rewritten so the fall-through can never sign
+a false sentence. UNVERIFIED → the demand proposal survives byte-compatible (verified by
+reconstructing the pre-change payload and diffing) but is labeled 수요 추정: a new assumption
+token, a lowered confidence, and the user's ask-first policy in the rationale — if you know
+the real count, reject this and supply it. The approval card is the ask.
+
+**The demo is now the regression.** Input 113's entrance IS measured (the workbook carries
+link 617's row, observed 649): the historic proposal refuses by name, `2690.88` is asserted
+absent from the entire payload, the control node is untouched, and the live harness asserts
+the refusal with a `RefusedByDesign` exit its banner reports as not-a-failure — a switch
+that disables the doctrine for a demo deliberately does not exist. The demo script's meaning
+changed: it now demonstrates the refusal and the estimation path, not the edit.
+
+**Verification (one refuter, serial by user direction) held every core claim** — no bypass
+inside the proposal machinery (the latent-demand refusal branch is genuinely unreachable
+today, proven by construction), fall-through truthfulness survived a built counterfactual,
+byte-compat empirical, harness control-flow real — and caught what mattered: the link join
+was exact string equality, so a COM-typed `"617.0"` would have silently downgraded the
+demo's own measured entrance to an editable "estimate" (`vissim_com.py` had fixed this exact
+class for the sibling `No` field one line above). Fixed both sides (`canonical_link_id`,
+integral-only by argued asymmetry — truncating `"617.5"` would manufacture a refusal instead)
+plus the understated multi-row citation, a dormant harness abridgement that dropped the
+estimate caveat, and `MAX_APPROVAL_REASON_CHARS` 300→600 — at 300 the first thing abridgement
+dropped was the caveat, i.e. the cap was quietly turning "estimate" into "correction"; ko/ja
+now fit and the abridgement helper is deleted, en's overflow stays a named caveat.
+
+**Named limits and follow-ups.** The acceptance sentence ("제안이 생성 불가") is met as
+written and no wider: a direct `set_vehicle_input_volume` call through the normal approval
+flow can still edit a measured entrance — a guardrails warn-constraint is the named follow-up.
+The production approval UI sends no `reason` at all (the DOCX 근거 cell reads "-" for real
+UI approvals) — the binding audit constraint is the missing UI field, not the cap; queued
+under U-2's post-D4 structural work. The store-path link↔leg edge and workbook aliasing
+remain the predicate's named blind spots (UNVERIFIED, never silent). The "GEH improved via a
+non-input parameter" half of acceptance awaits a real run in the user's COM lane. Suite
+**4495 / 1 (env RAG) / 1 skip** (+43 across the unit); scope 10 backend files, gate.py and
+frontend untouched.

@@ -160,6 +160,44 @@ def test_get_vehicle_input_normalises_a_float_no_to_a_bare_integer_string():
     assert result["no"] == "13"
 
 
+def test_get_vehicle_input_normalises_a_float_link_the_same_way():
+    """The ``No`` guard above had a sibling gap: ``Link`` was passed through as
+    ``str(...)``, so a float-typed link rendered "617.0".
+
+    That stopped being cosmetic with unit D4 (2026-08-12). This link is what
+    ``services.agent.fixes.entrance_measurement`` joins against a movement
+    OBJECT_ID's own integer from-link to decide whether the observed counts
+    were taken AT this entrance. "617.0" != "617" would fall to UNVERIFIED —
+    the branch that ALLOWS the demand edit as a labelled estimate — so the
+    mismatch would silently license overwriting a measurement rather than
+    merely losing a refusal.
+    """
+    controller, _ = _controller_with({13: _FakeVehicleInput(13, 617.0)})
+
+    result = controller.get_vehicle_input(13)
+
+    assert result["link"] == "617"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (617, "617"),
+        (617.0, "617"),
+        ("617", "617"),
+        # Not truncated and not invented: a non-integral or non-numeric id
+        # compares as itself rather than being coerced into a false match.
+        (617.5, "617.5"),
+        ("Murdoch Dr_NB", "Murdoch Dr_NB"),
+        (None, ""),
+    ],
+)
+def test_id_text_normalises_only_integral_numbers(raw, expected):
+    from services.vissim_com import _id_text
+
+    assert _id_text(raw) == expected
+
+
 def test_get_vehicle_input_returns_the_full_contract_shape():
     controller, _ = _controller_with({3: _FakeVehicleInput(3, "5", name="North approach")})
 

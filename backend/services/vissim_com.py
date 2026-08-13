@@ -17,6 +17,32 @@ class VissimObjectNotFoundError(ValueError):
     pass
 
 
+def _id_text(value: Any) -> str:
+    """A COM object id as a STRING that will actually match an id elsewhere.
+
+    COM hands numeric attributes back as floats often enough that this has
+    already bitten once: ``str(AttValue("No"))`` renders ``13.0`` and misses
+    every shadow-model entry keyed ``"13"``, which is why
+    :meth:`VissimController.get_vehicle_input` casts ``No`` through ``int()``
+    and :meth:`VissimController._collection_nos` does the same.
+
+    An integral number becomes its integer spelling; anything else (a real
+    non-numeric id, ``None``, an empty value) comes back verbatim/empty, so
+    this only ever normalizes the case it was written for. A NON-integral
+    number is deliberately left alone rather than truncated: turning ``617.5``
+    into ``"617"`` would manufacture a match, which is worse than missing one.
+    """
+    if value is None:
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if number != int(number):
+        return str(value)
+    return str(int(number))
+
+
 class VissimParkingLotTypeError(ValueError):
     """Q6 unit (2): a parking verb was pointed at a lot whose SPECIES it
     cannot serve. The object exists (so it is not an
@@ -617,7 +643,15 @@ class VissimController:
                 # every shadow-model id keyed "13".
                 "no": str(int(vehicle_input.AttValue("No"))),
                 "name": str(vehicle_input.AttValue("Name") or ""),
-                "link": str(vehicle_input.AttValue("Link") or ""),
+                # Same guard as ``no`` above, and for a second reason since
+                # unit D4: this link is what tells a MEASURED entrance (the
+                # observed counts were taken on it) from an unverified one,
+                # and ``services.agent.fixes.entrance_measurement`` joins it
+                # against a movement OBJECT_ID's own integer from-link. A
+                # float-typed "617.0" here would silently miss that join and
+                # downgrade a measured entrance to an editable one -- exactly
+                # the inversion D4 exists to refuse.
+                "link": _id_text(vehicle_input.AttValue("Link")),
                 "volume": float(vehicle_input.AttValue("Volume(1)")),
                 "composition_no": str(vehicle_input.AttValue("VehComp(1)") or ""),
                 "volume_type": str(vehicle_input.AttValue("VolType(1)") or ""),
