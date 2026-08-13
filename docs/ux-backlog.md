@@ -63,9 +63,19 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   ("거부됨 — 등록하지 않음" + "거부 — 결함이 입증되었습니다") say the same thing — merge into
   ONE verdict header (status + counts + sha + downloads), demote the rest. (11) green-on-green:
   pass cells render green text on a green card — contrast bug, fix within the palette.
-  (12) 3×3 grid: selected state barely visible, and the severity auto-select reads as "a
-  random card opened itself" — strong selected affordance + explicit "가장 심각한 검사를
-  자동 선택" microcopy. (13) body type one step larger; keep trimming residual prose.
+  (12) 3×3 grid — USER REFINED 2026-08-13: NO microcopy, NO checkmark, NO auto-select.
+  ALL cells start closed (detail renders only after a click; severity stays readable on the
+  cells themselves via state chips + accent rings, which satisfies the doctrine without an
+  auto-expanded panel); wider cell gaps; active cell = one-step fill + 2px ring + brighter
+  title, ~100ms transition. The cb27da1/78e52d1 auto-select pins get rewritten accordingly.
+  (13) body type one step larger; keep trimming residual prose. Console STYLE transfer
+  specifics (palette frozen — spacing/size/weight/structure only): one-layer cards with
+  20-24px padding and 32-40px section rhythm instead of nested boxes; section titles
+  15-16px semibold / body 13 / secondary 12 muted, nothing below 12; the Console stat
+  pattern (small muted label above, large bold value below) for the verdict counts, region
+  measurement and history scale numbers; 생성 이력 as a clean table (muted column headers,
+  borderless hover rows, right-aligned verdict chips); pill-style filter chips from the
+  existing .ui-button-ghost vocabulary.
   (14) LAYOUT: adopt the Console's split — left rail = controls/history/verdict list, right =
   sticky map/network + detail. ALL of 9–14 fold into the #13 U-1-map unit (one rebuild of
   app/genesis/page.tsx rather than two); choice-hierarchy/stepper stays in the #14 mockup.
