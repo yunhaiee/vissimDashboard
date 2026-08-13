@@ -121,6 +121,12 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   the chip (확인 불가's doubled mono border, now pinned) carries the whole pre-reading
   signal; repeated fine prints removed — a filename that only re-spells the job name prints
   nothing (table 2nd line, drawer meta, verdict sha line), shown only when it differs.
+  ROUND 2 (same day): 확인 불가 chip ink grey not white (border weight carries the
+  doctrine); detail's check title on its own line below id+chip+tier; sidebar sign-out
+  pill onto the profile's row (globals.css layout-only edit, palette lock intact).
+  NAMED QUEUED UNIT from the same review: genesis tile map draws lines only — clickable
+  components at 도식 parity = the item-8 shared-preview convergence, deliberately NOT in
+  #18's shell scope.
 - [ ] **U-2 — Calibration-loop UI/UX enhancement.** Same feedback applied to the calibration loop
   surfaces (approval flow, anomaly→proposal→approve→re-run). Note: D4 (roadmap §5.D, professor's
   direction reversal) will change what the loop's proposals even look like — sequence the UX pass

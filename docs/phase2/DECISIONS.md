@@ -6121,3 +6121,18 @@ named after its job), so the fact is hidden exactly when it is literally the tit
 extension, and shown when it carries information. First cut of ③ missed that
 `report.network` carries `.inpx` — caught by the same live read-back that verified the
 other two. Typecheck + contract 62/62 after each step.
+
+**Round two of the live pass, same day.** ④ 확인 불가's chip ink goes grey
+(`text-slate-600`): six of nine chips at full ink strength outshouted the two verdicts that
+carry hue — the doubled border, not brightness, is what keeps "could not run" from reading
+as fine (chip measured `rgb(165,163,154)` against emerald/rose neighbours; pin updated). ⑤
+the detail's check title moves to its own line — inline after id+chip+tier it read as a
+fourth fragment of one phrase rather than the sentence the fragments describe (measured:
+title box below the header row). ⑥ the sidebar sign-out pill joins the profile's row —
+`.app-side-account` becomes one row (identity column left, pill right); the mobile media
+query's row override became a no-op and was reduced to the one line still meaningful.
+globals.css touched for LAYOUT only; the palette lock is intact. The user also set a
+direction to record, not build: user management should leave this app for a managed
+service (Supabase-class) — roadmap §G. And asked whether the genesis map's unclickable
+lines are the shared-preview convergence's to fix: yes — named as its own queued unit, NOT
+part of #18's shell.

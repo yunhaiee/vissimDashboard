@@ -390,11 +390,22 @@ body {
    the sidebar footer with the language toggle because both describe THIS
    BROWSER rather than the model -- and because the toggle was already the
    only "settings"-shaped affordance a user would look near. */
+/* One ROW: identity (name over role) on the left, the sign-out pill on the
+   right (user, live pass 2026-08-13 — the button used to sit on its own line
+   below the profile). */
 .app-side-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+  min-width: 0;
+}
+
+.app-side-account-ident {
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
-  margin-bottom: 0.6rem;
   min-width: 0;
 }
 
@@ -413,8 +424,7 @@ body {
 }
 
 .app-side-account-action {
-  align-self: flex-start;
-  margin-top: 0.3rem;
+  flex-shrink: 0;
   border: 1px solid var(--border-soft);
   border-radius: 9999px;
   background: transparent;
@@ -587,15 +597,10 @@ body {
 
   /* The sidebar becomes a horizontal bar here, so the account block folds
      into one line beside the language toggle instead of stacking. */
+  /* The account block is a row at every width now; only the bottom margin
+     changes on small screens. */
   .app-side-account {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.4rem;
     margin-bottom: 0;
-  }
-
-  .app-side-account-action {
-    margin-top: 0;
   }
 
   .app-content {

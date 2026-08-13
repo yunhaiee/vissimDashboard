@@ -203,12 +203,14 @@ function AccountAffordance() {
 
   return (
     <div className="app-side-account">
-      {/* display_name is what an operator typed for this person; username is
-          the login id and the fallback when no display name was set. */}
-      <span className="app-side-account-name" title={user.username}>
-        {user.display_name || user.username}
-      </span>
-      <span className="app-side-account-role">{roleLabel(user.role, t)}</span>
+      <div className="app-side-account-ident">
+        {/* display_name is what an operator typed for this person; username is
+            the login id and the fallback when no display name was set. */}
+        <span className="app-side-account-name" title={user.username}>
+          {user.display_name || user.username}
+        </span>
+        <span className="app-side-account-role">{roleLabel(user.role, t)}</span>
+      </div>
       <button type="button" onClick={() => void logout()} className="app-side-account-action">
         {t("로그아웃", "Sign out", "ログアウト")}
       </button>

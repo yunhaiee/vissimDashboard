@@ -200,7 +200,11 @@ function checkStateLabel(state: GenesisGateCheck["state"], t: Translate): string
 function checkStateTagClasses(state: GenesisGateCheck["state"]): string {
   if (state === "pass") return "border-emerald-300 bg-emerald-50 text-emerald-800";
   if (state === "fail") return "border-rose-300 bg-rose-50 text-rose-800";
-  return "border-2 border-slate-400 bg-slate-100 text-slate-900";
+  // Grey ink, not full-strength (user, live pass 2026-08-13): six 확인 불가
+  // chips at ink strength outshouted the two verdicts that carry hue. The
+  // doubled border stays — weight, not brightness, is what keeps this state
+  // from reading as fine.
+  return "border-2 border-slate-400 bg-slate-100 text-slate-600";
 }
 
 /** The card behind a check — IDENTICAL for every state, so the grid reads as a
@@ -396,8 +400,12 @@ function GateCheckGrid({ checks, t }: { checks: GenesisGateCheck[]; t: Translate
                   ? t("거부 등급", "refuse tier", "拒否ティア")
                   : t("경고 등급", "warn tier", "警告ティア")}
               </span>
-              <span className="min-w-0 flex-1 font-semibold">{selected.title}</span>
             </div>
+            {/* The check's full title on its own line (user, live pass
+              * 2026-08-13): inline after id+chip+tier it read as a fourth
+              * fragment of the same phrase rather than the sentence the three
+              * fragments describe. */}
+            <p className="mt-1.5 font-semibold">{selected.title}</p>
 
             <div className="mt-2">
               {selected.gaps.length > 0 && (

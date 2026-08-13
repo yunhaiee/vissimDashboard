@@ -1765,8 +1765,8 @@ contractTest("U-1: the R1.5 grid starts with every cell closed, and severity sti
   );
   pin.match(
     cellStyling,
-    /"border-2 border-slate-400 bg-slate-100 text-slate-900"/,
-    "expected 확인 불가's chip to keep its doubled mono border -- with the cell ring gone it is the only pre-reading signal between 'could not run' and a pass",
+    /"border-2 border-slate-400 bg-slate-100 text-slate-600"/,
+    "expected 확인 불가's chip to keep its doubled mono border with GREY ink (user: full-strength ink outshouted the two hues) -- the border weight, not brightness, is what keeps 'could not run' from reading as fine",
   );
 
   // (4) NO MICROCOPY ON THE CELLS. The tier line ("거부 등급"/"경고 등급") used
