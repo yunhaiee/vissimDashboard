@@ -85,6 +85,15 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   meta line, then plain titled sections (Description / Versions ↔ our 판정 / 소견 / 아티팩트),
   close X top-right. This IS the #13 split: 생성 이력 row click → the right pane shows that
   generation's verdict grid, map and artifact row; the left column stays the form + table.
+  MOCKUP DECISIONS (2026-08-13, flow-stepper-mockup reviewed): **variant B approved** —
+  the five-group pipeline sidebar (① 네트워크 ② 데이터 ③ 시뮬·보정 ④ 보고서, project
+  selector fixed on top) becomes the implementation target after #13. Right drawer must
+  hold a BIGGER proportion (~45-50% of content width, map ≥360px tall). **THREE-COLOR
+  RULE (this CLOSES the amber-neutral question — user decided):** rose=fail,
+  emerald=pass, sky=selection/info; everything else MONO — not_checkable/warn/provisional
+  render ink + heavier ring/border, distinct by weight and shape, never a fourth color.
+  Matches globals.css's own "no yellow" philosophy; doctrine (not-checkable must not read
+  as fine) is carried by the ring, pinned.
   REGION-PAGE ADDENDA (user live-testing 2026-08-13, folded into #13 mid-build): tinted
   info boxes were blue-on-blue — ONE contrast rule, ink-strength text on every tinted box;
   RegionGauge removed in polygon mode (the map + the 한계 안 line already say it; the little
