@@ -840,7 +840,15 @@ export default function FloatingAssistant() {
   // a fresh turn. The card's own message only gets its resolution label
   // updated in place; it is never removed and never re-offered (single-use
   // — a consumed approval_id 404s on any retry, see AgentApprovalError).
-  async function runAgentApproval(sourceMessageId: string, approval: AgentApprovalState, approved: boolean) {
+  async function runAgentApproval(
+    sourceMessageId: string,
+    approval: AgentApprovalState,
+    approved: boolean,
+    // U-2-core: the reviewer's optional typed reason, already trimmed (or
+    // undefined) by AgentApprovalCard -- passed straight through to the
+    // approve/decline POST's own `reason` field below.
+    reason?: string,
+  ) {
     if (loading || approval.resolution !== "pending" || !approval.sessionId) return;
 
     const createdAt = Date.now();
@@ -866,7 +874,7 @@ export default function FloatingAssistant() {
     let hasAgentSteps = false;
     try {
       const response = await approveAgentAction(
-        { session_id: approval.sessionId, approval_id: approval.approvalId, approved },
+        { session_id: approval.sessionId, approval_id: approval.approvalId, approved, reason },
         {
           onStep: (event) => {
             hasAgentSteps = true;
@@ -1193,8 +1201,8 @@ export default function FloatingAssistant() {
                     onConfirmExecute={() => confirmPromptExecution(message)}
                     onDeclineExecute={() => declinePromptExecution(message.id)}
                     modelEdited={modelEdited}
-                    onResolveApproval={(approved) => {
-                      if (message.agentApproval) void runAgentApproval(message.id, message.agentApproval, approved);
+                    onResolveApproval={(approved, reason) => {
+                      if (message.agentApproval) void runAgentApproval(message.id, message.agentApproval, approved, reason);
                     }}
                   />
                 ))}
@@ -1264,8 +1272,10 @@ function FloatingChatMessage({
    * the approval card, which uses it to decide whether the base model's
    * "current value" is still true (see VehicleInputActionDetail). */
   modelEdited: boolean;
-  /** M2.3: resolves this message's write-approval card, if it has one. */
-  onResolveApproval: (approved: boolean) => void;
+  /** M2.3: resolves this message's write-approval card, if it has one.
+   * U-2-core: now also carries the reviewer's optional typed reason
+   * straight through from AgentApprovalCard's own input. */
+  onResolveApproval: (approved: boolean, reason?: string) => void;
 }) {
   const isUser = message.role === "user";
   const promptSimulation = getPromptSimulationResult(message.response?.tool_results);
@@ -1314,7 +1324,12 @@ function FloatingChatMessage({
           </>
         )}
         {!isUser && message.agentApproval && (
-          <AgentApprovalCard approval={message.agentApproval} modelEdited={modelEdited} onRun={() => onResolveApproval(true)} onCancelApproval={() => onResolveApproval(false)} />
+          <AgentApprovalCard
+            approval={message.agentApproval}
+            modelEdited={modelEdited}
+            onRun={(reason) => onResolveApproval(true, reason)}
+            onCancelApproval={(reason) => onResolveApproval(false, reason)}
+          />
         )}
         {!isUser && message.wroteModel && message.writeSessionId && (
           <AgentModelDownloadLink sessionId={message.writeSessionId} />
@@ -1762,6 +1777,56 @@ function AgentActionDetail({
   return <p className="mt-0.5 text-[11px] text-slate-600">{agentActionDetail(action, t)}</p>;
 }
 
+// U-2-core (D4's decision record, 2026-08-13): "the approval card does not
+// display the PROPOSAL's own rationale ... to the person deciding". This is
+// that rationale -- `action.summary`, the planner's own <=80-char step
+// narration (planner.py's `PlannerDecision.summary`, a REQUIRED field on
+// every tool-call schema — see planner.py's `_with_summary_param`). It was
+// already on the wire (routers/assistant.py's `action_entry["summary"]`,
+// unchanged by this unit) and already used to build the short answer text
+// that appears ABOVE this card (`_approval_proposal_answer`) — it was simply
+// never rendered ON the card itself, where the reviewer is actually looking
+// when they decide. Rendered read-only and verbatim: never re-worded,
+// re-summarized, or truncated further here.
+//
+// Named, not silently absent, per this unit's own instructions: unlike
+// genesis's FixProposal (services/agent/fixes.py), which stores a tri-lingual
+// `rationale_ko/en/ja`, a `confidence` label, and a populated `assumptions`
+// tuple, THIS chat-driven write path's `PlannerDecision` carries only
+// `summary` — no separate confidence signal exists for it at all, and
+// `AgentApproval.assumptions` is wired on the wire shape but is hardcoded to
+// `[]` server-side today (routers/assistant.py: "No structured 'assumption'
+// signal exists yet from the planner"). So this card renders exactly what
+// this proposal type produces (a rationale line here, and the assumptions
+// block below whenever it stops being empty) and fabricates neither a
+// confidence chip nor demand-estimate framing that no data here supports —
+// both are genesis-only concepts (see FixFindingRow in app/genesis/page.tsx
+// for where they legitimately apply).
+function AgentActionRationale({ summary }: { summary: string }) {
+  const { t } = useLanguage();
+  if (!summary.trim()) return null;
+  return (
+    <div className="mt-1.5 border-t border-slate-200 pt-1.5">
+      <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500">
+        {t("제안 이유", "Why proposed", "提案理由")}
+      </p>
+      <p className="mt-0.5 text-[11px] leading-5 text-slate-700">{summary}</p>
+    </div>
+  );
+}
+
+// U-2-core: cap for the reviewer's optional approval/decline reason. MUST
+// match backend/routers/assistant.py's `MAX_APPROVAL_REASON_CHARS` -- the
+// pydantic field this posts into (`AgentApproveRequest.reason`) 422s past
+// it server-side, and dashboard-contract.test.ts pins this literal against
+// that backend constant so the two numbers cannot silently drift apart.
+// Named once and reused by the input's `maxLength`, the defensive `.slice()`
+// on every keystroke, and the live counter, rather than a bare `600`
+// repeated three times (genesis's own reviewer-reason field at
+// app/genesis/page.tsx does repeat the bare literal -- not duplicated here
+// on purpose, since a mismatch between the two would be silent).
+const APPROVAL_REASON_MAX_CHARS = 600;
+
 function AgentApprovalCard({
   approval,
   modelEdited,
@@ -1774,13 +1839,28 @@ function AgentApprovalCard({
    * what decides whether a base-model "current value" is still the truth. See
    * VehicleInputActionDetail's own comment. */
   modelEdited: boolean;
-  onRun: () => void;
-  onCancelApproval: () => void;
+  /** U-2-core: both now take the reviewer's optional typed reason (trimmed,
+   * `undefined` when blank) so it rides the SAME approve/decline POST this
+   * card already sends -- see the reason input below and
+   * AgentApproveRequest.reason in lib/api.ts. */
+  onRun: (reason?: string) => void;
+  onCancelApproval: (reason?: string) => void;
 }) {
   const { t } = useLanguage();
   const busy = approval.resolution === "approving" || approval.resolution === "declining";
   const actionable = approval.resolution === "pending" || busy;
   const runDisabled = busy || !approval.sessionId;
+  // U-2-core: local to this card, not part of AgentApprovalState -- it is
+  // never read anywhere else, and the card unmounts once resolved (replaced
+  // by the plain "승인됨"/"취소됨" label below), so there is nothing to
+  // persist it into. `.slice()` on every keystroke is a second, input-
+  // independent enforcement of the cap alongside the <input>'s own
+  // `maxLength` -- belt-and-suspenders against the exact failure named in
+  // this unit's own review brief: a reason that silently exceeds the cap and
+  // 422s. Both must agree with the backend's own cap (routers/assistant.py's
+  // MAX_APPROVAL_REASON_CHARS) -- see APPROVAL_REASON_MAX_CHARS below.
+  const [reason, setReason] = useState("");
+  const reasonNearCap = reason.length > APPROVAL_REASON_MAX_CHARS - 60;
 
   return (
     <div className="mt-2 rounded-xl border border-slate-200 bg-surface px-3 py-2.5">
@@ -1796,6 +1876,7 @@ function AgentApprovalCard({
               <PreflightStatusChip warningCount={approval.warnings.length} />
             </div>
             <AgentActionDetail action={action} focus={approval.focus} modelEdited={modelEdited} />
+            <AgentActionRationale summary={action.summary} />
           </div>
         ))}
       </div>
@@ -1831,23 +1912,53 @@ function AgentApprovalCard({
       )}
 
       {actionable ? (
-        <div className="mt-2.5 flex gap-2">
-          <button
-            type="button"
-            onClick={onRun}
-            disabled={runDisabled}
-            className="ui-button-primary inline-flex h-9 items-center px-4 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {approval.resolution === "approving" ? t("실행 중...", "Running...", "実行中...") : t("실행", "Run", "実行")}
-          </button>
-          <button
-            type="button"
-            onClick={onCancelApproval}
-            disabled={runDisabled}
-            className="ui-button-ghost inline-flex h-9 items-center px-4 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {approval.resolution === "declining" ? t("취소 중...", "Cancelling...", "キャンセル中...") : t("취소", "Cancel", "キャンセル")}
-          </button>
+        <div className="mt-2.5 flex flex-col gap-2">
+          {/* U-2-core (D4's decision record, 2026-08-13): the ONE named gap
+              this unit exists to close -- "the production approval UI sends
+              no reason at all". Optional, wired verbatim into the SAME
+              approve/decline POST's existing `reason` field for both Run
+              and Cancel (backend/routers/assistant.py records it into the
+              ledger regardless of outcome), so a real UI decision can carry
+              the audit DOCX's 근거 cell instead of leaving it "-". */}
+          <label className="flex flex-col gap-1 text-[11px] text-slate-600">
+            <span className="flex items-center justify-between gap-2">
+              <span>{t("사유 (선택)", "Reason (optional)", "理由（任意）")}</span>
+              <span className={`font-mono text-[10px] ${reasonNearCap ? "text-amber-600" : "text-slate-400"}`}>
+                {reason.length}/{APPROVAL_REASON_MAX_CHARS}
+              </span>
+            </span>
+            <input
+              type="text"
+              value={reason}
+              onChange={(event) => setReason(event.target.value.slice(0, APPROVAL_REASON_MAX_CHARS))}
+              maxLength={APPROVAL_REASON_MAX_CHARS}
+              disabled={busy}
+              placeholder={t(
+                "승인·반려 사유를 남기면 감사 문서에 기록됩니다",
+                "A reason left here is recorded in the audit document",
+                "承認・却下の理由を残すと監査文書に記録されます",
+              )}
+              className="rounded-md border border-slate-300 bg-surface px-2 py-1 text-[12px] text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+            />
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => onRun(reason.trim() || undefined)}
+              disabled={runDisabled}
+              className="ui-button-primary inline-flex h-9 items-center px-4 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {approval.resolution === "approving" ? t("실행 중...", "Running...", "実行中...") : t("실행", "Run", "実行")}
+            </button>
+            <button
+              type="button"
+              onClick={() => onCancelApproval(reason.trim() || undefined)}
+              disabled={runDisabled}
+              className="ui-button-ghost inline-flex h-9 items-center px-4 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {approval.resolution === "declining" ? t("취소 중...", "Cancelling...", "キャンセル中...") : t("취소", "Cancel", "キャンセル")}
+            </button>
+          </div>
         </div>
       ) : approval.resolution === "error" ? (
         <div className="mt-2.5 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] leading-5 text-rose-700">

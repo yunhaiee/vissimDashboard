@@ -1306,6 +1306,18 @@ export interface AgentApproveRequest {
   session_id: string;
   approval_id: string;
   approved: boolean;
+  // U-2-core (D4's decision record, 2026-08-13 -- "the production approval
+  // UI sends no `reason` at all ... the binding audit constraint is the
+  // missing UI field"): the reviewer's optional one-line reason, wired from
+  // the approval card's own input straight into the field the backend has
+  // accepted since Phase 1.3 (AgentApproveRequest.reason,
+  // backend/routers/assistant.py, cap MAX_APPROVAL_REASON_CHARS=600) but
+  // this client never populated. Capped client-side at the same 600 chars
+  // (FloatingAssistant.tsx's APPROVAL_REASON_MAX_CHARS) so a paste can
+  // never overflow into a 422. Omitted (not sent as an empty string) when
+  // the reviewer leaves it blank -- matches every pre-this-unit caller,
+  // which simply never set the field at all.
+  reason?: string;
 }
 
 export interface AssistantSource {

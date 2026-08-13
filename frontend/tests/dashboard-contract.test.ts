@@ -1299,6 +1299,157 @@ contractTest("U9: the approval card reacts to 401/403 from the server, never to 
 });
 
 // ---------------------------------------------------------------------------
+// Unit U-2-core — the write-approval card's own rationale + a real reviewer
+// reason, closing D4's named gap ("the production approval UI sends no
+// `reason` at all ... the DOCX 근거 cell reads '-' for real UI approvals")
+// ---------------------------------------------------------------------------
+
+contractTest("U-2-core: the approval card renders the proposal's own rationale verbatim, and names what this flow does not produce", (pin) => {
+  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const assistantRouter = readFileSync(path.join(repoRoot, "backend", "routers", "assistant.py"), "utf-8");
+
+  // `action.summary` -- the planner's own step narration -- was already on
+  // the wire before this unit (routers/assistant.py's action_entry) but was
+  // never rendered on the card itself. This is the new component, and its
+  // one job is to print it back unchanged: `{summary}` alone, no wrapping
+  // sentence, no re-summarizing call.
+  pin.match(
+    floatingAssistant,
+    /function AgentActionRationale\(\{ summary \}: \{ summary: string \}\) \{/,
+    "expected a dedicated component for the proposal's own rationale line",
+  );
+  pin.match(
+    floatingAssistant,
+    /<p className="mt-0\.5 text-\[11px\] leading-5 text-slate-700">\{summary\}<\/p>/,
+    "expected the rationale to render the raw `summary` value verbatim -- not re-worded or wrapped in extra text",
+  );
+  pin.match(
+    floatingAssistant,
+    /<AgentActionDetail action=\{action\} focus=\{approval\.focus\} modelEdited=\{modelEdited\} \/>[\s\S]*?<AgentActionRationale summary=\{action\.summary\} \/>/,
+    "expected every action row in the approval card to render its own rationale, right after its from/to detail line",
+  );
+
+  // The escape hatch this unit's own brief requires: this chat-driven write
+  // path's PlannerDecision carries no confidence value and no populated
+  // assumptions (unlike genesis's FixProposal) -- say so in code rather than
+  // fabricating a confidence chip or demand-estimate framing this payload
+  // cannot support.
+  pin.match(
+    floatingAssistant,
+    /no separate confidence signal exists for it at all/,
+    "expected the code to name that this write-approval flow has no confidence signal, rather than silently omitting a chip",
+  );
+  pin.match(
+    floatingAssistant,
+    /hardcoded to[\s\S]{0,10}`\[\]` server-side today/,
+    "expected the code to name that `assumptions` is real on the wire but always empty for this flow today",
+  );
+
+  // The assumptions block itself must still exist -- this unit adds the
+  // rationale line; it does not touch the (already-shipped) assumptions
+  // renderer, which is exactly what stops populating whenever
+  // AgentApproval.assumptions above finally does.
+  pin.match(
+    floatingAssistant,
+    /\{approval\.assumptions\.length > 0 && \(/,
+    "expected the pre-existing assumptions block to remain, for when the wire shape starts populating it",
+  );
+
+  // Confirms this is honestly sourced, not invented: the wire-shape comment
+  // this unit's rationale relies on is still the router's own, unchanged.
+  pin.match(
+    assistantRouter,
+    /No structured "assumption" signal exists yet from the planner/,
+    "expected the backend's own comment confirming assumptions stays [] for this flow (source for the frontend's explanatory comment)",
+  );
+});
+
+contractTest("U-2-core: the reviewer's optional reason reaches the SAME approve/decline POST, capped to the backend's own limit", (pin) => {
+  const floatingAssistant = read("components/FloatingAssistant.tsx");
+  const api = read("lib/api.ts");
+  const assistantRouter = readFileSync(path.join(repoRoot, "backend", "routers", "assistant.py"), "utf-8");
+
+  // Source of truth for the cap: the backend's pydantic field 422s past this
+  // number, so the frontend's own cap must equal it exactly -- not merely
+  // "close enough" -- or a reason under the frontend's cap could still 422.
+  pin.match(assistantRouter, /MAX_APPROVAL_REASON_CHARS = 600/, "expected the backend's approval-reason cap to still be 600 (frontend cap below is pinned to this exact number)");
+  pin.match(floatingAssistant, /const APPROVAL_REASON_MAX_CHARS = 600;/, "expected the frontend's approval-reason cap to equal the backend's MAX_APPROVAL_REASON_CHARS");
+
+  // The wire type: additive-only, optional, matches what AgentApproveRequest
+  // already accepted server-side (Phase 1.3) but no client ever sent.
+  const approveRequestType = sliceBetween(api, "export interface AgentApproveRequest {", "export interface AssistantSource {");
+  pin.match(approveRequestType, /reason\?: string;/, "expected AgentApproveRequest to carry the optional reviewer reason");
+
+  // Double enforcement against the cap -- native maxLength AND a defensive
+  // slice on every keystroke -- so pasted text can never put more than 600
+  // chars into component state, and therefore never into the POST body:
+  // this is the concrete prevention for "a reason that silently exceeds the
+  // cap and 422s".
+  pin.match(floatingAssistant, /maxLength=\{APPROVAL_REASON_MAX_CHARS\}/, "expected the reason <input> to cap input length natively");
+  pin.match(
+    floatingAssistant,
+    /onChange=\{\(event\) => setReason\(event\.target\.value\.slice\(0, APPROVAL_REASON_MAX_CHARS\)\)\}/,
+    "expected a defensive slice to the cap on every keystroke, independent of the input's own maxLength",
+  );
+  // The live counter near the limit, and its amber warning as the value
+  // approaches the cap (reusing this card's existing amber-for-warning
+  // color, not a new one -- see the warnings block above it).
+  pin.match(
+    floatingAssistant,
+    /\{reason\.length\}\/\{APPROVAL_REASON_MAX_CHARS\}/,
+    "expected a live character counter next to the reason input",
+  );
+  pin.match(
+    floatingAssistant,
+    /reasonNearCap \? "text-amber-600" : "text-slate-400"/,
+    "expected the counter to turn amber as the reason nears the cap",
+  );
+
+  // The reason reaches BOTH Run and Cancel -- the backend records it into
+  // the ledger regardless of outcome (_record_approval_decision), so the UI
+  // must not silently drop it on the decline path.
+  pin.match(
+    floatingAssistant,
+    /onClick=\{\(\) => onRun\(reason\.trim\(\) \|\| undefined\)\}/,
+    "expected the Run button to send the reviewer's trimmed reason",
+  );
+  pin.match(
+    floatingAssistant,
+    /onClick=\{\(\) => onCancelApproval\(reason\.trim\(\) \|\| undefined\)\}/,
+    "expected the Cancel button to send the reviewer's trimmed reason too -- the backend records a reason on decline exactly like approve",
+  );
+  pin.match(
+    assistantRouter,
+    /reason=\(payload\.reason or ""\)\.strip\(\) or None,/,
+    "expected the backend to still record `reason` regardless of approved/declined (source for the Cancel-path pin above)",
+  );
+
+  // The reason travels all the way from the card's local state, through
+  // FloatingChatMessage's callback, to the actual POST body -- not lost at
+  // any hop in between.
+  pin.match(
+    floatingAssistant,
+    /onRun=\{\(reason\) => onResolveApproval\(true, reason\)\}/,
+    "expected the card's Run callback to forward the reason up",
+  );
+  pin.match(
+    floatingAssistant,
+    /onResolveApproval: \(approved: boolean, reason\?: string\) => void;/,
+    "expected FloatingChatMessage's resolve callback type to carry the optional reason",
+  );
+  pin.match(
+    floatingAssistant,
+    /if \(message\.agentApproval\) void runAgentApproval\(message\.id, message\.agentApproval, approved, reason\);/,
+    "expected the top-level handler to forward the reason into runAgentApproval",
+  );
+  pin.match(
+    floatingAssistant,
+    /\{ session_id: approval\.sessionId, approval_id: approval\.approvalId, approved, reason \}/,
+    "expected the actual approve/decline POST body to carry the reason",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Unit P④ — user↔project membership and the admin screen
 // ---------------------------------------------------------------------------
 

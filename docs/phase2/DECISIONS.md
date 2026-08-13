@@ -6339,3 +6339,27 @@ false "not caught" verdicts first, and the real-suite replay is what settled it)
 authenticated click-through (real 승인 click → real sibling → live re-gate) remains
 IMPOSSIBLE for any agent here and is the user's lane, alongside the live COM loop script.
 Final: typecheck clean, contract **76/76** (+8), build passes.
+
+## 2026-08-14 — U-2-core: the approval ledger's 근거 cell stops reading "-"
+
+**What (the concrete half of U-2; the broad calibration-loop UX pass stays deferred for
+the user's own elaboration).** D4's record named the binding audit gap: the approval UI
+sent no `reason`, so the DOCX ledger's 근거 cell read "-" for every real UI approval. The
+fix needed ZERO backend changes — reading `routers/assistant.py` end-to-end first showed
+`AgentApproveRequest.reason` (cap 600, the cap D4 itself raised) had existed since Phase
+1.3 and is recorded on BOTH approve and decline; and the planner's per-action `summary`
+was already on the wire inside the pending approval, used for the answer text but never
+rendered on the card. Shipped: each proposed action shows a 제안 이유 block rendering the
+summary VERBATIM (no re-wording, no truncation — the 80-char cap lives at the planner
+schema, not this card); an optional reviewer 사유 input with a live n/600 counter,
+double-enforced against the backend's own constant and wired into BOTH Run and Cancel
+(the ledger records decline reasons identically). What this card does NOT show is named
+in code rather than faked: this flow has no confidence signal and server-side assumptions
+are hardcoded empty — a confidence chip here would be fabricated authority, the exact
+misrepresentation the genesis card avoids by having real fields to show. Pins: rationale
+verbatim, reason on both buttons and in the POST body, cap source-locked to
+`MAX_APPROVAL_REASON_CHARS`; mutation-verified by real break-and-restore (each pin failed
+alone under its own mutation). Contract **78/78** (+2), typecheck and build clean,
+re-verified independently. A real approval card needs a live agent turn plus a signed-in
+reviewer — unreachable here, named. Residual: the broad U-2 restyling (including the
+known duplicate approve-strip/progress-bar) awaits the user's detailed feedback.
