@@ -80,6 +80,11 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   영역/규모/판정), monospace ids and coordinates, no row borders — row height carries the
   separation, verdict as a small right-side tag chip (the "Anthropic" chip style),
   pagination arrows when the list grows, ONE primary action top-right of the section.
+  MASTER-DETAIL reference (second Skills screenshot, row clicked): clicking a list row
+  highlights it and opens a RIGHT-SIDE detail drawer — header = name + tag chip + one muted
+  meta line, then plain titled sections (Description / Versions ↔ our 판정 / 소견 / 아티팩트),
+  close X top-right. This IS the #13 split: 생성 이력 row click → the right pane shows that
+  generation's verdict grid, map and artifact row; the left column stays the form + table.
   (14) LAYOUT: adopt the Console's split — left rail = controls/history/verdict list, right =
   sticky map/network + detail. ALL of 9–14 fold into the #13 U-1-map unit (one rebuild of
   app/genesis/page.tsx rather than two); choice-hierarchy/stepper stays in the #14 mockup.
