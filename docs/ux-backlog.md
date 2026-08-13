@@ -55,6 +55,20 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
      stepper; ONE shared network-preview component. User wants a MOCKUP first. [U-1-flow]
   **Approved order (serial): D4 → U-1-quick (#2,#3,#4,#5) → polygon-native trim → U-1-map
   (#1,#7) → U-1-flow mockup → decision → B5-2.**
+
+  **SECOND ELABORATION 2026-08-13 (after testing U-1-quick live; reference design = the
+  Claude Console dashboard screenshots):** (9) card-in-card-in-card with repeated titles —
+  생성 비교 stacks THREE same-meaning titles (panel → inner → label); flatten to one title +
+  one control, sweep all screens for the same disease. (10) the two refusal banners
+  ("거부됨 — 등록하지 않음" + "거부 — 결함이 입증되었습니다") say the same thing — merge into
+  ONE verdict header (status + counts + sha + downloads), demote the rest. (11) green-on-green:
+  pass cells render green text on a green card — contrast bug, fix within the palette.
+  (12) 3×3 grid: selected state barely visible, and the severity auto-select reads as "a
+  random card opened itself" — strong selected affordance + explicit "가장 심각한 검사를
+  자동 선택" microcopy. (13) body type one step larger; keep trimming residual prose.
+  (14) LAYOUT: adopt the Console's split — left rail = controls/history/verdict list, right =
+  sticky map/network + detail. ALL of 9–14 fold into the #13 U-1-map unit (one rebuild of
+  app/genesis/page.tsx rather than two); choice-hierarchy/stepper stays in the #14 mockup.
 - [ ] **U-2 — Calibration-loop UI/UX enhancement.** Same feedback applied to the calibration loop
   surfaces (approval flow, anomaly→proposal→approve→re-run). Note: D4 (roadmap §5.D, professor's
   direction reversal) will change what the loop's proposals even look like — sequence the UX pass
