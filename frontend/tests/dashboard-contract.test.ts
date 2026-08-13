@@ -1339,7 +1339,16 @@ contractTest("genesis API surface keeps its workspace and refusal contract", (pi
   const api = read("lib/api.ts");
   const shell = read("components/AppShell.tsx");
 
-  const genesisSection = sliceBetween(api, "export type GenesisJobStatus", "export function genesisArtifactUrl");
+  // END MARKER CO-EDITED by U-1-quick: this slice used to end at
+  // `export function genesisArtifactUrl`, which no longer exists -- that
+  // function built a bare `<a href>` URL for the artifact route and was the bug
+  // reported as "all five artifact buttons do nothing" (see the U-1-quick
+  // download test below for the three mechanisms). The slice now ends at the
+  // region block's first export, which is the next stable landmark; everything
+  // this test asserts about the genesis bindings is still inside it, and the
+  // slice additionally now covers `fetchGenesisArtifact`, which the
+  // "must not bypass the workspace-header fetch helpers" pin below applies to.
+  const genesisSection = sliceBetween(api, "export type GenesisJobStatus", "export type RegionPolygonVertices");
 
   // Mutations go through apiMutationFetch, which is one of the two places
   // X-Workspace-Id and credentials are attached -- a bare fetch() here would
@@ -1414,45 +1423,88 @@ contractTest("genesis primary CTAs stay legible on the inverted dark palette", (
 // reader, decide what starts open.
 // ---------------------------------------------------------------------------
 
-contractTest("U-1: the R1.5 checklist collapses by default and opens itself by severity", (pin) => {
+// REWRITTEN BY U-1-quick (docs/ux-backlog.md, the user's detailed elaboration
+// item #4). This test used to be "U-1: the R1.5 checklist collapses by default
+// and opens itself by severity" and pinned `checkAutoOpens`, `aria-expanded`
+// and a per-row `useState` -- nine independently-collapsible rows. The user's
+// report from live use was that the ▸ arrow was the only click target and that
+// nine stacked rows read as a list to scroll rather than a verdict to scan, so
+// the rows became a 3×3 grid of cells with ONE detail panel underneath.
+//
+// THE DOCTRINE IS UNCHANGED and is what this test still holds: severity -- not
+// the reader -- decides what is on screen first, and nothing is hidden without
+// a click path. What changed is only its expression: the boolean "does this row
+// start open" became an ORDER ("which single cell is selected"), because a grid
+// selects one thing where a list opened several.
+contractTest("U-1-quick: the R1.5 checks are a grid that selects itself by severity", (pin) => {
   const page = read("app/genesis/page.tsx");
 
-  // The rule, in code: only a clean pass with nothing recorded starts closed.
-  // `fail` opens because it is a proven fault; `not_checkable` opens because
-  // R1.5's own design rule is that a check which could not RUN is never a
-  // pass, and a row the reader has to click would let it read like one.
-  pin.match(page, /function checkAutoOpens\(check: GenesisGateCheck\): boolean \{/, "expected a named severity rule deciding which checks start open");
+  // The rule, in code, worst first. `fail` is a proven fault; `not_checkable`
+  // outranks every pass because R1.5's own design rule is that a check which
+  // could not RUN is never a pass; a PASS that still carries something (gap,
+  // finding, warning, omitted count) outranks a clean one, because a warn-tier
+  // finding on a passing check is still a finding.
+  pin.match(page, /function checkRank\(check: GenesisGateCheck\): number \{/, "expected a named severity rule deciding which check is selected first");
+  pin.match(page, /if \(check\.state === "fail"\) return 0;/, "expected a proven refuse-tier fault to outrank everything");
   pin.match(
     page,
-    /if \(check\.state !== "pass"\) return true;/,
-    "expected EVERY non-pass check -- fail and not_checkable alike -- to open itself",
+    /if \(check\.state !== "pass"\) return 1;/,
+    "expected not_checkable to outrank every pass -- a check that could not run is never a pass",
+  );
+  pin.match(
+    page,
+    /return checkHasBody\(check\) \? 2 : 3;/,
+    "expected a passing check that still CARRIES something to be selected ahead of a clean pass",
   );
   pin.match(
     page,
     /check\.gaps\.length > 0 \|\|\s*\n?\s*check\.findings\.length > 0 \|\|\s*\n?\s*check\.warnings\.length > 0 \|\|\s*\n?\s*check\.findings_omitted > 0/,
-    "expected a passing check that still CARRIES something (gap, finding, warning, omitted count) to open itself too",
+    "expected 'carries something' to mean gap OR finding OR warning OR omitted count -- all four",
   );
   pin.match(
     page,
-    /useState\(\(\) => checkAutoOpens\(check\)\)/,
-    "expected the row's initial open state to be seeded from severity rather than from a constant",
+    /checkRank\(check\) === checkRank\(worst\) && check\.id < worst\.id/,
+    "expected ties to break on the id ascending, so the selection is never arbitrary",
+  );
+  pin.match(
+    page,
+    /useState\(\(\) => worstCheckId\(checks\)\)/,
+    "expected the grid's initial selection to be seeded from severity rather than from a constant",
   );
 
-  // Collapsed is not hidden: id, state word, tier and title stay on screen for
-  // every check, and the toggle says what it is.
+  // The user's explicit ask: the WHOLE cell is the click target, and the
+  // per-row disclosure it replaces is gone rather than left beside it.
+  pin.match(page, /grid grid-cols-3/, "expected the nine checks to be laid out as a 3-column grid");
+  pin.match(page, /aria-pressed=\{isSelected\}/, "expected each cell to expose its selected state to assistive tech");
+  pin.doesNotMatch(page, /function GateCheckRow\(/, "expected the per-row disclosure component to be gone, not kept beside the grid");
+  pin.doesNotMatch(
+    page,
+    /aria-expanded=\{open\}/,
+    "expected no per-check expand toggle to survive -- the grid has one detail panel, not nine",
+  );
+
+  // Nothing is hidden without a click path: every cell states its id and its
+  // tri-state word with no click at all, and a non-pass cell keeps a persistent
+  // accent (globals.css remaps amber to neutral, so not_checkable's fill alone
+  // would read as "nothing to report").
   pin.match(
     page,
-    /\{check\.id\}[\s\S]{0,400}checkStateLabel\(check\.state, t\)[\s\S]{0,400}\{check\.title\}/,
-    "expected the id, the tri-state word and the title to stay visible on a COLLAPSED row",
+    /\{check\.id\}[\s\S]{0,300}checkStateLabel\(check\.state, t\)/,
+    "expected the id and the tri-state word to be visible on EVERY cell without a click",
   );
-  pin.match(page, /aria-expanded=\{open\}/, "expected the collapse toggle to expose its state to assistive tech");
-  pin.match(page, /\{open && \(/, "expected the check body to render only while the row is open");
-  // A pass with nothing inside still opens, and says so rather than expanding
-  // onto a blank.
+  pin.match(page, /: "ring-1 ring-current"/, "expected failing/not-checkable cells to keep an accent even when another cell is selected");
+
+  // ONE detail panel, not nine -- and it is a live region, so a selection
+  // change is announced rather than only repainted.
+  const gridBody = sliceBetween(page, "function GateCheckGrid(", "/** The five downloadable artifacts");
+  const liveRegions = (gridBody.match(/aria-live="polite"/g) ?? []).length;
+  pin.match(`count=${liveRegions}`, /^count=1$/, "expected exactly one detail region under the grid");
+
+  // A clean pass still names its emptiness rather than showing a blank panel.
   pin.match(
     page,
     /이 검사에 기록된 항목이 없습니다/,
-    "expected an empty check to name its emptiness when opened, not render a blank body",
+    "expected an empty check to name its emptiness when selected, not render a blank panel",
   );
 });
 
@@ -1517,6 +1569,156 @@ contractTest("U-1: the four genesis screens share one Panel and one refusalHeadl
   ]) {
     pin.match(ui, new RegExp(`case "${code}":`), `expected ${code} to survive into the shared refusal table`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// U-1-quick (docs/ux-backlog.md, the user's detailed elaboration of U-1, items
+// #2 #3 #5) -- the artifact download bug, the residual prose, and the history
+// row. Item #4 (the V1-V9 grid) is the rewritten test above.
+// ---------------------------------------------------------------------------
+
+contractTest("U-1-quick: artifact downloads go through apiFetch, never a bare href", (pin) => {
+  const api = read("lib/api.ts");
+  const page = read("app/genesis/page.tsx");
+
+  // THE BUG, reported from live use: all five artifact buttons did nothing.
+  // They were plain anchors built from `genesisArtifactUrl()` = `apiUrl(...)`,
+  // an ABSOLUTE cross-origin URL, and that broke three ways at once --
+  //   (1) the session cookie is host-only for the page's own origin, so the
+  //       authenticated route (`download_artifact` takes `current_user`) 401s;
+  //   (2) an anchor cannot send `X-Workspace-Id`, so the request resolves in
+  //       the DEFAULT workspace and any other project's job is 404 -- the named
+  //       1.4 hole ("the health-page <a href> can't carry a header");
+  //   (3) a bare href has no failure branch, so the page said nothing either way.
+  // The URL builder is DELETED rather than left beside the fix: leaving it is
+  // leaving the trap.
+  pin.doesNotMatch(
+    page,
+    /href=\{genesisArtifactUrl\(/,
+    "expected no artifact anchor -- an <a href> cannot carry the session cookie or the workspace header",
+  );
+  pin.doesNotMatch(
+    api,
+    /export function genesisArtifactUrl/,
+    "expected the bare artifact-URL builder to be deleted, not left next to the fix",
+  );
+
+  // The replacement goes through apiFetch -- the one path that takes the
+  // same-origin proxy first and attaches X-Workspace-Id.
+  pin.match(api, /export async function fetchGenesisArtifact\(/, "expected one binding to own the artifact route");
+  pin.match(
+    api,
+    /const r = await apiFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/artifact\/\$\{kind\}`/,
+    "expected the artifact bytes to be fetched through apiFetch (cookie + workspace header)",
+  );
+  pin.match(
+    api,
+    /filenameFromContentDisposition\(r\.headers\.get\("content-disposition"\)\) \?\? `\$\{jobId\}\.\$\{kind\}`/,
+    "expected the saved filename to come from the response's own header, with a fallback that invents nothing",
+  );
+  pin.match(page, /await fetchGenesisArtifact\(jobId, kind\)/, "expected the page to download through the binding");
+  pin.match(page, /saveBlob\(artifact\.blob, artifact\.filename\)/, "expected the fetched bytes to be handed to a real download");
+
+  // And the failure is NAMED, per status, instead of being silent -- which is
+  // the half of this bug a user actually experienced.
+  pin.match(page, /function downloadFailureText\(caught: unknown, t: Translate\): string \{/, "expected a named reason for every download failure");
+  pin.match(page, /caught\.status === 401/, "expected a 401 to be told apart -- it means sign in");
+  pin.match(page, /caught\.status === 403/, "expected a 403 to be told apart -- it means the wrong project");
+  pin.match(page, /caught\.status === 404/, "expected a 404 to be told apart -- no such file, or another project's generation");
+  pin.match(page, /내려받지 못했습니다/, "expected a failed download to say so on screen rather than do nothing");
+});
+
+contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation hints are deleted", (pin) => {
+  const ui = read("components/genesis/ui.tsx");
+  const page = read("app/genesis/page.tsx");
+  const map = read("components/genesis/GateFindingsMap.tsx");
+  const panel = read("components/genesis/GenesisComparisonPanel.tsx");
+
+  // ONE tooltip primitive, and it must be reachable by every input a user has.
+  // A `title` attribute (or a hover-only div) would DELETE these sentences for
+  // keyboard and touch users, which is the same as dropping them.
+  pin.match(ui, /export function InfoTip\(/, "expected one shared ⓘ rather than five per-screen tooltips");
+  pin.match(ui, /role="tooltip"/, "expected the tooltip content to be announced as a tooltip");
+  pin.match(ui, /aria-describedby=\{open \? tooltipId : undefined\}/, "expected the trigger to point at its content while open");
+  pin.match(ui, /onFocus=\{\(\) => setHovering\(true\)\}/, "expected TAB to reach the sentence, not only the mouse");
+  pin.match(ui, /onClick=\{\(\) => setPinned\(\(current\) => !current\)\}/, "expected a click/tap to latch it open -- the only thing that works on touch");
+  pin.match(ui, /event\.key === "Escape"/, "expected Escape to close it");
+
+  // The four DOCTRINE sentences: each still lives verbatim in the file that
+  // owns it, now inside the ⓘ instead of permanently on screen.
+  pin.match(
+    map,
+    /info=\{t\([\s\S]{0,20}"링크는 초안 네트워크/,
+    "expected the map's local-coordinates disclaimer to move into the ⓘ, not out of the source",
+  );
+  pin.match(
+    panel,
+    /<InfoTip[\s\S]{0,200}게이트 판정과 개수만 비교합니다/,
+    "expected the comparison's scope line to stay in this panel, inside the ⓘ",
+  );
+  pin.match(
+    page,
+    /<InfoTip[\s\S]{0,400}프로젝트에 등록되었습니다\. 다만 실행되지 못한/,
+    "expected the provisional doctrine paragraph to be carried by the ⓘ, not shortened away",
+  );
+  pin.match(
+    page,
+    /<InfoTip[\s\S]{0,300}제외된 도로는 버려지지 않고/,
+    "expected the excluded-roads disclosure to hang off the checkbox that raises the question",
+  );
+
+  // The one line that was DELETED rather than moved: how to use a mouse is not
+  // a disclosure and has no claim in it to lose. The pattern requires the `t(`
+  // call form on purpose -- the deletion note left in GateFindingsMap.tsx names
+  // the removed string, and a bare-string pin would match that comment.
+  pin.doesNotMatch(
+    map,
+    /t\("드래그로 이동/,
+    "expected the drag/zoom operation hint to be deleted outright, not moved into a tooltip",
+  );
+});
+
+contractTest("U-1-quick: a 생성 이력 row states its region and its scale, or says '—'", (pin) => {
+  const page = read("app/genesis/page.tsx");
+  const lib = read("lib/genesisArtifacts.ts");
+  const api = read("lib/api.ts");
+  // The backend half, read across the repo root the way the 2.4 diff test does:
+  // the field this row renders does not exist unless the runner writes it.
+  const jobsService = readFileSync(
+    path.join(repoRoot, "backend", "services", "genesis_jobs.py"),
+    "utf-8",
+  );
+
+  // THE THREE-WAY DISTINCTION is the whole point, and it is why the field is
+  // optional-AND-nullable rather than merely nullable: a record written before
+  // this field existed knows nothing (→ "—"), while `null` is a MEASUREMENT
+  // (the frozen .osm was read and carries no fetch provenance → an upload).
+  // Collapsing them would let a legacy generation claim it was uploaded.
+  pin.match(api, /requested_region\?: GenesisRequestedRegion \| null;/, "expected the field to be optional AND nullable -- absent and null are different answers");
+  pin.match(lib, /export function requestedRegionLabel\(/, "expected one place to word the region, shared like statusLabel");
+  pin.match(lib, /if \(region === undefined\) return "—";/, "expected a record with no such field to render an em dash, never an invented region");
+  pin.match(lib, /if \(region === null\) return t\("업로드"/, "expected a measured absence of fetch provenance to read as an upload");
+  pin.match(lib, /폴리곤 \$\{region\.polygon_vertices\}점/, "expected a polygon fetch to state its vertex count");
+  pin.match(lib, /export function networkScaleLabel\(/, "expected the link/connector/node scale to be worded in the same shared place");
+  pin.match(lib, /if \(!network\) return "—";/, "expected a generation with no network to say so rather than render zeroes");
+
+  // The row reads both off the job record and derives neither.
+  pin.match(page, /requestedRegionLabel\(job\.requested_region, t\)/, "expected the history row to render the recorded region");
+  pin.match(page, /networkScaleLabel\(job\.network, t\)/, "expected the history row to render the recorded network scale");
+  pin.match(page, /statusLabel\(job\.status, t\)/, "expected the row to keep its verdict chip beside the two new facts");
+
+  // The backend writes it, once, from the region the runner already read.
+  pin.match(jobsService, /def _requested_region_summary\(/, "expected the job record's region summary to be built in one named place");
+  pin.match(
+    jobsService,
+    /requested_region=_requested_region_summary\(requested_bbox, requested_polygon\)/,
+    "expected the runner to persist the region it already reads for the parser",
+  );
+  pin.match(
+    jobsService,
+    /summary\["polygon_vertices"\] = len\(requested_polygon\)/,
+    "expected a lasso to be recorded as a COUNT -- the ring stays in the artifact, not in every listing row",
+  );
 });
 
 // ---------------------------------------------------------------------------

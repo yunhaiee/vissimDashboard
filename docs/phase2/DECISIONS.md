@@ -5964,3 +5964,40 @@ fixture proves exactly that shape (last-row XML mangling invisible to both pre-c
 endpoint test uploads it with a 200 first, then asserts the ingest 400). The only other
 adapter call in the chain (`select_adapter`) is safe by construction — every `sniff()`
 exception scores 0.0 and cannot propagate. Suite **4531 / 1 (env RAG) / 1 skip** (+2).
+
+## 2026-08-13 — U-1-quick: one line had broken every artifact button three ways, and the checklist becomes a grid
+
+**What (four items of the user's approved U-1 elaboration).** ① The dead artifact row's root
+cause was `genesisArtifactUrl` returning an ABSOLUTE cross-origin URL (`127.0.0.1:8001`):
+the host-only session cookie never travelled, no `<a>` can carry `X-Workspace-Id` (the named
+1.4 hole), and a bare href has no failure branch — three independent breakages from one
+line. Fixed as `fetchGenesisArtifact` (apiFetch → Blob → download, RFC 5987 `filename*=`
+handled and verified against Starlette's actual output, path separators stripped, object
+URLs revoked, the whole row disabled while one download runs) with per-status named errors;
+the broken function is DELETED, and a pin now forbids bare `/artifact/` hrefs. ② A shared
+`InfoTip` (hover+focus+click-latch+Escape; `aria-describedby` gated on the same boolean as
+the tooltip body so it never dangles; the ⓘ is self-drawn because U+24D8 is missing from
+parts of the ko/ja font stack) absorbs the local-coords disclaimer, the comparison-scope
+sentence, the provisional-status doctrine and the excluded-roads note; the drag/zoom hint is
+deleted outright. ③ V1–V9 becomes a 3×3 grid of whole-cell buttons with ONE detail panel:
+severity rank fail(0) > not_checkable(1) > pass-carrying-something(2) > clean pass(3), ties
+on lowest id, worst auto-selected; non-pass cells wear a persistent ring (which also
+mitigates the amber-renders-neutral question until the user decides it); the grid remounts
+on job switch AND on re-gate. ④ 생성 이력 rows now carry the verdict chip, the requested
+region (bbox coords, `폴리곤 N점`, or `업로드`) and the network scale; the backend persists a
+compact `requested_region` summary on the same `_update` call that already flips the job to
+running (verified: zero extra I/O), and the wire preserves key-absent (legacy → "—") vs null
+(upload → "업로드") — checked all the way through the listing route, which serializes raw
+dicts and cannot collapse the two.
+
+**Verification (interrupted once by the session usage limit; resumed and completed).** All
+six attacks held: no surviving reference to the deleted function; the RFC 5987 branch
+correct though currently unexercised (genesis names are forced ASCII — noted, since
+`downloadAgentModel` shares the parser); InfoTip's sharpest a11y edge (dangling
+`aria-describedby`) verified closed; the rank table confirmed including
+not_checkable-with-gaps outranking every pass; the three-way region distinction proven over
+the real listing route; all 46 changed pins discrimination-proven twice (builder's
+reconstruction script, re-run independently). One pre-existing bug found beside the diff:
+the `source_osm` artifact kind reads a record key that is never written and always 404s —
+unreachable from the UI, split out as its own chip rather than smuggled in. Backend suite
+**4534 / 1 (env RAG) / 1 skip** (+3); contract **56/56**; typecheck clean.

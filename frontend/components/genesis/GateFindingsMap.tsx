@@ -27,6 +27,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import { InfoTip } from "@/components/genesis/ui";
 import type { GenesisGateCheck, GenesisGateFinding, GenesisGateReport } from "@/lib/api";
 import {
   fetchGenesisDraftNetwork,
@@ -423,7 +424,12 @@ export default function GateFindingsMap({
   return (
     <MapShell
       title={t("지도에서 보기", "View on the map", "地図で見る")}
-      subtitle={t(
+      /* U-1-quick #3: this sentence is a DISCLAIMER (there is no basemap; these
+       * are the generation's own metres), so it stays verbatim and stays
+       * reachable -- it moved from a permanent subtitle under the title to the
+       * ⓘ beside it. A reader who has already understood it once should not
+       * have to read it again on every open. */
+      info={t(
         "링크는 초안 네트워크(genesis_json)의 좌표 그대로입니다 — 배경지도가 아니라 이 생성의 로컬 좌표계입니다.",
         "Links are drawn from the draft network's own coordinates (genesis_json) -- there is no basemap; this is the generation's own local coordinate system.",
         "リンクは下書きネットワーク(genesis_json)自体の座標です — 背景地図ではなく、この生成のローカル座標系です。",
@@ -528,9 +534,14 @@ export default function GateFindingsMap({
                     </g>
                   </svg>
                 </div>
-                <p className="mt-1 text-[10px] text-slate-400">
-                  {t("드래그로 이동, 휠로 확대/축소", "Drag to pan, wheel to zoom", "ドラッグで移動、ホイールで拡大縮小")}
-                </p>
+                {/* U-1-quick #3 DELETED the "드래그로 이동, 휠로 확대/축소"
+                  * line that used to sit here. It was an OPERATION hint, not a
+                  * disclosure: pan-and-zoom on a map is the one interaction
+                  * every user of this product already knows, the 보기 초기화
+                  * button above undoes any mistake, and unlike the local-
+                  * coordinates disclaimer beside the title there is no claim in
+                  * it that could be lost. Nothing about the data moved into a
+                  * tooltip here -- this text is gone, on purpose. */}
               </div>
 
               <DetailPanel
@@ -761,14 +772,21 @@ function LegendToggle({
 
 function MapShell({
   title,
-  subtitle,
+  info,
   t,
   open,
   onToggle,
   children,
 }: {
   title: string;
-  subtitle?: string;
+  /** A sentence that must stay REACHABLE but not stay on screen -- rendered as
+   * the shared ⓘ beside the title (components/genesis/ui.tsx's `InfoTip`).
+   *
+   * This REPLACED a `subtitle` prop (U-1-quick): the one sentence it ever
+   * carried was the local-coordinates disclaimer, and once that moved into the
+   * ⓘ, `subtitle` was a permanent-prose slot with no caller -- i.e. an
+   * invitation to put a paragraph back under the title. */
+  info?: string;
   t: Translate;
   open?: boolean;
   onToggle?: () => void;
@@ -778,8 +796,10 @@ function MapShell({
     <div className="rounded-lg border border-slate-200 bg-surface/90 px-3.5 py-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-bold text-slate-900">{title}</p>
-          {subtitle && <p className="mt-0.5 text-[11px] text-slate-500">{subtitle}</p>}
+          <p className="text-xs font-bold text-slate-900">
+            {title}
+            {info && <InfoTip text={info} />}
+          </p>
         </div>
         {onToggle && (
           <button

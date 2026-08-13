@@ -26,6 +26,10 @@
 // carry the file name and the numbers, and inventing a friendlier sentence in
 // place of either is how a UI starts lying about why something did not happen.
 //
+// U-1-quick (2026-08-13) added a THIRD shared piece, `InfoTip` -- see its own
+// doc comment for the rule it encodes. Same reason as the two above: five
+// screens were about to grow five tooltips.
+//
 // COLLAPSE IS ALLOWED, DELETION IS NOT. The optional `collapsible` prop below
 // exists so a screen can put a section one click away; it uses the same
 // 펼치기/접기 wording (and the same button chrome) `GateFindingsMap`'s MapShell
@@ -35,7 +39,7 @@
 // `key` that changes with the data -- severity decides the default, the reader
 // decides the rest.
 
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 
@@ -98,6 +102,87 @@ export function Panel({
       </div>
       <div className={shown ? "mt-3" : "hidden"}>{children}</div>
     </section>
+  );
+}
+
+/**
+ * ⓘ — the third disclosure primitive these screens needed, added by U-1-quick
+ * (docs/ux-backlog.md, the user's detailed elaboration, item #3).
+ *
+ * `Panel`'s 펼치기/접기 collapses a SECTION and `<details>` collapses a LIST;
+ * neither fits a single doctrine SENTENCE that has to stay reachable while it
+ * stops competing with the control it explains. The measured problem: five
+ * always-visible paragraphs (the map's local-coordinates note, the comparison's
+ * scope line, the provisional-status explanation, the excluded-roads note, and
+ * a drag/zoom operation hint) sat at full weight beside the things they
+ * annotate.
+ *
+ * THE RULE THIS COMPONENT ENCODES, and the one thing it must not become: a
+ * doctrine sentence goes IN here verbatim and is reachable by hover, by click
+ * and by keyboard focus; an OPERATION hint (how to use a mouse) does not come
+ * here at all, it gets deleted. A tooltip is a promotion for a sentence worth
+ * keeping, never a hiding place for one that is not.
+ *
+ * Reachability, concretely — a tooltip only a mouse can open would delete the
+ * sentence for everyone else:
+ *   * hover opens it (pointer);
+ *   * focus opens it, so TAB reaches it, and the trigger is a real `<button>`
+ *     rather than a `title` attribute (which no keyboard can summon);
+ *   * click TOGGLES a pinned state, which is the only thing that works on a
+ *     touch screen, and Escape closes it;
+ *   * the panel carries `role="tooltip"` and the trigger points at it with
+ *     `aria-describedby` while it is open, so a screen reader announces the
+ *     sentence as the button's description instead of losing it entirely.
+ *
+ * The trigger draws its own circled "i" (a bordered span around the letter)
+ * rather than printing U+24D8 ⓘ: the glyph is missing from several of the
+ * fonts in this app's ko/ja stack and would render as a tofu box on exactly
+ * the machines the product is being sold into.
+ */
+export function InfoTip({ text, label }: { text: string; label?: string }) {
+  const { t } = useLanguage();
+  const tooltipId = useId();
+  // Two independent opens, deliberately: `hovering` follows the pointer AND
+  // the focus ring (either one shows it, losing either one hides it), while
+  // `pinned` is the click/touch latch that survives the pointer leaving. A
+  // single boolean would make a tap open-and-immediately-close on a touch
+  // device, which is how a tooltip becomes unreachable on a phone.
+  const [hovering, setHovering] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const open = hovering || pinned;
+
+  return (
+    <span className="relative ml-1 inline-flex align-middle">
+      <button
+        type="button"
+        aria-label={label ?? t("설명 보기", "Show the explanation", "説明を表示")}
+        aria-expanded={open}
+        aria-describedby={open ? tooltipId : undefined}
+        onClick={() => setPinned((current) => !current)}
+        onMouseEnter={() => setHovering(true)}
+        onMouseLeave={() => setHovering(false)}
+        onFocus={() => setHovering(true)}
+        onBlur={() => setHovering(false)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setPinned(false);
+            setHovering(false);
+          }
+        }}
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white/[0.06] text-[9px] font-bold leading-none text-slate-500"
+      >
+        <span aria-hidden>i</span>
+      </button>
+      {open && (
+        <span
+          id={tooltipId}
+          role="tooltip"
+          className="absolute left-0 top-5 z-30 w-64 rounded-md border border-slate-300 bg-surface px-2.5 py-2 text-left text-[11px] font-normal leading-relaxed text-slate-600 shadow-[0_16px_34px_rgba(15,23,42,0.28)]"
+        >
+          {text}
+        </span>
+      )}
+    </span>
   );
 }
 

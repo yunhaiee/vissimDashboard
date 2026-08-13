@@ -35,23 +35,29 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
 import GateFindingsMap from "@/components/genesis/GateFindingsMap";
 import GenesisComparisonPanel from "@/components/genesis/GenesisComparisonPanel";
-import { Panel, refusalHeadline } from "@/components/genesis/ui";
+import { InfoTip, Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
+  fetchGenesisArtifact,
   fetchGenesisGateReport,
   fetchGenesisJob,
   fetchGenesisJobs,
   fetchStagedSideInputs,
-  genesisArtifactUrl,
   startGenesisJob,
   uploadGenesisOsm,
+  type GenesisArtifactKind,
   type GenesisGateCheck,
   type GenesisGateReport,
   type GenesisJob,
   type GenesisJobStatus,
   type StagedSideInputEntry,
 } from "@/lib/api";
-import { formatTimestamp, statusLabel } from "@/lib/genesisArtifacts";
+import {
+  formatTimestamp,
+  networkScaleLabel,
+  requestedRegionLabel,
+  statusLabel,
+} from "@/lib/genesisArtifacts";
 
 type Translate = (ko: string, en: string, ja: string) => string;
 
@@ -163,38 +169,15 @@ function sideInputLabel(entry: StagedSideInputEntry): string {
   return entry.filename;
 }
 
-/**
- * COLLAPSED BY DEFAULT, OPENED BY SEVERITY. UX pass U-1: all nine R1.5 checks
- * used to render fully expanded -- id, title, tier, every gap, every finding,
- * every warning -- so a PUBLISHED generation (nine passes, nothing to read)
- * produced the same wall of text as a refused one, and the two or three rows
- * that actually decided the verdict had no more visual weight than the six that
- * did not.
- *
- * Nothing is dropped: the header line (id + state chip + tier + title) is
- * ALWAYS on screen for every check, and the body is one click away for the
- * checks that collapse. What decides the default is the state, not the reader:
- *
- *   * `fail` opens -- a refuse-tier fault is why this screen exists;
- *   * `not_checkable` opens -- R1.5's own rule is that a check which could not
- *     RUN is never a pass, and a closed row would let it read like one;
- *   * anything carrying gaps, findings, warnings or an omitted-findings count
- *     opens -- a warn-tier finding on a passing check is still a finding.
- *
- * Only a clean pass with nothing recorded starts closed, and it still opens on
- * click (saying so, rather than expanding into a blank).
- *
- * This is `GateFindingsMap`'s `autoOpen` precedent applied per row: the same
- * "collapse by default, auto-open on the state that matters" shape, not a
- * second disclosure idea.
- */
 /** The cross-navigation chip. One constant so the three read as one row and a
  * fourth entry cannot drift into its own shape. */
 const CROSS_CHIP =
   "rounded-full border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700";
 
-function checkAutoOpens(check: GenesisGateCheck): boolean {
-  if (check.state !== "pass") return true;
+/** Everything a check records beyond its own state. Named once because it is
+ * read twice -- it decides both the selection rank below and whether the detail
+ * panel renders the "nothing recorded" sentence instead of a blank. */
+function checkHasBody(check: GenesisGateCheck): boolean {
   return (
     check.gaps.length > 0 ||
     check.findings.length > 0 ||
@@ -203,90 +186,321 @@ function checkAutoOpens(check: GenesisGateCheck): boolean {
   );
 }
 
-function GateCheckRow({ check, t }: { check: GenesisGateCheck; t: Translate }) {
-  const [open, setOpen] = useState(() => checkAutoOpens(check));
-  const hasBody =
-    check.gaps.length > 0 ||
-    check.findings.length > 0 ||
-    check.warnings.length > 0 ||
-    check.findings_omitted > 0;
+/**
+ * SEVERITY DECIDES WHAT YOU SEE FIRST — the same doctrine the collapsed
+ * checklist carried (U-1, `checkAutoOpens`), now expressed as an ORDER instead
+ * of a boolean, because a grid selects one cell rather than opening several
+ * rows.
+ *
+ *   0  `fail`          — a refuse-tier fault is why this screen exists.
+ *   1  `not_checkable` — R1.5's own rule: a check that could not RUN is never a
+ *                        pass, so it outranks every pass here for the same
+ *                        reason it may never be counted as one.
+ *   2  a PASS that still carries something (gap, finding, warning, or an
+ *      omitted-findings count) — a warn-tier finding on a passing check is
+ *      still a finding.
+ *   3  a clean pass with nothing recorded.
+ *
+ * Ties break on the id, ascending (`worstCheckId` below), so among two equal
+ * ranks V3 is selected before V7 and the choice is never arbitrary.
+ */
+function checkRank(check: GenesisGateCheck): number {
+  if (check.state === "fail") return 0;
+  if (check.state !== "pass") return 1;
+  return checkHasBody(check) ? 2 : 3;
+}
+
+/** The cell the grid opens on. Never null for a report that has checks: an
+ * all-passing generation still selects V1 and the detail panel says, in the
+ * gate's own words, that nothing was recorded — an empty selection would put a
+ * blank panel under nine green cells and leave a reader unsure whether the
+ * gate ran. */
+function worstCheckId(checks: GenesisGateCheck[]): string {
+  let worst: GenesisGateCheck | null = null;
+  for (const check of checks) {
+    if (
+      worst === null ||
+      checkRank(check) < checkRank(worst) ||
+      (checkRank(check) === checkRank(worst) && check.id < worst.id)
+    ) {
+      worst = check;
+    }
+  }
+  return worst?.id ?? "";
+}
+
+/**
+ * V1–V9 AS A GRID, with ONE detail panel under it.
+ *
+ * U-1-quick (docs/ux-backlog.md, the user's detailed elaboration item #4).
+ * The checklist was nine full-width rows, each its own disclosure; the user's
+ * report from live use was that the arrow was the only click target and that
+ * nine stacked rows read as a list to scroll rather than a verdict to scan.
+ * Nine cells in a 3×3 grid put the whole gate on one screen — every id and
+ * every state word visible without a single click — and the one panel below
+ * carries the selected check's findings in the SAME markup the row body used.
+ *
+ * NOTHING IS HIDDEN WITHOUT A CLICK PATH, which is the half of the doctrine
+ * that survives from the collapsed version: every check is on screen with its
+ * id and its tri-state word, the WHOLE cell is the button (not an arrow in its
+ * corner), and the detail of any check is exactly one click away. What the
+ * grid adds is that a fault is visible without reading: a non-pass cell keeps a
+ * persistent accent ring whether or not it is the selected one, which matters
+ * more here than anywhere else in the app because globals.css remaps the amber
+ * family to neutral — `not_checkable`'s fill alone reads as grey, so the ring
+ * (drawn in the cell's own `currentColor`) is what stops "could not run" from
+ * looking like "nothing to report".
+ */
+function GateCheckGrid({ checks, t }: { checks: GenesisGateCheck[]; t: Translate }) {
+  // Seeded from severity, not from a constant, and only on mount -- the caller
+  // remounts this grid with a key tied to the verdict, so a re-gate re-selects
+  // rather than keeping the cell the reader clicked on the superseded verdict.
+  const [selectedId, setSelectedId] = useState(() => worstCheckId(checks));
+  const selected = checks.find((check) => check.id === selectedId) ?? checks[0] ?? null;
 
   return (
-    <li className={`rounded-lg border px-3.5 py-2.5 text-xs ${checkStateClasses(check.state)}`}>
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        aria-expanded={open}
-        className="flex w-full items-baseline gap-2 text-left"
-      >
-        <span className="font-mono text-[11px] font-bold">{check.id}</span>
-        <span className="rounded-full border border-current/30 px-1.5 py-0.5 text-[10px] font-bold uppercase">
-          {checkStateLabel(check.state, t)}
-        </span>
-        <span className="text-[10px] opacity-70">
-          {check.tier === "refuse"
-            ? t("거부 등급", "refuse tier", "拒否ティア")
-            : t("경고 등급", "warn tier", "警告ティア")}
-        </span>
-        <span className="min-w-0 flex-1 font-semibold">{check.title}</span>
-        <span aria-hidden className="shrink-0 text-[10px] opacity-60">
-          {open ? "▾" : "▸"}
-        </span>
-      </button>
+    <div>
+      <div className="grid grid-cols-3 gap-1.5">
+        {checks.map((check) => {
+          const isSelected = selected !== null && check.id === selected.id;
+          // ONE ring expression, never two classes: `ring-1 ring-current` and
+          // `ring-2 ring-slate-500` set the same two custom properties, so
+          // emitting both would let stylesheet order -- not this file -- decide
+          // which one a selected failing cell shows.
+          const accent = isSelected
+            ? "ring-2 ring-slate-500"
+            : check.state === "pass"
+              ? ""
+              : "ring-1 ring-current";
+          return (
+            <button
+              key={check.id}
+              type="button"
+              onClick={() => setSelectedId(check.id)}
+              aria-pressed={isSelected}
+              // The full title is on the cell as a hover string as well as in
+              // the panel below: the cell clamps it to two lines, and a clamped
+              // sentence a reader cannot recover is a dropped sentence.
+              title={check.title}
+              className={`flex flex-col gap-1 rounded-lg border px-2.5 py-2 text-left ${checkStateClasses(check.state)} ${accent}`}
+            >
+              <span className="flex flex-wrap items-center gap-1.5">
+                <span className="font-mono text-[11px] font-bold">{check.id}</span>
+                <span className="rounded-full border border-current/30 px-1.5 py-0.5 text-[9px] font-bold uppercase">
+                  {checkStateLabel(check.state, t)}
+                </span>
+              </span>
+              <span className="line-clamp-2 text-[10px] font-semibold leading-tight">
+                {check.title}
+              </span>
+              <span className="text-[9px] opacity-70">
+                {check.tier === "refuse"
+                  ? t("거부 등급", "refuse tier", "拒否ティア")
+                  : t("경고 등급", "warn tier", "警告ティア")}
+              </span>
+            </button>
+          );
+        })}
+      </div>
 
-      {open && (
-        <div className="mt-1.5">
-          {check.gaps.length > 0 && (
-            <ul className="space-y-0.5">
-              {check.gaps.map((gap) => (
-                <li key={gap.code} className="text-[11px] leading-relaxed">
-                  {t("실행 불가", "could not run", "実行不可")}: {gap.message}
-                </li>
-              ))}
-            </ul>
-          )}
+      {selected && (
+        <div
+          // One region, announced when the selection changes -- a grid whose
+          // detail lands somewhere a screen reader never travels to would have
+          // hidden the findings the cells only summarise.
+          aria-live="polite"
+          className={`mt-2 rounded-lg border px-3.5 py-3 text-xs ${checkStateClasses(selected.state)}`}
+        >
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="font-mono text-[11px] font-bold">{selected.id}</span>
+            <span className="rounded-full border border-current/30 px-1.5 py-0.5 text-[10px] font-bold uppercase">
+              {checkStateLabel(selected.state, t)}
+            </span>
+            <span className="text-[10px] opacity-70">
+              {selected.tier === "refuse"
+                ? t("거부 등급", "refuse tier", "拒否ティア")
+                : t("경고 등급", "warn tier", "警告ティア")}
+            </span>
+            <span className="min-w-0 flex-1 font-semibold">{selected.title}</span>
+          </div>
 
-          {check.findings.length > 0 && (
-            <ul className="mt-1.5 space-y-0.5">
-              {check.findings.map((finding, index) => (
-                <li key={`${finding.code}-${index}`} className="text-[11px] leading-relaxed">
-                  {finding.message}
-                </li>
-              ))}
-            </ul>
-          )}
-          {check.findings_omitted > 0 && (
-            <p className="mt-1 text-[11px] opacity-80">
-              {t(
-                `이 화면에 표시되지 않은 항목 ${check.findings_omitted}건 — gate.json 전체 내려받기에 모두 들어 있습니다.`,
-                `${check.findings_omitted} more not shown here — all of them are in the gate.json download.`,
-                `この画面に表示されていない項目 ${check.findings_omitted} 件 — gate.json のダウンロードにすべて含まれています。`,
-              )}
-            </p>
-          )}
+          <div className="mt-1.5">
+            {selected.gaps.length > 0 && (
+              <ul className="space-y-0.5">
+                {selected.gaps.map((gap) => (
+                  <li key={gap.code} className="text-[11px] leading-relaxed">
+                    {t("실행 불가", "could not run", "実行不可")}: {gap.message}
+                  </li>
+                ))}
+              </ul>
+            )}
 
-          {check.warnings.length > 0 && (
-            <ul className="mt-1.5 space-y-0.5">
-              {check.warnings.map((warning, index) => (
-                <li key={`w-${warning.code}-${index}`} className="text-[11px] leading-relaxed">
-                  warn / {warning.message}
-                </li>
-              ))}
-            </ul>
-          )}
+            {selected.findings.length > 0 && (
+              <ul className="mt-1.5 space-y-0.5">
+                {selected.findings.map((finding, index) => (
+                  <li key={`${finding.code}-${index}`} className="text-[11px] leading-relaxed">
+                    {finding.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {selected.findings_omitted > 0 && (
+              <p className="mt-1 text-[11px] opacity-80">
+                {t(
+                  `이 화면에 표시되지 않은 항목 ${selected.findings_omitted}건 — gate.json 전체 내려받기에 모두 들어 있습니다.`,
+                  `${selected.findings_omitted} more not shown here — all of them are in the gate.json download.`,
+                  `この画面に表示されていない項目 ${selected.findings_omitted} 件 — gate.json のダウンロードにすべて含まれています。`,
+                )}
+              </p>
+            )}
 
-          {!hasBody && (
-            <p className="text-[11px] leading-relaxed opacity-70">
-              {t(
-                "이 검사에 기록된 항목이 없습니다.",
-                "Nothing was recorded for this check.",
-                "この検査に記録された項目はありません。",
-              )}
-            </p>
-          )}
+            {selected.warnings.length > 0 && (
+              <ul className="mt-1.5 space-y-0.5">
+                {selected.warnings.map((warning, index) => (
+                  <li key={`w-${warning.code}-${index}`} className="text-[11px] leading-relaxed">
+                    warn / {warning.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {!checkHasBody(selected) && (
+              <p className="text-[11px] leading-relaxed opacity-70">
+                {t(
+                  "이 검사에 기록된 항목이 없습니다.",
+                  "Nothing was recorded for this check.",
+                  "この検査に記録された項目はありません。",
+                )}
+              </p>
+            )}
+          </div>
         </div>
       )}
-    </li>
+    </div>
+  );
+}
+
+/** The five downloadable artifacts, declared once so the row cannot grow a
+ * sixth entry in its own shape. `kind` is the backend's own artifact kind
+ * (`routers/genesis.py`'s `_ARTIFACT_MEDIA_TYPES`), never a filename. */
+const ARTIFACT_KINDS: Array<{ kind: GenesisArtifactKind; label: (t: Translate) => string }> = [
+  { kind: "inpx", label: (t) => t("네트워크 .inpx", "Network .inpx", "ネットワーク .inpx") },
+  { kind: "compliance_md", label: (t) => t("§5 준수 리포트", "§5 compliance report", "§5 準拠レポート") },
+  { kind: "gate_report", label: (t) => t("게이트 리포트", "Gate report", "ゲートレポート") },
+  { kind: "gate_json", label: () => "gate.json" },
+  { kind: "genesis_json", label: (t) => t("생성기 명부", "Generator census", "生成器の名簿") },
+];
+
+/** Hand the fetched bytes to the browser's own download. The object URL is
+ * revoked on a timer rather than immediately after `click()`: several browsers
+ * have not yet started reading the blob when the synchronous click returns, and
+ * revoking under them cancels the download that just started. */
+function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** Why a download did not happen, in the user's language and NEVER as silence.
+ * The three statuses are named apart because the actions they call for are
+ * different: sign in, switch 프로젝트, or nothing (the file was never
+ * produced). Anything else keeps the thrown message verbatim. */
+function downloadFailureText(caught: unknown, t: Translate): string {
+  if (caught instanceof GenesisError) {
+    if (caught.status === 401) {
+      return t(
+        "내려받기에는 로그인이 필요합니다 — 로그인 후 다시 시도하세요.",
+        "Downloading an artifact requires a signed-in user — sign in and try again.",
+        "ダウンロードにはログインが必要です — ログイン後に再試行してください。",
+      );
+    }
+    if (caught.status === 403) {
+      return t(
+        "이 프로젝트의 파일을 받을 권한이 없습니다.",
+        "You are not allowed to read this project's files.",
+        "このプロジェクトのファイルを取得する権限がありません。",
+      );
+    }
+    if (caught.status === 404) {
+      return t(
+        "이 생성에는 그 파일이 없습니다 — 또는 지금 선택된 프로젝트의 생성이 아닙니다.",
+        "This generation has no such file — or it does not belong to the project selected right now.",
+        "この生成にはそのファイルがありません — もしくは現在選択中のプロジェクトの生成ではありません。",
+      );
+    }
+    return caught.message;
+  }
+  return caught instanceof Error ? caught.message : String(caught);
+}
+
+/**
+ * THE ARTIFACT ROW, AND THE BUG IT REPLACES.
+ *
+ * Reported from live use (docs/ux-backlog.md, U-1-quick item #2): every one of
+ * these five buttons did nothing. They were plain `<a href>` anchors built from
+ * `genesisArtifactUrl()`, and that broke three ways at once — no session cookie
+ * on the cross-origin URL `apiUrl()` produces, no `X-Workspace-Id` header an
+ * anchor is capable of sending, and no branch anywhere to report either. The
+ * evidence and the three mechanisms are written out at `fetchGenesisArtifact`
+ * in lib/api.ts; that function is now the only way this route is addressed, and
+ * `genesisArtifactUrl` is deleted rather than left lying next to it.
+ *
+ * The state here is per-ROW, not per-button, on purpose: only one download runs
+ * at a time and only the most recent failure is on screen, so five simultaneous
+ * error boxes can never stack up under a five-button row.
+ */
+function ArtifactRow({ jobId, t }: { jobId: string; t: Translate }) {
+  const [pending, setPending] = useState<GenesisArtifactKind | null>(null);
+  const [failure, setFailure] = useState<{ kind: GenesisArtifactKind; message: string } | null>(null);
+
+  const download = useCallback(
+    async (kind: GenesisArtifactKind) => {
+      setPending(kind);
+      setFailure(null);
+      try {
+        const artifact = await fetchGenesisArtifact(jobId, kind);
+        saveBlob(artifact.blob, artifact.filename);
+      } catch (caught) {
+        setFailure({ kind, message: downloadFailureText(caught, t) });
+      } finally {
+        setPending(null);
+      }
+    },
+    [jobId, t],
+  );
+
+  return (
+    <div className="mt-4">
+      <div className="flex flex-wrap gap-2 text-[11px]">
+        {ARTIFACT_KINDS.map((artifact) => (
+          <button
+            key={artifact.kind}
+            type="button"
+            disabled={pending !== null}
+            onClick={() => void download(artifact.kind)}
+            className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {pending === artifact.kind
+              ? t("내려받는 중…", "Downloading…", "ダウンロード中…")
+              : artifact.label(t)}
+          </button>
+        ))}
+      </div>
+      {failure && (
+        <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800">
+          <p className="font-semibold">
+            {t("내려받지 못했습니다", "The download did not happen", "ダウンロードできませんでした")} (
+            {failure.kind})
+          </p>
+          <p className="mt-1 leading-relaxed">{failure.message}</p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -553,13 +767,18 @@ export default function GenesisPage() {
                 "Exclude highway=service ways (car-park aisles, driveways, back lanes)",
                 "highway=service の道路を除外（駐車場通路・進入路・裏路地）",
               )}
-              <span className="mt-0.5 block text-[11px] text-slate-400">
-                {t(
+              {/* U-1-quick #3: the disclosure that excluding is not deleting is
+                * doctrine, so it moved into the ⓘ verbatim rather than being
+                * cut -- it answers a question the checkbox raises, and a
+                * question is answered on demand, not pre-emptively in a second
+                * grey line under every form. */}
+              <InfoTip
+                text={t(
                   "제외된 도로는 버려지지 않고 이름이 남습니다 — 준수 리포트에 사유와 함께 기록됩니다.",
                   "Excluded ways are never dropped silently — each is named with its reason in the compliance report.",
                   "除外された道路は黙って捨てられず、準拠レポートに理由とともに記録されます。",
                 )}
-              </span>
+              />
             </span>
           </label>
 
@@ -741,10 +960,21 @@ export default function GenesisPage() {
                     job.id === selectedId ? "border-slate-400 bg-slate-50" : "border-slate-200 bg-transparent"
                   }`}
                 >
+                  {/* U-1-quick #5: a row used to be a name and a date, which
+                    * is not enough to tell two generations of the same city
+                    * apart. It now carries the two facts that actually
+                    * distinguish them -- WHICH AREA was asked for and HOW BIG
+                    * the network came out -- both read off the job record and
+                    * both rendered "—" when the record does not carry them.
+                    * Nothing here is derived, estimated or filled in. */}
                   <span className="min-w-0">
                     <span className="block truncate font-semibold text-slate-800">{job.name}</span>
                     <span className="block truncate text-[11px] text-slate-500">
                       {job.source_osm.filename} · {formatTimestamp(job.created_at, lang)}
+                    </span>
+                    <span className="block truncate text-[11px] text-slate-500">
+                      {t("영역", "Region", "領域")} {requestedRegionLabel(job.requested_region, t)} ·{" "}
+                      {t("규모", "Scale", "規模")} {networkScaleLabel(job.network, t)}
                     </span>
                   </span>
                   <span
@@ -788,12 +1018,24 @@ export default function GenesisPage() {
               </p>
             )}
             {selected.status === "provisional" && (
+              /* U-1-quick #3. The visible line is the STATUS -- registered, and
+               * one check still open -- and the paragraph explaining WHY a
+               * generation job can never close V1 by itself is the ⓘ, verbatim.
+               * The doctrine is not shortened, only the sentence a reader has
+               * to walk past every time they open a provisional generation. */
               <p className="mt-1.5 leading-relaxed">
                 {t(
-                  "프로젝트에 등록되었습니다. 다만 실행되지 못한 거부 등급 검사가 있어 잠정 상태입니다 — 생성 잡은 Vissim COM을 열 수 없으므로, 실제 Vissim이 이 파일을 여는 것을 증명하는 V1은 라이브 검사 증거를 붙여야 확정됩니다.",
-                  "Registered in the project, but provisional: a refuse-tier check could not run. A generation job may not open Vissim COM, so V1 — the only check that proves a real Vissim opens this file — stays open until live-check evidence is attached.",
-                  "プロジェクトに登録されましたが、実行できなかった拒否ティア検査があるため暫定です。生成ジョブは Vissim COM を開けないため、実際の Vissim がこのファイルを開くことを証明する V1 はライブ検査の証拠を添付するまで確定しません。",
+                  "등록되었지만 잠정입니다 — V1은 라이브 검사 증거를 기다립니다.",
+                  "Registered, but provisional — V1 is waiting for live-check evidence.",
+                  "登録されましたが暫定です — V1 はライブ検査の証拠を待っています。",
                 )}
+                <InfoTip
+                  text={t(
+                    "프로젝트에 등록되었습니다. 다만 실행되지 못한 거부 등급 검사가 있어 잠정 상태입니다 — 생성 잡은 Vissim COM을 열 수 없으므로, 실제 Vissim이 이 파일을 여는 것을 증명하는 V1은 라이브 검사 증거를 붙여야 확정됩니다.",
+                    "Registered in the project, but provisional: a refuse-tier check could not run. A generation job may not open Vissim COM, so V1 — the only check that proves a real Vissim opens this file — stays open until live-check evidence is attached.",
+                    "プロジェクトに登録されましたが、実行できなかった拒否ティア検査があるため暫定です。生成ジョブは Vissim COM を開けないため、実際の Vissim がこのファイルを開くことを証明する V1 はライブ検査の証拠を添付するまで確定しません。",
+                  )}
+                />
               </p>
             )}
             {selected.status === "refused" && (
@@ -909,16 +1151,12 @@ export default function GenesisPage() {
                 </p>
               </div>
 
-              <ul className="space-y-2">
-                {report.checks.map((check) => (
-                  // Keyed on the VERDICT, not only the check id: the auto-open
-                  // default is computed once per mount, and a re-gate (which
-                  // changes `checked_at` while the job id stays put) is exactly
-                  // when a row's default has to be recomputed rather than
-                  // inherited from the verdict it just replaced.
-                  <GateCheckRow key={`${selected.id}-${gateCheckedAt ?? ""}-${check.id}`} check={check} t={t} />
-                ))}
-              </ul>
+              {/* Keyed on the VERDICT, not only the job id: the grid's
+                * severity selection is computed once per mount, and a re-gate
+                * (which changes `checked_at` while the job id stays put) is
+                * exactly when that selection has to be recomputed rather than
+                * inherited from the verdict it just replaced. */}
+              <GateCheckGrid key={`${selected.id}-${gateCheckedAt ?? ""}`} checks={report.checks} t={t} />
 
               {/* Roadmap v2 §5.B B3 (완결) -- WHERE the gate's findings are,
                 * spatially. Nested inside `report &&` because a highlight is
@@ -937,40 +1175,7 @@ export default function GenesisPage() {
             </>
           )}
 
-          {selected.artifact && (
-            <div className="mt-4 flex flex-wrap gap-2 text-[11px]">
-              <a
-                href={genesisArtifactUrl(selected.id, "inpx")}
-                className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700"
-              >
-                {t("네트워크 .inpx", "Network .inpx", "ネットワーク .inpx")}
-              </a>
-              <a
-                href={genesisArtifactUrl(selected.id, "compliance_md")}
-                className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700"
-              >
-                {t("§5 준수 리포트", "§5 compliance report", "§5 準拠レポート")}
-              </a>
-              <a
-                href={genesisArtifactUrl(selected.id, "gate_report")}
-                className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700"
-              >
-                {t("게이트 리포트", "Gate report", "ゲートレポート")}
-              </a>
-              <a
-                href={genesisArtifactUrl(selected.id, "gate_json")}
-                className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700"
-              >
-                gate.json
-              </a>
-              <a
-                href={genesisArtifactUrl(selected.id, "genesis_json")}
-                className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700"
-              >
-                {t("생성기 명부", "Generator census", "生成器の名簿")}
-              </a>
-            </div>
-          )}
+          {selected.artifact && <ArtifactRow jobId={selected.id} t={t} />}
         </Panel>
       )}
 

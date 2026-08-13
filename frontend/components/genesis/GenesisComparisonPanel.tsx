@@ -27,6 +27,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import { InfoTip } from "@/components/genesis/ui";
 import { fetchGenesisGateReport, type GenesisGateReport, type GenesisJob } from "@/lib/api";
 import {
   buildNetworkStatDeltas,
@@ -201,15 +202,21 @@ export default function GenesisComparisonPanel({
 
   return (
     <div className="rounded-lg border border-slate-200 bg-surface/90 px-3.5 py-3">
+      {/* U-1-quick #3: the SCOPE sentence stays here -- this panel is still its
+        * one and only source, which is what the U-1 contract test pins -- but
+        * it stopped being a permanent second line under the title and became
+        * the ⓘ beside it. It is a limit on what the comparison claims, so it
+        * has to remain reachable from the panel it limits and it stays here
+        * verbatim; it is not a limit a reader needs restated on every visit. */}
       <p className="text-xs font-bold text-slate-900">
         {t("이전 생성과 비교", "Compare with a previous generation", "以前の生成と比較")}
-      </p>
-      <p className="mt-0.5 text-[11px] text-slate-500">
-        {t(
-          "게이트 판정과 개수만 비교합니다 — 네트워크 기하 자체의 차이는 비교하지 않습니다.",
-          "Compares gate results and counts only -- it does not diff the networks' geometry itself.",
-          "ゲート判定と件数のみを比較します — ネットワークの形状自体の差分は比較しません。",
-        )}
+        <InfoTip
+          text={t(
+            "게이트 판정과 개수만 비교합니다 — 네트워크 기하 자체의 차이는 비교하지 않습니다.",
+            "Compares gate results and counts only -- it does not diff the networks' geometry itself.",
+            "ゲート判定と件数のみを比較します — ネットワークの形状自体の差分は比較しません。",
+          )}
+        />
       </p>
 
       {!currentJob.gate ? (

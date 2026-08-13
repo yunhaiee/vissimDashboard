@@ -1342,6 +1342,14 @@ def test_end_to_end_region_to_staged_osm_to_gated_generation(
     assert gate.status_code == 200, gate.text
     assert gate.json()["verdict"] == "incomplete"
 
+    # U-1-quick: and the 생성 이력 row can say WHICH region without opening the
+    # artifact — the runner copies the fetched window onto the job record, over
+    # the real fetch path rather than a hand-written provenance comment.
+    assert record["requested_region"] == {
+        "bbox": SMALL_REGION.as_dict(),
+        "polygon_vertices": None,
+    }
+
     # And the region's provenance is still inside the network's own source .osm.
     source = genesis_jobs.job_dir(record["id"]) / record["source_osm"]["stored_as"]
     provenance = osm_fetch.read_provenance(source.read_bytes())
@@ -1401,6 +1409,14 @@ def test_end_to_end_polygon_region_is_built_and_judged_on_its_bounding_box(
     assert record["status"] == genesis_jobs.STATUS_PROVISIONAL, record
     assert record["gate"]["verdict"] == "incomplete"
     assert record["network"]["links"] > 0
+
+    # U-1-quick: the history row's region for a LASSO — the vertex count beside
+    # the bounding box the build was actually judged against, which for this
+    # fixture is exactly SMALL_REGION (that equality is the fixture's point).
+    assert record["requested_region"] == {
+        "bbox": SMALL_REGION.as_dict(),
+        "polygon_vertices": len(SMALL_POLYGON.vertices),
+    }
 
     from services.genesis import connectivity as conn
 

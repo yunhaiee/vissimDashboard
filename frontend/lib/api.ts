@@ -1583,18 +1583,29 @@ export async function downloadAgentModel(
   return { blob, filename };
 }
 
+// ONE reader for this header, shared by `downloadAgentModel` and
+// `fetchGenesisArtifact` -- a second copy beside the genesis one was written
+// and deleted during U-1-quick, which is exactly the duplication CLAUDE.md
+// names. Any path separator in the recovered name is dropped before it is
+// returned: the name goes straight to an `<a download>`, and a server-supplied
+// string is not this app's to trust with a directory component.
 function filenameFromContentDisposition(header: string | null): string | null {
   if (!header) return null;
   const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
   if (utf8Match) {
     try {
-      return decodeURIComponent(utf8Match[1]);
+      return basenameOnly(decodeURIComponent(utf8Match[1]));
     } catch {
       // Malformed percent-encoding -- fall through to the plain filename.
     }
   }
   const plainMatch = header.match(/filename="([^"]+)"/i);
-  return plainMatch ? plainMatch[1] : null;
+  return plainMatch ? basenameOnly(plainMatch[1]) : null;
+}
+
+function basenameOnly(value: string): string | null {
+  const name = value.split(/[\\/]/).pop()?.trim();
+  return name ? name : null;
 }
 
 export async function askAssistant(payload: AssistantQueryRequest, signal?: AbortSignal): Promise<AssistantQueryResponse> {
@@ -2831,6 +2842,30 @@ export interface GenesisRevocation {
   detail?: string;
 }
 
+/** WHAT WAS ASKED FOR, as opposed to what came back — written onto the job
+ * record by the runner (`genesis_jobs._run_genesis_job_locked`) out of the
+ * frozen `source.osm`'s own fetch provenance, so the 생성 이력 list can say
+ * which area a generation is about without downloading its artifact.
+ *
+ * THE THREE-WAY DISTINCTION IS THE POINT, and it is carried by `undefined` vs
+ * `null` vs an object — see `requestedRegionLabel` in lib/genesisArtifacts.ts,
+ * which is the only place allowed to word it:
+ *   * FIELD ABSENT (`undefined`) — a record written before this field existed.
+ *     Nothing is known about its region and nothing may be invented for it.
+ *   * `null` — the runner DID read the frozen .osm and found no fetch
+ *     provenance in it, which is what a hand-uploaded file looks like.
+ *   * an object — the .osm came from `POST /api/genesis/region/fetches`, and
+ *     `bbox` is the rectangle the build was actually judged against (for a
+ *     lasso that is the ring's OWN bounding box — the same rectangle the trim
+ *     and the boundary ladder use, see `services/osm_fetch.py`'s provenance
+ *     comment). `polygon_vertices` is present ONLY for a lasso fetch and is a
+ *     COUNT, not the ring: the vertices live in the artifact's metadata and a
+ *     history row has no business redrawing them. */
+export interface GenesisRequestedRegion {
+  bbox: { south: number; west: number; north: number; east: number } | null;
+  polygon_vertices: number | null;
+}
+
 export interface GenesisJob {
   id: string;
   workspace_id: string;
@@ -2844,6 +2879,10 @@ export interface GenesisJob {
   submitted_by: string | null;
   options: { exclude_service: boolean };
   source_osm: { filename: string; bytes: number; sha256: string };
+  /** OPTIONAL on purpose — a record written before U-1-quick carries no such
+   * key, and `undefined` is what tells the UI to say "—" instead of "업로드".
+   * See `GenesisRequestedRegion` for the full three-way rule. */
+  requested_region?: GenesisRequestedRegion | null;
   network: { links: number; connectors: number; nodes: number } | null;
   artifact: { inpx: string; sha256: string; bytes: number } | null;
   gate: GenesisJobGate | null;
@@ -3012,8 +3051,65 @@ export type GenesisArtifactKind =
   | "gate_report"
   | "source_osm";
 
-export function genesisArtifactUrl(jobId: string, kind: GenesisArtifactKind): string {
-  return apiUrl(`/api/genesis/jobs/${jobId}/artifact/${kind}`);
+/** One artifact's BYTES, fetched the way every other authenticated genesis read
+ * is fetched.
+ *
+ * WHAT THIS REPLACED, and why an `<a href>` could not work here (U-1-quick,
+ * docs/ux-backlog.md item #2 -- reported from live use as "all five artifact
+ * buttons do nothing"). The row used to be five plain anchors pointing at
+ * `genesisArtifactUrl()`, i.e. at `apiUrl(...)` -- an ABSOLUTE
+ * `http://127.0.0.1:8001/...` URL. That single line broke the download three
+ * separate ways, each of them enough on its own:
+ *
+ *   1. AUTH. `routers/genesis.py`'s `download_artifact` takes
+ *      `Depends(current_user)` (deliberately -- it hands out the network file
+ *      itself, and its docstring gives the laundering attack it exists to
+ *      stop). The session cookie is set by `POST /api/auth/login`, which this
+ *      app issues through the SAME-ORIGIN Next proxy (next.config.ts rewrites
+ *      `/api/:path*`), so the cookie is host-only for the page's own origin --
+ *      `localhost:3000`. A navigation to `127.0.0.1:8001` is a different host
+ *      and carries no cookie at all, so the response is the 401 that
+ *      `backend/tests/test_genesis_jobs.py` already pins for an unauthenticated
+ *      caller of this exact route.
+ *   2. WORKSPACE. Even signed in, an anchor cannot set a request header, so it
+ *      cannot carry `X-Workspace-Id`. `main.WorkspaceScopeMiddleware` binds an
+ *      absent header to the DEFAULT workspace, `genesis_jobs.artifact_path`
+ *      then reads the default workspace's registry, and a job belonging to any
+ *      other 프로젝트 comes back 404 -- "unknown id, malformed id, or a job
+ *      belonging to another workspace -- indistinguishable on purpose"
+ *      (`genesis_jobs.get_job`). This is the named 1.4 hole, recorded in
+ *      docs/ux-backlog.md under "workspace scoping cannot reach two surfaces".
+ *   3. SILENCE. Whatever the browser then did with that 401/404 -- render it,
+ *      or drop it in the downloads shelf -- the page itself said nothing,
+ *      because a bare href has no failure branch to say it with.
+ *
+ * Going through `apiFetch` fixes all three at once: it takes the same-origin
+ * path first (so the cookie rides along), `sameOriginRequestInit` attaches
+ * `X-Workspace-Id`, and the caller gets a `Response` it can name a failure
+ * from. The bytes come back as a Blob and the CALLER saves them; this function
+ * deliberately does not touch the DOM, so it stays testable and stays the one
+ * place the artifact route is addressed.
+ *
+ * The filename comes from the response's own `Content-Disposition` through the
+ * SAME reader `downloadAgentModel` uses (`filenameFromContentDisposition` --
+ * FastAPI's `FileResponse(..., filename=path.name)` always sets the header),
+ * and falls back to `<jobId>.<kind>` -- never to a name invented from the job's
+ * display name, which is not what is on disk. */
+export interface GenesisArtifactDownload {
+  blob: Blob;
+  filename: string;
+}
+
+export async function fetchGenesisArtifact(
+  jobId: string,
+  kind: GenesisArtifactKind,
+): Promise<GenesisArtifactDownload> {
+  const r = await apiFetch(`/api/genesis/jobs/${jobId}/artifact/${kind}`, { cache: "no-store" });
+  if (!r.ok) throw await genesisError(r);
+  return {
+    blob: await r.blob(),
+    filename: filenameFromContentDisposition(r.headers.get("content-disposition")) ?? `${jobId}.${kind}`,
+  };
 }
 
 // ---------------------------------------------------------------------------

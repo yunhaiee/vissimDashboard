@@ -86,6 +86,7 @@ import {
   type GenesisGateFinding,
   type GenesisGateReport,
   type GenesisJobStatus,
+  type GenesisRequestedRegion,
 } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
@@ -507,6 +508,64 @@ export function statusLabel(status: GenesisJobStatus, t: (ko: string, en: string
     default:
       return status;
   }
+}
+
+/** At most six decimals, trailing zeros dropped — `115.836` stays `115.836`
+ * and a float that arrived as `-32.08120000000001` prints as `-32.0812`. Six
+ * decimals is ~0.1 m at these latitudes, finer than any region a human drew or
+ * typed, so this rounds away float noise without rounding away a coordinate. */
+function formatCoordinate(value: number): string {
+  return String(Number(value.toFixed(6)));
+}
+
+/** The 생성 이력 row's answer to "which area is this generation about?".
+ *
+ * THREE ANSWERS, NEVER TWO — the whole reason `GenesisJob.requested_region` is
+ * `undefined | null | object` rather than a nullable field (see its own doc
+ * comment in lib/api.ts):
+ *   * `undefined` → "—". The record predates the field; this app knows nothing
+ *     about its region and must not go looking for one to display.
+ *   * `null` → "업로드". The runner DID read the generation's own frozen .osm
+ *     and found no fetch provenance, which is exactly what a file somebody
+ *     uploaded looks like. This is a measurement, not a guess.
+ *   * an object → the rectangle the build was judged against, and — for a
+ *     lasso — the ring's VERTEX COUNT beside it, because the row states that a
+ *     polygon was drawn and that the box is what the generator used, which is
+ *     the one thing about a polygon fetch a reader most needs to know.
+ */
+export function requestedRegionLabel(
+  region: GenesisRequestedRegion | null | undefined,
+  t: (ko: string, en: string, ja: string) => string,
+): string {
+  if (region === undefined) return "—";
+  if (region === null) return t("업로드", "Uploaded file", "アップロード");
+
+  const box = region.bbox;
+  const boxText = box
+    ? `${formatCoordinate(box.south)}, ${formatCoordinate(box.west)} ~ ${formatCoordinate(box.north)}, ${formatCoordinate(box.east)}`
+    : null;
+  if (region.polygon_vertices && region.polygon_vertices > 0) {
+    const drawn = t(
+      `폴리곤 ${region.polygon_vertices}점`,
+      `Polygon, ${region.polygon_vertices} vertices`,
+      `ポリゴン ${region.polygon_vertices} 点`,
+    );
+    return boxText ? `${drawn} + bbox ${boxText}` : drawn;
+  }
+  // An object with neither shape cannot be produced by the runner, but a
+  // hand-edited record must not render as a blank cell.
+  return boxText ?? "—";
+}
+
+/** `links · connectors · nodes`, or "—" for a generation that never got far
+ * enough to have any. Never zero-filled: a job that failed before a draft
+ * existed has NO counts, and "0 links" is a different claim from "not built". */
+export function networkScaleLabel(
+  network: { links: number; connectors: number; nodes: number } | null,
+  t: (ko: string, en: string, ja: string) => string,
+): string {
+  if (!network) return "—";
+  return `${t("링크", "links", "リンク")} ${network.links} · ${t("커넥터", "connectors", "コネクタ")} ${network.connectors} · ${t("노드", "nodes", "ノード")} ${network.nodes}`;
 }
 
 export function formatTimestamp(iso: string | null, lang: "ko" | "en" | "ja"): string {

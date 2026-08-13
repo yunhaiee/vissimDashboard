@@ -39,7 +39,7 @@ from fastapi.testclient import TestClient
 
 import main
 from conftest import admin_headers, bearer_headers
-from services import datasets, genesis_jobs, workspaces
+from services import datasets, genesis_jobs, osm_fetch, workspaces
 from services.datasets import DatasetStorageError
 from services.genesis.gate import CheckState, GateVerdict, Provenance
 
@@ -1106,6 +1106,114 @@ def test_the_job_record_never_carries_an_absolute_server_path(
     assert str(workspace_root) not in blob
     assert "\\\\" not in blob.replace("\\n", ""), "a Windows path leaked into the record"
     assert not re.search(r"[A-Za-z]:[\\/]", blob), "a drive-letter path leaked into the record"
+
+
+# ---------------------------------------------------------------------------
+# ``requested_region`` — what the 생성 이력 list needs to tell two generations
+# of the same city apart (U-1-quick, docs/ux-backlog.md item #5)
+# ---------------------------------------------------------------------------
+#
+# Three answers, never two, and the distinction is carried by the JSON itself:
+# an OBJECT (this .osm was fetched for a region), ``null`` (the file was read
+# and carries no fetch provenance — an upload), and the key being ABSENT (a
+# record written before the field existed). The client words all three and
+# invents a region for none of them; these tests are what stop the second and
+# third from collapsing into each other, which is the only way "—" could start
+# reading as "uploaded".
+
+#: A rectangle comfortably containing every node of ``crossroads_osm`` — the
+#: trim is real (``parse_osm_file`` is handed this box), so a window that clipped
+#: the fixture would fail these tests for a reason that has nothing to do with
+#: what they assert.
+_FETCH_BBOX = {
+    "south": -32.0800,
+    "west": 115.8260,
+    "north": -32.0600,
+    "east": 115.8460,
+}
+
+#: Five vertices, deliberately not four: a count that matched the number of
+#: sides of the bounding box could pass while reading the wrong list.
+_FETCH_POLYGON = [
+    [_FETCH_BBOX["south"], _FETCH_BBOX["west"]],
+    [_FETCH_BBOX["south"], _FETCH_BBOX["east"]],
+    [_FETCH_BBOX["north"], _FETCH_BBOX["east"]],
+    [_FETCH_BBOX["north"], 115.8360],
+    [_FETCH_BBOX["north"], _FETCH_BBOX["west"]],
+]
+
+
+def _fetched_osm(tmp_path: Path, *, polygon: list | None = None) -> Path:
+    """``crossroads_osm`` carrying a region fetch's own provenance comment.
+
+    Written with ``osm_fetch.annotate`` — the exact function a real fetch stages
+    its bytes through — rather than a hand-typed comment, so these tests read the
+    same document shape production does and cannot pass against a format the
+    fetcher no longer writes.
+    """
+    provenance: dict = {"source": "overpass", "requested_region": dict(_FETCH_BBOX)}
+    if polygon is not None:
+        provenance["requested_polygon"] = {"vertices": polygon}
+    path = tmp_path / f"fetched-{uuid4().hex[:6]}.osm"
+    path.write_bytes(
+        osm_fetch.annotate(crossroads_osm().encode("utf-8"), provenance)
+    )
+    return path
+
+
+def test_a_generation_records_the_region_its_extract_was_fetched_for(
+    workspace_root: Path, tmp_path: Path
+):
+    """A rectangle fetch: the box on the record, in the provenance's own words."""
+    record = _generate(_fetched_osm(tmp_path))
+
+    assert record["requested_region"] == {
+        "bbox": _FETCH_BBOX,
+        "polygon_vertices": None,
+    }
+
+
+def test_a_polygon_fetch_records_the_vertex_count_beside_its_bounding_box(
+    workspace_root: Path, tmp_path: Path
+):
+    """A lasso: the COUNT of vertices, and the box the build was judged against.
+
+    Both, not one — the box is what the trim and the boundary ladder actually
+    used (``osm_fetch`` writes a ring's own bounding box as ``requested_region``
+    for exactly that reason), and the count is the only thing that tells a
+    reader the shape they drew was not a rectangle. The ring itself stays in the
+    artifact's metadata; a history row does not redraw it.
+    """
+    record = _generate(_fetched_osm(tmp_path, polygon=_FETCH_POLYGON))
+
+    assert record["requested_region"]["bbox"] == _FETCH_BBOX
+    assert record["requested_region"]["polygon_vertices"] == len(_FETCH_POLYGON)
+
+
+def test_an_upload_records_a_null_region_and_a_legacy_record_records_none_at_all(
+    client: TestClient, crossroads_osm_file: Path
+):
+    """The two absences that must not read alike.
+
+    An UPLOAD gets ``requested_region: null`` — the runner opened the frozen
+    ``.osm`` and it said nothing about a region, which is a measurement. A
+    record written before this field existed has no such key, and the client
+    renders that as "—". Collapsing them would let a legacy generation claim it
+    was uploaded, which nothing here knows.
+    """
+    uploaded = _generate(crossroads_osm_file)
+    assert "requested_region" in uploaded
+    assert uploaded["requested_region"] is None
+
+    legacy = _seed_job(_island_network(), name="legacy")
+    assert "requested_region" not in legacy
+
+    # And both survive the HTTP listing the 생성 이력 page reads, still apart.
+    listed = client.get("/api/genesis/jobs")
+    assert listed.status_code == 200, listed.text
+    by_id = {job["id"]: job for job in listed.json()["jobs"]}
+    assert by_id[uploaded["id"]]["requested_region"] is None
+    assert "requested_region" not in by_id[legacy["id"]]
 
 
 def test_a_crash_while_re_gating_leaves_a_coherent_terminal_record(

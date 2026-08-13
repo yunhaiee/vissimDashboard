@@ -1223,16 +1223,74 @@ def _requested_region_of(
     )
 
 
+def _requested_region_summary(
+    requested_bbox: tuple[float, float, float, float] | None,
+    requested_polygon: tuple[tuple[float, float], ...] | None,
+) -> dict[str, Any] | None:
+    """WHAT WAS ASKED FOR, small enough to live on the job record.
+
+    Added by U-1-quick (docs/ux-backlog.md): the 생성 이력 list showed a name and
+    a date, which cannot tell two generations of the same city apart. The region
+    is already read from the frozen ``.osm``'s provenance on every run
+    (:func:`_requested_region_of`), so the only thing missing was writing it
+    down — this function is the shape it is written down in, and the record then
+    crosses the HTTP boundary through ``GET /jobs`` like every other field.
+
+    ``None`` — the whole value, not an empty dict — when the source document
+    carries no fetch provenance at all, which is what a hand-uploaded ``.osm``
+    looks like. That is a MEASUREMENT (the file was read and said nothing about
+    a region), and it is deliberately distinguishable from a record written
+    before this field existed, which has no such key at all. The client turns
+    the two into different words and invents a region for neither
+    (``lib/genesisArtifacts.ts``'s ``requestedRegionLabel``).
+
+    The bbox keeps the provenance's own compass-word shape rather than a
+    4-tuple: this module already carries a warning about how easily a
+    ``(lat, lon, lat, lon)`` tuple transposes into a study area rotated onto its
+    side (:func:`services.genesis.osm.requested_bbox_from_provenance`), and a
+    dict cannot be transposed by a reader who guesses the order wrong.
+
+    The polygon is a COUNT, never the ring. The ring is already in the
+    artifact's own metadata (``*.genesis.json``'s ``boundary``), a job record is
+    read on every listing, and a 40-vertex lasso repeated across a page of
+    history rows is payload nobody asked for.
+    """
+    if requested_bbox is None and requested_polygon is None:
+        return None
+    summary: dict[str, Any] = {"bbox": None, "polygon_vertices": None}
+    if requested_bbox is not None:
+        south, west, north, east = requested_bbox
+        summary["bbox"] = {
+            "south": south,
+            "west": west,
+            "north": north,
+            "east": east,
+        }
+    if requested_polygon is not None:
+        summary["polygon_vertices"] = len(requested_polygon)
+    return summary
+
+
 def _run_genesis_job_locked(job_id: str) -> dict[str, Any]:
     record = get_job(job_id)
     try:
-        _update(job_id, status=STATUS_RUNNING, phase=PHASE_READING_OSM)
         # Re-derived from the job id rather than read off the record: the
         # record crosses the HTTP boundary and must not carry server paths.
         osm_path = job_dir(job_id) / str(record["source_osm"]["stored_as"])
         exclude_service = bool((record.get("options") or {}).get("exclude_service"))
 
         requested_bbox, requested_polygon = _requested_region_of(osm_path)
+        # Written in the SAME registry write that flips the job to running.
+        # The region costs no new I/O — ``_requested_region_of`` was already
+        # being called here, because ``parse_osm_file`` below needs the bbox —
+        # so persisting it is one dict on a write this line was making anyway,
+        # rather than a second ``_update`` per generation.
+        _update(
+            job_id,
+            status=STATUS_RUNNING,
+            phase=PHASE_READING_OSM,
+            requested_region=_requested_region_summary(requested_bbox, requested_polygon),
+        )
         extract = parse_osm_file(
             osm_path,
             exclude_service=exclude_service,
