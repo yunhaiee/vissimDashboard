@@ -184,13 +184,6 @@ export default function ProjectSelector() {
           </button>
         </div>
       )}
-      <p className="mt-1.5 text-[11px] leading-relaxed text-slate-400 max-[880px]:hidden">
-        {t(
-          "프로젝트마다 모델·검증 데이터·시뮬레이션 결과가 분리됩니다.",
-          "Each project keeps its own model, validation data and simulation results.",
-          "プロジェクトごとにモデル・検証データ・シミュレーション結果が分離されます。",
-        )}
-      </p>
       {error && <p className="mt-1.5 break-words text-[11px] leading-relaxed text-rose-600">{error}</p>}
     </div>
   );
