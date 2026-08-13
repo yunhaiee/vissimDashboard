@@ -91,6 +91,7 @@ from ..base import (
     IssueSeverity,
     SniffResult,
 )
+from ..xlsx_guard import XlsxBombError, guard_xlsx_path
 from ..schema import (
     ApproachRef,
     CanonicalVehicleClass,
@@ -1213,6 +1214,15 @@ def _open_worksheet(path: Path):
         import openpyxl
     except ImportError as exc:  # pragma: no cover - openpyxl is a hard dependency
         raise AdapterError(f"openpyxl is required to read {path.name}: {exc}") from exc
+
+    # Decompression-bomb guard BEFORE openpyxl touches the file: openpyxl's
+    # read_only mode streams sheet rows but always fully materialises
+    # sharedStrings.xml/styles.xml (see services/dataimport/xlsx_guard.py's
+    # module docstring for the measured numbers behind this).
+    try:
+        guard_xlsx_path(path)
+    except XlsxBombError as exc:
+        raise AdapterError(str(exc)) from exc
 
     try:
         workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)

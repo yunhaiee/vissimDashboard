@@ -17,6 +17,12 @@ try:
 except ImportError:
     _HAS_OPENPYXL = False
 
+# Decompression-bomb guard, called BEFORE every openpyxl.load_workbook() below
+# touches its input -- see services/dataimport/xlsx_guard.py's module
+# docstring for the measured numbers behind this. Depends on stdlib zipfile
+# only, so it is imported unconditionally (independent of _HAS_OPENPYXL).
+from services.dataimport.xlsx_guard import guard_xlsx_bytes, guard_xlsx_path
+
 
 class DirectionCount(TypedDict):
     direction: str   # e.g. "N-E"
@@ -135,6 +141,7 @@ def load_real_counts(excel_path: str, period: str | None = None) -> dict[str, No
     if not p.exists():
         return {}
 
+    guard_xlsx_path(p)
     wb = openpyxl.load_workbook(p, data_only=True)
 
     if "Counts" in wb.sheetnames:
@@ -313,6 +320,7 @@ def load_base_workbook(excel_path: str) -> dict[str, Any]:
         }
 
     try:
+        guard_xlsx_path(p)
         wb = openpyxl.load_workbook(p, data_only=True)
     except Exception as exc:
         return {
@@ -352,6 +360,7 @@ def load_base_workbook_bytes(filename: str, content: bytes) -> dict[str, Any]:
         }
 
     try:
+        guard_xlsx_bytes(content, label=name)
         wb = openpyxl.load_workbook(BytesIO(content), data_only=True)
     except Exception as exc:
         return {

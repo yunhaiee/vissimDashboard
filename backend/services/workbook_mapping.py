@@ -74,6 +74,10 @@ except ImportError:  # pragma: no cover - exercised indirectly via _require_open
 
 from services import datasets
 from services import validation as validation_module
+# Decompression-bomb guard, called BEFORE every openpyxl.load_workbook() below
+# touches its input -- see services/dataimport/xlsx_guard.py's module
+# docstring for the measured numbers behind this.
+from services.dataimport.xlsx_guard import guard_xlsx_bytes, guard_xlsx_path
 
 STAGING_TTL_SECONDS = 2 * 60 * 60  # 2 hours -- an abandoned mapping session is cheap to just re-upload.
 
@@ -176,6 +180,7 @@ def stage_workbook(filename: str, content: bytes) -> str:
     if not content or not content.strip():
         raise ValueError("Uploaded file is empty.")
     try:
+        guard_xlsx_bytes(content, label=Path(filename).name or "upload.xlsx")
         openpyxl.load_workbook(BytesIO(content), data_only=True)
     except Exception as exc:
         raise ValueError(f"Uploaded file could not be read as an Excel workbook: {exc}") from exc
@@ -205,6 +210,7 @@ def load_staged_workbook(token: str):
     _require_openpyxl()
     source = _staging_path(token)
     try:
+        guard_xlsx_path(source)
         return openpyxl.load_workbook(source, data_only=True)
     except Exception as exc:
         raise ValueError(f"Staged workbook could not be read: {exc}") from exc

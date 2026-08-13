@@ -30,6 +30,7 @@ from services.dataimport.adapters.daejeon import (
 )
 from services.dataimport.base import (
     SNIFF_CONFIDENCE_THRESHOLD,
+    AdapterError,
     IssueSeverity,
     check_adapter_conformance,
 )
@@ -819,3 +820,179 @@ def test_a_multi_site_drop_keeps_the_sites_apart(adapter, tmp_path):
     assert {site.site_id for site in result.sites} == {"가람네거리", "나루삼거리"}
     assert {count.site_id for count in result.counts} == {"가람네거리", "나루삼거리"}
     assert len(result.source_files) == 2
+
+
+# ---------------------------------------------------------------------------
+# 7. Decompression-bomb guard (adversarial finding, 2026-08-12/13) -- wired
+# into ``_open_worksheet`` via ``services.dataimport.xlsx_guard``. Full guard
+# coverage (each cap in isolation, "lying header" handling, clean
+# pass-through) lives in test_xlsx_guard.py; this only proves the WIRING:
+# this adapter's own AdapterError fires, carrying the guard's measured
+# numbers, and a genuinely small real-shaped workbook is unaffected.
+# ---------------------------------------------------------------------------
+
+_BOMB_SST_HEADER = (
+    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    b'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    b'count="1" uniqueCount="1"><si><t xml:space="preserve">'
+)
+_BOMB_SST_FOOTER = b"</t></si></sst>"
+_BOMB_SHARED_STRINGS_OVERRIDE = (
+    b'<Override PartName="/xl/sharedStrings.xml" '
+    b'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+)
+
+
+def _bomb_workbook(root: Path, *, declared_bytes: int = 5_000_000, file_name: str | None = None) -> Path:
+    """A real .xlsx decompression bomb reusing this adapter's own
+    ``_write_workbook`` fixture as the base (so it is otherwise a completely
+    normal Daejeon-shaped export): ``xl/sharedStrings.xml`` is replaced by a
+    single repeated-character run that declares ``declared_bytes`` --
+    ~1000:1 compressed on disk, tripping the guard's ratio cap (60:1) at
+    production thresholds without needing a multi-hundred-MB fixture. See
+    services/dataimport/xlsx_guard.py's module docstring for how the
+    Content_Types Override is required for openpyxl to even look at this
+    part (a base workbook alone never carries it).
+    """
+    base_path = _write_workbook(root, _approach_rows("가람방면"), file_name="__bomb_base__.xlsx")
+    src = zipfile.ZipFile(base_path)
+    sst = _BOMB_SST_HEADER + b"A" * declared_bytes + _BOMB_SST_FOOTER
+
+    out_path = root / (file_name or _file_name())
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for info in src.infolist():
+            if info.filename == "[Content_Types].xml":
+                data = src.read(info.filename)
+                if b"sharedStrings" not in data:
+                    data = data.replace(b"</Types>", _BOMB_SHARED_STRINGS_OVERRIDE + b"</Types>")
+                archive.writestr(info, data)
+            else:
+                archive.writestr(info, src.read(info.filename))
+        archive.writestr("xl/sharedStrings.xml", sst)
+    src.close()
+    return out_path
+
+
+def test_a_decompression_bomb_is_refused_by_adapter_error_with_the_measured_numbers(
+    adapter, tmp_path
+):
+    path = _bomb_workbook(tmp_path, declared_bytes=5_000_000, file_name=_file_name())
+    with pytest.raises(AdapterError) as exc_info:
+        adapter.parse([path])
+    message = str(exc_info.value)
+    assert path.name in message
+    assert "5,000," in message  # the declared byte count, verbatim
+    assert "cap 60:1" in message or "cap" in message
+
+
+def test_the_smallest_real_shaped_fixture_still_parses_cleanly(adapter, tmp_path):
+    """The guard must clear ordinary Daejeon-shaped workbooks with room to
+    spare -- reuses this file's own smallest fixture builder rather than
+    copying anything from client-data/."""
+    path = _write_workbook(tmp_path, _approach_rows("가람방면", hours=1))
+    result = _parse(adapter, path)
+    assert result.counts, "guard false-positived on a genuinely tiny real-shaped workbook"
+
+
+def test_a_lying_declared_size_is_refused_by_the_existing_corrupt_file_path(adapter, tmp_path):
+    """A member whose CENTRAL DIRECTORY declares a small size while its
+    recorded CRC is for a much larger stream: the guard's header precheck
+    sees nothing to refuse (small declared size), defers to the real
+    reader, and openpyxl/zipfile discover the inconsistency themselves
+    (BadZipFile) -- caught by this adapter's EXISTING generic ``except
+    Exception`` in ``_open_worksheet``, same as any other corrupt file.
+    Nothing is silently admitted at full size either way. See
+    services/dataimport/xlsx_guard.py's module docstring for the full
+    "does zipfile trust the header" investigation.
+    """
+    import struct
+    import zlib
+
+    base_path = _write_workbook(tmp_path, _approach_rows("가람방면"), file_name="lying_base.xlsx")
+    src = zipfile.ZipFile(base_path)
+    sst = _BOMB_SST_HEADER + b"B" * 200_000 + _BOMB_SST_FOOTER
+    crc_full = zlib.crc32(sst) & 0xFFFFFFFF
+
+    out_path = tmp_path / _file_name()
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for info in src.infolist():
+            if info.filename == "[Content_Types].xml":
+                data = src.read(info.filename)
+                if b"sharedStrings" not in data:
+                    data = data.replace(b"</Types>", _BOMB_SHARED_STRINGS_OVERRIDE + b"</Types>")
+                archive.writestr(info, data)
+            else:
+                archive.writestr(info, src.read(info.filename))
+        archive.writestr("xl/sharedStrings.xml", sst)
+    src.close()
+
+    raw = bytearray(out_path.read_bytes())
+    idx = raw.find(b"xl/sharedStrings.xml")
+    patched = False
+    while idx != -1:
+        central_start = idx - 46
+        if central_start >= 0 and raw[central_start : central_start + 4] == b"PK\x01\x02":
+            struct.pack_into("<I", raw, central_start + 16, crc_full)
+            struct.pack_into("<I", raw, central_start + 24, 1000)  # lie: declare only 1000 bytes
+            patched = True
+        idx = raw.find(b"xl/sharedStrings.xml", idx + 1)
+    assert patched, "fixture bug: did not find the central directory record to patch"
+    out_path.write_bytes(bytes(raw))
+
+    with pytest.raises(AdapterError):
+        adapter.parse([out_path])
+
+
+def test_an_encrypted_member_with_no_size_violation_never_leaks_a_raw_runtimeerror(
+    adapter, tmp_path
+):
+    """Regression (adversarial review, 2026-08-13): a member with the
+    encryption general-purpose flag bit set (no size violation at all) made
+    the guard's streaming re-measurement pass raise a raw ``RuntimeError``
+    ("... is encrypted, password required ...") from ``archive.open(info)``
+    that the guard's own ``except zipfile.BadZipFile`` did not catch --
+    escaping past ``_open_worksheet``'s existing ``except Exception`` too
+    (a bare ``RuntimeError`` IS an ``Exception``, so that part was fine; the
+    bug was entirely inside the guard). Confirmed regression: the exact same
+    file opens with ZERO exceptions under plain
+    ``openpyxl.load_workbook(read_only=True)`` -- it never reads
+    ``docProps/app.xml`` at all -- so the guard was stricter than the real
+    reader on a file the real reader considers perfectly fine. Fixed in
+    services/dataimport/xlsx_guard.py by catching
+    ``(BadZipFile, RuntimeError, NotImplementedError)`` explicitly, never a
+    bare ``except Exception``. This adapter must now produce its NORMAL
+    parse outcome (whatever that is for this fixture), never crash with a
+    raw ``RuntimeError``.
+    """
+    import struct
+
+    path = _write_workbook(tmp_path, _approach_rows("가람방면"))
+    raw = bytearray(path.read_bytes())
+    target = b"docProps/app.xml"
+    idx = raw.find(target)
+    patched = 0
+    while idx != -1:
+        local_start = idx - 30
+        if local_start >= 0 and raw[local_start : local_start + 4] == b"PK\x03\x04":
+            flags = struct.unpack_from("<H", raw, local_start + 6)[0]
+            struct.pack_into("<H", raw, local_start + 6, flags | 0x1)
+            patched += 1
+        central_start = idx - 46
+        if central_start >= 0 and raw[central_start : central_start + 4] == b"PK\x01\x02":
+            flags = struct.unpack_from("<H", raw, central_start + 8)[0]
+            struct.pack_into("<H", raw, central_start + 8, flags | 0x1)
+            patched += 1
+        idx = raw.find(target, idx + 1)
+    assert patched == 2, "fixture bug: expected to patch local+central headers for docProps/app.xml"
+    path.write_bytes(bytes(raw))
+
+    # Fixture sanity: plain openpyxl must be unaffected (never touches this member).
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    assert wb.sheetnames
+
+    # The regression: this must not raise RuntimeError, only ever AdapterError
+    # (if anything) or a normal ImportResult.
+    result = adapter.parse([path])
+    assert result.counts, "the adapter's normal happy-path outcome for this fixture"

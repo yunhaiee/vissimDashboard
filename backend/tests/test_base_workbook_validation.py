@@ -1,13 +1,20 @@
+import zipfile
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
 import openpyxl
+import pytest
 from fastapi.testclient import TestClient
 
 import main
 from services import datasets, workspaces
-from services.validation import create_base_workbook_template, load_base_workbook
+from services.validation import (
+    create_base_workbook_template,
+    load_base_workbook,
+    load_base_workbook_bytes,
+    load_real_counts,
+)
 
 
 def test_base_workbook_template_can_be_parsed():
@@ -389,3 +396,166 @@ def test_base_workbook_reset_endpoint_removes_only_uploaded_workbook(tmp_path, m
         assert reset_response.json()["exists"] is False
         assert not datasets.active_real_counts_excel().exists()
         assert "real_counts_filename" not in datasets.metadata_path().read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Decompression-bomb guard (adversarial finding, 2026-08-12/13) -- wired into
+# services/validation.py's three openpyxl.load_workbook() call sites via
+# services.dataimport.xlsx_guard. Full guard coverage (each cap in
+# isolation, "lying header" handling, clean pass-through) lives in
+# test_xlsx_guard.py; this only proves the WIRING into each of
+# load_base_workbook_bytes / load_base_workbook / load_real_counts and the
+# POST /api/validation/base-workbook route, using this file's own smallest
+# real-shaped fixture (create_base_workbook_template()) -- nothing copied
+# from client-data/.
+# ---------------------------------------------------------------------------
+
+_BOMB_SST_HEADER = (
+    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    b'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    b'count="1" uniqueCount="1"><si><t xml:space="preserve">'
+)
+_BOMB_SST_FOOTER = b"</t></si></sst>"
+_BOMB_SHARED_STRINGS_OVERRIDE = (
+    b'<Override PartName="/xl/sharedStrings.xml" '
+    b'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+)
+
+
+def _bomb_bytes(*, declared_bytes: int = 5_000_000) -> bytes:
+    """A real .xlsx decompression bomb built on top of THIS module's own
+    standard template (``create_base_workbook_template()``), so it is
+    otherwise a completely normal base validation workbook:
+    ``xl/sharedStrings.xml`` is replaced by a single repeated-character run
+    that declares ``declared_bytes`` -- ~1000:1 compressed on disk, tripping
+    the guard's ratio cap (60:1) at production thresholds without needing a
+    multi-hundred-MB fixture. See services/dataimport/xlsx_guard.py's
+    module docstring for how the Content_Types Override is required for
+    openpyxl to even look at this part (the template alone never carries
+    it).
+    """
+    src = zipfile.ZipFile(BytesIO(create_base_workbook_template()))
+    sst = _BOMB_SST_HEADER + b"A" * declared_bytes + _BOMB_SST_FOOTER
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for info in src.infolist():
+            if info.filename == "[Content_Types].xml":
+                data = src.read(info.filename)
+                if b"sharedStrings" not in data:
+                    data = data.replace(b"</Types>", _BOMB_SHARED_STRINGS_OVERRIDE + b"</Types>")
+                archive.writestr(info, data)
+            else:
+                archive.writestr(info, src.read(info.filename))
+        archive.writestr("xl/sharedStrings.xml", sst)
+    return out.getvalue()
+
+
+def _lying_header_bytes() -> bytes:
+    """A member whose CENTRAL DIRECTORY declares a small size while its
+    recorded CRC is for a much larger stream -- see
+    services/dataimport/xlsx_guard.py's module docstring for the "does
+    zipfile trust the header" investigation this proves: the guard's header
+    precheck sees nothing to refuse and defers, and openpyxl/zipfile then
+    discover the inconsistency themselves (BadZipFile) when actually read.
+    """
+    import struct
+    import zlib
+
+    src = zipfile.ZipFile(BytesIO(create_base_workbook_template()))
+    sst = _BOMB_SST_HEADER + b"B" * 200_000 + _BOMB_SST_FOOTER
+    crc_full = zlib.crc32(sst) & 0xFFFFFFFF
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for info in src.infolist():
+            if info.filename == "[Content_Types].xml":
+                data = src.read(info.filename)
+                if b"sharedStrings" not in data:
+                    data = data.replace(b"</Types>", _BOMB_SHARED_STRINGS_OVERRIDE + b"</Types>")
+                archive.writestr(info, data)
+            else:
+                archive.writestr(info, src.read(info.filename))
+        archive.writestr("xl/sharedStrings.xml", sst)
+
+    raw = bytearray(out.getvalue())
+    idx = raw.find(b"xl/sharedStrings.xml")
+    patched = False
+    while idx != -1:
+        central_start = idx - 46
+        if central_start >= 0 and raw[central_start : central_start + 4] == b"PK\x01\x02":
+            struct.pack_into("<I", raw, central_start + 16, crc_full)
+            struct.pack_into("<I", raw, central_start + 24, 1000)  # lie: declare only 1000 bytes
+            patched = True
+        idx = raw.find(b"xl/sharedStrings.xml", idx + 1)
+    assert patched, "fixture bug: did not find the central directory record to patch"
+    return bytes(raw)
+
+
+def _write_bytes_to_disk(tmp_path: Path, content: bytes, name: str = "workbook.xlsx") -> Path:
+    path = tmp_path / name
+    path.write_bytes(content)
+    return path
+
+
+def test_load_base_workbook_bytes_refuses_the_bomb_by_name_with_the_numbers():
+    result = load_base_workbook_bytes("bomb.xlsx", _bomb_bytes(declared_bytes=5_000_000))
+    assert result["exists"] is False
+    assert len(result["warnings"]) == 1
+    assert "5,000," in result["warnings"][0]
+    assert "cap" in result["warnings"][0]
+
+
+def test_load_base_workbook_bytes_still_parses_the_smallest_real_fixture():
+    result = load_base_workbook_bytes("real_counts.xlsx", create_base_workbook_template())
+    assert result["warnings"] == []
+    assert result["counts"]
+
+
+def test_load_base_workbook_bytes_refuses_a_lying_declared_size():
+    result = load_base_workbook_bytes("lying.xlsx", _lying_header_bytes())
+    assert result["exists"] is False
+    assert len(result["warnings"]) == 1  # openpyxl's own BadZipFile, via the existing except Exception
+
+
+def test_load_base_workbook_disk_refuses_the_bomb_by_name_with_the_numbers(tmp_path):
+    path = _write_bytes_to_disk(tmp_path, _bomb_bytes(declared_bytes=5_000_000), "bomb.xlsx")
+    result = load_base_workbook(str(path))
+    assert result["exists"] is True
+    assert len(result["warnings"]) == 1
+    assert "5,000," in result["warnings"][0]
+
+
+def test_load_base_workbook_disk_still_parses_the_smallest_real_fixture(tmp_path):
+    path = _write_bytes_to_disk(tmp_path, create_base_workbook_template(), "real_counts.xlsx")
+    result = load_base_workbook(str(path))
+    assert result["warnings"] == []
+    assert result["counts"]
+
+
+def test_load_real_counts_raises_on_the_bomb_with_the_numbers(tmp_path):
+    """Unlike load_base_workbook{,_bytes}, this call site has no existing
+    try/except around openpyxl.load_workbook() -- the guard's typed
+    XlsxBombError propagates uncaught, exactly as any other openpyxl
+    exception already would here. Still a clear, named, non-silent
+    failure, just not folded into a warnings list like its siblings."""
+    from services.dataimport.xlsx_guard import XlsxBombError
+
+    path = _write_bytes_to_disk(tmp_path, _bomb_bytes(declared_bytes=5_000_000), "bomb.xlsx")
+    with pytest.raises(XlsxBombError) as exc_info:
+        load_real_counts(str(path))
+    assert "5,000," in str(exc_info.value)
+
+
+def test_load_real_counts_still_parses_the_smallest_real_fixture(tmp_path):
+    path = _write_bytes_to_disk(tmp_path, create_base_workbook_template(), "real_counts.xlsx")
+    real_counts = load_real_counts(str(path))
+    assert real_counts  # the template's own sample rows resolve to at least one node
+
+
+def test_post_base_workbook_endpoint_refuses_the_bomb_with_400():
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/validation/base-workbook?filename=bomb.xlsx",
+            content=_bomb_bytes(declared_bytes=5_000_000),
+        )
+    assert response.status_code == 400
+    assert "5,000," in response.text

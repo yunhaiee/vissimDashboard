@@ -5918,3 +5918,39 @@ remain the predicate's named blind spots (UNVERIFIED, never silent). The "GEH im
 non-input parameter" half of acceptance awaits a real run in the user's COM lane. Suite
 **4495 / 1 (env RAG) / 1 skip** (+43 across the unit); scope 10 backend files, gate.py and
 frontend untouched.
+
+## 2026-08-13 — every workbook door gets a bomb check, and the check itself briefly broke a working file
+
+**What (user-directed, from the demand-debt pass's chip).** A 514 KB crafted `.xlsx` whose
+`sharedStrings.xml` declares 500 MB inflated a real `openpyxl.load_workbook(read_only=True)`
+call by 551 MB in 1.2 s (measured; `read_strings()` materializes every `<si>` regardless of
+read_only) — and the 32 MB body cap counts COMPRESSED bytes. New
+`services/dataimport/xlsx_guard.py` inspects the zip before openpyxl: header precheck on
+central-directory sizes (member ≤100 MB, total ≤300 MB, ratio ≤60:1, members ≤2000 — every
+constant cites both the bomb and the measured real ceilings: 17.9 MB worst member, 22.9 MB
+worst total, 12.43:1 worst ratio across all 25 client workbooks, margins 4.8–13.7×) plus a
+streamed re-measurement whose caps are, on this CPython's zipfile, provably unreachable
+independently of the header check (streamed output cannot exceed the same declared
+`file_size` — cited to Lib/zipfile.py 3.11.2) and are kept as named forward insurance, not
+claimed as independent protection. Wired into all 9 real `load_workbook` sites (both
+adapters, validation ×3, workbook-mapping ×2; the two in-process-bytes sites verified
+unreachable by external input and left unwired by name), each speaking its consumer's own
+refusal vocabulary with the measured numbers.
+
+**Verification held everything numeric and found the one real bug: the guard itself was a
+regression.** zip64 declared sizes, orphan local headers, data descriptors, lying headers
+(zipfile truncates to the declared size and CRC-fails — proven, cited), sparse-legitimate
+false positives (adversarially built 200k-row files peak at 13.83:1, 4.3× under the cap) all
+held, and the refuter re-derived every measured constant exactly. But a member carrying only
+the zip ENCRYPTION flag — no size violation — made the streaming loop leak a raw
+`RuntimeError` through both adapters, on a file that plain openpyxl opens with zero errors
+(read_only never touches that member — established empirically per member). The guard that
+existed to refuse hostile files was crashing on a benign one. Fixed by catching the
+"member unreadable by zipfile" family explicitly (`BadZipFile`/`RuntimeError`/
+`NotImplementedError`, each cited to its CPython raise site) — deliberately NOT bare
+`Exception`, because a guard that swallows its own bugs is worse than one that crashes.
+
+**Also surfaced, split out by name:** `services/observations.py`'s ingest path catches no
+`AdapterError` at all (any corrupt workbook there — bomb or otherwise — is a raw 500 where
+genesis's `stage_counts` refuses by name); queued as its own unit rather than smuggled in.
+Suite **4529 / 1 (env RAG) / 1 skip** (+34 across the unit).

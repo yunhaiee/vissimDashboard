@@ -58,6 +58,7 @@ from ..base import (
     IssueSeverity,
     SniffResult,
 )
+from ..xlsx_guard import XlsxBombError, guard_xlsx_path
 from ..schema import (
     ApproachRef,
     CanonicalVehicleClass,
@@ -729,6 +730,16 @@ def _open_scats_workbook(path: Path):
         import openpyxl
     except ImportError as exc:  # pragma: no cover - openpyxl is a hard dependency
         raise AdapterError(f"openpyxl is required to read {path.name}: {exc}") from exc
+
+    # Decompression-bomb guard BEFORE openpyxl touches the file -- same
+    # reasoning as adapters/daejeon.py's `_open_worksheet`; see
+    # services/dataimport/xlsx_guard.py's module docstring for the measured
+    # numbers.
+    try:
+        guard_xlsx_path(path)
+    except XlsxBombError as exc:
+        raise AdapterError(str(exc)) from exc
+
     try:
         return openpyxl.load_workbook(path, read_only=True, data_only=True)
     except OSError as exc:

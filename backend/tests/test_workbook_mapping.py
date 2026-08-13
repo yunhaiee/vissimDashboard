@@ -11,6 +11,7 @@ test_base_workbook_validation.py, which this file does not duplicate.
 """
 from __future__ import annotations
 
+import zipfile
 from io import BytesIO
 from pathlib import Path
 
@@ -548,3 +549,126 @@ def test_cancel_leaves_active_workbook_untouched_and_discard_is_the_chosen_clean
 def test_discard_mapping_endpoint_is_idempotent_on_unknown_token(client):
     response = client.delete("/api/validation/base-workbook/mapping/not-a-real-token")
     assert response.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# Decompression-bomb guard (adversarial finding, 2026-08-12/13) -- wired into
+# services/workbook_mapping.py's ``stage_workbook``/``load_staged_workbook``
+# via services.dataimport.xlsx_guard, which every public entry point here
+# (inspect_workbook, resolve_sheet_mapping, preview_mapping, import_mapping)
+# calls through. Full guard coverage (each cap in isolation, "lying header"
+# handling, clean pass-through) lives in test_xlsx_guard.py; this only
+# proves the WIRING through the actual HTTP routes, using this file's own
+# smallest real-shaped fixture (create_base_workbook_template()) -- nothing
+# copied from client-data/.
+# ---------------------------------------------------------------------------
+
+_BOMB_SST_HEADER = (
+    b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    b'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+    b'count="1" uniqueCount="1"><si><t xml:space="preserve">'
+)
+_BOMB_SST_FOOTER = b"</t></si></sst>"
+_BOMB_SHARED_STRINGS_OVERRIDE = (
+    b'<Override PartName="/xl/sharedStrings.xml" '
+    b'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+)
+
+
+def _bomb_bytes(*, declared_bytes: int = 5_000_000) -> bytes:
+    """A real .xlsx decompression bomb built on top of this module's own
+    standard template, so it is otherwise a completely normal base
+    validation workbook: ``xl/sharedStrings.xml`` is replaced by a single
+    repeated-character run that declares ``declared_bytes`` -- ~1000:1
+    compressed on disk, tripping the guard's ratio cap (60:1) at production
+    thresholds without needing a multi-hundred-MB fixture. See
+    services/dataimport/xlsx_guard.py's module docstring for how the
+    Content_Types Override is required for openpyxl to even look at this
+    part.
+    """
+    src = zipfile.ZipFile(BytesIO(create_base_workbook_template()))
+    sst = _BOMB_SST_HEADER + b"A" * declared_bytes + _BOMB_SST_FOOTER
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for info in src.infolist():
+            if info.filename == "[Content_Types].xml":
+                data = src.read(info.filename)
+                if b"sharedStrings" not in data:
+                    data = data.replace(b"</Types>", _BOMB_SHARED_STRINGS_OVERRIDE + b"</Types>")
+                archive.writestr(info, data)
+            else:
+                archive.writestr(info, src.read(info.filename))
+        archive.writestr("xl/sharedStrings.xml", sst)
+    return out.getvalue()
+
+
+def _lying_header_bytes() -> bytes:
+    """A member whose CENTRAL DIRECTORY declares a small size while its
+    recorded CRC is for a much larger stream -- see
+    services/dataimport/xlsx_guard.py's module docstring for the "does
+    zipfile trust the header" investigation this proves.
+    """
+    import struct
+    import zlib
+
+    src = zipfile.ZipFile(BytesIO(create_base_workbook_template()))
+    sst = _BOMB_SST_HEADER + b"B" * 200_000 + _BOMB_SST_FOOTER
+    crc_full = zlib.crc32(sst) & 0xFFFFFFFF
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for info in src.infolist():
+            if info.filename == "[Content_Types].xml":
+                data = src.read(info.filename)
+                if b"sharedStrings" not in data:
+                    data = data.replace(b"</Types>", _BOMB_SHARED_STRINGS_OVERRIDE + b"</Types>")
+                archive.writestr(info, data)
+            else:
+                archive.writestr(info, src.read(info.filename))
+        archive.writestr("xl/sharedStrings.xml", sst)
+
+    raw = bytearray(out.getvalue())
+    idx = raw.find(b"xl/sharedStrings.xml")
+    patched = False
+    while idx != -1:
+        central_start = idx - 46
+        if central_start >= 0 and raw[central_start : central_start + 4] == b"PK\x01\x02":
+            struct.pack_into("<I", raw, central_start + 16, crc_full)
+            struct.pack_into("<I", raw, central_start + 24, 1000)  # lie: declare only 1000 bytes
+            patched = True
+        idx = raw.find(b"xl/sharedStrings.xml", idx + 1)
+    assert patched, "fixture bug: did not find the central directory record to patch"
+    return bytes(raw)
+
+
+def test_inspect_refuses_the_bomb_by_name_with_the_numbers(client):
+    response = _post_bytes(
+        client, "/api/validation/base-workbook/inspect", _bomb_bytes(declared_bytes=5_000_000), "bomb.xlsx"
+    )
+    assert response.status_code == 400
+    assert "5,000," in response.text
+
+
+def test_inspect_still_stages_the_smallest_real_fixture(client):
+    response = _post_bytes(
+        client, "/api/validation/base-workbook/inspect", create_base_workbook_template(), "real_counts.xlsx"
+    )
+    assert response.status_code == 200
+    assert response.json()["upload_token"]
+
+
+def test_inspect_refuses_a_lying_declared_size(client):
+    response = _post_bytes(
+        client, "/api/validation/base-workbook/inspect", _lying_header_bytes(), "lying.xlsx"
+    )
+    assert response.status_code == 400
+
+
+def test_upload_base_workbook_falls_back_to_mapping_and_the_bomb_refuses_there_too(client):
+    """POST /base-workbook itself never raises on a bomb (``load_base_workbook_bytes``
+    catches and reports it as a warning), so it falls into the SAME
+    non-conforming-upload path a merely-differently-shaped workbook would --
+    ``workbook_mapping.inspect_workbook`` (i.e. ``stage_workbook``), which is
+    what actually refuses it."""
+    response = _post_bytes(client, "/api/validation/base-workbook", _bomb_bytes(declared_bytes=5_000_000), "bomb.xlsx")
+    assert response.status_code == 400
+    assert "5,000," in response.text
