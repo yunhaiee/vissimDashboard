@@ -59,17 +59,22 @@ import GenesisTileMap from "@/components/genesis/GenesisTileMap";
 import { InfoTip, Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
+  applyGenesisFix,
   fetchGenesisArtifact,
   fetchGenesisGateReport,
   fetchGenesisJob,
+  fetchGenesisJobFixes,
   fetchGenesisJobs,
   fetchStagedSideInputs,
   startGenesisJob,
   uploadGenesisOsm,
   type GenesisArtifactKind,
+  type GenesisFixDisposition,
+  type GenesisFixFinding,
   type GenesisGateCheck,
   type GenesisGateReport,
   type GenesisJob,
+  type GenesisJobFixes,
   type GenesisJobStatus,
   type StagedSideInputEntry,
 } from "@/lib/api";
@@ -300,6 +305,361 @@ function checkHasBody(check: GenesisGateCheck): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// B5-2 stage 4 — the fix strip: "거부는 진단, 에이전트는 치료" made clickable.
+// One GET (`fetchGenesisJobFixes`, fetched once per (job, verdict) exactly
+// like the gate report is) hands back the registry's own disposition for
+// EVERY finding in the job's STORED verdict; `GateCheckGrid`'s own detail
+// area renders it under the SELECTED check's findings, never a second door
+// into the registry.
+// ---------------------------------------------------------------------------
+
+/**
+ * WHETHER A DISPOSITION IS ACTUALLY SOMETHING TO APPLY — and the trap this
+ * function exists to close.
+ *
+ * `disposition.status === "AUTOMATABLE"` looks like the safe test, and it is
+ * NOT: `routers/genesis.py`'s own `_render_fix_disposition` docstring names
+ * "three shapes, never a fourth", and the third one is exactly this landmine
+ * — an AUTOMATABLE-DECLARED mapping whose builder refused for a STRUCTURAL
+ * reason (most importantly V6's MEASURED entrance,
+ * `INPUT_VOLUME_IS_OBSERVED_DATA` — an observed count is the calibration
+ * TARGET, never a knob to turn) reports `status: "AUTOMATABLE"`, a real
+ * `verb`, AND `params: null` / `requires: []`, because the backend only ever
+ * fills `params` when it holds a real proposal or a partially-filled
+ * ask-first one. A button gated on `status` alone would render an enabled,
+ * submittable "적용 승인" over a refusal — precisely the misrepresentation this
+ * whole unit exists to prevent. `params !== null` is the one field the
+ * backend itself treats as "there is something to apply".
+ */
+function fixDispositionIsActionable(disposition: GenesisFixDisposition): boolean {
+  return disposition.status === "AUTOMATABLE" && disposition.params !== null;
+}
+
+/** ko/en/ja for `disposition.confidence` — mono wording, never a fourth
+ * colour (the palette lock's own rule: rose/emerald/sky are the only
+ * accents this app has). `NONE` is the ask-first card's own value (no
+ * proposal exists yet to have a confidence about). */
+function fixConfidenceLabel(confidence: string, t: Translate): string {
+  switch (confidence) {
+    case "ARITHMETIC_FROM_OBSERVED_COUNTS":
+      return t("산술 계산값 (관측 카운트 기반)", "Arithmetic, from observed counts", "算術計算値（観測カウント基準）");
+    case "CONSTRAINT_COMPUTED_CEILING":
+      return t("제약이 계산한 상한값", "A constraint's own computed ceiling", "制約が計算した上限値");
+    case "DEMAND_ESTIMATE_FROM_UNVERIFIED_ENTRANCE":
+      return t("수요 추정값 (미검증 진입부)", "A demand ESTIMATE (unverified entrance)", "需要推定値（未検証の流入部）");
+    case "NONE":
+      return t("근거 값 없음", "No confidence value", "根拠値なし");
+    default:
+      return confidence;
+  }
+}
+
+/**
+ * Unit D4's "수요 추정" (demand-estimate) framing — a distinct claim from the
+ * literal `confidence` string. On a GET this route NEVER receives a
+ * caller-supplied volume (`derive_fix_targets`'s own docstring: "threaded
+ * from params ONLY"), so V6's ask-first shape reports `confidence: "NONE"`
+ * with `reason_code: "EVIDENCE_INSUFFICIENT"` — the
+ * `"DEMAND_ESTIMATE_FROM_UNVERIFIED_ENTRANCE"` value only appears once a
+ * human has supplied the volume and the SERVER re-derives the real proposal
+ * at apply time. So this checks every shape D4's doctrine actually produces
+ * on a GET, not only the literal confidence string that a future full
+ * proposal would carry — it is what triggers the "수요 추정" sentence on the
+ * ask-first card today, and would keep triggering it on a real one.
+ */
+function fixIsDemandEstimateFraming(disposition: GenesisFixDisposition): boolean {
+  return (
+    disposition.confidence === "DEMAND_ESTIMATE_FROM_UNVERIFIED_ENTRANCE" ||
+    disposition.assumptions.includes("ENTRANCE_NOT_VERIFIED_MEASURED") ||
+    (disposition.verb === "set_vehicle_input_volume" && disposition.reason_code === "EVIDENCE_INSUFFICIENT")
+  );
+}
+
+/** ko/en/ja for one `fixes.py` assumption token — the machine half of a
+ * sentence the rationale already makes in prose; this is the short gloss
+ * beside the bullet. An unrecognised token (catalogue drift) still shows the
+ * raw token rather than nothing. */
+function fixAssumptionLabel(token: string, t: Translate): string {
+  switch (token) {
+    case "INPUT_DRIVES_NODE_TOTAL":
+      return t(
+        "이 입력이 교차로 총량을 좌우한다고 가정합니다",
+        "Assumes this input drives the node's total",
+        "このインプットが交差点合計を左右すると仮定します",
+      );
+    case "SIBLING_ROUTES_UNCHANGED":
+      return t(
+        "다른 경로들의 상대 비율은 그대로 둔다고 가정합니다",
+        "Assumes the other routes keep their current relative flow",
+        "他の経路の相対比率はそのまま維持されると仮定します",
+      );
+    case "DECISION_MOVEMENTS_COMPLETE":
+      return t(
+        "제시된 이동류 목록이 이 결정의 전체 범위라고 가정합니다",
+        "Assumes the listed movements are this decision's complete scope",
+        "提示された移動流のリストがこの決定の全範囲であると仮定します",
+      );
+    case "INTERVAL_MATCHES_COUNT_PERIOD":
+      return t(
+        "선택한 구간이 실측 기간과 일치한다고 가정합니다",
+        "Assumes the chosen interval matches the count's own period",
+        "選択した区間が実測期間と一致すると仮定します",
+      );
+    case "ENTRANCE_NOT_VERIFIED_MEASURED":
+      return t(
+        "이 진입부가 실측 지점인지 확인되지 않았다는 전제입니다 (수요 추정)",
+        "Assumes this entrance could not be verified as measured (a named demand estimate)",
+        "この流入部が実測地点かは確認されていないという前提です（需要推定）",
+      );
+    default:
+      return token;
+  }
+}
+
+/** Label + input kind for one `disposition.requires` field name. The three
+ * known fields are every one `_partial_fix_params` (`routers/genesis.py`)
+ * can actually leave required today; a field this table has never seen still
+ * gets an honest generic label (its own raw name) rather than a blank one,
+ * and is treated as free text rather than assumed numeric. */
+function fixRequiredFieldSpec(field: string, t: Translate): { label: string; numeric: boolean } {
+  switch (field) {
+    case "volume":
+      return { label: t("교통량 (대/시)", "Volume (veh/h)", "交通量（台/時）"), numeric: true };
+    case "lane_count":
+      return { label: t("차로 수", "Lane count", "車線数"), numeric: true };
+    case "pos_m":
+      return { label: t("링크상 위치 (m)", "Position on link (m)", "リンク上の位置（m）"), numeric: true };
+    default:
+      return { label: field, numeric: false };
+  }
+}
+
+/** `refusalHeadline` for an `applyGenesisFix` failure, plus its `reasons`
+ * verbatim -- the same two-part shape `selected.refusal` already renders
+ * elsewhere on this page, reused rather than re-invented for this box. */
+function applyFixErrorText(caught: unknown, t: Translate): { headline: string; reasons: string[] } {
+  if (caught instanceof GenesisError) {
+    return {
+      headline: refusalHeadline(
+        caught.code,
+        t,
+        t("수정을 적용하지 못했습니다", "The fix could not be applied", "修正を適用できませんでした"),
+      ),
+      reasons: caught.reasons,
+    };
+  }
+  return { headline: caught instanceof Error ? caught.message : String(caught), reasons: [] };
+}
+
+/**
+ * ONE finding's disposition — EITHER an informational mono line (never a
+ * button: a refusal is information, not a disabled control) OR an approval
+ * card. Never a third shape.
+ *
+ * `isFirstForCode` guards a real backend trap, not a client-invented rule.
+ * `POST .../fixes/apply` addresses a finding by CODE ALONE (its body carries
+ * no `subject`), and `create_genesis_fix_job` resolves that to the FIRST
+ * finding carrying that code in the stored verdict
+ * (`genesis_jobs._finding_in_stored_gate`'s own docstring: "first mirrors
+ * gate.py's own deterministic ordering"). When the SAME code names two
+ * different objects in one verdict — two vehicle inputs both missing volume
+ * is the real case, both carrying `v6_input_without_volume` — a click on the
+ * SECOND card would submit params addressing the second object under a
+ * finding_code that resolves to the first: `genesis_fix_params_target_mismatch`,
+ * every time, no matter how correct the card's own proposal looked. Rather
+ * than let a reader discover that from a 409, the second (and any later) card
+ * never offers the button at all.
+ */
+function FixFindingRow({
+  jobId,
+  finding,
+  isFirstForCode,
+  t,
+  lang,
+  onApplied,
+}: {
+  jobId: string;
+  finding: GenesisFixFinding;
+  isFirstForCode: boolean;
+  t: Translate;
+  lang: string;
+  onApplied: (job: GenesisJob) => void;
+}) {
+  const disposition = finding.disposition;
+  const actionable = isFirstForCode && fixDispositionIsActionable(disposition);
+  const rationale =
+    lang === "ko" ? disposition.rationale.ko : lang === "ja" ? disposition.rationale.ja : disposition.rationale.en;
+
+  const [approvalRationale, setApprovalRationale] = useState("");
+  const [requiredValues, setRequiredValues] = useState<Record<string, string>>({});
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState<GenesisError | Error | null>(null);
+
+  const missingRequired = disposition.requires.some((field) => !requiredValues[field]?.trim());
+
+  const submit = useCallback(async () => {
+    if (!disposition.verb || disposition.params === null) return;
+    setApplying(true);
+    setApplyError(null);
+    try {
+      const params: Record<string, unknown> = { ...disposition.params };
+      for (const field of disposition.requires) {
+        const spec = fixRequiredFieldSpec(field, t);
+        const raw = requiredValues[field] ?? "";
+        params[field] = spec.numeric ? Number(raw) : raw;
+      }
+      const job = await applyGenesisFix(jobId, {
+        finding_code: finding.code,
+        verb: disposition.verb,
+        params,
+        approval_rationale: approvalRationale.trim() || undefined,
+      });
+      onApplied(job);
+    } catch (caught) {
+      setApplyError(caught instanceof Error ? caught : new Error(String(caught)));
+    } finally {
+      setApplying(false);
+    }
+  }, [disposition, requiredValues, approvalRationale, jobId, finding.code, onApplied, t]);
+
+  const error = applyError ? applyFixErrorText(applyError, t) : null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-[13px] text-slate-800">
+      <div className="flex flex-wrap items-baseline gap-2">
+        {finding.origin === "warning" && <span className="text-[12px] text-slate-500">warn /</span>}
+        <span className="font-mono text-[12px] font-semibold text-slate-700">{finding.code}</span>
+        <span className="font-mono text-[12px] text-slate-500">{finding.subject}</span>
+      </div>
+
+      {!actionable ? (
+        <div className="mt-2">
+          {/* NOT_AUTOMATABLE (or a structural refusal wearing an AUTOMATABLE
+            * status -- see fixDispositionIsActionable) -- ONE mono line, the
+            * rationale verbatim, and NEVER a button. */}
+          <p className="font-mono text-[13px] leading-relaxed text-slate-700">{rationale}</p>
+          {!isFirstForCode && fixDispositionIsActionable(disposition) && (
+            <p className="mt-1.5 text-[12px] leading-relaxed text-slate-500">
+              {t(
+                "같은 코드의 발견이 이 판정에 여러 건입니다 — 자동 적용은 첫 번째 발견에만 연결됩니다. 그 발견을 먼저 적용해 재게이트한 뒤, 남은 발견이 새 판정의 첫 자리에 나타나면 그때 적용하십시오.",
+                "This code appears more than once in this verdict — an apply only ever resolves to the FIRST finding carrying it. Apply that one first; once the re-gate runs, the remaining finding moves to the front of the new verdict's own list and can be applied then.",
+                "同じコードの発見がこの判定に複数あります — 自動適用は最初の発見にのみ結び付きます。まずそれを適用して再ゲートし、残りの発見が新しい判定の先頭に現れたら、その時に適用してください。",
+              )}
+            </p>
+          )}
+          {disposition.reason_code && (
+            <p className="mt-1 font-mono text-[12px] text-slate-500">{disposition.reason_code}</p>
+          )}
+        </div>
+      ) : (
+        <div className="mt-2 flex flex-col gap-2">
+          <p className="font-mono text-[12px] text-slate-600">
+            {t("동사", "Verb", "動詞")}: {disposition.verb}
+          </p>
+          <p className="leading-relaxed text-slate-700">{rationale}</p>
+
+          <span
+            className={`w-fit rounded-full border px-1.5 py-0.5 text-[12px] font-semibold ${
+              fixIsDemandEstimateFraming(disposition)
+                ? "border-2 border-slate-400 bg-slate-100 text-slate-900 underline decoration-dotted decoration-slate-400 underline-offset-4"
+                : "border-slate-300 bg-white/[0.06] text-slate-600"
+            }`}
+          >
+            {fixConfidenceLabel(disposition.confidence, t)}
+          </span>
+
+          {fixIsDemandEstimateFraming(disposition) && (
+            <p className="text-[12px] leading-relaxed text-slate-600">
+              {t(
+                "※ 수요 추정 — 이 값은 검증된 실측이 아니라 명시된 추정치입니다. 실제 진입 교통량을 아신다면 이 제안 대신 그 값을 직접 입력해 주십시오.",
+                "NB DEMAND ESTIMATE — this value is a named estimate, not a verified measurement. If you know the real entrance count, enter it directly instead of approving this.",
+                "※ 需要推定 — この値は検証済みの実測ではなく、明示された推定値です。実際の流入交通量をご存知であれば、この提案の代わりに直接入力してください。",
+              )}
+            </p>
+          )}
+
+          {disposition.assumptions.length > 0 && (
+            <ul className="list-disc space-y-0.5 pl-4 text-[12px] leading-relaxed text-slate-600">
+              {disposition.assumptions.map((token) => (
+                <li key={token}>{fixAssumptionLabel(token, t)}</li>
+              ))}
+            </ul>
+          )}
+
+          {/* The inherited-auto-publish disclosure -- one sentence, not a
+            * modal, on every approval card regardless of confidence. */}
+          <p className="text-[12px] leading-relaxed text-slate-500">
+            {t(
+              "승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다 — 통과하면 그 결과가 자동으로 이 프로젝트의 활성 데이터셋으로 등록됩니다.",
+              "Approving runs a real Vissim edit and re-gates the network — a pass automatically registers the result as this project's active dataset.",
+              "承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します — 合格すればその結果は自動的にこのプロジェクトのアクティブなデータセットとして登録されます。",
+            )}
+          </p>
+
+          {disposition.requires.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              {disposition.requires.map((field) => {
+                const spec = fixRequiredFieldSpec(field, t);
+                return (
+                  <label key={field} className="flex items-center gap-2 text-[12px] text-slate-700">
+                    <span className="min-w-[120px]">{spec.label}</span>
+                    <input
+                      type={spec.numeric ? "number" : "text"}
+                      value={requiredValues[field] ?? ""}
+                      onChange={(event) =>
+                        setRequiredValues((current) => ({ ...current, [field]: event.target.value }))
+                      }
+                      className="w-32 rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[12px] text-slate-900"
+                    />
+                  </label>
+                );
+              })}
+            </div>
+          )}
+
+          <label className="flex flex-col gap-1 text-[12px] text-slate-600">
+            <span>{t("사유 (선택)", "Rationale (optional)", "理由（任意）")}</span>
+            <input
+              type="text"
+              value={approvalRationale}
+              onChange={(event) => setApprovalRationale(event.target.value)}
+              maxLength={600}
+              className="rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[13px] text-slate-900"
+            />
+          </label>
+
+          <div>
+            <button
+              type="button"
+              disabled={applying || missingRequired}
+              onClick={() => void submit()}
+              className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[13px] disabled:cursor-not-allowed"
+            >
+              {applying ? t("적용하는 중…", "Applying…", "適用中…") : t("적용 승인", "Approve fix", "適用を承認")}
+            </button>
+          </div>
+
+          {error && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-800">
+              <p className="font-semibold">{error.headline}</p>
+              {error.reasons.length > 0 && (
+                <ul className="mt-1 space-y-1">
+                  {error.reasons.map((reason, index) => (
+                    <li key={index} className="font-mono text-[12px] leading-relaxed">
+                      {reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * V1–V9 AS A GRID — EVERY CELL STARTS CLOSED.
  *
@@ -333,11 +693,47 @@ function checkHasBody(check: GenesisGateCheck): boolean {
  * The selected cell is one step brighter (a fill step, a 2px ring, a brighter
  * title) over a ~100ms transition, so the click has an answer.
  */
-function GateCheckGrid({ checks, t }: { checks: GenesisGateCheck[]; t: Translate }) {
+function GateCheckGrid({
+  checks,
+  t,
+  lang,
+  jobId,
+  fixes,
+  fixesError,
+  onFixApplied,
+}: {
+  checks: GenesisGateCheck[];
+  t: Translate;
+  lang: string;
+  /** The job these findings belong to -- needed only to address
+   * `POST .../fixes/apply`, never read for anything else here. */
+  jobId: string;
+  /** `null` while the (job, verdict)-keyed fetch is still in flight or has
+   * not started; the page owns the fetch and its caching, this component
+   * only renders what it is handed. */
+  fixes: GenesisJobFixes | null;
+  fixesError: GenesisError | Error | null;
+  onFixApplied: (job: GenesisJob) => void;
+}) {
   // NO initial selection, by the user's explicit instruction. `null` is the
   // mount state and stays until a click.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = selectedId ? checks.find((check) => check.id === selectedId) ?? null : null;
+
+  // Which finding, for a given CODE, is the first one in this verdict's own
+  // findings list -- job-wide, not per-check, because `POST .../fixes/apply`
+  // resolves a `finding_code` against the PARENT's WHOLE stored verdict, not
+  // against one check's own slice of it (see FixFindingRow's doc comment).
+  const firstOccurrenceOfCode = useMemo(() => {
+    const seen = new Set<string>();
+    const map = new Map<string, boolean>();
+    for (const finding of fixes?.findings ?? []) {
+      const key = `${finding.code}::${finding.subject}`;
+      map.set(key, !seen.has(finding.code));
+      seen.add(finding.code);
+    }
+    return map;
+  }, [fixes]);
 
   return (
     <div>
@@ -455,6 +851,78 @@ function GateCheckGrid({ checks, t }: { checks: GenesisGateCheck[]; t: Translate
                     "この検査に記録された項目はありません。",
                   )}
                 </p>
+              )}
+
+              {/* THE FIX STRIP -- roadmap B5-2 stage 4. Only for a check that
+                * actually recorded something: an empty check has no finding
+                * for the registry to have an opinion about. `fixes` is
+                * fetched ONCE per (job, verdict) by the page, exactly like
+                * the gate report above it -- this component only renders
+                * what it is handed, never fetches on its own. */}
+              {checkHasBody(selected) && (
+                <div className="mt-4 border-t border-slate-200 pt-3">
+                  <p className="text-[13px] font-semibold text-slate-800">
+                    {t("수정 제안", "Fix proposals", "修正提案")}
+                    <InfoTip
+                      text={t(
+                        "이 검사가 낸 각 발견에 대해, 등록된 수정 카탈로그가 자동으로 고칠 수 있는지와 그 근거를 답합니다. 자동 수정이 없다는 답은 정보이지 버튼이 아닙니다 — 거부는 진단, 에이전트는 치료.",
+                        "For each finding this check raised, the registered fix catalogue answers whether it can be automatically repaired and on what evidence. \"No automated fix\" is information, never a button — a refusal is a diagnosis, and the agent is the treatment.",
+                        "この検査が出した各発見について、登録済みの修正カタログが自動修正可能かとその根拠を答えます。「自動修正なし」は情報であり、ボタンではありません — 拒否は診断、エージェントは治療。",
+                      )}
+                    />
+                  </p>
+
+                  {!fixes && !fixesError && (
+                    <p className="mt-2 text-[13px] text-slate-500">
+                      {t("수정 제안을 불러오는 중…", "Loading fix proposals…", "修正提案を読み込み中…")}
+                    </p>
+                  )}
+
+                  {fixesError && (
+                    <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
+                      {fixesError instanceof GenesisError && fixesError.status === 401
+                        ? t(
+                            "수정 제안을 보려면 로그인이 필요합니다 — 로그인 후 다시 시도하세요.",
+                            "Viewing fix proposals requires a signed-in user — sign in and try again.",
+                            "修正提案の閲覧にはログインが必要です — ログイン後に再試行してください。",
+                          )
+                        : t(
+                            "수정 제안을 불러오지 못했습니다.",
+                            "Could not load fix proposals.",
+                            "修正提案を読み込めませんでした。",
+                          )}
+                    </p>
+                  )}
+
+                  {fixes && (
+                    <div className="mt-2 flex flex-col gap-3">
+                      {fixes.findings
+                        .filter((finding) => finding.check_id === selected.id)
+                        .map((finding) => (
+                          <FixFindingRow
+                            key={`${finding.code}::${finding.subject}`}
+                            jobId={jobId}
+                            finding={finding}
+                            isFirstForCode={
+                              firstOccurrenceOfCode.get(`${finding.code}::${finding.subject}`) ?? true
+                            }
+                            t={t}
+                            lang={lang}
+                            onApplied={onFixApplied}
+                          />
+                        ))}
+                      {fixes.findings.filter((finding) => finding.check_id === selected.id).length === 0 && (
+                        <p className="text-[13px] text-slate-500">
+                          {t(
+                            "이 검사에는 개별 수정 제안이 없습니다.",
+                            "No individual fix proposal for this check.",
+                            "この検査には個別の修正提案がありません。",
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -640,11 +1108,29 @@ export default function GenesisPage() {
     { jobId: string; language: string; payload: GenesisGateReport } | null
   >(null);
   const [reportError, setReportError] = useState<string | null>(null);
+  // Roadmap B5-2 stage 4 -- the fix strip's own fetch, keyed the SAME way the
+  // gate report above it is (job id + the moment the verdict was decided),
+  // but WITHOUT `language` in the key: `GET .../fixes` takes no `language`
+  // query param at all -- `disposition.rationale` already comes back
+  // trilingual (`FixProposal.rationale()`), so a language toggle needs no
+  // re-fetch here the way the gate report's own per-language render does.
+  // `fixesError` keeps the thrown error itself (not a stringified message)
+  // so the render side can distinguish a 401 (unauthenticated -- the named
+  // degradation path) from any other failure, the same distinction
+  // `downloadFailureText` already draws for artifact downloads.
+  const [fixesEntry, setFixesEntry] = useState<
+    { jobId: string; checkedAt: string; payload: GenesisJobFixes } | null
+  >(null);
+  const [fixesError, setFixesError] = useState<GenesisError | Error | null>(null);
 
   const selected = selectedEntry && selectedEntry.id === selectedId ? selectedEntry.record : null;
   const report =
     reportEntry && selected && reportEntry.jobId === selected.id && reportEntry.language === lang
       ? reportEntry.payload
+      : null;
+  const fixes =
+    fixesEntry && selected && fixesEntry.jobId === selected.id && fixesEntry.checkedAt === (selected.gate?.checked_at ?? "")
+      ? fixesEntry.payload
       : null;
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -746,6 +1232,52 @@ export default function GenesisPage() {
       cancelled = true;
     };
   }, [gatedJobId, gateCheckedAt, lang]);
+
+  // The fix strip's own data, fetched once per (job, verdict) -- same
+  // discipline as the gate report effect immediately above, deliberately a
+  // SEPARATE effect (not folded into it) because the two can fail
+  // independently: `GET .../gate` is open to an anonymous caller and
+  // `GET .../fixes` is not (routers/genesis.py's own docstring names the
+  // same laundering argument `download_artifact` does), so an anonymous
+  // visitor sees a full verdict AND a named 401 degradation here rather than
+  // either request's failure taking the other down with it.
+  useEffect(() => {
+    if (!gatedJobId) return;
+    let cancelled = false;
+    setFixesError(null);
+    fetchGenesisJobFixes(gatedJobId)
+      .then((payload) => {
+        if (!cancelled) {
+          setFixesEntry({ jobId: gatedJobId, checkedAt: gateCheckedAt ?? "", payload });
+          setFixesError(null);
+        }
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setFixesError(caught instanceof Error ? caught : new Error(String(caught)));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [gatedJobId, gateCheckedAt]);
+
+  // On a 202 from POST .../fixes/apply: the sibling job record IS the
+  // selection -- point the drawer at it through the SAME mechanics `submit`
+  // (below) uses for a freshly-started ordinary generation, so the reader
+  // watches the re-gate verdict arrive through the existing polling effect
+  // rather than through anything fix-specific. Refresh the history list so
+  // the sibling appears there too (a new row, same name as its parent --
+  // the drawer's own 파생 line is what tells the two apart, per B5-2 stage 4).
+  const handleFixApplied = useCallback(
+    (job: GenesisJob) => {
+      setSelectedId(job.id);
+      setSelectedEntry({ id: job.id, record: job });
+      setPage(0);
+      void loadJobs();
+    },
+    [loadJobs],
+  );
 
   const submit = useCallback(async () => {
     if (!file) return;
@@ -1233,6 +1765,19 @@ export default function GenesisPage() {
                       : ""}
                     {formatTimestamp(selected.created_at, lang)} · {networkScaleLabel(selected.network, t)}
                   </p>
+                  {/* LINEAGE VISIBILITY -- roadmap B5-2 stage 4. A fix job's
+                    * name is identical to its parent's (create_genesis_fix_job
+                    * never renames it), so without this line the history table
+                    * and the drawer header alone cannot tell a fix job apart
+                    * from the generation it was cloned from. key-ABSENT on an
+                    * ordinary generation (`derived_from` is never `null`), so
+                    * this renders for exactly the jobs that are fix jobs. */}
+                  {selected.derived_from && (
+                    <p className="mt-1 truncate font-mono text-[12px] text-slate-500">
+                      {t("파생", "Derived from", "派生")} — {selected.derived_from.job_id} ·{" "}
+                      {selected.derived_from.finding_code} · {selected.derived_from.approved_by ?? "—"}
+                    </p>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -1445,7 +1990,16 @@ export default function GenesisPage() {
                         * (which changes `checked_at` while the job id stays
                         * put) must clear whichever cell the reader had opened
                         * on the verdict it just replaced. */}
-                      <GateCheckGrid key={`${selected.id}-${gateCheckedAt ?? ""}`} checks={report.checks} t={t} />
+                      <GateCheckGrid
+                        key={`${selected.id}-${gateCheckedAt ?? ""}`}
+                        checks={report.checks}
+                        t={t}
+                        lang={lang}
+                        jobId={selected.id}
+                        fixes={fixes}
+                        fixesError={fixesError}
+                        onFixApplied={handleFixApplied}
+                      />
                     </div>
                   )}
                 </section>

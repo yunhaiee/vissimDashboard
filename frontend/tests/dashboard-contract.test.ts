@@ -3902,3 +3902,276 @@ contractTest("U-19 round 2: one width formula draws width-scaled ribbons in both
     "expected the real-census honesty measurement to be cited in source, not only claimed in a report",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Roadmap B5-2 stage 4 -- the per-finding fix card in the genesis drawer, the
+// human half of "거부는 진단, 에이전트는 치료". Stage 3 (backend, commit 194a2f6)
+// landed GET/POST .../fixes[/apply]; this is the client side of that door.
+// ---------------------------------------------------------------------------
+
+contractTest("B5-2 stage 4: a disposition's own status is not the actionable test", (pin) => {
+  const page = read("app/genesis/page.tsx");
+
+  // THE TRAP: `_render_fix_disposition`'s own docstring (routers/genesis.py)
+  // names "three shapes, never a fourth" -- an AUTOMATABLE-DECLARED mapping
+  // whose builder refused for a STRUCTURAL reason (V6's MEASURED entrance is
+  // the real one) reports status "AUTOMATABLE" with params: null. Gating the
+  // apply button on `status === "AUTOMATABLE"` alone would render an enabled
+  // button over a refusal -- `params !== null` is pinned as the actual test.
+  pin.match(
+    page,
+    /function fixDispositionIsActionable\(disposition: GenesisFixDisposition\): boolean \{\s*\n\s*return disposition\.status === "AUTOMATABLE" && disposition\.params !== null;/,
+    "expected the actionable test to require params !== null, not status alone -- status alone is true for a structural refusal too",
+  );
+  // And the two call sites both go through it -- neither the informational
+  // branch's guard nor FixFindingRow's own `actionable` reinvents the check.
+  pin.match(
+    page,
+    /const actionable = isFirstForCode && fixDispositionIsActionable\(disposition\);/,
+    "expected FixFindingRow's own actionable flag to be derived from the shared test, not a second copy of the params !== null logic",
+  );
+});
+
+contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
+  const page = read("app/genesis/page.tsx");
+
+  // The informational branch -- NOT_AUTOMATABLE, VERB_UNREGISTERED, or an
+  // AUTOMATABLE mapping's structural refusal (see the test above) -- must
+  // carry no <button at all, under ANY spacing or nesting a future edit might
+  // introduce. Sliced to exactly that branch so this cannot pass vacuously
+  // against the button that legitimately exists two branches over.
+  const informationalBranch = sliceBetween(page, "{!actionable ? (", ") : (");
+  pin.match(informationalBranch, /\S/, "expected to find the informational (non-actionable) branch (markers moved?)");
+  pin.doesNotMatch(
+    informationalBranch,
+    /<button/,
+    "expected NO button in the informational branch -- a refusal is information, not a disabled control",
+  );
+  pin.match(
+    informationalBranch,
+    /NEVER a button/,
+    "expected the doctrine comment stating the rule to stay attached to the branch it describes",
+  );
+
+  // The actionable branch is the ONLY place a button may appear, and it is
+  // real, not decorative: disabled by both an in-flight request and any
+  // still-missing required value.
+  const actionableBranch = sliceBetween(page, ") : (\n        <div className=\"mt-2 flex flex-col gap-2\">", "    </div>\n  );\n}");
+  pin.match(actionableBranch, /\S/, "expected to find the actionable branch (markers moved?)");
+  pin.match(actionableBranch, /<button/, "expected the apply button to live in the actionable branch");
+  pin.match(
+    actionableBranch,
+    /disabled=\{applying \|\| missingRequired\}/,
+    "expected the apply button disabled by both an in-flight submit and any unmet required field",
+  );
+});
+
+contractTest("B5-2 stage 4: the requires-gated button and the demand-estimate confidence chip", (pin) => {
+  const page = read("app/genesis/page.tsx");
+
+  // `missingRequired` is computed from EVERY field the backend named in
+  // `disposition.requires`, not a hand-picked subset (e.g. only "volume").
+  pin.match(
+    page,
+    /const missingRequired = disposition\.requires\.some\(\(field\) => !requiredValues\[field\]\?\.trim\(\)\);/,
+    "expected the button's disabled state to be driven by every field in disposition.requires, not a hardcoded field name",
+  );
+
+  // The confidence chip must read visibly different for a demand estimate --
+  // mono + wording (a doubled border + dotted underline, the SAME mono flag
+  // `report.counts.not_checkable` already uses elsewhere on this page), never
+  // a fourth colour. A plain arithmetic/ceiling confidence takes the OTHER
+  // branch of the same ternary, so this is a real branch, not decoration.
+  pin.match(
+    page,
+    /fixIsDemandEstimateFraming\(disposition\)\s*\n\s*\? "border-2 border-slate-400 bg-slate-100 text-slate-900 underline decoration-dotted decoration-slate-400 underline-offset-4"\s*\n\s*: "border-slate-300 bg-white\/\[0\.06\]\s*text-slate-600"/,
+    "expected the confidence chip to visibly branch on the demand-estimate framing, mono + weight only",
+  );
+  pin.doesNotMatch(
+    withoutComments(page),
+    /fixIsDemandEstimateFraming[\s\S]{0,400}(?:bg-amber|bg-emerald-50|bg-rose-50)/,
+    "expected the demand-estimate flag to stay mono -- no fourth colour and no borrowed rose/emerald tint either",
+  );
+
+  // The confidence chip is not fooled by a literal confidence of "NONE": V6's
+  // ask-first shape (no volume supplied yet) reports exactly that, and this
+  // is the function documented to catch it anyway (D4's own doctrine, not
+  // only a literal string match against the confidence field).
+  pin.match(
+    page,
+    /disposition\.confidence === "DEMAND_ESTIMATE_FROM_UNVERIFIED_ENTRANCE" \|\|\s*\n\s*disposition\.assumptions\.includes\("ENTRANCE_NOT_VERIFIED_MEASURED"\) \|\|\s*\n\s*\(disposition\.verb === "set_vehicle_input_volume" && disposition\.reason_code === "EVIDENCE_INSUFFICIENT"\)/,
+    "expected the demand-estimate test to also catch V6's ask-first shape, whose literal confidence is NONE on a GET",
+  );
+});
+
+contractTest("B5-2 stage 4: the inherited-auto-publish disclosure is on every approval card", (pin) => {
+  const page = read("app/genesis/page.tsx");
+  pin.match(
+    page,
+    /승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다 — 통과하면 그 결과가 자동으로 이 프로젝트의 활성 데이터셋으로 등록됩니다/,
+    "expected the one-sentence auto-publish disclosure on the approval card",
+  );
+  pin.match(page, /Approving runs a real Vissim edit and re-gates the network/, "expected the English disclosure sentence");
+  // ONE sentence, not a modal -- no dialog/confirm wrapper introduced for it.
+  pin.doesNotMatch(page, /window\.confirm/, "expected the disclosure to be a sentence on the card, not a confirm() dialog");
+});
+
+contractTest("B5-2 stage 4: the fixes fetch is cached once per (job, verdict), and apply goes through the typed helper", (pin) => {
+  const page = read("app/genesis/page.tsx");
+  const api = read("lib/api.ts");
+
+  // Same discipline as the gate report fetch immediately above it in source,
+  // but WITHOUT `lang` in either the call or the dependency array: the
+  // backend's own rationale already comes back trilingual, so a language
+  // toggle must not trigger a second network round trip the report fetch
+  // needs for a different reason (gate.py renders check titles per-language
+  // server-side).
+  pin.match(
+    page,
+    /fetchGenesisJobFixes\(gatedJobId\)\s*\n\s*\.then\(\(payload\) => \{\s*\n\s*if \(!cancelled\) \{\s*\n\s*setFixesEntry\(\{ jobId: gatedJobId, checkedAt: gateCheckedAt \?\? "", payload \}\);/,
+    "expected the fixes fetch to key its cache entry on (job id, checked_at)",
+  );
+  pin.match(
+    page,
+    /\}, \[gatedJobId, gateCheckedAt\]\);/,
+    "expected the fixes effect's own dependency array to omit `lang` -- one fetch per (job, verdict), not per (job, verdict, language)",
+  );
+  pin.match(
+    api,
+    /export async function fetchGenesisJobFixes\(jobId: string\): Promise<GenesisJobFixes> \{/,
+    "expected the fetch binding to take no language parameter at all",
+  );
+  // The render-side cache key mirrors the fetch key exactly, the same "read
+  // back only when the key still matches" discipline `report` uses.
+  pin.match(
+    page,
+    /fixesEntry && selected && fixesEntry\.jobId === selected\.id && fixesEntry\.checkedAt === \(selected\.gate\?\.checked_at \?\? ""\)/,
+    "expected the displayed fixes payload to be read back only when its cache key still matches the selected job's current verdict",
+  );
+
+  // The apply call goes through the typed helper everywhere -- never a raw
+  // fetch either in the binding itself or at its one call site.
+  pin.match(
+    api,
+    /export async function applyGenesisFix\(\s*\n\s*jobId: string,\s*\n\s*body: \{ finding_code: string; verb: string; params: Record<string, unknown>; approval_rationale\?: string \},\s*\n\s*\): Promise<GenesisJob> \{\s*\n\s*const r = await apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/fixes\/apply`/,
+    "expected applyGenesisFix to go through apiMutationFetch, the same workspace-header-carrying helper every other genesis mutation uses",
+  );
+  const findingRow = sliceBetween(page, "function FixFindingRow({", "\n/**\n * V1–V9 AS A GRID");
+  pin.match(findingRow, /\S/, "expected to find the FixFindingRow body (markers moved?)");
+  pin.match(
+    findingRow,
+    /const job = await applyGenesisFix\(jobId, \{/,
+    "expected the apply click to call the typed helper",
+  );
+  pin.doesNotMatch(
+    findingRow,
+    /\n\s*const r = await fetch\(/,
+    "expected the apply flow never to bypass the typed helper with a raw fetch",
+  );
+});
+
+contractTest("B5-2 stage 4: a fix job's drawer header states its own lineage", (pin) => {
+  const page = read("app/genesis/page.tsx");
+  const api = read("lib/api.ts");
+
+  // key-ABSENT on an ordinary generation (never null) -- the same discipline
+  // `requested_region` already established on this type, pinned the same way.
+  pin.match(
+    api,
+    /export interface GenesisFixLineage \{\s*\n\s*job_id: string;\s*\n\s*finding_code: string;\s*\n\s*verb: string;\s*\n\s*params: Record<string, unknown>;\s*\n\s*approved_by: string \| null;\s*\n\s*approval_rationale: string \| null;\s*\n\s*approved_at: string;\s*\n\s*parent_sha256: string;\s*\n\s*\}/,
+    "expected the GenesisFixLineage type to mirror derived_from's exact backend shape",
+  );
+  pin.match(
+    api,
+    /derived_from\?: GenesisFixLineage;/,
+    "expected GenesisJob.derived_from to be optional (key-absent for an ordinary generation), not nullable",
+  );
+
+  // The drawer header line itself: 파생 — {parent id} · {finding_code} · {approved_by}.
+  pin.match(
+    page,
+    /\{selected\.derived_from && \(/,
+    "expected the lineage line to be gated on derived_from's presence, exactly like an ordinary job renders none",
+  );
+  pin.match(
+    page,
+    /t\("파생", "Derived from", "派生"\)\} — \{selected\.derived_from\.job_id\} ·\{" "\}\s*\n\s*\{selected\.derived_from\.finding_code\} · \{selected\.derived_from\.approved_by \?\? "—"\}/,
+    "expected the lineage line to read parent id, finding_code and approved_by, in that order",
+  );
+
+  // The history table grew NO new column for this -- the drawer carries it.
+  const historyHead = sliceBetween(page, "<thead>", "</thead>");
+  pin.match(historyHead, /\S/, "expected to find the history table's own header row (markers moved?)");
+  pin.doesNotMatch(
+    historyHead,
+    /파생|Derived from/,
+    "expected the history table to grow no lineage column -- the drawer carries it",
+  );
+});
+
+contractTest("B5-2 stage 4: the same-code apply guard is computed job-wide, not per check", (pin) => {
+  const page = read("app/genesis/page.tsx");
+
+  // `POST .../fixes/apply` addresses a finding by CODE ALONE and
+  // `_finding_in_stored_gate` (backend/services/genesis_jobs.py) resolves the
+  // FIRST match in the PARENT's WHOLE stored verdict -- so the guard here
+  // must walk `fixes.findings` (every check's findings, job-wide) rather than
+  // only the currently-selected check's own slice, or a second V6 finding
+  // under a DIFFERENT check id could still collide.
+  pin.match(
+    page,
+    /const firstOccurrenceOfCode = useMemo\(\(\) => \{\s*\n\s*const seen = new Set<string>\(\);\s*\n\s*const map = new Map<string, boolean>\(\);\s*\n\s*for \(const finding of fixes\?\.findings \?\? \[\]\) \{/,
+    "expected the first-occurrence map to walk the WHOLE fixes payload, not a per-check filtered slice",
+  );
+  pin.doesNotMatch(
+    page,
+    /for \(const finding of fixes\?\.findings\.filter\(/,
+    "expected the guard to walk the unfiltered findings list -- filtering to one check_id first would let two same-coded findings under DIFFERENT checks both read as first",
+  );
+  pin.match(
+    page,
+    /isFirstForCode=\{\s*\n\s*firstOccurrenceOfCode\.get\(`\$\{finding\.code\}::\$\{finding\.subject\}`\) \?\? true\s*\n\s*\}/,
+    "expected each rendered finding row to be told whether it is its code's first occurrence",
+  );
+});
+
+contractTest("B5-2 stage 4: the genesis_fix_* refusal codes join the shared headline table", (pin) => {
+  const ui = read("components/genesis/ui.tsx");
+
+  for (const code of [
+    "genesis_fix_unknown_finding",
+    "genesis_fix_verb_mismatch",
+    "genesis_fix_parent_not_refused",
+    "genesis_fix_finding_not_in_parent_verdict",
+    "genesis_fix_params_target_mismatch",
+    "genesis_fix_measurement_gate_not_satisfied",
+    "genesis_fix_verb_no_longer_registered",
+    "genesis_fix_no_gate_verdict",
+  ]) {
+    pin.match(ui, new RegExp(`case "${code}":`), `expected ${code} to have a headline in the shared refusal table`);
+  }
+
+  // D4 speaking verbatim: `genesis_fix_measurement_gate_not_satisfied` must
+  // read as "re-checked against reality", never a generic "request refused"
+  // -- the whole point of carrying the underlying reason through unmodified.
+  pin.match(
+    ui,
+    /case "genesis_fix_measurement_gate_not_satisfied":\s*\n\s*return t\(\s*\n\s*"실제 근거를 다시 확인한 결과, 이 승인은 더 이상 유효하지 않습니다",/,
+    "expected the measurement-gate refusal headline to say evidence was RE-CHECKED, not merely 'refused'",
+  );
+
+  // The error box below the apply button quotes `reasons` verbatim (never a
+  // re-worded backend refusal) -- the same discipline `selected.refusal`
+  // already uses elsewhere on this page.
+  const page = read("app/genesis/page.tsx");
+  pin.match(
+    page,
+    /headline: refusalHeadline\(\s*\n\s*caught\.code,\s*\n\s*t,/,
+    "expected the apply-error box to translate the CODE through refusalHeadline",
+  );
+  pin.match(
+    page,
+    /reasons: caught\.reasons,/,
+    "expected the apply-error box to carry the backend's reasons array through unmodified",
+  );
+});

@@ -389,6 +389,59 @@ export function refusalHeadline(code: string | null, t: Translate, fallback?: st
         "対応表がカウントに存在しない流入路を指定しています",
       );
 
+    // ---- fix approval (app/genesis/page.tsx, roadmap B5-2 stage 4) ----
+    // Two layers, deliberately redundant (routers/genesis.py's own
+    // apply_genesis_fix docstring) -- both can be the code on a refused
+    // POST .../fixes/apply, and both need a headline here.
+    case "genesis_fix_unknown_finding":
+      return t(
+        "이 발견 코드에는 등록된 수정이 없습니다",
+        "No registered fix exists for this finding code",
+        "この発見コードには登録された修正がありません",
+      );
+    case "genesis_fix_verb_mismatch":
+      return t(
+        "이 발견이 제안하는 동사와 다릅니다",
+        "That is not the verb this finding's own mapping names",
+        "この発見が提案する動詞と異なります",
+      );
+    case "genesis_fix_parent_not_refused":
+      return t(
+        "이 생성은 거부 상태가 아닙니다 — 수정은 거부된 생성에만 적용됩니다",
+        "This generation is not refused -- a fix only applies to a refused generation",
+        "この生成は拒否状態ではありません — 修正は拒否された生成にのみ適用されます",
+      );
+    case "genesis_fix_finding_not_in_parent_verdict":
+      return t(
+        "이 발견 코드는 이 생성의 판정에 없습니다",
+        "This finding code does not appear in this generation's own verdict",
+        "この発見コードはこの生成の判定に存在しません",
+      );
+    case "genesis_fix_params_target_mismatch":
+      return t(
+        "제출된 값이 이 발견이 지목한 대상과 다릅니다",
+        "The submitted values address a different object than this finding names",
+        "送信された値はこの発見が指し示す対象と異なります",
+      );
+    case "genesis_fix_measurement_gate_not_satisfied":
+      return t(
+        "실제 근거를 다시 확인한 결과, 이 승인은 더 이상 유효하지 않습니다",
+        "Re-checked against real evidence, this approval no longer holds",
+        "実際の根拠を再確認した結果、この承認はもはや有効ではありません",
+      );
+    case "genesis_fix_verb_no_longer_registered":
+      return t(
+        "이 제안은 그 사이 낡아졌습니다 — 동사 또는 값이 더 이상 등록되어 있지 않습니다",
+        "This proposal has gone stale since it was made -- the verb or its params no longer validate",
+        "この提案はその後古くなりました — 動詞または値がもはや登録されていません",
+      );
+    case "genesis_fix_no_gate_verdict":
+      return t(
+        "이 생성은 아직 게이트를 거치지 않았습니다",
+        "This generation has not been gated yet",
+        "この生成はまだゲートを通過していません",
+      );
+
     default:
       return fallback ?? t("요청이 거부되었습니다", "The request was refused", "要求が拒否されました");
   }

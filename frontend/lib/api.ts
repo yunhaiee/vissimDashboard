@@ -2866,6 +2866,22 @@ export interface GenesisRequestedRegion {
   polygon_vertices: number | null;
 }
 
+/** Present ONLY on a fix job's record (roadmap B5-2, `genesis_jobs.create_genesis_fix_job`'s
+ * own docstring) -- key-ABSENT on an ordinary generation, never `null`, the same
+ * "presence is itself the fact" discipline `requested_region` already established on this
+ * type. `job_id` here is the PARENT this fix job was cloned from -- not to be confused with
+ * `GenesisJob.id`, which is the fix job's own id. */
+export interface GenesisFixLineage {
+  job_id: string;
+  finding_code: string;
+  verb: string;
+  params: Record<string, unknown>;
+  approved_by: string | null;
+  approval_rationale: string | null;
+  approved_at: string;
+  parent_sha256: string;
+}
+
 export interface GenesisJob {
   id: string;
   workspace_id: string;
@@ -2890,6 +2906,8 @@ export interface GenesisJob {
   revocation?: GenesisRevocation | null;
   refusal: { code: string; reasons: string[] } | null;
   error: string | null;
+  /** See `GenesisFixLineage` -- absent means "an ordinary generation", not "unknown". */
+  derived_from?: GenesisFixLineage;
 }
 
 export interface GenesisGateFinding {
@@ -3110,6 +3128,92 @@ export async function fetchGenesisArtifact(
     blob: await r.blob(),
     filename: filenameFromContentDisposition(r.headers.get("content-disposition")) ?? `${jobId}.${kind}`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Roadmap B5-2 stage 4 -- "거부는 진단, 에이전트는 치료" made clickable. The two
+// routes `backend/routers/genesis.py` landed in stage 3 (commit 194a2f6):
+//   GET  /jobs/{id}/fixes        -- the registry's disposition for EVERY
+//                                    finding in the job's STORED gate verdict
+//   POST /jobs/{id}/fixes/apply  -- one approved fix -> a sibling fix job
+// -----------------------------------------------------------------------------
+// `GenesisFixDisposition.status` is a THIRD vocabulary, not `fixes.py`'s tidy
+// two-value AUTOMATABLE/NOT_AUTOMATABLE -- it is whatever
+// `services.agent.fixes` derives live (`VERB_UNREGISTERED` when a mapped verb
+// has since been renamed/retired), so this type keeps it as `string` rather
+// than a closed union the backend could silently outgrow. **The one thing a
+// caller must NOT do is treat `status === "AUTOMATABLE"` as "safe to render an
+// apply button"** -- see `app/genesis/page.tsx`'s `fixDispositionIsActionable`
+// for why (`_render_fix_disposition`'s own docstring, "three shapes, never a
+// fourth": a structural refusal on an AUTOMATABLE-declared mapping — e.g. V6's
+// MEASURED-entrance `INPUT_VOLUME_IS_OBSERVED_DATA` — reports
+// `status: "AUTOMATABLE"` with `params: null`, and `params !== null` is the
+// only field this backend actually uses to mean "there is something to
+// apply").
+
+/** One finding's disposition -- the registry's answer, never re-derived
+ * client-side. `rationale` is ALREADY trilingual (`FixProposal.rationale()`),
+ * so unlike the gate report this needs no `language=` query param and no
+ * re-fetch when the app language toggles. */
+export interface GenesisFixDisposition {
+  status: string;
+  verb: string | null;
+  params: Record<string, unknown> | null;
+  requires: string[];
+  confidence: string;
+  assumptions: string[];
+  rationale: { ko: string; en: string; ja: string };
+  reason_code: string | null;
+}
+
+export interface GenesisFixFinding {
+  /** One of `report.checks[].id` (e.g. "V6") -- the join key back to the
+   * V1-V9 grid's selected cell. */
+  check_id: string;
+  origin: "finding" | "warning";
+  code: string;
+  subject: string;
+  context: Record<string, unknown>;
+  disposition: GenesisFixDisposition;
+}
+
+export interface GenesisJobFixes {
+  job_id: string;
+  status: GenesisJobStatus;
+  verdict: GenesisGateVerdict;
+  /** Deliberately UNCAPPED (routers/genesis.py's own docstring) -- every
+   * finding AND warning in the stored verdict, never truncated. */
+  findings: GenesisFixFinding[];
+  /** The registry's own mirror check: a gate finding code `gate.py` can emit
+   * that this catalogue has no entry for at all. Carried through for
+   * completeness; this page does not currently render it (no selected job's
+   * fix list has ever contained one, and inventing a display for an empty
+   * array to date would be speculative chrome). */
+  unmapped_finding_codes: string[];
+}
+
+export async function fetchGenesisJobFixes(jobId: string): Promise<GenesisJobFixes> {
+  const r = await apiFetch(`/api/genesis/jobs/${jobId}/fixes`, { cache: "no-store" });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** One approved gate-finding fix -> the sibling fix job record (202). The
+ * body's shape mirrors `ApplyGenesisFixRequest` in `routers/genesis.py`
+ * exactly -- `approved_by` has no field here for the same reason it has none
+ * there: the route stamps the signed-in session's own username, so the
+ * client is structurally unable to name a different approver. */
+export async function applyGenesisFix(
+  jobId: string,
+  body: { finding_code: string; verb: string; params: Record<string, unknown>; approval_rationale?: string },
+): Promise<GenesisJob> {
+  const r = await apiMutationFetch(`/api/genesis/jobs/${jobId}/fixes/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
 }
 
 // ---------------------------------------------------------------------------

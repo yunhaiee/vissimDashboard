@@ -6312,3 +6312,30 @@ the gate is wired for real and tested through the same seam discipline as COM. S
 **4635 / 1 (env RAG) / 1 skip** (+65 over the pre-unit baseline across three stages and
 the fix round; counts re-run independently by the orchestrator). Stage 4 (the drawer's
 approval card) follows separately.
+
+**Stage 4 — the approval card (same day).** The drawer's finding rows now carry their
+dispositions. The design rule that mattered: **a refusal is information, not a disabled
+control** — a NOT_AUTOMATABLE finding renders its verbatim rationale + reason code with NO
+button element at all (pinned), because a greyed-out button reads as "someday" when the
+truth is "never, and here is why". Actionable cards show verb, rationale, confidence,
+assumptions, the one-sentence auto-publish disclosure, an optional 사유 field, and ONE
+승인 button — gated closed until every `requires` field (V6's ask-first volume) is
+supplied, with the 수요 추정 framing shown when the confidence says so. Approve → 202 →
+the drawer switches to the sibling job and the existing polling shows the re-gate verdict
+arriving; a fix job's header carries the lineage line (파생 — parent · finding ·
+approver), which matters because fix jobs inherit the parent's name verbatim. The
+builder's own adversarial review caught the round's two real traps before any refuter
+did: the backend's three-shape disposition means a STRUCTURAL REFUSAL can arrive as
+`status: AUTOMATABLE` with `params: null` — actionability therefore gates on `params !==
+null`, pinned; and `POST apply` resolves a finding by CODE to the first match in the
+stored verdict, so a second finding sharing the code renders informationally with a note
+instead of a button that would silently fix the wrong row — a real API addressing
+limitation, named here as a follow-up (address findings by subject, not code, when a
+verdict carries duplicates). Verification honesty: the backend half of this unit got the
+full independent refuter; the UI half got the builder's 8-pin mutation evidence plus the
+orchestrator's spot re-verification — one mutation replayed through the REAL suite (9
+tests failed under it, 76/76 after restore; a crude regex-replay harness had produced two
+false "not caught" verdicts first, and the real-suite replay is what settled it). The
+authenticated click-through (real 승인 click → real sibling → live re-gate) remains
+IMPOSSIBLE for any agent here and is the user's lane, alongside the live COM loop script.
+Final: typecheck clean, contract **76/76** (+8), build passes.
