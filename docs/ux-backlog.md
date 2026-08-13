@@ -127,6 +127,16 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   NAMED QUEUED UNIT from the same review: genesis tile map draws lines only — clickable
   components at 도식 parity = the item-8 shared-preview convergence, deliberately NOT in
   #18's shell scope.
+  **#19 LANDED `4824790` (2026-08-13): the draft preview is clickable and width-true.**
+  Click any link/connector in either genesis renderer → sky selection + detail strip
+  (kind/id/name + the findings referencing it); finding↔map share ONE pinned resolver.
+  Width-scaled ribbons via the schematic viewer's own formula extracted to
+  `lib/roadWidth.ts` (4 consumers, hand-multiplication banned); connector identity =
+  NetworkViewer's real vocabulary (same pavement width + thin dashed centreline, rhythm ≠
+  warn dash). Refuter refuted one blind pin (fixed with a two-pin backstop) and one prose
+  overclaim (SVG fallback ribbons are fit-scale-constant under zoom — now stated).
+  Item 8 residuals that remain OPEN: 변경 비교 as a network-view mode; lane-divider/
+  chevron markings on genesis links; first live click awaits an authenticated session.
   **#18 LANDED `b74f99d` (2026-08-13): variant B is live.** Pipeline sidebar (selector on
   top + ① 네트워크 ② 데이터 ③ 시뮬·보정 ④ 보고서 + unnumbered 관리), route-only stepper
   (mockup's status/done-dot rejected as fabricated progress, pinned absent), item 6
