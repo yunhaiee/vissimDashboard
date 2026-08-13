@@ -206,6 +206,38 @@ def _break_declared_dimension(path: Path) -> None:
     assert patched, "openpyxl no longer writes a <dimension> element — fixture needs updating"
 
 
+def _corrupt_a_row_past_the_header(path: Path) -> None:
+    """Mangle the LAST ``<row>`` element's XML into an unclosed tag.
+
+    Two things read less of the sheet than a full ``parse()`` does, and both
+    must keep working on the result: ``services.observations.stage_workbook``'s
+    upload-time readability check opens the workbook and closes it again
+    without ever reading a row, and this adapter's own ``sniff`` (via
+    ``_peek_header``) reads exactly the FIRST row before it has enough
+    evidence to decide. openpyxl's read-only ``iter_rows`` is a lazy
+    generator, so corrupting only the sheet's LAST row is invisible to both —
+    it only surfaces once something walks the WHOLE sheet, which is exactly
+    what a full ``adapter.parse()`` does. Used by
+    ``tests/test_observations_store.py`` and
+    ``tests/test_observations_endpoint.py`` to reproduce the gap
+    ``services.observations.ingest_observation_set`` closes: a workbook that
+    clears both of those cheaper checks and only fails deep inside the real
+    parse.
+    """
+    with zipfile.ZipFile(path) as archive:
+        members = {info.filename: archive.read(info.filename) for info in archive.infolist()}
+    xml = members["xl/worksheets/sheet1.xml"].decode("utf-8")
+    matches = list(re.finditer(r"<row\b[^>]*>.*?</row>", xml, flags=re.S))
+    assert len(matches) > 3, "fixture bug: expected 3 header rows + at least one data row"
+    last = matches[-1]
+    opening_tag = re.match(r"<row\b[^>]*>", last.group(0)).group(0)
+    mangled = xml[: last.start()] + opening_tag + '<c r="UNCLOSED' + xml[last.end() :]
+    members["xl/worksheets/sheet1.xml"] = mangled.encode("utf-8")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+
+
 @pytest.fixture()
 def adapter() -> DaejeonCountAdapter:
     return DaejeonCountAdapter()

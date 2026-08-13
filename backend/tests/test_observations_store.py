@@ -43,6 +43,7 @@ from tests.test_dataimport_daejeon import (
     QUARTER,
     WEDNESDAY,
     _approach_rows,
+    _corrupt_a_row_past_the_header,
     _file_name,
     _write_workbook,
 )
@@ -296,6 +297,39 @@ def test_an_adapter_refusal_also_stores_nothing(workspace_root: Path, tmp_path: 
 
     assert "daejeon_site_identity_unavailable" in excinfo.value.to_dict()["gate"]["codes"]
     assert observations.list_observation_sets() == []
+
+
+def test_a_workbook_that_only_fails_during_the_full_parse_is_refused_not_a_raw_exception(
+    workspace_root: Path, tmp_path: Path
+):
+    """Regression: ``ingest_observation_set`` used to call ``adapter.parse``
+    with no ``try``/``except`` at all. A workbook that opens fine (what
+    ``stage_workbook``'s upload-time check proves) and sniffs fine (an
+    adapter's ``sniff`` reads far less of the file than a full parse does —
+    ``_peek_header`` reads exactly the first row) but is corrupt deeper in
+    used to escape ``ingest_observation_set`` as a raw ``AdapterError``
+    instead of the ``ObservationRefusal`` every other unreadable-input path
+    in this module produces. Mirrors ``services.genesis_jobs.stage_counts``'s
+    ``AdapterError`` -> refusal mapping for the same adapter contract.
+    """
+    path = _one_site_workbook(tmp_path)
+    _corrupt_a_row_past_the_header(path)
+
+    with pytest.raises(observations.ObservationRefusal) as excinfo:
+        _ingest([path])
+
+    refusal = excinfo.value
+    assert refusal.code == "observation_workbook_unreadable"
+    assert refusal.status == 400
+    body = refusal.to_dict()
+    assert body["stored"] is False
+    assert set(body["message"]) == {"ko", "en", "ja"}
+    # The underlying AdapterError's own text is carried, not swallowed.
+    assert "could not be read as a worksheet" in body["message"]["en"]
+    assert path.name in body["message"]["en"]
+
+    assert observations.list_observation_sets() == []
+    assert not observations.registry_path().exists()
 
 
 def test_declaring_no_period_is_refused_rather_than_guessed(workspace_root: Path, tmp_path: Path):

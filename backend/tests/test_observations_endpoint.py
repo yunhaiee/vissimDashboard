@@ -24,7 +24,13 @@ from fastapi.testclient import TestClient
 
 import main
 from services import observations, workspaces
-from tests.test_dataimport_daejeon import WEDNESDAY, _approach_rows, _file_name, _write_workbook
+from tests.test_dataimport_daejeon import (
+    WEDNESDAY,
+    _approach_rows,
+    _corrupt_a_row_past_the_header,
+    _file_name,
+    _write_workbook,
+)
 
 AM = {
     "name": "AM",
@@ -209,6 +215,39 @@ def test_a_gate_refusal_is_a_422_carrying_the_gate_and_stores_nothing(
     assert "MRWA" in finding["citation"]
     assert finding["context"]["required_h"] == 3.0
     assert finding["subject"]
+
+    assert client.get("/api/observations").json()["sets"] == []
+
+
+def test_a_workbook_unreadable_only_during_the_full_parse_is_a_4xx_not_a_500(
+    client: TestClient, tmp_path: Path
+):
+    """Regression: ``ingest_observation_set`` used to call ``adapter.parse``
+    with no try/except at all, so a workbook that opens fine at upload time
+    (``stage_workbook``'s readability check opens the workbook and closes it
+    again, without ever reading a row) and sniffs fine (an adapter's
+    ``sniff`` reads far less than a full parse -- this one only the first
+    row) but is corrupt deeper in used to escape THIS endpoint as an
+    unhandled 500 instead of the same kind of 4xx refusal every other
+    unreadable-input path here already answers with.
+    """
+    path = _workbook(tmp_path)
+    _corrupt_a_row_past_the_header(path)
+    token = _upload(client, path)  # succeeds -- the upload-time check never reads a row
+
+    response = client.post(
+        "/api/observations/ingest",
+        json={"name": "손상된 워크북", "upload_tokens": [token], "periods": [AM]},
+    )
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert detail["stored"] is False
+    assert detail["reason_code"] == "observation_workbook_unreadable"
+    assert set(detail["message"]) == {"ko", "en", "ja"}
+    # The underlying AdapterError's own text is carried, not swallowed.
+    assert "could not be read as a worksheet" in detail["message"]["en"]
+    assert path.name in detail["message"]["en"]
 
     assert client.get("/api/observations").json()["sets"] == []
 

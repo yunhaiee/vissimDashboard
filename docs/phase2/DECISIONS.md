@@ -5954,3 +5954,13 @@ existed to refuse hostile files was crashing on a benign one. Fixed by catching 
 `AdapterError` at all (any corrupt workbook there — bomb or otherwise — is a raw 500 where
 genesis's `stage_counts` refuses by name); queued as its own unit rather than smuggled in.
 Suite **4529 / 1 (env RAG) / 1 skip** (+34 across the unit).
+
+**The split-out unit landed the same day (user-directed):** `ingest_observation_set` now
+refuses `observation_workbook_unreadable` (400, ko/en/ja, the AdapterError's text carried)
+mirroring `stage_counts`; its docstring states WHY the case is reachable — `sniff()` reads
+one row and the upload-time check only opens and closes, so a workbook corrupt past its
+header clears both and fails only when the full parse walks every row. The regression
+fixture proves exactly that shape (last-row XML mangling invisible to both pre-checks; the
+endpoint test uploads it with a 200 first, then asserts the ingest 400). The only other
+adapter call in the chain (`select_adapter`) is safe by construction — every `sniff()`
+exception scores 0.0 and cannot propagate. Suite **4531 / 1 (env RAG) / 1 skip** (+2).

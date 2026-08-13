@@ -83,6 +83,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from services import workspaces
 from services.dataimport import (
+    AdapterError,
     DataAdapter,
     ImportIssue,
     ImportResult,
@@ -749,7 +750,15 @@ def ingest_observation_set(
     Raises:
         ObservationRefusal: nothing was stored. ``code`` says why; the
             ``detail`` carries the gate report when the refusal came from a
-            REFUSE-tier finding.
+            REFUSE-tier finding. Also raised (as ``observation_workbook_unreadable``)
+            when a staged workbook that opened fine at upload time and sniffed
+            fine (an adapter's ``sniff`` only reads enough to score confidence,
+            never the whole file) turns out unreadable once ``adapter.parse``
+            walks every row — a corrupt/truncated body deeper in the file, or
+            the xlsx decompression-bomb guard tripping mid-parse
+            (``services/dataimport/xlsx_guard.py``). Mirrors
+            ``services.genesis_jobs.stage_counts``'s ``AdapterError`` ->
+            refusal mapping for the same adapter contract.
     """
     cleaned_name = (name or "").strip()
     if not cleaned_name:
@@ -802,7 +811,30 @@ def ingest_observation_set(
     source_files: list[str] = []
 
     for path in sorted(paths, key=lambda item: item.name):
-        result: ImportResult | None = apply_quality_gate(adapter.parse([path]), thresholds)
+        try:
+            parsed = adapter.parse([path])
+        except AdapterError as exc:
+            # The adapter's contract (services/dataimport/base.py) reserves
+            # AdapterError for "unreadable at all" -- not a data-quality
+            # finding, which would come back as a REFUSE-tier ImportIssue
+            # instead and be handled by the gate branch below. Both
+            # sniff() (adapter selection, above) and stage_workbook()'s
+            # upload-time open check read far less of the file than a full
+            # parse() does, so a workbook that cleared both can still fail
+            # here -- same gap services.genesis_jobs.stage_counts already
+            # closes for the genesis intake path; this mirrors it so the two
+            # intake paths refuse the same way instead of one of them 500ing.
+            raise ObservationRefusal(
+                "observation_workbook_unreadable",
+                {
+                    "ko": f"'{path.name}'을(를) 읽을 수 없습니다: {exc}",
+                    "en": f"{path.name!r} could not be read: {exc}",
+                    "ja": f"'{path.name}' を読み込めませんでした: {exc}",
+                },
+                status=400,
+                detail={"filename": path.name, "adapter": _adapter_payload(adapter)},
+            ) from exc
+        result: ImportResult | None = apply_quality_gate(parsed, thresholds)
         issues.extend(result.issues)
         source_files.extend(result.source_files or [path.name])
         for site in result.sites:
