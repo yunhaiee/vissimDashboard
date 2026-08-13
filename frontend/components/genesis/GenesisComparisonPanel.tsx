@@ -56,7 +56,7 @@ function stateLabel(state: GenesisCheckDelta["baseState"], t: Translate): string
 function stateColor(state: GenesisCheckDelta["baseState"]): string {
   if (state === "pass") return "text-emerald-700";
   if (state === "fail") return "text-rose-700";
-  if (state === "not_checkable") return "text-amber-700";
+  if (state === "not_checkable") return "text-slate-900 underline decoration-dotted underline-offset-2";
   return "text-slate-400";
 }
 
@@ -98,7 +98,7 @@ function excludedZoneCountOrNull(result: ExcludedZoneResult | null): number | nu
   return result?.status === "ok" ? result.count : null;
 }
 
-/** Same naming pattern as `GateFindingsMap`'s `loadError` -- "—" for a
+/** Same naming pattern as `GenesisTileMap`'s `loadError` -- "—" for a
  * genuine absence, a distinct marker for a fetch that failed outright. */
 function excludedZoneDisplay(result: ExcludedZoneResult | null, t: Translate): string {
   if (!result || result.status === "no_artifact") return "—";
@@ -201,30 +201,25 @@ export default function GenesisComparisonPanel({
   }, [priorReport, currentReport]);
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-surface/90 px-3.5 py-3">
-      {/* U-1-quick #3: the SCOPE sentence stays here -- this panel is still its
-        * one and only source, which is what the U-1 contract test pins -- but
-        * it stopped being a permanent second line under the title and became
-        * the ⓘ beside it. It is a limit on what the comparison claims, so it
-        * has to remain reachable from the panel it limits and it stays here
-        * verbatim; it is not a limit a reader needs restated on every visit. */}
-      <p className="text-xs font-bold text-slate-900">
-        {t("이전 생성과 비교", "Compare with a previous generation", "以前の生成と比較")}
-        <InfoTip
-          text={t(
-            "게이트 판정과 개수만 비교합니다 — 네트워크 기하 자체의 차이는 비교하지 않습니다.",
-            "Compares gate results and counts only -- it does not diff the networks' geometry itself.",
-            "ゲート判定と件数のみを比較します — ネットワークの形状自体の差分は比較しません。",
-          )}
-        />
-      </p>
-
+    /* ONE TITLE, ONE CONTROL, RESULTS — docs/ux-backlog.md, SECOND ELABORATION
+     * item 9. This used to be a card (border + fill) drawn INSIDE the page's
+     * own card, carrying a heading ("이전 생성과 비교") that meant the same
+     * thing as the section heading directly above it, above a picker labelled
+     * a third time. Three boxes and three titles for one control.
+     *
+     * The card and the heading are both gone: the caller supplies the section
+     * title, this component supplies the picker and the table. The SCOPE
+     * sentence — the limit on what this comparison claims — is NOT gone; it
+     * moved onto the picker's own label, which is the one place it is on
+     * screen exactly when a comparison is being made. This panel remains its
+     * single source (the U-1 contract test pins that), and it stays verbatim. */
+    <div>
       {!currentJob.gate ? (
         // Named, not blank: a queued/running job (or one that errored before a
         // network existed) never gets a gate report AT ALL -- `page.tsx` mounts
         // this panel on `selected` alone, so without this branch the spinner
         // above simply ends and nothing renders where a comparison would go.
-        <p className="mt-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center text-[11px] text-slate-500">
+        <p className="mt-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center text-[13px] text-slate-500">
           {t(
             "이 생성에는 아직 게이트 결과가 없어 비교할 수 없습니다.",
             "This generation has no gate result yet, so it cannot be compared.",
@@ -236,7 +231,7 @@ export default function GenesisComparisonPanel({
         // this branch the failure collapses into the loading message below and
         // reads as pending forever. Same three-state honesty as
         // `ExcludedZoneResult`, applied to the current report itself.
-        <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+        <p className="mt-2 rounded-lg border-2 border-slate-400 bg-slate-100 px-3 py-2 text-[13px] text-slate-900">
           {t(
             "현재 생성의 게이트 결과를 불러오지 못해 비교할 수 없습니다",
             "Could not load this generation's gate result, so it cannot be compared",
@@ -248,7 +243,7 @@ export default function GenesisComparisonPanel({
         // The job DOES have a gate -- `page.tsx` is still fetching its stored
         // report (`fetchGenesisGateReport`). Transient, but named rather than
         // silent so it never reads as "this feature is broken".
-        <p className="mt-2 text-[11px] text-slate-500">
+        <p className="mt-2 text-[13px] text-slate-500">
           {t(
             "현재 생성의 게이트 결과를 불러오는 중…",
             "Loading the current generation's gate result…",
@@ -256,13 +251,22 @@ export default function GenesisComparisonPanel({
           )}
         </p>
       ) : candidates.length === 0 ? (
-        <p className="mt-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center text-[11px] text-slate-500">
+        <p className="mt-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center text-[13px] text-slate-500">
           {t("비교할 이전 생성이 없습니다.", "There is no earlier generation to compare against.", "比較できる以前の生成がありません。")}
         </p>
       ) : (
-        <div className="mt-2">
-          <label className="flex flex-col gap-1 text-[11px] text-slate-600">
-            {t("비교할 이전 생성", "Generation to compare against", "比較する以前の生成")}
+        <div>
+          <label className="flex flex-col gap-1 text-[13px] text-slate-600">
+            <span>
+              {t("비교할 이전 생성", "Generation to compare against", "比較する以前の生成")}
+              <InfoTip
+                text={t(
+                  "게이트 판정과 개수만 비교합니다 — 네트워크 기하 자체의 차이는 비교하지 않습니다.",
+                  "Compares gate results and counts only -- it does not diff the networks' geometry itself.",
+                  "ゲート判定と件数のみを比較します — ネットワークの形状自体の差分は比較しません。",
+                )}
+              />
+            </span>
             <select
               value={priorId}
               onChange={(event) => setPriorId(event.target.value)}
@@ -278,10 +282,10 @@ export default function GenesisComparisonPanel({
           </label>
 
           {loading && (
-            <p className="mt-2 text-[11px] text-slate-500">{t("비교하는 중…", "Comparing…", "比較中…")}</p>
+            <p className="mt-2 text-[13px] text-slate-500">{t("비교하는 중…", "Comparing…", "比較中…")}</p>
           )}
           {error && (
-            <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+            <p className="mt-2 rounded-lg border-2 border-slate-400 bg-slate-100 px-3 py-2 text-[13px] text-slate-900">
               {error}
             </p>
           )}
@@ -289,7 +293,7 @@ export default function GenesisComparisonPanel({
           {!loading && !error && priorJob && priorReport && currentReport && (
             <>
               <div className="mt-3 overflow-x-auto">
-                <table className="w-full min-w-[720px] border-collapse text-[11px]">
+                <table className="w-full min-w-[720px] border-collapse text-[13px]">
                   <thead>
                     <tr className="border-b border-slate-200 text-left text-slate-500">
                       <th className="py-1 pr-2 font-semibold">{t("검사", "Check", "検査")}</th>
@@ -309,7 +313,7 @@ export default function GenesisComparisonPanel({
                   </thead>
                   <tbody>
                     {deltas.map((delta) => (
-                      <tr key={delta.id} className={`border-b border-slate-100 ${delta.stateChanged ? "bg-amber-50/60" : ""}`}>
+                      <tr key={delta.id} className={`border-b border-slate-100 ${delta.stateChanged ? "bg-slate-100" : ""}`}>
                         <td className="py-1.5 pr-2">
                           <span className="font-mono font-bold">{delta.id}</span>
                           <span className="ml-1 text-slate-500">{checkTitles[delta.id] ?? ""}</span>
@@ -326,10 +330,10 @@ export default function GenesisComparisonPanel({
                           {delta.removed.length > 0 ? `-${delta.removed.length}` : "0"}
                         </td>
                         <td className="py-1.5 pr-2 text-slate-500">{delta.unchangedCount}</td>
-                        <td className="py-1.5 pr-2 text-amber-700">
+                        <td className="py-1.5 pr-2 text-slate-700">
                           {delta.addedWarnings.length > 0 ? `+${delta.addedWarnings.length}` : "0"}
                         </td>
-                        <td className="py-1.5 pr-2 text-amber-700">
+                        <td className="py-1.5 pr-2 text-slate-700">
                           {delta.removedWarnings.length > 0 ? `-${delta.removedWarnings.length}` : "0"}
                         </td>
                       </tr>
@@ -338,7 +342,7 @@ export default function GenesisComparisonPanel({
                 </table>
               </div>
               {deltas.some((d) => d.baseFindingsOmitted > 0 || d.targetFindingsOmitted > 0 || d.baseWarningsOmitted > 0 || d.targetWarningsOmitted > 0) && (
-                <p className="mt-1.5 text-[10px] text-amber-700">
+                <p className="mt-1.5 text-[12px] text-slate-900">
                   {t(
                     "한쪽 이상의 게이트 결과가 표시 항목을 잘랐습니다 — 위 추가/제거 수는 하한값입니다.",
                     "At least one side's gate result truncated the findings it shipped -- the added/removed counts above are a lower bound.",
@@ -347,7 +351,7 @@ export default function GenesisComparisonPanel({
                 </p>
               )}
               {deltas.some((d) => d.duplicateKeysPresent) && (
-                <p className="mt-1 text-[10px] text-slate-500">
+                <p className="mt-1 text-[12px] text-slate-500">
                   {t(
                     "일부 검사에서 코드+대상이 같은 항목이 여러 번 나타났습니다 — 위 추가/제거 수는 그 중복 횟수까지 반영한 값입니다.",
                     "At least one check repeated the same code+subject more than once -- the added/removed counts above already account for those repeats.",
@@ -360,7 +364,7 @@ export default function GenesisComparisonPanel({
                 <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {statDeltas.map((stat) => (
                     <div key={stat.label} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-center">
-                      <p className="text-[10px] text-slate-500">{statLabel(stat.label, t)}</p>
+                      <p className="text-[12px] text-slate-500">{statLabel(stat.label, t)}</p>
                       <p className="mt-0.5 text-xs font-bold text-slate-800">
                         {stat.label === "excluded_zones"
                           ? excludedZoneDisplay(excludedZoneResults?.prior ?? null, t)

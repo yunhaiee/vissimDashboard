@@ -81,13 +81,14 @@ from typing import Any, Literal
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from routers.auth import current_user
 from routers.datasets import MAX_UPLOAD_BYTES, _TOO_LARGE_DETAIL, _reject_oversized_body
 from services import genesis_jobs, osm_fetch
 from services.datasets import DatasetStorageError
+from services.genesis import geojson as genesis_geojson
 from services.genesis import phase_diagram, side_inputs
 
 logger = logging.getLogger(__name__)
@@ -776,6 +777,66 @@ def get_gate_report(job_id: str, request: Request):
             status_code=409,
             detail=f"The stored gate result could not be read. [{type(exc).__name__}: {exc}]",
         ) from exc
+
+
+@router.get("/jobs/{job_id}/artifact/geojson")
+def get_artifact_geojson(job_id: str, user: dict[str, Any] = Depends(current_user)):
+    """This generation's draft network as WGS84 GeoJSON — links and connectors.
+
+    U-1-map (docs/ux-backlog.md item #1). The findings map used to draw the
+    draft's raw local metres into a bare SVG with no basemap. This route hands
+    it degrees instead, converted SERVER-SIDE by
+    ``services.genesis.geojson.draft_to_geojson`` on the very plane the draft
+    was built on (``metadata.projection``'s recorded origin, inverted through
+    ``services.genesis.project.LocalTangentPlane.inverse``, which is the exact
+    algebraic inverse of the forward that made those metres).
+
+    **Declared ABOVE ``download_artifact``, and it has to be.** That route's
+    path is ``/artifact/{kind}`` and FastAPI matches in declaration order, so
+    with this one second every request here would fall through to it and 404 on
+    an unknown kind. This is deliberately not a sixth entry in
+    ``_ARTIFACT_MEDIA_TYPES`` either: those kinds resolve to a FILE this job
+    wrote, and no file on disk holds this payload — it is computed per request.
+
+    Authenticated for exactly the reason ``download_artifact`` is: this is the
+    network's geometry, and the adversarial case there (an anonymous caller
+    laundering a refused network back in through the un-gated upload path)
+    applies to degrees as much as to metres. Workspace scoping is
+    ``genesis_jobs.artifact_path``'s: another project's job is a 404, never a
+    peek.
+
+    ``no-store``, because a re-gate can revoke a publication while the job id
+    stays put and a cached network under a superseded verdict is the one thing
+    this screen must not show.
+    """
+    try:
+        path = genesis_jobs.artifact_path(job_id, "genesis_json")
+    except genesis_jobs.GenesisJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    import json as _json
+
+    try:
+        draft = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This generation's draft could not be read. [{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+
+    try:
+        payload = genesis_geojson.draft_to_geojson(draft)
+    except genesis_geojson.DraftGeoJsonRefused as exc:
+        # 409, not 404: the artifact EXISTS and was read — what it does not
+        # carry is the recorded origin, which is a different answer from "no
+        # such generation" and calls for a different sentence on screen.
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "reasons": [exc.reason]}
+        ) from exc
+
+    return JSONResponse(content=payload, headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/jobs/{job_id}/artifact/{kind}")

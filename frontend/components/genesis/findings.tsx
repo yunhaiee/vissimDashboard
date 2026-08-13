@@ -1,0 +1,384 @@
+"use client";
+
+// U-1-map (docs/ux-backlog.md, the user's detailed elaboration item #1) — the
+// half of the findings map that is NOT a renderer.
+//
+// WHY THIS FILE EXISTS. The gate's findings now have TWO renderers: a real
+// basemap (`GenesisTileMap`, leaflet + CARTO over the server-computed WGS84
+// GeoJSON) and the original local-coordinates SVG (`DraftLocalMap`), which
+// survives as the honest fallback for a generation whose draft carries no
+// recorded projection origin. Everything below is what both of them agree on —
+// which finding touches which link, which colour a tier is drawn in, and what a
+// click SAYS — because two copies of that is two answers to "why is this link
+// red", and this product's whole claim is that there is one.
+//
+// The id-resolution itself is NOT here: it lives in lib/genesisArtifacts.ts's
+// `resolveFindingHighlight`, whose doc comment carries the measured inventory of
+// which gate finding codes actually carry a link/connector id. This file only
+// collects and groups what that function returns.
+
+import type { GenesisGateCheck, GenesisGateFinding, GenesisGateReport } from "@/lib/api";
+import {
+  resolveFindingHighlight,
+  type GenesisDraftNetwork,
+  type GenesisFindingHighlight,
+  type GenesisIsolatedZone,
+} from "@/lib/genesisArtifacts";
+
+export type Translate = (ko: string, en: string, ja: string) => string;
+
+// THE DRAWING VOCABULARY, named once so a refuse-tier finding cannot be rose in
+// one renderer and red in the other.
+//
+// THREE COLOURS ONLY (user decision, 2026-08-13): rose = refuse, sky =
+// selection, and neutral for everything else. The warn tier used to be amber
+// (#d97706) and is now near-white INK — it is told apart from an ordinary link
+// by WEIGHT and by a DASH pattern, not by a fourth hue. That is a stronger
+// signal than the amber was on this theme, not a weaker one: globals.css
+// remaps the whole amber family to neutral anyway, so the old warn stroke was
+// already rendering grey at ordinary weight.
+export const NORMAL_LINK = "#c7cfdb";
+export const NORMAL_CONNECTOR = "#dbe1ea";
+export const REFUSE_COLOR = "#e11d48"; // rose-600, this app's existing "fail" convention
+export const WARN_COLOR = "#fafaf9";
+export const SELECTED_COLOR = "#0ea5e9"; // sky-500, reserved for the clicked element
+
+/** The warn tier's dash, in SVG/leaflet's shared `stroke-dasharray` form. What
+ * carries "warn" once the hue is gone, so both renderers must use it. */
+export const WARN_DASH = "7 5";
+
+export type FindingRef = {
+  checkId: string;
+  checkTitle: string;
+  tier: GenesisGateCheck["tier"];
+  finding: GenesisGateFinding;
+  via: "finding" | "warning";
+};
+
+// A clicked link/connector can carry MORE THAN ONE finding -- V4's lane checks
+// alone can put three separate findings on one connector. `refs` therefore
+// carries every finding for the clicked element, never just the first; the
+// detail panel lists all of them rather than silently dropping the rest.
+export type SelectedItem =
+  | { kind: "finding"; refs: FindingRef[] }
+  | { kind: "excluded_zone"; zone: GenesisIsolatedZone }
+  | null;
+
+export interface HighlightSets {
+  refuseLinks: Set<number>;
+  warnLinks: Set<number>;
+  refuseConnectors: Set<number>;
+  warnConnectors: Set<number>;
+  byLink: Map<number, FindingRef[]>;
+  byConnector: Map<number, FindingRef[]>;
+  unresolved: FindingRef[];
+}
+
+export function collectFindingRefs(report: GenesisGateReport): FindingRef[] {
+  const refs: FindingRef[] = [];
+  for (const check of report.checks) {
+    for (const finding of check.findings) {
+      refs.push({ checkId: check.id, checkTitle: check.title, tier: check.tier, finding, via: "finding" });
+    }
+    for (const warning of check.warnings) {
+      refs.push({ checkId: check.id, checkTitle: check.title, tier: check.tier, finding: warning, via: "warning" });
+    }
+  }
+  return refs;
+}
+
+/** Highlight sets, one pass over every finding: which links/connectors carry a
+ * refuse-tier finding, which carry a warn-tier one, and which findings resolved
+ * to nothing at all. A link touched by both a refuse and a warn finding is
+ * drawn refuse -- the stronger claim wins the pixel. `byLink`/`byConnector`
+ * collect EVERY finding touching one element (not just the first) -- a click
+ * surfaces the whole list, see `FindingsDetailPanel`. */
+export function buildHighlights(
+  findingRefs: FindingRef[],
+  network: GenesisDraftNetwork | null,
+): HighlightSets {
+  const refuseLinks = new Set<number>();
+  const warnLinks = new Set<number>();
+  const refuseConnectors = new Set<number>();
+  const warnConnectors = new Set<number>();
+  const byLink = new Map<number, FindingRef[]>();
+  const byConnector = new Map<number, FindingRef[]>();
+  const unresolved: FindingRef[] = [];
+  if (network) {
+    for (const ref of findingRefs) {
+      const highlight = resolveFindingHighlight(ref.finding, network);
+      if (!highlight.resolved) {
+        unresolved.push(ref);
+        continue;
+      }
+      const isRefuse = ref.tier === "refuse";
+      for (const linkId of highlight.linkIds) {
+        (isRefuse ? refuseLinks : warnLinks).add(linkId);
+        if (!byLink.has(linkId)) byLink.set(linkId, []);
+        byLink.get(linkId)!.push(ref);
+      }
+      for (const connectorId of highlight.connectorIds) {
+        (isRefuse ? refuseConnectors : warnConnectors).add(connectorId);
+        if (!byConnector.has(connectorId)) byConnector.set(connectorId, []);
+        byConnector.get(connectorId)!.push(ref);
+      }
+    }
+  }
+  return { refuseLinks, warnLinks, refuseConnectors, warnConnectors, byLink, byConnector, unresolved };
+}
+
+/** The currently-selected finding(s), as one highlight to redraw on top in the
+ * selected colour. Unions every selected finding's own highlight (not just the
+ * first) since two findings on the same clicked element are not guaranteed to
+ * resolve to the same zone. */
+export function selectedHighlightOf(
+  selected: SelectedItem,
+  network: GenesisDraftNetwork | null,
+): GenesisFindingHighlight | null {
+  if (!network || selected?.kind !== "finding") return null;
+  const linkIds = new Set<number>();
+  const connectorIds = new Set<number>();
+  for (const ref of selected.refs) {
+    const highlight = resolveFindingHighlight(ref.finding, network);
+    for (const linkId of highlight.linkIds) linkIds.add(linkId);
+    for (const connectorId of highlight.connectorIds) connectorIds.add(connectorId);
+  }
+  return { linkIds: [...linkIds], connectorIds: [...connectorIds], resolved: true };
+}
+
+export function EmptyState({ text }: { text: string }) {
+  return (
+    <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-[13px] text-slate-500">
+      {text}
+    </p>
+  );
+}
+
+export function LegendToggle({
+  color,
+  label,
+  checked,
+  dashed = false,
+  onChange,
+}: {
+  color: string;
+  label: string;
+  checked: boolean;
+  /** Draw the swatch as a DASHED bar rather than a dot. The warn tier is mono
+   * now, so a round swatch in near-white would be indistinguishable from the
+   * normal-link swatch — the legend has to show the same distinction the map
+   * draws, or it stops being a legend. */
+  dashed?: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center gap-1.5">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      {dashed ? (
+        <svg width="16" height="10" viewBox="0 0 16 10" aria-hidden="true">
+          <line
+            x1="0"
+            y1="5"
+            x2="16"
+            y2="5"
+            stroke={color}
+            strokeWidth="3"
+            strokeDasharray={WARN_DASH}
+          />
+        </svg>
+      ) : (
+        <span
+          className="inline-block h-2.5 w-2.5 rounded-full"
+          style={{ backgroundColor: color }}
+          aria-hidden="true"
+        />
+      )}
+      {label}
+    </label>
+  );
+}
+
+/**
+ * WHAT A CLICK SAYS — one panel, shared by both renderers.
+ *
+ * Three sections, and the last two are DOCTRINE rather than decoration:
+ *   * the clicked element's findings, ALL of them;
+ *   * 제외된 구역 — the zones `build_draft` removed, listed BY NAME with no
+ *     map position, because they were excluded before the final coordinates
+ *     were fixed and no honest pin exists for them (lib/genesisArtifacts.ts's
+ *     header comment carries the mechanism);
+ *   * the findings whose subject resolved to no geometry at all, also listed by
+ *     name. Neither list may be dropped when the renderer changes: a map that
+ *     silently omits what it cannot draw is the exact failure this product
+ *     refuses.
+ *
+ * Type sizes follow the Console pass (U-1 second elaboration item 13): body
+ * 13px, secondary 12px muted, nothing smaller.
+ */
+export function FindingsDetailPanel({
+  selected,
+  onClear,
+  unresolved,
+  unresolvedCount,
+  onSelectUnresolved,
+  excludedZones,
+  onSelectExcludedZone,
+  t,
+}: {
+  selected: SelectedItem;
+  onClear: () => void;
+  unresolved: FindingRef[];
+  unresolvedCount: number;
+  onSelectUnresolved: (ref: FindingRef) => void;
+  excludedZones: GenesisIsolatedZone[];
+  onSelectExcludedZone: (zone: GenesisIsolatedZone) => void;
+  t: Translate;
+}) {
+  return (
+    <div className="flex w-full flex-col gap-2">
+      <div className="min-h-[140px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-[13px] text-slate-700">
+        {!selected && (
+          <p className="text-[12px] text-slate-500">
+            {t(
+              "표시된 링크를 클릭하면 해당 발견의 상세 정보가 여기 나타납니다.",
+              "Click a highlighted link to see that finding's detail here.",
+              "強調表示されたリンクをクリックすると、この発見の詳細がここに表示されます。",
+            )}
+          </p>
+        )}
+        {selected?.kind === "finding" && (
+          <>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] font-bold uppercase text-slate-500">
+                {selected.refs.length > 1
+                  ? t(
+                      `이 요소의 발견 ${selected.refs.length}건`,
+                      `${selected.refs.length} findings on this element`,
+                      `この要素の発見 ${selected.refs.length} 件`,
+                    )
+                  : t("이 요소의 발견", "Finding on this element", "この要素の発見")}
+              </span>
+              <button type="button" onClick={onClear} className="text-[12px] text-slate-500">
+                {t("닫기", "Close", "閉じる")}
+              </button>
+            </div>
+            {/* EVERY finding on the clicked element, not just the first --
+              * one connector can carry three separate V4 findings at once,
+              * and collapsing them to one used to make the other two
+              * invisible without any sign they existed. */}
+            <ul className="mt-1.5 space-y-2">
+              {selected.refs.map((ref, index) => (
+                <li
+                  key={`${ref.checkId}-${ref.finding.code}-${index}`}
+                  className={index > 0 ? "border-t border-slate-200 pt-1.5" : undefined}
+                >
+                  <span
+                    className={`rounded-full border px-1.5 py-0.5 text-[12px] font-bold uppercase ${
+                      ref.tier === "refuse"
+                        ? "border-rose-300 bg-rose-50 text-rose-800"
+                        : "border-2 border-slate-400 bg-slate-100 text-slate-900"
+                    }`}
+                  >
+                    {ref.checkId} · {ref.tier === "refuse" ? t("거부 등급", "refuse", "拒否") : t("경고 등급", "warn", "警告")}
+                  </span>
+                  <p className="mt-1 font-semibold text-slate-800">{ref.checkTitle}</p>
+                  <p className="mt-0.5 font-mono text-[12px] text-slate-500">{ref.finding.code}</p>
+                  <p className="mt-0.5 text-[12px] text-slate-500">{ref.finding.subject}</p>
+                  <p className="mt-1 leading-relaxed">{ref.finding.message}</p>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        {selected?.kind === "excluded_zone" && (
+          <>
+            <div className="flex items-center justify-between">
+              <span className="rounded-full border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[12px] font-bold uppercase text-slate-700">
+                {t("제외된 구역", "Excluded zone", "除外されたゾーン")}
+              </span>
+              <button type="button" onClick={onClear} className="text-[12px] text-slate-500">
+                {t("닫기", "Close", "閉じる")}
+              </button>
+            </div>
+            <p className="mt-1.5 font-semibold text-slate-800">{selected.zone.representative}</p>
+            <p className="mt-1 font-mono text-[12px] text-slate-500">{selected.zone.reason}</p>
+            <p className="mt-1 leading-relaxed">{selected.zone.detail}</p>
+            <p className="mt-1.5">
+              {t("링크", "Links", "リンク")} {selected.zone.links} · {t("OSM way", "OSM ways", "OSM way")} {selected.zone.ways}
+            </p>
+            <p className="mt-1">{selected.zone.street_names.join(", ")}</p>
+            <p className="mt-1.5 rounded border border-slate-300 bg-white/[0.04] px-1.5 py-1 text-[12px] text-slate-600">
+              {t(
+                "이 구역은 최종 좌표가 확정되기 전에 제외되어, 지도에 그릴 좌표가 없습니다.",
+                "This zone was excluded before the final coordinates were fixed -- it has no coordinates left to draw.",
+                "このゾーンは最終座標が確定する前に除外されたため、地図に描く座標がありません。",
+              )}
+            </p>
+          </>
+        )}
+      </div>
+
+      {excludedZones.length > 0 && (
+        <div className="rounded-lg border border-slate-200 bg-surface/90 px-3 py-2.5">
+          <p className="text-[13px] font-bold text-slate-800">
+            {t("제외된 구역", "Excluded zones", "除外されたゾーン")} ({excludedZones.length})
+          </p>
+          <p className="mt-0.5 text-[12px] text-slate-500">
+            {t(
+              "지도에 좌표가 없어 목록으로만 보여줍니다 — 이름을 누르면 사유가 나타납니다.",
+              "No coordinates survive for these -- listed by name only; click one for the reason.",
+              "座標が残っていないため一覧のみで表示します — 名前を押すと理由が表示されます。",
+            )}
+          </p>
+          <ul className="mt-1.5 max-h-40 space-y-1 overflow-y-auto">
+            {excludedZones.map((zone, index) => (
+              <li key={`${zone.representative}-${index}`}>
+                <button
+                  type="button"
+                  onClick={() => onSelectExcludedZone(zone)}
+                  className="w-full truncate rounded border border-slate-200 bg-slate-50 px-2 py-1 text-left text-[12px] text-slate-700"
+                  title={zone.street_names.join(", ")}
+                >
+                  {zone.representative} · {zone.links}
+                  {t("개 링크", " links", "リンク")}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {unresolvedCount > 0 && (
+        <div className="rounded-lg border-2 border-slate-400 bg-slate-100 px-3 py-2.5 text-[13px] text-slate-900">
+          <p className="font-semibold">
+            {t(
+              `지도에 표시하지 못한 발견 ${unresolvedCount}건`,
+              `${unresolvedCount} finding(s) could not be placed on the map`,
+              `地図に表示できなかった発見 ${unresolvedCount} 件`,
+            )}
+          </p>
+          <p className="mt-0.5 text-[12px]">
+            {t(
+              "게이트 결과가 이 항목들의 위치 참조를 전달하지 않습니다 — 위 판정 목록에서 문구는 그대로 확인할 수 있습니다.",
+              "The gate result does not carry a location reference for these -- their wording is still in the check list above.",
+              "ゲート結果にはこれらの位置参照が含まれていません — 上の判定リストで文言は確認できます。",
+            )}
+          </p>
+          <ul className="mt-1.5 max-h-32 space-y-1 overflow-y-auto">
+            {unresolved.map((ref, index) => (
+              <li key={`${ref.checkId}-${ref.finding.code}-${index}`}>
+                <button
+                  type="button"
+                  onClick={() => onSelectUnresolved(ref)}
+                  className="w-full truncate rounded border border-slate-400 bg-white/[0.04] px-2 py-1 text-left text-[12px]"
+                >
+                  {ref.checkId} · {ref.finding.subject}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}

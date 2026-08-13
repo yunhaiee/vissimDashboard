@@ -1,4 +1,30 @@
-"""Convert VISSIM network geometry to WGS84 GeoJSON for Leaflet."""
+"""Convert VISSIM network geometry to WGS84 GeoJSON for Leaflet.
+
+TWO TRANSFORMS, AND WHICH DATASET GETS WHICH
+--------------------------------------------
+U-1-map (docs/ux-backlog.md, the user's detailed elaboration item #7). Reported
+from live use: the dashboard MAP was dead for every genesis-published dataset
+while the 도식 worked. The cause is below — this module was pinned to ONE
+transform, fitted to one client's network:
+
+* **A consultant's .inpx (unchanged).** Coordinates whose datum nobody recorded,
+  so placing them on the earth means FITTING: the five ``DEFAULT_MAP_*``
+  Helmert constants (least squares over 9 surveyed intersections, ~14 m max
+  residual) on top of the file's own ``refPointMap``/``refPointNet`` anchor.
+  Every byte of that path is as it was; a dataset with no recorded
+  georeference takes it and nothing else.
+* **A genesis-published network (new).** Built FROM WGS84 degrees by
+  ``services/genesis/project.py``'s local tangent plane, whose ``inverse`` is
+  exact, and whose origin ``services/genesis_jobs.py`` now records into the
+  dataset's own metadata at publish. So this dataset carries its own transform
+  and is inverted with it. It has to be: ``services/genesis/emit.py``
+  deliberately writes NO ``refPointMap`` (it makes no absolute claim), so
+  ``_load_transform`` 500s on one — and even with an anchor, Perth's constants
+  would put a Daejeon network in the Indian Ocean.
+
+The choice is made per request from ``datasets.get_active_dataset_georeference()``
+and is never a guess: no record means the Helmert path, exactly as before.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,11 +33,13 @@ import logging
 import math
 import os
 from pathlib import Path
+from typing import Callable
 from xml.etree import ElementTree as ET
 
 from fastapi import APIRouter, HTTPException, Query
 
-from services.datasets import get_active_inpx_path
+from services.datasets import get_active_dataset_georeference, get_active_inpx_path
+from services.genesis.project import PROJECTION_KIND, LocalTangentPlane, is_valid_origin_deg
 from services.inpx_parser import parse_network, parse_network_root
 from services.scenario_project import build_scenario_tree, can_build_scenario_tree
 
@@ -106,6 +134,42 @@ def _cache_key(mtime: float, inpx_path: str, scenario_id: str | None) -> tuple[f
     )
 
 
+#: One point in Vissim's own units → ``(lat, lon)``. Both transforms below are
+#: reduced to this signature so the feature loops call ONE thing and cannot
+#: quietly grow a third branch inside them.
+PointToWgs84 = Callable[[float, float], "tuple[float, float]"]
+
+
+def _dataset_plane() -> LocalTangentPlane | None:
+    """The active dataset's OWN local tangent plane, or ``None``.
+
+    ``None`` for every consultant upload and for the packaged demo — they carry
+    no georeference record, and the Helmert path is their transform. The
+    ``kind`` is checked rather than assumed: this function knows how to invert
+    exactly one projection, and a record naming a different one must fall
+    through to a named failure rather than be inverted with the wrong algebra.
+    """
+    record = get_active_dataset_georeference()
+    if not record or record.get("kind") != PROJECTION_KIND:
+        return None
+    lat = record.get("origin_lat_deg")
+    lon = record.get("origin_lon_deg")
+    # Range-checked, not merely type-checked: a swapped pair is numeric on both
+    # fields and would draw the whole network mirrored onto the far side of the
+    # planet. `None` falls back to the Helmert path, which for a genesis dataset
+    # then reports its missing anchor honestly instead of inventing a place.
+    if not is_valid_origin_deg(lat, lon):
+        return None
+    return LocalTangentPlane(lat0_deg=float(lat), lon0_deg=float(lon))
+
+
+def _georeference_signature() -> tuple:
+    """What the cached FeatureCollection was built WITH, so a dataset swap that
+    changes only the transform cannot be served from the previous one's entry."""
+    plane = _dataset_plane()
+    return () if plane is None else (plane.lat0_deg, plane.lon0_deg)
+
+
 @router.get("/network")
 def get_geojson_network(
     scenario_id: str | None = Query(None),
@@ -121,7 +185,17 @@ def get_geojson_network(
     except OSError:
         raise HTTPException(status_code=404, detail="INPX file not found")
 
-    cache_key = (mtime, str(inpx_path), scenario_id or "", offset_x, offset_y, rotation_deg, scale_x, scale_y)
+    plane = _dataset_plane()
+    cache_key = (
+        mtime,
+        str(inpx_path),
+        scenario_id or "",
+        offset_x,
+        offset_y,
+        rotation_deg,
+        scale_x,
+        scale_y,
+    ) + _georeference_signature()
     if cache_key in _cache:
         return _cache[cache_key]
 
@@ -169,7 +243,26 @@ def get_geojson_network(
                     continue
         net["nodes"].extend(_extra.values())
 
-    transform = _load_transform(mtime, str(inpx_path), scenario_id or "")
+    # THE FORK. A dataset that recorded its own plane is inverted with it; every
+    # other dataset loads the Helmert anchor and takes the same five constants
+    # it always did. ``_load_transform`` is not even CALLED on the genesis path,
+    # which is the point: a genesis .inpx carries no refPointMap and that call
+    # is what used to 500 the map for it.
+    if plane is not None:
+        to_wgs84: PointToWgs84 = plane.inverse
+    else:
+        transform = _load_transform(mtime, str(inpx_path), scenario_id or "")
+
+        def to_wgs84(vx: float, vy: float) -> tuple[float, float]:
+            return transform.to_wgs84(
+                vx,
+                vy,
+                offset_x=offset_x,
+                offset_y=offset_y,
+                rotation_deg=rotation_deg,
+                scale_x=scale_x,
+                scale_y=scale_y,
+            )
 
     features = []
     for link in net["links"]:
@@ -179,15 +272,7 @@ def get_geojson_network(
             continue
         coords = []
         for vx, vy in link["points"]:
-            lat, lon = transform.to_wgs84(
-                vx,
-                vy,
-                offset_x=offset_x,
-                offset_y=offset_y,
-                rotation_deg=rotation_deg,
-                scale_x=scale_x,
-                scale_y=scale_y,
-            )
+            lat, lon = to_wgs84(vx, vy)
             coords.append([lon, lat])
         features.append({
             "type": "Feature",
@@ -203,15 +288,7 @@ def get_geojson_network(
         })
 
     for node in net["nodes"]:
-        lat, lon = transform.to_wgs84(
-            node["x"],
-            node["y"],
-            offset_x=offset_x,
-            offset_y=offset_y,
-            rotation_deg=rotation_deg,
-            scale_x=scale_x,
-            scale_y=scale_y,
-        )
+        lat, lon = to_wgs84(node["x"], node["y"])
         features.append({
             "type": "Feature",
             "id": f"node_{node['id']}",
@@ -332,6 +409,16 @@ def get_map_center(
         mtime = os.path.getmtime(inpx_path)
     except OSError:
         raise HTTPException(status_code=404, detail="INPX file not found")
+
+    # Same fork as ``/network``, and for the same reason: a genesis .inpx has no
+    # refPointMap for ``_load_transform`` to read. Its centre is the plane's own
+    # ORIGIN, which is not an approximation — ``project.origin_for_bounds`` puts
+    # the origin at the centre of the requested region's bounding box, so (0, 0)
+    # in this dataset's metres IS the middle of the area somebody asked for.
+    plane = _dataset_plane()
+    if plane is not None:
+        lat, lon = plane.inverse(0.0, 0.0)
+        return {"lat": lat, "lon": lon, "zoom": 16}
 
     transform = _load_transform(mtime, str(inpx_path), scenario_id or "")
     lat, lon = transform.to_wgs84(

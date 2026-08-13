@@ -203,6 +203,73 @@ export async function fetchGenesisDraftNetwork(jobId: string): Promise<GenesisDr
 }
 
 // ---------------------------------------------------------------------------
+// The same draft in DEGREES -- U-1-map (docs/ux-backlog.md, item #1)
+// ---------------------------------------------------------------------------
+//
+// The metres above are this generation's own local tangent plane and cannot be
+// drawn over a basemap. `GET /api/genesis/jobs/{id}/artifact/geojson` inverts
+// them SERVER-SIDE, on the plane the draft itself recorded
+// (`services/genesis/geojson.py`), which is legitimate for exactly the reason a
+// consultant's .inpx cannot be treated the same way: a genesis draft was BUILT
+// from WGS84, so the inverse is algebra, not a fit.
+//
+// It is a SECOND fetch beside `fetchGenesisDraftNetwork`, deliberately, and the
+// map makes both. Each answers something the other does not: the GeoJSON
+// carries where the roads are on the earth; the census carries the doctrine
+// facts a map must still show and cannot derive from geometry — the excluded
+// zones (named, with no coordinates left to draw) and the retained isolated
+// zones a finding expands into. Folding the census into the GeoJSON would make
+// one artifact the source of two claims, which is how they start to disagree.
+
+/** One link or connector as WGS84. `coordinates` is GeoJSON order --
+ * `[lon, lat]`, NOT leaflet's `[lat, lon]`; every consumer flips it explicitly
+ * rather than relying on remembering which library it is talking to. */
+export interface GenesisGeoFeature {
+  type: "Feature";
+  id: string;
+  geometry: { type: "LineString"; coordinates: [number, number][] };
+  properties: { id: number; kind: "link" | "connector"; name: string };
+}
+
+export interface GenesisGeoJson {
+  type: "FeatureCollection";
+  features: GenesisGeoFeature[];
+  /** The plane the server inverted with, carried so a reader can reproduce it
+   * and so the map can centre on it before any feature is drawn. */
+  origin: { lat: number; lon: number };
+  /** `[west, south, east, north]`, standard GeoJSON. Absent for a draft with
+   * no drawable geometry at all. */
+  bbox?: [number, number, number, number];
+}
+
+/** `GET /jobs/{id}/artifact/geojson` -- authenticated and workspace-scoped like
+ * every other genesis artifact read, through `apiFetch` for the same reason
+ * (`fetchGenesisDraftNetwork`'s comment): a bare `fetch()` carries neither the
+ * session cookie nor `X-Workspace-Id` and would silently read the default
+ * project. A 409 here is the server REFUSING to place a draft that recorded no
+ * projection origin -- the caller renders the fallback and says so, and must
+ * never substitute an origin of its own. */
+export async function fetchGenesisDraftGeoJson(jobId: string): Promise<GenesisGeoJson> {
+  const r = await apiFetch(`/api/genesis/jobs/${jobId}/artifact/geojson`, { cache: "no-store" });
+  if (!r.ok) {
+    const text = await r.text();
+    let message = text || `${r.status} ${r.statusText}`.trim();
+    try {
+      const data = JSON.parse(text) as { detail?: unknown };
+      if (typeof data.detail === "string" && data.detail.trim()) message = data.detail;
+      const detail = data.detail as { reasons?: unknown } | undefined;
+      if (detail && Array.isArray(detail.reasons) && detail.reasons.length > 0) {
+        message = String(detail.reasons[0]);
+      }
+    } catch {
+      // Plain text errors are still useful.
+    }
+    throw new GenesisError(message, r.status);
+  }
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
 // Finding -> geometry resolution (best-effort; see header comment)
 // ---------------------------------------------------------------------------
 

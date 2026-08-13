@@ -427,6 +427,97 @@ def clear_active_real_counts_excel() -> dict:
     return get_active_dataset()
 
 
+# ---------------------------------------------------------------------------
+# Per-dataset georeference — U-1-map (docs/ux-backlog.md, elaboration item #7)
+# ---------------------------------------------------------------------------
+#
+# THE BUG THIS CLOSES, reported from live use: the dashboard MAP was dead for
+# every genesis-published dataset while the 도식 (schematic) worked. The map is
+# ``routers/geojson.py``, and it is pinned to the SouthSt Helmert constants —
+# five numbers fitted to nine surveyed Murdoch intersections — plus a
+# ``refPointMap``/``refPointNet`` anchor read out of the .inpx. A genesis
+# network has neither: ``services/genesis/emit.py`` deliberately writes NO
+# refPointMap (it makes no absolute claim), so the transform load 500s, and even
+# if it had not, Perth's constants would place a Daejeon network in the Indian
+# Ocean.
+#
+# What a genesis network DOES have is the exact plane it was built on. This pair
+# carries that plane — origin latitude/longitude and the projection kind — from
+# the publish step to the map, per dataset, so the map transforms each dataset
+# with its OWN transform instead of one project's constants applied to
+# everybody's geometry. A dataset with no such record (every consultant upload)
+# is untouched and keeps the Helmert path byte for byte.
+
+#: Where the record lives inside ``uploads/current/metadata.json``. One key, so
+#: a dataset either carries a per-dataset transform or does not — there is no
+#: half-recorded state a reader would have to interpret.
+GEOREFERENCE_METADATA_KEY = "georeference"
+
+
+def save_active_dataset_with_georeference(
+    filename: str, content: bytes, georeference: dict | None
+) -> dict:
+    """Promote a dataset AND record its transform as ONE indivisible step.
+
+    THE RACE THIS CLOSES, which is not theoretical on a box where two people can
+    publish from two browsers. :func:`save_active_dataset` and
+    :func:`set_active_dataset_georeference` each take the per-workspace upload
+    lock, but as two SEPARATE acquisitions — so between them the lock is free,
+    and a second registration can slip its whole promote into that window. The
+    outcome is the worst kind available here: dataset B's bytes sitting under
+    dataset A's projection origin, with both writes individually "successful"
+    and nothing anywhere recording that the pair disagree. Every coordinate the
+    dashboard map then draws is confidently, silently in the wrong place.
+
+    Holding ONE lock across both writes makes that interleaving impossible. The
+    lock is the same reentrant per-workspace lock both callees take
+    (``_upload_lock`` returns an ``RLock``), so their own ``with`` blocks
+    re-enter it rather than deadlocking — which is why this is a wrapper and not
+    a reimplementation of either.
+
+    ``georeference=None`` clears any previous record, and that is load-bearing:
+    it is what stops a dataset this app cannot place from inheriting the
+    plane of the one it replaced.
+    """
+    with _upload_lock(uploads_root()):
+        stored = save_active_dataset(filename, content)
+        set_active_dataset_georeference(georeference)
+        return stored
+
+
+def set_active_dataset_georeference(georeference: dict | None) -> None:
+    """Record (or clear) the transform that places THIS dataset on the earth.
+
+    Written under the same per-workspace upload lock every other metadata write
+    takes, and read back through ``_read_metadata`` so it merges with whatever
+    the promote already wrote rather than replacing the descriptor.
+
+    ``None`` clears it, which is what a caller publishing a dataset it cannot
+    georeference must do: a stale record from the PREVIOUS dataset would be
+    worse than none at all — it would draw the new network in the old one's
+    place with no sign anything was wrong.
+    """
+    with _upload_lock(uploads_root()):
+        metadata = _read_metadata()
+        if georeference is None:
+            metadata.pop(GEOREFERENCE_METADATA_KEY, None)
+        else:
+            metadata[GEOREFERENCE_METADATA_KEY] = georeference
+        _write_metadata_payload(metadata)
+
+
+def get_active_dataset_georeference() -> dict | None:
+    """This dataset's own transform, or ``None`` for one that has no record.
+
+    ``None`` is the answer for every dataset uploaded through the browser and
+    for the packaged ``data/`` demo, and it means exactly one thing to the
+    caller: use whatever transform you used before this function existed. It is
+    never a reason to invent one.
+    """
+    record = _read_metadata().get(GEOREFERENCE_METADATA_KEY)
+    return record if isinstance(record, dict) else None
+
+
 def _clear_validation_caches() -> None:
     """Drop ``services.validation``'s ``lru_cache``es after any dataset write.
 

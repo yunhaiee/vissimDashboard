@@ -41,6 +41,117 @@ function sliceBetween(source: string, startMarker: string, endMarker: string): s
   return end === -1 ? "" : source.slice(start, end);
 }
 
+/**
+ * The source with its comments removed — and NOTHING else removed.
+ *
+ * For the one pin shape that cannot work on raw source: "this CSS class must
+ * never appear in markup again". The files in this repo explain their own
+ * fixes, so the banned class is named — correctly and usefully — in the comment
+ * right above the code that stopped using it, and a file-wide `doesNotMatch`
+ * would fire on that explanation forever. Stripping comments lets the pin mean
+ * what it says (no live usage) while the prose that documents WHY stays put.
+ *
+ * WHY THIS IS A SCANNER AND NOT TWO REGEXES. The first version was a pair of
+ * `.replace()` calls — one for block comments, one matching a double slash
+ * through to the end of its line — and the second of those ate everything
+ * after the `//` in a URL. (The old expressions are described rather than
+ * quoted here: a regex for a block comment cannot be written inside a block
+ * comment, which is its own small lesson about stripping by pattern.) The
+ * CARTO tile template
+ * `"https://{s}.basemaps.cartocdn.com/..."` is exactly such a line, and a
+ * banned class sitting after it on the same line vanished with it. That is the
+ * dangerous direction for a `doesNotMatch`: the haystack shrinks, so the pin
+ * PASSES while the violation is still in the file. A pin that cannot fail is
+ * worse than no pin, because the suite reports it as green.
+ *
+ * So the scanner copies string and template literals through verbatim, and
+ * recognises regex literals (a `/` in a position where an expression may
+ * start), which is the other place a stray quote or `//` can hide. Two
+ * safeguards keep a mis-parse from ever silently shrinking the haystack:
+ *
+ *   * an unterminated `'`/`"` string ends at the newline, because a JS string
+ *     cannot span a raw one. Without this, a bare apostrophe in JSX text
+ *     (`don't`) would open a "string" that swallowed the rest of the file;
+ *   * the regex heuristic only fires after a character that genuinely cannot
+ *     end an expression, so a division is never mistaken for a regex.
+ *
+ * `contractTest("contract helper: withoutComments…")` below is its self-test,
+ * including the exact tile-URL line that proved the old version wrong.
+ */
+const REGEX_MAY_FOLLOW = /[(,=:[!&|?{};+\-*%^~<>\n]/;
+
+function withoutComments(source: string): string {
+  let out = "";
+  let i = 0;
+  let lastMeaningful = "\n";
+
+  const copyDelimited = (quote: string, allowNewline: boolean) => {
+    out += source[i];
+    i += 1;
+    while (i < source.length) {
+      const ch = source[i];
+      if (ch === "\\") {
+        out += source.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (!allowNewline && ch === "\n") return; // unterminated -- not a string
+      out += ch;
+      i += 1;
+      if (ch === quote) return;
+    }
+  };
+
+  while (i < source.length) {
+    const c = source[i];
+    const next = source[i + 1];
+
+    if (c === "/" && next === "/") {
+      while (i < source.length && source[i] !== "\n") i += 1;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      i += 2;
+      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) i += 1;
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      copyDelimited(c, c === "`");
+      lastMeaningful = c;
+      continue;
+    }
+    if (c === "/" && REGEX_MAY_FOLLOW.test(lastMeaningful)) {
+      // A regex literal. Copied through for the same reason a string is: it can
+      // contain a quote or a `//` that would otherwise derail the scan.
+      out += c;
+      i += 1;
+      let inClass = false;
+      while (i < source.length) {
+        const ch = source[i];
+        if (ch === "\\") {
+          out += source.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (ch === "\n") break; // unterminated -- it was a division after all
+        out += ch;
+        i += 1;
+        if (ch === "[") inClass = true;
+        else if (ch === "]") inClass = false;
+        else if (ch === "/" && !inClass) break;
+      }
+      lastMeaningful = "/";
+      continue;
+    }
+
+    out += c;
+    if (!/\s/.test(c) || c === "\n") lastMeaningful = c;
+    i += 1;
+  }
+  return out;
+}
+
 /** A RegExp matching `text` literally -- Korean UI strings are full of `.`,
  * `(` and `·`, which a raw `new RegExp(text)` would treat as syntax. */
 function literalPattern(text: string): RegExp {
@@ -86,6 +197,96 @@ function contractTest(name: string, body: (pin: Pin) => void) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// The helpers this file pins WITH have to be pinned too
+// ---------------------------------------------------------------------------
+//
+// `withoutComments` feeds several `doesNotMatch` pins, and a stripper that
+// removes too much makes every one of them pass vacuously -- a green suite over
+// a live violation, which is strictly worse than no pin. Its first version did
+// exactly that: `//` inside a URL string ate the rest of that line.
+
+contractTest("contract helper: withoutComments strips comments and NOTHING else", (pin) => {
+  // THE REGRESSION, verbatim: this is the CARTO tile template every map in this
+  // app draws. The `//` is inside a string, so the class after it must survive.
+  const tileLine =
+    'const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"; const bad = "bg-amber-50";';
+  pin.match(
+    withoutComments(tileLine),
+    /bg-amber-50/,
+    "a `//` inside a string must not be treated as a comment -- the old stripper ate this whole line",
+  );
+  pin.match(
+    withoutComments(tileLine),
+    /basemaps\.cartocdn\.com/,
+    "the URL itself must survive intact",
+  );
+
+  // Template literals and escaped quotes are strings too.
+  pin.match(
+    withoutComments("const u = `https://x/y`; const c = 'text-amber-900';"),
+    /text-amber-900/,
+    "a `//` inside a template literal must not start a comment either",
+  );
+  pin.match(
+    withoutComments('const s = "a \\" // b"; const c = "border-amber-300";'),
+    /border-amber-300/,
+    "an escaped quote must not end the string early",
+  );
+
+  // A regex literal can carry a quote or a slash pair; neither may derail the
+  // scan for the rest of the file.
+  pin.match(
+    withoutComments("const r = /[\"']/g; const c = \"bg-amber-100\";"),
+    /bg-amber-100/,
+    "a quote inside a regex literal must not open a string that swallows the file",
+  );
+
+  // A bare apostrophe in JSX text cannot open a string that runs past the line.
+  pin.match(
+    withoutComments("<p>don't</p>\nconst c = \"text-amber-700\";"),
+    /text-amber-700/,
+    "an unterminated quote must end at the newline -- a JS string cannot span one",
+  );
+
+  // And it still does its actual job: real comments go.
+  pin.doesNotMatch(
+    withoutComments('// we removed text-amber-900 here\nconst c = "ok";'),
+    /text-amber-900/,
+    "a line comment naming the banned class must still be stripped",
+  );
+  pin.doesNotMatch(
+    withoutComments('/* text-amber-900 was here */ const c = "ok";'),
+    /text-amber-900/,
+    "a block comment naming the banned class must still be stripped",
+  );
+  // Division is not a regex.
+  pin.match(
+    withoutComments('const half = total / 2; const c = "text-amber-800";'),
+    /text-amber-800/,
+    "a division must not be parsed as a regex literal",
+  );
+});
+
+contractTest("U-1: the ⓘ trigger draws its glyph as geometry, not as a text node", (pin) => {
+  const ui = read("components/genesis/ui.tsx");
+
+  // Reported from live review 2026-08-13: the "i" sat below the circle's
+  // centre. Flex centring centres a text node's LINE BOX, which is symmetric
+  // about the baseline -- but a lowercase "i" has all its ink above the
+  // baseline and no descender to balance the ascent, so it lands low by an
+  // amount that changes with whichever ko/ja fallback font resolves. A margin
+  // nudge would be a constant tuned against one machine's font stack; two
+  // shapes in a square viewBox are centred by arithmetic this repo controls.
+  pin.match(ui, /<svg viewBox="0 0 16 16"/, "expected the ⓘ glyph to be drawn as SVG geometry");
+  pin.match(ui, /<circle cx="8"/, "expected the glyph's dot to be centred on the viewBox's own axis");
+  pin.doesNotMatch(
+    ui,
+    /<span aria-hidden>i<\/span>/,
+    "expected the text-node 'i' to be gone -- it is what could not be centred reliably",
+  );
+});
 
 contractTest("main dashboard keeps scenario-comparison core composition", (pin) => {
   const page = read("app/dashboard/page.tsx");
@@ -1418,94 +1619,315 @@ contractTest("genesis primary CTAs stay legible on the inverted dark palette", (
 // UX pass U-1 (docs/ux-backlog.md) -- progressive disclosure on the genesis
 // screens. These are NOT layout pins: what they hold is the doctrine that
 // survived the density pass. "Nothing is silently dropped" is this product's
-// whole thesis, and the only way to reduce what a screen shows without
-// breaking it is to make COLLAPSE the reduction and to let SEVERITY, not the
-// reader, decide what starts open.
+// whole thesis, and reducing what a screen shows is only allowed when the
+// reduction is a COLLAPSE with a click path back and when a fault is still
+// visible without one.
 // ---------------------------------------------------------------------------
 
-// REWRITTEN BY U-1-quick (docs/ux-backlog.md, the user's detailed elaboration
-// item #4). This test used to be "U-1: the R1.5 checklist collapses by default
-// and opens itself by severity" and pinned `checkAutoOpens`, `aria-expanded`
-// and a per-row `useState` -- nine independently-collapsible rows. The user's
-// report from live use was that the ▸ arrow was the only click target and that
-// nine stacked rows read as a list to scroll rather than a verdict to scan, so
-// the rows became a 3×3 grid of cells with ONE detail panel underneath.
+// REWRITTEN TWICE, and the second rewrite is a USER DECISION worth stating.
 //
-// THE DOCTRINE IS UNCHANGED and is what this test still holds: severity -- not
-// the reader -- decides what is on screen first, and nothing is hidden without
-// a click path. What changed is only its expression: the boolean "does this row
-// start open" became an ORDER ("which single cell is selected"), because a grid
-// selects one thing where a list opened several.
-contractTest("U-1-quick: the R1.5 checks are a grid that selects itself by severity", (pin) => {
+// v1 ("the R1.5 checklist collapses by default and opens itself by severity")
+// pinned `checkAutoOpens`, `aria-expanded` and a per-row `useState` -- nine
+// independently-collapsible rows.
+// v2 (U-1-quick, item #4) turned those rows into a 3x3 grid with ONE detail
+// panel, and kept severity as an ORDER: `checkRank`/`worstCheckId` chose which
+// single cell was already open on arrival.
+// v3 (2026-08-13, docs/ux-backlog.md SECOND ELABORATION item 12) is this one.
+// After testing v2 live the user asked for NO microcopy, NO checkmark and NO
+// auto-select: every cell starts closed and the detail area renders nothing
+// until a click. `checkRank` and `worstCheckId` are DELETED, and their pins
+// with them.
+//
+// SO WHAT STILL CARRIES THE DOCTRINE, now that nothing opens itself? The rule
+// was never "a panel must be open"; it was "a check that FAILED or could not
+// RUN must be visible without reading and without clicking". That now lives
+// entirely on the cells, and this test holds exactly those two properties:
+//
+//   * every cell prints its id AND its tri-state WORD with no click at all --
+//     실패 / 확인 불가 are words on screen, never a colour a reader has to
+//     decode;
+//   * a non-pass cell keeps a persistent accent ring in its own currentColor
+//     whether or not anything is selected. This is load-bearing here and
+//     almost nowhere else: globals.css remaps the amber family to NEUTRAL, so
+//     `not_checkable`'s fill alone renders grey -- the ring is the only thing
+//     standing between "could not run" and "nothing to report".
+//
+// What was given up is only that severity no longer decides what the reader is
+// LOOKING AT. That is a presentation choice the user made; it drops no claim.
+contractTest("U-1: the R1.5 grid starts with every cell closed, and severity still reads off the cells", (pin) => {
   const page = read("app/genesis/page.tsx");
+  const gridBody = sliceBetween(page, "function GateCheckGrid(", "/** The five downloadable artifacts");
+  pin.match(gridBody, /\S/, "expected to find the GateCheckGrid body (markers moved? every doesNotMatch below would pass vacuously on empty input)");
+  // The two helpers that own every class a cell wears. Sliced apart from the
+  // grid on purpose: the point of the 2026-08-13 change is that the grid's own
+  // markup names no colour at all, so "the tint is gone" and "the tint moved
+  // here" are two different assertions against two different regions.
+  const cellStyling = sliceBetween(page, "function checkStateTagClasses(", "function verdictLabel(");
+  pin.match(cellStyling, /\S/, "expected to find the cell/chip styling helpers (markers moved?)");
 
-  // The rule, in code, worst first. `fail` is a proven fault; `not_checkable`
-  // outranks every pass because R1.5's own design rule is that a check which
-  // could not RUN is never a pass; a PASS that still carries something (gap,
-  // finding, warning, omitted count) outranks a clean one, because a warn-tier
-  // finding on a passing check is still a finding.
-  pin.match(page, /function checkRank\(check: GenesisGateCheck\): number \{/, "expected a named severity rule deciding which check is selected first");
-  pin.match(page, /if \(check\.state === "fail"\) return 0;/, "expected a proven refuse-tier fault to outrank everything");
+  // (1) NOTHING IS SELECTED ON MOUNT. The initial state is null and stays null
+  // until a click -- asserted on the state initializer itself, because a
+  // component that seeded it from anything else is exactly what v2 was.
   pin.match(
-    page,
-    /if \(check\.state !== "pass"\) return 1;/,
-    "expected not_checkable to outrank every pass -- a check that could not run is never a pass",
+    gridBody,
+    /useState<string \| null>\(null\)/,
+    "expected the grid's selection to start as null -- the user asked for every cell closed on arrival",
   );
-  pin.match(
-    page,
-    /return checkHasBody\(check\) \? 2 : 3;/,
-    "expected a passing check that still CARRIES something to be selected ahead of a clean pass",
+  pin.doesNotMatch(
+    gridBody,
+    /useState\(\(\) =>/,
+    "expected no computed initial selection -- a lazy initializer here is how v2 auto-opened a cell",
   );
+  // The detail is INSIDE a `selected &&` guard, so an unclicked grid renders no
+  // detail markup at all rather than an empty styled box.
   pin.match(
-    page,
-    /check\.gaps\.length > 0 \|\|\s*\n?\s*check\.findings\.length > 0 \|\|\s*\n?\s*check\.warnings\.length > 0 \|\|\s*\n?\s*check\.findings_omitted > 0/,
-    "expected 'carries something' to mean gap OR finding OR warning OR omitted count -- all four",
-  );
-  pin.match(
-    page,
-    /checkRank\(check\) === checkRank\(worst\) && check\.id < worst\.id/,
-    "expected ties to break on the id ascending, so the selection is never arbitrary",
-  );
-  pin.match(
-    page,
-    /useState\(\(\) => worstCheckId\(checks\)\)/,
-    "expected the grid's initial selection to be seeded from severity rather than from a constant",
+    gridBody,
+    /\{selected && \(/,
+    "expected the detail area to render nothing at all until a cell is clicked",
   );
 
-  // The user's explicit ask: the WHOLE cell is the click target, and the
-  // per-row disclosure it replaces is gone rather than left beside it.
-  pin.match(page, /grid grid-cols-3/, "expected the nine checks to be laid out as a 3-column grid");
-  pin.match(page, /aria-pressed=\{isSelected\}/, "expected each cell to expose its selected state to assistive tech");
-  pin.doesNotMatch(page, /function GateCheckRow\(/, "expected the per-row disclosure component to be gone, not kept beside the grid");
+  // (2) THE SEVERITY MACHINERY IS GONE, not merely unused. Leaving `checkRank`
+  // beside a grid that no longer calls it is leaving the next reader to
+  // discover which of the two is live.
+  pin.doesNotMatch(page, /function checkRank\(/, "expected the severity RANK to be deleted with the auto-select it existed for");
+  pin.doesNotMatch(page, /function worstCheckId\(/, "expected the worst-check chooser to be deleted along with checkRank");
+  pin.doesNotMatch(page, /function GateCheckRow\(/, "expected the per-row disclosure component to stay gone");
   pin.doesNotMatch(
     page,
     /aria-expanded=\{open\}/,
-    "expected no per-check expand toggle to survive -- the grid has one detail panel, not nine",
+    "expected no per-check expand toggle to survive -- the grid has one detail area, not nine",
   );
 
-  // Nothing is hidden without a click path: every cell states its id and its
-  // tri-state word with no click at all, and a non-pass cell keeps a persistent
-  // accent (globals.css remaps amber to neutral, so not_checkable's fill alone
-  // would read as "nothing to report").
+  // (3) SEVERITY IS STILL READABLE WITHOUT A CLICK -- the half of the doctrine
+  // that must never move. Id + tri-state word on every cell, and a persistent
+  // accent ring on every non-pass cell.
+  pin.match(page, /grid grid-cols-3/, "expected the nine checks to be laid out as a 3-column grid");
   pin.match(
-    page,
+    gridBody,
     /\{check\.id\}[\s\S]{0,300}checkStateLabel\(check\.state, t\)/,
     "expected the id and the tri-state word to be visible on EVERY cell without a click",
   );
-  pin.match(page, /: "ring-1 ring-current"/, "expected failing/not-checkable cells to keep an accent even when another cell is selected");
+  pin.match(gridBody, /aria-pressed=\{isSelected\}/, "expected each cell to expose its selected state to assistive tech");
 
-  // ONE detail panel, not nine -- and it is a live region, so a selection
-  // change is announced rather than only repainted.
-  const gridBody = sliceBetween(page, "function GateCheckGrid(", "/** The five downloadable artifacts");
+  // (3a) COLOUR LIVES ON THE CHIP, NOT ON THE CARD (user, live review
+  // 2026-08-13). Nine tinted cards read as a block of colour to decode rather
+  // than nine verdicts to scan, and the tint outweighed the two things that
+  // carry the meaning -- the id and the state word. The card is mono for every
+  // state; the small chip that already prints the word carries the hue.
+  pin.match(page, /function checkStateTagClasses\(/, "expected ONE helper owning the state chip's colour");
+  pin.match(page, /function checkCellClasses\(/, "expected a separate helper for the (mono) card");
+  pin.doesNotMatch(
+    page,
+    /function checkStateClasses\(/,
+    "expected the merged card+chip helper to be gone -- one function returning both is how the tint got onto the card",
+  );
+  pin.doesNotMatch(
+    gridBody,
+    /bg-(?:emerald|rose|sky)-/,
+    "the grid's own markup must carry NO tint -- every colour it shows comes through checkStateTagClasses",
+  );
+  pin.match(
+    gridBody,
+    /checkCellClasses\(check\.state, isSelected\)/,
+    "expected the cell card to take the mono card helper",
+  );
+  pin.match(
+    gridBody,
+    /checkStateTagClasses\(check\.state\)/,
+    "expected the cell's state chip to be the thing that carries the colour",
+  );
+  // ...and the DETAIL below the grid follows the same rule, so one state cannot
+  // be grey in the cell and green in its own detail.
+  pin.match(
+    gridBody,
+    /checkStateTagClasses\(selected\.state\)/,
+    "expected the detail's chip to carry the colour, matching the cells",
+  );
+
+  // (3b) The ring survives the tint's removal, and now carries MORE: with no
+  // tinted fill left, it is the whole of "something in this cell is not a
+  // pass", visible without reading a word.
+  pin.match(
+    cellStyling,
+    /: "ring-1 ring-slate-400"/,
+    "expected failing/not-checkable cells to keep a (now neutral) accent ring even with nothing selected -- it is the only pre-reading signal left once the cards went mono",
+  );
+
+  // (4) NO MICROCOPY ON THE CELLS. The tier line ("거부 등급"/"경고 등급") used
+  // to be printed on every cell AND in the detail; it now appears once, in the
+  // detail. Counted rather than pattern-matched, so re-adding it to the cell
+  // fails here even though the string legitimately survives.
+  const tierPhrases = (gridBody.match(/t\("거부 등급", "refuse tier", "拒否ティア"\)/g) ?? []).length;
+  pin.match(
+    `count=${tierPhrases}`,
+    /^count=1$/,
+    "expected the refuse/warn tier line exactly once (in the detail) -- the user asked for no microcopy on the cells",
+  );
+
+  // (5) THE CLICK HAS AN ANSWER: one fill step, a 2px ring, a brighter title,
+  // over ~100ms.
+  pin.match(cellStyling, /"ring-2 ring-slate-500"/, "expected the selected cell to take a 2px ring");
+  pin.match(gridBody, /duration-100/, "expected the ~100ms transition the user asked for on the active cell");
+  pin.match(
+    gridBody,
+    /isSelected \? "font-semibold text-slate-900"/,
+    "expected the selected cell's title to brighten by one step",
+  );
+  pin.match(
+    gridBody,
+    /grid grid-cols-3 gap-3\.5/,
+    "expected the widened (~14px) cell gaps -- the 6px grid read as one block of colour",
+  );
+
+  // (6) GREEN ON GREEN, the contrast bug (SECOND ELABORATION item 11). The dark
+  // remap in globals.css re-points `bg-emerald-50` to a DARK green (#1e2b22)
+  // but never remapped `text-emerald-900`, which stayed Tailwind's default
+  // #064e3b -- a dark green on a dark green. The foreground must come from the
+  // remapped LIGHT end of the family. Same trap for sky (`text-sky-700+` over
+  // `bg-sky-50` #032042), which is why the status chip is pinned too.
+  // `withoutComments`, because this page NAMES the banned class in the doc
+  // comment that explains the mechanism -- the pin is about live markup.
+  const pageMarkup = withoutComments(page);
+  pin.doesNotMatch(
+    pageMarkup,
+    /text-emerald-900/,
+    "the emerald-900 foreground is NOT remapped for the dark theme -- over bg-emerald-50 it renders green-on-green (the reported contrast bug)",
+  );
+  pin.doesNotMatch(
+    pageMarkup,
+    /text-sky-(?:700|800|900)/,
+    "sky's 700/800/900 foregrounds are NOT remapped either -- over bg-sky-50 (#032042) they render blue-on-blue",
+  );
+  pin.match(
+    page,
+    /if \(state === "pass"\) return "border-emerald-300 bg-emerald-50 text-emerald-800";/,
+    "expected the PASS chip to keep its green tint in background+border and take an INK-strength foreground from the remapped end",
+  );
+
+  // (7) ONE detail region, and it is a live region that is MOUNTED even when
+  // empty -- an aria-live element that appears together with its content is an
+  // element no screen reader was watching when the content arrived.
   const liveRegions = (gridBody.match(/aria-live="polite"/g) ?? []).length;
   pin.match(`count=${liveRegions}`, /^count=1$/, "expected exactly one detail region under the grid");
+  pin.match(
+    gridBody,
+    /<div aria-live="polite">\s*\n\s*\{selected &&/,
+    "expected the live region to be mounted around the conditional detail, not conditionally rendered with it",
+  );
 
-  // A clean pass still names its emptiness rather than showing a blank panel.
+  // (8) A clean pass still names its emptiness rather than showing a blank
+  // panel -- unchanged from v2, and the reason the detail is not simply hidden
+  // for a check with nothing recorded.
   pin.match(
     page,
     /이 검사에 기록된 항목이 없습니다/,
     "expected an empty check to name its emptiness when selected, not render a blank panel",
   );
+});
+
+// ---------------------------------------------------------------------------
+// U-1 unit #13 -- the Console split (docs/ux-backlog.md, SECOND ELABORATION
+// items 9, 10, 14 and the LIST/MASTER-DETAIL reference paragraphs).
+// ---------------------------------------------------------------------------
+
+contractTest("U-1: the genesis page is a list/detail split with ONE verdict header", (pin) => {
+  const page = read("app/genesis/page.tsx");
+
+  // THE TABLE. The user's LIST REFERENCE names its five columns; a history row
+  // that lost one of them is a row that stopped distinguishing two generations
+  // of the same city, which is the gap U-1-quick #5 closed in the first place.
+  for (const [ko, en] of [
+    ["이름", "Name"],
+    ["생성일", "Created"],
+    ["영역", "Region"],
+    ["규모", "Scale"],
+    ["판정", "Verdict"],
+  ]) {
+    pin.match(
+      page,
+      new RegExp(`scope="col"[\\s\\S]{0,120}t\\("${ko}", "${en}"`),
+      `expected the history table to keep its ${ko}/${en} column header`,
+    );
+  }
+  // Borderless rows: separation comes from row height, not from a rule between
+  // every pair -- the reference design's own choice, and what stops ten rows
+  // reading as a grid of boxes.
+  const historyRows = sliceBetween(page, "<tbody>", "</tbody>");
+  pin.match(historyRows, /\S/, "expected to find the history table body (markers moved?)");
+  pin.doesNotMatch(
+    historyRows,
+    /border-b/,
+    "expected borderless history rows -- the LIST REFERENCE puts the separation in the row height",
+  );
+  pin.match(page, /aria-selected=\{job\.id === selectedId\}/, "expected the clicked row to announce itself as selected");
+  pin.match(
+    page,
+    /const HISTORY_PAGE_SIZE = 10;/,
+    "expected pagination once the list grows past a page, as the LIST REFERENCE asks",
+  );
+
+  // NOTHING SELECTED ON ARRIVAL, and ONE quiet line where the drawer would be.
+  // The previous version seeded `selectedId` from the newest job, so the whole
+  // right-hand column was full before the reader picked anything.
+  pin.doesNotMatch(
+    page,
+    /setSelectedId\(\(current\) => current \|\| entries\[0\]/,
+    "expected the history list to stop auto-selecting its newest row",
+  );
+  pin.match(page, /\{!selected \? \(/, "expected an explicit nothing-selected branch for the detail pane");
+  pin.match(
+    page,
+    /왼쪽 생성 이력에서 한 줄을 선택하면/,
+    "expected ONE quiet empty-state line in the right pane, not an empty scaffold",
+  );
+
+  // THE MERGED VERDICT HEADER (item 10). Two banners said the same thing in two
+  // boxes; there is now one block, and the counts are the Console stat pattern
+  // (small muted label above, large bold value below) rather than a run-on
+  // sentence. `statusLabel` stays the ONE source of the status wording.
+  pin.match(page, /function Stat\(\{ label, value, tone \}/, "expected the Console stat pattern to exist as one named component");
+  for (const [ko, en] of [["통과", "pass"], ["실패", "fail"], ["확인 불가", "not checkable"]]) {
+    pin.match(
+      page,
+      new RegExp(`<Stat[\\s\\S]{0,90}t\\("${ko}", "${en}"`),
+      `expected the ${ko} count to be rendered as a stat, not as part of a sentence`,
+    );
+  }
+  const verdictBanners = (page.match(/statusLabel\(selected\.status, t\)/g) ?? []).length;
+  pin.match(
+    `count=${verdictBanners}`,
+    /^count=2$/,
+    "expected the selected job's status phrase in exactly two places -- the drawer header chip and the verdict header's pre-report fallback -- never a second banner repeating the gate verdict",
+  );
+  pin.match(
+    page,
+    /report \? verdictLabel\(report\.verdict, t\) : statusLabel\(selected\.status, t\)/,
+    "expected ONE headline that is the gate verdict when there is one and the job status otherwise -- not both stacked",
+  );
+
+  // The artifact download row lives in the drawer's own 아티팩트 section, under
+  // the verdict, exactly once.
+  pin.match(page, /title=\{t\("아티팩트", "Artifacts", "アーティファクト"\)\}/, "expected a titled 아티팩트 section in the drawer");
+  const artifactRows = (page.match(/<ArtifactRow /g) ?? []).length;
+  pin.match(`count=${artifactRows}`, /^count=1$/, "expected exactly one artifact row on the page");
+
+  // NOTHING BELOW 12px (SECOND ELABORATION item 13) -- on this page AND in the
+  // chrome every genesis screen shares, because a 9px ⓘ glyph or an 11px
+  // 접기 button is exactly the residual the Console pass exists to remove, and
+  // it would otherwise survive by living one file over.
+  for (const [label, source] of [
+    ["app/genesis/page.tsx", page],
+    ["components/genesis/ui.tsx", read("components/genesis/ui.tsx")],
+    ["components/genesis/findings.tsx", read("components/genesis/findings.tsx")],
+    ["components/genesis/GenesisTileMap.tsx", read("components/genesis/GenesisTileMap.tsx")],
+    ["components/genesis/GenesisComparisonPanel.tsx", read("components/genesis/GenesisComparisonPanel.tsx")],
+  ] as const) {
+    pin.doesNotMatch(
+      source,
+      /text-\[(?:[0-9]|1[01])(?:\.\d+)?px\]/,
+      `expected no type below 12px in ${label} -- the Console pass sets 13px body / 12px secondary as the floor`,
+    );
+  }
 });
 
 contractTest("U-1: the comparison's scope sentence has exactly one source", (pin) => {
@@ -1631,7 +2053,15 @@ contractTest("U-1-quick: artifact downloads go through apiFetch, never a bare hr
 contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation hints are deleted", (pin) => {
   const ui = read("components/genesis/ui.tsx");
   const page = read("app/genesis/page.tsx");
-  const map = read("components/genesis/GateFindingsMap.tsx");
+  // CO-EDITED by U-1-map: `GateFindingsMap.tsx` is gone. Its fetch/states/
+  // detail composition became `GenesisTileMap.tsx` (leaflet + CARTO over the
+  // server-computed WGS84) and its pan/zoom SVG canvas became
+  // `DraftLocalMap.tsx`, kept as the honest fallback for a draft the server
+  // will not place. Both halves are read here: the disclaimer moved with the
+  // component that owns the map's chrome, and the deleted operation hint must
+  // stay deleted in BOTH.
+  const tileMap = read("components/genesis/GenesisTileMap.tsx");
+  const localMap = read("components/genesis/DraftLocalMap.tsx");
   const panel = read("components/genesis/GenesisComparisonPanel.tsx");
 
   // ONE tooltip primitive, and it must be reachable by every input a user has.
@@ -1646,10 +2076,14 @@ contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation
 
   // The four DOCTRINE sentences: each still lives verbatim in the file that
   // owns it, now inside the ⓘ instead of permanently on screen.
+  // The local-coordinates disclaimer is now the FALLBACK arm of the map's ⓘ —
+  // it is the honest sentence for a draft with no recorded projection origin,
+  // and the georeferenced arm beside it is the sentence for one that has it.
+  // Still verbatim, still in an InfoTip, still in the file that owns the map.
   pin.match(
-    map,
-    /info=\{t\([\s\S]{0,20}"링크는 초안 네트워크/,
-    "expected the map's local-coordinates disclaimer to move into the ⓘ, not out of the source",
+    tileMap,
+    /<InfoTip[\s\S]{0,900}"링크는 초안 네트워크/,
+    "expected the map's local-coordinates disclaimer to stay in the ⓘ, as the no-basemap arm",
   );
   pin.match(
     panel,
@@ -1669,13 +2103,15 @@ contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation
 
   // The one line that was DELETED rather than moved: how to use a mouse is not
   // a disclosure and has no claim in it to lose. The pattern requires the `t(`
-  // call form on purpose -- the deletion note left in GateFindingsMap.tsx names
+  // call form on purpose -- the deletion note left in DraftLocalMap.tsx names
   // the removed string, and a bare-string pin would match that comment.
-  pin.doesNotMatch(
-    map,
-    /t\("드래그로 이동/,
-    "expected the drag/zoom operation hint to be deleted outright, not moved into a tooltip",
-  );
+  for (const [label, source] of [["GenesisTileMap", tileMap], ["DraftLocalMap", localMap]] as const) {
+    pin.doesNotMatch(
+      source,
+      /t\("드래그로 이동/,
+      `expected the drag/zoom operation hint to stay deleted in ${label}, not to reappear when the renderer split in two`,
+    );
+  }
 });
 
 contractTest("U-1-quick: a 생성 이력 row states its region and its scale, or says '—'", (pin) => {
@@ -1807,25 +2243,73 @@ contractTest("B2: the region page ends at the staging door and hands off to B1's
     "expected a missing ODbL note to be reported as missing rather than replaced with one we wrote",
   );
 
-  // What of the 0.4 mockup did NOT ship is said on the page, not only in a
-  // commit message -- a consultant who read the mockup would otherwise look for
-  // a feature and conclude the page is broken. The LASSO left this list when it
-  // shipped (stage (a)); the two that act on drafted geometry did not, and the
-  // paragraph has to say which is which rather than going quiet.
-  pin.match(
-    page,
-    /폴리곤 라쏘는 이제 지원하고, 잘라내기도 그린 폴리곤 기준입니다/,
-    "expected the page to say the lasso ships AND that the trim follows the drawn ring",
+  // REWRITTEN 2026-08-13 (U-1 polish, the user's decision after live testing --
+  // docs/ux-backlog.md, U-1 "REGION-PAGE ADDENDA"). These three pins used to
+  // REQUIRE the "이 화면에 일부러 넣지 않은 것" disclosure and its two deferred
+  // features. The section is now removed, so they are inverted -- the same
+  // shape this file already uses for a superseded sentence (see the
+  // bounding-box disclosure pinned absent in the lasso test below).
+  //
+  // THE DOCTRINE NOTE, because on this codebase deleting a disclosure is
+  // normally the offence: the named-absence rule governs DATA silently dropped
+  // during processing -- a road the trim cut, a count the workbook did not
+  // carry, a zone the gate could not reach. It does NOT govern unbuilt roadmap
+  // features. A reader cannot act on "a button that does not exist yet",
+  // nothing on screen is wrong without the paragraph, and the deferral record
+  // already has a durable home in docs/ux-backlog.md and
+  // docs/product/master-roadmap-v2-2026-08-11.md, which carry it with its
+  // reason and its sequencing. So the SECTION is pinned absent while the
+  // dropped-data disclosures on this page (the polygon-is-the-boundary card,
+  // the estimate caveat, the missing-ODbL note) stay pinned present above and
+  // in the lasso test.
+  //
+  // `withoutComments` on the two section-name pins, for the reason this file
+  // already documents for the deleted drag/zoom hint: the removal note left in
+  // the source NAMES both removed sections so the next reader learns why they
+  // went, and a raw doesNotMatch would fire on the explanation forever.
+  const pageCode = withoutComments(page);
+  pin.doesNotMatch(
+    pageCode,
+    /이 화면에 일부러 넣지 않은 것/,
+    "the deferred-features disclosure was removed by the user on 2026-08-13 -- it must not come back",
   );
-  pin.match(
-    page,
+  pin.doesNotMatch(
+    pageCode,
     /도로 개별 선택·블록 제외\(공유 벽 규칙\)는 의도적으로 다음 단계로 미뤘습니다/,
-    "expected the still-deferred per-road / block-exclusion features to stay named on the page",
+    "the deferred per-road / block-exclusion paragraph belongs to the backlog and the roadmap now, not to this screen",
   );
   pin.doesNotMatch(
     page,
     /사각형 영역만 지원합니다/,
     "the page must not still claim rectangles are the only supported shape",
+  );
+
+  // 추출 이력 -- REMOVED 2026-08-13 by the same user decision. Every generation
+  // consumes a FRESH extract (the B4 runbook's own rule), so a list of past
+  // staged extracts carried no action; generation history lives on the hub.
+  // UI ONLY: the listing binding and the state it fills are deliberately still
+  // here, so this pin asserts the LIST is gone and the plumbing is not.
+  pin.doesNotMatch(
+    pageCode,
+    /추출 이력/,
+    "the staged-extract history list was removed -- generation history lives on /genesis",
+  );
+  pin.doesNotMatch(
+    pageCode,
+    /아직 추출한 영역이 없습니다/,
+    "the removed list must not leave its empty state behind",
+  );
+  pin.match(
+    page,
+    /const entries = await fetchRegionFetches\(\);/,
+    "the listing plumbing stays -- the LIST was removed, not the endpoint or the state it fills",
+  );
+  // The failure that list used to report has to keep a home, or removing the
+  // section would have silently deleted an error path.
+  pin.match(
+    page,
+    /추출 목록을 불러오지 못했습니다/,
+    "expected the listing/polling failure to be named at page level now that its panel is gone",
   );
 
   // ko primary with an explicit ja argument on every t().
@@ -1867,6 +2351,32 @@ contractTest("B2 lasso: the page sends one shape and says the polygon is what ge
     page,
     /return vertices\.length >= 3 \? \{ polygon: vertices \} : null;/,
     "expected the polygon payload to be the drawn ring, and nothing before three corners",
+  );
+
+  // THE LASSO IS THE DEFAULT (U-1 polish, 2026-08-13, the user's call), and the
+  // three pins below are what make that safe rather than merely true. An empty
+  // ring must be genuinely empty: `parsed` is null before three corners, the
+  // measure effect returns on null `parsed` BEFORE it arms the debounce timer,
+  // and DEFAULT_BBOX therefore reaches the rectangle fields and the map centre
+  // but never a measurement. Without the early return, opening this page would
+  // fire an Overpass-limits preview for a shape nobody drew; without the null
+  // measurement, the screen could open on a 둔산-sized "한계 안" nobody asked
+  // for. The `RegionShape` order matters too: `parsed` is read by the submit
+  // path, so a default that produced a shape would arm the extract button.
+  pin.match(
+    page,
+    /useState<RegionMode>\("polygon"\)/,
+    "expected the polygon lasso to be the DEFAULT mode, with the rectangle as the secondary toggle",
+  );
+  pin.match(
+    page,
+    /if \(!parsed\) \{\s*\n\s*setMeasurement\(null\);/,
+    "expected an unfinished shape to clear the measurement and return BEFORE the preview is scheduled -- zero corners must fire no request",
+  );
+  pin.match(
+    page,
+    /\["polygon", t\("폴리곤 \(라쏘\)"/,
+    "expected the polygon pill to be listed first -- the reading order is half of what a default means",
   );
   pin.match(page, /previewRegion\(parsed\)/, "the polygon must be measured by the same server preview");
   pin.match(
@@ -1914,6 +2424,23 @@ contractTest("B2 lasso: the page sends one shape and says the polygon is what ge
     map,
     /weight: 1,\s*\n\s*opacity: 0\.45,\s*\n\s*dashArray: "3 6",/,
     "expected the bounding box to be drawn as a demoted hairline, still present",
+  );
+  // ONE abstract rectangle on this screen, not two. `RegionGauge` draws the
+  // region's extent inside the cap square; in polygon mode the basemap above it
+  // already draws the ring AND the server's derived bounding box, so the gauge
+  // became a third rectangle that answered a question the stat block beside it
+  // answers in numbers -- the user read it, live, as a shape somebody had
+  // drawn. It is gated to rectangle mode (which has no map at all) rather than
+  // deleted, and the two pins hold both halves of that.
+  pin.match(
+    page,
+    /\{mode === "rect" && measurement && \(\s*\n\s*<div[^\n]*>\s*\n\s*<RegionGauge/,
+    "expected the cap gauge to render ONLY in rectangle mode -- polygon mode has the real map",
+  );
+  pin.match(
+    page,
+    /function RegionGauge\(\{ measurement, t \}/,
+    "expected the gauge component itself to survive -- rectangle mode still has nothing else",
   );
   pin.match(
     page,
@@ -2065,17 +2592,47 @@ contractTest("B2: the region API bindings carry the workspace header and the mea
 // ---------------------------------------------------------------------------
 
 contractTest("B3: the gate findings map never draws a silent blank and never invents excluded-zone geometry", (pin) => {
-  const map = read("components/genesis/GateFindingsMap.tsx");
+  // CO-EDITED BY U-1-map (docs/ux-backlog.md item #1). `GateFindingsMap.tsx`
+  // was split, not restyled, and every pin below moved with the half that now
+  // owns the code it describes:
+  //   * `GenesisTileMap.tsx`  -- the fetches, the four named states, the
+  //     leaflet/CARTO basemap, and the choice between it and the fallback;
+  //   * `DraftLocalMap.tsx`   -- the local-coordinates SVG canvas, unchanged:
+  //     the memoized polyline layer, `vector-effect` stroke widths and the
+  //     non-passive wheel listener are all still here and still pinned, because
+  //     that canvas is still what a draft with no recorded origin is drawn on;
+  //   * `findings.tsx`        -- the detail panel and the highlight grouping
+  //     both renderers share, which is what stops the two of them from ever
+  //     disagreeing about which finding touches which link.
+  const tileMap = read("components/genesis/GenesisTileMap.tsx");
+  const localMap = read("components/genesis/DraftLocalMap.tsx");
+  const detail = read("components/genesis/findings.tsx");
   const lib = read("lib/genesisArtifacts.ts");
 
   // No artifact, a failed network fetch and an empty network are three
   // DIFFERENT named states -- never a blank canvas.
-  pin.match(map, /!hasArtifact\s*\)\s*\{[\s\S]*?<EmptyState/, "expected a job with no artifact to render a named empty state");
-  pin.match(map, /loadError &&[\s\S]*?<EmptyState/, "expected a failed network fetch to render a named empty state");
-  pin.match(map, /network\.links\.length === 0[\s\S]*?<EmptyState/, "expected an empty network to render a named empty state");
+  pin.match(tileMap, /!hasArtifact\s*\)\s*\{[\s\S]*?<EmptyState/, "expected a job with no artifact to render a named empty state");
+  pin.match(tileMap, /loadError &&[\s\S]*?<EmptyState/, "expected a failed network fetch to render a named empty state");
+  pin.match(tileMap, /network\.links\.length === 0[\s\S]*?<EmptyState/, "expected an empty network to render a named empty state");
+
+  // A FOURTH named state, added by U-1-map: the census loaded but the SERVER
+  // refused to place this draft on the earth (no recorded projection origin).
+  // That is a degradation, not a failure -- the shape and its findings are
+  // still drawn, in local coordinates, above a sentence that says the basemap
+  // is missing and quotes the server's own reason. What it must never do is
+  // substitute an origin: a network drawn about a guessed origin is the right
+  // shape in the wrong place, with nothing on screen to say so.
+  pin.match(tileMap, /geo \? \(/, "expected the basemap to be used only when the server actually returned degrees");
+  pin.match(
+    tileMap,
+    /배경지도 없이 이 생성의 로컬 좌표로만 그립니다/,
+    "expected the no-basemap fallback to name itself on screen rather than silently degrade",
+  );
+  pin.match(tileMap, /\{geoRefusal && \(/, "expected the server's own refusal reason to be quoted, not swallowed");
+  pin.match(tileMap, /<DraftLocalMap/, "expected the local-coordinates canvas to remain the fallback renderer");
 
   // Every finding this page cannot place on the map is LISTED, not dropped.
-  pin.match(map, /unresolvedCount > 0/, "expected unresolved findings to get their own disclosed section");
+  pin.match(detail, /unresolvedCount > 0/, "expected unresolved findings to get their own disclosed section");
   pin.match(
     lib,
     /return \{ linkIds: \[\], connectorIds: \[\], resolved: false \};/,
@@ -2092,10 +2649,21 @@ contractTest("B3: the gate findings map never draws a silent blank and never inv
     "expected excluded zones to be a named field on the connectivity metadata",
   );
   pin.match(
-    map,
+    detail,
     /이 구역은 최종 좌표가 확정되기 전에 제외되어, 지도에 그릴 좌표가 없습니다/,
     "expected an excluded zone's detail panel to say plainly that it has no coordinates left to draw",
   );
+  // The detail panel is SHARED by both renderers rather than copied into each:
+  // two copies of "why is this link red" is two answers, and a basemap does not
+  // change what a finding says.
+  pin.match(detail, /export function FindingsDetailPanel\(/, "expected ONE detail panel behind both renderers");
+  for (const [label, source] of [["GenesisTileMap", tileMap], ["DraftLocalMap", localMap]] as const) {
+    pin.doesNotMatch(
+      source,
+      /function FindingsDetailPanel\(|function DetailPanel\(/,
+      `expected ${label} to import the shared detail panel, not grow its own copy`,
+    );
+  }
 
   // The artifact fetch stays on the same workspace-header/credentials path
   // every other genesis read in this app uses -- a bare fetch() here would
@@ -2169,17 +2737,23 @@ contractTest("B3: the gate findings map never draws a silent blank and never inv
   // V4 lane findings on one connector is a real shape) -- the detail panel
   // must list every finding touching the clicked element, not silently
   // collapse to the first and hide the rest.
-  pin.match(map, /kind: "finding"; refs: FindingRef\[\]/, "expected a selection to carry EVERY finding on the clicked element, not just one");
-  pin.match(map, /selected\.refs\.map\(/, "expected the detail panel to render the full list of findings for the clicked element");
-  pin.doesNotMatch(map, /if \(refs\[0\]\) setSelected/, "must not collapse a multi-finding element's click down to only its first finding");
+  pin.match(detail, /kind: "finding"; refs: FindingRef\[\]/, "expected a selection to carry EVERY finding on the clicked element, not just one");
+  pin.match(detail, /selected\.refs\.map\(/, "expected the detail panel to render the full list of findings for the clicked element");
+  for (const [label, source] of [["GenesisTileMap", tileMap], ["DraftLocalMap", localMap]] as const) {
+    pin.doesNotMatch(
+      source,
+      /if \(refs\[0\]\) setSelected/,
+      `${label} must not collapse a multi-finding element's click down to only its first finding`,
+    );
+  }
 
   // FIX B3-9: a JSX `onWheel` prop is registered PASSIVE by this app's React
   // 19, so `event.preventDefault()` inside it is a silent no-op and the page
   // scrolls underneath an attempted zoom. The fix must be a real, non-passive
   // DOM listener, not the JSX prop.
-  pin.doesNotMatch(map, /onWheel=\{handleWheel\}/, "a JSX onWheel handler cannot preventDefault under this app's React 19 -- must not be reintroduced");
+  pin.doesNotMatch(localMap, /onWheel=\{handleWheel\}/, "a JSX onWheel handler cannot preventDefault under this app's React 19 -- must not be reintroduced");
   pin.match(
-    map,
+    localMap,
     /addEventListener\("wheel", handleWheelNative, \{ passive: false \}\)/,
     "expected the wheel handler to be attached as a real, non-passive DOM listener",
   );
@@ -2190,9 +2764,9 @@ contractTest("B3: the gate findings map never draws a silent blank and never inv
   // polyline layer's props entirely (a memoized component) and uses
   // `vector-effect="non-scaling-stroke"` for constant on-screen width instead
   // of a per-render division.
-  pin.match(map, /const NetworkLayer = memo\(function NetworkLayer\(/, "expected the polyline layer to be a component memoized against everything except `view`");
-  pin.match(map, /vectorEffect="non-scaling-stroke"/, "expected constant-width strokes via vector-effect, not a view.scale division read on every element");
-  pin.doesNotMatch(map, /strokeWidth=\{[\d.]+ \/ view\.scale\}/, "must not reintroduce a per-element view.scale read for stroke width");
+  pin.match(localMap, /const NetworkLayer = memo\(function NetworkLayer\(/, "expected the polyline layer to be a component memoized against everything except `view`");
+  pin.match(localMap, /vectorEffect="non-scaling-stroke"/, "expected constant-width strokes via vector-effect, not a view.scale division read on every element");
+  pin.doesNotMatch(localMap, /strokeWidth=\{[\d.]+ \/ view\.scale\}/, "must not reintroduce a per-element view.scale read for stroke width");
 
   // FIX B3-11: `loading` was ALSO a dependency of the fetch effect above --
   // `setLoading(true)` (inside the effect) then re-fired the effect on the
@@ -2203,13 +2777,140 @@ contractTest("B3: the gate findings map never draws a silent blank and never inv
   // fetch. Removing the dependency is race-free at every delay tested.
   // Found live 2026-08-12, second finding on this same effect; re-verified
   // empirically 2026-08-12.
-  const fetchEffectDeps = sliceBetween(map, "}, [open, network,", "]);\n\n  const bbox");
-  pin.match(fetchEffectDeps, /\S/, "expected the fetch effect's dependency array in GateFindingsMap.tsx (markers moved? the doesNotMatch below would pass vacuously on empty input)");
+  // The dependency array moved to GenesisTileMap.tsx with the fetch, and lost
+  // `open` (the panel no longer collapses -- the drawer is the disclosure now).
+  // Both halves of the eternal-spinner fix are still asserted: `loadError` is
+  // IN the guard, and `loading` is OUT of the deps.
+  const fetchEffectDeps = sliceBetween(tileMap, "}, [network, loadError,", "]);");
+  pin.match(fetchEffectDeps, /\S/, "expected the fetch effect's dependency array in GenesisTileMap.tsx (markers moved? the doesNotMatch below would pass vacuously on empty input)");
   pin.doesNotMatch(
     fetchEffectDeps,
     /\bloading\b/,
     "the fetch effect must not depend on `loading` -- it sets `loading` itself, so a dependency on it makes the effect cancel its own in-flight fetch via cleanup, producing an eternal spinner",
   );
+  pin.match(
+    tileMap,
+    /if \(network \|\| loadError !== null \|\| !hasArtifact\) return;/,
+    "expected `loadError` to stay IN the fetch guard -- without it a failed fetch clears its own error and retries forever",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// U-1-map -- the map's own source of degrees, and the three-colour discipline
+// ---------------------------------------------------------------------------
+
+contractTest("U-1-map: the basemap's WGS84 comes from the server, through apiFetch, and is never guessed", (pin) => {
+  const lib = read("lib/genesisArtifacts.ts");
+  const tileMap = read("components/genesis/GenesisTileMap.tsx");
+  const router = readFileSync(path.join(repoRoot, "backend", "routers", "genesis.py"), "utf-8");
+  const service = readFileSync(
+    path.join(repoRoot, "backend", "services", "genesis", "geojson.py"),
+    "utf-8",
+  );
+
+  // ONE binding owns the route, and it goes through apiFetch -- the only path
+  // that takes the same-origin proxy and attaches the session cookie plus
+  // X-Workspace-Id. A bare fetch() here would silently read the DEFAULT
+  // project's job, which is the named 1.4 hole.
+  pin.match(
+    lib,
+    /await apiFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/artifact\/geojson`/,
+    "expected the GeoJSON to be read through apiFetch (cookie + workspace header)",
+  );
+  pin.doesNotMatch(lib, /\n\s*const r = await fetch\(/, "genesis artifact reads must not bypass the workspace-header fetch helper");
+  pin.match(tileMap, /fetchGenesisDraftGeoJson\(jobId\)/, "expected the map to take its degrees from that one binding");
+
+  // THE CONVERSION IS SERVER-SIDE, on the plane the draft RECORDED. The client
+  // must not carry a projection at all: the whole reason this is honest (unlike
+  // the consultant Helmert fit) is that it inverts a transform this program
+  // performed, using the origin that transform wrote down.
+  pin.match(service, /def plane_for_draft\(/, "expected the plane to be reconstructed server-side from the draft's own metadata");
+  pin.match(service, /LocalTangentPlane\(lat0_deg=float\(lat\), lon0_deg=float\(lon\)\)/, "expected the EXACT recorded origin, not a re-derived one");
+  pin.doesNotMatch(
+    withoutComments(tileMap),
+    /Math\.(?:sinh|atan|radians)|20037508/,
+    "the client must carry no projection arithmetic of its own -- the server owns the inverse",
+  );
+
+  // AND IT REFUSES rather than guessing. A draft with no recorded origin cannot
+  // be placed; inventing one draws every link in the right shape at the wrong
+  // place, which is the silent kind of wrong this product exists to refuse.
+  pin.match(service, /class DraftGeoJsonRefused\(Exception\):/, "expected a named refusal for a draft that cannot be placed");
+  pin.match(service, /"genesis_draft_has_no_projection_origin"/, "expected the refusal to carry a stable code the UI can translate");
+  pin.doesNotMatch(
+    withoutComments(service),
+    /origin_lat_deg", 0\.0|lat0_deg=0\.0/,
+    "a (0, 0) fallback origin would place a Perth network in the Gulf of Guinea -- there must be none",
+  );
+
+  // The route is declared ABOVE `/artifact/{kind}`; FastAPI matches in
+  // declaration order, so the generic route would otherwise swallow it.
+  pin.match(
+    router,
+    /@router\.get\("\/jobs\/\{job_id\}\/artifact\/geojson"\)[\s\S]*?@router\.get\("\/jobs\/\{job_id\}\/artifact\/\{kind\}"\)/,
+    "expected the geojson route to be declared before the generic artifact-kind route",
+  );
+  pin.match(
+    router,
+    /def get_artifact_geojson\(job_id: str, user: dict\[str, Any\] = Depends\(current_user\)\)/,
+    "expected the geojson route to require a signed-in user, like every other artifact read",
+  );
+});
+
+contractTest("U-1-map: the genesis screens use three accent colours, and the fourth state is mono", (pin) => {
+  // A USER DECISION, 2026-08-13, resolving the amber question this backlog had
+  // carried open since the palette audit. The accents are rose (fail/refuse),
+  // emerald (pass), sky (selection/info/link) -- and nothing else.
+  //
+  // WHY DROPPING AMBER DOES NOT WEAKEN THE not_checkable DOCTRINE, which is the
+  // only thing at stake: R1.5 requires that a check which could not RUN never
+  // reads as fine. globals.css already remaps the ENTIRE amber family to
+  // neutral for this theme, so amber was never carrying that weight here -- it
+  // was rendering grey, at the same weight as ordinary chrome. The replacement
+  // is louder, not quieter: ink-strength text inside a DOUBLED neutral border
+  // (and, on the map, a heavier dashed stroke), beside a green pass chip. The
+  // WORD is printed either way. A hue was dropped; no claim was.
+  const files: Array<[string, string]> = [
+    ["app/genesis/page.tsx", read("app/genesis/page.tsx")],
+    ["components/genesis/findings.tsx", read("components/genesis/findings.tsx")],
+    ["components/genesis/GenesisTileMap.tsx", read("components/genesis/GenesisTileMap.tsx")],
+    ["components/genesis/DraftLocalMap.tsx", read("components/genesis/DraftLocalMap.tsx")],
+    ["components/genesis/GenesisComparisonPanel.tsx", read("components/genesis/GenesisComparisonPanel.tsx")],
+  ];
+  for (const [label, source] of files) {
+    // `withoutComments`, because these files NAME the banned family while
+    // explaining the conversion -- the pin is about live markup.
+    pin.doesNotMatch(
+      withoutComments(source),
+      /(?:border|bg|text|ring|from|to)-amber-/,
+      `${label} must carry no amber-family class -- the accents are rose, emerald and sky, and every former amber state renders mono`,
+    );
+    pin.doesNotMatch(
+      withoutComments(source),
+      /#d97706|#f59e0b|#fbbf24/,
+      `${label} must carry no amber hex either -- the sweep covers the map strokes, not only the Tailwind classes`,
+    );
+  }
+
+  // The three that remain, each still meaning exactly one thing.
+  const findings = read("components/genesis/findings.tsx");
+  pin.match(findings, /REFUSE_COLOR = "#e11d48"/, "expected rose to stay the refuse tier's colour");
+  pin.match(findings, /SELECTED_COLOR = "#0ea5e9"/, "expected sky to stay reserved for the clicked element");
+
+  // The warn tier is told apart by WEIGHT and SHAPE now, so the dash is
+  // load-bearing -- and both renderers plus the legend must use the same one,
+  // or the legend stops describing the map.
+  pin.match(findings, /export const WARN_DASH = /, "expected one shared dash pattern for the warn tier");
+  // BOTH warn strokes -- links and connectors are drawn by two separate passes,
+  // and dashing only one of them would leave half the warn tier looking normal.
+  const svgDashes = (read("components/genesis/DraftLocalMap.tsx").match(/strokeDasharray=\{WARN_DASH\}/g) ?? []).length;
+  pin.match(`count=${svgDashes}`, /^count=2$/, "expected the SVG canvas to dash BOTH its warn strokes (links and connectors)");
+  pin.match(
+    read("components/genesis/GenesisTileMap.tsx"),
+    /dashArray: pass === "warn" \? WARN_DASH : undefined/,
+    "expected the leaflet layer to dash its warn strokes with the same pattern",
+  );
+  pin.match(findings, /dashed \? \(/, "expected the legend swatch to show the dash, so it still describes what the map draws");
 });
 
 contractTest("B3: generation comparison stays scoped to gate results and named counts, never geometry", (pin) => {
@@ -2488,11 +3189,15 @@ contractTest(
 
     // A cell that fails the pattern is a NAMED, VISIBLE, per-cell error, and
     // it blocks 만들기 -- never a silent coercion, and never lost among the
-    // other cells.
+    // other cells. The foreground moved from `text-rose-900` to the ink ramp on
+    // 2026-08-13 under the tinted-box rule (see "U-1: three accent colours,
+    // tint in the fill, ink in the text"): the ERROR STYLE is what this pin is
+    // about and it is unchanged -- rose fill, rose border -- while the text
+    // stops taking its colour from the same family it sits on.
     pin.match(
       page,
-      /invalid\s*\n\s*\? "border-rose-400 bg-rose-50 text-rose-900"\s*\n\s*: "border-slate-300"/,
-      "expected an invalid link-id cell to render its own error style",
+      /invalid\s*\n\s*\? "border-rose-400 bg-rose-50 text-slate-800"\s*\n\s*: "border-slate-300"/,
+      "expected an invalid link-id cell to render its own error style (rose fill + border, ink-ramp text)",
     );
     pin.match(
       page,
@@ -2539,3 +3244,167 @@ contractTest(
     );
   },
 );
+
+// ---------------------------------------------------------------------------
+// U-1 polish (2026-08-13) -- the colour rules for the three genesis sub-screens
+// (region / demand / phases). Layout-adjacent by nature, so they live in one
+// test of their own, per this file's own rule about keeping brittle style pins
+// away from behavioural ones.
+// ---------------------------------------------------------------------------
+
+contractTest("U-1: three accent colours, tint in the fill, ink in the text", (pin) => {
+  const files: Array<[string, string]> = [
+    ["app/genesis/region/page.tsx", read("app/genesis/region/page.tsx")],
+    ["app/genesis/demand/page.tsx", read("app/genesis/demand/page.tsx")],
+    ["app/genesis/phases/page.tsx", read("app/genesis/phases/page.tsx")],
+  ];
+
+  // ---- RULE 1: a tinted box is a FILL, never an INK -------------------------
+  //
+  // REPORTED FROM LIVE USE (the user, 2026-08-13): the region page's polygon
+  // info box was blue-on-blue, the same disease as the gate's green-on-green
+  // pass cells. THE MECHANISM, measured against globals.css: the `@theme` dark
+  // remap covers only the Tailwind shades this app happened to be using when it
+  // was written -- sky 50/200/400/500/600, emerald 50-800, blue 50-800, rose
+  // 50-900, amber 50-900, slate 50-950. A `text-*` shade OUTSIDE that list keeps
+  // Tailwind's stock LIGHT-mode value and lands on a DARK fill of its own
+  // family: `text-sky-900` (#0c4a6e) on `bg-sky-50` (remapped to #032042),
+  // `text-emerald-900` (#064e3b) on `bg-emerald-50` (remapped to #1e2b22).
+  //
+  // The rule is family-wide rather than a per-shade allow-list, because an
+  // allow-list means re-reading globals.css every time a box is added: a tinted
+  // box states its tint in the BACKGROUND and the BORDER, and takes its text
+  // from the neutral ink ramp.
+  //
+  // The pattern is anchored on a pair of quotes and forbids newlines between
+  // them, so it fires on a class STRING (a className attribute or a
+  // classes-returning helper) and not on the doc comments that legitimately
+  // name the removed combinations while explaining them.
+  const tintFamilyInk =
+    /"[^"\n]*bg-(sky|emerald|blue|rose|amber)-(?:50|100)[^"\n]*text-\1-\d{2,3}[^"\n]*"|"[^"\n]*text-(sky|emerald|blue|rose|amber)-\d{2,3}[^"\n]*bg-\2-(?:50|100)[^"\n]*"/;
+  // `border-sky-300` is the same fall-through in a border -- sky-300 is not in
+  // the remap either, so it renders as stock #7dd3fc, a bright cyan hairline
+  // nothing else in this app draws.
+  const unmappedSkyBorder = /"[^"\n]*border-sky-300[^"\n]*"/;
+
+  for (const [name, source] of files) {
+    pin.doesNotMatch(
+      source,
+      tintFamilyInk,
+      `${name}: a tinted box must carry its tint in the fill and border only -- a same-family text-* shade renders dark-on-dark under the globals.css remap`,
+    );
+    pin.doesNotMatch(
+      source,
+      unmappedSkyBorder,
+      `${name}: sky-300 is outside the dark remap and renders as stock #7dd3fc -- use border-sky-200`,
+    );
+  }
+
+  // The corrected forms exist, so this test fails in BOTH directions: a
+  // regression that reintroduces the family ink trips the pins above, and a
+  // sweep that deleted the tints instead of fixing them trips these.
+  pin.match(
+    files[0][1],
+    /"border-sky-200 bg-sky-50 text-slate-800"/,
+    "expected the region page's info tint to survive as fill + border with ink-ramp text",
+  );
+  pin.match(
+    files[0][1],
+    /"border-emerald-300 bg-emerald-50 text-slate-800"/,
+    "expected the staged/pass tint to survive the same way",
+  );
+  pin.match(
+    files[2][1],
+    /"border-emerald-300 bg-emerald-50 text-slate-800"/,
+    "expected the 확인됨 chip to keep its green fill with ink-ramp text",
+  );
+
+  // ---- RULE 2: three accent colours, and amber is not one of them -----------
+  //
+  // USER DECISION, 2026-08-13, settling the amber question this repo has
+  // carried open since the palette lock. The genesis screens have exactly three
+  // accent hues: rose = fail/refuse, emerald = pass, sky = selection/info/link.
+  // Everything that used amber -- 확인 불가 / not_checkable, warn-tier findings,
+  // 재확인 필요, rests-on-attestation, provisional chips, every amber notice box
+  // -- renders MONO: the neutral ramp at ink strength, a heavier
+  // `border-slate-400` hairline, and a `ring-1` on the full-width notices.
+  // Distinct through WEIGHT and SHAPE, never through a fourth hue.
+  //
+  // THE DOCTRINE, which is the only thing that had to survive: not_checkable
+  // must still not read as "fine". A mono chip with a heavy ring sitting beside
+  // a green pass chip is visibly NOT the green state, and its own word
+  // (확인 불가 / 재확인 필요 / 경고) is printed on it either way. WHAT IS
+  // DROPPED IS A HUE, NEVER A CLAIM -- and on this theme it was barely a hue:
+  // globals.css:199-211 already remapped the whole amber family to white-alphas
+  // and the ivory ramp, so "amber" rendered grey while still being named as a
+  // warning colour in every call site. Naming the grey is the honest version.
+  //
+  // `withoutComments` is required here: the doc comments in all three files
+  // legitimately name the banned classes while explaining the conversion, and a
+  // raw doesNotMatch would fire on the explanation forever.
+  const lassoMap = read("components/genesis/RegionLassoMap.tsx");
+  for (const [name, source] of [...files, ["components/genesis/RegionLassoMap.tsx", lassoMap] as [string, string]]) {
+    pin.doesNotMatch(
+      withoutComments(source),
+      /(?:border|bg|text|fill|stroke|ring|from|via|to)-amber-/,
+      `${name}: amber is not one of the three accent colours (rose/emerald/sky) -- a formerly-amber state renders MONO, distinct by weight and ring`,
+    );
+    // The hex half of the same sweep. Leaflet takes colours as strings, so a
+    // class-only pin would have left the lasso's own amber bounding box and its
+    // yellow first corner exactly where they were.
+    pin.doesNotMatch(
+      withoutComments(source),
+      /#d97706|#f59e0b|#fbbf24|#fef08a|#facc15|#eab308/i,
+      `${name}: no amber or yellow hex either -- the sweep covers map strokes and markers, not only Tailwind classes`,
+    );
+  }
+  // The lasso's substitutions, both kept: a neutral residual frame that is still
+  // drawn (deleting it would hide the residual the metre band is measured on),
+  // and a first corner told apart by size and fill rather than by a fourth hue.
+  pin.match(
+    lassoMap,
+    /color: "#898781",\s*\n\s*weight: 1,/,
+    "expected the residual bounding box to keep its hairline in the neutral muted grey",
+  );
+  pin.match(
+    lassoMap,
+    /radius: index === 0 \? 6 : 4,/,
+    "expected the ring's first corner to be findable by SIZE now that it cannot be yellow",
+  );
+  // MONO exists rather than the states having been quietly de-emphasised into
+  // the page background: the heavy hairline is what carries them now.
+  pin.match(
+    files[1][1],
+    /"border-slate-400 bg-slate-100 text-slate-800"/,
+    "expected the demand page's WARN issue to render mono with a heavier hairline, not as a plain muted row",
+  );
+  pin.match(
+    files[2][1],
+    /"border-slate-400 bg-slate-100 text-slate-800"/,
+    "expected 재확인 필요 and 확인 요망 to render mono with a heavier hairline",
+  );
+  pin.match(
+    files[2][1],
+    /border-slate-400 bg-slate-100 px-4 py-3\.5 text-slate-800 ring-1 ring-slate-400/,
+    "expected the stale-confirmation banner -- the one thing on that screen that must not be one click away -- to carry the heavy ring",
+  );
+  // And the words the colour used to carry are all still printed.
+  pin.match(files[1][1], /t\("경고", "WARN", "警告"\)/, "the WARN word stays -- the word is what says warning, not the hue");
+  pin.match(files[2][1], /t\("재확인 필요", "RE-CONFIRM", "再確認要"\)/, "재확인 필요 stays a printed word");
+  pin.match(files[2][1], /t\("확인 요망", "FLAG", "要確認"\)/, "확인 요망 stays a printed word");
+
+  // ---- RULE 3: the 12px type floor -----------------------------------------
+  //
+  // The user's report was "too much small text", and these three screens had
+  // four sizes below the floor (9, 10, 10.5 and 11px) carrying real content --
+  // the region measurement's coordinate readout, the phases state chips, every
+  // provenance line. Console density: section titles 15px, body 13, secondary
+  // 12 muted, nothing under 12.
+  for (const [name, source] of [...files, ["components/genesis/RegionLassoMap.tsx", read("components/genesis/RegionLassoMap.tsx")] as [string, string]]) {
+    pin.doesNotMatch(
+      withoutComments(source),
+      /text-\[(?:\d|10|10\.5|11)(?:\.\d+)?px\]/,
+      `${name}: nothing under 12px survives the density pass -- raise it to text-xs`,
+    );
+  }
+});

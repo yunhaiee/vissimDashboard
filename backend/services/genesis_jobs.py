@@ -1588,7 +1588,9 @@ def gate_and_publish(
 
     _update(job_id, phase=PHASE_PUBLISHING)
     try:
-        publication = _register_as_active_dataset(record, inpx_path)
+        publication = _register_as_active_dataset(
+            record, inpx_path, draft_metadata=metadata
+        )
     except Exception as exc:  # noqa: BLE001 - see below; recorded, then re-raised
         # A storage refusal here is NORMAL operation on Windows, not an exotic
         # error: ``services/datasets.py`` documents that anything holding
@@ -1659,7 +1661,54 @@ def gate_and_publish(
         ) from exc
 
 
-def _register_as_active_dataset(record: dict[str, Any], inpx_path: Path) -> dict[str, Any]:
+def _dataset_georeference(draft_metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The transform that places THIS network on the earth, or ``None``.
+
+    U-1-map (docs/ux-backlog.md, elaboration item #7). Read straight out of the
+    draft's own ``metadata.projection`` — the origin ``services/genesis/draft.py``
+    recorded when it projected the OSM degrees into metres — and handed to
+    ``datasets.set_active_dataset_georeference`` so ``routers/geojson.py`` can
+    invert THIS dataset's metres instead of applying the SouthSt Helmert
+    constants to every dataset alike.
+
+    ``None`` whenever the origin is not both present and numeric. That is not a
+    defensive shrug: the caller CLEARS the record on ``None``, so a generation
+    whose draft carries no origin leaves the dataset with no transform (the map
+    then reports it honestly) rather than inheriting the previous dataset's —
+    which would draw this network in the last one's place.
+
+    The units are stated in the record (``kind``) rather than assumed by the
+    reader, and no radius is copied: they are derived from the origin, and
+    ``LocalTangentPlane`` recomputes them from it on the other side.
+    """
+    from services.genesis.project import is_valid_origin_deg
+
+    projection = ((draft_metadata or {}).get("metadata") or {}).get("projection") or {}
+    lat = projection.get("origin_lat_deg")
+    lon = projection.get("origin_lon_deg")
+    # The SAME range check `services.genesis.geojson.plane_for_draft` applies on
+    # the read side, applied here on the write side: a swapped-but-numeric pair
+    # recorded onto a dataset would mirror the dashboard map onto the far side
+    # of the planet, and it is cheaper to refuse to record it than to notice
+    # later. `None` CLEARS the record, so the dataset ends up honestly
+    # untransformed rather than inheriting the previous one's plane.
+    if not is_valid_origin_deg(lat, lon):
+        return None
+    return {
+        "kind": str(projection.get("kind") or ""),
+        "datum": str(projection.get("datum") or "WGS84"),
+        "origin_lat_deg": float(lat),
+        "origin_lon_deg": float(lon),
+        "source": "genesis_draft",
+    }
+
+
+def _register_as_active_dataset(
+    record: dict[str, Any],
+    inpx_path: Path,
+    *,
+    draft_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Make this artifact the workspace's active Vissim dataset.
 
     Private, and called from exactly ONE place — :func:`gate_and_publish`, after
@@ -1673,10 +1722,23 @@ def _register_as_active_dataset(record: dict[str, Any], inpx_path: Path) -> dict
     a failure mid-promote leaves the previous dataset byte-identical. What the
     generation REPLACED is recorded, because "my model disappeared" is otherwise
     an unanswerable support question.
+
+    ``draft_metadata`` is the census :func:`gate_and_publish` already read (the
+    same dict the gate judged against, never re-read here — two reads of one
+    file is two answers waiting to disagree). Its projection origin is written
+    to the dataset AFTER the promote, so the transform can never be recorded for
+    a dataset that failed to land. See :func:`_dataset_georeference`.
     """
     previous = datasets.get_active_dataset()
-    stored = datasets.save_active_dataset(
-        f"{record['name']}.inpx", inpx_path.read_bytes()
+    # ONE call, holding ONE lock across the promote and the georeference write.
+    # These used to be two separately-locked calls, and the gap between them was
+    # a real window: a second registration landing there left ITS bytes under
+    # THIS generation's projection origin, both writes reporting success. See
+    # ``datasets.save_active_dataset_with_georeference``.
+    stored = datasets.save_active_dataset_with_georeference(
+        f"{record['name']}.inpx",
+        inpx_path.read_bytes(),
+        _dataset_georeference(draft_metadata),
     )
     return {
         "published_at": _now_iso(),

@@ -927,6 +927,16 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       app-wide-login decision, DECISIONS 2026-08-11); it stops this router
       handing the bytes to someone with no identity at all.
 
+    **U-1-map (docs/ux-backlog.md, elaboration item #1) adds ONE more read for
+    exactly the same reason: ``GET /api/genesis/jobs/{job_id}/artifact/geojson``**
+    — the draft network's geometry in WGS84 degrees instead of the draft's own
+    metres. It is computed per request rather than served from a file, but what
+    it returns IS the network, so the laundering argument above applies to it
+    unchanged: a coordinate system does not decide who may read a refused
+    generation's roads. Listed separately from ``artifact/{kind}`` and declared
+    ABOVE it in ``routers/genesis.py``, because FastAPI matches in declaration
+    order and the ``{kind}`` route would otherwise swallow it.
+
     **B2 (roadmap v2 §5.B) adds exactly ONE: POST /api/genesis/region/fetches.**
     A region fetch writes a staged ``.osm`` into the project's tree — the same
     reason ``POST /api/genesis/uploads`` is guarded — and it is additionally the
@@ -1027,6 +1037,7 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/genesis/demand-inputs/parse",
         "/api/genesis/demand-inputs/build",
         "/api/genesis/jobs",
+        "/api/genesis/jobs/{job_id}/artifact/geojson",
         "/api/genesis/jobs/{job_id}/artifact/{kind}",
         "/api/genesis/jobs/{job_id}/live-check",
         "/api/genesis/phase-diagrams",

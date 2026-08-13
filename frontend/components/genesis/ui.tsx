@@ -32,8 +32,8 @@
 //
 // COLLAPSE IS ALLOWED, DELETION IS NOT. The optional `collapsible` prop below
 // exists so a screen can put a section one click away; it uses the same
-// 펼치기/접기 wording (and the same button chrome) `GateFindingsMap`'s MapShell
-// already uses, so the app grows no second disclosure vocabulary. A caller that
+// 펼치기/접기 wording (and the same button chrome) the genesis screens already
+// use, so the app grows no second disclosure vocabulary. A caller that
 // needs a section's open state to follow the DATA (open it when this
 // intersection's cross-check flagged something) passes `defaultOpen` and a
 // `key` that changes with the data -- severity decides the default, the reader
@@ -45,16 +45,32 @@ import { useLanguage } from "@/components/LanguageProvider";
 
 type Translate = (ko: string, en: string, ja: string) => string;
 
-/** The two paddings the four copies actually shipped with, named rather than
- * averaged away. `regular` = genesis + region; `compact` = demand + phases. */
+/** The paddings the four copies actually shipped with, named rather than
+ * averaged away. `regular` = the original genesis + region variant; `compact` =
+ * demand + phases.
+ *
+ * `console` is U-1's second elaboration (docs/ux-backlog.md item 13): the
+ * reference design's ONE-LAYER card — 24px of padding and 32px of rhythm
+ * between sections, instead of a 20/16 card that then nests more boxes inside
+ * itself. It is a third named value rather than a redefinition of `regular`
+ * for the same reason the first two were kept apart: silently restyling a
+ * screen nobody reviewed is how a "shared component" becomes a surprise.
+ *
+ * All FOUR genesis screens take `console` as of 2026-08-13 (unit #13) — every
+ * Panel on every one of them was measured as a top-level sibling first, so the
+ * larger padding could not land on a card nested inside another card, which is
+ * the exact disease item 9 reported. `regular`/`compact` are kept for the
+ * screens outside this family that still use them. */
 const DENSITY = {
   regular: "mb-5 px-5 py-4",
   compact: "mb-4 px-4 py-3",
+  console: "mb-8 px-6 py-5",
 } as const;
 
 export function Panel({
   title,
   subtitle,
+  action,
   children,
   density = "regular",
   collapsible = false,
@@ -62,6 +78,11 @@ export function Panel({
 }: {
   title: string;
   subtitle?: string;
+  /** ONE control, top-right of the section header — the Console list pattern
+   * (docs/ux-backlog.md, the LIST REFERENCE paragraph: "ONE primary action
+   * top-right of the section"). Deliberately singular: a slot that took an
+   * array is a slot that grows a toolbar. */
+  action?: React.ReactNode;
   children: React.ReactNode;
   density?: keyof typeof DENSITY;
   /** Adds the 펼치기/접기 toggle. The section is still RENDERED when closed is
@@ -86,15 +107,16 @@ export function Panel({
             * page and everything else at 10-14px, a panel heading that matched
             * its own body left these screens with effectively two type sizes
             * and no middle. */}
-          <h2 className="text-[15px] font-bold text-slate-900">{title}</h2>
-          {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
+          <h2 className="text-[15px] font-semibold text-slate-900">{title}</h2>
+          {subtitle && <p className="mt-1 text-[12px] text-slate-500">{subtitle}</p>}
         </div>
+        {action}
         {collapsible && (
           <button
             type="button"
             onClick={() => setOpen((current) => !current)}
             aria-expanded={open}
-            className="shrink-0 rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-slate-700"
+            className="shrink-0 rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 text-[12px] font-semibold text-slate-700"
           >
             {open ? t("접기", "Collapse", "折りたたむ") : t("펼치기", "Expand", "展開")}
           </button>
@@ -134,10 +156,21 @@ export function Panel({
  *     `aria-describedby` while it is open, so a screen reader announces the
  *     sentence as the button's description instead of losing it entirely.
  *
- * The trigger draws its own circled "i" (a bordered span around the letter)
- * rather than printing U+24D8 ⓘ: the glyph is missing from several of the
- * fonts in this app's ko/ja stack and would render as a tofu box on exactly
- * the machines the product is being sold into.
+ * The trigger draws its own circled "i" rather than printing U+24D8 ⓘ: that
+ * glyph is missing from several of the fonts in this app's ko/ja stack and
+ * would render as a tofu box on exactly the machines the product is being sold
+ * into.
+ *
+ * It draws the letter as SVG GEOMETRY, not as a text node, and that is a fix
+ * rather than a flourish. Reported from live review 2026-08-13: the "i" sat
+ * visibly below the circle's centre. The cause is that flex centring centres a
+ * text node's LINE BOX, and a line box is symmetric about the baseline —
+ * whereas the ink of a lowercase "i" is all above it, with no descender to
+ * balance the ascent. So the glyph lands low by roughly half the descender
+ * depth, by an amount that changes with whichever font in the ko/ja stack
+ * actually resolves. Nudging it with a margin would be tuning a constant
+ * against one machine's font. Two shapes in a square viewBox are centred by
+ * arithmetic this file controls, in every font, at every size.
  */
 export function InfoTip({ text, label }: { text: string; label?: string }) {
   const { t } = useLanguage();
@@ -169,15 +202,23 @@ export function InfoTip({ text, label }: { text: string; label?: string }) {
             setHovering(false);
           }
         }}
-        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white/[0.06] text-[9px] font-bold leading-none text-slate-500"
+        className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white/[0.06] text-slate-500"
       >
-        <span aria-hidden>i</span>
+        {/* The dot and the stem are placed about the viewBox's own centre
+          * (y = 8): dot 2.2→5.4, gap, stem 6.8→13.2, so the ink spans 2.2→13.2
+          * and is centred on 7.7 — half a unit high, which reads as centred
+          * once the circular border is taken into account. No font metrics
+          * involved, so it cannot drift with the ko/ja fallback stack. */}
+        <svg viewBox="0 0 16 16" className="h-[11px] w-[11px]" fill="currentColor" aria-hidden="true">
+          <circle cx="8" cy="3.8" r="1.6" />
+          <rect x="6.9" y="6.8" width="2.2" height="6.4" rx="1.1" />
+        </svg>
       </button>
       {open && (
         <span
           id={tooltipId}
           role="tooltip"
-          className="absolute left-0 top-5 z-30 w-64 rounded-md border border-slate-300 bg-surface px-2.5 py-2 text-left text-[11px] font-normal leading-relaxed text-slate-600 shadow-[0_16px_34px_rgba(15,23,42,0.28)]"
+          className="absolute left-0 top-6 z-30 w-72 rounded-md border border-slate-300 bg-surface px-3 py-2.5 text-left text-[13px] font-normal leading-relaxed text-slate-600 shadow-[0_16px_34px_rgba(15,23,42,0.28)]"
         >
           {text}
         </span>

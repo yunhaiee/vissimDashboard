@@ -230,13 +230,21 @@ export default function RegionLassoMap({
         // residual metre band and the size estimate use. A hairline at 45%
         // opacity keeps that fact visible without competing with the shape the
         // user actually drew — deleting it would hide the residual instead.
+        //
+        // MONO since the three-colour decision (2026-08-13; the rule is stated
+        // in full above `statusClasses` in app/genesis/region/page.tsx). The
+        // stroke was amber, and amber is no longer one of this product's
+        // accents — rose means refuse, emerald means pass, sky means the thing
+        // you selected or drew. The residual frame is none of those, so it is
+        // neutral: `--text-muted`, the same grey the chrome around it uses. The
+        // demotion is unchanged — hairline, dashed, 45%.
         L.rectangle(
           [
             [bbox.south, bbox.west],
             [bbox.north, bbox.east],
           ],
           {
-            color: "#f59e0b",
+            color: "#898781",
             weight: 1,
             opacity: 0.45,
             dashArray: "3 6",
@@ -264,12 +272,21 @@ export default function RegionLassoMap({
           }).addTo(layer);
         }
       }
+      // The FIRST corner is the one a user aims the closing double-click near,
+      // so it has to be findable. It used to be findable by being yellow, which
+      // the three-colour decision (2026-08-13) removed: the accents are rose,
+      // emerald and sky, and a ring corner is none of those three states — it is
+      // part of the shape being drawn, so it is sky like the rest of the ring.
+      // It is told apart by SIZE and FILL instead: a wider marker with an ivory
+      // centre against the pale-sky centres of the others. Distinct by weight
+      // and shape, which is the same substitution every dropped amber state on
+      // these screens took.
       vertices.forEach(([lat, lon], index) => {
         L.circleMarker([lat, lon], {
-          radius: 4,
+          radius: index === 0 ? 6 : 4,
           color: "#0ea5e9",
           weight: 2,
-          fillColor: index === 0 ? "#fef08a" : "#e0f2fe",
+          fillColor: index === 0 ? "#fafaf9" : "#e0f2fe",
           fillOpacity: 1,
           interactive: false,
         }).addTo(layer);
@@ -306,7 +323,9 @@ export default function RegionLassoMap({
         <button
           type="button"
           onClick={() => void fit()}
-          className="absolute bottom-2 right-2 z-[400] rounded-md border border-slate-400 bg-surface/90 px-2 py-1 text-[11px] font-semibold text-slate-700"
+          // 12px floor, U-1 polish 2026-08-13: this button sits ON the tiles,
+          // which is the worst background this app has for small type.
+          className="absolute bottom-2 right-2 z-[400] rounded-full border border-slate-400 bg-surface/90 px-2.5 py-1 text-xs font-semibold text-slate-700"
         >
           {fitLabel}
         </button>

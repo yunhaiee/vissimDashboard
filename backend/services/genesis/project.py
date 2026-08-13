@@ -137,6 +137,30 @@ NOT_GEOREFERENCED_NOTE = (
 )
 
 
+def is_valid_origin_deg(lat_deg: float, lon_deg: float) -> bool:
+    """Could ``(lat, lon)`` be a WGS84 origin at all?
+
+    A range check, and it exists because "numeric" is not "plausible". A
+    metadata record whose origin arrived with its two fields SWAPPED —
+    ``lat=115.836, lon=-32.07``, the exact shape of a Perth coordinate written
+    the wrong way round — is numeric on both fields, so every ``isinstance``
+    guard downstream passes it and the transform then produces confident
+    garbage: ``cos(115.836°)`` is negative, so east becomes west and the whole
+    network is mirrored onto the far side of the planet with nothing on screen
+    to say so.
+
+    ``bool`` is rejected explicitly because Python's ``bool`` IS an ``int``, so
+    a JSON ``true`` in ``origin_lat_deg`` would otherwise sail through an
+    ``isinstance(x, (int, float))`` check and become latitude 1.0.
+    """
+    for value in (lat_deg, lon_deg):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        if not math.isfinite(float(value)):
+            return False
+    return -90.0 <= float(lat_deg) <= 90.0 and -180.0 <= float(lon_deg) <= 180.0
+
+
 def meridional_radius_m(lat_deg: float) -> float:
     """M(φ) — the ellipsoid's north-south radius of curvature, metres."""
     sin_phi = math.sin(math.radians(lat_deg))

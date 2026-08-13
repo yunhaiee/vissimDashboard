@@ -6043,3 +6043,63 @@ reconstruction script, re-run independently). One pre-existing bug found beside 
 the `source_osm` artifact kind reads a record key that is never written and always 404s —
 unreachable from the UI, split out as its own chip rather than smuggled in. Backend suite
 **4534 / 1 (env RAG) / 1 skip** (+3); contract **56/56**; typecheck clean.
+
+## 2026-08-13 — U-1-map+polish: the genesis screen becomes a console, and the draft's roads land on a real map
+
+**What (elaboration items 1+7 and 9–14, the region addenda and the user's two live tweaks —
+one rebuild, not five patches).** ① The draft finally rides a real basemap. New
+`services/genesis/geojson.py`: `plane_for_draft` rebuilds the `LocalTangentPlane` from the
+draft's stored projection origin and `draft_to_geojson` runs the exact inverse back to WGS84 —
+genesis drafts alone can do this (consultant datasets keep their Helmert constants; that path
+is byte-untouched). Served as `GET /api/genesis/jobs/{job_id}/artifact/geojson`, declared
+ABOVE `artifact/{kind}` because FastAPI matches in declaration order — the refuter proved the
+swap live (route order reversed → the literal segment swallowed as a kind → 404-class
+failure); the auth-route registry test gains the route with its reason written down (a
+coordinate system does not decide who may read a refused generation's roads). The 991-line
+`GateFindingsMap` splits three ways: `GenesisTileMap` (leaflet + CARTO + the geojson),
+`DraftLocalMap` (the SVG fallback — kept for origin-less drafts and endpoint failure, and its
+failure branch QUOTES the server's named reason), and `findings.tsx` so highlight logic exists
+once. The user saw the degradation path live before the commit: the running backend predated
+the endpoint, the page fell back to the SVG and quoted "Unknown artifact kind" — the fallback
+worked on its first real day. ② The dashboard map stops being consultant-only:
+`_register_as_active_dataset` writes per-dataset georeference metadata at publish and
+`routers/geojson.py` transforms per dataset. ③ `app/genesis/page.tsx` becomes the Console
+split: left = form + 생성 이력 as a Skills-style table (muted headers, borderless hover rows,
+mono ids/coords, right-aligned verdict chip), right = a sticky master-detail drawer
+(`minmax(480px, 46%)`, measured live at 46.0%) holding ONE merged verdict header in the stat
+pattern (the two same-meaning refusal banners are dead), the 3×3 grid with nothing selected
+until a click, the map and the artifact row. ④ Region page: polygon lasso is the default,
+RegionGauge / 추출 이력 / the deferred-features disclosure are gone, tinted boxes obey one
+ink-strength contrast rule. ⑤ The three-color rule swept everywhere: rose=fail, emerald=pass,
+sky=selection, all else mono — live-measured zero remnants.
+
+**Verification (adversarial pass held; its gaps plus the user's live tweaks became one fix
+round).** The refuter's attacks on the shipped claims all HELD empirically: a transposed
+origin drifts 0.02° into a 2,217.76 m round-trip failure (the projection really does bite),
+the consultant Helmert path is unchanged, the drawer proportion and null initial selection are
+real, suite count exact. The fix round, five items: (1, user) the 3×3 cells lose the tint —
+color lives ONLY on the state tag; live-measured, all nine cards carry identical mono
+fill/border, box-shadow only on 실패/확인 불가, and a new pin forbids the grid's own markup
+from naming any color (`doesNotMatch /bg-(emerald|rose|sky)-/`). The builder extended the
+rule to the detail box under the grid so one state can't be grey in its cell and green in its
+detail — disclosed, revertible. (2, user) the ⓘ glyph sat low: flex centring centres the LINE
+BOX, which is baseline-symmetric, while a lowercase "i" is all ascender — the offset varied
+with whichever ko/ja fallback font resolved. Replaced with SVG geometry; ink centre now
+0.21 px off, font-independent. (3) `plane_for_draft` trusted stored origins:
+`is_valid_origin_deg` now guards all THREE read-back sites (draft geojson, publish write,
+dashboard read), rejects out-of-range AND `bool` (Python's `bool` IS an `int` — a JSON `true`
+would have become latitude 1.0) AND non-finite floats, both of which passed the old
+`isinstance` guard; refusal quotes both values so a reader sees a transposition. (4) promote
+and georeference-write were two lock acquisitions — a second publish could interleave and
+hand the dashboard one dataset's bytes with another's origin. Now ONE acquisition of the
+existing per-workspace RLock spans both (a wrapper — the callees re-enter); the regression
+test releases a REAL second thread inside the critical section at the exact promoted-but-
+unrecorded moment and fails when the writes are split. The race was real. (5) the contract
+suite's `withoutComments` treated `https://…` inside a string as a `//` comment — rewritten
+as a string/template/regex-aware scanner, self-tested on the exact CARTO tile-URL line that
+proved the old one wrong. The builder logged two of its own trips: it hit the same
+JSX-comment-as-first-child error it had warned its subagent about, and its new doc comment
+quoted the old block-comment regex verbatim — whose `*/` terminated the comment early. Prose
+describing code is code. Final: backend **4570 / 1 (env RAG) / 1 skip** (+13), contract
+**62/62** (+2), typecheck clean, production build passes — backend and contract counts
+re-run independently by the orchestrator, matching.

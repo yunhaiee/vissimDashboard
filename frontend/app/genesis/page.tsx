@@ -4,17 +4,38 @@
 // (the gate is its exit door) + the minimal half of row B3 (the gate's verdict
 // becomes visible to a human).
 //
-// Until this page the whole chain ran from backend/tools/*.py and a consultant
-// had no button. Three backend surfaces, each read from the endpoint that OWNS
-// its data rather than re-derived here:
+// Three backend surfaces, each read from the endpoint that OWNS its data
+// rather than re-derived here:
 //   * POST /api/genesis/uploads  -- stage the .osm (raw body + X-Filename, the
 //     house two-step because this backend has no python-multipart);
 //   * POST /api/genesis/jobs     -- start one generation, then poll
 //     GET /api/genesis/jobs/{id} exactly as the browser would poll a run;
 //   * GET  /api/genesis/jobs/{id}/gate -- the STORED verdict, check by check.
 //
-// WHAT THIS PAGE MUST NOT DO, and the reason it is written this way:
-// the R1.5 gate is a TRI-state per check (pass / fail / not-checkable) and a
+// -------------------------------------------------------------------------
+// THE LAYOUT, AND WHY IT IS A SPLIT (U-1, unit #13)
+// -------------------------------------------------------------------------
+// docs/ux-backlog.md, the SECOND ELABORATION (2026-08-13) items 9-14. The user
+// tested the previous single-column version live and reported: cards nested
+// inside cards with the same title repeated three times, two refusal banners
+// saying the same thing, and a history list carrying only a name and a date.
+// The reference design is the Claude Console dashboard, and its list/detail
+// pattern is what this page now is:
+//
+//   LEFT   the two things you DO — start a generation, and pick one from the
+//          history TABLE (muted column headers, monospace ids and coordinates,
+//          borderless rows whose height carries the separation, the verdict as
+//          a small right-aligned tag chip, pagination once the list grows).
+//   RIGHT  everything about the ONE row you picked, as a detail drawer:
+//          verdict, map, artifacts, comparison. Sticky, so scrolling the
+//          history does not scroll the thing you are reading.
+//
+// Nothing selected shows ONE quiet line, not an empty scaffold.
+//
+// -------------------------------------------------------------------------
+// WHAT THIS PAGE MUST NOT DO, and the reason it is written this way
+// -------------------------------------------------------------------------
+// The R1.5 gate is a TRI-state per check (pass / fail / not-checkable) and a
 // tri-state verdict, and "a check that could not run is never a pass" is the
 // design rule the whole gate hangs on (docs/phase2/DECISIONS.md, 2026-08-11).
 // So a not-checkable check is rendered in its own colour with its own word and
@@ -30,11 +51,11 @@
 // depends on an entry landing in the generated lib/i18n-ja.ts dictionary.
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import GateFindingsMap from "@/components/genesis/GateFindingsMap";
 import GenesisComparisonPanel from "@/components/genesis/GenesisComparisonPanel";
+import GenesisTileMap from "@/components/genesis/GenesisTileMap";
 import { InfoTip, Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
@@ -72,6 +93,11 @@ const POLL_INTERVAL_MS = 1000;
 //: that has already been overturned, slow enough to be invisible in the logs.
 const TERMINAL_RECHECK_MS = 15000;
 
+/** Rows per page in the history table. The LIST REFERENCE (docs/ux-backlog.md)
+ * asks for pagination arrows "when the list grows"; ten is the point at which
+ * the table stops fitting beside the drawer without scrolling the page. */
+const HISTORY_PAGE_SIZE = 10;
+
 const TERMINAL: GenesisJobStatus[] = ["refused", "provisional", "published", "error"];
 
 function isTerminal(status: GenesisJobStatus): boolean {
@@ -85,23 +111,60 @@ function isTerminal(status: GenesisJobStatus): boolean {
 // locally-drifting copy is how a picker option ends up showing a raw
 // `job.status`/ISO timestamp next to this page's already-translated ones.
 
+/**
+ * THREE COLOURS, AND THE FOURTH STATE IS MONO. (User decision, 2026-08-13.)
+ *
+ * This screen may use exactly three accents and no others:
+ *   rose    — fail / refused
+ *   emerald — pass / published
+ *   sky     — selection, info, links
+ *
+ * Everything that used to be AMBER — `not_checkable`, `provisional`, warn-tier
+ * findings, a verdict resting on an attestation — is now MONO: ink-strength
+ * text inside a heavier (2px) neutral border, or a filled neutral chip. It is
+ * told apart by WEIGHT and SHAPE, never by a fourth hue.
+ *
+ * WHY THAT IS SAFE, and it is the only question that matters here. R1.5's rule
+ * is that a check which could not RUN must never read as fine. What made the
+ * old amber unsafe was that globals.css remaps the whole amber family to
+ * NEUTRAL for this theme — so the state that most needed to stand out was
+ * already rendering grey, at the SAME weight as ordinary chrome. Mono with a
+ * doubled border, beside a green pass chip, is louder than that was, and the
+ * word (확인 불가 / 잠정) is printed either way. A hue was dropped; no claim was.
+ *
+ * TINTED BOX = TINT IN THE BACKGROUND AND THE BORDER, INK IN THE TEXT — the
+ * other half of the rule, and the contrast bug it fixes (U-1 second
+ * elaboration item 11, plus the region page's blue-on-blue box reported the
+ * same day). globals.css remaps the Tailwind ramps for dark, but only the
+ * shades this app actually used: `bg-emerald-50` became a DARK green (#1e2b22)
+ * while the emerald 900 foreground was never remapped and stayed Tailwind's
+ * default #064e3b — dark green on dark green. Same trap for sky's 700/800/900
+ * over `bg-sky-50` (#032042). So a tinted box takes its foreground from the
+ * remapped LIGHT end of its own family: emerald-800 (#b0d5b6), rose-800
+ * (#ecac9c), sky-600 (#6da7ec — literally the Console badge pairing the
+ * palette lock names for this navy). Borders come from shades the remap covers
+ * (`*-200`/`*-300`), never from `*-400+` of a tinted family.
+ */
 function statusClasses(status: GenesisJobStatus): string {
   switch (status) {
     case "published":
-      return "border-emerald-300 bg-emerald-50 text-emerald-900";
+      return "border-emerald-300 bg-emerald-50 text-emerald-800";
     case "provisional":
-      return "border-amber-300 bg-amber-50 text-amber-900";
+      return "border-slate-400 bg-slate-100 text-slate-900";
     case "refused":
     case "error":
-      return "border-rose-300 bg-rose-50 text-rose-900";
+      return "border-rose-300 bg-rose-50 text-rose-800";
     default:
-      return "border-sky-300 bg-sky-50 text-sky-900";
+      return "border-sky-200 bg-sky-50 text-sky-600";
   }
 }
 
-/** PASS / FAIL / NOT CHECKABLE — three words, three colours, never two.
- * `not_checkable` gets amber and its own noun because R1.5 forbids counting it
- * as a pass, and a UI that greyed it out would be doing exactly that. */
+/** PASS / FAIL / NOT CHECKABLE — three words, three treatments, never two.
+ * `not_checkable` keeps its OWN NOUN, which is the part R1.5 actually requires:
+ * a check that could not run may never be counted as a pass, so it may never
+ * borrow the pass word. Its treatment is mono-with-a-doubled-border rather than
+ * a third hue (see `statusClasses` above for the user's 2026-08-13 decision and
+ * why greying it out is not what that amounts to). */
 function checkStateLabel(state: GenesisGateCheck["state"], t: Translate): string {
   switch (state) {
     case "pass":
@@ -115,10 +178,47 @@ function checkStateLabel(state: GenesisGateCheck["state"], t: Translate): string
   }
 }
 
-function checkStateClasses(state: GenesisGateCheck["state"]): string {
-  if (state === "pass") return "border-emerald-300 bg-emerald-50 text-emerald-900";
-  if (state === "fail") return "border-rose-300 bg-rose-50 text-rose-900";
-  return "border-amber-300 bg-amber-50 text-amber-900";
+/**
+ * THE STATE TAG CHIP — the ONLY thing on this screen that carries a check's
+ * colour. (User decision from live review, 2026-08-13.)
+ *
+ * The nine cells used to be tinted CARDS: a whole emerald panel for a pass, a
+ * whole rose one for a fail. Nine of them at once read as a block of colour to
+ * decode rather than nine verdicts to scan, and the tint competed with the two
+ * things that actually carry meaning — the check id and its state word. So the
+ * card is mono for every state now (`checkCellClasses`) and the colour moved
+ * onto the small chip that already prints the word.
+ *
+ * The doctrine is untouched and this is where to check that claim: `pass` and
+ * `fail` keep their hues, `not_checkable` stays mono-with-a-doubled-border per
+ * the three-colour rule, the WORD is printed on every chip regardless, and the
+ * CELL still keeps a persistent (now neutral) ring whenever it is not a pass —
+ * so "something here is not fine" is still visible from across the room, and
+ * WHICH not-fine it is, is one glance at the chip.
+ */
+function checkStateTagClasses(state: GenesisGateCheck["state"]): string {
+  if (state === "pass") return "border-emerald-300 bg-emerald-50 text-emerald-800";
+  if (state === "fail") return "border-rose-300 bg-rose-50 text-rose-800";
+  return "border-2 border-slate-400 bg-slate-100 text-slate-900";
+}
+
+/** The card behind a check — mono for EVERY state, so the grid reads as a field
+ * of nine equal cells and the eye goes to the chips. `isSelected` is the only
+ * thing that changes the fill, and the ring is the doctrine: one step for
+ * "not a pass", two steps for "this is the one you opened". */
+function checkCellClasses(state: GenesisGateCheck["state"], isSelected: boolean): string {
+  const base = isSelected
+    ? "border-slate-300 bg-slate-100 text-slate-900"
+    : "border-slate-200 bg-slate-50 text-slate-800";
+  // ONE ring expression, never two classes: both set the same two custom
+  // properties, so emitting both would let stylesheet order — not this file —
+  // decide which one a selected failing cell shows.
+  const ring = isSelected
+    ? "ring-2 ring-slate-500"
+    : state === "pass"
+      ? ""
+      : "ring-1 ring-slate-400";
+  return `${base} ${ring}`;
 }
 
 function verdictLabel(verdict: GenesisGateReport["verdict"], t: Translate): string {
@@ -141,20 +241,14 @@ function verdictLabel(verdict: GenesisGateReport["verdict"], t: Translate): stri
 /** The generation form's own unknown-code sentence, handed to the shared
  * `refusalHeadline` as its fallback: on THIS screen the refused request is a
  * generation, so the generic "요청이 거부되었습니다" would be a step vaguer than
- * the page can afford. Every known code (including the four
- * `genesis_upload_*`/`osm_unreadable`/`draft_refused` ones this page raises)
- * lives in components/genesis/ui.tsx now -- see that file for why four copies
- * became one. */
+ * the page can afford. Every known code lives in components/genesis/ui.tsx. */
 function generationRefusalFallback(t: Translate): string {
   return t("생성이 거부되었습니다", "Generation was refused", "生成が拒否されました");
 }
 
 /** One dropdown line for a staged side input -- filename plus whatever its
  * OWN summary already states (never re-derived here, so the picker cannot say
- * something the staging response did not). `demand`'s summary carries
- * `sites_mapped`/`approaches_mapped`; `signals`'s carries `assignments`. Falls
- * back to just the filename for a shape this picker does not recognise, which
- * covers a future kind without this file needing to know about it first. */
+ * something the staging response did not). */
 function sideInputLabel(entry: StagedSideInputEntry): string {
   const summary = entry.summary ?? {};
   if (entry.kind === "demand") {
@@ -169,14 +263,35 @@ function sideInputLabel(entry: StagedSideInputEntry): string {
   return entry.filename;
 }
 
-/** The cross-navigation chip. One constant so the three read as one row and a
- * fourth entry cannot drift into its own shape. */
-const CROSS_CHIP =
-  "rounded-full border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700";
+/** The cross-navigation chip. Pill-shaped, from the app's own
+ * `.ui-button-ghost` primitive (U-1 second elaboration: "pill-style filter
+ * chips from the existing .ui-button-ghost vocabulary") rather than a fourth
+ * hand-rolled border/background triple. */
+const CROSS_CHIP = "ui-button-ghost rounded-full px-3 py-1 text-[12px] font-medium";
 
-/** Everything a check records beyond its own state. Named once because it is
- * read twice -- it decides both the selection rank below and whether the detail
- * panel renders the "nothing recorded" sentence instead of a blank. */
+/**
+ * THE CONSOLE STAT — a small muted label above a large bold value.
+ *
+ * docs/ux-backlog.md, the SECOND ELABORATION's style transfer: this is the one
+ * pattern the reference design uses wherever a number matters, and it is what
+ * replaces the run-on "통과 7 · 실패 1 · 확인 불가 1" sentence the verdict
+ * banner used to carry. Three stats side by side read as three FACTS; the
+ * same three in a sentence read as prose to skim past.
+ */
+function Stat({ label, value, tone }: { label: string; value: React.ReactNode; tone?: string }) {
+  return (
+    <div className="min-w-[86px]">
+      <p className="text-[12px] text-slate-500">{label}</p>
+      <p className={`mt-0.5 text-[22px] font-semibold leading-none ${tone ?? "text-slate-900"}`}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+/** Everything a check records beyond its own state. Named once because the
+ * detail area reads it to decide whether to render the "nothing recorded"
+ * sentence instead of a blank. */
 function checkHasBody(check: GenesisGateCheck): boolean {
   return (
     check.gaps.length > 0 ||
@@ -187,195 +302,159 @@ function checkHasBody(check: GenesisGateCheck): boolean {
 }
 
 /**
- * SEVERITY DECIDES WHAT YOU SEE FIRST — the same doctrine the collapsed
- * checklist carried (U-1, `checkAutoOpens`), now expressed as an ORDER instead
- * of a boolean, because a grid selects one cell rather than opening several
- * rows.
+ * V1–V9 AS A GRID — EVERY CELL STARTS CLOSED.
  *
- *   0  `fail`          — a refuse-tier fault is why this screen exists.
- *   1  `not_checkable` — R1.5's own rule: a check that could not RUN is never a
- *                        pass, so it outranks every pass here for the same
- *                        reason it may never be counted as one.
- *   2  a PASS that still carries something (gap, finding, warning, or an
- *      omitted-findings count) — a warn-tier finding on a passing check is
- *      still a finding.
- *   3  a clean pass with nothing recorded.
+ * REWRITTEN 2026-08-13 (docs/ux-backlog.md, SECOND ELABORATION item 12, the
+ * user's own refinement after testing the auto-selecting version live): NO
+ * microcopy on the cells, NO checkmark, and NO auto-select. The detail area
+ * below renders NOTHING until the reader clicks a cell.
  *
- * Ties break on the id, ascending (`worstCheckId` below), so among two equal
- * ranks V3 is selected before V7 and the choice is never arbitrary.
- */
-function checkRank(check: GenesisGateCheck): number {
-  if (check.state === "fail") return 0;
-  if (check.state !== "pass") return 1;
-  return checkHasBody(check) ? 2 : 3;
-}
-
-/** The cell the grid opens on. Never null for a report that has checks: an
- * all-passing generation still selects V1 and the detail panel says, in the
- * gate's own words, that nothing was recorded — an empty selection would put a
- * blank panel under nine green cells and leave a reader unsure whether the
- * gate ran. */
-function worstCheckId(checks: GenesisGateCheck[]): string {
-  let worst: GenesisGateCheck | null = null;
-  for (const check of checks) {
-    if (
-      worst === null ||
-      checkRank(check) < checkRank(worst) ||
-      (checkRank(check) === checkRank(worst) && check.id < worst.id)
-    ) {
-      worst = check;
-    }
-  }
-  return worst?.id ?? "";
-}
-
-/**
- * V1–V9 AS A GRID, with ONE detail panel under it.
+ * WHY THAT DOES NOT WEAKEN THE DOCTRINE, which is the only question that
+ * matters here. The rule this screen has always had to keep is "nothing reads
+ * as fine unless it is fine" — a check that FAILED or could not RUN must be
+ * visible without reading and without clicking. The previous version bought
+ * that with an auto-expanded panel seeded by a severity RANK (`checkRank`,
+ * `worstCheckId`), which is why those two functions and their pins existed.
+ * They are gone, and what carries the doctrine now is on the CELLS themselves:
  *
- * U-1-quick (docs/ux-backlog.md, the user's detailed elaboration item #4).
- * The checklist was nine full-width rows, each its own disclosure; the user's
- * report from live use was that the arrow was the only click target and that
- * nine stacked rows read as a list to scroll rather than a verdict to scan.
- * Nine cells in a 3×3 grid put the whole gate on one screen — every id and
- * every state word visible without a single click — and the one panel below
- * carries the selected check's findings in the SAME markup the row body used.
+ *   * every cell states its id and its tri-state WORD, with no click at all —
+ *     `실패` and `확인 불가` are printed, never implied by a colour;
+ *   * a non-pass cell keeps a persistent accent ring whether or not anything is
+ *     selected. This matters more here than anywhere else in the app, and more
+ *     still since the cards went mono (see `checkStateTagClasses`): with no
+ *     tinted fill left to carry it, the ring is the whole of "something in this
+ *     cell is not a pass", and the chip beside it says which.
  *
- * NOTHING IS HIDDEN WITHOUT A CLICK PATH, which is the half of the doctrine
- * that survives from the collapsed version: every check is on screen with its
- * id and its tri-state word, the WHOLE cell is the button (not an arrow in its
- * corner), and the detail of any check is exactly one click away. What the
- * grid adds is that a fault is visible without reading: a non-pass cell keeps a
- * persistent accent ring whether or not it is the selected one, which matters
- * more here than anywhere else in the app because globals.css remaps the amber
- * family to neutral — `not_checkable`'s fill alone reads as grey, so the ring
- * (drawn in the cell's own `currentColor`) is what stops "could not run" from
- * looking like "nothing to report".
+ * So severity is still readable at a glance; what it no longer does is decide
+ * what the reader is looking at. A panel that opened itself was, in the user's
+ * words from live use, a screen that answered a question nobody had asked yet.
+ *
+ * The selected cell is one step brighter (a fill step, a 2px ring, a brighter
+ * title) over a ~100ms transition, so the click has an answer.
  */
 function GateCheckGrid({ checks, t }: { checks: GenesisGateCheck[]; t: Translate }) {
-  // Seeded from severity, not from a constant, and only on mount -- the caller
-  // remounts this grid with a key tied to the verdict, so a re-gate re-selects
-  // rather than keeping the cell the reader clicked on the superseded verdict.
-  const [selectedId, setSelectedId] = useState(() => worstCheckId(checks));
-  const selected = checks.find((check) => check.id === selectedId) ?? checks[0] ?? null;
+  // NO initial selection, by the user's explicit instruction. `null` is the
+  // mount state and stays until a click.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = selectedId ? checks.find((check) => check.id === selectedId) ?? null : null;
 
   return (
     <div>
-      <div className="grid grid-cols-3 gap-1.5">
+      {/* ~14px gaps (gap-3.5), the user's own measurement: the 6px grid read as
+        * one block of colour rather than nine separate verdicts. */}
+      <div className="grid grid-cols-3 gap-3.5">
         {checks.map((check) => {
-          const isSelected = selected !== null && check.id === selected.id;
-          // ONE ring expression, never two classes: `ring-1 ring-current` and
-          // `ring-2 ring-slate-500` set the same two custom properties, so
-          // emitting both would let stylesheet order -- not this file -- decide
-          // which one a selected failing cell shows.
-          const accent = isSelected
-            ? "ring-2 ring-slate-500"
-            : check.state === "pass"
-              ? ""
-              : "ring-1 ring-current";
+          const isSelected = check.id === selectedId;
           return (
             <button
               key={check.id}
               type="button"
-              onClick={() => setSelectedId(check.id)}
+              onClick={() => setSelectedId((current) => (current === check.id ? null : check.id))}
               aria-pressed={isSelected}
               // The full title is on the cell as a hover string as well as in
-              // the panel below: the cell clamps it to two lines, and a clamped
-              // sentence a reader cannot recover is a dropped sentence.
+              // the detail below: the cell clamps it to two lines, and a
+              // clamped sentence a reader cannot recover is a dropped sentence.
               title={check.title}
-              className={`flex flex-col gap-1 rounded-lg border px-2.5 py-2 text-left ${checkStateClasses(check.state)} ${accent}`}
+              className={`flex flex-col gap-1.5 rounded-lg border px-3 py-2.5 text-left transition-[background-color,box-shadow,color] duration-100 ${checkCellClasses(check.state, isSelected)}`}
             >
               <span className="flex flex-wrap items-center gap-1.5">
-                <span className="font-mono text-[11px] font-bold">{check.id}</span>
-                <span className="rounded-full border border-current/30 px-1.5 py-0.5 text-[9px] font-bold uppercase">
+                <span className="font-mono text-[13px] font-bold">{check.id}</span>
+                <span
+                  className={`rounded-full border px-1.5 py-0.5 text-[12px] font-bold uppercase ${checkStateTagClasses(check.state)}`}
+                >
                   {checkStateLabel(check.state, t)}
                 </span>
               </span>
-              <span className="line-clamp-2 text-[10px] font-semibold leading-tight">
+              <span
+                className={`line-clamp-2 text-[12px] leading-tight ${isSelected ? "font-semibold text-slate-900" : "font-medium"}`}
+              >
                 {check.title}
-              </span>
-              <span className="text-[9px] opacity-70">
-                {check.tier === "refuse"
-                  ? t("거부 등급", "refuse tier", "拒否ティア")
-                  : t("경고 등급", "warn tier", "警告ティア")}
               </span>
             </button>
           );
         })}
       </div>
 
-      {selected && (
-        <div
-          // One region, announced when the selection changes -- a grid whose
-          // detail lands somewhere a screen reader never travels to would have
-          // hidden the findings the cells only summarise.
-          aria-live="polite"
-          className={`mt-2 rounded-lg border px-3.5 py-3 text-xs ${checkStateClasses(selected.state)}`}
-        >
-          <div className="flex flex-wrap items-baseline gap-2">
-            <span className="font-mono text-[11px] font-bold">{selected.id}</span>
-            <span className="rounded-full border border-current/30 px-1.5 py-0.5 text-[10px] font-bold uppercase">
-              {checkStateLabel(selected.state, t)}
-            </span>
-            <span className="text-[10px] opacity-70">
-              {selected.tier === "refuse"
-                ? t("거부 등급", "refuse tier", "拒否ティア")
-                : t("경고 등급", "warn tier", "警告ティア")}
-            </span>
-            <span className="min-w-0 flex-1 font-semibold">{selected.title}</span>
+      {/* ONE detail region, mounted always and EMPTY until a click.
+        * Mounted-but-empty rather than conditionally rendered, on purpose: an
+        * aria-live region that only appears together with its content is a
+        * region a screen reader was not watching when the content arrived, so
+        * the selection would be announced to nobody. */}
+      {/* The detail takes the SAME rule as the cells above it — mono card,
+        * colour on the chip. Two vocabularies for one state ("the cell is grey
+        * but its detail is green") is exactly the kind of drift the shared
+        * helper exists to prevent. */}
+      <div aria-live="polite">
+        {selected && (
+          <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-[13px] text-slate-800">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="font-mono text-[13px] font-bold">{selected.id}</span>
+              <span
+                className={`rounded-full border px-1.5 py-0.5 text-[12px] font-bold uppercase ${checkStateTagClasses(selected.state)}`}
+              >
+                {checkStateLabel(selected.state, t)}
+              </span>
+              <span className="text-[12px] text-slate-600">
+                {selected.tier === "refuse"
+                  ? t("거부 등급", "refuse tier", "拒否ティア")
+                  : t("경고 등급", "warn tier", "警告ティア")}
+              </span>
+              <span className="min-w-0 flex-1 font-semibold">{selected.title}</span>
+            </div>
+
+            <div className="mt-2">
+              {selected.gaps.length > 0 && (
+                <ul className="space-y-1">
+                  {selected.gaps.map((gap) => (
+                    <li key={gap.code} className="text-[13px] leading-relaxed">
+                      {t("실행 불가", "could not run", "実行不可")}: {gap.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {selected.findings.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {selected.findings.map((finding, index) => (
+                    <li key={`${finding.code}-${index}`} className="text-[13px] leading-relaxed">
+                      {finding.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {selected.findings_omitted > 0 && (
+                <p className="mt-1.5 text-[12px] text-slate-600">
+                  {t(
+                    `이 화면에 표시되지 않은 항목 ${selected.findings_omitted}건 — gate.json 전체 내려받기에 모두 들어 있습니다.`,
+                    `${selected.findings_omitted} more not shown here — all of them are in the gate.json download.`,
+                    `この画面に表示されていない項目 ${selected.findings_omitted} 件 — gate.json のダウンロードにすべて含まれています。`,
+                  )}
+                </p>
+              )}
+
+              {selected.warnings.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {selected.warnings.map((warning, index) => (
+                    <li key={`w-${warning.code}-${index}`} className="text-[13px] leading-relaxed">
+                      warn / {warning.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {!checkHasBody(selected) && (
+                <p className="text-[13px] leading-relaxed text-slate-600">
+                  {t(
+                    "이 검사에 기록된 항목이 없습니다.",
+                    "Nothing was recorded for this check.",
+                    "この検査に記録された項目はありません。",
+                  )}
+                </p>
+              )}
+            </div>
           </div>
-
-          <div className="mt-1.5">
-            {selected.gaps.length > 0 && (
-              <ul className="space-y-0.5">
-                {selected.gaps.map((gap) => (
-                  <li key={gap.code} className="text-[11px] leading-relaxed">
-                    {t("실행 불가", "could not run", "実行不可")}: {gap.message}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {selected.findings.length > 0 && (
-              <ul className="mt-1.5 space-y-0.5">
-                {selected.findings.map((finding, index) => (
-                  <li key={`${finding.code}-${index}`} className="text-[11px] leading-relaxed">
-                    {finding.message}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {selected.findings_omitted > 0 && (
-              <p className="mt-1 text-[11px] opacity-80">
-                {t(
-                  `이 화면에 표시되지 않은 항목 ${selected.findings_omitted}건 — gate.json 전체 내려받기에 모두 들어 있습니다.`,
-                  `${selected.findings_omitted} more not shown here — all of them are in the gate.json download.`,
-                  `この画面に表示されていない項目 ${selected.findings_omitted} 件 — gate.json のダウンロードにすべて含まれています。`,
-                )}
-              </p>
-            )}
-
-            {selected.warnings.length > 0 && (
-              <ul className="mt-1.5 space-y-0.5">
-                {selected.warnings.map((warning, index) => (
-                  <li key={`w-${warning.code}-${index}`} className="text-[11px] leading-relaxed">
-                    warn / {warning.message}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {!checkHasBody(selected) && (
-              <p className="text-[11px] leading-relaxed opacity-70">
-                {t(
-                  "이 검사에 기록된 항목이 없습니다.",
-                  "Nothing was recorded for this check.",
-                  "この検査に記録された項目はありません。",
-                )}
-              </p>
-            )}
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -475,15 +554,15 @@ function ArtifactRow({ jobId, t }: { jobId: string; t: Translate }) {
   );
 
   return (
-    <div className="mt-4">
-      <div className="flex flex-wrap gap-2 text-[11px]">
+    <div>
+      <div className="flex flex-wrap gap-2">
         {ARTIFACT_KINDS.map((artifact) => (
           <button
             key={artifact.kind}
             type="button"
             disabled={pending !== null}
             onClick={() => void download(artifact.kind)}
-            className="rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+            className="ui-button-ghost rounded-full px-3 py-1 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-60"
           >
             {pending === artifact.kind
               ? t("내려받는 중…", "Downloading…", "ダウンロード中…")
@@ -492,7 +571,7 @@ function ArtifactRow({ jobId, t }: { jobId: string; t: Translate }) {
         ))}
       </div>
       {failure && (
-        <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800">
+        <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-800">
           <p className="font-semibold">
             {t("내려받지 못했습니다", "The download did not happen", "ダウンロードできませんでした")} (
             {failure.kind})
@@ -501,6 +580,18 @@ function ArtifactRow({ jobId, t }: { jobId: string; t: Translate }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** One titled block inside the detail drawer. Plain title + body, no card
+ * around it: the drawer IS the card, and the disease the user named (item 9)
+ * was a card inside a card inside a card, each repeating the same title. */
+function DrawerSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="border-t border-slate-200 pt-6">
+      <h3 className="text-[15px] font-semibold text-slate-900">{title}</h3>
+      <div className="mt-3">{children}</div>
+    </section>
   );
 }
 
@@ -528,6 +619,11 @@ export default function GenesisPage() {
 
   const [jobs, setJobs] = useState<GenesisJob[]>([]);
   const [jobsError, setJobsError] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  // NOTHING IS SELECTED ON ARRIVAL. The previous version auto-selected the
+  // newest generation, which meant the whole right-hand column was already
+  // full of one job's verdict before the reader had chosen anything to look
+  // at — the same "answers a question nobody asked" the V1-V9 grid had.
   const [selectedId, setSelectedId] = useState<string>("");
   // Both fetched payloads are stored WITH the key they were fetched for, and
   // read back only when that key still matches. Clearing them from inside the
@@ -553,7 +649,6 @@ export default function GenesisPage() {
       const entries = await fetchGenesisJobs();
       setJobs(entries);
       setJobsError(null);
-      setSelectedId((current) => current || entries[0]?.id || "");
     } catch (caught) {
       setJobsError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -662,6 +757,7 @@ export default function GenesisPage() {
       });
       setSelectedId(started.id);
       setSelectedEntry({ id: started.id, record: started });
+      setPage(0);
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       setDemandToken("");
@@ -708,13 +804,20 @@ export default function GenesisPage() {
     ),
   };
 
+  const pageCount = Math.max(1, Math.ceil(jobs.length / HISTORY_PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const visibleJobs = useMemo(
+    () => jobs.slice(safePage * HISTORY_PAGE_SIZE, safePage * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE),
+    [jobs, safePage],
+  );
+
   return (
-    <div className="mx-auto max-w-5xl px-4 py-8">
-      <header className="mb-6">
+    <div className="mx-auto max-w-[1500px] px-4 py-8">
+      <header className="mb-8">
         <h1 className="text-[22px] font-semibold tracking-tight text-white">
           {t("네트워크 생성 (Genesis)", "Network Genesis", "ネットワーク生成 (Genesis)")}
         </h1>
-        <p className="mt-1 text-sm text-slate-600">
+        <p className="mt-1 text-[13px] text-slate-500">
           {t(
             "OpenStreetMap 추출(.osm)에서 Vissim 네트워크 초안을 만들고, R1.5 검증 게이트를 통과한 것만 프로젝트에 등록합니다.",
             "Build a draft Vissim network from an OpenStreetMap extract (.osm); only what the R1.5 gate lets through is registered in the project.",
@@ -723,484 +826,633 @@ export default function GenesisPage() {
         </p>
       </header>
 
-      {/* ----------------------------------------------------------------- */}
-      {/* Start a generation                                                 */}
-      {/* ----------------------------------------------------------------- */}
-      <Panel
-        title={t("새 생성", "New generation", "新規生成")}
-        subtitle={t(
-          "로컬 .osm 파일을 선택하세요. 네트워크는 잡 큐에서 만들어지며, Vissim COM은 사용하지 않습니다.",
-          "Pick a local .osm file. The network is built on the job queue and no Vissim COM is used.",
-          "ローカルの .osm ファイルを選んでください。ネットワークはジョブキューで作成され、Vissim COM は使いません。",
-        )}
-      >
-        <div className="flex flex-col gap-3">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".osm,.xml"
-            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-            className="block w-full text-xs text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white/[0.06] file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-700"
-          />
-
-          <label className="flex flex-col gap-1 text-xs text-slate-600">
-            {t("네트워크 이름 (선택)", "Network name (optional)", "ネットワーク名（任意）")}
-            <input
-              type="text"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder={file ? file.name.replace(/\.(osm|xml)$/i, "") : "murdoch"}
-              className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs text-slate-800"
-            />
-          </label>
-
-          <label className="flex items-start gap-2 text-xs text-slate-600">
-            <input
-              type="checkbox"
-              checked={excludeService}
-              onChange={(event) => setExcludeService(event.target.checked)}
-              className="mt-0.5"
-            />
-            <span>
-              {t(
-                "highway=service 도로 제외 (주차장 통로·진입로·뒷골목)",
-                "Exclude highway=service ways (car-park aisles, driveways, back lanes)",
-                "highway=service の道路を除外（駐車場通路・進入路・裏路地）",
-              )}
-              {/* U-1-quick #3: the disclosure that excluding is not deleting is
-                * doctrine, so it moved into the ⓘ verbatim rather than being
-                * cut -- it answers a question the checkbox raises, and a
-                * question is answered on demand, not pre-emptively in a second
-                * grey line under every form. */}
-              <InfoTip
-                text={t(
-                  "제외된 도로는 버려지지 않고 이름이 남습니다 — 준수 리포트에 사유와 함께 기록됩니다.",
-                  "Excluded ways are never dropped silently — each is named with its reason in the compliance report.",
-                  "除外された道路は黙って捨てられず、準拠レポートに理由とともに記録されます。",
-                )}
-              />
-            </span>
-          </label>
-
-          {/* The optional layers' pickers. Both default to the empty option
-            * (none), which is the geometry-only path this form has always
-            * taken -- picking one only NAMES a token already staged and
-            * validated; nothing here builds or edits a document. */}
-          <div className="flex flex-wrap gap-3">
-            <label className="flex flex-1 flex-col gap-1 text-xs text-slate-600">
-              {t("수요 입력 (선택)", "Demand input (optional)", "需要入力（任意）")}
-              <select
-                value={demandToken}
-                onChange={(event) => setDemandToken(event.target.value)}
-                className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs text-slate-800"
-              >
-                <option value="">{t("없음", "none", "なし")}</option>
-                {sideInputs
-                  .filter((entry) => entry.kind === "demand")
-                  .map((entry) => (
-                    <option key={entry.token} value={entry.token}>
-                      {sideInputLabel(entry)}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label className="flex flex-1 flex-col gap-1 text-xs text-slate-600">
-              {t("신호 입력 (선택)", "Signals input (optional)", "信号入力（任意）")}
-              <select
-                value={signalsToken}
-                onChange={(event) => setSignalsToken(event.target.value)}
-                className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs text-slate-800"
-              >
-                <option value="">{t("없음", "none", "なし")}</option>
-                {sideInputs
-                  .filter((entry) => entry.kind === "signals")
-                  .map((entry) => (
-                    <option key={entry.token} value={entry.token}>
-                      {sideInputLabel(entry)}
-                    </option>
-                  ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              disabled={!file || submitting}
-              onClick={() => void submit()}
-              /* `.ui-button-primary` (app/globals.css's sanctioned button
-               * primitive, `@layer components`) instead of a fourth hand-rolled
-               * chip: it already carries the inverted palette's correct
-               * foreground and its own `:disabled` opacity, which is what the
-               * old `bg-slate-900 + text-ink + disabled:bg-slate-300` triple
-               * was reimplementing by hand. */
-              className="ui-button-primary px-3.5 py-1.5 text-xs disabled:cursor-not-allowed"
-            >
-              {submitting
-                ? t("시작하는 중…", "Starting…", "開始中…")
-                : t("생성 시작", "Start generation", "生成を開始")}
-            </button>
-            <span className="text-[11px] text-slate-400">
-              {t(
-                "생성에는 로그인이 필요합니다.",
-                "Starting a generation requires a signed-in user.",
-                "生成の開始にはログインが必要です。",
-              )}
-            </span>
-          </div>
-
-          {submitError && (
-            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
-              <p className="font-semibold">
-                {submitError instanceof GenesisError
-                  ? refusalHeadline(submitError.code, t, generationRefusalFallback(t))
-                  : t("생성을 시작하지 못했습니다", "Could not start the generation", "生成を開始できませんでした")}
-              </p>
-              <p className="mt-1 whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
-                {submitError.message}
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* UX pass U-1: these three used to be full-paragraph notice boxes
-          * stacked ABOVE the file input -- three secondary navigations
-          * outranking the primary control, and the first thing a first-time
-          * user read on this page. They are now a chip row BELOW the flow
-          * they support, with every sentence kept (one click away, and on
-          * hover) rather than rewritten or dropped:
-          *   * /genesis/region  -- roadmap v2 §5.B B2. The region page ENDS at
-          *     the staging area and hands its extract to this same flow, so
-          *     the two entry points differ only in where the .osm came from;
-          *     generation, gating and publishing are one road.
-          *   * /genesis/phases  -- roadmap C1-b. The signals layer needs one
-          *     fact no parse can produce (which approach runs in which 현시),
-          *     because the 대전 sheet prints it as a drawing; a named human
-          *     confirms it, and only then does it become a side input.
-          *   * /genesis/demand  -- a counts workbook + a browser-typed
-          *     site→leg→link map become a token the dropdown above can pick
-          *     up: the same "build once, attach here" shape.
-          * Each `note` is used TWICE (the chip's title and the disclosure
-          * body) from one constant, so the two can never drift apart. */}
-        <div className="mt-4 border-t border-slate-200 pt-3">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11px]">
-            <span className="text-slate-500">
-              {t("입력이 더 필요하신가요?", "Need another input?", "他の入力が必要ですか？")}
-            </span>
-            {/* `title` sits on the WRAPPER, never on the anchor. Measured in
-              * the running app: a `title` on a link with its own visible text
-              * becomes that link's accessible NAME, so screen-reader and
-              * voice-control users would hear/have to say the whole paragraph
-              * instead of the label they can see (WCAG 2.5.3, label in name).
-              * On the span it is a plain hover tooltip and the link keeps its
-              * own label. */}
-            <span title={regionHint.note}>
-              <Link href="/genesis/region" className={CROSS_CHIP}>
-                {regionHint.label}
-              </Link>
-            </span>
-            <span title={phasesHint.note}>
-              <Link href="/genesis/phases" className={CROSS_CHIP}>
-                {phasesHint.label}
-              </Link>
-            </span>
-            <span title={demandHint.note}>
-              <Link href="/genesis/demand" className={CROSS_CHIP}>
-                {demandHint.label}
-              </Link>
-            </span>
-          </div>
-          <details className="mt-2">
-            <summary className="cursor-pointer text-[11px] text-slate-500">
-              {t("각각 무엇인가요?", "What is each of these?", "それぞれ何ですか？")}
-            </summary>
-            <ul className="mt-1.5 space-y-1">
-              {[regionHint, phasesHint, demandHint].map((entry) => (
-                <li key={entry.label} className="text-[11px] leading-relaxed text-slate-600">
-                  <span className="font-semibold text-slate-700">{entry.label}</span> — {entry.note}
-                </li>
-              ))}
-            </ul>
-          </details>
-        </div>
-      </Panel>
-
-      {/* ----------------------------------------------------------------- */}
-      {/* Job list                                                           */}
-      {/* ----------------------------------------------------------------- */}
-      <Panel
-        title={t("생성 이력", "Generations", "生成履歴")}
-        subtitle={t(
-          "이 프로젝트의 생성만 보입니다.",
-          "Only this project's generations are listed.",
-          "このプロジェクトの生成のみ表示されます。",
-        )}
-      >
-        {jobsError && (
-          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-            {t("목록을 불러오지 못했습니다", "Failed to load the list", "一覧を読み込めませんでした")}: {jobsError}
-          </div>
-        )}
-        {jobs.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-xs text-slate-500">
-            {t(
-              "아직 생성한 네트워크가 없습니다.",
-              "No network has been generated yet.",
-              "まだ生成したネットワークはありません。",
+      {/* THE SPLIT, and its PROPORTION (user decision, 2026-08-13). Left =
+        * controls + history; right = the selected row's detail drawer, sticky
+        * on a tall screen so scrolling the table does not scroll what you are
+        * reading off it.
+        *
+        * The drawer takes ~46% of the content width, not a fixed narrow column:
+        * it has to hold a nine-cell verdict grid, a real map and an artifact
+        * row without any of them wrapping into a stack of one-item lines. A
+        * CSS grid rather than flex, because `minmax(480px, 46%)` states both
+        * halves of that in one place — never thinner than the verdict grid
+        * needs, never wider than half the page — and lets the LEFT column
+        * compress gracefully (`minmax(0, 1fr)`) instead of forcing a horizontal
+        * scrollbar on the whole page. */}
+      <div className="flex flex-col gap-8 xl:grid xl:grid-cols-[minmax(0,1fr)_minmax(480px,46%)] xl:items-start xl:gap-8">
+        <div className="min-w-0">
+          {/* ------------------------------------------------------------- */}
+          {/* Start a generation                                            */}
+          {/* ------------------------------------------------------------- */}
+          <Panel
+            density="console"
+            title={t("새 생성", "New generation", "新規生成")}
+            subtitle={t(
+              "로컬 .osm 파일을 선택하세요. 네트워크는 잡 큐에서 만들어지며, Vissim COM은 사용하지 않습니다.",
+              "Pick a local .osm file. The network is built on the job queue and no Vissim COM is used.",
+              "ローカルの .osm ファイルを選んでください。ネットワークはジョブキューで作成され、Vissim COM は使いません。",
             )}
-          </p>
-        ) : (
-          <ul className="space-y-1.5">
-            {jobs.map((job) => (
-              <li key={job.id}>
-                <button
-                  type="button"
-                  onClick={() => setSelectedId(job.id)}
-                  className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left text-xs ${
-                    job.id === selectedId ? "border-slate-400 bg-slate-50" : "border-slate-200 bg-transparent"
-                  }`}
-                >
-                  {/* U-1-quick #5: a row used to be a name and a date, which
-                    * is not enough to tell two generations of the same city
-                    * apart. It now carries the two facts that actually
-                    * distinguish them -- WHICH AREA was asked for and HOW BIG
-                    * the network came out -- both read off the job record and
-                    * both rendered "—" when the record does not carry them.
-                    * Nothing here is derived, estimated or filled in. */}
-                  <span className="min-w-0">
-                    <span className="block truncate font-semibold text-slate-800">{job.name}</span>
-                    <span className="block truncate text-[11px] text-slate-500">
-                      {job.source_osm.filename} · {formatTimestamp(job.created_at, lang)}
-                    </span>
-                    <span className="block truncate text-[11px] text-slate-500">
-                      {t("영역", "Region", "領域")} {requestedRegionLabel(job.requested_region, t)} ·{" "}
-                      {t("규모", "Scale", "規模")} {networkScaleLabel(job.network, t)}
-                    </span>
-                  </span>
-                  <span
-                    className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusClasses(job.status)}`}
-                  >
-                    {statusLabel(job.status, t)}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
-
-      {/* ----------------------------------------------------------------- */}
-      {/* The selected generation and its gate verdict                       */}
-      {/* ----------------------------------------------------------------- */}
-      {selected && (
-        <Panel
-          title={t("게이트 판정", "Gate verdict", "ゲート判定")}
-          subtitle={t(
-            "R1.5 검증 게이트 V1–V9. 실행되지 못한 검사는 절대 통과가 아닙니다.",
-            "The R1.5 validation gate, V1–V9. A check that could not run is never a pass.",
-            "R1.5検証ゲート V1–V9。実行できなかった検査は決して合格ではありません。",
-          )}
-        >
-          <div
-            className={`mb-3 rounded-lg border px-3.5 py-3 text-xs ${statusClasses(selected.status)}`}
+            /* ONE primary action, top-right of the section — the Console list
+             * pattern. It is the page's only primary button; everything else
+             * (cross-navigation, artifacts, pagination) is a ghost pill. */
+            action={
+              <button
+                type="button"
+                disabled={!file || submitting}
+                onClick={() => void submit()}
+                className="ui-button-primary shrink-0 px-3.5 py-1.5 text-[13px] disabled:cursor-not-allowed"
+              >
+                {submitting
+                  ? t("시작하는 중…", "Starting…", "開始中…")
+                  : t("생성 시작", "Start generation", "生成を開始")}
+              </button>
+            }
           >
-            <p className="text-sm font-bold">{statusLabel(selected.status, t)}</p>
-            {selected.network && (
-              <p className="mt-1">
-                {t("링크", "Links", "リンク")} {selected.network.links} ·{" "}
-                {t("커넥터", "Connectors", "コネクタ")} {selected.network.connectors} ·{" "}
-                {t("노드", "Nodes", "ノード")} {selected.network.nodes}
-              </p>
-            )}
-            {!isTerminal(selected.status) && (
-              <p className="mt-1">
-                {t("진행", "Phase", "進行")}: {selected.phase} ({Math.round(selected.progress * 100)}%)
-              </p>
-            )}
-            {selected.status === "provisional" && (
-              /* U-1-quick #3. The visible line is the STATUS -- registered, and
-               * one check still open -- and the paragraph explaining WHY a
-               * generation job can never close V1 by itself is the ⓘ, verbatim.
-               * The doctrine is not shortened, only the sentence a reader has
-               * to walk past every time they open a provisional generation. */
-              <p className="mt-1.5 leading-relaxed">
-                {t(
-                  "등록되었지만 잠정입니다 — V1은 라이브 검사 증거를 기다립니다.",
-                  "Registered, but provisional — V1 is waiting for live-check evidence.",
-                  "登録されましたが暫定です — V1 はライブ検査の証拠を待っています。",
-                )}
-                <InfoTip
-                  text={t(
-                    "프로젝트에 등록되었습니다. 다만 실행되지 못한 거부 등급 검사가 있어 잠정 상태입니다 — 생성 잡은 Vissim COM을 열 수 없으므로, 실제 Vissim이 이 파일을 여는 것을 증명하는 V1은 라이브 검사 증거를 붙여야 확정됩니다.",
-                    "Registered in the project, but provisional: a refuse-tier check could not run. A generation job may not open Vissim COM, so V1 — the only check that proves a real Vissim opens this file — stays open until live-check evidence is attached.",
-                    "プロジェクトに登録されましたが、実行できなかった拒否ティア検査があるため暫定です。生成ジョブは Vissim COM を開けないため、実際の Vissim がこのファイルを開くことを証明する V1 はライブ検査の証拠を添付するまで確定しません。",
-                  )}
+            <div className="flex flex-col gap-4">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".osm,.xml"
+                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                className="block w-full text-[13px] text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white/[0.06] file:px-3 file:py-1.5 file:text-[13px] file:font-semibold file:text-slate-700"
+              />
+
+              <label className="flex flex-col gap-1 text-[13px] text-slate-600">
+                {t("네트워크 이름 (선택)", "Network name (optional)", "ネットワーク名（任意）")}
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder={file ? file.name.replace(/\.(osm|xml)$/i, "") : "murdoch"}
+                  className="rounded-md border border-slate-300 px-2.5 py-1.5 text-[13px] text-slate-800"
                 />
-              </p>
-            )}
-            {selected.status === "refused" && (
-              <p className="mt-1.5 leading-relaxed">
+              </label>
+
+              <label className="flex items-start gap-2 text-[13px] text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={excludeService}
+                  onChange={(event) => setExcludeService(event.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  {t(
+                    "highway=service 도로 제외 (주차장 통로·진입로·뒷골목)",
+                    "Exclude highway=service ways (car-park aisles, driveways, back lanes)",
+                    "highway=service の道路を除外（駐車場通路・進入路・裏路地）",
+                  )}
+                  {/* U-1-quick #3: the disclosure that excluding is not deleting is
+                    * doctrine, so it moved into the ⓘ verbatim rather than being
+                    * cut -- it answers a question the checkbox raises, and a
+                    * question is answered on demand, not pre-emptively in a second
+                    * grey line under every form. */}
+                  <InfoTip
+                    text={t(
+                      "제외된 도로는 버려지지 않고 이름이 남습니다 — 준수 리포트에 사유와 함께 기록됩니다.",
+                      "Excluded ways are never dropped silently — each is named with its reason in the compliance report.",
+                      "除外された道路は黙って捨てられず、準拠レポートに理由とともに記録されます。",
+                    )}
+                  />
+                </span>
+              </label>
+
+              {/* The optional layers' pickers. Both default to the empty option
+                * (none), which is the geometry-only path this form has always
+                * taken -- picking one only NAMES a token already staged and
+                * validated; nothing here builds or edits a document. */}
+              <div className="flex flex-wrap gap-3">
+                <label className="flex flex-1 flex-col gap-1 text-[13px] text-slate-600">
+                  {t("수요 입력 (선택)", "Demand input (optional)", "需要入力（任意）")}
+                  <select
+                    value={demandToken}
+                    onChange={(event) => setDemandToken(event.target.value)}
+                    className="rounded-md border border-slate-300 px-2.5 py-1.5 text-[13px] text-slate-800"
+                  >
+                    <option value="">{t("없음", "none", "なし")}</option>
+                    {sideInputs
+                      .filter((entry) => entry.kind === "demand")
+                      .map((entry) => (
+                        <option key={entry.token} value={entry.token}>
+                          {sideInputLabel(entry)}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label className="flex flex-1 flex-col gap-1 text-[13px] text-slate-600">
+                  {t("신호 입력 (선택)", "Signals input (optional)", "信号入力（任意）")}
+                  <select
+                    value={signalsToken}
+                    onChange={(event) => setSignalsToken(event.target.value)}
+                    className="rounded-md border border-slate-300 px-2.5 py-1.5 text-[13px] text-slate-800"
+                  >
+                    <option value="">{t("없음", "none", "なし")}</option>
+                    {sideInputs
+                      .filter((entry) => entry.kind === "signals")
+                      .map((entry) => (
+                        <option key={entry.token} value={entry.token}>
+                          {sideInputLabel(entry)}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              </div>
+
+              <p className="text-[12px] text-slate-500">
                 {t(
-                  "거부 등급 검사가 결함을 입증했으므로 이 네트워크는 프로젝트에 등록되지 않았습니다. 파일과 판정은 아래에서 그대로 받아볼 수 있습니다.",
-                  "A refuse-tier check proved a fault, so this network was NOT registered in the project. The file and the verdict are both downloadable below.",
-                  "拒否ティアの検査が欠陥を証明したため、このネットワークはプロジェクトに登録されていません。ファイルと判定は下からそのまま取得できます。",
+                  "생성에는 로그인이 필요합니다.",
+                  "Starting a generation requires a signed-in user.",
+                  "生成の開始にはログインが必要です。",
                 )}
               </p>
-            )}
-            {selected.revocation && (
-              <p className="mt-1.5 leading-relaxed">
-                {selected.revocation.removed_from_workspace
-                  ? t(
-                      "라이브 증거가 들어온 뒤 게이트가 이 네트워크를 거부하여, 프로젝트에서 등록을 해제했습니다.",
-                      "After live evidence arrived the gate refused this network, so its registration was removed from the project.",
-                      "ライブ証拠が届いた後にゲートがこのネットワークを拒否したため、プロジェクトから登録を解除しました。",
-                    )
-                  : t(
-                      "게이트가 이 네트워크를 거부했습니다. 프로젝트의 현재 데이터셋은 이미 다른 파일이므로 아무것도 삭제하지 않았습니다.",
-                      "The gate refused this network. The project's active dataset is no longer this artifact, so nothing was deleted.",
-                      "ゲートがこのネットワークを拒否しました。プロジェクトの現在のデータセットは既に別のファイルのため、何も削除していません。",
-                    )}
-              </p>
-            )}
-            {selected.refusal && (
-              <div className="mt-1.5">
-                <p className="font-semibold">
-                  {refusalHeadline(selected.refusal.code, t, generationRefusalFallback(t))}
-                </p>
-                <ul className="mt-1 space-y-0.5">
-                  {selected.refusal.reasons.map((reason, index) => (
-                    <li key={index} className="font-mono text-[11px] leading-relaxed">
-                      {reason}
+
+              {submitError && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-800">
+                  <p className="font-semibold">
+                    {submitError instanceof GenesisError
+                      ? refusalHeadline(submitError.code, t, generationRefusalFallback(t))
+                      : t("생성을 시작하지 못했습니다", "Could not start the generation", "生成を開始できませんでした")}
+                  </p>
+                  <p className="mt-1 whitespace-pre-wrap font-mono text-[12px] leading-relaxed">
+                    {submitError.message}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* UX pass U-1: these three used to be full-paragraph notice boxes
+              * stacked ABOVE the file input -- three secondary navigations
+              * outranking the primary control, and the first thing a first-time
+              * user read on this page. They are now a chip row BELOW the flow
+              * they support, with every sentence kept (one click away, and on
+              * hover) rather than rewritten or dropped. Each `note` is used
+              * TWICE (the chip's title and the disclosure body) from one
+              * constant, so the two can never drift apart. */}
+            <div className="mt-6 border-t border-slate-200 pt-4">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-[12px]">
+                <span className="text-slate-500">
+                  {t("입력이 더 필요하신가요?", "Need another input?", "他の入力が必要ですか？")}
+                </span>
+                {/* `title` sits on the WRAPPER, never on the anchor. Measured in
+                  * the running app: a `title` on a link with its own visible text
+                  * becomes that link's accessible NAME, so screen-reader and
+                  * voice-control users would hear/have to say the whole paragraph
+                  * instead of the label they can see (WCAG 2.5.3, label in name).
+                  * On the span it is a plain hover tooltip and the link keeps its
+                  * own label. */}
+                <span title={regionHint.note}>
+                  <Link href="/genesis/region" className={CROSS_CHIP}>
+                    {regionHint.label}
+                  </Link>
+                </span>
+                <span title={phasesHint.note}>
+                  <Link href="/genesis/phases" className={CROSS_CHIP}>
+                    {phasesHint.label}
+                  </Link>
+                </span>
+                <span title={demandHint.note}>
+                  <Link href="/genesis/demand" className={CROSS_CHIP}>
+                    {demandHint.label}
+                  </Link>
+                </span>
+              </div>
+              <details className="mt-3">
+                <summary className="cursor-pointer text-[12px] text-slate-500">
+                  {t("각각 무엇인가요?", "What is each of these?", "それぞれ何ですか？")}
+                </summary>
+                <ul className="mt-2 space-y-1.5">
+                  {[regionHint, phasesHint, demandHint].map((entry) => (
+                    <li key={entry.label} className="text-[12px] leading-relaxed text-slate-600">
+                      <span className="font-semibold text-slate-700">{entry.label}</span> — {entry.note}
                     </li>
                   ))}
                 </ul>
+              </details>
+            </div>
+          </Panel>
+
+          {/* ------------------------------------------------------------- */}
+          {/* Generation history — the Console list                          */}
+          {/* ------------------------------------------------------------- */}
+          <Panel
+            density="console"
+            title={t("생성 이력", "Generations", "生成履歴")}
+            subtitle={t(
+              "이 프로젝트의 생성만 보입니다. 행을 누르면 오른쪽에 그 생성의 판정이 열립니다.",
+              "Only this project's generations are listed. Click a row and its verdict opens on the right.",
+              "このプロジェクトの生成のみ表示されます。行を押すと右にその生成の判定が開きます。",
+            )}
+            action={
+              jobs.length > HISTORY_PAGE_SIZE ? (
+                <div className="flex shrink-0 items-center gap-1.5 text-[12px] text-slate-500">
+                  <span className="font-mono">
+                    {safePage * HISTORY_PAGE_SIZE + 1}–
+                    {Math.min(jobs.length, (safePage + 1) * HISTORY_PAGE_SIZE)} / {jobs.length}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={safePage === 0}
+                    onClick={() => setPage((current) => Math.max(0, current - 1))}
+                    aria-label={t("이전 쪽", "Previous page", "前のページ")}
+                    className="ui-button-ghost rounded-md px-2 py-0.5 disabled:opacity-40"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    disabled={safePage >= pageCount - 1}
+                    onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
+                    aria-label={t("다음 쪽", "Next page", "次のページ")}
+                    className="ui-button-ghost rounded-md px-2 py-0.5 disabled:opacity-40"
+                  >
+                    ›
+                  </button>
+                </div>
+              ) : undefined
+            }
+          >
+            {jobsError && (
+              <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-800">
+                {t("목록을 불러오지 못했습니다", "Failed to load the list", "一覧を読み込めませんでした")}: {jobsError}
               </div>
             )}
-          </div>
-
-          {selected.gate?.live_evidence && (
-            <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[11px] text-slate-700">
-              {/* "Attestation", never "proof". The state.json arrives over
-                * HTTP, so this app cannot establish that Vissim ran — it can
-                * only record who says it did. Naming that here is the whole
-                * point: an accountable human claim is genuinely useful, and it
-                * is not the same thing as a machine-verified load. */}
-              <p className="font-semibold text-slate-800">
+            {jobs.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-[13px] text-slate-500">
                 {t(
-                  "라이브 검사 증언 (운영자 진술)",
-                  "Live-check attestation (operator's statement)",
-                  "ライブ検査の証言（運用者の申告）",
+                  "아직 생성한 네트워크가 없습니다.",
+                  "No network has been generated yet.",
+                  "まだ生成したネットワークはありません。",
                 )}
               </p>
-              <p className="mt-0.5">
-                {selected.gate.live_evidence.label} · {selected.gate.live_evidence.network} ·{" "}
-                {selected.gate.live_evidence.vissim_version ??
-                  t("버전 미기록", "version not recorded", "バージョン未記録")}
+            ) : (
+              /* THE TABLE (docs/ux-backlog.md, the LIST REFERENCE): muted
+                * column headers, monospace ids and coordinates, NO row borders
+                * — the row height carries the separation — and the verdict as a
+                * small right-aligned tag chip. U-1-quick #5's three facts are
+                * unchanged; only their arrangement is. */
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-left">
+                  <thead>
+                    <tr className="text-[12px] font-normal text-slate-500">
+                      <th scope="col" className="py-2 pr-3 font-normal">
+                        {t("이름", "Name", "名前")}
+                      </th>
+                      <th scope="col" className="py-2 pr-3 font-normal">
+                        {t("생성일", "Created", "作成日")}
+                      </th>
+                      <th scope="col" className="py-2 pr-3 font-normal">
+                        {t("영역", "Region", "領域")}
+                      </th>
+                      <th scope="col" className="py-2 pr-3 font-normal">
+                        {t("규모", "Scale", "規模")}
+                      </th>
+                      <th scope="col" className="py-2 text-right font-normal">
+                        {t("판정", "Verdict", "判定")}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleJobs.map((job) => (
+                      <tr
+                        key={job.id}
+                        onClick={() => setSelectedId(job.id)}
+                        tabIndex={0}
+                        aria-selected={job.id === selectedId}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setSelectedId(job.id);
+                          }
+                        }}
+                        className={`cursor-pointer align-top text-[13px] ${
+                          job.id === selectedId ? "bg-slate-100" : "hover:bg-slate-50"
+                        }`}
+                      >
+                        <td className="max-w-[150px] py-2.5 pr-3">
+                          <span className="block truncate font-medium text-slate-800">{job.name}</span>
+                          <span className="block truncate font-mono text-[12px] text-slate-500">
+                            {job.source_osm.filename}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap py-2.5 pr-3 font-mono text-[12px] text-slate-500">
+                          {formatTimestamp(job.created_at, lang)}
+                        </td>
+                        <td className="max-w-[160px] py-2.5 pr-3 font-mono text-[12px] text-slate-500">
+                          <span className="block truncate" title={requestedRegionLabel(job.requested_region, t)}>
+                            {requestedRegionLabel(job.requested_region, t)}
+                          </span>
+                        </td>
+                        <td className="max-w-[150px] py-2.5 pr-3 font-mono text-[12px] text-slate-500">
+                          <span className="block truncate" title={networkScaleLabel(job.network, t)}>
+                            {networkScaleLabel(job.network, t)}
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-right">
+                          <span
+                            className={`inline-block rounded-full border px-2 py-0.5 text-[12px] font-semibold ${statusClasses(job.status)}`}
+                          >
+                            {statusLabel(job.status, t)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
+        </div>
+
+        {/* --------------------------------------------------------------- */}
+        {/* The detail drawer — everything about the ONE selected row        */}
+        {/* --------------------------------------------------------------- */}
+        <div className="min-w-0 flex-1 xl:sticky xl:top-6">
+          {!selected ? (
+            <div className="rounded-xl border border-slate-200 bg-white/[0.03] px-6 py-5">
+              <p className="text-[13px] text-slate-500">
+                {t(
+                  "왼쪽 생성 이력에서 한 줄을 선택하면 그 생성의 판정·지도·아티팩트가 여기에 열립니다.",
+                  "Pick a row from the generation history on the left and its verdict, map and artifacts open here.",
+                  "左の生成履歴から一行を選ぶと、その生成の判定・地図・アーティファクトがここに開きます。",
+                )}
               </p>
-              <p className="mt-0.5">
-                {selected.gate.live_evidence.admitted
-                  ? t("채택됨 (동일 파일 확인)", "Admitted (same file proven)", "採用（同一ファイル確認）")
-                  : t(
-                      "채택되지 않음 — 이 증거는 다른 파일에 대한 것입니다",
-                      "Not admitted — this evidence is about a different file",
-                      "採用されず — この証拠は別のファイルに関するものです",
+            </div>
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-white/[0.03] px-6 py-5">
+              {/* DRAWER HEADER: name + verdict chip + ONE muted meta line +
+                * close X. The master-detail reference's exact shape. */}
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="truncate text-[15px] font-semibold text-slate-900">{selected.name}</h2>
+                    <span
+                      className={`shrink-0 rounded-full border px-2 py-0.5 text-[12px] font-semibold ${statusClasses(selected.status)}`}
+                    >
+                      {statusLabel(selected.status, t)}
+                    </span>
+                  </div>
+                  <p className="mt-1 truncate font-mono text-[12px] text-slate-500">
+                    {selected.source_osm.filename} · {formatTimestamp(selected.created_at, lang)} ·{" "}
+                    {networkScaleLabel(selected.network, t)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedId("")}
+                  aria-label={t("상세 닫기", "Close the detail", "詳細を閉じる")}
+                  className="ui-button-ghost shrink-0 rounded-md px-2 py-0.5 text-[13px]"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="mt-6 flex flex-col gap-6">
+                {/* ----------------------------------------------------- */}
+                {/* 판정 — the ONE merged verdict header, then the grid    */}
+                {/* ----------------------------------------------------- */}
+                <section className="border-t border-slate-200 pt-6">
+                  <h3 className="text-[15px] font-semibold text-slate-900">
+                    {t("판정", "Verdict", "判定")}
+                    <InfoTip
+                      text={t(
+                        "R1.5 검증 게이트 V1–V9. 실행되지 못한 검사는 절대 통과가 아닙니다.",
+                        "The R1.5 validation gate, V1–V9. A check that could not run is never a pass.",
+                        "R1.5検証ゲート V1–V9。実行できなかった検査は決して合格ではありません。",
+                      )}
+                    />
+                  </h3>
+
+                  {/* ONE HEADER, WHERE THERE WERE TWO BANNERS.
+                    * docs/ux-backlog.md, SECOND ELABORATION item 10: the job
+                    * status banner ("거부됨 — 등록하지 않음") and the gate
+                    * verdict banner ("거부 — 결함이 입증되었습니다") said the
+                    * same thing in two boxes, in two different words, one above
+                    * the other. They are now one block: the status phrase, the
+                    * three counts as Console stats, the sha in monospace. The
+                    * status wording itself is unchanged and still comes from
+                    * the ONE shared `statusLabel`. */}
+                  <div className="mt-3">
+                    <p className="text-[15px] font-semibold text-slate-900">
+                      {report ? verdictLabel(report.verdict, t) : statusLabel(selected.status, t)}
+                    </p>
+
+                    {report && (
+                      <div className="mt-3 flex flex-wrap gap-x-8 gap-y-3">
+                        <Stat
+                          label={t("통과", "pass", "合格")}
+                          value={report.counts.pass}
+                          tone="text-emerald-800"
+                        />
+                        <Stat
+                          label={t("실패", "fail", "不合格")}
+                          value={report.counts.fail}
+                          tone={report.counts.fail > 0 ? "text-rose-800" : undefined}
+                        />
+                        <Stat
+                          label={t("확인 불가", "not checkable", "確認不可")}
+                          value={report.counts.not_checkable}
+                          /* MONO BUT FLAGGED. This is the count that must never
+                           * read as fine, and it sits between a green one and a
+                           * red one -- rendered as a plain number it would be
+                           * the quietest of the three. The dotted underline is
+                           * the same mono flag `GenesisComparisonPanel` gives
+                           * the same state, so the app has one vocabulary for
+                           * it rather than a fourth colour. */
+                          tone={
+                            report.counts.not_checkable > 0
+                              ? "text-slate-900 underline decoration-dotted decoration-slate-400 underline-offset-4"
+                              : undefined
+                          }
+                        />
+                      </div>
                     )}
-                {selected.gate.live_evidence.gap_codes.length > 0 &&
-                  ` (${selected.gate.live_evidence.gap_codes.join(", ")})`}
-              </p>
-              {selected.gate.live_evidence.attested_by && (
-                <p className="mt-0.5">
-                  {t("증언자", "Attested by", "申告者")}:{" "}
-                  <span className="font-semibold">
-                    {selected.gate.live_evidence.attested_by}
-                  </span>
-                  {selected.gate.live_evidence.attested_at &&
-                    ` · ${formatTimestamp(selected.gate.live_evidence.attested_at, lang)}`}
-                </p>
-              )}
-              {selected.gate.rests_on_attestation && (
-                <p className="mt-1.5 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900">
-                  {t(
-                    "이 판정의 V1은 운영자 진술에 근거합니다 — 이 앱이 Vissim 로딩을 직접 관측한 것이 아닙니다.",
-                    "V1 in this verdict rests on an operator's statement — this app did not observe the Vissim load itself.",
-                    "この判定のV1は運用者の申告に基づきます — このアプリがVissimの読み込みを直接観測したわけではありません。",
+
+                    {report && (
+                      <p className="mt-3 break-all font-mono text-[12px] text-slate-500">
+                        {report.network} · sha256 {report.network_sha256.slice(0, 16)}
+                      </p>
+                    )}
+
+                    {!isTerminal(selected.status) && (
+                      <p className="mt-2 text-[13px] text-slate-600">
+                        {t("진행", "Phase", "進行")}: {selected.phase} (
+                        {Math.round(selected.progress * 100)}%)
+                      </p>
+                    )}
+
+                    {selected.status === "provisional" && (
+                      /* U-1-quick #3. The visible line is the STATUS -- registered, and
+                       * one check still open -- and the paragraph explaining WHY a
+                       * generation job can never close V1 by itself is the ⓘ, verbatim. */
+                      <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
+                        {t(
+                          "등록되었지만 잠정입니다 — V1은 라이브 검사 증거를 기다립니다.",
+                          "Registered, but provisional — V1 is waiting for live-check evidence.",
+                          "登録されましたが暫定です — V1 はライブ検査の証拠を待っています。",
+                        )}
+                        <InfoTip
+                          text={t(
+                            "프로젝트에 등록되었습니다. 다만 실행되지 못한 거부 등급 검사가 있어 잠정 상태입니다 — 생성 잡은 Vissim COM을 열 수 없으므로, 실제 Vissim이 이 파일을 여는 것을 증명하는 V1은 라이브 검사 증거를 붙여야 확정됩니다.",
+                            "Registered in the project, but provisional: a refuse-tier check could not run. A generation job may not open Vissim COM, so V1 — the only check that proves a real Vissim opens this file — stays open until live-check evidence is attached.",
+                            "プロジェクトに登録されましたが、実行できなかった拒否ティア検査があるため暫定です。生成ジョブは Vissim COM を開けないため、実際の Vissim がこのファイルを開くことを証明する V1 はライブ検査の証拠を添付するまで確定しません。",
+                          )}
+                        />
+                      </p>
+                    )}
+                    {selected.status === "refused" && (
+                      <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
+                        {t(
+                          "거부 등급 검사가 결함을 입증했으므로 이 네트워크는 프로젝트에 등록되지 않았습니다. 파일과 판정은 아래에서 그대로 받아볼 수 있습니다.",
+                          "A refuse-tier check proved a fault, so this network was NOT registered in the project. The file and the verdict are both downloadable below.",
+                          "拒否ティアの検査が欠陥を証明したため、このネットワークはプロジェクトに登録されていません。ファイルと判定は下からそのまま取得できます。",
+                        )}
+                      </p>
+                    )}
+                    {selected.revocation && (
+                      <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
+                        {selected.revocation.removed_from_workspace
+                          ? t(
+                              "라이브 증거가 들어온 뒤 게이트가 이 네트워크를 거부하여, 프로젝트에서 등록을 해제했습니다.",
+                              "After live evidence arrived the gate refused this network, so its registration was removed from the project.",
+                              "ライブ証拠が届いた後にゲートがこのネットワークを拒否したため、プロジェクトから登録を解除しました。",
+                            )
+                          : t(
+                              "게이트가 이 네트워크를 거부했습니다. 프로젝트의 현재 데이터셋은 이미 다른 파일이므로 아무것도 삭제하지 않았습니다.",
+                              "The gate refused this network. The project's active dataset is no longer this artifact, so nothing was deleted.",
+                              "ゲートがこのネットワークを拒否しました。プロジェクトの現在のデータセットは既に別のファイルのため、何も削除していません。",
+                            )}
+                      </p>
+                    )}
+                    {selected.refusal && (
+                      <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-800">
+                        <p className="font-semibold">
+                          {refusalHeadline(selected.refusal.code, t, generationRefusalFallback(t))}
+                        </p>
+                        <ul className="mt-1 space-y-1">
+                          {selected.refusal.reasons.map((reason, index) => (
+                            <li key={index} className="font-mono text-[12px] leading-relaxed">
+                              {reason}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  {selected.gate?.live_evidence && (
+                    <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-[13px] text-slate-700">
+                      {/* "Attestation", never "proof". The state.json arrives over
+                        * HTTP, so this app cannot establish that Vissim ran — it can
+                        * only record who says it did. */}
+                      <p className="font-semibold text-slate-800">
+                        {t(
+                          "라이브 검사 증언 (운영자 진술)",
+                          "Live-check attestation (operator's statement)",
+                          "ライブ検査の証言（運用者の申告）",
+                        )}
+                      </p>
+                      <p className="mt-1">
+                        {selected.gate.live_evidence.label} · {selected.gate.live_evidence.network} ·{" "}
+                        {selected.gate.live_evidence.vissim_version ??
+                          t("버전 미기록", "version not recorded", "バージョン未記録")}
+                      </p>
+                      <p className="mt-1">
+                        {selected.gate.live_evidence.admitted
+                          ? t("채택됨 (동일 파일 확인)", "Admitted (same file proven)", "採用（同一ファイル確認）")
+                          : t(
+                              "채택되지 않음 — 이 증거는 다른 파일에 대한 것입니다",
+                              "Not admitted — this evidence is about a different file",
+                              "採用されず — この証拠は別のファイルに関するものです",
+                            )}
+                        {selected.gate.live_evidence.gap_codes.length > 0 &&
+                          ` (${selected.gate.live_evidence.gap_codes.join(", ")})`}
+                      </p>
+                      {selected.gate.live_evidence.attested_by && (
+                        <p className="mt-1">
+                          {t("증언자", "Attested by", "申告者")}:{" "}
+                          <span className="font-semibold">{selected.gate.live_evidence.attested_by}</span>
+                          {selected.gate.live_evidence.attested_at &&
+                            ` · ${formatTimestamp(selected.gate.live_evidence.attested_at, lang)}`}
+                        </p>
+                      )}
+                      {selected.gate.rests_on_attestation && (
+                        <p className="mt-2 rounded border-2 border-slate-400 bg-slate-100 px-2 py-1 text-slate-900">
+                          {t(
+                            "이 판정의 V1은 운영자 진술에 근거합니다 — 이 앱이 Vissim 로딩을 직접 관측한 것이 아닙니다.",
+                            "V1 in this verdict rests on an operator's statement — this app did not observe the Vissim load itself.",
+                            "この判定のV1は運用者の申告に基づきます — このアプリがVissimの読み込みを直接観測したわけではありません。",
+                          )}
+                        </p>
+                      )}
+                    </div>
                   )}
-                </p>
-              )}
+
+                  {reportError && (
+                    <div className="mt-4 rounded-lg border-2 border-slate-400 bg-slate-100 px-3 py-2 text-[13px] text-slate-900">
+                      {t(
+                        "게이트 결과를 불러오지 못했습니다",
+                        "Failed to load the gate result",
+                        "ゲート結果を読み込めませんでした",
+                      )}
+                      : {reportError}
+                    </div>
+                  )}
+
+                  {report && (
+                    <div className="mt-4">
+                      {/* Keyed on the VERDICT, not only the job id: a re-gate
+                        * (which changes `checked_at` while the job id stays
+                        * put) must clear whichever cell the reader had opened
+                        * on the verdict it just replaced. */}
+                      <GateCheckGrid key={`${selected.id}-${gateCheckedAt ?? ""}`} checks={report.checks} t={t} />
+                    </div>
+                  )}
+                </section>
+
+                {/* ----------------------------------------------------- */}
+                {/* 지도                                                   */}
+                {/* ----------------------------------------------------- */}
+                {report && (
+                  <section className="border-t border-slate-200 pt-6">
+                    <GenesisTileMap
+                      jobId={selected.id}
+                      report={report}
+                      hasArtifact={Boolean(selected.artifact)}
+                    />
+                  </section>
+                )}
+
+                {/* ----------------------------------------------------- */}
+                {/* 아티팩트                                               */}
+                {/* ----------------------------------------------------- */}
+                {selected.artifact && (
+                  <DrawerSection title={t("아티팩트", "Artifacts", "アーティファクト")}>
+                    <ArtifactRow jobId={selected.id} t={t} />
+                  </DrawerSection>
+                )}
+
+                {/* ----------------------------------------------------- */}
+                {/* 비교                                                   */}
+                {/* ----------------------------------------------------- */}
+                {/* ONE TITLE, not three. docs/ux-backlog.md item 9: the page
+                  * wrapped `GenesisComparisonPanel` in a Panel titled 생성 비교,
+                  * the panel drew its own inner card with the same title again,
+                  * and the picker carried a third label of the same meaning.
+                  * The drawer supplies the single title; the panel keeps its
+                  * own scope sentence (it is pinned there, and the page must
+                  * not restate it). */}
+                <DrawerSection title={t("생성 비교", "Compare generations", "生成の比較")}>
+                  <GenesisComparisonPanel
+                    jobs={jobs}
+                    currentJob={selected}
+                    currentReport={report}
+                    currentReportError={reportError}
+                  />
+                </DrawerSection>
+              </div>
             </div>
           )}
-
-          {reportError && (
-            <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              {t("게이트 결과를 불러오지 못했습니다", "Failed to load the gate result", "ゲート結果を読み込めませんでした")}
-              : {reportError}
-            </div>
-          )}
-
-          {report && (
-            <>
-              <div className="mb-3 rounded-lg border border-slate-200 bg-surface/90 px-3.5 py-3">
-                <p className="text-xs font-bold text-slate-900">{verdictLabel(report.verdict, t)}</p>
-                <p className="mt-1 text-[11px] text-slate-600">
-                  {t("통과", "pass", "合格")} {report.counts.pass} · {t("실패", "fail", "不合格")}{" "}
-                  {report.counts.fail} · {t("확인 불가", "not checkable", "確認不可")}{" "}
-                  {report.counts.not_checkable}
-                </p>
-                <p className="mt-1 font-mono text-[11px] text-slate-400">
-                  {report.network} · sha256 {report.network_sha256.slice(0, 16)}
-                </p>
-              </div>
-
-              {/* Keyed on the VERDICT, not only the job id: the grid's
-                * severity selection is computed once per mount, and a re-gate
-                * (which changes `checked_at` while the job id stays put) is
-                * exactly when that selection has to be recomputed rather than
-                * inherited from the verdict it just replaced. */}
-              <GateCheckGrid key={`${selected.id}-${gateCheckedAt ?? ""}`} checks={report.checks} t={t} />
-
-              {/* Roadmap v2 §5.B B3 (완결) -- WHERE the gate's findings are,
-                * spatially. Nested inside `report &&` because a highlight is
-                * only meaningful once there is a stored verdict to highlight;
-                * `GateFindingsMap` itself decides whether to auto-open (a
-                * REFUSED verdict does), and fetches the network artifact only
-                * once opened. */}
-              <div className="mt-4">
-                <GateFindingsMap
-                  jobId={selected.id}
-                  report={report}
-                  hasArtifact={Boolean(selected.artifact)}
-                  autoOpen={report.verdict === "refused"}
-                />
-              </div>
-            </>
-          )}
-
-          {selected.artifact && <ArtifactRow jobId={selected.id} t={t} />}
-        </Panel>
-      )}
-
-      {/* Roadmap v2 §5.B B3 (완결) -- prior-generation comparison. Its own
-        * Panel (not nested inside the gate verdict one above) because it
-        * reads a SECOND job's stored gate result, on the user's request --
-        * the gate verdict panel above is about the one job selected in the
-        * history list, and this one is deliberately about two.
-        *
-        * It carries NO `subtitle` by design. The page used to restate the
-        * comparison's SCOPE -- gate results and counts only, never the
-        * networks' geometry -- one line above `GenesisComparisonPanel`'s own
-        * scope line, which says that in slightly different words: two sources
-        * for one sentence, and the kind of duplication that drifts. The panel
-        * owns that line (it is pinned there), so the page stops repeating it. */}
-      {selected && (
-        <Panel title={t("생성 비교", "Compare generations", "生成の比較")}>
-          <GenesisComparisonPanel
-            jobs={jobs}
-            currentJob={selected}
-            currentReport={report}
-            currentReportError={reportError}
-          />
-        </Panel>
-      )}
+        </div>
+      </div>
     </div>
   );
 }
