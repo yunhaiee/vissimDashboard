@@ -85,6 +85,11 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   meta line, then plain titled sections (Description / Versions ↔ our 판정 / 소견 / 아티팩트),
   close X top-right. This IS the #13 split: 생성 이력 row click → the right pane shows that
   generation's verdict grid, map and artifact row; the left column stays the form + table.
+  LIVE-REVIEW TWEAKS on the #13 build (2026-08-13, pre-commit): 3×3 cells lose the
+  whole-card tint — color lives ONLY on the state tag (통과/실패/확인 불가), card body mono;
+  the ⓘ glyph sits slightly below vertical center — align it. (Screenshot also showed the
+  old backend process rejecting /artifact/geojson — not a defect; the degradation path drew
+  the SVG fallback and quoted the server's reason exactly as designed.)
   MOCKUP DECISIONS (2026-08-13, flow-stepper-mockup reviewed): **variant B approved** —
   the five-group pipeline sidebar (① 네트워크 ② 데이터 ③ 시뮬·보정 ④ 보고서, project
   selector fixed on top) becomes the implementation target after #13. Right drawer must
