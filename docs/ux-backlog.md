@@ -151,6 +151,13 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   surfaces (approval flow, anomaly→proposal→approve→re-run). Note: D4 (roadmap §5.D, professor's
   direction reversal) will change what the loop's proposals even look like — sequence the UX pass
   after D4's proposal-shape change lands, or design them together.
+  **U-2-core LANDED `c1291c7` (2026-08-14):** the named audit gap is closed — the approval
+  card now renders each action's 제안 이유 verbatim and carries a reviewer 사유 (n/600,
+  source-locked to the backend cap) on BOTH approve and decline, so the ledger's 근거 cell
+  stops reading "-". No confidence chip: this flow has no confidence signal and rendering
+  one would be fabricated authority (named in code). REMAINING for the broad pass (awaits
+  the user's detailed feedback): FloatingAssistant restyling to the Console vocabulary,
+  the duplicate approve-strip/progress-bar, and the loop-surface information architecture.
 
 Pre-audit facts (read-only terrain pass, 2026-08-12 — measured, not designed):
 
