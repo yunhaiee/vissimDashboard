@@ -1646,11 +1646,15 @@ contractTest("genesis primary CTAs stay legible on the inverted dark palette", (
 //   * every cell prints its id AND its tri-state WORD with no click at all --
 //     실패 / 확인 불가 are words on screen, never a colour a reader has to
 //     decode;
-//   * a non-pass cell keeps a persistent accent ring in its own currentColor
-//     whether or not anything is selected. This is load-bearing here and
-//     almost nowhere else: globals.css remaps the amber family to NEUTRAL, so
-//     `not_checkable`'s fill alone renders grey -- the ring is the only thing
-//     standing between "could not run" and "nothing to report".
+//   * the state CHIP is visibly not the pass chip whether or not anything is
+//     selected: rose for a fail, a DOUBLED mono border for 확인 불가. This is
+//     load-bearing here and almost nowhere else: globals.css remaps the amber
+//     family to NEUTRAL, so `not_checkable`'s fill alone renders grey -- the
+//     chip's weight is the only thing standing between "could not run" and
+//     "nothing to report". (The user's second live pass, 2026-08-13, removed
+//     the CELLS' own state ring: two thicknesses of white card border read as
+//     two kinds of card. The cards are identical now; the chip carries all of
+//     it.)
 //
 // What was given up is only that severity no longer decides what the reader is
 // LOOKING AT. That is a presentation choice the user made; it drops no claim.
@@ -1699,8 +1703,8 @@ contractTest("U-1: the R1.5 grid starts with every cell closed, and severity sti
   );
 
   // (3) SEVERITY IS STILL READABLE WITHOUT A CLICK -- the half of the doctrine
-  // that must never move. Id + tri-state word on every cell, and a persistent
-  // accent ring on every non-pass cell.
+  // that must never move. Id + tri-state word on every cell, and a chip whose
+  // weight/hue is visibly not the pass chip on every non-pass cell.
   pin.match(page, /grid grid-cols-3/, "expected the nine checks to be laid out as a 3-column grid");
   pin.match(
     gridBody,
@@ -1728,8 +1732,8 @@ contractTest("U-1: the R1.5 grid starts with every cell closed, and severity sti
   );
   pin.match(
     gridBody,
-    /checkCellClasses\(check\.state, isSelected\)/,
-    "expected the cell card to take the mono card helper",
+    /checkCellClasses\(isSelected\)/,
+    "expected the cell card to take the mono card helper -- and to take ONLY the selection, since state no longer changes the card",
   );
   pin.match(
     gridBody,
@@ -1744,13 +1748,25 @@ contractTest("U-1: the R1.5 grid starts with every cell closed, and severity sti
     "expected the detail's chip to carry the colour, matching the cells",
   );
 
-  // (3b) The ring survives the tint's removal, and now carries MORE: with no
-  // tinted fill left, it is the whole of "something in this cell is not a
-  // pass", visible without reading a word.
+  // (3b) THE CARDS ARE IDENTICAL FOR EVERY STATE (user, second live pass
+  // 2026-08-13): the non-pass ring made cell borders come in two thicknesses of
+  // white. With it gone, the pre-reading signal lives ENTIRELY on the chip --
+  // so the chip's doubled mono border for 확인 불가 is now itself load-bearing
+  // and pinned, and the cell helper must not read the state at all.
+  pin.doesNotMatch(
+    cellStyling,
+    /ring-1 ring-slate-400/,
+    "expected the cells' state ring to be gone -- every card wears the pass card's hairline, per the user's live instruction",
+  );
   pin.match(
     cellStyling,
-    /: "ring-1 ring-slate-400"/,
-    "expected failing/not-checkable cells to keep a (now neutral) accent ring even with nothing selected -- it is the only pre-reading signal left once the cards went mono",
+    /function checkCellClasses\(isSelected: boolean\)/,
+    "expected the card helper to take ONLY the selection -- a state parameter here is the road back to state-driven card borders",
+  );
+  pin.match(
+    cellStyling,
+    /"border-2 border-slate-400 bg-slate-100 text-slate-900"/,
+    "expected 확인 불가's chip to keep its doubled mono border -- with the cell ring gone it is the only pre-reading signal between 'could not run' and a pass",
   );
 
   // (4) NO MICROCOPY ON THE CELLS. The tier line ("거부 등급"/"경고 등급") used
@@ -1766,7 +1782,7 @@ contractTest("U-1: the R1.5 grid starts with every cell closed, and severity sti
 
   // (5) THE CLICK HAS AN ANSWER: one fill step, a 2px ring, a brighter title,
   // over ~100ms.
-  pin.match(cellStyling, /"ring-2 ring-slate-500"/, "expected the selected cell to take a 2px ring");
+  pin.match(cellStyling, /ring-2 ring-slate-500/, "expected the selected cell to take a 2px ring");
   pin.match(gridBody, /duration-100/, "expected the ~100ms transition the user asked for on the active cell");
   pin.match(
     gridBody,

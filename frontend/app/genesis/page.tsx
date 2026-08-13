@@ -191,10 +191,11 @@ function checkStateLabel(state: GenesisGateCheck["state"], t: Translate): string
  *
  * The doctrine is untouched and this is where to check that claim: `pass` and
  * `fail` keep their hues, `not_checkable` stays mono-with-a-doubled-border per
- * the three-colour rule, the WORD is printed on every chip regardless, and the
- * CELL still keeps a persistent (now neutral) ring whenever it is not a pass —
- * so "something here is not fine" is still visible from across the room, and
- * WHICH not-fine it is, is one glance at the chip.
+ * the three-colour rule, and the WORD is printed on every chip regardless. The
+ * CHIP is the whole of the pre-reading signal now — the user's second live pass
+ * (2026-08-13) removed the cells' state ring too, so every card wears the same
+ * hairline and "something here is not fine" is the chip's weight and hue, one
+ * glance away from WHICH not-fine it is.
  */
 function checkStateTagClasses(state: GenesisGateCheck["state"]): string {
   if (state === "pass") return "border-emerald-300 bg-emerald-50 text-emerald-800";
@@ -202,23 +203,17 @@ function checkStateTagClasses(state: GenesisGateCheck["state"]): string {
   return "border-2 border-slate-400 bg-slate-100 text-slate-900";
 }
 
-/** The card behind a check — mono for EVERY state, so the grid reads as a field
- * of nine equal cells and the eye goes to the chips. `isSelected` is the only
- * thing that changes the fill, and the ring is the doctrine: one step for
- * "not a pass", two steps for "this is the one you opened". */
-function checkCellClasses(state: GenesisGateCheck["state"], isSelected: boolean): string {
-  const base = isSelected
-    ? "border-slate-300 bg-slate-100 text-slate-900"
+/** The card behind a check — IDENTICAL for every state, so the grid reads as a
+ * field of nine equal cells and the eye goes to the chips. The user's second
+ * live pass (2026-08-13) levelled the last state-driven difference: the
+ * non-pass cells' heavier ring made their borders read as a second, thicker
+ * kind of white line, so every card now wears the pass card's hairline and the
+ * chip alone says what state lives inside. Selection is the ONLY thing that
+ * changes the card — fill one step, plus the 2px ring. */
+function checkCellClasses(isSelected: boolean): string {
+  return isSelected
+    ? "border-slate-300 bg-slate-100 text-slate-900 ring-2 ring-slate-500"
     : "border-slate-200 bg-slate-50 text-slate-800";
-  // ONE ring expression, never two classes: both set the same two custom
-  // properties, so emitting both would let stylesheet order — not this file —
-  // decide which one a selected failing cell shows.
-  const ring = isSelected
-    ? "ring-2 ring-slate-500"
-    : state === "pass"
-      ? ""
-      : "ring-1 ring-slate-400";
-  return `${base} ${ring}`;
 }
 
 function verdictLabel(verdict: GenesisGateReport["verdict"], t: Translate): string {
@@ -319,11 +314,13 @@ function checkHasBody(check: GenesisGateCheck): boolean {
  *
  *   * every cell states its id and its tri-state WORD, with no click at all —
  *     `실패` and `확인 불가` are printed, never implied by a colour;
- *   * a non-pass cell keeps a persistent accent ring whether or not anything is
- *     selected. This matters more here than anywhere else in the app, and more
- *     still since the cards went mono (see `checkStateTagClasses`): with no
- *     tinted fill left to carry it, the ring is the whole of "something in this
- *     cell is not a pass", and the chip beside it says which.
+ *   * the state CHIP is visibly not the pass chip whether or not anything is
+ *     selected: rose for a fail, a doubled mono border for 확인 불가 (see
+ *     `checkStateTagClasses`). The cards themselves are identical for every
+ *     state — the user's second live pass removed the non-pass cells' heavier
+ *     ring, because two thicknesses of white card border read as two kinds of
+ *     card — so the chip now carries the whole of "something here is not a
+ *     pass", and it says which in the same glance.
  *
  * So severity is still readable at a glance; what it no longer does is decide
  * what the reader is looking at. A panel that opened itself was, in the user's
@@ -355,7 +352,7 @@ function GateCheckGrid({ checks, t }: { checks: GenesisGateCheck[]; t: Translate
               // the detail below: the cell clamps it to two lines, and a
               // clamped sentence a reader cannot recover is a dropped sentence.
               title={check.title}
-              className={`flex flex-col gap-1.5 rounded-lg border px-3 py-2.5 text-left transition-[background-color,box-shadow,color] duration-100 ${checkCellClasses(check.state, isSelected)}`}
+              className={`flex flex-col gap-1.5 rounded-lg border px-3 py-2.5 text-left transition-[background-color,box-shadow,color] duration-100 ${checkCellClasses(isSelected)}`}
             >
               <span className="flex flex-wrap items-center gap-1.5">
                 <span className="font-mono text-[13px] font-bold">{check.id}</span>
@@ -1129,9 +1126,16 @@ export default function GenesisPage() {
                       >
                         <td className="max-w-[150px] py-2.5 pr-3">
                           <span className="block truncate font-medium text-slate-800">{job.name}</span>
-                          <span className="block truncate font-mono text-[12px] text-slate-500">
-                            {job.source_osm.filename}
-                          </span>
+                          {/* A derived filename that only re-spells the name above it is
+                            * repetition, not information (user, live review 2026-08-13):
+                            * it prints only when it actually differs — i.e. an upload
+                            * whose file was not named after the job. Same rule in the
+                            * drawer header and the verdict sha line. */}
+                          {job.source_osm.filename !== `${job.name}.osm` && (
+                            <span className="block truncate font-mono text-[12px] text-slate-500">
+                              {job.source_osm.filename}
+                            </span>
+                          )}
                         </td>
                         <td className="whitespace-nowrap py-2.5 pr-3 font-mono text-[12px] text-slate-500">
                           {formatTimestamp(job.created_at, lang)}
@@ -1191,8 +1195,10 @@ export default function GenesisPage() {
                     </span>
                   </div>
                   <p className="mt-1 truncate font-mono text-[12px] text-slate-500">
-                    {selected.source_osm.filename} · {formatTimestamp(selected.created_at, lang)} ·{" "}
-                    {networkScaleLabel(selected.network, t)}
+                    {selected.source_osm.filename !== `${selected.name}.osm`
+                      ? `${selected.source_osm.filename} · `
+                      : ""}
+                    {formatTimestamp(selected.created_at, lang)} · {networkScaleLabel(selected.network, t)}
                   </p>
                 </div>
                 <button
@@ -1268,7 +1274,10 @@ export default function GenesisPage() {
 
                     {report && (
                       <p className="mt-3 break-all font-mono text-[12px] text-slate-500">
-                        {report.network} · sha256 {report.network_sha256.slice(0, 16)}
+                        {report.network !== selected.name && report.network !== `${selected.name}.inpx`
+                          ? `${report.network} · `
+                          : ""}
+                        sha256 {report.network_sha256.slice(0, 16)}
                       </p>
                     )}
 

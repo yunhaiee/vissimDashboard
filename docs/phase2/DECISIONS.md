@@ -6103,3 +6103,21 @@ quoted the old block-comment regex verbatim — whose `*/` terminated the commen
 describing code is code. Final: backend **4570 / 1 (env RAG) / 1 skip** (+13), contract
 **62/62** (+2), typecheck clean, production build passes — backend and contract counts
 re-run independently by the orchestrator, matching.
+
+**The user's live pass continued after the commit, three instructions in sequence, each
+verified live before the next arrived.** ① The verdict chip in the history table wrapped
+mid-word at narrow widths ("거부됨 — 등록" / "하지 않음" reads as two tags) —
+`whitespace-nowrap` on both chips, the table's own `overflow-x-auto` owns the narrow case.
+② The 3×3 cards' borders came in two thicknesses of white — the non-pass cells' doctrine
+ring, kept through the tint removal, was now itself the inconsistency. Removed: every card
+wears the pass card's hairline (all nine measured `border=1px` identical, `shadow=none`),
+`checkCellClasses` takes ONLY the selection, and the doctrine's whole pre-reading weight
+moves onto the chip — whose doubled mono border for 확인 불가 is therefore now pinned as
+load-bearing, with the cells' state ring pinned ABSENT. ③ The drawer spelled the job's base
+name three times (title, `{name}.osm` meta line, `{name}.inpx` sha line) and the table
+spelled it twice. Rule shipped: **a derived filename that only re-spells the title prints
+nothing** — each site renders its filename only when it actually differs (an upload not
+named after its job), so the fact is hidden exactly when it is literally the title plus an
+extension, and shown when it carries information. First cut of ③ missed that
+`report.network` carries `.inpx` — caught by the same live read-back that verified the
+other two. Typecheck + contract 62/62 after each step.
