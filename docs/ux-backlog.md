@@ -85,6 +85,14 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   meta line, then plain titled sections (Description / Versions ↔ our 판정 / 소견 / 아티팩트),
   close X top-right. This IS the #13 split: 생성 이력 row click → the right pane shows that
   generation's verdict grid, map and artifact row; the left column stays the form + table.
+  REGION-PAGE ADDENDA (user live-testing 2026-08-13, folded into #13 mid-build): tinted
+  info boxes were blue-on-blue — ONE contrast rule, ink-strength text on every tinted box;
+  RegionGauge removed in polygon mode (the map + the 한계 안 line already say it; the little
+  dashed square read as a stray drawn rectangle); polygon lasso becomes the DEFAULT mode;
+  the 추출 이력 list REMOVED (every generation consumes a fresh extract, so past staged
+  extracts carry no action; generation history lives on the hub) and the deferred-features
+  disclosure REMOVED (named-absence doctrine governs dropped DATA, not unbuilt features —
+  the deferral record's home is this file and the roadmap).
   (14) LAYOUT: adopt the Console's split — left rail = controls/history/verdict list, right =
   sticky map/network + detail. ALL of 9–14 fold into the #13 U-1-map unit (one rebuild of
   app/genesis/page.tsx rather than two); choice-hierarchy/stepper stays in the #14 mockup.
