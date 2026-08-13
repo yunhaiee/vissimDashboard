@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Prism 플로우 재편 목업 — 스테퍼 + 사이드바 A/B (2026-08-13)</title>
+<!--
+  DECISION LOG (mockup convention, region-selection-mockup 형식을 따름)
+
+  2026-08-13  사용자 승인: "파이프라인이 곧 내비게이션" 제안 승인, 프로젝트 선택기의
+              사이드바 상단 배치 선호 확인. 이 목업은 결정 대기 중인 한 가지를
+              나란히 보여준다:
+                A안 — 현행 사이드바 유지 + 상단 스테퍼만 추가 (보수적)
+                B안 — 사이드바를 파이프라인 5그룹으로 재편 (제안 본안)
+              공통: 상단 진행 스테퍼(프로젝트의 파이프라인 상태 칩), genesis 허브의
+              세로 3스텝(소스 양자택일 → 입력 붙이기[고르기≠만들기 분리] → 생성),
+              Skills식 이력 테이블 → 행 클릭 → 우측 판정 드로어.
+              시각 언어는 Console 이식 확정분: 한 겹 카드, 32-40px 리듬, 스탯 패턴,
+              12px 미만 없음, 팔레트는 실앱과 동일 (#1a1a19 / ivory / hairline).
+
+  가짜 데이터: 이력 행·판정 수치는 실제 데모 잡의 실측값을 본떴다 (링크 1831 등).
+  여기 있는 어떤 것도 실API에 연결되지 않는다 — 이것은 결정용 그림이다.
+-->
+<style>
+  :root{
+    --bg:#1a1a19; --surface:#232322; --line:rgba(255,255,255,.10); --line-soft:rgba(255,255,255,.06);
+    --ink:#fafaf9; --mut:#a8a8a3; --faint:#71716c;
+    --sky:#38bdf8; --rose:#fb7185; --emerald:#34d399; --amber:#fbbf24;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font:13px/1.55 "Segoe UI",Pretendard,sans-serif;}
+  .app{display:grid;grid-template-columns:230px 1fr;min-height:100vh}
+  /* ── 사이드바 ── */
+  aside{border-right:1px solid var(--line);padding:14px 12px;display:flex;flex-direction:column;gap:6px}
+  .proj{border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-weight:600;display:flex;justify-content:space-between;background:rgba(255,255,255,.03);margin-bottom:10px}
+  .proj span{color:var(--faint)}
+  .grp{margin-top:14px;font-size:12px;color:var(--faint);font-weight:700;letter-spacing:.4px;padding:0 6px}
+  .nav{padding:7px 10px;border-radius:7px;color:var(--mut);cursor:pointer}
+  .nav:hover{background:rgba(255,255,255,.05)}
+  .nav.on{background:rgba(255,255,255,.08);color:var(--ink);font-weight:600}
+  .nav small{color:var(--faint);float:right}
+  /* ── 상단 ── */
+  main{padding:0 36px 60px}
+  .topbar{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding:12px 0;margin-bottom:34px}
+  .stepper{display:flex;gap:8px;align-items:center;flex:1}
+  .step{display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);color:var(--mut);font-size:12px}
+  .step.on{border-color:var(--sky);color:var(--ink);background:rgba(56,189,248,.08)}
+  .step .dot{width:7px;height:7px;border-radius:50%;background:var(--faint)}
+  .step.done .dot{background:var(--emerald)}
+  .step.on .dot{background:var(--sky)}
+  .step .st{color:var(--faint)}
+  .arrow{color:var(--faint)}
+  .abtoggle{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .abtoggle button{background:none;border:0;color:var(--mut);padding:7px 14px;cursor:pointer;font-size:12px}
+  .abtoggle button.on{background:var(--ink);color:#0b0b0b;font-weight:700}
+  /* ── 본문 ── */
+  h1{font-size:21px;margin:6px 0 4px}
+  .sub{color:var(--mut);margin-bottom:34px}
+  section{margin-bottom:40px}
+  h2{font-size:15px;font-weight:600;margin-bottom:14px}
+  .card{border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.03);padding:22px}
+  .stepnum{display:inline-flex;width:22px;height:22px;border-radius:50%;border:1px solid var(--line);align-items:center;justify-content:center;font-size:12px;color:var(--mut);margin-right:9px}
+  .bigchoice{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px}
+  .choice{border:1px solid var(--line);border-radius:10px;padding:20px;cursor:pointer;text-align:center}
+  .choice:hover{border-color:var(--sky)}
+  .choice b{display:block;font-size:14px;margin-bottom:4px}
+  .choice span{color:var(--mut);font-size:12px}
+  .attach{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px}
+  .attach .row{display:flex;gap:8px;align-items:center}
+  select{background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:7px;padding:8px 10px;flex:1;font-size:13px}
+  .ghost{background:none;border:1px solid var(--line);border-radius:7px;color:var(--mut);padding:8px 12px;cursor:pointer;font-size:12px;white-space:nowrap}
+  .primary{background:var(--ink);color:#0b0b0b;font-weight:700;border:0;border-radius:8px;padding:10px 22px;cursor:pointer;font-size:13px;margin-top:16px}
+  .lbl{font-size:12px;color:var(--mut);margin-bottom:5px}
+  /* ── 테이블 ── */
+  table{width:100%;border-collapse:collapse}
+  th{font-size:12px;color:var(--faint);text-align:left;font-weight:600;padding:8px 12px;border-bottom:1px solid var(--line)}
+  td{padding:12px;font-size:13px}
+  tr.row{cursor:pointer;border-radius:8px}
+  tr.row:hover td{background:rgba(255,255,255,.04)}
+  tr.row.sel td{background:rgba(56,189,248,.09)}
+  .mono{font-family:Consolas,monospace;font-size:12px;color:var(--mut)}
+  .chip{font-size:11.5px;border:1px solid var(--line);border-radius:999px;padding:3px 10px;color:var(--mut);white-space:nowrap}
+  .chip.warn{border-color:rgba(251,113,133,.5);color:var(--rose)}
+  .chip.ok{border-color:rgba(52,211,153,.5);color:var(--emerald)}
+  .chip.prov{border-color:rgba(251,191,36,.45);color:var(--amber)}
+  /* ── 우측 드로어 ── */
+  .split{display:grid;grid-template-columns:1fr 380px;gap:22px;align-items:start}
+  .drawer{border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.03);padding:20px;position:sticky;top:16px}
+  .drawer .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+  .drawer .hd b{font-size:15px}
+  .x{color:var(--faint);cursor:pointer;font-size:15px}
+  .meta{color:var(--faint);font-size:12px;margin-bottom:16px}
+  .stats{display:flex;gap:26px;margin:14px 0 20px}
+  .stat .l{font-size:11.5px;color:var(--faint)}
+  .stat .v{font-size:21px;font-weight:700}
+  .stat .v.bad{color:var(--rose)}
+  .grid9{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}
+  .cell{border:1px solid var(--line);border-radius:8px;padding:10px;cursor:pointer;transition:all .1s}
+  .cell:hover{background:rgba(255,255,255,.05)}
+  .cell.sel{background:rgba(255,255,255,.08);box-shadow:0 0 0 2px var(--sky) inset}
+  .cell b{font-size:12.5px}
+  .cell .s{display:block;font-size:11.5px;margin-top:3px}
+  .cell.fail{border-color:rgba(251,113,133,.55)} .cell.fail .s{color:var(--rose)}
+  .cell.nc{border-color:rgba(251,191,36,.45)} .cell.nc .s{color:var(--amber)}
+  .cell.pass .s{color:var(--emerald)}
+  .mapph{height:170px;border:1px solid var(--line);border-radius:8px;background:
+    linear-gradient(rgba(56,189,248,.05),rgba(56,189,248,.02)),#151514;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:12px;margin-bottom:16px}
+  .arts{display:flex;gap:8px;flex-wrap:wrap}
+  .note{border:1px solid rgba(56,189,248,.4);background:rgba(56,189,248,.07);border-radius:8px;padding:12px 14px;color:var(--ink);font-size:12.5px;margin-top:26px}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside id="sidebar"></aside>
+  <main>
+    <div class="topbar">
+      <div class="stepper">
+        <div class="step done"><span class="dot"></span>네트워크 <span class="st">published 1</span></div><span class="arrow">›</span>
+        <div class="step on"><span class="dot"></span>데이터 <span class="st">수요 ✓ · 신호 대기</span></div><span class="arrow">›</span>
+        <div class="step"><span class="dot"></span>시뮬·보정</div><span class="arrow">›</span>
+        <div class="step"><span class="dot"></span>보고서</div>
+      </div>
+      <div class="abtoggle">
+        <button id="btnA" onclick="setVariant('A')">A안 · 현행+스테퍼</button>
+        <button id="btnB" class="on" onclick="setVariant('B')">B안 · 5그룹 재편</button>
+      </div>
+    </div>
+
+    <h1>네트워크 생성</h1>
+    <p class="sub">순서대로: 소스를 고르고, 입력을 붙이고, 생성합니다. 게이트를 통과한 것만 프로젝트에 등록됩니다.</p>
+
+    <section class="card">
+      <h2><span class="stepnum">1</span>네트워크 소스</h2>
+      <div class="bigchoice">
+        <div class="choice"><b>영역에서 추출</b><span>지도에 폴리곤을 그려 OSM에서 받아옵니다</span></div>
+        <div class="choice"><b>.osm 파일 업로드</b><span>가지고 있는 추출 파일을 올립니다</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="stepnum">2</span>입력 붙이기 <span style="color:var(--faint);font-weight:400;font-size:12px">(선택 — 없으면 기하만 생성)</span></h2>
+      <div class="attach">
+        <div><div class="lbl">수요</div><div class="row"><select><option>가람네거리 수요 (8/13 생성분 기준)</option><option>없음</option></select><button class="ghost">+ 새로 만들기</button></div></div>
+        <div><div class="lbl">신호</div><div class="row"><select><option>없음</option></select><button class="ghost">+ 현시도 확인</button></div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="stepnum">3</span>생성</h2>
+      <div class="row" style="display:flex;gap:14px;align-items:center">
+        <button class="primary">생성 시작</button>
+        <span style="color:var(--faint);font-size:12px">잡 큐에서 실행 · Vissim COM 미사용 · 게이트가 유일한 출구</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>생성 이력</h2>
+      <div class="split">
+        <table>
+          <thead><tr><th>이름</th><th>생성일</th><th>영역</th><th>규모</th><th style="text-align:right">판정</th></tr></thead>
+          <tbody>
+            <tr class="row sel" onclick="sel(this)"><td>region_n36_3523</td><td class="mono">8/13 13:50</td><td class="mono">폴리곤 6점</td><td class="mono">링크 214</td><td align="right"><span class="chip prov">잠정 등록</span></td></tr>
+            <tr class="row" onclick="sel(this)"><td>demo-crossroads</td><td class="mono">8/12 15:28</td><td class="mono">업로드</td><td class="mono">링크 8</td><td align="right"><span class="chip prov">잠정 등록</span></td></tr>
+            <tr class="row" onclick="sel(this)"><td>region_n36_3504</td><td class="mono">8/12 15:04</td><td class="mono">1.91 km²</td><td class="mono">링크 1831</td><td align="right"><span class="chip warn">거부됨</span></td></tr>
+          </tbody>
+        </table>
+        <div class="drawer">
+          <div class="hd"><b>region_n36_3523 <span class="chip prov" style="margin-left:6px">잠정 등록</span></b><span class="x">✕</span></div>
+          <div class="meta">2026. 8. 13 13:50 · 폴리곤 6점 · sha 70c5…aeca</div>
+          <div class="stats">
+            <div class="stat"><div class="l">통과</div><div class="v">4</div></div>
+            <div class="stat"><div class="l">실패</div><div class="v bad">0</div></div>
+            <div class="stat"><div class="l">확인 불가</div><div class="v">5</div></div>
+          </div>
+          <div class="grid9">
+            <div class="cell nc" onclick="cell(this)"><b>V1</b><span class="s">확인 불가</span></div>
+            <div class="cell pass" onclick="cell(this)"><b>V2</b><span class="s">통과</span></div>
+            <div class="cell pass" onclick="cell(this)"><b>V3</b><span class="s">통과</span></div>
+            <div class="cell pass" onclick="cell(this)"><b>V4</b><span class="s">통과</span></div>
+            <div class="cell nc" onclick="cell(this)"><b>V5</b><span class="s">확인 불가</span></div>
+            <div class="cell nc" onclick="cell(this)"><b>V6</b><span class="s">확인 불가</span></div>
+            <div class="cell pass" onclick="cell(this)"><b>V7</b><span class="s">통과</span></div>
+            <div class="cell nc" onclick="cell(this)"><b>V8</b><span class="s">확인 불가</span></div>
+            <div class="cell nc" onclick="cell(this)"><b>V9</b><span class="s">확인 불가</span></div>
+          </div>
+          <div class="mapph">타일 지도 (#13에서 실물 — CARTO + 소견 오버레이)</div>
+          <div class="arts">
+            <button class="ghost">네트워크 .inpx</button><button class="ghost">게이트 리포트</button><button class="ghost">§5 준수</button><button class="ghost">비교…</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="note" id="noteB">
+      <b>B안이 바꾸는 것:</b> 사이드바가 파이프라인 5그룹(네트워크 → 데이터 → 시뮬·보정 → 보고서)이 됩니다.
+      수요·현시도가 "데이터" 그룹의 1급 메뉴가 되고(지금은 genesis 밑에 숨어 있음), 네트워크 변경 비교는
+      네트워크 뷰의 모드로, 데이터 다운로드는 아티팩트 행과 보고서 그룹으로 흡수됩니다.
+      A안은 현행 메뉴를 유지하고 상단 스테퍼만 추가합니다 — 토글로 비교해 보세요.
+    </div>
+  </main>
+</div>
+<script>
+const A = `
+  <div class="proj">B4-데모 <span>▾</span></div>
+  <div class="nav on">대시보드</div>
+  <div class="nav">베이스모델 검증</div>
+  <div class="nav">네트워크</div>
+  <div class="nav">네트워크 생성</div>
+  <div class="nav">네트워크 변경 비교</div>
+  <div class="nav">모델 검진</div>
+  <div class="nav">데이터 다운로드</div>
+  <div class="nav">보고서 작성</div>`;
+const B = `
+  <div class="proj">B4-데모 <span>▾</span></div>
+  <div class="grp">① 네트워크</div>
+  <div class="nav on">생성</div>
+  <div class="nav">네트워크 뷰 <small>+비교</small></div>
+  <div class="grp">② 데이터</div>
+  <div class="nav">수요</div>
+  <div class="nav">신호 (현시도)</div>
+  <div class="nav">실측 관측</div>
+  <div class="grp">③ 시뮬·보정</div>
+  <div class="nav">대시보드</div>
+  <div class="nav">모델 검진</div>
+  <div class="grp">④ 보고서</div>
+  <div class="nav">작성 · 아티팩트</div>`;
+function setVariant(v){
+  document.getElementById('sidebar').innerHTML = v==='A'?A:B;
+  document.getElementById('btnA').classList.toggle('on',v==='A');
+  document.getElementById('btnB').classList.toggle('on',v==='B');
+}
+function sel(tr){document.querySelectorAll('tr.row').forEach(r=>r.classList.remove('sel'));tr.classList.add('sel');}
+function cell(c){document.querySelectorAll('.cell').forEach(x=>x.classList.remove('sel'));c.classList.add('sel');}
+setVariant('B');
+</script>
+</body>
+</html>
