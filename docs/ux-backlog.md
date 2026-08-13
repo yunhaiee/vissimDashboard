@@ -28,6 +28,33 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   proposal shape). REMAINING for the user's detailed review: the amber-neutral question below,
   `.ui-button-primary` adoption on the other three CTAs, FloatingAssistant structural work
   (post-D4), and whatever the elaboration surfaces.
+
+  **THE USER'S DETAILED ELABORATION ARRIVED 2026-08-13 (screenshots of live use). Eight
+  problems, all APPROVED with solutions and order (user answer: "전부 승인, 제안 순서대로";
+  flow direction: mockup first, then decide):**
+  1. GateFindingsMap ↔ dashboard-map parity: bare local-coords SVG is illegible, no basemap.
+     Solution: server-computed GeoJSON endpoint (genesis drafts are WGS84-derived — exact
+     inverse exists, unlike consultant Helmert), leaflet+CARTO with finding overlays. [U-1-map]
+  2. ALL artifact buttons dead (.inpx / §5 / gate report / gate.json / manifest) — BUG,
+     suspected `<a href>`-cannot-carry-workspace-header class (the named 1.4 hole). [U-1-quick]
+  3. Residual always-visible text (drag/zoom hint, comparison scope, local-coords note,
+     provisional explanation, excluded-roads note) → new shared ⓘ tooltip component; doctrine
+     strings into tooltips (reachable), operation hints deleted. [U-1-quick]
+  4. V1–V9: whole-card click (not just arrow) + 3×3 grid of state chips with a single detail
+     panel below; severity auto-select stays. [U-1-quick]
+  5. 생성 이력 rows carry only title+date → add verdict chip, requested region (coords/area),
+     link/node counts; backend job-listing gains a region summary. [U-1-quick]
+  6. Choice hierarchy broken on the hub: step-1 (upload|extract) and step-2 (demand/현시)
+     share a row; "수요 입력 만들기" page + job-form "수요 입력 (선택)" dropdown read as
+     duplicates. → absorbed into the flow restructure. [U-1-flow]
+  7. Dashboard MAP dead for genesis-published datasets (도식 works): the map is pinned to the
+     consultant Helmert constants. Solution: per-dataset georeference metadata written at
+     genesis publish; geojson router uses per-dataset transform. [U-1-map]
+  8. Function overlap (network preview ×3) + user proposes a survey-like flow. Direction:
+     the product's own six stages (스코핑→데이터→생성→보정→분석→리포트) as a persistent
+     stepper; ONE shared network-preview component. User wants a MOCKUP first. [U-1-flow]
+  **Approved order (serial): D4 → U-1-quick (#2,#3,#4,#5) → polygon-native trim → U-1-map
+  (#1,#7) → U-1-flow mockup → decision → B5-2.**
 - [ ] **U-2 — Calibration-loop UI/UX enhancement.** Same feedback applied to the calibration loop
   surfaces (approval flow, anomaly→proposal→approve→re-run). Note: D4 (roadmap §5.D, professor's
   direction reversal) will change what the loop's proposals even look like — sequence the UX pass
