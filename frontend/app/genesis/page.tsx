@@ -1385,9 +1385,9 @@ export default function GenesisPage() {
             density="console"
             title={t("새 생성", "New generation", "新規生成")}
             subtitle={t(
-              "로컬 .osm 파일을 선택하세요. 네트워크는 잡 큐에서 만들어지며, Vissim COM은 사용하지 않습니다.",
-              "Pick a local .osm file. The network is built on the job queue and no Vissim COM is used.",
-              "ローカルの .osm ファイルを選んでください。ネットワークはジョブキューで作成され、Vissim COM は使いません。",
+              "로컬 .osm 파일을 선택하세요.",
+              "Pick a local .osm file.",
+              "ローカルの .osm ファイルを選んでください。",
             )}
             /* ONE primary action, top-right of the section — the Console list
              * pattern. It is the page's only primary button; everything else
@@ -1533,21 +1533,10 @@ export default function GenesisPage() {
                 </label>
               </div>
 
-              <p className="text-[12px] text-slate-500">
-                {t(
-                  "두 목록은 고르기만 합니다 — 항목은 각 필드 옆 링크의 화면에서 만들어집니다.",
-                  "These dropdowns only pick — entries are made on the screen each field links to.",
-                  "この二つのリストは選ぶだけです — 項目は各フィールド横のリンク先で作成されます。",
-                )}
-              </p>
-
-              <p className="text-[12px] text-slate-500">
-                {t(
-                  "생성에는 로그인이 필요합니다.",
-                  "Starting a generation requires a signed-in user.",
-                  "生成の開始にはログインが必要です。",
-                )}
-              </p>
+              {/* (User text-purge 2026-08-14: the dropdowns-only-pick sentence
+                * and the login note left the screen — the label-row links say
+                * the first, and an unauthenticated start answers with its own
+                * named refusal for the second.) */}
 
               {submitError && (
                 <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-800">

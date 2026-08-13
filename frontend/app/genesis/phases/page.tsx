@@ -371,9 +371,9 @@ export default function PhaseDiagramReviewPage() {
             {rows.length === 0 ? (
               <p className="text-[13px] leading-relaxed text-slate-500">
                 {t(
-                  "렌더링된 현시도가 없습니다. backend/tools/genesis_phase_diagram_batch.py 를 먼저 실행하십시오.",
-                  "No rendered 현시도 yet. Run backend/tools/genesis_phase_diagram_batch.py first.",
-                  "レンダリング済みの現示図がありません。先に backend/tools/genesis_phase_diagram_batch.py を実行してください。",
+                  "렌더링된 현시도가 없습니다.",
+                  "No rendered 현시도 yet.",
+                  "レンダリング済みの現示図がありません。",
                 )}
               </p>
             ) : (
@@ -415,14 +415,11 @@ export default function PhaseDiagramReviewPage() {
             )}
           </Panel>
 
+          {/* No subtitle (user text-purge 2026-08-14): the button itself counts
+            * the confirmed intersections it stages from. */}
           <Panel
             density="console"
             title={t("signals 입력 만들기", "Stage the signals input", "signals入力の作成")}
-            subtitle={t(
-              "확인된 교차로만 포함됩니다.",
-              "Confirmed intersections only.",
-              "確認済の交差点のみ含まれます。",
-            )}
           >
             <button
               type="button"

@@ -8,6 +8,7 @@ import {
   fetchWorkspaces,
   getWorkspaceId,
   setWorkspaceId,
+  WorkspaceAccessError,
   type WorkspaceSummary,
 } from "@/lib/api";
 import { isDatasetBusy, subscribeToDatasetBusy } from "@/lib/datasetEvents";
@@ -30,6 +31,11 @@ import { isDatasetBusy, subscribeToDatasetBusy } from "@/lib/datasetEvents";
  * the backend's own answer for "which workspace did this request resolve to"
  * rather than guessing from localStorage.
  */
+/** sessionStorage key for the one-shot workspace_forbidden recovery below —
+ * present only between "we dropped a refused header" and the next successful
+ * listing, so recovery can fire again for a FUTURE refusal but never loop. */
+const WORKSPACE_RECOVERY_FLAG = "vissim-workspace-recovery";
+
 export default function ProjectSelector() {
   const { t } = useLanguage();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
@@ -54,6 +60,7 @@ export default function ProjectSelector() {
     fetchWorkspaces()
       .then((payload) => {
         if (!mounted) return;
+        window.sessionStorage.removeItem(WORKSPACE_RECOVERY_FLAG);
         setWorkspaces(payload.workspaces);
         setSelectedWorkspaceId(payload.current);
         // A stale id in localStorage (e.g. a workspace created on another
@@ -63,12 +70,31 @@ export default function ProjectSelector() {
           setWorkspaceId(payload.current === payload.default ? null : payload.current);
         }
       })
-      .catch(() => {
+      .catch((error) => {
+        if (!mounted) return;
+        // SELF-HEAL (user hit this live, 2026-08-14): a stored project id the
+        // server refuses -- deleted project, or an account that is not a
+        // member -- makes EVERY request on EVERY page 403 workspace_forbidden,
+        // and the picker (also 403ing) used to just hide, leaving no way out.
+        // Drop the refused header and reload into the default project; the
+        // membership decision itself stays the server's. One-shot per tab via
+        // sessionStorage so a server that refuses even the header-less call
+        // cannot put the page in a reload loop.
+        if (
+          error instanceof WorkspaceAccessError &&
+          getWorkspaceId() &&
+          window.sessionStorage.getItem(WORKSPACE_RECOVERY_FLAG) === null
+        ) {
+          window.sessionStorage.setItem(WORKSPACE_RECOVERY_FLAG, error.code);
+          setWorkspaceId(null);
+          window.location.reload();
+          return;
+        }
         // Signed-out visitors (the login screen renders inside this shell too)
         // and an unreachable backend both land here. A missing workspace list
         // hides the picker rather than showing an error in the navigation —
         // the pages themselves already report a backend they cannot reach.
-        if (mounted) setWorkspaces([]);
+        setWorkspaces([]);
       });
     return () => {
       mounted = false;

@@ -511,6 +511,33 @@ contractTest("#18: the 프로젝트 picker moved to the sidebar, and a switch ca
   pin.match(runUpload, /setDatasetBusy\(true\);[\s\S]*?try \{[\s\S]*?await /, "expected the busy flag raised BEFORE the upload's awaited work begins");
   pin.match(runUpload, /finally \{[\s\S]*?setDatasetBusy\(false\)/, "expected the busy flag cleared in the settle path, not beside where it was raised");
   pin.match(selector, /subscribeToDatasetBusy/, "expected the picker to stay disabled while an upload is in flight");
+
+  // SELF-HEAL (user hit this live, 2026-08-14): a stored project id the server
+  // refuses (deleted project / non-member account) 403s workspace_forbidden on
+  // every request, and the picker used to just hide -- a dead end with no way
+  // back. The recovery must (a) fire only on the TYPED error, (b) only while a
+  // header is actually stored, (c) drop the header and reload, (d) be one-shot
+  // per tab so a still-refusing server cannot cause a reload loop.
+  pin.match(
+    selector,
+    /error instanceof WorkspaceAccessError &&\s*getWorkspaceId\(\) &&\s*window\.sessionStorage\.getItem\(WORKSPACE_RECOVERY_FLAG\) === null/,
+    "expected the workspace_forbidden recovery to be gated on the typed error AND a stored header AND the one-shot flag",
+  );
+  pin.match(
+    selector,
+    /setWorkspaceId\(null\);\s*window\.location\.reload\(\);/,
+    "expected recovery to drop the refused header and reload into the default project",
+  );
+  pin.match(
+    selector,
+    /window\.sessionStorage\.removeItem\(WORKSPACE_RECOVERY_FLAG\)/,
+    "expected a successful listing to re-arm the recovery for a future refusal",
+  );
+  pin.match(
+    read("lib/api.ts"),
+    /code === "workspace_forbidden" \|\| code === "workspace_not_found"/,
+    "expected fetchWorkspaces to type exactly the two server refusal codes -- other failures must keep hiding the picker, not reloading",
+  );
 });
 
 contractTest("root entry redirects to dashboard once assistant is floating", (pin) => {

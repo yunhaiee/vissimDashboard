@@ -2047,9 +2047,33 @@ export interface WorkspaceListResponse {
   default: string;
 }
 
+/** The stored X-Workspace-Id no longer resolves for THIS session: the project
+ * was deleted, or the signed-in account is not a member. P④'s membership gate
+ * deliberately never falls back to the default workspace server-side, so a
+ * client that keeps sending the refused header 403s on every request on every
+ * page — this error is the typed signal that lets the picker drop it. */
+export class WorkspaceAccessError extends Error {
+  constructor(public readonly code: string) {
+    super(code);
+    this.name = "WorkspaceAccessError";
+  }
+}
+
 export async function fetchWorkspaces(): Promise<WorkspaceListResponse> {
   const r = await apiFetch("/api/workspaces", { cache: "no-store" });
-  if (!r.ok) throw new Error(await readApiError(r));
+  if (!r.ok) {
+    if (r.status === 403 || r.status === 404) {
+      const body = await r
+        .clone()
+        .json()
+        .catch(() => null);
+      const code = body?.detail?.code;
+      if (code === "workspace_forbidden" || code === "workspace_not_found") {
+        throw new WorkspaceAccessError(code);
+      }
+    }
+    throw new Error(await readApiError(r));
+  }
   return r.json();
 }
 

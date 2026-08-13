@@ -63,7 +63,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { Panel, refusalHeadline } from "@/components/genesis/ui";
+import { InfoTip, Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   RegionFetchError,
@@ -628,15 +628,10 @@ export default function GenesisRegionPage() {
       {/* ----------------------------------------------------------------- */}
       {/* Pick a region                                                      */}
       {/* ----------------------------------------------------------------- */}
-      <Panel
-        density="console"
-        title={t("① 영역 지정", "1. Name the region", "① 領域の指定")}
-        subtitle={t(
-          "WGS84 십진도. 넓이는 내려받기 전에 한계와 비교해 보여 줍니다 — 한계를 넘으면 자르지 않고 거부합니다.",
-          "WGS84 decimal degrees. The area is shown against the limit BEFORE anything is downloaded — past the limit it is refused, never truncated.",
-          "WGS84 十進度。範囲は取得前に上限と比較して表示します — 上限を超えた場合は切り詰めず拒否します。",
-        )}
-      >
+      {/* No subtitle (user text-purge, 2026-08-14): the limit behaviour speaks
+        * when the measurement row shows the number against the cap, and the
+        * refusal path names itself when it fires. */}
+      <Panel density="console" title={t("① 영역 지정", "1. Name the region", "① 領域の指定")}>
         {/* ONE shape at a time. Both modes send exactly one region, because a
           * polygon's bounding box is derived by the server and a second box from
           * here could disagree with the rectangle the fetch is judged against.
@@ -689,36 +684,21 @@ export default function GenesisRegionPage() {
               )}
               fitLabel={t("그린 영역으로 이동", "Zoom to shape", "描いた領域へ移動")}
             />
-            {/* WHAT IS CUT, on screen. The query, the tail trim and the model
-              * boundary are all the drawn polygon; the faint rectangle is the
-              * residual — the metre band and the size estimate. Said here, said
-              * again in the generated compliance report, and never implied.
-              *
-              * This card used to say the opposite (the rectangle judged, the ring
-              * only queried) and it was true when it said it. It is replaced
-              * rather than softened: a disclosure kept past its own fix is the
-              * same lie as one that was never written. */}
-            {/* THE box the user reported (2026-08-13): it was
-              * `border-sky-300 bg-sky-50 text-sky-900` — a stock #7dd3fc
-              * border, a remapped #032042 navy fill, and #0c4a6e ink that the
-              * remap never touched, i.e. dark navy text on dark navy. It now
-              * follows the tinted-box rule stated above `statusClasses`, and
-              * the type went 11px → 13px with it: this is the longest doctrine
-              * paragraph on the screen, and it was also the smallest. */}
-            <p className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-[13px] leading-relaxed text-slate-800">
-              {t(
-                "그린 폴리곤이 그대로 기준입니다. Overpass 질의도, 도로 꼬리 잘라내기도, 모형 경계 끝점 판정도 모두 이 폴리곤으로 합니다 — 폴리곤 밖으로 뻗은 도로는 폴리곤 변에서 자르고 그 자리에 노드를 만듭니다. 옅은 점선 사각형은 폴리곤의 바운딩 박스로, 이제는 거리 기반 경계 띠와 용량 추정에만 쓰입니다. 이 내용은 생성된 준수 보고서에도 그대로 적힙니다.",
-                "The polygon you drew is the boundary. Overpass is queried with it, the way-tail trim cuts at it, and a road end is judged against it — a road running past the polygon is cut AT its edge and a node is placed there. The faint dashed rectangle is the polygon's bounding box, and it is now used only for the distance-based boundary band and the size estimate. The generated compliance report states this too.",
-                "描いたポリゴンがそのまま基準です。Overpass の問い合わせも、道路の尾部の切り詰めも、モデル境界の端点判定も、すべてこのポリゴンで行います — ポリゴンの外へ伸びる道路はその辺で切り詰め、そこにノードを作ります。薄い破線の矩形はポリゴンのバウンディングボックスで、いまは距離ベースの境界帯と規模の見積りにのみ使います。この内容は生成される準拠レポートにも記載されます。",
-              )}
-            </p>
+            {/* WHAT IS CUT — the boundary doctrine, verbatim, one click away
+              * (user text-purge 2026-08-14: the always-visible sky box left the
+              * screen; the sentences are unchanged and still pinned, because
+              * the disclosure's home is now this ⓘ plus the generated
+              * compliance report). */}
             <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
-              <span>
-                {t("점", "Corners", "点")} {vertices.length}
-                {maxVertices !== null && ` / ${maxVertices}`}
-                {ringClosed
-                  ? ` · ${t("닫힘", "closed", "閉じました")}`
-                  : ` · ${t("두 번 눌러 닫기", "double-click to close", "ダブルクリックで閉じる")}`}
+              <span className="inline-flex items-center gap-1 text-[12px] text-slate-500">
+                {t("경계 처리", "Boundary rule", "境界の扱い")}
+                <InfoTip
+                  text={t(
+                    "그린 폴리곤이 그대로 기준입니다. Overpass 질의도, 도로 꼬리 잘라내기도, 모형 경계 끝점 판정도 모두 이 폴리곤으로 합니다 — 폴리곤 밖으로 뻗은 도로는 폴리곤 변에서 자르고 그 자리에 노드를 만듭니다. 옅은 점선 사각형은 폴리곤의 바운딩 박스로, 거리 기반 경계 띠와 용량 추정에만 쓰입니다. 이 내용은 생성된 준수 보고서에도 그대로 적힙니다.",
+                    "The polygon you drew is the boundary. Overpass is queried with it, the way-tail trim cuts at it, and a road end is judged against it — a road running past the polygon is cut AT its edge and a node is placed there. The faint dashed rectangle is the polygon's bounding box, used only for the distance-based boundary band and the size estimate. The generated compliance report states this too.",
+                    "描いたポリゴンがそのまま基準です。Overpass の問い合わせも、道路の尾部の切り詰めも、モデル境界の端点判定も、すべてこのポリゴンで行います — ポリゴンの外へ伸びる道路はその辺で切り詰め、そこにノードを作ります。薄い破線の矩形はポリゴンのバウンディングボックスで、距離ベースの境界帯と規模の見積りにのみ使います。この内容は生成される準拠レポートにも記載されます。",
+                  )}
+                />
               </span>
               <button
                 type="button"
@@ -931,13 +911,6 @@ export default function GenesisRegionPage() {
               ? t("요청하는 중…", "Requesting…", "要求中…")
               : t("이 영역 추출하기", "Extract this region", "この領域を抽出")}
           </button>
-          <span className="text-xs text-slate-500">
-            {t(
-              "추출에는 로그인이 필요합니다. 데이터는 OpenStreetMap(ODbL)에서 받아 옵니다.",
-              "Extracting requires a signed-in user. The data comes from OpenStreetMap (ODbL).",
-              "抽出にはログインが必要です。データは OpenStreetMap (ODbL) から取得します。",
-            )}
-          </span>
         </div>
 
         {submitError && (
