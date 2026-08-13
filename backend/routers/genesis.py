@@ -87,6 +87,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from routers.auth import current_user
 from routers.datasets import MAX_UPLOAD_BYTES, _TOO_LARGE_DETAIL, _reject_oversized_body
 from services import genesis_jobs, osm_fetch
+from services.agent import fixes as agent_fixes
+from services.agent import genesis_fixes
 from services.datasets import DatasetStorageError
 from services.genesis import geojson as genesis_geojson
 from services.genesis import phase_diagram, side_inputs
@@ -191,6 +193,39 @@ class AttachLiveCheckRequest(BaseModel):
 
     state: dict[str, Any] = Field(description="genesis_open_live_check.py's state.json, verbatim.")
     label: str | None = Field(default=None, description="Which run inside that state.json.")
+
+
+class ApplyGenesisFixRequest(BaseModel):
+    """One approved gate-finding fix -> a sibling fix job.
+
+    ``approved_by`` is deliberately NOT a field here, the same discipline
+    ``ConfirmPhaseDiagramRequest`` uses for ``attested_by``: an approval is an
+    attestation of who signed off on spending live COM time on this edit, and
+    the cheapest way to make "a caller names somebody else as the approver"
+    impossible is to give the client no field to put a name in. The route
+    stamps the signed-in session's own username instead.
+
+    ``finding_code``/``verb`` are re-validated against the registry HERE,
+    before any job is touched (:func:`services.agent.genesis_fixes.get_genesis_fix`)
+    — a caller must not be able to apply an arbitrary verb under a finding
+    whose mapping names a different one, or ANY verb under a finding this
+    catalogue declares :data:`services.agent.fixes.NOT_AUTOMATABLE`. Whether
+    the parent job is actually refused, and whether ``verb``/``params`` still
+    resolve against the LIVE tool registry, is
+    :func:`services.genesis_jobs.create_genesis_fix_job`'s own job -- this
+    model does not re-implement that check.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    finding_code: str = Field(min_length=1, description="One of gate.py's own finding codes.")
+    verb: str = Field(min_length=1, description="Must match the finding's registered verb exactly.")
+    params: dict[str, Any] = Field(
+        default_factory=dict, description="The edit verb's params, approved by a human."
+    )
+    approval_rationale: str | None = Field(
+        default=None, description="Why the approver is confident in this fix, for the audit trail."
+    )
 
 
 class BuildDemandInputRequest(BaseModel):
@@ -699,6 +734,121 @@ def attach_live_check(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.post("/jobs/{job_id}/fixes/apply", status_code=202)
+def apply_genesis_fix(
+    job_id: str,
+    payload: ApplyGenesisFixRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Approve ONE gate-finding fix -> a sibling fix job. 202: the edit is a
+    live COM turn and runs on the job queue's worker thread, never here.
+
+    Roadmap B5-2 stage 3. Authenticated the same way ``attach_live_check`` is
+    (any signed-in user, no extra role) -- both spend live COM time against a
+    project's job tree, and ``approved_by`` on the record is exactly why a
+    session is required at all.
+
+    **Two layers, deliberately redundant -- an adversarial pass proved why.**
+
+    1. **This route's own gate**, entirely against the STATIC registry, no
+       job touched yet: ``finding_code`` must resolve to a REGISTERED mapping
+       (else 400 ``genesis_fix_unknown_finding``), and that mapping must be
+       :data:`services.agent.fixes.AUTOMATABLE` and name the EXACT ``verb``
+       this request supplies (else 400 ``genesis_fix_verb_mismatch``). Cheap,
+       fast-fail, and the common case's whole answer.
+    2. **``genesis_jobs.start_genesis_fix_job`` -> ``create_genesis_fix_job``'s
+       own gate is the AUTHORITATIVE one.** It re-checks everything layer 1
+       does PLUS what layer 1 structurally cannot: unknown parent (404),
+       parent not refused (409 ``genesis_fix_parent_not_refused``), the
+       finding_code does not appear in the PARENT's OWN stored verdict (409
+       ``genesis_fix_finding_not_in_parent_verdict``), the submitted params
+       address a DIFFERENT object than the one the finding names (409
+       ``genesis_fix_params_target_mismatch``), the fix registry RE-RUN
+       against REAL server-side evidence (this workspace's own observation
+       sets, unit D4) no longer reaches a matching proposal — most
+       importantly a MEASURED entrance (409
+       ``genesis_fix_measurement_gate_not_satisfied``) — or ``verb``/``params``
+       gone stale (409 ``genesis_fix_verb_no_longer_registered``). ONE call:
+       it creates the job record (cloning the parent's artifact, synchronous,
+       fast) and starts the COM run on a daemon thread, exactly the split
+       ``POST /jobs`` uses for an ordinary generation
+       (``genesis_jobs.start_genesis_job``) -- this handler never calls
+       ``run_genesis_fix_job`` itself and never touches COM.
+
+    Keep BOTH layers: layer 1 alone is defeatable (a caller that reaches
+    layer 2 directly, or a future router bug bypasses layer 1) — an
+    executable exploit proved exactly that, twice — while layer 2 alone would
+    make every legitimate approval pay for a full re-derivation before the
+    caller ever learns their finding_code was a typo. The redundancy is the
+    feature, not an oversight.
+    """
+    mapping = genesis_fixes.get_genesis_fix(payload.finding_code)
+    if mapping is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "genesis_fix_unknown_finding",
+                "reasons": [
+                    f"{payload.finding_code!r} has no registered fix mapping in this catalogue."
+                ],
+            },
+        )
+    if mapping.status != agent_fixes.AUTOMATABLE or mapping.verb != payload.verb:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "genesis_fix_verb_mismatch",
+                "reasons": [
+                    f"Finding {payload.finding_code!r}'s registered mapping is "
+                    f"{mapping.status!r}"
+                    + (
+                        f" naming verb {mapping.verb!r}"
+                        if mapping.status == agent_fixes.AUTOMATABLE
+                        else ""
+                    )
+                    + f", not verb {payload.verb!r}. A fix can only be applied through the "
+                    "exact verb this catalogue proposed for this finding."
+                ],
+            },
+        )
+    try:
+        record = genesis_jobs.start_genesis_fix_job(
+            job_id,
+            finding_code=payload.finding_code,
+            verb=payload.verb,
+            params=dict(payload.params),
+            approved_by=str(user.get("username") or user.get("id") or "unknown"),
+            approval_rationale=payload.approval_rationale,
+        )
+    except genesis_jobs.GenesisJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except genesis_jobs.GenesisRefused as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "reasons": exc.reasons}
+        ) from exc
+    except (OSError, ValueError) as exc:
+        # The same shape ``GET .../gate`` uses for an unreadable stored
+        # verdict: create_genesis_fix_job's re-derivation (layer 2 above)
+        # reads the parent's gate.json, and a corrupted/unreadable file is a
+        # different answer from "no such job" or "refused by name".
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"The parent's stored gate result could not be read. Nothing was started. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    logger.info(
+        "genesis: %s approved fix %s/%s on job %s -> sibling %s",
+        user.get("username"),
+        payload.finding_code,
+        payload.verb,
+        job_id,
+        record["id"],
+    )
+    return record
+
+
 # ---------------------------------------------------------------------------
 # Reads
 # ---------------------------------------------------------------------------
@@ -899,6 +1049,201 @@ def get_gate_report_markdown(job_id: str, request: Request):
             detail=f"The stored gate result could not be read. [{type(exc).__name__}: {exc}]",
         ) from exc
     return PlainTextResponse(payload["report_markdown"], media_type="text/markdown; charset=utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Fix dispositions (roadmap B5-2 stage 3) — "거부는 진단" made clickable: what
+# the registry (services.agent.genesis_fixes) says about EVERY finding in a
+# job's STORED gate verdict, and the one door that turns an approved entry
+# into a sibling fix job.
+# ---------------------------------------------------------------------------
+
+
+#: For an AUTOMATABLE mapping whose builder could not reach a full PROPOSAL
+#: from this route's own derived evidence, which ``param_fields`` are
+#: genuinely a human's to supply -- and what this route can still fill in
+#: from the finding itself while it waits for them. Presentation only, over
+#: ``genesis_fixes.VERB_ADDRESSING_FIELD``/``expected_fix_target`` (the
+#: SERVICE layer's own addressing map -- see roadmap B5-2 stage-3 fix round):
+#: never a second copy of any builder's doctrine, and never invented for a
+#: STRUCTURAL refusal (see ``_render_fix_disposition``, which only calls this
+#: for the ask-first case, ``fixes.EVIDENCE_INSUFFICIENT``).
+def _partial_fix_params(mapping: Any, finding: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    code = finding["code"]
+    context = finding["context"]
+    addressing_field = genesis_fixes.VERB_ADDRESSING_FIELD.get(mapping.verb)
+    expected_target = genesis_fixes.expected_fix_target(code, finding)
+    params: dict[str, Any] = {}
+    requires: list[str] = list(mapping.param_fields)
+    if addressing_field and expected_target is not None:
+        params[addressing_field] = expected_target
+        if addressing_field in requires:
+            requires.remove(addressing_field)
+    if code == "v4_more_mapped_lanes_than_link_has":
+        mapped_lanes = context.get("mapped_lanes")
+        if mapped_lanes is not None:
+            params["lane_count"] = int(mapped_lanes)
+            requires = [field for field in requires if field != "lane_count"]
+    elif code in ("v6_input_without_volume", "v6_input_volume_is_zero"):
+        params["interval_no"] = 1
+        requires = [field for field in requires if field != "interval_no"]
+    elif code == "v9_stop_line_without_queue_counter" and addressing_field in params:
+        params["name"] = f"V9 stop line {params[addressing_field]}"
+        requires = [field for field in requires if field != "name"]
+    return params, requires
+
+
+def _render_fix_disposition(
+    *, check_id: str, origin: str, finding: dict[str, Any], proposal: Any
+) -> dict[str, Any]:
+    """One finding + the registry's answer for it -> one response entry.
+
+    Three shapes, never a fourth:
+
+    * a real :data:`agent_fixes.PROPOSAL` -- ``verb``/``params`` filled from
+      the evidence this route actually had, ``requires`` empty;
+    * a declared :data:`agent_fixes.AUTOMATABLE` mapping whose builder
+      refused for a MISSING ask-first value (``reason_code ==
+      fixes.EVIDENCE_INSUFFICIENT``) -- ``verb`` named, ``params`` filled
+      where this route COULD derive them, ``requires`` naming what a caller
+      must still supply;
+    * everything else -- a declared :data:`agent_fixes.NOT_AUTOMATABLE`
+      mapping, a drifted :data:`agent_fixes.VERB_UNREGISTERED`, no mapping at
+      all, OR (roadmap B5-2 stage-3 fix round item 3) an AUTOMATABLE mapping
+      whose builder refused for a STRUCTURAL reason evidence this route
+      itself derived proved true -- most importantly a MEASURED entrance
+      (``fixes.INPUT_VOLUME_IS_OBSERVED_DATA``). No amount of caller-supplied
+      params would change that verdict, so ``requires`` stays empty and the
+      registry's OWN reason code/rationale (already carrying the real
+      evidence, via ``genesis_jobs.derive_fix_targets``'s V6 node-evidence
+      derivation) tell the true story instead of reading as "just needs a
+      volume".
+    """
+    mapping = genesis_fixes.get_genesis_fix(finding["code"])
+    disposition: dict[str, Any] = {
+        "status": agent_fixes.NOT_AUTOMATABLE,
+        "verb": None,
+        "params": None,
+        "requires": [],
+        "confidence": proposal.confidence,
+        "assumptions": list(proposal.assumptions),
+        "rationale": proposal.rationale(),
+        "reason_code": proposal.reason_code,
+    }
+    if proposal.outcome == agent_fixes.PROPOSAL:
+        disposition["status"] = agent_fixes.AUTOMATABLE
+        disposition["verb"] = proposal.verb
+        disposition["params"] = proposal.params
+    elif mapping is not None and mapping.status == agent_fixes.AUTOMATABLE:
+        status, _detail = genesis_fixes.effective_status(mapping)
+        disposition["status"] = status
+        disposition["verb"] = mapping.verb
+        if status == agent_fixes.AUTOMATABLE and proposal.reason_code == agent_fixes.EVIDENCE_INSUFFICIENT:
+            params, requires = _partial_fix_params(mapping, finding)
+            disposition["params"] = params
+            disposition["requires"] = requires
+    return {
+        "check_id": check_id,
+        "origin": "warning" if origin == "warnings" else "finding",
+        "code": finding["code"],
+        "subject": finding["subject"],
+        "context": finding["context"],
+        "disposition": disposition,
+    }
+
+
+@router.get("/jobs/{job_id}/fixes")
+def get_job_fixes(job_id: str, user: dict[str, Any] = Depends(current_user)):
+    """Every finding in this job's STORED gate verdict, with the registry's
+    disposition for each. Roadmap B5-2 stage 3.
+
+    Authenticated like the artifact/geojson reads: this exposes the gate's own
+    diagnosis of a network, the same laundering argument ``download_artifact``
+    names. 404 unknown job; 409 ``genesis_fix_no_gate_verdict`` when the job
+    exists but has not been gated yet (the job's OWN status, quoted, so a
+    caller sees whether to poll or to look elsewhere) -- the same distinction
+    ``GET .../gate`` draws between "no such job" and "no verdict yet".
+
+    Served from the STORED ``gate.json`` (never re-run), and read RAW rather
+    than through ``genesis_jobs.gate_payload`` -- that render drops each
+    finding's ``context`` and caps the list at
+    ``genesis_jobs.MAX_FINDINGS_IN_PAYLOAD``, and this route needs the full
+    context every builder reads AND every finding with no drop ("complete
+    over the verdict's findings" is the whole point of the unit).
+    ``genesis_jobs.iter_stored_gate_findings`` is the ONE walk this route and
+    ``create_genesis_fix_job``'s own finding lookup share (both a check's
+    ``findings`` and its ``warnings`` -- V6 rides its own warn-tier clause on
+    a refuse-tier check as ``warnings``, ``services.genesis.gate``'s own
+    module docstring -- and a finding living there is still a finding this
+    catalogue must answer for). This route is deliberately UNCAPPED, unlike
+    ``gate_payload``: measured on a synthetic 1001-finding fixture, the full
+    response is ~848 KB and renders in ~0.094s -- large, not pathological,
+    and a truncated fix list would silently hide exactly the findings a
+    reviewer most needs to see.
+
+    Evidence (census + V6/V9 targets) comes from
+    ``genesis_jobs.job_draft_or_none``/``derive_fix_targets`` -- the SAME
+    service-layer functions ``create_genesis_fix_job`` re-derives a proposal
+    with before minting a sibling job, so a GET here and a POST .../apply
+    right after it can never disagree about what the evidence says.
+    ``params=None`` here (never a caller-supplied volume/geometry -- this is
+    a GET), but V6's MEASUREMENT evidence still flows unconditionally, so a
+    measured entrance's disposition shows the real structural refusal rather
+    than always reading as "just needs a volume" (fix round item 3).
+
+    ``unmapped_finding_codes`` is the registry's own mirror check
+    (:func:`genesis_fixes.get_unmapped_finding_codes`) -- every code
+    ``gate.py`` can emit either resolves in the catalogue or is named here as
+    a gap, so a client can see "no code fell between" without re-deriving the
+    check itself.
+    """
+    try:
+        record = genesis_jobs.get_job(job_id)
+    except genesis_jobs.GenesisJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    stored = genesis_jobs.job_dir(job_id) / genesis_jobs.GATE_JSON_FILENAME
+    if not stored.is_file():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "genesis_fix_no_gate_verdict",
+                "reasons": [
+                    f"Job {job_id} has not been gated yet (status: {record.get('status')})."
+                ],
+            },
+        )
+
+    import json as _json
+
+    try:
+        raw = _json.loads(stored.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"The stored gate result could not be read. [{type(exc).__name__}: {exc}]",
+        ) from exc
+
+    draft = genesis_jobs.job_draft_or_none(job_id)
+    census = draft.metadata if draft is not None else None
+
+    entries: list[dict[str, Any]] = []
+    for check_id, origin, finding in genesis_jobs.iter_stored_gate_findings(raw):
+        targets = genesis_jobs.derive_fix_targets(finding["code"], finding, draft=draft, params=None)
+        proposal = genesis_fixes.propose_genesis_fix(
+            finding["code"], finding=finding, census=census, targets=targets
+        )
+        entries.append(
+            _render_fix_disposition(check_id=check_id, origin=origin, finding=finding, proposal=proposal)
+        )
+
+    return {
+        "job_id": job_id,
+        "status": record.get("status"),
+        "verdict": raw.get("verdict"),
+        "findings": entries,
+        "unmapped_finding_codes": list(genesis_fixes.get_unmapped_finding_codes()),
+    }
 
 
 # ---------------------------------------------------------------------------

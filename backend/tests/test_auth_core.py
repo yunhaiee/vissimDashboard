@@ -1009,6 +1009,22 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       more business enumerating a project's staged uploads than downloading
       its generated network.
 
+    **B5-2 stage 3 (roadmap v2 §5.B) adds exactly two: the fix-mapping routes.**
+
+    * ``GET /api/genesis/jobs/{job_id}/fixes`` -- for every finding in a job's
+      stored gate verdict, what the fix registry (``services.agent.genesis_fixes``)
+      says about it. Same laundering argument as ``GET .../gate`` and
+      ``artifact/{kind}``: this exposes the gate's own diagnosis of a network
+      (which faults it found, and how each one COULD be repaired), so it stays
+      behind a session for the same reason those reads do.
+    * ``POST /api/genesis/jobs/{job_id}/fixes/apply`` -- approves one fix and
+      spends a live COM turn cloning + re-gating the parent's artifact as a
+      sibling job. Same reason ``POST /api/genesis/jobs/{job_id}/live-check``
+      is guarded: it mutates the job tree and its ``derived_from.approved_by``
+      has to name who signed off, so the audit trail can answer "who approved
+      this repair" the same way a generation's record answers "who built this
+      network".
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -1039,6 +1055,8 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/genesis/jobs",
         "/api/genesis/jobs/{job_id}/artifact/geojson",
         "/api/genesis/jobs/{job_id}/artifact/{kind}",
+        "/api/genesis/jobs/{job_id}/fixes",
+        "/api/genesis/jobs/{job_id}/fixes/apply",
         "/api/genesis/jobs/{job_id}/live-check",
         "/api/genesis/phase-diagrams",
         "/api/genesis/phase-diagrams/signals-input",

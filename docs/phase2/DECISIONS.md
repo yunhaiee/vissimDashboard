@@ -6250,3 +6250,65 @@ links' lane-divider/chevron markings are NOT mirrored (a materially larger featu
 named, not smuggled); the two format-fragile flat-weight pins keep their positive-pin
 backstops instead of a rewrite (the identity dash legitimately uses the 0.6 literal).
 Final: typecheck clean, contract **68/68** (+2 tests), production build passes.
+
+## 2026-08-14 — B5-2 backend: the refusal becomes a diagnosis, and the refuter catches an approval that approves nothing
+
+**What (stages 1–3 of "거부는 진단, 에이전트는 치료").** ① A registry
+(`services/agent/genesis_fixes.py`) in which every one of the gate's 41 finding codes is
+either AUTOMATABLE (verb + params validated against the live tool registry, liveness
+DERIVED per call — never a stale table) or NOT_AUTOMATABLE with a named reason — and a
+mirror check, AST-derived from gate.py's own source, that makes a code falling between the
+two a test failure. The doctrine is in the dispositions: all seven V3 connectivity codes
+refuse `CONNECTIVITY_IS_NOT_INVENTED` (the generator already names
+`one_way_dead_end_unfixable`; an agent stitching connectors over a diagnosed island is the
+unit's own worst case); `v4_lane_drop_without_runway` cannot emit a proposal from ANY
+branch — boundary-traced shortfalls refuse `RUNWAY_ENDS_AT_REQUESTED_BOUNDARY` (the road
+ends where the user's boundary ends; fabricating length is inventing reality), the rest
+`NO_TOOL_WITHOUT_FABRICATION` (no lnChgDist setter exists); V6 demand delegates to D4's
+`entrance_measurement` — imported, never reimplemented. ② The fix job
+(`genesis_jobs.py`): a refused parent's draft is CLONED into a NEW SIBLING job
+(`derived_from` lineage, byte-anchored by the clone's sha), the one approved verb
+dispatches through the ordinary tool registry with guardrails unchanged, and the
+UNMODIFIED `gate_and_publish` re-gates the result — the parent's whole work dir is
+asserted byte-unchanged, because the REFUSED verdict is the diagnosis and a re-gate that
+overwrites it destroys the evidence (the recon caught that `attach_live_check` overwrites
+in place, which is honest for re-grading the SAME bytes and wrong for judging NEW bytes).
+A pass auto-registers the active dataset exactly like any generation — inherited on
+purpose, asserted so a change is loud. The live COM proof script is authored
+(`tools/genesis_fix_loop_live_check.py`) and NOT run: that first live loop is the user's
+COM lane. ③ Two routes: `GET /jobs/{id}/fixes` (every finding's disposition, ask-first
+values as named `requires`, uncapped by design with the pathological cost measured —
+1,001 findings → 848KB, 0.094s) and `POST /jobs/{id}/fixes/apply` (202 + sibling id;
+`approved_by` from the session, structurally unspoofable — the request model forbids the
+field).
+
+**Verification: the refuter earned the unit's name.** Its two REFUTED findings were both
+structural, both proven by executable exploit, and both are exactly what an approval loop
+exists to prevent: (1) **approve-what-was-never-proposed** — the propose step (GET) runs
+D4's measurement gate, but apply validated only mapping+verb+params, so a hand-crafted
+POST overwrote a MEASURED entrance's volume to 5000 and sailed through re-gate; worse, the
+GET route structurally COULD NOT show a MEASURED refusal (it refused to derive any V6
+evidence, conflating "never invent the volume" with "never derive the measurement"). (2)
+**target switch** — a finding about input 1 accepted params for input 2, and a V3-only
+parent accepted a v6 fix job: `finding_code` was audit decoration, never checked against
+the parent's stored verdict. Both now die at the SERVICE layer with named refusals, in
+order: `genesis_fix_finding_not_in_parent_verdict` (the finding must exist in the parent's
+raw stored gate.json), `genesis_fix_params_target_mismatch` (the verb's addressing field —
+declared beside the registry so it cannot drift — must equal the finding's own subject),
+`genesis_fix_measurement_gate_not_satisfied` (apply RE-DERIVES the proposal with
+server-side evidence and requires outcome PROPOSAL; a D4 refusal is carried verbatim).
+The refuter's exploits are the regression tests. Also fixed on its verdict: the
+`parent_sha256` TOCTOU (hash the clone, not a second read of the parent) and the untested
+duplicate-registration guard. What HELD, with evidence: parent-dir immutability by
+construction (uuid job dirs, path-checked), registry drift honesty (a synthetic new
+gate.py code really trips the AST mirror), NOT_AUTOMATABLE builders cannot emit proposals
+(property + runtime assert), concurrent applies on one parent are each-on-own-clone safe,
+and the router's static verb check being defeatable ALONE while the service still refused
+— redundancy kept and named. **Honest limit, named:** the workspace observations store is
+`leg|turn`-keyed, never link-keyed, so `derive_v6_node_evidence` cannot yield
+ENTRANCE_MEASURED from real ingested data TODAY (D4's own documented
+`ENTRANCE_NO_LINK_KEYED_ROWS` gap — unlocked by D1's LMA/LMB drawings, not by this unit);
+the gate is wired for real and tested through the same seam discipline as COM. Suite:
+**4635 / 1 (env RAG) / 1 skip** (+65 over the pre-unit baseline across three stages and
+the fix round; counts re-run independently by the orchestrator). Stage 4 (the drawer's
+approval card) follows separately.

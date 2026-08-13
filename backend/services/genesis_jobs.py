@@ -50,6 +50,15 @@ takes it — as ``tools/genesis_open_live_check.py``'s ``state.json`` — throug
 :func:`attach_live_check`, and ``gate.py``'s sha256 identity rule decides
 whether it is evidence about THIS file.
 
+**The one exception is a FIX job (B5-2 stage 2).** :func:`run_genesis_fix_job`
+opens a real ``VissimEditSession`` to apply one already-approved verb, because
+that is the whole point of a fix job — the ``services.agent.edit_session``
+import that does it is function-local (:func:`_build_fix_edit_session`, and
+the runner's own imports), so a plain ``import services.genesis_jobs`` still
+never touches COM; only actually RUNNING a fix job does, on that job's own
+worker thread, never a request handler — the same job-queue discipline
+CLAUDE.md requires everywhere else COM is touched.
+
 **What that rule does and does not prove — stated precisely, because an earlier
 revision of this docstring claimed "nothing here can fake it" and an adversarial
 pass proved otherwise.** The sha256 rule establishes that the evidence is ABOUT
@@ -129,10 +138,10 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Iterator, Mapping
 from uuid import uuid4
 
-from services import datasets, workspaces
+from services import datasets, observations, workspaces
 from services.dataimport.adapters.daejeon import DaejeonCountAdapter
 from services.dataimport.base import AdapterError, ImportResult, IssueSeverity
 from services.genesis import side_inputs as side_inputs_module
@@ -152,6 +161,9 @@ from services.genesis.osm import (
     requested_bbox_from_provenance,
     requested_polygon_from_provenance,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, see _build_fix_edit_session
+    from services.agent.edit_session import VissimEditSession
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +242,11 @@ PHASE_EMITTING = "emitting"
 PHASE_GATING = "gating"
 PHASE_PUBLISHING = "publishing"
 PHASE_DONE = "done"
+#: A fix job's own phase, between ``PHASE_QUEUED`` and ``PHASE_GATING`` --
+#: the COM turn that applies the one approved verb (:func:`run_genesis_fix_job`).
+#: Ordinary generation jobs never carry this phase; they have no equivalent
+#: step at all (they never touch COM -- see the module docstring).
+PHASE_APPLYING_FIX = "applying_fix"
 
 #: What a V1 that went green on ATTACHED evidence actually rests on. Carried on
 #: the job record, in the gate summary and into the UI, so a verdict resting on
@@ -246,6 +263,7 @@ _PHASE_PROGRESS = {
     PHASE_READING_OSM: 0.1,
     PHASE_DRAFTING: 0.35,
     PHASE_EMITTING: 0.7,
+    PHASE_APPLYING_FIX: 0.5,
     PHASE_GATING: 0.85,
     PHASE_PUBLISHING: 0.95,
     PHASE_DONE: 1.0,
@@ -346,6 +364,24 @@ class GenesisRefused(GenesisJobError):
     def __init__(self, code: str, reasons: list[str]) -> None:
         super().__init__(f"{code}: {'; '.join(reasons) or code}")
         self.code = code
+        self.reasons = reasons
+
+
+class _FixApplyFailed(GenesisJobError):
+    """One step of :func:`run_genesis_fix_job`'s single-verb apply failed.
+
+    Private: this exists only so :func:`_run_genesis_fix_job_locked` can build
+    the job record's ``fix_apply_failed:{step}`` refusal code in one place
+    (:attr:`step`) with its human-readable reasons (:attr:`reasons`), rather
+    than duplicating that format string at every raise site (preflight
+    blocked, dispatch itself failed, postwrite blocked). Never crosses this
+    module's own boundary — a caller sees the resulting job record, not this
+    exception.
+    """
+
+    def __init__(self, step: str, reasons: list[str]) -> None:
+        super().__init__(f"fix_apply_failed:{step}: {'; '.join(reasons) or step}")
+        self.step = step
         self.reasons = reasons
 
 
@@ -1826,6 +1862,766 @@ def _revoke_publication(record: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# FIX JOBS — roadmap B5-2 stage 2. "거부는 진단" (a refusal IS the diagnosis):
+# a fix job clones a REFUSED generation's artifact, applies ONE approved verb
+# on the job-queue thread pattern, and re-gates the clone as a NEW SIBLING
+# job whose ``derived_from`` points at the parent. Nothing here may write a
+# single byte under the parent's own work dir — the parent's artifacts are the
+# "before" evidence of the diagnosis this fix is answering, and overwriting
+# them in place would destroy the very thing a re-gate is supposed to compare
+# against.
+#
+# The gate stays the only exit door: :func:`run_genesis_fix_job` ends by
+# calling the UNMODIFIED :func:`gate_and_publish` on the sibling job, exactly
+# as a fresh generation does, so a fix that happens to repair every refuse-tier
+# fault publishes -- and one that does not stays refused -- through the same
+# structural gate A4 already guarantees. This section imports nothing new into
+# THAT guarantee; it only ever gets to CALL it.
+#
+# --- Fix round (adversarial pass, roadmap B5-2 stage 3 hardening) ----------
+# An executable exploit proved that approving a fix WITHOUT re-deriving its
+# proposal from real, server-side evidence lets a caller (a) mint a fix job
+# for a finding the parent's own verdict never made, (b) overwrite a
+# MEASURED entrance's volume by hand-crafting params, and (c) apply params
+# that address a DIFFERENT object than the one the named finding diagnosed.
+# :func:`create_genesis_fix_job` below re-runs :mod:`services.agent.genesis_fixes`
+# against THIS evidence before it ever mints a job directory, so every
+# caller — HTTP or otherwise — is covered, not merely a router-side check.
+# ---------------------------------------------------------------------------
+
+
+def iter_stored_gate_findings(
+    raw_gate: dict[str, Any],
+) -> Iterator[tuple[str, str, dict[str, Any]]]:
+    """``(check_id, origin, finding)`` for EVERY finding AND warning in a raw,
+    stored ``gate.json`` -- ``origin`` is ``"findings"`` or ``"warnings"``.
+
+    The ONE walk both ``routers/genesis.py``'s fixes-listing route and this
+    module's own finding lookup share, so they can never disagree about what
+    counts as "a finding in the verdict". Both a check's ``findings`` and its
+    ``warnings`` are walked: V6 rides its own warn clause as ``warnings`` on
+    a refuse-tier check (``services.genesis.gate``'s own module docstring),
+    and a code living there is still a finding a fix job must answer for.
+
+    Each ``finding`` is a plain dict (``code``/``subject``/``context``) —
+    the shape ``services.agent.genesis_fixes`` duck-types, never a
+    ``services.genesis.gate.GateFinding`` pydantic instance (this module does
+    not import ``gate.py``'s model for this).
+    """
+    for check in raw_gate.get("checks", []) or []:
+        check_id = str(check.get("id") or "")
+        for origin in ("findings", "warnings"):
+            for raw_finding in check.get(origin, []) or []:
+                yield (
+                    check_id,
+                    origin,
+                    {
+                        "code": str(raw_finding.get("code") or ""),
+                        "subject": str(raw_finding.get("subject") or ""),
+                        "context": dict(raw_finding.get("context") or {}),
+                    },
+                )
+
+
+def _finding_in_stored_gate(raw_gate: dict[str, Any], finding_code: str) -> dict[str, Any] | None:
+    """The FIRST finding (or warning) in a raw, stored ``gate.json`` whose
+    ``code`` matches ``finding_code`` -- or ``None`` when the parent's own
+    verdict never made this diagnosis at all.
+
+    "First" mirrors ``gate.py``'s own deterministic ordering
+    (``CheckResult.build`` sorts findings by ``(code, subject)``): when TWO
+    objects share one finding code (e.g. two independent zero-volume vehicle
+    inputs), this resolves to the numerically-first one, and
+    :func:`create_genesis_fix_job`'s subject/params addressing cross-check
+    (exploit #2's fix) is exactly what stops an approver's params from
+    silently answering for a DIFFERENT one of the two.
+    """
+    for _check_id, _origin, finding in iter_stored_gate_findings(raw_gate):
+        if finding["code"] == finding_code:
+            return finding
+    return None
+
+
+def job_draft_or_none(job_id: str) -> "DraftNetwork | None":
+    """This job's own ``*.genesis.json`` census, parsed as a real
+    ``DraftNetwork`` -- or ``None`` when it is absent, unreadable, or does
+    not validate (a fix job's OWN census is never written — see
+    :func:`create_genesis_fix_job`'s docstring — and a hand-seeded test
+    fixture's census is deliberately minimal).
+
+    Never raises: an unreadable/absent census means a caller derives LESS
+    evidence, never that it fails outright. The genuine "job unknown" case is
+    caught by the caller before this is ever reached. Shared by BOTH the
+    fixes-listing route and :func:`create_genesis_fix_job`'s own
+    re-derivation, so a network's own recorded geometry (V9's link length) is
+    read the SAME way in both places.
+    """
+    try:
+        path = artifact_path(job_id, "genesis_json")
+    except GenesisJobNotFoundError:
+        return None
+    try:
+        return DraftNetwork.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
+def derive_v6_node_evidence(link_id: str) -> dict[str, Any] | None:
+    """Real observed-count evidence for ONE vehicle-input LINK, from THIS
+    workspace's ingested observation sets (:mod:`services.observations`) --
+    unit D4's own join (``services.agent.fixes.movement_from_link`` /
+    ``canonical_link_id``), reused directly rather than reimplemented,
+    applied against each set's RAW per-site movement rows
+    (``observations.get_observation_set(...)['aggregates'][period][site]
+    ['movements']``) rather than through ``observations.observed_side``,
+    which additionally needs a site->Vissim-node map genesis has no
+    equivalent of — a generated network carries no "observation site"
+    concept at all (that join exists only for the counts-workbook DEMAND
+    side input, a different pipeline entirely). D4's own question ("was
+    THIS link's volume ever measured") does not need a node identity, only a
+    FROM-link match, so this scans every set/period/site directly.
+
+    Returns the FIRST matching site's row in the RAW ``observed_side``-node
+    shape (``services.agent.fixes.node_evidence_from_real_counts``'s OWN
+    expected input — the caller normalizes it, this function does not), or
+    ``None`` when no ingested set carries a movement whose FROM-link is this
+    one.
+
+    **EVIDENCE SOURCE / KNOWN GAP, not fixed here:** every row this store
+    holds is keyed ``"<leg>|<turn>"`` (``services.observations.movement_id``
+    — always, unconditionally), never a Vissim movement OBJECT_ID, so
+    ``movement_from_link`` can never match a row sourced from THIS store
+    today — ``fixes.entrance_measurement``'s own docstring names the missing
+    link<->leg edge as a follow-up (``ENTRANCE_NO_LINK_KEYED_ROWS``). This
+    function is wired for real against the real store (not stubbed) so the
+    day that edge exists, evidence starts flowing with no caller-side
+    change; until then it always returns ``None`` for genuinely-ingested
+    data, which is the CORRECT "no observations joinable -> UNVERIFIED
+    stands" answer, not a bug. A module-level function (not a closure), on
+    purpose, so a test can monkeypatch it directly to prove the REFUSAL
+    WIRING downstream of a measured entrance without needing the store's own
+    gap closed first — the same seam pattern this test suite already uses
+    for COM (``_build_fix_edit_session``).
+    """
+    from services.agent.fixes import canonical_link_id, movement_from_link  # noqa: PLC0415
+
+    target = canonical_link_id(link_id)
+    if not target:
+        return None
+    for summary in observations.list_observation_sets():
+        set_id = summary.get("id")
+        if not set_id:
+            continue
+        record = observations.get_observation_set(str(set_id))
+        if not record:
+            continue
+        for sites in (record.get("aggregates") or {}).values():
+            for site_id, entry in (sites or {}).items():
+                movements = entry.get("movements") or {}
+                for mid, volume in movements.items():
+                    if movement_from_link(mid) != target:
+                        continue
+                    return {
+                        "node_id": str(site_id),
+                        "node_name": entry.get("site_name") or str(site_id),
+                        "total_real": entry.get("total"),
+                        "total_sim_basam": None,
+                        "count_basis": "turning_counts",
+                        "directions": [
+                            {"direction": m, "real": v.get("volume"), "sim_basam": 0}
+                            for m, v in movements.items()
+                        ],
+                    }
+    return None
+
+
+def derive_fix_targets(
+    code: str,
+    finding: Mapping[str, Any],
+    *,
+    draft: "DraftNetwork | None" = None,
+    params: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The ``targets`` :func:`services.agent.genesis_fixes.propose_genesis_fix`
+    is re-run with — built from what THIS service layer can honestly derive,
+    never invented. Shared by the fixes-listing route (``params=None``:
+    never a volume, but the MEASUREMENT evidence still flows, so a measured
+    entrance shows its structural refusal — fix round item 3) and
+    :func:`create_genesis_fix_job`'s own re-derivation (``params`` = the
+    approver's submitted payload: the judgment-call VALUE a human is
+    accountable for feeds back in as evidence, while the STRUCTURAL facts
+    below are always re-verified for real).
+
+    * **V9** (``link_length_m``) — objective network geometry read straight
+      off the job's own stored census (``draft.link_by_id(...).length_m``).
+      Never ask-first: a link's length is not a judgment call.
+    * **V6** (``node``) — real observed-count evidence for the finding's own
+      link, via :func:`derive_v6_node_evidence` (see its docstring for
+      exactly what that join can and cannot see today). Derived
+      UNCONDITIONALLY, independent of ``params`` — the measurement doctrine
+      must be checkable even when nobody has proposed a volume yet.
+    * **V6** (``proposed_volume``) / **V7** (``corrected_points_xy``) — the
+      ask-first fields. Threaded from ``params`` ONLY (never derived here):
+      these are exactly the values the module docstring by
+      ``genesis_fixes._build_v6_entrance_volume`` names as the APPROVER's
+      alone to supply.
+    """
+    from services.agent.fixes import node_evidence_from_real_counts  # noqa: PLC0415
+    from services.agent.genesis_fixes import expected_fix_target  # noqa: PLC0415
+
+    targets: dict[str, Any] = {}
+    context = dict(finding.get("context") or {})
+
+    if code == "v9_stop_line_without_queue_counter" and draft is not None:
+        link_id_text = expected_fix_target(code, finding)
+        link = None
+        if link_id_text:
+            try:
+                link = draft.link_by_id(int(link_id_text))
+            except (ValueError, TypeError):
+                link = None
+        if link is not None:
+            targets["link_length_m"] = link.length_m
+
+    if code in ("v6_input_without_volume", "v6_input_volume_is_zero"):
+        link_id = context.get("link")
+        if link_id:
+            raw_node = derive_v6_node_evidence(str(link_id))
+            if raw_node is not None:
+                targets["node"] = node_evidence_from_real_counts(raw_node)
+        if params is not None and params.get("volume") is not None:
+            targets["proposed_volume"] = params.get("volume")
+
+    if code.startswith("v7_") and params is not None and params.get("points_xy") is not None:
+        targets["corrected_points_xy"] = params.get("points_xy")
+
+    return targets
+
+
+def create_genesis_fix_job(
+    parent_job_id: str,
+    *,
+    finding_code: str,
+    verb: str,
+    params: dict[str, Any],
+    approved_by: str | None,
+    approval_rationale: str | None,
+) -> dict[str, Any]:
+    """Register a fix job WITHOUT starting it — the clone step.
+
+    Validates, in order, before a job id is ever minted (so any refusal
+    below leaves no job directory on disk):
+
+    1. the parent job exists in THIS workspace (:func:`get_job` raises
+       :class:`GenesisJobNotFoundError` the same way it does for any unknown
+       id — a fix job's parent is not a special case here);
+    2. the parent's verdict is :data:`STATUS_REFUSED`. A fix job only makes
+       sense against a refusal — the parent's artifact and gate result are
+       the diagnosis this fix answers, and a parent that published or went
+       provisional has no such diagnosis to answer. Refused with the named
+       code ``genesis_fix_parent_not_refused``;
+    3. ``verb``/``params`` still resolve against the LIVE tool registry, via
+       ``services.agent.fixes.resolve_verb``/``validate_params`` — the exact
+       functions :mod:`services.agent.genesis_fixes` used to PROPOSE this fix
+       in the first place, called again HERE because approval can arrive
+       long after proposal (a human reviewing a refusal queue), and a verb
+       renamed or re-tiered in ``tools_edit.py`` in the meantime must refuse
+       cleanly rather than crash the runner on a verb that no longer exists.
+       Refused with the named code ``genesis_fix_verb_no_longer_registered``;
+    4. **``finding_code`` actually appears in the PARENT's own stored
+       verdict** (:func:`_finding_in_stored_gate`) — a caller must not be
+       able to mint a fix job for a diagnosis the parent's gate never made
+       (e.g. a V6 finding_code against a V3-only parent). Refused with the
+       named code ``genesis_fix_finding_not_in_parent_verdict``;
+    5. **the submitted ``params`` ADDRESS the exact element that finding is
+       about** — checked against the finding's OWN subject/context via
+       ``services.agent.genesis_fixes.VERB_ADDRESSING_FIELD`` /
+       ``expected_fix_target``, so params approved for one object (vehicle
+       input 1) cannot be applied under a finding_code that happens to also
+       match a DIFFERENT object (vehicle input 2). Refused with the named
+       code ``genesis_fix_params_target_mismatch``;
+    6. **the fix registry, RE-RUN against REAL server-side evidence, still
+       reaches a matching proposal** — :func:`derive_fix_targets` builds the
+       ``census``/``targets`` this service layer can honestly derive (the
+       parent's own stored geometry, and this workspace's ingested
+       observation sets for V6's measured-entrance doctrine — unit D4),
+       ``services.agent.genesis_fixes.propose_genesis_fix`` is called with
+       them, and the result must be a ``PROPOSAL`` naming the SAME verb. A
+       structural refusal here — most importantly a MEASURED entrance
+       (``INPUT_VOLUME_IS_OBSERVED_DATA``) — means the approval this call
+       carries no longer holds against reality, however innocuous the
+       request looked. Refused with the named code
+       ``genesis_fix_measurement_gate_not_satisfied``, carrying the
+       registry's OWN reason code and rationale.
+
+    **Why THIS is the authoritative gate, not merely a convenience.**
+    ``routers/genesis.py``'s ``apply_genesis_fix`` runs an equivalent but
+    CHEAPER static check (finding_code resolves + names an AUTOMATABLE
+    mapping whose verb matches) before ever reaching this function — a
+    fast-fail for the common case. That router-side check alone is
+    defeatable (any caller that reaches this function directly, or a future
+    router bug) and does not re-verify anything against the PARENT's actual
+    verdict or REAL evidence; checks 4-6 above are what actually make an
+    exploit die, at the one layer every caller — HTTP or otherwise — must
+    pass through. Keep both: the redundancy is deliberate, not an oversight.
+
+    Only after ALL of the above: a new job id is minted, its own work
+    directory created, and the parent's CURRENT ``.inpx`` artifact bytes
+    (:func:`artifact_path`, which itself refuses if the parent's artifact is
+    somehow gone) are copied into it under the SAME base name the parent
+    used — never the parent's own file, never opened for writing, only ever
+    read from. The clone's sha256 is computed from the CLONED bytes
+    (AFTER ``shutil.copyfile`` returns, not from a separate pre-copy read of
+    the parent's file — a TOCTOU fix: the parent's artifact is never
+    modified in place, but hashing what was ACTUALLY cloned rather than a
+    second, independent read of the source is the only way this value can
+    ever disagree with itself) and recorded as ``derived_from.parent_sha256``
+    — lineage anchored to the bytes that were actually cloned, not to the
+    parent job's id or its own (possibly stale) recorded hash.
+
+    ``derived_from`` is the whole point of a sibling job: ``{job_id,
+    finding_code, verb, params, approved_by, approval_rationale, approved_at,
+    parent_sha256}``, present ONLY on a fix job's record — an ordinary
+    generation's record carries no such key at all (key-ABSENT, not
+    ``null``), the same "presence is itself the fact" discipline
+    ``requested_region`` already established in this module, and the one
+    ``tests/test_genesis_fix_jobs.py`` pins across the listing route's own
+    JSON round trip.
+
+    Raises:
+        GenesisJobNotFoundError: no such parent job in this workspace.
+        GenesisRefused: the parent is not refused, the approved verb/params
+            have gone stale, the finding does not appear in the parent's own
+            verdict, the params address a different object than the finding
+            names, or the registry's real-evidence re-derivation does not
+            reach a matching proposal. None of these create a job directory.
+    """
+    workspace_id = workspaces.current_workspace_id()
+    parent = get_job(parent_job_id)
+    if parent.get("status") != STATUS_REFUSED:
+        raise GenesisRefused(
+            "genesis_fix_parent_not_refused",
+            [
+                f"Job {parent_job_id} is {parent.get('status')!r}, not {STATUS_REFUSED!r}. "
+                "A fix job only makes sense against a refused generation -- its artifact and "
+                "gate result are the diagnosis this fix is meant to answer."
+            ],
+        )
+
+    # Function-local: this is the ONE call site in this module that needs the
+    # agent's fix-mapping registries, and both ``services.agent.fixes`` and
+    # ``services.agent.genesis_fixes`` are themselves COM-free (their own
+    # module docstrings: "Nothing here ... touches COM" / "No COM, no I/O,
+    # no Vissim") -- this is about keeping this module's import surface
+    # minimal, not about the COM discipline the runner below is actually
+    # subject to.
+    from services.agent import fixes as agent_fixes  # noqa: PLC0415
+    from services.agent import genesis_fixes as agent_genesis_fixes  # noqa: PLC0415
+
+    resolution = agent_fixes.resolve_verb(verb)
+    if not resolution["resolved"]:
+        raise GenesisRefused(
+            "genesis_fix_verb_no_longer_registered",
+            [
+                f"{verb!r} no longer resolves in the live tool registry "
+                f"({resolution['why']}). This approved proposal has gone stale since it was "
+                "made -- propose a fresh fix rather than approving this one."
+            ],
+        )
+    params_ok, why = agent_fixes.validate_params(verb, params)
+    if not params_ok:
+        raise GenesisRefused(
+            "genesis_fix_verb_no_longer_registered",
+            [
+                f"{verb!r}'s approved params no longer validate against its live schema "
+                f"({why}). This approved proposal has gone stale since it was made -- propose "
+                "a fresh fix rather than approving this one."
+            ],
+        )
+
+    # --- exploit #3's fix: the finding must actually be IN the parent's own
+    # verdict, not merely a code this catalogue recognises in the abstract.
+    raw_parent_gate = json.loads(
+        (job_dir(parent_job_id) / GATE_JSON_FILENAME).read_text(encoding="utf-8")
+    )
+    finding = _finding_in_stored_gate(raw_parent_gate, finding_code)
+    if finding is None:
+        raise GenesisRefused(
+            "genesis_fix_finding_not_in_parent_verdict",
+            [
+                f"Finding code {finding_code!r} does not appear anywhere in job "
+                f"{parent_job_id}'s stored gate verdict -- there is no diagnosis for this fix "
+                "to answer."
+            ],
+        )
+
+    # --- exploit #2's fix: params must address the SAME element the finding
+    # is about, not merely be well-formed for the verb in the abstract.
+    addressing_field = agent_genesis_fixes.VERB_ADDRESSING_FIELD.get(verb)
+    expected_target = agent_genesis_fixes.expected_fix_target(finding_code, finding)
+    if addressing_field and expected_target is not None:
+        submitted_target = params.get(addressing_field)
+        if submitted_target is None or str(submitted_target) != expected_target:
+            raise GenesisRefused(
+                "genesis_fix_params_target_mismatch",
+                [
+                    f"Finding {finding_code!r} (subject {finding['subject']!r}) names "
+                    f"{expected_target!r} as its {addressing_field!r}, but the submitted "
+                    f"params name {submitted_target!r} instead. A fix must address exactly "
+                    "the element the finding diagnosed, never a different one under the same "
+                    "verb -- this is checked even when the mismatched object also exists and "
+                    "is otherwise a valid target."
+                ],
+            )
+
+    # --- exploit #1's fix: re-run the registry against REAL evidence (this
+    # job's own stored census, and this workspace's ingested observation
+    # sets for V6 -- see derive_fix_targets/derive_v6_node_evidence for
+    # exactly what is derived and what is never invented) and require it to
+    # reach the SAME proposal the caller is claiming to apply.
+    draft = job_draft_or_none(parent_job_id)
+    census = draft.metadata if draft is not None else None
+    targets = derive_fix_targets(finding_code, finding, draft=draft, params=params)
+    proposal = agent_genesis_fixes.propose_genesis_fix(
+        finding_code, finding=finding, census=census, targets=targets
+    )
+    if proposal.outcome != agent_fixes.PROPOSAL or proposal.verb != verb:
+        raise GenesisRefused(
+            "genesis_fix_measurement_gate_not_satisfied",
+            [
+                f"The fix registry re-derived finding {finding_code!r}'s disposition from REAL "
+                f"server-side evidence and did not reach a proposal matching verb {verb!r} "
+                f"(outcome={proposal.outcome!r}, reason_code={proposal.reason_code!r}). "
+                + (proposal.rationale_en or "")
+            ],
+        )
+
+    parent_artifact = artifact_path(parent_job_id, "inpx")
+
+    job_id = uuid4().hex[:12]
+    work_dir = job_dir(job_id)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    name = str(parent.get("name") or "fix")
+    clone_path = work_dir / f"{name}.inpx"
+    # A plain copy, never a move and never opened for writing here -- the
+    # parent's own artifact file is read once and never touched again by
+    # anything in this module. ``run_genesis_fix_job`` opens its COM session
+    # on THIS clone, in the NEW job's own work dir.
+    shutil.copyfile(parent_artifact, clone_path)
+    # TOCTOU fix: hash the CLONE's bytes, after the copy -- see the
+    # docstring above. One read, reused for both the new job's own artifact
+    # sha AND the lineage sha, since both name the exact same bytes.
+    clone_sha256 = _sha256(clone_path)
+
+    record = {
+        "id": job_id,
+        "workspace_id": workspace_id,
+        "name": name,
+        "status": STATUS_QUEUED,
+        "phase": PHASE_QUEUED,
+        "progress": 0.0,
+        "created_at": _now_iso(),
+        "started_at": None,
+        "completed_at": None,
+        "submitted_by": approved_by,
+        "options": {},
+        # A fix job re-uses the parent's OWN artifact bytes -- there is no
+        # ``.osm`` of its own to re-parse, unlike an ordinary generation.
+        "source_osm": None,
+        "network": None,
+        "artifact": {
+            "inpx": clone_path.name,
+            "compliance_md": None,
+            # Named by convention (matches an ordinary job's own naming) but
+            # not copied from the parent -- the parent's census describes ITS
+            # network, and after the runner's edit this job's network is no
+            # longer byte-identical to it. Absent on disk, ``gate_and_publish``
+            # reads that as "no census" (Provenance UNKNOWN) exactly as it
+            # does for any hand-uploaded network; see its own docstring.
+            "genesis_json": f"{name}.genesis.json",
+            "sha256": clone_sha256,
+            "bytes": clone_path.stat().st_size,
+        },
+        "layers": None,
+        "gate": None,
+        "publication": None,
+        "refusal": None,
+        "error": None,
+        "derived_from": {
+            "job_id": parent_job_id,
+            "finding_code": finding_code,
+            "verb": verb,
+            "params": dict(params),
+            "approved_by": approved_by,
+            "approval_rationale": approval_rationale,
+            "approved_at": _now_iso(),
+            "parent_sha256": clone_sha256,
+        },
+    }
+    _upsert(record)
+    return record
+
+
+def start_genesis_fix_job(parent_job_id: str, **kwargs: Any) -> dict[str, Any]:
+    """:func:`create_genesis_fix_job`, then run it on a daemon worker thread.
+
+    Mirrors :func:`start_genesis_job`'s own split exactly, and for the same
+    reason: creating the job record (and cloning the parent's artifact) is
+    fast, synchronous, request-thread work; applying the verb is a live COM
+    turn and must never run inside a request handler (CLAUDE.md's COM
+    discipline). Tests that want a synchronous result call
+    :func:`create_genesis_fix_job` + :func:`run_genesis_fix_job` directly,
+    the same split :func:`_generate` uses for ordinary jobs in
+    ``tests/test_genesis_jobs.py``.
+    """
+    record = create_genesis_fix_job(parent_job_id, **kwargs)
+    threading.Thread(
+        target=run_genesis_fix_job,
+        args=(record["id"], record["workspace_id"]),
+        daemon=True,
+    ).start()
+    return record
+
+
+def run_genesis_fix_job(job_id: str, workspace_id: str) -> dict[str, Any]:
+    """The fix-job runner body, workspace re-bound explicitly.
+
+    Public and synchronous, mirroring :func:`run_genesis_job` exactly: a
+    ``threading.Thread`` does not inherit the request's ContextVars, so the
+    submitting workspace is re-bound here rather than trusted from
+    ``current_workspace_id()`` (which raises on a bare worker thread).
+    :func:`start_genesis_fix_job` is the only production caller.
+    """
+    with workspaces.bind_workspace(workspace_id):
+        return _run_genesis_fix_job_locked(job_id)
+
+
+def _fresh_shadow_model(path: Path, after_mtime: float | None) -> tuple[dict[str, Any], float]:
+    """``build_shadow_model(path)``, forcing a fresh (non-stale-cached) parse.
+
+    ``build_shadow_model`` is ``lru_cache``-keyed on ``(path, mtime)``
+    (``services/agent/tools_network.py``); this runner parses the SAME path
+    twice (before the write, after it), and ``services.agent.state.
+    ArtifactManager._refresh_shadow_model``'s own docstring records the
+    empirically-measured landmine this mirrors: two parses of one path can
+    land at the same filesystem-mtime tick on this Windows dev box, which
+    would otherwise silently hand back the STALE "before" parse for the
+    "after" read. ``after_mtime`` is the mtime this same path was last parsed
+    at (``None`` for the first parse); when the file's current mtime has not
+    moved strictly past it, this nudges it forward with ``os.utime`` before
+    parsing — the same nudge ``ArtifactManager`` performs, reimplemented
+    small here rather than reached into (that class's cache-busting method is
+    private, and this module does not otherwise depend on
+    ``services.agent.state`` at all).
+
+    Returns ``(shadow_model, mtime_parsed_at)`` so the caller can pass the
+    second value back in as ``after_mtime`` for its own next call.
+    """
+    from services.agent.tools_network import build_shadow_model  # noqa: PLC0415 - see module note on lazy agent imports
+
+    disk_mtime = path.stat().st_mtime
+    next_mtime = disk_mtime
+    if after_mtime is not None and next_mtime <= after_mtime:
+        next_mtime = after_mtime + 0.001
+        os.utime(path, (next_mtime, next_mtime))
+    return build_shadow_model(path), next_mtime
+
+
+def _build_fix_edit_session(working_inpx: Path) -> "VissimEditSession":
+    """Construct the ``VissimEditSession`` for a fix job's one approved write.
+
+    Thin, separately-named seam -- mirrors ``routers/assistant.py``'s own
+    ``_build_edit_session`` precisely, for the same reason: tests
+    ``monkeypatch.setattr(genesis_jobs, "_build_fix_edit_session", ...)``
+    with a fake session, so the whole runner exercises real for everything
+    except the one line that would otherwise need live Vissim COM. Production
+    code path: unconditionally the real class.
+
+    Imported function-local, not at module import time -- see this module's
+    own docstring ("The one exception is a FIX job"): ``services.agent.
+    edit_session`` imports ``services.vissim_com`` at ITS OWN top level, so
+    importing it here at genesis_jobs.py's module scope would make a plain
+    ``import services.genesis_jobs`` reach COM. This function (and the
+    runner's own imports below) are the only places that import it, and only
+    when a fix job actually RUNS.
+    """
+    from services.agent.edit_session import VissimEditSession  # noqa: PLC0415
+
+    return VissimEditSession(working_inpx)
+
+
+def _run_genesis_fix_job_locked(job_id: str) -> dict[str, Any]:
+    record = get_job(job_id)
+    try:
+        derived = record.get("derived_from") or {}
+        verb = str(derived.get("verb") or "")
+        params = dict(derived.get("params") or {})
+        artifact = record.get("artifact") or {}
+        inpx_name = artifact.get("inpx")
+        if not verb or not inpx_name:
+            # Defensive only -- every job this module's own
+            # create_genesis_fix_job produces carries both. A record missing
+            # either did not come from here (or its registry entry was hand-
+            # edited), and applying "no verb at all" would be a silent no-op
+            # dressed as a fix.
+            raise _FixApplyFailed(
+                "missing_derivation",
+                [
+                    "This job carries no derived_from.verb/params or artifact.inpx to apply -- "
+                    "it was not produced by create_genesis_fix_job."
+                ],
+            )
+
+        work_dir = job_dir(job_id)
+        working_inpx = work_dir / str(inpx_name)
+
+        _update(job_id, status=STATUS_RUNNING, phase=PHASE_APPLYING_FIX)
+
+        # Function-local: see this module's docstring and
+        # _build_fix_edit_session's own note. Nothing above this line in this
+        # function has touched COM; everything from here down runs on THIS
+        # function's own caller's thread, which for production is always the
+        # daemon thread start_genesis_fix_job started -- never a request
+        # handler.
+        from services.agent.edit_session import (  # noqa: PLC0415
+            clear_active_edit_session,
+            set_active_edit_session,
+        )
+        from services.agent.guardrails import GuardrailEngine  # noqa: PLC0415
+        from services.agent.toolkit import dispatch as _dispatch_verb  # noqa: PLC0415
+
+        session = _build_fix_edit_session(working_inpx)
+        try:
+            set_active_edit_session(session)
+            try:
+                before_model, before_mtime = _fresh_shadow_model(working_inpx, None)
+                action = {"tool": verb, "params": dict(params)}
+                engine = GuardrailEngine()
+
+                # Preflight, exactly as the interactive approval loop runs it
+                # (orchestrator.py's own guardrail sandwich) -- a REFUSE-tier
+                # preflight finding skips dispatch entirely rather than
+                # applying a write the same engine would refuse a human's turn
+                # for.
+                preflight_report = engine.preflight(action, before_model)
+                if preflight_report.blocking:
+                    raise _FixApplyFailed(
+                        "preflight_blocked",
+                        [
+                            f"{f.constraint_id}: {f.messages.get('en') or f.messages.get('ko') or ''}"
+                            for f in preflight_report.findings
+                        ]
+                        or ["preflight refused the approved verb"],
+                    )
+
+                # THE one dispatch. The tool's own function persists its write
+                # internally (every write tool in tools_edit.py ends with
+                # ``session.persist()``) -- there is no separate persist call
+                # here, and none is needed.
+                envelope = _dispatch_verb(verb, params)
+                if envelope.get("status") != "ok":
+                    raise _FixApplyFailed(
+                        "dispatch_failed",
+                        [str(envelope.get("message") or envelope.get("error_type") or "dispatch failed")],
+                    )
+
+                after_model, _after_mtime = _fresh_shadow_model(working_inpx, before_mtime)
+                postwrite_report = engine.postwrite(
+                    action, before_model, after_model, envelope.get("verification")
+                )
+                if postwrite_report.blocking:
+                    raise _FixApplyFailed(
+                        "postwrite_blocked",
+                        [
+                            f"{f.constraint_id}: {f.messages.get('en') or f.messages.get('ko') or ''}"
+                            for f in postwrite_report.findings
+                        ]
+                        or ["postwrite verification refused the applied write"],
+                    )
+            finally:
+                clear_active_edit_session()
+        finally:
+            session.close()
+
+        # The clone's bytes changed under the write above -- re-hash before
+        # gating, exactly as the ordinary generation runner does right before
+        # its own call to gate_and_publish, so the record's artifact hash is
+        # never stale relative to what is actually on disk.
+        record = _update(
+            job_id,
+            phase=PHASE_GATING,
+            artifact={
+                **artifact,
+                "sha256": _sha256(working_inpx),
+                "bytes": working_inpx.stat().st_size,
+            },
+        )
+        return gate_and_publish(job_id)
+    except GenesisPublicationRecordError as exc:
+        # Identical repair posture to _run_genesis_job_locked's own handling:
+        # the dataset IS live, only the record write of that fact failed.
+        logger.critical(
+            "genesis_jobs: repairing fix job %s -- its dataset is registered but the publish "
+            "record did not land on the first pass.",
+            job_id,
+        )
+        try:
+            return _update_with_retry(
+                job_id,
+                status=exc.status,
+                phase=PHASE_DONE,
+                progress=1.0,
+                gate=exc.gate,
+                publication=exc.publication,
+                revocation=None,
+                error=None,
+            )
+        except Exception:  # noqa: BLE001 - registry still unwritable; do not lie
+            logger.critical(
+                "genesis_jobs: fix job %s could not be repaired (registry still unwritable). "
+                "Its active dataset IS live; the record must be reconciled by hand.",
+                job_id,
+                exc_info=True,
+            )
+            return get_job(job_id)
+    except _FixApplyFailed as exc:
+        # The parent is untouched (nothing above ever opens it for writing,
+        # let alone this branch); no artifact of THIS job is registered,
+        # because this return happens before gate_and_publish is ever
+        # reached.
+        logger.info(
+            "genesis_jobs: fix job %s could not apply its verb (%s)", job_id, exc.step
+        )
+        return _update(
+            job_id,
+            status=STATUS_ERROR,
+            phase=PHASE_DONE,
+            progress=1.0,
+            refusal={"code": f"fix_apply_failed:{exc.step}", "reasons": exc.reasons},
+            error=f"fix_apply_failed:{exc.step}",
+        )
+    except Exception as exc:  # noqa: BLE001 - a job failure is data, not a crash
+        logger.exception("genesis_jobs: fix job %s failed", job_id)
+        try:
+            already = get_job(job_id)
+        except GenesisJobError:  # pragma: no cover - the record was just read
+            already = {}
+        if (already.get("refusal") or {}).get("code"):
+            return already
+        return _update(
+            job_id,
+            status=STATUS_ERROR,
+            phase=PHASE_DONE,
+            progress=1.0,
+            refusal={
+                "code": "fix_apply_failed:unexpected",
+                "reasons": [f"{type(exc).__name__}: {exc}"],
+            },
+            error=f"fix_apply_failed:unexpected: {type(exc).__name__}: {exc}",
+        )
+
+
+# ---------------------------------------------------------------------------
 # V1's live evidence — attached, never manufactured
 # ---------------------------------------------------------------------------
 
@@ -2220,19 +3016,26 @@ __all__ = [
     "STATUS_RUNNING",
     "StagedOsmNotFoundError",
     "TERMINAL_STATUSES",
+    "PHASE_APPLYING_FIX",
     "artifact_path",
     "attach_live_check",
+    "create_genesis_fix_job",
     "create_genesis_job",
+    "derive_fix_targets",
+    "derive_v6_node_evidence",
     "discard_staged_osm",
     "discard_staged_side_input",
     "gate_and_publish",
     "gate_payload",
     "genesis_dir",
     "get_job",
+    "iter_stored_gate_findings",
     "job_dir",
+    "job_draft_or_none",
     "list_jobs",
     "list_staged_side_inputs",
     "registry_path",
+    "run_genesis_fix_job",
     "run_genesis_job",
     "side_staging_dir",
     "stage_counts",
@@ -2242,5 +3045,6 @@ __all__ = [
     "staged_osm_path",
     "staged_side_input",
     "staging_dir",
+    "start_genesis_fix_job",
     "start_genesis_job",
 ]
