@@ -6136,3 +6136,63 @@ direction to record, not build: user management should leave this app for a mana
 service (Supabase-class) — roadmap §G. And asked whether the genesis map's unclickable
 lines are the shared-preview convergence's to fix: yes — named as its own queued unit, NOT
 part of #18's shell.
+
+## 2026-08-13 — #18: the pipeline becomes the navigation, and the refuter catches the bug the move itself created
+
+**What (approved variant B of the flow mockup).** The sidebar is now the consultant
+pipeline: 프로젝트 selector fixed on top (a new `ProjectSelector`, MOVED out of
+`VissimDatasetBanner` where it lived as a card on three pages), then ① 네트워크 (생성 ·
+네트워크 뷰 · 변경 비교) ② 데이터 (수요 · 현시도 — promoted out of the genesis hub, the
+half of variant B that changes what a consultant can find) ③ 시뮬·보정 (대시보드 ·
+베이스모델 검증 · 모델 검진) ④ 보고서 (작성 · 아티팩트), plus an unnumbered admin-only
+관리 group. Above every pipeline page, a stepper whose ONLY input is the route
+(`ROUTE_STAGE`, a constant): the mockup drew per-stage status and a done-dot, and shipping
+that would be fabricated progress — this app has no honest per-workspace answer to "is the
+데이터 stage finished", so the highlight is a fact about the URL and nothing else, pinned
+(`stepper carries no state`, `no emerald done treatment`). Backlog item 6 finished on the
+hub: 영역 추출 sits beside the file input as step 1's binary (또는 + link, wrapping as one
+unit), each side-input dropdown carries its maker as a small link on its label row, one
+quiet sentence says the dropdowns only pick, the old chip row is gone and all three note
+sentences survive verbatim in the disclosure. A shared `datasetEvents.ts` replaces two
+hand-written copies of the dataset-change broadcast; upload/reset announce through it and
+a cross-component busy counter keeps the picker locked while an upload is in flight.
+
+**Process facts worth keeping.** The builder ran in an isolated worktree so the user's
+live :3000 stayed stable mid-build; it died once at the session usage limit and resumed
+from its transcript. The worktree snapshot predated #13 (its genesis page was 47KB vs
+main's 78KB) — but every shell file it touched was byte-identical across trees, so the
+fold-back took its files wholesale while the contract-test additions moved as a diff. That
+transplant nearly shipped a disaster: PowerShell 5.1's `Get-Content` reads UTF-8 without
+BOM as ANSI, silently mangling every Korean string in the file — caught only because the
+diffstat's shape (271/162 against an expected +108/-0) was wrong, restored from git,
+redone byte-safely in Python. A wrong-shaped diff is a smoke alarm; read it before
+committing. Item 6 the builder correctly refused to write against its stale base and
+handed over as line-precise instructions; the orchestrator applied them to main.
+
+**Verification (adversarial, and it earned its keep): 7 findings, 4 REFUTED.** The
+critical one: the picker move CREATED a stale-data bug — while the picker lived in the
+banner it existed only on the three pages that subscribe to the dataset broadcast, so a
+switch could not happen anywhere else; from the sidebar it can happen everywhere, and
+seven pipeline pages load workspace-scoped data on mount with no listener, leaving the
+PREVIOUS project's jobs/tokens on screen while every new request already carries the new
+header — in the app whose selector itself promises "프로젝트마다 … 분리됩니다". Shipped
+fix: **a switch is a full reload.** Per-page subscriptions would fix today's seven pages
+and silently re-open the bug in the next page that forgets one; tearing the page down
+cannot go stale, for any page, ever, and it deletes the interleaved-switch race (the old
+banner's ref-gated effect never closed it; the builder's comment had overclaimed safety —
+prose stronger than code). Also refuted: the mobile rail inflated to ~490px of
+syllable-wrapped Korean (the selector card lacked the `max-[880px]` treatment the nav got
+— now a fixed 210px nowrap card, measured back to a 148px rail); a 1280–1335px window
+orphaned the extract link from its "또는" (now they wrap as one unit); `/simulation` was
+missing from `ROUTE_STAGE` while the dashboard itself cross-links it as "고급: 시뮬레이션
+실행기" (added → ③, live-verified); the picker rendered above the LOGIN form (anonymous
+workspace listing legitimately returns the default project — hidden on `/login` only);
+and 3 of 6 sampled pins were blind to their mutations (file-wide substring presence) —
+rewritten as slice-scoped ordering pins, and the exact three blinding mutations re-run:
+all CAUGHT. (First re-run printed two false "still blind" verdicts — the mutations
+themselves had failed to apply over CRLF; a mutation harness must PROVE the mutation
+applied before its verdict means anything.) Named residuals: 실측 관측 has no route to
+list under ②; 변경 비교 staying a separate entry is item 8's open half (adjacent to the
+queued preview-unification unit); the brand row stays above the selector; fetchWorkspaces
+now runs once per route (401-safe, hides the picker). Final: typecheck clean, contract
+**66/66** (+4 #18 tests), production build passes, live-measured on :3000.

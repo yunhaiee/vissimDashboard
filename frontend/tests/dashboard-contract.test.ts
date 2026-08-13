@@ -376,6 +376,143 @@ contractTest("app shell exposes the merged dashboard routes", (pin) => {
   );
 });
 
+// Unit #18 -- variant B of the approved flow mockup: the pipeline IS the
+// navigation. The pins below describe the SHAPE of that claim (which page sits
+// under which stage, and that the stepper cannot know anything the URL does not
+// say). Style lives in its own test further down, per the quarantine rule above.
+contractTest("#18: the sidebar is the pipeline — selector on top, four numbered groups", (pin) => {
+  const shell = read("components/AppShell.tsx");
+
+  // "Fixed on top" is an ORDER claim, so it is pinned as one: everything
+  // between the brand link and the nav element, which is where the selector has
+  // to be for the mockup's layout to hold.
+  const aboveNav = sliceBetween(shell, "app-side-brand", "app-side-nav");
+  pin.match(aboveNav, /<ProjectSelector \/>/, "expected the 프로젝트 selector to sit above the navigation, not inside a page");
+
+  const networkGroup = sliceBetween(shell, 'ordinal: "①"', 'ordinal: "②"');
+  pin.match(networkGroup, /href: "\/genesis"/, "expected 생성 under ① 네트워크");
+  pin.match(networkGroup, /href: "\/network"/, "expected the network view under ① 네트워크");
+  pin.match(networkGroup, /href: "\/network-diff"/, "expected the diff view under ① 네트워크");
+
+  // The half of variant B that actually moves something: both screens were
+  // reachable only from the genesis hub before this unit.
+  const dataGroup = sliceBetween(shell, 'ordinal: "②"', 'ordinal: "③"');
+  pin.match(dataGroup, /href: "\/genesis\/demand"/, "expected 수요 promoted to a first-class ② 데이터 entry");
+  pin.match(dataGroup, /href: "\/genesis\/phases"/, "expected 현시도 promoted to a first-class ② 데이터 entry");
+
+  const simGroup = sliceBetween(shell, 'ordinal: "③"', 'ordinal: "④"');
+  pin.match(simGroup, /href: "\/dashboard"/, "expected the dashboard under ③ 시뮬·보정");
+  pin.match(simGroup, /href: "\/base-model"/, "expected base-model validation under ③ 시뮬·보정");
+  pin.match(simGroup, /href: "\/health"/, "expected the health check under ③ 시뮬·보정");
+
+  const reportGroup = sliceBetween(shell, 'ordinal: "④"', "// Unit P④");
+  pin.match(reportGroup, /href: "\/report"/, "expected the report builder under ④ 보고서");
+  pin.match(reportGroup, /href: "\/downloads"/, "expected downloads absorbed into ④ 보고서");
+
+  // 사용자 관리 is not a pipeline stage, and an ordinal would claim it is.
+  pin.match(shell, /ordinal: null/, "expected the admin group to carry no pipeline ordinal");
+});
+
+contractTest("#18: the pipeline stepper is derived from the route and stores nothing", (pin) => {
+  const shell = read("components/AppShell.tsx");
+
+  pin.match(
+    shell,
+    /const ROUTE_STAGE: Readonly<Record<string, PipelineStage>> = \{/,
+    "expected a static route->stage table rather than a computed or fetched one",
+  );
+  pin.match(shell, /"\/genesis\/region": "network"/, "expected the region sub-screen to map to the 네트워크 stage");
+  pin.match(shell, /"\/genesis\/demand": "data"/, "expected the demand screen to map to the 데이터 stage");
+  pin.match(shell, /"\/base-model": "sim"/, "expected base-model validation to map to the 시뮬·보정 stage");
+  pin.match(shell, /"\/downloads": "report"/, "expected downloads to map to the 보고서 stage");
+  pin.match(
+    shell,
+    /<PipelineStepper current=\{stageForPath\(pathname\)\} \/>/,
+    "expected the stepper's only input to be the current route",
+  );
+
+  // The doctrine pin. A stepper that kept state -- or that had a "done" step --
+  // would be asserting progress this app has never measured; the mockup drew
+  // exactly that with fake data, and it is the one thing from it not shipped.
+  const stepper = sliceBetween(shell, "function PipelineStepper(", "// Unit U9.");
+  pin.doesNotMatch(stepper, /useState|useEffect|useRef|localStorage/, "expected the stepper to carry no state of its own");
+  pin.doesNotMatch(stepper, /emerald|done|complete/, "expected no 'completed stage' treatment the app cannot measure");
+});
+
+// Style pins, quarantined per the rule above.
+contractTest("#18: the stepper's current stage uses the sky selection treatment", (pin) => {
+  const shell = read("components/AppShell.tsx");
+  const stepper = sliceBetween(shell, "function PipelineStepper(", "// Unit U9.");
+
+  // Three-color rule: sky = selection, and the foreground comes from the LIGHT
+  // end of the family because globals.css remaps sky-50 to a navy fill.
+  pin.match(stepper, /border-sky-200 bg-sky-50 font-semibold text-sky-600/, "expected the current stage to take the sky selection treatment");
+  pin.match(stepper, /border-slate-200 text-slate-500/, "expected non-current stages to stay mono");
+  pin.doesNotMatch(stepper, /amber|yellow|rose|emerald/, "expected no fourth hue in the stepper");
+});
+
+contractTest("#18: the 프로젝트 picker moved to the sidebar, and a switch can never leave a page stale", (pin) => {
+  const shell = read("components/AppShell.tsx");
+  const selector = read("components/ProjectSelector.tsx");
+  const banner = read("components/VissimDatasetBanner.tsx");
+
+  pin.match(shell, /import ProjectSelector from "@\/components\/ProjectSelector"/, "expected the shell to own the project picker");
+  pin.doesNotMatch(banner, /fetchWorkspaces|createWorkspace|vissim-workspace-picker/, "expected the picker to be gone from the dataset banner");
+
+  // Moved, not reinvented: the two behaviours that are easy to lose in a move.
+  pin.match(selector, /id="vissim-workspace-picker"/, "expected the moved picker to keep its control id");
+  pin.match(
+    selector,
+    /setWorkspaceId\(isDefault \? null : workspaceId\)/,
+    "expected the default workspace to keep storing null, so a fresh browser sends no header",
+  );
+
+  // A SWITCH IS A FULL RELOAD (adversarial verification, 2026-08-13). The
+  // banner's broadcast reaches exactly the pages that subscribe -- and while
+  // the picker lived in the banner, those were the only pages a switch could
+  // happen on. From the sidebar a switch is possible on EVERY page, and seven
+  // pipeline pages load workspace-scoped data on mount with no listener: a
+  // broadcast-based switch shows the PREVIOUS project's data under the new
+  // project's header. Tearing the page down cannot go stale, for any page,
+  // ever -- including the next page nobody wires up. Scoped to the switch
+  // handler so a reload anywhere else cannot satisfy the pin.
+  const switchHandler = sliceBetween(selector, "const handleSwitchWorkspace", "const handleCreateWorkspace");
+  pin.match(
+    switchHandler,
+    /window\.location\.reload\(\)/,
+    "expected a project switch to tear the page down -- the one mechanism no unsubscribed page can be left out of",
+  );
+  pin.doesNotMatch(
+    switchHandler,
+    /fetchActiveDataset|publishDatasetChange/,
+    "expected the switch NOT to fetch-and-broadcast -- that path only reaches subscribers, which is the stale-data bug the reload closes",
+  );
+
+  // The banner's own upload/reset stays in-page and reaches pages EXACTLY
+  // once, through the one subscription: not zero (a silent drop) and not twice
+  // (a direct call beside the broadcast). Slice-scoped because the refuter
+  // proved the file-wide versions of these pins were blind to a duplicated
+  // direct call and to a defeated refetch.
+  const subscription = sliceBetween(banner, "subscribeToDatasetChange((dataset) => {", "const handleSelectFile");
+  pin.match(subscription, /onDatasetChange\?\.\(dataset\)/, "expected pages to receive onDatasetChange from the ONE subscription");
+  const runUpload = sliceBetween(banner, "const runUpload = useCallback(", "const handleFileSelected");
+  const resetHandler = sliceBetween(banner, "const handleReset = useCallback(", "return (");
+  pin.match(runUpload, /publishDatasetChange\(dataset\)/, "expected a finished upload to announce through the shared broadcast");
+  pin.doesNotMatch(runUpload, /onDatasetChange/, "expected the upload path to deliver only via the broadcast -- a direct call beside it double-fires every page");
+  pin.match(resetHandler, /publishDatasetChange\(dataset\)/, "expected a reset to announce through the shared broadcast");
+  pin.doesNotMatch(resetHandler, /onDatasetChange/, "expected the reset path to deliver only via the broadcast");
+  pin.doesNotMatch(banner, /new CustomEvent\("vissim-dataset-change"/, "expected the hand-written broadcast copy to be gone from the banner");
+
+  // The busy guard, pinned as an ORDERING rather than substring presence: the
+  // refuter proved presence-only pins accept a collapsed ~0ms busy window. The
+  // flag must be up before the awaited work starts and come down in the settle
+  // path -- and with a switch being a reload, this guard is what stops a
+  // mid-upload switch from killing the upload it is scoped to.
+  pin.match(runUpload, /setDatasetBusy\(true\);[\s\S]*?try \{[\s\S]*?await /, "expected the busy flag raised BEFORE the upload's awaited work begins");
+  pin.match(runUpload, /finally \{[\s\S]*?setDatasetBusy\(false\)/, "expected the busy flag cleared in the settle path, not beside where it was raised");
+  pin.match(selector, /subscribeToDatasetBusy/, "expected the picker to stay disabled while an upload is in flight");
+});
+
 contractTest("root entry redirects to dashboard once assistant is floating", (pin) => {
   const page = read("app/page.tsx");
 

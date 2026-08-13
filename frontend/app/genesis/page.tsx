@@ -874,13 +874,31 @@ export default function GenesisPage() {
             }
           >
             <div className="flex flex-col gap-4">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".osm,.xml"
-                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-                className="block w-full text-[13px] text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white/[0.06] file:px-3 file:py-1.5 file:text-[13px] file:font-semibold file:text-slate-700"
-              />
+              {/* Step 1 is a BINARY — a local file or a drawn region — so its
+                * two halves sit on one row (backlog item 6, finished in #18).
+                * The extract link used to live in a chip row at the bottom of
+                * the form, three visual steps away from the input it is the
+                * alternative to. */}
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".osm,.xml"
+                  onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                  className="block min-w-[240px] flex-1 text-[13px] text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white/[0.06] file:px-3 file:py-1.5 file:text-[13px] file:font-semibold file:text-slate-700"
+                />
+                {/* "또는" and its link wrap as ONE unit: measured 1280–1335px
+                  * (just past the xl split), the link alone dropped to the next
+                  * line, orphaned from the word that introduces it. */}
+                <span className="flex items-center gap-2 whitespace-nowrap">
+                  <span className="text-[12px] text-slate-500">{t("또는", "or", "または")}</span>
+                  <span title={regionHint.note}>
+                    <Link href="/genesis/region" className={CROSS_CHIP}>
+                      {regionHint.label}
+                    </Link>
+                  </span>
+                </span>
+              </div>
 
               <label className="flex flex-col gap-1 text-[13px] text-slate-600">
                 {t("네트워크 이름 (선택)", "Network name (optional)", "ネットワーク名（任意）")}
@@ -926,8 +944,22 @@ export default function GenesisPage() {
                 * taken -- picking one only NAMES a token already staged and
                 * validated; nothing here builds or edits a document. */}
               <div className="flex flex-wrap gap-3">
+                {/* Each dropdown carries ITS maker as a small link on the label
+                  * row (backlog item 6): the 만들기 pages and these selects used
+                  * to read as duplicate ways to "add demand/signals", when the
+                  * pages PRODUCE what the dropdowns merely pick. Putting the
+                  * link where its product lands is the sentence-free way to say
+                  * that. (Clicks on a link inside a label navigate; they do not
+                  * activate the labelled control.) */}
                 <label className="flex flex-1 flex-col gap-1 text-[13px] text-slate-600">
-                  {t("수요 입력 (선택)", "Demand input (optional)", "需要入力（任意）")}
+                  <span className="flex items-baseline justify-between gap-2">
+                    {t("수요 입력 (선택)", "Demand input (optional)", "需要入力（任意）")}
+                    <span title={demandHint.note}>
+                      <Link href="/genesis/demand" className={CROSS_CHIP}>
+                        {t("만들기 →", "Build →", "作成 →")}
+                      </Link>
+                    </span>
+                  </span>
                   <select
                     value={demandToken}
                     onChange={(event) => setDemandToken(event.target.value)}
@@ -944,7 +976,14 @@ export default function GenesisPage() {
                   </select>
                 </label>
                 <label className="flex flex-1 flex-col gap-1 text-[13px] text-slate-600">
-                  {t("신호 입력 (선택)", "Signals input (optional)", "信号入力（任意）")}
+                  <span className="flex items-baseline justify-between gap-2">
+                    {t("신호 입력 (선택)", "Signals input (optional)", "信号入力（任意）")}
+                    <span title={phasesHint.note}>
+                      <Link href="/genesis/phases" className={CROSS_CHIP}>
+                        {t("현시도 확인 →", "Confirm 현시도 →", "現示図確認 →")}
+                      </Link>
+                    </span>
+                  </span>
                   <select
                     value={signalsToken}
                     onChange={(event) => setSignalsToken(event.target.value)}
@@ -961,6 +1000,14 @@ export default function GenesisPage() {
                   </select>
                 </label>
               </div>
+
+              <p className="text-[12px] text-slate-500">
+                {t(
+                  "두 목록은 고르기만 합니다 — 항목은 각 필드 옆 링크의 화면에서 만들어집니다.",
+                  "These dropdowns only pick — entries are made on the screen each field links to.",
+                  "この二つのリストは選ぶだけです — 項目は各フィールド横のリンク先で作成されます。",
+                )}
+              </p>
 
               <p className="text-[12px] text-slate-500">
                 {t(
@@ -984,45 +1031,23 @@ export default function GenesisPage() {
               )}
             </div>
 
-            {/* UX pass U-1: these three used to be full-paragraph notice boxes
-              * stacked ABOVE the file input -- three secondary navigations
-              * outranking the primary control, and the first thing a first-time
-              * user read on this page. They are now a chip row BELOW the flow
-              * they support, with every sentence kept (one click away, and on
-              * hover) rather than rewritten or dropped. Each `note` is used
-              * TWICE (the chip's title and the disclosure body) from one
-              * constant, so the two can never drift apart. */}
+            {/* Backlog item 6, finished in unit #18. The three cross-links were
+              * one flat chip row down here, which read as three equal choices;
+              * they now sit WHERE THEY ACT — 영역 추출 beside the file input
+              * (step 1's binary), the two 만들기 links beside the dropdowns
+              * they feed (step 2). Every `note` sentence is kept: as the hover
+              * title on each relocated link (`title` on the WRAPPER span, never
+              * on the anchor — measured 2026-08-13, an anchor's title becomes
+              * its accessible NAME, WCAG 2.5.3) and verbatim in this disclosure,
+              * both from the same constants so they can never drift. */}
             <div className="mt-6 border-t border-slate-200 pt-4">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-[12px]">
-                <span className="text-slate-500">
-                  {t("입력이 더 필요하신가요?", "Need another input?", "他の入力が必要ですか？")}
-                </span>
-                {/* `title` sits on the WRAPPER, never on the anchor. Measured in
-                  * the running app: a `title` on a link with its own visible text
-                  * becomes that link's accessible NAME, so screen-reader and
-                  * voice-control users would hear/have to say the whole paragraph
-                  * instead of the label they can see (WCAG 2.5.3, label in name).
-                  * On the span it is a plain hover tooltip and the link keeps its
-                  * own label. */}
-                <span title={regionHint.note}>
-                  <Link href="/genesis/region" className={CROSS_CHIP}>
-                    {regionHint.label}
-                  </Link>
-                </span>
-                <span title={phasesHint.note}>
-                  <Link href="/genesis/phases" className={CROSS_CHIP}>
-                    {phasesHint.label}
-                  </Link>
-                </span>
-                <span title={demandHint.note}>
-                  <Link href="/genesis/demand" className={CROSS_CHIP}>
-                    {demandHint.label}
-                  </Link>
-                </span>
-              </div>
-              <details className="mt-3">
+              <details>
                 <summary className="cursor-pointer text-[12px] text-slate-500">
-                  {t("각각 무엇인가요?", "What is each of these?", "それぞれ何ですか？")}
+                  {t(
+                    "추출·현시도·수요 입력이 무엇인가요?",
+                    "What are extract, 현시도 and demand input?",
+                    "抽出・現示図・需要入力とは？",
+                  )}
                 </summary>
                 <ul className="mt-2 space-y-1.5">
                   {[regionHint, phasesHint, demandHint].map((entry) => (

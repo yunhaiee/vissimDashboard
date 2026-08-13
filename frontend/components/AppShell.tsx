@@ -4,12 +4,26 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import FloatingAssistant from "@/components/FloatingAssistant";
+import ProjectSelector from "@/components/ProjectSelector";
 import { roleLabel, useAuth } from "@/components/AuthProvider";
 import { useLanguage } from "@/components/LanguageProvider";
 import { loginHref } from "@/lib/authRedirect";
 import type { Language } from "@/lib/i18n";
 
-function NavIcon({ name }: { name: "dashboard" | "network" | "genesis" | "network-diff" | "validation" | "downloads" | "report" | "health" | "admin" }) {
+type NavIconName =
+  | "dashboard"
+  | "network"
+  | "genesis"
+  | "network-diff"
+  | "validation"
+  | "downloads"
+  | "report"
+  | "health"
+  | "admin";
+
+type Translate = (ko: string, en: string, ja?: string) => string;
+
+function NavIcon({ name }: { name: NavIconName }) {
   const paths: Record<string, React.ReactNode> = {
     dashboard: (
       <>
@@ -95,30 +109,149 @@ function NavIcon({ name }: { name: "dashboard" | "network" | "genesis" | "networ
   );
 }
 
+/**
+ * The consultant pipeline, as four stages, in the order the work happens.
+ *
+ * Unit #18 (variant B of docs/product/mockups/flow-stepper-mockup-2026-08-13.html,
+ * approved 2026-08-13): the pipeline IS the navigation. The sidebar groups every
+ * page under the stage it serves, and the stepper says which stage the page you
+ * are looking at belongs to.
+ */
+type PipelineStage = "network" | "data" | "sim" | "report";
+
+const PIPELINE_STAGES = ["network", "data", "sim", "report"] as const satisfies readonly PipelineStage[];
+
+/**
+ * Route -> stage. A CONSTANT, and deliberately the only input the stepper has.
+ *
+ * The mockup drew each step carrying a status ("published 1", "수요 ✓ · 신호
+ * 대기", an emerald done-dot). Those are not shipped here and the omission is
+ * the point: this app has no cheap, honest way to answer "is the 데이터 stage
+ * finished for this project" -- it would take a per-workspace roll-up of demand
+ * inputs, confirmed 현시도, real counts and gate verdicts, and a stepper that
+ * guessed at it would be exactly the fabricated-progress lie the validation
+ * doctrine exists to prevent. So the highlight is a fact about the URL and
+ * nothing else, and every other step renders mono rather than "not done yet".
+ *
+ * Routes that are not a pipeline stage (/admin, /login) are absent on purpose;
+ * `stageForPath` returns null and the stepper renders nothing at all, which is
+ * honest for a screen that is not part of the pipeline.
+ */
+const ROUTE_STAGE: Readonly<Record<string, PipelineStage>> = {
+  "/genesis": "network",
+  // A sub-screen of 생성, reached from the hub rather than the sidebar -- it
+  // belongs to the same stage even though it is not its own menu entry.
+  "/genesis/region": "network",
+  "/network": "network",
+  "/network-diff": "network",
+  "/genesis/demand": "data",
+  "/genesis/phases": "data",
+  "/dashboard": "sim",
+  "/base-model": "sim",
+  "/health": "sim",
+  // Hidden from the sidebar since the assistant went floating, but the
+  // dashboard itself cross-links it as "고급: 시뮬레이션 실행기" -- a screen the
+  // app presents as an extension of ③ belongs to ③, menu entry or not.
+  "/simulation": "sim",
+  "/report": "report",
+  "/downloads": "report",
+};
+
+function stageForPath(pathname: string): PipelineStage | null {
+  return ROUTE_STAGE[pathname] ?? null;
+}
+
+function stageLabel(stage: PipelineStage, t: Translate): string {
+  switch (stage) {
+    case "network":
+      return t("네트워크", "Network", "ネットワーク");
+    case "data":
+      return t("데이터", "Data", "データ");
+    case "sim":
+      return t("시뮬·보정", "Simulate & Calibrate", "シミュ・補正");
+    case "report":
+      return t("보고서", "Report", "レポート");
+  }
+}
+
+type NavLink = { href: string; label: string; icon: NavIconName };
+type NavGroup = {
+  /** Doubles as the React key and the `aria-labelledby` id stem, so no hook is
+   * needed inside the render loop. */
+  id: string;
+  /** null for the group that is not a pipeline stage (see 관리 below). */
+  stage: PipelineStage | null;
+  ordinal: string | null;
+  title: string;
+  links: NavLink[];
+};
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { lang, setLang, t } = useLanguage();
   const { user } = useAuth();
 
-  // Dashboard listed first: it's the landing page (root redirects here) and
-  // the page most users need first; the more specialist calibration page
-  // follows it instead of leading.
-  const links: Array<{ href: string; label: string; icon: "dashboard" | "network" | "genesis" | "network-diff" | "validation" | "downloads" | "report" | "health" | "admin" }> = [
-    { href: "/dashboard", label: t("대시보드", "Dashboard", "ダッシュボード"), icon: "dashboard" },
-    { href: "/base-model", label: t("베이스모델 검증", "Base Model Validation", "ベースモデル検証"), icon: "validation" },
-    { href: "/network", label: t("네트워크", "Network", "ネットワーク"), icon: "network" },
-    // Roadmap v2 §5.B B1: the .osm -> gated .inpx chain, which until now ran
-    // only from backend/tools scripts. Placed next to /network because what it
-    // produces IS the project's network, and a consultant reaches for it before
-    // there is one to look at.
-    { href: "/genesis", label: t("네트워크 생성", "Network Genesis", "ネットワーク生成"), icon: "genesis" },
-    // Roadmap 2.4: sits directly under /network -- it reads the same object,
-    // one snapshot pair at a time, and a reviewer reaches for it right after
-    // looking at the network itself.
-    { href: "/network-diff", label: t("네트워크 변경 비교", "Network Diff", "ネットワーク差分比較"), icon: "network-diff" },
-    { href: "/health", label: t("모델 검진", "Model Health Check", "モデル検診"), icon: "health" },
-    { href: "/downloads", label: t("데이터 다운로드", "Data Downloads", "データダウンロード"), icon: "downloads" },
-    { href: "/report", label: t("보고서 작성", "Report Builder", "レポート作成"), icon: "report" },
+  // Labels are shorter than the flat menu's were because the group header now
+  // carries the noun: under "① 네트워크", "생성" says everything "네트워크 생성"
+  // said. Routes are untouched -- this unit regroups and renames, it moves no
+  // page.
+  const groups: NavGroup[] = [
+    {
+      id: "network",
+      stage: "network",
+      ordinal: "①",
+      title: t("네트워크", "Network", "ネットワーク"),
+      links: [
+        { href: "/genesis", label: t("생성", "Build", "生成"), icon: "genesis" },
+        { href: "/network", label: t("네트워크 뷰", "Network View", "ネットワークビュー"), icon: "network" },
+        // The mockup folded this into the view above as a "+비교" mode. That is
+        // a change to the network PAGE, not to the menu, so the route keeps its
+        // own entry here and the merge stays open (docs/ux-backlog.md item 8).
+        { href: "/network-diff", label: t("변경 비교", "Diff", "変更比較"), icon: "network-diff" },
+      ],
+    },
+    {
+      id: "data",
+      stage: "data",
+      ordinal: "②",
+      title: t("데이터", "Data", "データ"),
+      // Promoted out of /genesis, which is the half of variant B that changes
+      // what a consultant can find: both screens produce inputs the generation
+      // form merely SELECTS, and while they were reachable only from the
+      // genesis hub they read as sub-steps of building a network rather than as
+      // the project's data.
+      links: [
+        { href: "/genesis/demand", label: t("수요", "Demand", "需要"), icon: "downloads" },
+        { href: "/genesis/phases", label: t("신호 (현시도)", "Signals (현시도)", "信号 (現示図)"), icon: "validation" },
+      ],
+    },
+    {
+      id: "sim",
+      stage: "sim",
+      ordinal: "③",
+      title: t("시뮬·보정", "Simulate & Calibrate", "シミュ・補正"),
+      links: [
+        { href: "/dashboard", label: t("대시보드", "Dashboard", "ダッシュボード"), icon: "dashboard" },
+        // Not placed by the mockup, which drew only 대시보드 and 모델 검진 here.
+        // Filed under ③ because validating the base model against real counts
+        // is what "보정" names -- it reads the same runs the dashboard does.
+        { href: "/base-model", label: t("베이스모델 검증", "Base Model Validation", "ベースモデル検証"), icon: "validation" },
+        { href: "/health", label: t("모델 검진", "Model Health Check", "モデル検診"), icon: "health" },
+      ],
+    },
+    {
+      id: "report",
+      stage: "report",
+      ordinal: "④",
+      title: t("보고서", "Report", "レポート"),
+      links: [
+        { href: "/report", label: t("작성", "Builder", "作成"), icon: "report" },
+        // The mockup absorbed 데이터 다운로드 into "작성 · 아티팩트". Absorbing it
+        // into the report PAGE would delete a working screen, so it keeps its
+        // entry inside the group the mockup put it in.
+        { href: "/downloads", label: t("아티팩트", "Artifacts", "アーティファクト"), icon: "downloads" },
+      ],
+    },
   ];
 
   // Unit P④. COSMETIC ONLY: this hides a link a non-admin has no use for, it
@@ -128,11 +261,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // show or hide a menu item, never grant or deny a capability. (Contrast the
   // approval card, where a client-side role guess would hide a BUTTON and is
   // therefore forbidden outright.)
+  //
+  // Unnumbered, and last: 사용자 관리 is not a pipeline stage, and giving it an
+  // ordinal would claim it is one. For everybody except an admin the sidebar is
+  // exactly the five blocks the mockup drew.
   if (user?.role === "admin") {
-    links.push({
-      href: "/admin",
-      label: t("사용자 관리", "Users & Access", "ユーザー管理"),
-      icon: "admin",
+    groups.push({
+      id: "admin",
+      stage: null,
+      ordinal: null,
+      title: t("관리", "Administration", "管理"),
+      links: [{ href: "/admin", label: t("사용자 관리", "Users & Access", "ユーザー管理"), icon: "admin" }],
     });
   }
 
@@ -144,20 +283,44 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           VISSIM Platform
         </Link>
 
+        {/* Not on the sign-in screen: the adversarial pass found the picker
+          * rendering ABOVE the login form (the anonymous workspace listing
+          * legitimately returns the default project), and a screen about
+          * acquiring an identity is the one place project scoping is noise. */}
+        {pathname !== "/login" && <ProjectSelector />}
+
         <nav className="app-side-nav" aria-label={t("주 메뉴", "Main navigation")}>
-          {links.map((item) => {
-            const active = pathname === item.href;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`app-side-link ${active ? "app-side-link-active" : ""}`}
+          {groups.map((group, index) => (
+            <div
+              key={group.id}
+              role="group"
+              aria-labelledby={`app-side-group-${group.id}`}
+              className={`flex flex-col gap-[2px] max-[880px]:flex-row max-[880px]:items-center max-[880px]:gap-1 ${
+                index === 0 ? "" : "mt-3.5 max-[880px]:mt-0"
+              }`}
+            >
+              <p
+                id={`app-side-group-${group.id}`}
+                className="px-1.5 pb-1 text-[11px] font-bold tracking-[0.04em] text-slate-400 max-[880px]:whitespace-nowrap max-[880px]:pb-0"
               >
-                <NavIcon name={item.icon} />
-                <span>{item.label}</span>
-              </Link>
-            );
-          })}
+                {group.ordinal ? `${group.ordinal} ${group.title}` : group.title}
+              </p>
+              {group.links.map((item) => {
+                const active = pathname === item.href;
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    aria-current={active ? "page" : undefined}
+                    className={`app-side-link ${active ? "app-side-link-active" : ""}`}
+                  >
+                    <NavIcon name={item.icon} />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         <div className="app-side-footer">
@@ -171,10 +334,65 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <main className="app-content">
-        <div className="app-content-inner">{children}</div>
+        <div className="app-content-inner">
+          <PipelineStepper current={stageForPath(pathname)} />
+          {children}
+        </div>
       </main>
       <FloatingAssistant />
     </div>
+  );
+}
+
+/**
+ * The persistent stage indicator. Stateless by construction: it takes the stage
+ * the route names and renders four labels, so there is nothing here that can
+ * drift out of step with the project's real condition.
+ *
+ * Three-color rule (docs/ux-backlog.md, MOCKUP DECISIONS 2026-08-13): sky is
+ * selection, so the current stage takes the same `border-sky-200 bg-sky-50
+ * text-sky-600` the genesis screens use for their selected/info state -- the
+ * foreground from the remapped LIGHT end of the family, which is the contrast
+ * rule that navy fill needs. Every other stage is mono. No emerald: a green
+ * step would read as "passed", and passing is a verdict this component has not
+ * measured.
+ */
+function PipelineStepper({ current }: { current: PipelineStage | null }) {
+  const { t } = useLanguage();
+
+  if (!current) return null;
+
+  return (
+    <nav aria-label={t("파이프라인 단계", "Pipeline stage", "パイプライン段階")} className="mb-7 border-b border-slate-200 pb-3">
+      <ol className="flex flex-wrap items-center gap-x-1.5 gap-y-2">
+        {PIPELINE_STAGES.map((stage, index) => {
+          const active = stage === current;
+          return (
+            <li key={stage} className="flex items-center gap-1.5">
+              {index > 0 && (
+                <span aria-hidden className="text-slate-400">
+                  ›
+                </span>
+              )}
+              <span
+                aria-current={active ? "step" : undefined}
+                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[12px] ${
+                  active
+                    ? "border-sky-200 bg-sky-50 font-semibold text-sky-600"
+                    : "border-slate-200 text-slate-500"
+                }`}
+              >
+                <span
+                  aria-hidden
+                  className={`h-[6px] w-[6px] rounded-full ${active ? "bg-sky-600" : "bg-slate-400"}`}
+                />
+                {stageLabel(stage, t)}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
   );
 }
 
