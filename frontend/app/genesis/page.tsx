@@ -1148,7 +1148,7 @@ export default function GenesisPage() {
                         </td>
                         <td className="py-2.5 text-right">
                           <span
-                            className={`inline-block rounded-full border px-2 py-0.5 text-[12px] font-semibold ${statusClasses(job.status)}`}
+                            className={`inline-block whitespace-nowrap rounded-full border px-2 py-0.5 text-[12px] font-semibold ${statusClasses(job.status)}`}
                           >
                             {statusLabel(job.status, t)}
                           </span>
@@ -1185,7 +1185,7 @@ export default function GenesisPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="truncate text-[15px] font-semibold text-slate-900">{selected.name}</h2>
                     <span
-                      className={`shrink-0 rounded-full border px-2 py-0.5 text-[12px] font-semibold ${statusClasses(selected.status)}`}
+                      className={`shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[12px] font-semibold ${statusClasses(selected.status)}`}
                     >
                       {statusLabel(selected.status, t)}
                     </span>
