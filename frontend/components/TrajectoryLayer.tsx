@@ -2,7 +2,8 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { fetchTrajectories, type NetworkData, type TrajectoryFrame, type TrajectoryVehicleFrame } from "@/lib/api";
-import { DEFAULT_LANE_M, MIN_ROAD_PX, linkWidthMeters, type ViewProjection } from "@/components/NetworkViewer";
+import { DEFAULT_LANE_M, MIN_ROAD_PX, linkWidthMeters } from "@/lib/roadWidth";
+import { type ViewProjection } from "@/components/NetworkViewer";
 
 // Phase 3 P4 — vehicle playback overlay for the network viewer.
 //

@@ -23,6 +23,7 @@
 import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import {
+  CONNECTOR_IDENTITY_DASH,
   NORMAL_CONNECTOR,
   NORMAL_LINK,
   REFUSE_COLOR,
@@ -32,12 +33,14 @@ import {
   type HighlightSets,
   type Translate,
 } from "@/components/genesis/findings";
+import { genesisElementWidthMeters } from "@/lib/genesisArtifacts";
 import type {
   GenesisDraftConnector,
   GenesisDraftLink,
   GenesisDraftNetwork,
   GenesisFindingHighlight,
 } from "@/lib/genesisArtifacts";
+import { MIN_ROAD_PX } from "@/lib/roadWidth";
 
 const VIEW_W = 640;
 const VIEW_H = 440;
@@ -47,6 +50,12 @@ const FIT_PAD_RATIO = 0.06;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 24;
 const WHEEL_ZOOM_STEP = 1.18;
+
+/** Below this many VIEW-space units of movement, a background pointerdown ->
+ * pointerup is a CLICK (clears the selection); above it, a DRAG (pan, leaves
+ * the selection alone). In the SVG's own 640x440 space, not raw client
+ * pixels, so it means the same thing at any zoom level. */
+const BACKGROUND_CLICK_TOLERANCE = 4;
 
 type Bbox = { xMin: number; yMin: number; xMax: number; yMax: number };
 
@@ -88,7 +97,11 @@ export function fitProjection(bbox: Bbox) {
   // reads north-up.
   const projX = (x: number) => offsetX + (x - x0) * scale;
   const projY = (y: number) => offsetY + (bbox.yMax + padY - y) * scale;
-  return { projX, projY };
+  // `scale` (view-units per metre) travels alongside projX/projY -- U-19
+  // round 2's road-width ribbons need the SAME metres-to-view-units factor
+  // the points themselves were projected with, so a 3-lane link's ribbon and
+  // its own polyline agree on what "this many metres" means on screen.
+  return { projX, projY, scale };
 }
 
 function pointsAttr(points: [number, number][], projX: (x: number) => number, projY: (y: number) => number): string {
@@ -106,6 +119,7 @@ export default function DraftLocalMap({
   showWarn,
   onSelectLink,
   onSelectConnector,
+  onClearSelection,
   t,
 }: {
   network: GenesisDraftNetwork;
@@ -118,6 +132,12 @@ export default function DraftLocalMap({
   showWarn: boolean;
   onSelectLink: (linkId: number) => void;
   onSelectConnector: (connectorId: number) => void;
+  /** Clicking empty canvas (not a link/connector) clears the selection --
+   * the SAME semantics `GenesisTileMap.tsx`'s leaflet renderer gives its own
+   * basemap click. Distinguished from a pan by movement distance in
+   * `handleBackgroundPointerUp` below, since the background rect is also the
+   * drag surface. */
+  onClearSelection: () => void;
   t: Translate;
 }) {
   const [view, setView] = useState({ scale: 1, tx: 0, ty: 0 });
@@ -209,7 +229,24 @@ export default function DraftLocalMap({
   };
 
   const handleBackgroundPointerUp = (event: ReactPointerEvent<SVGRectElement>) => {
-    if (dragState.current.pointerId === event.pointerId) dragState.current.active = false;
+    const drag = dragState.current;
+    if (drag.pointerId !== event.pointerId) return;
+    drag.active = false;
+    // A CLICK on empty canvas clears the selection; a DRAG (pan) must not --
+    // the background rect is both surfaces, told apart by how far the
+    // pointer actually moved between down and up. In VIEW units (the SVG's
+    // own 640x440 space, matching `zoomAt`'s already-established pattern of
+    // reading real pixels off `getBoundingClientRect`), not raw client
+    // pixels, so the tolerance means the same thing at any zoom level.
+    const svg = svgRef.current;
+    const rect = svg?.getBoundingClientRect();
+    const scaleX = rect ? VIEW_W / rect.width : 1;
+    const scaleY = rect ? VIEW_H / rect.height : 1;
+    const movedX = Math.abs(event.clientX - drag.startClientX) * scaleX;
+    const movedY = Math.abs(event.clientY - drag.startClientY) * scaleY;
+    if (movedX <= BACKGROUND_CLICK_TOLERANCE && movedY <= BACKGROUND_CLICK_TOLERANCE) {
+      onClearSelection();
+    }
   };
 
   if (!projection) return null;
@@ -315,7 +352,7 @@ const NetworkLayer = memo(function NetworkLayer({
   showNormal: boolean;
   showRefuse: boolean;
   showWarn: boolean;
-  projection: { projX: (x: number) => number; projY: (y: number) => number };
+  projection: { projX: (x: number) => number; projY: (y: number) => number; scale: number };
   onSelectLink: (linkId: number) => void;
   onSelectConnector: (connectorId: number) => void;
 }) {
@@ -325,32 +362,77 @@ const NetworkLayer = memo(function NetworkLayer({
         network.connectors.map((connector) => {
           if (highlights.byConnector.has(connector.id)) return null;
           if (connector.points.length < 2) return null;
+          // U-19 round 2: width-scaled ribbon, not a flat 0.6 -- the SAME
+          // formula genesisElementWidthMeters shares with the dashboard/
+          // network tab (lib/roadWidth.ts's linkWidthMeters), converted to
+          // this SVG's view-units by the SAME scale projX/projY project
+          // points with, floored so a 1-lane connector at a wide fit-out
+          // stays a real click target.
+          //
+          // HONEST LIMIT (adversarial verification 2026-08-13): these widths
+          // are computed at the network-FIT scale once, and the
+          // `vectorEffect="non-scaling-stroke"` below then holds the ON-SCREEN
+          // width constant while the user zooms -- unlike GenesisTileMap and
+          // NetworkViewer, whose ribbons track zoom. That is this fallback's
+          // deliberate perf design (the memoized layer skips re-rendering
+          // ~5,000 polylines on every view tick), so the ribbons here state
+          // RELATIVE road width, not zoom-true ground width.
+          const roadW = Math.max(genesisElementWidthMeters(connector) * projection.scale, MIN_ROAD_PX);
+          const points = pointsAttr(connector.points, projection.projX, projection.projY);
           return (
-            <polyline
-              key={`c-${connector.id}`}
-              points={pointsAttr(connector.points, projection.projX, projection.projY)}
-              fill="none"
-              stroke={NORMAL_CONNECTOR}
-              strokeWidth={0.6}
-              vectorEffect="non-scaling-stroke"
-              opacity={0.8}
-            />
+            <g key={`c-${connector.id}`}>
+              <polyline
+                points={points}
+                fill="none"
+                stroke={NORMAL_CONNECTOR}
+                strokeWidth={roadW}
+                vectorEffect="non-scaling-stroke"
+                strokeLinecap="round"
+                opacity={0.8}
+                className="cursor-pointer"
+                onClick={() => onSelectConnector(connector.id)}
+              />
+              {/* Connector identity cue -- mirrors NetworkViewer.tsx's Layer 4
+                * ("Connectors use the SAME width rule and floor as links --
+                * they are pavement, not annotation... a thin, muted centre
+                * dashline so an engineer can still tell which pavement inside
+                * a junction is a connector"). NOT a narrower ribbon -- the
+                * pavement above is full width, same as a link's; only this
+                * thin overlay marks it as a connector. Non-interactive: the
+                * click target stays the wide ribbon underneath. */}
+              <polyline
+                points={points}
+                fill="none"
+                stroke={NORMAL_LINK}
+                strokeWidth={0.6}
+                strokeDasharray={CONNECTOR_IDENTITY_DASH}
+                vectorEffect="non-scaling-stroke"
+                strokeLinecap="round"
+                opacity={0.55}
+                pointerEvents="none"
+              />
+            </g>
           );
         })}
       {showNormal &&
         network.links.map((link) => {
           if (highlights.refuseLinks.has(link.id) || highlights.warnLinks.has(link.id)) return null;
           if (link.points.length < 2) return null;
+          // Same width formula as the connector ribbon above -- one function,
+          // both element kinds.
+          const roadW = Math.max(genesisElementWidthMeters(link) * projection.scale, MIN_ROAD_PX);
           return (
             <polyline
               key={`l-${link.id}`}
               points={pointsAttr(link.points, projection.projX, projection.projY)}
               fill="none"
               stroke={NORMAL_LINK}
-              strokeWidth={1.1}
+              strokeWidth={roadW}
               vectorEffect="non-scaling-stroke"
               strokeLinecap="round"
               opacity={0.85}
+              className="cursor-pointer"
+              onClick={() => onSelectLink(link.id)}
             />
           );
         })}

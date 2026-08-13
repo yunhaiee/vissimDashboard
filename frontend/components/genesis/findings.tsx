@@ -47,6 +47,17 @@ export const SELECTED_COLOR = "#0ea5e9"; // sky-500, reserved for the clicked el
  * carries "warn" once the hue is gone, so both renderers must use it. */
 export const WARN_DASH = "7 5";
 
+/** U-19 round 2 -- a connector's OWN identity cue, mirroring
+ * `NetworkViewer.tsx`'s Layer 4 (a thin dashed centreline drawn over a
+ * connector's full-width pavement; see that file's own comment: "Connectors
+ * use the SAME width rule and floor as links -- they are pavement, not
+ * annotation"). Deliberately a different rhythm from `WARN_DASH` (short dash,
+ * long gap, vs. WARN_DASH's near-solid "7 5") so a normal-tier connector's
+ * identity dash can never read as the warn tier at a glance -- two different
+ * claims ("this is a connector" vs. "this failed a warn-tier check") must
+ * never share one dash pattern. */
+export const CONNECTOR_IDENTITY_DASH = "2 6";
+
 export type FindingRef = {
   checkId: string;
   checkTitle: string;
@@ -59,7 +70,21 @@ export type FindingRef = {
 // alone can put three separate findings on one connector. `refs` therefore
 // carries every finding for the clicked element, never just the first; the
 // detail panel lists all of them rather than silently dropping the rest.
+//
+// U-19 ("clicking a link/connector selects it and shows what the gate said
+// about it") added `"element"`: a DIRECTLY clicked link/connector, which is
+// now every feature on the map, not only ones a finding already highlighted.
+// `refs` here is legitimately often empty (most links carry no finding at
+// all) -- it is populated by `buildHighlights`'s `byLink`/`byConnector`, the
+// SAME per-element grouping the map's colouring already uses, which is
+// itself built from `resolveFindingHighlight`. So "which findings touch this
+// element" is answered by the one resolver, reached two ways: a finding
+// resolving forward to its geometry (`selectedHighlightOf` below, the
+// `"finding"` arm) and an element resolving backward to its findings
+// (`highlights.byLink`/`byConnector`, read by both renderers' click handlers
+// in `GenesisTileMap.tsx`) -- never a second, independent id/name match.
 export type SelectedItem =
+  | { kind: "element"; elementKind: "link" | "connector"; id: number; name: string; refs: FindingRef[] }
   | { kind: "finding"; refs: FindingRef[] }
   | { kind: "excluded_zone"; zone: GenesisIsolatedZone }
   | null;
@@ -130,12 +155,27 @@ export function buildHighlights(
 /** The currently-selected finding(s), as one highlight to redraw on top in the
  * selected colour. Unions every selected finding's own highlight (not just the
  * first) since two findings on the same clicked element are not guaranteed to
- * resolve to the same zone. */
+ * resolve to the same zone.
+ *
+ * A direct element click (`kind: "element"`, U-19) draws EXACTLY the clicked
+ * link or connector -- it does not expand to a retained isolated zone the way
+ * a finding's resolved highlight does (see `resolveFindingHighlight`'s doc
+ * comment on `findRetainedZoneFor`): the reader selected one specific piece of
+ * geometry, not "where does this finding point", so there is no id/name
+ * matching to do here at all -- the id is already known. */
 export function selectedHighlightOf(
   selected: SelectedItem,
   network: GenesisDraftNetwork | null,
 ): GenesisFindingHighlight | null {
-  if (!network || selected?.kind !== "finding") return null;
+  if (!network || !selected) return null;
+  if (selected.kind === "element") {
+    return {
+      linkIds: selected.elementKind === "link" ? [selected.id] : [],
+      connectorIds: selected.elementKind === "connector" ? [selected.id] : [],
+      resolved: true,
+    };
+  }
+  if (selected.kind !== "finding") return null;
   const linkIds = new Set<number>();
   const connectorIds = new Set<number>();
   for (const ref of selected.refs) {
@@ -240,11 +280,59 @@ export function FindingsDetailPanel({
         {!selected && (
           <p className="text-[12px] text-slate-500">
             {t(
-              "표시된 링크를 클릭하면 해당 발견의 상세 정보가 여기 나타납니다.",
-              "Click a highlighted link to see that finding's detail here.",
-              "強調表示されたリンクをクリックすると、この発見の詳細がここに表示されます。",
+              "링크나 커넥터를 클릭하면 여기에 상세 정보가 나타납니다.",
+              "Click a link or connector to see its detail here.",
+              "リンクやコネクタをクリックすると、ここに詳細が表示されます。",
             )}
           </p>
+        )}
+        {/* U-19: the element itself, clicked directly on the map -- every
+          * link/connector is reachable this way now, so `refs` is often
+          * empty and the panel says so plainly rather than looking broken.
+          * The sky badge is this app's selection/info accent (THREE-COLOR
+          * rule), matching the sky stroke the map itself draws on the
+          * clicked feature. */}
+        {selected?.kind === "element" && (
+          <>
+            <div className="flex items-center justify-between">
+              <span className="rounded-full border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[12px] font-bold uppercase text-slate-800">
+                {selected.elementKind === "link" ? t("링크", "Link", "リンク") : t("커넥터", "Connector", "コネクタ")}
+              </span>
+              <button type="button" onClick={onClear} className="text-[12px] text-slate-500">
+                {t("닫기", "Close", "閉じる")}
+              </button>
+            </div>
+            <p className="mt-1.5 font-mono text-[13px] font-semibold text-slate-800">{selected.id}</p>
+            {selected.name && <p className="mt-0.5 text-[12px] text-slate-600">{selected.name}</p>}
+            {selected.refs.length === 0 ? (
+              <p className="mt-1.5 text-[12px] text-slate-500">
+                {t("확인된 소견 없음", "No findings on this element", "確認された所見なし")}
+              </p>
+            ) : (
+              <ul className="mt-1.5 space-y-2">
+                {selected.refs.map((ref, index) => (
+                  <li
+                    key={`${ref.checkId}-${ref.finding.code}-${index}`}
+                    className={index > 0 ? "border-t border-slate-200 pt-1.5" : undefined}
+                  >
+                    <span
+                      className={`rounded-full border px-1.5 py-0.5 text-[12px] font-bold uppercase ${
+                        ref.tier === "refuse"
+                          ? "border-rose-300 bg-rose-50 text-rose-800"
+                          : "border-2 border-slate-400 bg-slate-100 text-slate-900"
+                      }`}
+                    >
+                      {ref.checkId} · {ref.tier === "refuse" ? t("거부 등급", "refuse", "拒否") : t("경고 등급", "warn", "警告")}
+                    </span>
+                    <p className="mt-1 font-semibold text-slate-800">{ref.checkTitle}</p>
+                    <p className="mt-0.5 font-mono text-[12px] text-slate-500">{ref.finding.code}</p>
+                    <p className="mt-0.5 text-[12px] text-slate-500">{ref.finding.subject}</p>
+                    <p className="mt-1 leading-relaxed">{ref.finding.message}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
         {selected?.kind === "finding" && (
           <>

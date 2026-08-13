@@ -35,6 +35,7 @@ import type { LayerGroup, Map as LeafletMap } from "leaflet";
 import { useLanguage } from "@/components/LanguageProvider";
 import DraftLocalMap from "@/components/genesis/DraftLocalMap";
 import {
+  CONNECTOR_IDENTITY_DASH,
   EmptyState,
   FindingsDetailPanel,
   LegendToggle,
@@ -54,14 +55,29 @@ import type { GenesisGateReport } from "@/lib/api";
 import {
   fetchGenesisDraftGeoJson,
   fetchGenesisDraftNetwork,
+  genesisElementWidthMeters,
   type GenesisDraftConnector,
   type GenesisDraftLink,
   type GenesisDraftNetwork,
   type GenesisGeoJson,
 } from "@/lib/genesisArtifacts";
+import { MIN_ROAD_PX } from "@/lib/roadWidth";
 
 /** The same CARTO dark basemap every other map in this app draws. */
 const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+
+// U-19 round 2 -- metres -> on-screen pixels at a given zoom/latitude, so a
+// leaflet stroke weight can be "this many real metres wide" instead of a flat
+// number. Standard Web Mercator ground-resolution formula (the same one
+// Bing/Google/Leaflet's own EPSG:3857 CRS is built on): the world is
+// `256 * 2^zoom` px wide at that zoom, and `2 * PI * EARTH_RADIUS_M` metres
+// around at the equator, narrowing by `cos(lat)` away from it.
+// `EARTH_RADIUS_M` is leaflet's own constant (`L.CRS.Earth.R`), not a
+// separately-sourced number.
+const EARTH_RADIUS_M = 6378137;
+function metersPerPixel(latDeg: number, zoom: number): number {
+  return (2 * Math.PI * EARTH_RADIUS_M * Math.cos((latDeg * Math.PI) / 180)) / (256 * Math.pow(2, zoom));
+}
 
 /** The map's own height inside the drawer. The user's own number: at ≥360px a
  * junction and its approaches are both legible at a usable zoom; below that the
@@ -174,22 +190,35 @@ export default function GenesisTileMap({
 
   const excludedZones = network?.metadata.connectivity?.excluded_zones ?? [];
 
-  // Clicking a link/connector selects EVERY finding touching it -- one
-  // connector can carry three separate V4 findings at once.
+  // U-19: clicking a link/connector selects THAT ELEMENT, whether or not it
+  // carries a finding -- every link/connector on the map is clickable now,
+  // not only ones a finding already highlighted. `highlights.byLink`/
+  // `byConnector` is EVERY finding whose subject resolved to this element via
+  // `resolveFindingHighlight` (through `buildHighlights`); reading it here
+  // rather than re-matching a subject against this id/name is what keeps this
+  // the same one resolver `selectedHighlightOf` uses in the other direction
+  // (finding -> geometry). A link with no finding legitimately gets `refs: []`
+  // -- the detail panel says so rather than refusing to select it.
   const handleSelectLink = useCallback(
     (linkId: number) => {
       const refs = highlights.byLink.get(linkId) ?? [];
-      if (refs.length > 0) setSelected({ kind: "finding", refs });
+      const link = linksById.get(linkId);
+      setSelected({ kind: "element", elementKind: "link", id: linkId, name: link?.name ?? "", refs });
     },
-    [highlights],
+    [highlights, linksById],
   );
   const handleSelectConnector = useCallback(
     (connectorId: number) => {
       const refs = highlights.byConnector.get(connectorId) ?? [];
-      if (refs.length > 0) setSelected({ kind: "finding", refs });
+      const connector = connectorsById.get(connectorId);
+      setSelected({ kind: "element", elementKind: "connector", id: connectorId, name: connector?.name ?? "", refs });
     },
-    [highlights],
+    [highlights, connectorsById],
   );
+  // ONE clear function, shared by the detail panel's 닫기 button and both
+  // renderers' "clicked empty map" handler -- not three copies of
+  // `setSelected(null)` that could drift.
+  const handleClearSelection = useCallback(() => setSelected(null), []);
 
   const header = (
     <div className="flex items-center justify-between gap-3">
@@ -282,6 +311,8 @@ export default function GenesisTileMap({
               {geo ? (
                 <FindingsTileLayer
                   geo={geo}
+                  linksById={linksById}
+                  connectorsById={connectorsById}
                   highlights={highlights}
                   selectedHighlight={selectedHighlight}
                   showNormal={showNormal}
@@ -289,6 +320,7 @@ export default function GenesisTileMap({
                   showWarn={showWarn}
                   onSelectLink={handleSelectLink}
                   onSelectConnector={handleSelectConnector}
+                  onClearSelection={handleClearSelection}
                 />
               ) : (
                 <>
@@ -319,6 +351,7 @@ export default function GenesisTileMap({
                     showWarn={showWarn}
                     onSelectLink={handleSelectLink}
                     onSelectConnector={handleSelectConnector}
+                    onClearSelection={handleClearSelection}
                     t={t}
                   />
                 </>
@@ -327,7 +360,7 @@ export default function GenesisTileMap({
 
             <FindingsDetailPanel
               selected={selected}
-              onClear={() => setSelected(null)}
+              onClear={handleClearSelection}
               unresolvedCount={highlights.unresolved.length}
               unresolved={highlights.unresolved}
               onSelectUnresolved={(ref) => setSelected({ kind: "finding", refs: [ref] })}
@@ -357,6 +390,8 @@ export default function GenesisTileMap({
  */
 function FindingsTileLayer({
   geo,
+  linksById,
+  connectorsById,
   highlights,
   selectedHighlight,
   showNormal,
@@ -364,8 +399,16 @@ function FindingsTileLayer({
   showWarn,
   onSelectLink,
   onSelectConnector,
+  onClearSelection,
 }: {
   geo: GenesisGeoJson;
+  /** U-19 round 2: the census network's own lane/width fields, already
+   * loaded client-side for round 1's name lookups -- reused here rather than
+   * re-fetched or re-derived, since a geojson feature's properties carry only
+   * `id`/`kind`/`name` (services/genesis/geojson.py's contract) and were never
+   * meant to duplicate what the census already carries. */
+  linksById: Map<number, GenesisDraftLink>;
+  connectorsById: Map<number, GenesisDraftConnector>;
   highlights: ReturnType<typeof buildHighlights>;
   selectedHighlight: { linkIds: number[]; connectorIds: number[] } | null;
   showNormal: boolean;
@@ -373,18 +416,28 @@ function FindingsTileLayer({
   showWarn: boolean;
   onSelectLink: (linkId: number) => void;
   onSelectConnector: (connectorId: number) => void;
+  /** Clicking the empty map (not any feature) clears the selection -- the
+   * click listener is bound to the map itself in the mount effect below, and
+   * every feature's own click handler stops propagation so selecting a
+   * feature does not immediately clear itself. */
+  onClearSelection: () => void;
 }) {
   const { t } = useLanguage();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const layerRef = useRef<LayerGroup | null>(null);
   const [ready, setReady] = useState(false);
+  // Bumped on every "zoomend" (mount effect below) purely to RE-TRIGGER the
+  // draw effect -- the actual zoom/centre are always read fresh off the map
+  // instance inside that effect, never off this counter's value, so there is
+  // no risk of it going stale between the event and the redraw.
+  const [zoomTick, setZoomTick] = useState(0);
 
   // The click handlers are read through a ref so the drawing effect below does
   // not have to re-run (and re-add every polyline) when a parent render hands
   // it new function identities.
-  const handlers = useRef({ onSelectLink, onSelectConnector });
-  handlers.current = { onSelectLink, onSelectConnector };
+  const handlers = useRef({ onSelectLink, onSelectConnector, onClearSelection });
+  handlers.current = { onSelectLink, onSelectConnector, onClearSelection };
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -407,6 +460,18 @@ function FindingsTileLayer({
           '&copy; <a href="https://www.openstreetmap.org">OSM</a> &copy; <a href="https://carto.com">CARTO</a>',
         maxZoom: 20,
       }).addTo(map);
+
+      // Clicking the empty map (basemap, not a feature) clears the selection.
+      // A feature's own click handler (below) calls `L.DomEvent.stopPropagation`
+      // first, so this only fires for a click that hit no polyline at all.
+      map.on("click", () => handlers.current.onClearSelection());
+
+      // U-19 round 2: road width is metres-converted-to-pixels AT THE CURRENT
+      // ZOOM, so every zoom level needs its own redraw -- without this a
+      // road's weight would freeze at whatever pixel count it was drawn with
+      // on the very first render and stop tracking the zoom the user is
+      // actually looking at.
+      map.on("zoomend", () => setZoomTick((current) => current + 1));
 
       if (!cancelled) setReady(true);
     })();
@@ -446,6 +511,10 @@ function FindingsTileLayer({
       const layer = L.layerGroup();
       const selectedLinks = new Set(selectedHighlight?.linkIds ?? []);
       const selectedConnectors = new Set(selectedHighlight?.connectorIds ?? []);
+      // Recomputed every redraw (this effect depends on `zoomTick`, bumped by
+      // the mount effect's "zoomend" listener) off the map's OWN current zoom
+      // and centre latitude -- never off a value captured once at mount.
+      const pxPerMeter = 1 / metersPerPixel(map.getCenter().lat, map.getZoom());
 
       // Four passes, weakest claim first, so leaflet's own insertion order is
       // the z-order and the strongest claim ends up on top.
@@ -480,14 +549,34 @@ function FindingsTileLayer({
                   : isConnector
                     ? NORMAL_CONNECTOR
                     : NORMAL_LINK;
+          // U-19 round 2: the "normal" tier draws a WIDTH-SCALED ribbon (real
+          // lane count x lane width, converted to on-screen px at the current
+          // zoom, floored so a 1-lane road stays a real click target) instead
+          // of a flat 1px/2px line -- visual parity with the dashboard/
+          // network tab's road ribbons. refuse/warn/selected keep their
+          // EXISTING fixed weights unchanged; only the base ribbon changed.
+          // HONESTY: if the census carries no matching element for this
+          // geojson feature (should not happen -- both come from the same
+          // generation -- but the census fetch and the geojson fetch ARE two
+          // independent requests, see this file's header comment), width is
+          // 0 and Math.max floors it to MIN_ROAD_PX rather than inventing a
+          // plausible-looking width.
+          const element = isConnector ? connectorsById.get(id) : linksById.get(id);
+          const widthMeters = element ? genesisElementWidthMeters(element) : 0;
           const weight =
-            pass === "selected" ? 6 : pass === "refuse" ? 5 : pass === "warn" ? 4 : isConnector ? 1 : 2;
-          const clickable = pass === "refuse" || pass === "warn";
+            pass === "selected"
+              ? 6
+              : pass === "refuse"
+                ? 5
+                : pass === "warn"
+                  ? 4
+                  : Math.max(widthMeters * pxPerMeter, MIN_ROAD_PX);
 
           // GeoJSON is [lon, lat]; leaflet is [lat, lon]. Flipped explicitly at
           // the one boundary where the two meet.
+          const latlngs = feature.geometry.coordinates.map(([lon, lat]) => [lat, lon] as [number, number]);
           const line = L.polyline(
-            feature.geometry.coordinates.map(([lon, lat]) => [lat, lon] as [number, number]),
+            latlngs,
             {
               color,
               weight,
@@ -498,17 +587,49 @@ function FindingsTileLayer({
               opacity: pass === "normal" ? 0.7 : 0.95,
               lineCap: "round",
               lineJoin: "round",
-              interactive: clickable,
+              // U-19: EVERY feature is clickable now, not only a refuse/warn
+              // one -- "clicking a link/connector selects it" means every
+              // link/connector. `interactive: true` is also what makes
+              // leaflet's canvas renderer switch the cursor to a pointer on
+              // hover (`leaflet-interactive`, Canvas.js's `_handleMouseHover`
+              // toggles that class on the container), so no separate CSS
+              // hover rule is needed for the pointer cursor.
+              interactive: true,
             },
           );
-          if (clickable) {
-            line.on("click", () => {
-              const current = handlers.current;
-              if (isConnector) current.onSelectConnector(id);
-              else current.onSelectLink(id);
-            });
-          }
+          line.on("click", (event) => {
+            // Leaflet's Path layers bubble their click to the map by default
+            // (`bubblingMouseEvents: true`) -- without stopping it here, every
+            // selecting click would ALSO hit the map's own click-to-clear
+            // handler registered in the mount effect above, clearing the
+            // selection the same click just set.
+            L.DomEvent.stopPropagation(event);
+            const current = handlers.current;
+            if (isConnector) current.onSelectConnector(id);
+            else current.onSelectLink(id);
+          });
           line.addTo(layer);
+
+          // Connector identity cue (U-19 round 2) -- mirrors NetworkViewer.
+          // tsx's Layer 4: a thin dashed centreline over a NORMAL-tier
+          // connector's own full-width pavement (drawn above, same width as a
+          // link -- "Connectors use the SAME width rule and floor as links",
+          // that file's own comment), not a narrower ribbon. Only the normal
+          // tier: a warn/refuse/selected connector already carries its own
+          // dash/weight vocabulary, and layering a second dash rhythm on top
+          // would read as a third, undocumented state. Non-interactive so the
+          // click target stays the wide ribbon underneath.
+          if (pass === "normal" && isConnector) {
+            L.polyline(latlngs, {
+              color: NORMAL_LINK,
+              weight: 1,
+              dashArray: CONNECTOR_IDENTITY_DASH,
+              opacity: 0.55,
+              lineCap: "round",
+              lineJoin: "round",
+              interactive: false,
+            }).addTo(layer);
+          }
         }
       }
 
@@ -523,7 +644,7 @@ function FindingsTileLayer({
     return () => {
       cancelled = true;
     };
-  }, [ready, geo, highlights, selectedHighlight, showNormal, showRefuse, showWarn]);
+  }, [ready, geo, linksById, connectorsById, highlights, selectedHighlight, showNormal, showRefuse, showWarn, zoomTick]);
 
   const fit = useCallback(async () => {
     const map = mapRef.current;

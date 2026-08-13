@@ -3561,3 +3561,344 @@ contractTest("U-1: three accent colours, tint in the fill, ink in the text", (pi
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// Unit #19 -- clicking a link/connector on the genesis map selects it and
+// shows what the gate said about it, through the SAME resolver the reverse
+// (finding -> geometry) direction already used. Single concern: this test is
+// about the SELECTION mechanism (one state, one resolver, both renderers
+// clickable, click-empty-clears) -- not a restyle, and not the B3 detail-panel
+// pins above, which cover the finding/excluded-zone arms this unit left alone.
+// ---------------------------------------------------------------------------
+
+contractTest("U-19: map selection is one state, driven by one resolver, in both renderers", (pin) => {
+  const findings = read("components/genesis/findings.tsx");
+  const tileMap = read("components/genesis/GenesisTileMap.tsx");
+  const localMap = read("components/genesis/DraftLocalMap.tsx");
+
+  // THE SHARED RESOLVER. `resolveFindingHighlight` is called from exactly TWO
+  // places -- both in findings.tsx -- and neither renderer re-implements any
+  // part of the id-or-exact-name match to answer "which findings touch this
+  // clicked element": a click reads `highlights.byLink`/`byConnector`, which
+  // `buildHighlights` already built by running the one resolver over every
+  // finding. Counted rather than matched once, so a THIRD call site (a
+  // second, independently-drifting implementation) fails this pin even if it
+  // happens to agree with the first today.
+  const resolverCalls = (findings.match(/resolveFindingHighlight\(ref\.finding, network\)/g) ?? []).length;
+  pin.match(
+    `count=${resolverCalls}`,
+    /^count=2$/,
+    "expected resolveFindingHighlight to be called from exactly two places in findings.tsx (buildHighlights, and selectedHighlightOf's finding arm)",
+  );
+  for (const [label, source] of [["GenesisTileMap", tileMap], ["DraftLocalMap", localMap]] as const) {
+    pin.doesNotMatch(
+      source,
+      /resolveFindingHighlight\(/,
+      `expected ${label} never to call resolveFindingHighlight directly -- the map-to-finding direction reads highlights.byLink/byConnector, which buildHighlights already computed with it`,
+    );
+  }
+
+  // A clicked element's findings come from that SAME per-element grouping --
+  // not a fresh match against the clicked id/name.
+  pin.match(
+    tileMap,
+    /const refs = highlights\.byLink\.get\(linkId\) \?\? \[\];/,
+    "expected a clicked link's findings to come from highlights.byLink, the resolver's own output",
+  );
+  pin.match(
+    tileMap,
+    /const refs = highlights\.byConnector\.get\(connectorId\) \?\? \[\];/,
+    "expected a clicked connector's findings to come from highlights.byConnector, the resolver's own output",
+  );
+
+  // EVERY element is selectable now, not only one a finding already
+  // highlighted -- `refs` is legitimately empty for most clicks, and
+  // selection must not be gated on it being non-empty (that was the OLD
+  // behaviour this unit replaced).
+  pin.match(
+    findings,
+    /kind: "element"; elementKind: "link" \| "connector"; id: number; name: string; refs: FindingRef\[\]/,
+    "expected a selection to carry an element identity (kind+id+name+refs), not only a finding list",
+  );
+  pin.doesNotMatch(
+    tileMap,
+    /refs\.length/,
+    "expected the tile map's handlers never to READ refs.length -- any gate on it is the old 'only finding-bearing elements are selectable' behaviour returning in a new spelling (the refuter proved the narrow `> 0` pin was blind to `if (refs.length)`)",
+  );
+  // ...and the positive half the refuter demanded: setSelected follows the
+  // refs lookup UNCONDITIONALLY in both handlers -- no branch in between.
+  pin.match(
+    tileMap,
+    /const refs = highlights\.byLink\.get\(linkId\) \?\? \[\];\s*const link = linksById\.get\(linkId\);\s*setSelected\(\{ kind: "element", elementKind: "link"/,
+    "expected handleSelectLink to select unconditionally -- nothing between the refs lookup and setSelected",
+  );
+  pin.match(
+    tileMap,
+    /const refs = highlights\.byConnector\.get\(connectorId\) \?\? \[\];\s*const connector = connectorsById\.get\(connectorId\);\s*setSelected\(\{ kind: "element", elementKind: "connector"/,
+    "expected handleSelectConnector to select unconditionally -- nothing between the refs lookup and setSelected",
+  );
+
+  // ONE selection state, owned by the container (GenesisTileMap) -- neither
+  // renderer grows its own copy.
+  const selectionStateCount = (tileMap.match(/useState<SelectedItem>/g) ?? []).length;
+  pin.match(
+    `count=${selectionStateCount}`,
+    /^count=1$/,
+    "expected exactly one useState<SelectedItem> in GenesisTileMap.tsx -- FindingsTileLayer must not carry its own copy",
+  );
+  pin.doesNotMatch(localMap, /useState<SelectedItem>/, "expected DraftLocalMap not to carry its own selection state either");
+  pin.match(tileMap, /onClearSelection=\{handleClearSelection\}/, "expected the leaflet layer to receive the shared clear function (matched twice: itself and DraftLocalMap)");
+  pin.match(localMap, /onClearSelection: \(\) => void;/, "expected DraftLocalMap to accept the same clear callback contract, not invent its own");
+
+  // EVERY FEATURE IS CLICKABLE on the leaflet renderer now -- U-19 removed the
+  // old tier gate (`clickable = pass === "refuse" || pass === "warn"`), which
+  // is also what gives every feature the pointer cursor on hover (leaflet's
+  // canvas renderer toggles `leaflet-interactive` -- `cursor: pointer` --
+  // for any layer with `interactive: true`, with no extra CSS needed).
+  pin.match(tileMap, /interactive: true,/, "expected every leaflet feature to be interactive, not only refuse/warn-tier ones");
+  pin.doesNotMatch(
+    tileMap,
+    /const clickable = pass === "refuse" \|\| pass === "warn";/,
+    "expected the tier-gated clickable flag to be gone -- every pass is now clickable",
+  );
+
+  // CLICKING EMPTY MAP CLEARS -- and a feature's own click must stop the
+  // event reaching that map-level handler, or selecting a feature would
+  // immediately clear itself right back out (leaflet Path layers bubble
+  // their click to the map by default: `bubblingMouseEvents: true`).
+  pin.match(
+    tileMap,
+    /map\.on\("click", \(\) => handlers\.current\.onClearSelection\(\)\);/,
+    "expected clicking the empty basemap to clear the selection",
+  );
+  pin.match(
+    tileMap,
+    /L\.DomEvent\.stopPropagation\(event\);/,
+    "expected a feature click to stop propagation so it cannot also clear the selection it just set",
+  );
+
+  // THE SVG FALLBACK gets the SAME semantics: every normal-tier polyline is
+  // clickable too now (previously only warn/refuse tier had onClick -- these
+  // two exact lines are new, using the block's own `connector`/`link` loop
+  // variable rather than the warn/refuse blocks' `connectorId`/`linkId`).
+  pin.match(localMap, /onClick=\{\(\) => onSelectConnector\(connector\.id\)\}/, "expected a normal-tier connector to be clickable, not only warn/refuse ones");
+  pin.match(localMap, /onClick=\{\(\) => onSelectLink\(link\.id\)\}/, "expected a normal-tier link to be clickable, not only warn/refuse ones");
+  // The background rect distinguishes a CLICK (clears) from a DRAG (pans) by
+  // movement distance -- it is both surfaces, so a pan must not also clear.
+  pin.match(
+    localMap,
+    /if \(movedX <= BACKGROUND_CLICK_TOLERANCE && movedY <= BACKGROUND_CLICK_TOLERANCE\) \{\s*\n\s*onClearSelection\(\);/,
+    "expected a click (not a drag) on empty canvas to clear the selection",
+  );
+
+  // THE DETAIL STRIP shows only what travels -- kind, mono id, name if
+  // present, then the matching findings -- and says so plainly when there are
+  // none, never an empty box.
+  pin.match(
+    findings,
+    /\{selected\.elementKind === "link" \? t\("링크", "Link", "リンク"\) : t\("커넥터", "Connector", "コネクタ"\)\}/,
+    "expected the detail strip's kind label to read 링크/커넥터",
+  );
+  pin.match(
+    findings,
+    /<p className="mt-1\.5 font-mono text-\[13px\] font-semibold text-slate-800">\{selected\.id\}<\/p>/,
+    "expected the clicked element's own id to be shown, mono",
+  );
+  pin.match(
+    findings,
+    /\{selected\.name && <p className="mt-0\.5 text-\[12px\] text-slate-600">\{selected\.name\}<\/p>\}/,
+    "expected the element's name to show only when present, never a blank line",
+  );
+  pin.match(
+    findings,
+    /확인된 소견 없음/,
+    "expected an element with no matching findings to say so plainly, not render an empty list or hide the panel",
+  );
+  pin.doesNotMatch(
+    findings,
+    /lane counts|link length|length_m|lane_width_m/,
+    "the detail strip must show only what the geojson contract carries (id, kind, name, findings) -- no invented attributes",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #19 round 2 -- the genesis draft map's roads become width-scaled
+// ribbons (real lane count x lane width), reaching visual parity with the
+// dashboard/network tab, per the user's direct request. `NetworkViewer.tsx`
+// and `TrajectoryLayer.tsx` use CRLF line endings (unlike the genesis files
+// round 1 touched) -- every pattern below either avoids `\n`/`$` anchors
+// entirely or reads through a CRLF-normalized copy, so a line-ending quirk in
+// a pre-existing file can never make a pin pass vacuously.
+// ---------------------------------------------------------------------------
+
+contractTest("U-19 round 2: one width formula draws width-scaled ribbons in both genesis renderers", (pin) => {
+  const roadWidth = read("lib/roadWidth.ts");
+  const networkViewer = read("components/NetworkViewer.tsx").replace(/\r\n/g, "\n");
+  const trajectoryLayer = read("components/TrajectoryLayer.tsx").replace(/\r\n/g, "\n");
+  const genesisArtifacts = read("lib/genesisArtifacts.ts");
+  const findings = read("components/genesis/findings.tsx");
+  const tileMap = read("components/genesis/GenesisTileMap.tsx");
+  const localMap = read("components/genesis/DraftLocalMap.tsx");
+
+  // ---- ONE formula, extracted (not duplicated) ------------------------------
+  //
+  // `lib/roadWidth.ts` is the single source; NetworkViewer.tsx (which used to
+  // define linkWidthMeters/DEFAULT_LANE_M/MIN_ROAD_PX locally) and
+  // TrajectoryLayer.tsx (which used to import them FROM NetworkViewer) both
+  // now import from the shared module instead -- a pure extraction, so the
+  // dashboard/network tab's own rendering is provably unchanged.
+  pin.match(roadWidth, /export function linkWidthMeters\(l: RoadWidthInput\): number \{/, "expected the shared module to export the one width formula");
+  pin.match(networkViewer, /import \{ DEFAULT_LANE_M, MIN_ROAD_PX, linkWidthMeters \} from "@\/lib\/roadWidth";/, "expected NetworkViewer to import the formula rather than defining its own");
+  pin.doesNotMatch(networkViewer, /export function linkWidthMeters\(/, "expected NetworkViewer's own local linkWidthMeters definition to be gone");
+  pin.doesNotMatch(networkViewer, /export const DEFAULT_LANE_M/, "expected NetworkViewer's own local DEFAULT_LANE_M export to be gone");
+  pin.doesNotMatch(networkViewer, /export const MIN_ROAD_PX/, "expected NetworkViewer's own local MIN_ROAD_PX export to be gone");
+  pin.match(trajectoryLayer, /import \{ DEFAULT_LANE_M, MIN_ROAD_PX, linkWidthMeters \} from "@\/lib\/roadWidth";/, "expected TrajectoryLayer to follow NetworkViewer's import to the same shared module");
+  pin.doesNotMatch(
+    trajectoryLayer,
+    /import \{[^}]*linkWidthMeters[^}]*\} from "@\/components\/NetworkViewer"/,
+    "expected TrajectoryLayer's old import of linkWidthMeters FROM NetworkViewer to be gone -- both now take it from lib/roadWidth",
+  );
+
+  // ---- The genesis adapter delegates, it does not reimplement ---------------
+  //
+  // Neither genesis type carries width_total/lane_widths -- the adapter turns
+  // one measured lane_width_m into a lane_widths array and lets the SAME
+  // linkWidthMeters sum it, rather than multiplying lanes x lane_width_m by
+  // hand (which would be a second formula that happens to agree today).
+  pin.match(genesisArtifacts, /import \{ linkWidthMeters \} from "@\/lib\/roadWidth";/, "expected the genesis adapter to import the shared formula");
+  pin.match(
+    genesisArtifacts,
+    /export function genesisElementWidthMeters\(element: \{ lanes: number; lane_width_m: number \}\): number \{/,
+    "expected one named adapter function for both GenesisDraftLink and GenesisDraftConnector",
+  );
+  pin.match(
+    genesisArtifacts,
+    /return linkWidthMeters\(\{ lane_widths: new Array\(laneCount\)\.fill\(element\.lane_width_m\), lanes: element\.lanes \}\);/,
+    "expected the adapter to hand a shaped object to linkWidthMeters, not compute a total itself",
+  );
+  pin.doesNotMatch(
+    genesisArtifacts,
+    /lanes\s*\)?\s*\*|\*\s*\(?\s*(?:element\.)?lane_width_m/,
+    "expected no hand-multiplied lanes x lane_width_m anywhere in the genesis adapter, under ANY spacing or parenthesisation -- that arithmetic must live inside linkWidthMeters alone",
+  );
+  // And neither renderer re-implements the multiplication either -- both must
+  // call the one adapter function to get a width.
+  for (const [label, source] of [["GenesisTileMap", tileMap], ["DraftLocalMap", localMap]] as const) {
+    pin.doesNotMatch(
+      source,
+      /\.lanes \* .*\.lane_width_m|lane_width_m.*\*.*\.lanes/,
+      `expected ${label} never to multiply lanes by lane_width_m itself -- it must call genesisElementWidthMeters`,
+    );
+    pin.match(
+      source,
+      /genesisElementWidthMeters\(/,
+      `expected ${label} to draw its road width through the one shared adapter`,
+    );
+  }
+
+  // ---- Zoom-reactive weight on the leaflet renderer --------------------------
+  //
+  // Real metres only mean a fixed pixel count AT one zoom level -- without a
+  // redraw on "zoomend" a road's weight would freeze at whatever it was on the
+  // first paint and stop tracking the zoom the user is actually looking at.
+  pin.match(tileMap, /map\.on\("zoomend", \(\) => setZoomTick\(\(current\) => current \+ 1\)\);/, "expected a zoomend listener to trigger a redraw");
+  pin.match(
+    tileMap,
+    /const pxPerMeter = 1 \/ metersPerPixel\(map\.getCenter\(\)\.lat, map\.getZoom\(\)\);/,
+    "expected pixels-per-metre to be recomputed from the map's OWN current zoom/centre on every redraw, never cached",
+  );
+  const drawEffectDeps = sliceBetween(tileMap, "}, [ready, geo, linksById, connectorsById,", "]);");
+  pin.match(drawEffectDeps, /\S/, "expected the draw effect's dependency array (markers moved? the doesNotMatch below would pass vacuously on empty input)");
+  pin.match(drawEffectDeps, /\bzoomTick\b/, "expected the draw effect to depend on zoomTick, or a zoom change would never trigger a redraw");
+  pin.doesNotMatch(
+    tileMap,
+    /pass === "selected" \? 6 : pass === "refuse" \? 5 : pass === "warn" \? 4 : isConnector \? 1 : 2/,
+    "expected the old flat 1px/2px normal-tier weight to be gone",
+  );
+  pin.match(
+    tileMap,
+    /: Math\.max\(widthMeters \* pxPerMeter, MIN_ROAD_PX\);/,
+    "expected the normal tier's weight to be the real width in metres converted to px, floored",
+  );
+  // refuse/warn/selected keep their EXISTING fixed weights -- only the normal
+  // ribbon's formula changed.
+  pin.match(tileMap, /pass === "selected"\s*\n\s*\? 6\s*\n\s*: pass === "refuse"\s*\n\s*\? 5\s*\n\s*: pass === "warn"\s*\n\s*\? 4\s*\n/, "expected refuse(5)/warn(4)/selected(6) weights to stay exactly the round-1 vocabulary");
+
+  // ---- Meter-unit stroke on the SVG fallback, same floor ---------------------
+  pin.match(localMap, /return \{ projX, projY, scale \};/, "expected fitProjection to expose its metres-to-view-units scale, not only the point projectors");
+  pin.match(
+    localMap,
+    /const roadW = Math\.max\(genesisElementWidthMeters\(connector\) \* projection\.scale, MIN_ROAD_PX\);/,
+    "expected a normal-tier connector's stroke width to be its real width in metres, scaled and floored",
+  );
+  pin.match(
+    localMap,
+    /const roadW = Math\.max\(genesisElementWidthMeters\(link\) \* projection\.scale, MIN_ROAD_PX\);/,
+    "expected a normal-tier link's stroke width to be its real width in metres, scaled and floored",
+  );
+  // Anchored on the ribbon's own colour (not a bare "0.6"/"1.1" search) so this
+  // stays precise about the RIBBON specifically -- the connector identity-cue
+  // overlay below legitimately reuses a small fixed stroke width of its own
+  // for its thin dashed centreline, and that is a different element, not the
+  // pavement this pin is about.
+  pin.doesNotMatch(
+    localMap,
+    /stroke=\{NORMAL_CONNECTOR\}\s*\n\s*strokeWidth=\{0\.6\}/,
+    "expected the old flat 0.6 connector RIBBON stroke width to be gone",
+  );
+  pin.doesNotMatch(
+    localMap,
+    /stroke=\{NORMAL_LINK\}\s*\n\s*strokeWidth=\{1\.1\}/,
+    "expected the old flat 1.1 link stroke width to be gone",
+  );
+
+  // ---- The floor is ONE constant, not two independently-chosen numbers ------
+  pin.match(tileMap, /import \{ MIN_ROAD_PX \} from "@\/lib\/roadWidth";/, "expected the tile map to import the shared floor, not invent its own");
+  pin.match(localMap, /import \{ MIN_ROAD_PX \} from "@\/lib\/roadWidth";/, "expected the SVG fallback to import the SAME shared floor");
+
+  // ---- Connector vs. link: mirrors NetworkViewer, not a third convention ----
+  //
+  // NetworkViewer.tsx's own comment, read directly: connectors get the SAME
+  // width rule and floor as links (pavement, not annotation) -- so this pin
+  // is deliberately AGAINST a narrower connector ribbon, which would be
+  // inventing a convention NetworkViewer itself does not use.
+  pin.match(
+    networkViewer,
+    /Connectors use the SAME width rule and floor as links/,
+    "expected NetworkViewer's own connector-width doctrine to still say what this unit mirrors (source moved? re-verify the citation)",
+  );
+  pin.match(findings, /export const CONNECTOR_IDENTITY_DASH = "2 6";/, "expected one shared connector-identity dash pattern");
+  pin.doesNotMatch(
+    findings,
+    /CONNECTOR_IDENTITY_DASH = "7 5"/,
+    "the connector identity dash must never equal WARN_DASH's rhythm -- 'this is a connector' and 'this failed a warn check' must never share one dash pattern",
+  );
+  for (const [label, source] of [["GenesisTileMap", tileMap], ["DraftLocalMap", localMap]] as const) {
+    pin.match(source, /CONNECTOR_IDENTITY_DASH/, `expected ${label} to draw the connector identity cue`);
+  }
+  pin.match(tileMap, /if \(pass === "normal" && isConnector\) \{/, "expected the identity cue on the leaflet renderer to be scoped to normal-tier connectors only -- a warn/refuse/selected connector keeps its own vocabulary, not a second dash layered on top");
+  pin.match(tileMap, /interactive: false,/, "expected the leaflet identity-cue overlay to be non-interactive so the click target stays the wide ribbon");
+  // Anchored to the identity-cue polyline specifically (its own dash prop
+  // within ~200 chars of its own pointerEvents) -- a bare `pointerEvents="none"`
+  // search would pass vacuously, since the pre-existing selected-highlight
+  // overlays already carried that attribute before this unit touched the file.
+  pin.match(
+    localMap,
+    /strokeDasharray=\{CONNECTOR_IDENTITY_DASH\}[\s\S]{0,200}pointerEvents="none"/,
+    "expected the SVG identity-cue overlay specifically to be non-interactive so the click target stays the wide ribbon",
+  );
+
+  // ---- Honesty rule: no invented width when data is missing ------------------
+  pin.match(
+    tileMap,
+    /const widthMeters = element \? genesisElementWidthMeters\(element\) : 0;/,
+    "expected a feature with no matching census element to get width 0 (floored to MIN_ROAD_PX), never an invented plausible-looking width",
+  );
+  // The real-census measurement this rule is judged against is recorded in
+  // the adapter's own header comment, not only in this test's prose.
+  pin.match(
+    genesisArtifacts,
+    /1831 links \+ 3828 connectors,\s*\n\/\/ zero missing or zero\/negative `lanes` or `lane_width_m` in that file/,
+    "expected the real-census honesty measurement to be cited in source, not only claimed in a report",
+  );
+});

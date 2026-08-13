@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
 import { NetworkData, NetworkElements, ScenarioResults } from "@/lib/api";
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, resolveLosGrade, type LosGrade } from "@/lib/los";
+import { DEFAULT_LANE_M, MIN_ROAD_PX, linkWidthMeters } from "@/lib/roadWidth";
 import { ELEMENT_TYPE_LABELS, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 import { buildVehicleInputStacks, vehicleInputCompositionLabel } from "@/lib/vehicleInputStack";
 import { useLanguage } from "@/components/LanguageProvider";
@@ -142,15 +143,16 @@ const RSA_AMBER = "#b9975a";     // muted amber — reduced-speed band
 const TTS_CYAN = "#6f97a3";      // muted cyan-slate — travel-time gate lines
 const PED_FILL = "#b9b2a3";      // warm light slate — pedestrian areas
 
-// Geometry constants for the road/marking math. DEFAULT_LANE_M / MIN_ROAD_PX
-// and linkWidthMeters() below are exported because the P5 vehicle overlay
-// (TrajectoryLayer) has to reproduce the EXACT on-screen road width this file
-// draws in order to size cars proportionally to their lane — re-deriving them
-// there would let the two drift apart silently.
-export const DEFAULT_LANE_M = 3.5; // fallback lane width when a link carries none
+// Geometry constants for the road/marking math. DEFAULT_LANE_M / MIN_ROAD_PX /
+// linkWidthMeters() moved to lib/roadWidth.ts (U-19 round 2, 2026-08-13) so
+// the genesis draft map could draw the SAME width formula the dashboard does
+// -- imported above. They stay re-exported in spirit (TrajectoryLayer, the P5
+// vehicle overlay, still needs the exact on-screen road width this file draws
+// to size cars proportionally to their lane) via that shared module instead
+// of this file's own definitions, so there is one formula, not two that could
+// drift.
 const EPS = 1e-6;
 const MITER_COS_MIN = 0.5;         // clamp miter to ≤ 2× so sharp bends never spike offsets
-export const MIN_ROAD_PX = 2.5;    // asphalt floor at base fit (scales up with zoom)
 const MAX_CHEVRONS = 8;            // cap per link (keeps SVG node count modest)
 
 // Road-marking geometry (Defect B, 2026-07-27). Chevrons/lane dividers/connector
@@ -215,16 +217,10 @@ const SIGNAL_BAR_OFFSET_M = 0.8;   // red signal bar sits this far downstream of
 type NetworkLink = NetworkData["links"][number];
 type Pt = [number, number];
 
-// Total roadway width in metres, tolerant of the three shapes Unit A can emit
-// (explicit total → summed lane widths → lane-count × default).
-export function linkWidthMeters(l: NetworkLink): number {
-  if (l.width_total != null && l.width_total > 0) return l.width_total;
-  if (l.lane_widths && l.lane_widths.length) {
-    const sum = l.lane_widths.reduce((a, b) => a + b, 0);
-    if (sum > 0) return sum;
-  }
-  return Math.max(l.lanes ?? 1, 1) * DEFAULT_LANE_M;
-}
+// linkWidthMeters(l: NetworkLink) moved to lib/roadWidth.ts and is imported
+// above -- `NetworkLink` structurally satisfies its narrower `RoadWidthInput`
+// parameter (width_total?/lane_widths?/lanes), so every call site below is
+// unchanged.
 
 // Signed interior lane-boundary offsets from the centreline, in metres. A link
 // with L lanes yields L-1 dividers; single-lane links yield none.

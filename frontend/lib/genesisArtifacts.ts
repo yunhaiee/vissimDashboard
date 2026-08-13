@@ -88,6 +88,7 @@ import {
   type GenesisJobStatus,
   type GenesisRequestedRegion,
 } from "@/lib/api";
+import { linkWidthMeters } from "@/lib/roadWidth";
 
 // ---------------------------------------------------------------------------
 // The draft network -- `*.genesis.json`, DraftNetwork.model_dump(mode="json")
@@ -177,6 +178,34 @@ export interface GenesisDraftNetwork {
   connectors: GenesisDraftConnector[];
   nodes: GenesisDraftNode[];
   skipped_ways?: Array<Record<string, unknown>>;
+}
+
+// ---------------------------------------------------------------------------
+// Road width -- U-19 round 2 (visual parity with the dashboard/network tab's
+// width-scaled ribbons, per the user's direct request).
+// ---------------------------------------------------------------------------
+//
+// FIRST CHECK, before touching anything else: does the census this file
+// already fetches carry lane/width data? Yes -- both `GenesisDraftLink` and
+// `GenesisDraftConnector` above carry `lanes` and `lane_width_m` on every
+// element (verified against a REAL generation's artifact,
+// `runtime/workspaces/bfc69251bd04/genesis/jobs/f57cf27e33f5/
+// region_n36_3504_e127_3845.genesis.json` -- 1831 links + 3828 connectors,
+// zero missing or zero/negative `lanes` or `lane_width_m` in that file). So
+// no geojson contract change, no backend edit: the width this function needs
+// was already loaded client-side for round 1's name lookups.
+//
+// THE ADAPTER, not a second formula. Neither genesis type carries
+// `width_total` or `lane_widths` (`lib/roadWidth.ts`'s two richer input
+// shapes) -- the generator emits one measured `lane_width_m` per element
+// instead of a per-lane breakdown. So this builds a `lane_widths` array of
+// that one value repeated `lanes` times and hands it to the SAME
+// `linkWidthMeters` the dashboard/network tab uses: the summing and the
+// lanes-only fallback both stay inside that one function. Nothing here
+// multiplies lanes by width itself.
+export function genesisElementWidthMeters(element: { lanes: number; lane_width_m: number }): number {
+  const laneCount = Math.max(Math.round(element.lanes ?? 1), 1);
+  return linkWidthMeters({ lane_widths: new Array(laneCount).fill(element.lane_width_m), lanes: element.lanes });
 }
 
 /** `GET /jobs/{id}/artifact/genesis_json` -- authenticated, same as every

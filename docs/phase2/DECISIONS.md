@@ -6196,3 +6196,57 @@ list under ②; 변경 비교 staying a separate entry is item 8's open half (ad
 queued preview-unification unit); the brand row stays above the selector; fetchWorkspaces
 now runs once per route (401-safe, hides the picker). Final: typecheck clean, contract
 **66/66** (+4 #18 tests), production build passes, live-measured on :3000.
+
+## 2026-08-13 — #19: the draft preview learns to be touched, and to be a road
+
+**What (two rounds, one unit — the user's "지도 컴포넌트가 클릭이 안 된다" and "대시보드와
+같은 렌더링으로" asks).** Round 1, the interaction vocabulary: clicking any link/connector
+in EITHER genesis renderer (leaflet tile map / SVG fallback) selects it — sky emphasis,
+one detail strip in the Console vocabulary (kind chip, mono id, name, and the gate
+findings that reference the element; "확인된 소견 없음" as one muted line when none) —
+and clicking empty map clears. The convergence claim is structural, not cosmetic:
+finding→map and map→finding provably share ONE resolver (`resolveFindingHighlight`,
+exactly two call sites, both in `findings.tsx`; a clicked element's findings come from
+`buildHighlights`' own precomputed output; both renderers are pinned to never call the
+resolver directly, and no second matching implementation exists — searched, then pinned).
+A physical merge with `NetworkViewer` (121KB, registered-dataset data model) was scoped
+OUT by name; 변경 비교-as-a-mode stays item 8's open half. Round 2, the appearance: the
+schematic viewer's width formula (`linkWidthMeters`) was EXTRACTED to `lib/roadWidth.ts`
+— proven a pure move by a 17-case behavioral battery over old-vs-new and by the live
+`/network` page rendering the registered dataset unchanged — and now has four consumers
+(NetworkViewer, TrajectoryLayer, and via one thin adapter both genesis renderers), with
+hand-multiplied `lanes × lane_width_m` pinned ABSENT under any spelling. The draft census
+already carried `lanes`/`lane_width_m` on every element (audited: 5,659/5,659 in the real
+generation, zero missing — so no geojson contract change), so the preview now draws
+width-scaled ribbons: Web-Mercator ground resolution at centre latitude, recomputed per
+zoom on the tile map (formula verified bit-for-bit against the standard constant), and
+the connector's identity comes from NetworkViewer's OWN vocabulary, read rather than
+guessed — same pavement width as links plus a thin muted dashed centreline, its rhythm
+deliberately distinct from the warn dash so identity can never read as failure. An
+element missing from the census renders at the floor width and stays selectable — the
+branch exists for honesty and was measured to never fire on real data.
+
+**Verification (two-stage: builder's own, then an independent refuter — 9 attacks, 1
+REFUTED + 1 prose correction).** The builder's evidence: 61 pins across two
+single-concern tests, every one mutation-verified with applied-mutation proof (including
+its own confession that its first pass had a substring-overlap bug in the mutation
+technique — the fix to the HARNESS, not the pins); the compiled actual source run against
+synthetic data in Node for the resolver semantics. The refuter then: proved the
+extraction exhaustively (17-input battery, zero divergence), verified the Mercator math
+bit-for-bit, confirmed overlay layers steal no clicks and the click-vs-drag tolerance has
+no unit mismatch, re-audited the 5,659-element census independently — and REFUTED one
+pin: the `refs.length > 0` doesNotMatch was blind to the respelling `if (refs.length)`,
+with NO positive backstop. Fixed by banning any read of `refs.length` in the tile map
+outright AND pinning the lookup→setSelected sequence in both handlers as an ordering; the
+refuter's exact bypass now trips two independent pins. Its prose finding also held: the
+SVG fallback's ribbons are computed at network-fit scale and `non-scaling-stroke` then
+holds their on-screen width constant under zoom — a deliberate perf design (~5,000
+polylines skip re-render per view tick), but the round's "parity" language overstated it;
+the comment now states the limit plainly (relative road width, not zoom-true ground
+width). One builder constraint slip, self-flagged: a single read-only `git status` to
+check for stray files. Named residuals: the first LIVE click on real geometry awaits an
+authenticated session (the geometry endpoints are auth-gated and nobody here logs in);
+links' lane-divider/chevron markings are NOT mirrored (a materially larger feature,
+named, not smuggled); the two format-fragile flat-weight pins keep their positive-pin
+backstops instead of a rewrite (the identity dash legitimately uses the 0.6 literal).
+Final: typecheck clean, contract **68/68** (+2 tests), production build passes.
