@@ -2076,8 +2076,15 @@ def artifact_path(job_id: str, kind: str) -> Path:
     elif kind == "layers_json":
         candidate = work_dir / LAYERS_JSON_FILENAME
     elif kind == "source_osm":
+        # Mirrors ``_run_genesis_job_locked``'s own resolution of this file —
+        # the record never carries a server path (see the module-level note by
+        # ``create_genesis_job``), so ``stored_as`` re-derived under
+        # ``job_dir`` is the only way back to it, on the runner's side and here.
         source = record.get("source_osm") or {}
-        candidate = Path(str(source.get("path") or ""))
+        stored_as = source.get("stored_as")
+        if not stored_as:
+            raise GenesisJobNotFoundError(f"Job {job_id} has no {kind!r} artifact.")
+        candidate = work_dir / str(stored_as)
     else:
         artifact = record.get("artifact") or {}
         filename = artifact.get(kind)

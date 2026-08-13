@@ -805,8 +805,18 @@ def download_artifact(
         path = genesis_jobs.artifact_path(job_id, kind)
     except genesis_jobs.GenesisJobNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    filename = path.name
+    if kind == "source_osm":
+        # On disk this is frozen under a fixed internal name (``source.osm``,
+        # ``services/genesis_jobs.py``'s ``frozen_osm``) so it can never collide
+        # with a side input in the same work dir. That name means nothing to the
+        # caller who uploaded it — the original upload filename is the honest
+        # one to hand back, the same way ``artifact_path`` already resolves this
+        # kind by re-deriving from the job record rather than trusting a path.
+        source = genesis_jobs.get_job(job_id).get("source_osm") or {}
+        filename = str(source.get("filename") or filename)
     return FileResponse(
-        path, media_type=_ARTIFACT_MEDIA_TYPES[kind], filename=path.name
+        path, media_type=_ARTIFACT_MEDIA_TYPES[kind], filename=filename
     )
 
 

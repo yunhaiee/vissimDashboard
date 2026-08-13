@@ -918,6 +918,47 @@ def test_an_unknown_job_and_an_unknown_artifact_kind_are_both_404(client: TestCl
     assert client.get("/api/genesis/jobs/deadbeef0000/artifact/inpx").status_code == 401
 
 
+def test_the_source_osm_artifact_downloads_the_frozen_upload(
+    client: TestClient, crossroads_osm_file: Path
+):
+    """B5/G-fix: ``artifact_path`` used to resolve this kind through
+    ``source.get("path")`` — a key ``create_genesis_job`` never writes (it only
+    ever writes ``filename``/``bytes``/``sha256``/``stored_as``, by the module's
+    own design note: the record crosses the HTTP boundary and must not carry a
+    server path). Every call therefore hit an empty ``Path("")``, was never a
+    file, and ``download_artifact`` 404'd unconditionally — despite
+    ``source_osm`` being a real entry in ``_ARTIFACT_MEDIA_TYPES`` and the
+    frontend's ``GenesisArtifactKind`` union. It must resolve the same way the
+    runner itself does: ``job_dir(job_id) / stored_as``.
+    """
+    headers = admin_headers()
+    staged = client.post(
+        "/api/genesis/uploads",
+        content=crossroads_osm_file.read_bytes(),
+        headers={"X-Filename": "cross.osm", **headers},
+    )
+    assert staged.status_code == 200, staged.text
+    token = staged.json()["token"]
+
+    started = client.post(
+        "/api/genesis/jobs", json={"upload_token": token, "name": "srcdl"}, headers=headers
+    )
+    assert started.status_code == 202, started.text
+    job_id = started.json()["id"]
+    _await_terminal(client, job_id)
+
+    # Authenticated like every other artifact kind — same reasoning as inpx.
+    assert client.get(f"/api/genesis/jobs/{job_id}/artifact/source_osm").status_code == 401
+
+    response = client.get(f"/api/genesis/jobs/{job_id}/artifact/source_osm", headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.content == crossroads_osm_file.read_bytes()
+    # The honest download name is the original upload's filename, not the
+    # fixed internal name (``source.osm``) the file is frozen under on disk —
+    # that name means nothing to the caller who uploaded ``cross.osm``.
+    assert 'filename="cross.osm"' in response.headers["content-disposition"]
+
+
 def test_a_bad_upload_is_refused_before_a_token_exists(client: TestClient):
     headers = admin_headers()
     for filename, body in (
@@ -1106,6 +1147,55 @@ def test_the_job_record_never_carries_an_absolute_server_path(
     assert str(workspace_root) not in blob
     assert "\\\\" not in blob.replace("\\n", ""), "a Windows path leaked into the record"
     assert not re.search(r"[A-Za-z]:[\\/]", blob), "a drive-letter path leaked into the record"
+
+
+def test_artifact_path_resolves_source_osm_via_stored_as(
+    workspace_root: Path, crossroads_osm_file: Path
+):
+    """Direct unit coverage of ``artifact_path("source_osm")`` itself, apart
+    from the HTTP layer: the record carries no ``path`` key (only ``stored_as``,
+    per the test just above), so this kind must resolve exactly like
+    ``_run_genesis_job_locked`` resolves the same file — ``job_dir(job_id) /
+    stored_as`` — not through a key the record never had.
+    """
+    record = _generate(crossroads_osm_file)
+
+    resolved = genesis_jobs.artifact_path(record["id"], "source_osm")
+    assert resolved == genesis_jobs.job_dir(record["id"]) / "source.osm"
+    assert resolved.read_bytes() == crossroads_osm_file.read_bytes()
+
+
+def test_artifact_path_refuses_a_source_osm_with_no_stored_as(workspace_root: Path):
+    """The not-found error survives the fix for a record that predates
+    ``stored_as`` or otherwise never got one — mirroring the ``else`` branch's
+    own "no {kind} artifact" guard for a missing named artifact.
+    """
+    job_id = uuid4().hex[:12]
+    genesis_jobs.job_dir(job_id).mkdir(parents=True, exist_ok=True)
+    genesis_jobs._upsert(
+        {
+            "id": job_id,
+            "workspace_id": workspaces.current_workspace_id(),
+            "name": "no-stored-as",
+            "status": genesis_jobs.STATUS_RUNNING,
+            "phase": genesis_jobs.PHASE_GATING,
+            "progress": 0.5,
+            "created_at": "2026-08-11T00:00:00+00:00",
+            "started_at": "2026-08-11T00:00:00+00:00",
+            "completed_at": None,
+            "submitted_by": "tester",
+            "options": {"exclude_service": False},
+            "source_osm": {"filename": "seed.osm", "bytes": 0, "sha256": ""},
+            "network": None,
+            "artifact": None,
+            "gate": None,
+            "publication": None,
+            "refusal": None,
+            "error": None,
+        }
+    )
+    with pytest.raises(genesis_jobs.GenesisJobNotFoundError):
+        genesis_jobs.artifact_path(job_id, "source_osm")
 
 
 # ---------------------------------------------------------------------------
