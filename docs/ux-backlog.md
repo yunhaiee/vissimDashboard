@@ -110,6 +110,12 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   (14) LAYOUT: adopt the Console's split — left rail = controls/history/verdict list, right =
   sticky map/network + detail. ALL of 9–14 fold into the #13 U-1-map unit (one rebuild of
   app/genesis/page.tsx rather than two); choice-hierarchy/stepper stays in the #14 mockup.
+  **#13 LANDED `5ba7210` (2026-08-13):** elaboration items 1+7 (tile map via server-side
+  WGS84 geojson + per-dataset dashboard georeference) and 9–14 (Console split, merged verdict
+  header, Skills table, three-color sweep), the region addenda and both live tweaks (tag-only
+  color, SVG ⓘ) shipped as one rebuild — narrative in DECISIONS 2026-08-13. Backend restart
+  required to activate the geojson endpoint (the SVG fallback covers until then, by design).
+  Remaining from the elaborations: items 6+8 = the approved **variant B** flow build (next).
 - [ ] **U-2 — Calibration-loop UI/UX enhancement.** Same feedback applied to the calibration loop
   surfaces (approval flow, anomaly→proposal→approve→re-run). Note: D4 (roadmap §5.D, professor's
   direction reversal) will change what the loop's proposals even look like — sequence the UX pass
