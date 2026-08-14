@@ -127,6 +127,22 @@ Direct user feedback, recorded verbatim in intent, details to follow from the us
   NAMED QUEUED UNIT from the same review: genesis tile map draws lines only — clickable
   components at 도식 parity = the item-8 shared-preview convergence, deliberately NOT in
   #18's shell scope.
+  **THE 2026-08-14 WAVE (#20–#26), all landed same day, live-review cadence across two
+  accounts:** #20 `17a65fe` lasso+editable vertex table, limit→button+hover reason,
+  per-page ? drawers; #21 `4e9f0dc` replay → dashboard run results (option A); #22
+  `eaa90a8` `/` lands on the project overview (no-project → create card only); mockup
+  `f00914a` four detail floor plans → **user chose D**; #23 `0159593` every generation
+  gets `/genesis/jobs/[id]` (map 65% left, verdict rail right, fix-approve navigates the
+  lineage), hub = list + 새 생성 modal; #24 `b39861c` overview 개요 title + inline picker
+  (ONE shared hook) + 2×2 cards + sidebar + icon; detail live passes `39796e0`/`cc30d16`
+  (거부됨 one word, meta/sha/문단/지도 heading hidden, findings fold at 6, artifact ↓
+  glyphs, list drops its card, LITERAL-black backdrops — the slate ramp remap was washing
+  overlays LIGHT, core-name-only grid cells); workspace_forbidden self-heal `9c973f8`;
+  **#25+#26 `c88fc34` (second account)**: top bar (account block + globe language menu +
+  book → new `/docs` fed by `lib/help-content.tsx`, the doctrine's ONE front door; per-page
+  ? retired, sidebar bottom empty), assistant chat = full-height right DRAWER that pushes
+  the page (Notion vocabulary), app-wide type floor up one notch, modal chips lose arrows.
+  Suite at wave end: contract 94/94, typecheck, build green.
   **#19 LANDED `4824790` (2026-08-13): the draft preview is clickable and width-true.**
   Click any link/connector in either genesis renderer → sky selection + detail strip
   (kind/id/name + the findings referencing it); finding↔map share ONE pinned resolver.

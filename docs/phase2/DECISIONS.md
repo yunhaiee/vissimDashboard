@@ -6493,3 +6493,25 @@ state, back link. Named residuals: the create flow needs login; backdrop-click c
 mutation-proven but was not literally clicked (pane tooling); hub row polling is NEW —
 the brief assumed it existed, the builder found it did not, and added it rather than
 letting a fresh job's row sit frozen (disclosed as an addition, not smuggled).
+
+## 2026-08-14 — the afternoon wave, closed across two accounts
+
+**Context.** The same live-review cadence continued on the user's second account after a
+usage-limit reset; this entry reconciles the records for what that session landed as one
+commit (`c88fc34`) plus the units this session had already committed the same day
+(#24 `b39861c`, the detail-page live passes `39796e0`/`cc30d16`).
+
+**What `c88fc34` holds (units #25 + #26 + a type-scale pass, verified on return: contract
+94/94, typecheck, production build green, tree clean).** ① The sidebar's bottom empties:
+the account block moves to a new top bar (`app-topbar-account`), the three language pills
+become a GLOBE menu, and a BOOK icon links to **`/docs`** — a new documentation page fed
+by `lib/help-content.tsx`, which becomes the ONE front door for the doctrine prose that
+#20's per-page ? drawers had collected (the per-page PageHelp affordances retired with
+their entries migrated, pins moved with the strings). ② The assistant chat stops being a
+floating panel: it is a full-height right-side DRAWER (Notion vocabulary) that PUSHES the
+page rather than floating over it, resizable from its left edge, width-only persistence.
+③ Every letter steps up a size — the app-wide type floor rose one notch (the 22px-h1 /
+10-14px-everything-else gap this file complained about on 08-12 is finally closed from
+the bottom), which is why the commit touches nearly every page. ④ The modal's cross-link
+chips lost their arrows per the user's instruction. The other session left no narrative;
+this entry is the reconciliation, written from the diff, not from memory of intentions.
