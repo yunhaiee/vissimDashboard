@@ -1,10 +1,11 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import NetworkDiffView from "@/components/NetworkDiffView";
 import NetworkSearchBox, { type NetworkSearchSelection } from "@/components/NetworkSearchBox";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import {
@@ -41,6 +42,17 @@ import { buildVehicleInputStacks, vehicleInputCompositionLabel } from "@/lib/veh
 const NetworkViewer = dynamic(() => import("@/components/NetworkViewer"), { ssr: false });
 
 const MAX_SELECTED_NODES = 6;
+
+// Unit #27 (backlog item 8, 2026-08-14): 변경 비교 stopped being its own
+// sidebar entry and became a MODE of this page (the mockup's own "+비교"
+// annotation). The mode lives in the URL, not in component state, so a deep
+// link (or the browser's own back/forward) lands on the right one without
+// this page having to remember anything -- the same reason the approval-card
+// focus above is URL-carried rather than an in-memory channel. Anything other
+// than the literal "diff" token means 네트워크, which is what a bare /network
+// (no ?mode at all) has always meant.
+type NetworkMode = "network" | "diff";
+const NETWORK_MODE_PARAM = "mode";
 
 // `useSearchParams` makes the client tree up to the nearest Suspense boundary
 // client-rendered (Next 16 docs, app/api-reference/functions/use-search-params
@@ -125,6 +137,25 @@ function NetworkPageContent() {
   // reload-safe and shareable; the ids are re-resolved against the network
   // geometry this page already fetches, so nothing extra is fetched.
   const searchParams = useSearchParams();
+  const router = useRouter();
+  // The mode pill's own state -- read straight from the URL every render
+  // rather than mirrored into useState, so there is no copy that could drift
+  // from what the address bar actually says (the same reason urlFocus below
+  // is derived, not stored).
+  const mode: NetworkMode = searchParams.get(NETWORK_MODE_PARAM) === "diff" ? "diff" : "network";
+  const setMode = useCallback(
+    (next: NetworkMode) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (next === "diff") params.set(NETWORK_MODE_PARAM, "diff");
+      else params.delete(NETWORK_MODE_PARAM);
+      const query = params.toString();
+      // push, not replace: switching modes is a real navigation the back
+      // button should undo, the same way following the approval card's focus
+      // link here is.
+      router.push(query ? `/network?${query}` : "/network");
+    },
+    [router, searchParams],
+  );
   const urlFocus = useMemo(() => parseNetworkFocus(searchParams), [searchParams]);
   // Carries the URL's per-click nonce (lib/networkFocus.ts's
   // FOCUS_NONCE_PARAM), which is what makes "same target, asked again" a
@@ -522,6 +553,7 @@ function NetworkPageContent() {
               )}
             </p>
           </div>
+          <NetworkModeToggle mode={mode} onChange={setMode} />
         </div>
         <div className="mt-4 flex flex-wrap items-end justify-between gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
@@ -540,130 +572,188 @@ function NetworkPageContent() {
         </div>
       </section>
 
-      {/* Banner colour is NetworkViewer.tsx's FOCUS_FLASH literal. Tailwind
-          arbitrary values are compiled from the literal class string, so it
-          cannot be imported — and importing anything from NetworkViewer here
-          would defeat its `ssr: false` dynamic import above. Keep the two in
-          step by hand; both carry the same "#00c2ff" marker. */}
-      {(searchSelection || activeFocus) && (
-        <div
-          data-testid="network-focus-banner"
-          className="mx-1 flex flex-wrap items-center gap-2 rounded-lg border border-[#00c2ff]/50 bg-[#00c2ff]/10 px-3 py-2 text-[14px] text-slate-600"
-        >
-          <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-full bg-[#00c2ff]" />
-          <span className="font-semibold text-slate-700">
-            {searchSelection
-              ? t("검색 결과 강조", "Search result highlighted", "検索結果をハイライト")
-              : t("승인 대상 강조", "Approval target highlighted", "承認対象をハイライト")}
-          </span>
-          {searchSelection ? (
-            <span className="text-slate-500">{searchHitDisplayLabel(searchSelection.hit, t)}</span>
-          ) : (
-            focusBanner && <span className="text-slate-500">{focusBanner}</span>
-          )}
-          <button
-            type="button"
-            onClick={searchSelection ? clearSearchSelection : dismissFocus}
-            className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[13px] font-medium text-slate-600 transition hover:text-slate-900"
-          >
-            {t("강조 해제", "Clear highlight", "ハイライト解除")}
-          </button>
-        </div>
-      )}
-
-      <div className="relative h-[70vh] min-h-[420px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)]">
-        {error ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
-            <p className="text-[15px] text-slate-400">{error}</p>
-            <button
-              type="button"
-              onClick={() => setReloadNonce((nonce) => nonce + 1)}
-              className="rounded-lg border border-slate-300/70 bg-surface/90 px-3 py-1.5 text-[14px] font-semibold text-slate-700 transition hover:bg-surface"
+      {/* 비교 mode swaps the viewer body for NetworkDiffView wholesale (unit
+          #27) -- the diagram, its focus banner and its selection chips all
+          belong to 네트워크 mode specifically, so they unmount rather than
+          sitting stale/hidden behind the diff view. NetworkPageContent itself
+          stays mounted either way, so the node/link/element SELECTION above
+          (selectedNodeIds/selectedLinks/selectedElements) and the network
+          fetch survive a round trip through 비교 untouched; only this JSX and
+          NetworkDiffView's own internal picker state reset on remount. See
+          the unit's report for why that split is the right one: it is what
+          keeps 비교 mode from fetching the session list before anyone asks to
+          see it. */}
+      {mode === "network" ? (
+        <>
+          {/* Banner colour is NetworkViewer.tsx's FOCUS_FLASH literal. Tailwind
+              arbitrary values are compiled from the literal class string, so it
+              cannot be imported — and importing anything from NetworkViewer here
+              would defeat its `ssr: false` dynamic import above. Keep the two in
+              step by hand; both carry the same "#00c2ff" marker. */}
+          {(searchSelection || activeFocus) && (
+            <div
+              data-testid="network-focus-banner"
+              className="mx-1 flex flex-wrap items-center gap-2 rounded-lg border border-[#00c2ff]/50 bg-[#00c2ff]/10 px-3 py-2 text-[14px] text-slate-600"
             >
-              {t("다시 시도", "Retry")}
-            </button>
-          </div>
-        ) : loading || !network ? (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <p className="text-[15px] text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
-          </div>
-        ) : (
-          // zoomToBbox carries the focus nonce as well as the four numbers:
-          // NetworkViewer keys its fit-to-region effect off a scalar built
-          // from them, and on a re-trigger the numbers are by definition
-          // unchanged — the nonce is the only thing that says "fly there
-          // again". `focusFlash`/`zoomToBbox` are the COMBINED values
-          // (search selection takes precedence over the URL-sourced
-          // approval focus) computed above.
-          <NetworkViewer
-            network={network}
-            selectedNodeIds={selectedNodeIds}
-            selectedLinkIds={selectedLinks.map((link) => link.id)}
-            selectedElements={selectedElements}
-            onNodeClick={handleNodeClick}
-            onLinkClick={handleLinkClick}
-            onElementClick={handleElementClick}
-            onBoxSelect={handleBoxSelect}
-            onBackgroundClick={clearAllSelection}
-            focusFlash={focusFlash}
-            zoomToBbox={zoomToBbox}
-          />
-        )}
-      </div>
-
-      {/* Selection chips (v2 UX unit, 2026-07-29) — the unified node/link/
-          element selection, each removable on its own, plus one "clear all".
-          Reuses the rounded-pill chip idiom app/dashboard/page.tsx's
-          SelectedIntersectionPanel already established for nodes. */}
-      {(selectedNodeIds.length > 0 || selectedLinks.length > 0 || selectedElements.length > 0) && (
-        <div className="mx-1 flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200 bg-surface/70 px-3 py-2">
-          {selectedNodeIds.map((nodeId) => {
-            const nodeName = network?.nodes.find((candidate) => candidate.id === nodeId)?.name || `Node ${nodeId}`;
-            return (
+              <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-full bg-[#00c2ff]" />
+              <span className="font-semibold text-slate-700">
+                {searchSelection
+                  ? t("검색 결과 강조", "Search result highlighted", "検索結果をハイライト")
+                  : t("승인 대상 강조", "Approval target highlighted", "承認対象をハイライト")}
+              </span>
+              {searchSelection ? (
+                <span className="text-slate-500">{searchHitDisplayLabel(searchSelection.hit, t)}</span>
+              ) : (
+                focusBanner && <span className="text-slate-500">{focusBanner}</span>
+              )}
               <button
-                key={`node-${nodeId}`}
                 type="button"
-                onClick={() => setSelectedNodeIds((prev) => prev.filter((id) => id !== nodeId))}
-                className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                onClick={searchSelection ? clearSearchSelection : dismissFocus}
+                className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[13px] font-medium text-slate-600 transition hover:text-slate-900"
               >
-                {t("노드", "Node")} {nodeName} ×
+                {t("강조 해제", "Clear highlight", "ハイライト解除")}
               </button>
-            );
-          })}
-          {selectedLinks.map((link) => (
-            <button
-              key={`link-${link.id}`}
-              type="button"
-              onClick={() => removeLinkSelection(link.id)}
-              className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-            >
-              {linkKindLabel(link.isConnector, t)} {link.name || link.id} ×
-            </button>
-          ))}
-          {selectedElements.map((element) => (
-            <button
-              key={`el-${element.type}-${element.id}`}
-              type="button"
-              onClick={() => removeElementSelection(element)}
-              className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-            >
-              {elementTypeLabel(element.type, t)} {element.name || element.id} ×
-            </button>
-          ))}
+            </div>
+          )}
+
+          <div className="relative h-[70vh] min-h-[420px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)]">
+            {error ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+                <p className="text-[15px] text-slate-400">{error}</p>
+                <button
+                  type="button"
+                  onClick={() => setReloadNonce((nonce) => nonce + 1)}
+                  className="rounded-lg border border-slate-300/70 bg-surface/90 px-3 py-1.5 text-[14px] font-semibold text-slate-700 transition hover:bg-surface"
+                >
+                  {t("다시 시도", "Retry")}
+                </button>
+              </div>
+            ) : loading || !network ? (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <p className="text-[15px] text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
+              </div>
+            ) : (
+              // zoomToBbox carries the focus nonce as well as the four numbers:
+              // NetworkViewer keys its fit-to-region effect off a scalar built
+              // from them, and on a re-trigger the numbers are by definition
+              // unchanged — the nonce is the only thing that says "fly there
+              // again". `focusFlash`/`zoomToBbox` are the COMBINED values
+              // (search selection takes precedence over the URL-sourced
+              // approval focus) computed above.
+              <NetworkViewer
+                network={network}
+                selectedNodeIds={selectedNodeIds}
+                selectedLinkIds={selectedLinks.map((link) => link.id)}
+                selectedElements={selectedElements}
+                onNodeClick={handleNodeClick}
+                onLinkClick={handleLinkClick}
+                onElementClick={handleElementClick}
+                onBoxSelect={handleBoxSelect}
+                onBackgroundClick={clearAllSelection}
+                focusFlash={focusFlash}
+                zoomToBbox={zoomToBbox}
+              />
+            )}
+          </div>
+
+          {/* Selection chips (v2 UX unit, 2026-07-29) — the unified node/link/
+              element selection, each removable on its own, plus one "clear all".
+              Reuses the rounded-pill chip idiom app/dashboard/page.tsx's
+              SelectedIntersectionPanel already established for nodes. */}
+          {(selectedNodeIds.length > 0 || selectedLinks.length > 0 || selectedElements.length > 0) && (
+            <div className="mx-1 flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200 bg-surface/70 px-3 py-2">
+              {selectedNodeIds.map((nodeId) => {
+                const nodeName = network?.nodes.find((candidate) => candidate.id === nodeId)?.name || `Node ${nodeId}`;
+                return (
+                  <button
+                    key={`node-${nodeId}`}
+                    type="button"
+                    onClick={() => setSelectedNodeIds((prev) => prev.filter((id) => id !== nodeId))}
+                    className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                  >
+                    {t("노드", "Node")} {nodeName} ×
+                  </button>
+                );
+              })}
+              {selectedLinks.map((link) => (
+                <button
+                  key={`link-${link.id}`}
+                  type="button"
+                  onClick={() => removeLinkSelection(link.id)}
+                  className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                >
+                  {linkKindLabel(link.isConnector, t)} {link.name || link.id} ×
+                </button>
+              ))}
+              {selectedElements.map((element) => (
+                <button
+                  key={`el-${element.type}-${element.id}`}
+                  type="button"
+                  onClick={() => removeElementSelection(element)}
+                  className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                >
+                  {elementTypeLabel(element.type, t)} {element.name || element.id} ×
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={clearAllSelection}
+                className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[13px] font-medium text-slate-600 transition hover:text-slate-900"
+              >
+                {t("모두 지우기", "Clear all")}
+              </button>
+            </div>
+          )}
+          {selectionNotice && (
+            <p className="px-1 text-[13px] text-amber-600" role="status">
+              {selectionNotice}
+            </p>
+          )}
+        </>
+      ) : (
+        <NetworkDiffView />
+      )}
+    </div>
+  );
+}
+
+// Two-pill mode header (unit #27, backlog item 8 -- the mockup's own "+비교"
+// annotation, absorbing what used to be /network-diff's own sidebar entry).
+// aria-pressed matches this app's existing segmented-control idiom
+// (app/dashboard/page.tsx's MapViewToggle); the SELECTED pill takes the sky
+// treatment AppShell.tsx's PipelineStepper already uses for "this is the
+// active one" (docs/ux-backlog.md, MOCKUP DECISIONS 2026-08-13 -- sky is
+// selection), so this toggle introduces no fourth hue under the three-color
+// rule. The unselected pill is plain mono, the same rule PipelineStepper
+// follows for every non-current stage.
+function NetworkModeToggle({ mode, onChange }: { mode: NetworkMode; onChange: (mode: NetworkMode) => void }) {
+  const { t } = useLanguage();
+  const options: Array<{ key: NetworkMode; label: string }> = [
+    { key: "network", label: t("네트워크", "Network", "ネットワーク") },
+    { key: "diff", label: t("변경 비교", "Diff", "変更比較") },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label={t("네트워크 화면 모드", "Network view mode", "ネットワーク画面モード")}
+      className="flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-[14px] font-medium"
+    >
+      {options.map((option) => {
+        const active = option.key === mode;
+        return (
           <button
+            key={option.key}
             type="button"
-            onClick={clearAllSelection}
-            className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[13px] font-medium text-slate-600 transition hover:text-slate-900"
+            aria-pressed={active}
+            onClick={() => onChange(option.key)}
+            className={`flex h-full items-center rounded-md px-3 transition-colors ${
+              active ? "bg-sky-50 text-sky-600" : "text-slate-500 hover:text-slate-800"
+            }`}
           >
-            {t("모두 지우기", "Clear all")}
+            {option.label}
           </button>
-        </div>
-      )}
-      {selectionNotice && (
-        <p className="px-1 text-[13px] text-amber-600" role="status">
-          {selectionNotice}
-        </p>
-      )}
+        );
+      })}
     </div>
   );
 }

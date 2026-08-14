@@ -163,6 +163,12 @@ const ROUTE_STAGE: Readonly<Record<string, PipelineStage>> = {
   // belongs to the same stage even though it is not its own menu entry.
   "/genesis/region": "network",
   "/network": "network",
+  // No sidebar entry of its own any more (unit #27 below absorbed it into
+  // /network's 비교 mode), but the route itself still exists as a redirect
+  // (app/network-diff/page.tsx) -- and the stepper renders BEFORE that
+  // redirect's effect fires, off the URL the browser is actually on. Dropping
+  // this line would blank the stepper for that one frame; the redirect target
+  // deserves an honest stage during its own flash as much as any other route.
   "/network-diff": "network",
   "/genesis/demand": "data",
   "/genesis/phases": "data",
@@ -221,13 +227,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       stage: "network",
       ordinal: "①",
       title: t("네트워크", "Network", "ネットワーク"),
+      // Unit #27 (backlog item 8, 2026-08-14): the mockup's own "+비교"
+      // annotation is done -- 변경 비교 is a MODE of the network view now
+      // (components/NetworkDiffView.tsx, toggled from app/network/page.tsx's
+      // own two-pill header), not a menu entry of its own. /network-diff still
+      // exists and still works (it redirects into that mode), so old links do
+      // not break; it is simply no longer one of this group's rows.
       links: [
         { href: "/genesis", label: t("생성", "Build", "生成"), icon: "genesis" },
         { href: "/network", label: t("네트워크 뷰", "Network View", "ネットワークビュー"), icon: "network" },
-        // The mockup folded this into the view above as a "+비교" mode. That is
-        // a change to the network PAGE, not to the menu, so the route keeps its
-        // own entry here and the merge stays open (docs/ux-backlog.md item 8).
-        { href: "/network-diff", label: t("변경 비교", "Diff", "変更比較"), icon: "network-diff" },
       ],
     },
     {

@@ -392,7 +392,11 @@ contractTest("#18: the sidebar is the pipeline — selector on top, four numbere
   const networkGroup = sliceBetween(shell, 'ordinal: "①"', 'ordinal: "②"');
   pin.match(networkGroup, /href: "\/genesis"/, "expected 생성 under ① 네트워크");
   pin.match(networkGroup, /href: "\/network"/, "expected the network view under ① 네트워크");
-  pin.match(networkGroup, /href: "\/network-diff"/, "expected the diff view under ① 네트워크");
+  // RETIRED (unit #27, backlog item 8, 2026-08-14): 변경 비교 stopped being a
+  // row of this group -- the mockup's own "+비교" annotation, user-ordered --
+  // and became a mode of /network instead. See "unit #27: 변경 비교 is a mode
+  // of /network, not its own route" below for what replaced this pin.
+  pin.doesNotMatch(networkGroup, /href: "\/network-diff"/, "expected the diff view's OWN row to be gone from ① 네트워크 -- it is a mode of the network view now");
 
   // The half of variant B that actually moves something: both screens were
   // reachable only from the genesis hub before this unit.
@@ -1607,8 +1611,12 @@ contractTest("P4: every admin-page string carries its own Japanese", (pin) => {
 
 contractTest("2.4: the diff view reads ONE endpoint, and the backend guards it", (pin) => {
   const api = read("lib/api.ts");
-  const page = read("app/network-diff/page.tsx");
-  const shell = read("components/AppShell.tsx");
+  // MOVED (unit #27, backlog item 8, 2026-08-14): this used to be
+  // app/network-diff/page.tsx. It is components/NetworkDiffView.tsx now, the
+  // body transplanted verbatim, which is why every pin below still reads
+  // unchanged -- "the page" in their messages means this component's markup,
+  // exactly as it did when it was the whole page.
+  const page = read("components/NetworkDiffView.tsx");
   // The backend half of the wiring, read across the repo root exactly the way
   // the shared/mrwa-validation-criteria.json pin above does. The endpoint path
   // and the ownership call are the two facts this page cannot check from its
@@ -1713,9 +1721,10 @@ contractTest("2.4: the diff view reads ONE endpoint, and the backend guards it",
   // PositionScope.reported is false and nothing may flip it.
   pin.doesNotMatch(backendRouter, /reported\s*=\s*True|"reported":\s*True/, "the backend must never set PositionScope.reported");
 
-  // --- shell ---------------------------------------------------------------
-  pin.match(shell, /href: "\/network-diff"/, "expected the diff view in the top navigation");
-  pin.match(shell, /icon: "network-diff"/, "expected the diff view to carry its own nav icon");
+  // --- shell -----------------------------------------------------------
+  // RETIRED (unit #27, 2026-08-14): the diff view no longer has its own
+  // top-nav row or nav icon -- see "unit #27: 변경 비교 is a mode of /network,
+  // not its own route" below for what replaced these two pins.
 });
 
 contractTest("2.4: every diff-view string carries its own Japanese", (pin) => {
@@ -1726,7 +1735,10 @@ contractTest("2.4: every diff-view string carries its own Japanese", (pin) => {
   // other road: every call is the three-argument form, so no string on it
   // depends on a generated file at all. Pinned so a later edit cannot quietly
   // drop back to two arguments and lose ja.
-  const page = read("app/network-diff/page.tsx");
+  //
+  // MOVED (unit #27, 2026-08-14): components/NetworkDiffView.tsx now, not
+  // app/network-diff/page.tsx -- see the sibling "2.4" contractTest above.
+  const page = read("components/NetworkDiffView.tsx");
 
   pin.doesNotMatch(
     page,
@@ -1746,6 +1758,93 @@ contractTest("2.4: every diff-view string carries its own Japanese", (pin) => {
     /count=([5-9]\d|\d{3,})/,
     "expected at least 50 t() calls on the diff view -- fewer means this extraction went stale, not that the page shrank",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #27 -- backlog item 8's last half: 변경 비교 stops being its own sidebar
+// entry and becomes a MODE of /network (the mockup's own "+비교" annotation,
+// user-ordered 2026-08-14). The diff view's own machinery (endpoint, tokens,
+// POSITION doctrine) is unchanged and re-pinned above, verbatim, against its
+// new home components/NetworkDiffView.tsx -- everything below is the NEW
+// surface: the mode toggle, the URL, and the redirect that keeps old
+// /network-diff links working.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #27: 변경 비교 is a mode of /network, not its own route", (pin) => {
+  // app/network/page.tsx is CRLF (same quirk as app/dashboard/page.tsx --
+  // see the block comment further down this file); normalize before matching
+  // multi-line patterns so a line-ending quirk cannot itself decide the pin.
+  const networkPage = read("app/network/page.tsx").replace(/\r\n/g, "\n");
+  const redirectPage = read("app/network-diff/page.tsx");
+  const shell = read("components/AppShell.tsx");
+
+  // --- the mode lives in the URL, not in component state -------------------
+  pin.match(networkPage, /type NetworkMode = "network" \| "diff";/, "expected an explicit two-state mode type");
+  pin.match(
+    networkPage,
+    /const mode: NetworkMode = searchParams\.get\(NETWORK_MODE_PARAM\) === "diff" \? "diff" : "network";/,
+    "expected the mode to be READ from the URL every render, not mirrored into its own useState",
+  );
+  pin.match(
+    networkPage,
+    /router\.push\(query \? `\/network\?\$\{query\}` : "\/network"\);/,
+    "expected switching modes to push a new URL, so the browser's back/forward can move between them",
+  );
+
+  // --- the pills themselves --------------------------------------------------
+  pin.match(networkPage, /function NetworkModeToggle\(/, "expected a dedicated mode-pill component");
+  pin.match(networkPage, /aria-pressed=\{active\}/, "expected the mode pills to be real aria-pressed toggle buttons");
+  pin.match(
+    networkPage,
+    /active \? "bg-sky-50 text-sky-600" : "text-slate-500 hover:text-slate-800"/,
+    "expected the selected pill to take the sky selection treatment PipelineStepper already established -- no fourth hue",
+  );
+  pin.match(
+    networkPage,
+    /<NetworkModeToggle mode=\{mode\} onChange=\{setMode\} \/>/,
+    "expected the toggle to actually be wired into the page header, not just defined",
+  );
+
+  // --- 비교 mode renders NetworkDiffView in place of the viewer body --------
+  pin.match(
+    networkPage,
+    /mode === "network" \? \(/,
+    "expected the viewer body (diagram, focus banner, selection chips) to be conditional on mode",
+  );
+  pin.match(
+    networkPage,
+    /\) : \(\s*<NetworkDiffView \/>\s*\)/,
+    "expected 비교 mode to swap in NetworkDiffView where the viewer body was",
+  );
+
+  // --- NetworkDiffView has exactly one consumer -----------------------------
+  // (plus the redirect below, which deliberately does NOT import it -- a
+  // redirect that rendered the view itself would be a second consumer and
+  // would defeat the whole point of moving the fetch-triggering component
+  // behind a real navigation).
+  pin.match(
+    networkPage,
+    /import NetworkDiffView from "@\/components\/NetworkDiffView";/,
+    "expected /network to be the one screen that imports the diff view",
+  );
+  // (A comment on the redirect page NAMES the component for orientation --
+  // this checks for an actual import or JSX usage, not the word.)
+  pin.doesNotMatch(
+    redirectPage,
+    /import\s+NetworkDiffView|<NetworkDiffView/,
+    "expected the /network-diff redirect to import nothing from the diff view -- it forwards the BROWSER, not the component",
+  );
+
+  // --- /network-diff itself is a plain client redirect ----------------------
+  pin.match(redirectPage, /router\.replace\("\/network\?mode=diff"\);/, "expected /network-diff to redirect into the network view's diff mode");
+  pin.doesNotMatch(
+    redirectPage,
+    /fetchNetworkDiff|fetchAgentDownloads/,
+    "expected the redirect page to fetch nothing itself -- all of that lives in NetworkDiffView now",
+  );
+
+  // --- the redirect target still gets an honest pipeline stage --------------
+  pin.match(shell, /"\/network-diff": "network",/, "expected ROUTE_STAGE to still map the redirect route while it is in flight");
 });
 
 // Real behaviour, not a source pin: the open-redirect guard is the one piece of

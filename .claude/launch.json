@@ -19,7 +19,8 @@
         "-Command",
         "Set-Location 'C:\\Users\\user\\Documents\\GitHub\\vissimDashboard\\frontend'; & npm.cmd run dev"
       ],
-      "port": 3000
+      "port": 3000,
+      "autoPort": true
     },
     {
       "name": "backend-mac",
