@@ -1435,9 +1435,13 @@ contractTest("U-2-core: the reviewer's optional reason reaches the SAME approve/
     /onChange=\{\(event\) => setReason\(event\.target\.value\.slice\(0, APPROVAL_REASON_MAX_CHARS\)\)\}/,
     "expected a defensive slice to the cap on every keystroke, independent of the input's own maxLength",
   );
-  // The live counter near the limit, and its amber warning as the value
-  // approaches the cap (reusing this card's existing amber-for-warning
-  // color, not a new one -- see the warnings block above it).
+  // The live counter near the limit, and its emphasis as the value
+  // approaches the cap. Retargeted by U-2 (the drawer's Console-vocabulary
+  // pass, 2026-08-14): this used to reuse the card's amber-for-warning
+  // color, which the app settled as banned app-wide (dashboard-contract.test.ts's
+  // "U-1: three accent colours" test, 2026-08-13 -- rose/emerald/sky are the
+  // only three accents). Nearing the cap is told apart by WEIGHT now, never a
+  // fourth hue.
   pin.match(
     floatingAssistant,
     /\{reason\.length\}\/\{APPROVAL_REASON_MAX_CHARS\}/,
@@ -1445,8 +1449,13 @@ contractTest("U-2-core: the reviewer's optional reason reaches the SAME approve/
   );
   pin.match(
     floatingAssistant,
-    /reasonNearCap \? "text-amber-600" : "text-slate-400"/,
-    "expected the counter to turn amber as the reason nears the cap",
+    /reasonNearCap \? "font-semibold text-slate-800" : "text-slate-400"/,
+    "expected the counter to gain weight (never a color) as the reason nears the cap",
+  );
+  pin.doesNotMatch(
+    floatingAssistant,
+    /reasonNearCap[\s\S]{0,10}amber/,
+    "the near-cap counter must never reintroduce amber -- three-color rule",
   );
 
   // The reason reaches BOTH Run and Cancel -- the backend records it into
@@ -1490,6 +1499,100 @@ contractTest("U-2-core: the reviewer's optional reason reaches the SAME approve/
     floatingAssistant,
     /\{ session_id: approval\.sessionId, approval_id: approval\.approvalId, approved, reason \}/,
     "expected the actual approve/decline POST body to carry the reason",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit U-2 — the assistant drawer's Console-vocabulary pass: one
+// authoritative approval surface, and the three-color rule enforced inside
+// the drawer.
+// ---------------------------------------------------------------------------
+
+contractTest("U-2: an approval renders on exactly one surface -- the card, never the step log", (pin) => {
+  const floatingAssistant = read("components/FloatingAssistant.tsx");
+
+  // THE REMOVED DUPLICATE: AgentStepNarration used to print its own
+  // "(승인 대기)" status chip on a "pending_approval" step, restating the
+  // exact fact AgentApprovalCard states as its own headline a few lines
+  // below in the same message. `withoutComments` is required -- this unit's
+  // own doc comment on AgentStepNarration legitimately explains the removed
+  // pattern while naming it, and a raw doesNotMatch would fire on that
+  // explanation forever.
+  pin.doesNotMatch(
+    withoutComments(floatingAssistant),
+    /step\.status === "pending_approval"/,
+    "single-surface approval rule: a step must not branch on pending_approval to render its own status chip -- AgentApprovalCard is the one authoritative surface for an approval's state",
+  );
+  // The positive half: the step's own summary text still renders (the
+  // narration is not deleted, only its duplicate status suffix is), and the
+  // "error" suffix -- a DIFFERENT concern (a failed step, not a paused one) --
+  // survives untouched.
+  pin.match(
+    floatingAssistant,
+    /\{index \+ 1\}\. \{step\.summary\}/,
+    "expected the step narration to keep its own per-step summary line",
+  );
+  pin.match(
+    floatingAssistant,
+    /step\.status === "error" && \(/,
+    "expected the step narration's error suffix to survive -- it is a different concern from an approval's status",
+  );
+  // The card remains the single place an approval's state is announced.
+  // `withoutComments` is required: this unit's own doc comment on
+  // AgentStepNarration (above) legitimately quotes this exact headline while
+  // explaining what moved, and a raw match would pass even if the LIVE
+  // headline were deleted, off the comment alone.
+  pin.match(
+    withoutComments(floatingAssistant),
+    /실행 전 확인이 필요합니다/,
+    "expected AgentApprovalCard's own headline to remain the one place an approval's pending state is announced",
+  );
+});
+
+contractTest("U-2: the drawer's Console-vocabulary pass -- three-color rule, unified selection chips, 13px floor", (pin) => {
+  const floatingAssistant = read("components/FloatingAssistant.tsx");
+
+  // THREE-COLOR RULE: amber was never one of the three accents (rose/emerald/
+  // sky -- dashboard-contract.test.ts's "U-1: three accent colours" test,
+  // 2026-08-13), and this drawer carried seven amber call sites before this
+  // pass. `withoutComments` because this file's own doc comments now narrate
+  // the removed amber usages while explaining the fix.
+  pin.doesNotMatch(
+    withoutComments(floatingAssistant),
+    /(?:border|bg|text|ring|from|via|to)-amber-/,
+    "the assistant drawer must carry no amber-family class -- warn/notice states render mono with a heavier hairline",
+  );
+  // ...and no raw Tailwind blue either: links, chips and "active" fills take
+  // either the app's sky selection/active accent or the neutral ink ramp,
+  // never a fourth ad-hoc hue that is neither.
+  pin.doesNotMatch(
+    withoutComments(floatingAssistant),
+    /(?:border|bg|text|ring|from|via|to)-blue-\d/,
+    "the assistant drawer must carry no raw Tailwind blue -- selection/active takes sky, everything else mono",
+  );
+
+  // DEDUPED SELECTION CHIP: the header's page-context pills and the
+  // welcome-screen summary card used to render the SAME selection (dataset,
+  // scenarios, nodes, links, elements) two different ways -- one mono, one
+  // blue. Both now share one constant, so they cannot drift apart again.
+  const selectionChipUseCount = (floatingAssistant.match(/className=\{SELECTION_CHIP_CLASS\}/g) ?? []).length;
+  pin.match(
+    `count=${selectionChipUseCount}`,
+    /^count=2$/,
+    "expected both page-context chip renderers (the header pills and the welcome-screen summary) to share the one SELECTION_CHIP_CLASS constant",
+  );
+  pin.match(
+    floatingAssistant,
+    /const SELECTION_CHIP_CLASS = "rounded-full border border-sky-200 bg-sky-50 px-2 py-0\.5 text-\[13px\] font-semibold text-sky-600";/,
+    "expected the shared selection chip to use the app's established sky selection accent (AppShell's own step-indicator recipe)",
+  );
+
+  // TYPE FLOOR: unit #25/#26 raised the app-wide floor to 13px -- nothing
+  // under it may survive inside the drawer.
+  pin.doesNotMatch(
+    withoutComments(floatingAssistant),
+    /text-\[(?:[1-9]|10|11|12)(?:\.\d+)?px\]/,
+    "no text size under the 13px app-wide floor may survive inside the assistant drawer",
   );
 });
 

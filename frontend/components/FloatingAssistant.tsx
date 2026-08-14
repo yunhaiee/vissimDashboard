@@ -1178,7 +1178,7 @@ export default function FloatingAssistant() {
                     key={starter}
                     type="button"
                     onClick={() => setPrompt(starter)}
-                    className="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-left text-[14px] font-medium leading-5 text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                    className="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-left text-[14px] font-medium leading-5 text-slate-600 transition hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900"
                   >
                     {starter}
                   </button>
@@ -1294,7 +1294,7 @@ function FloatingChatMessage({
       <div
         className={
           isUser
-            ? "max-w-[86%] rounded-lg bg-accent px-3 py-2 text-[15px] leading-6 text-white shadow-sm selection:bg-surface selection:text-blue-700"
+            ? "max-w-[86%] rounded-lg bg-accent px-3 py-2 text-[15px] leading-6 text-white shadow-sm selection:bg-surface selection:text-sky-700"
             : "max-w-[94%] rounded-lg border border-slate-200 bg-surface px-3 py-2 text-[15px] leading-6 text-slate-800 shadow-sm"
         }
       >
@@ -1355,9 +1355,19 @@ function FloatingChatMessage({
 // M1.4 agent-mode narration: a compact, text-led log of the read-only
 // agent's steps — small muted lines, no icons or per-step spinners. Status
 // only renders when a step failed; a successful step is just its summary.
-// M2.3 adds "pending_approval": the step that paused for a write approval —
-// rendered with the same neutral tone as a plain step (not the red error
-// style), since it is expected/normal, not a failure.
+//
+// SINGLE-SURFACE APPROVAL RULE (U-2 dedup, 2026-08-14): a "pending_approval"
+// step used to ALSO print "(승인 대기)" here, in the same message that renders
+// AgentApprovalCard a few lines below FloatingChatMessage's own JSX — the
+// audit for this unit found the same fact ("this turn is waiting on your
+// decision") stated on two surfaces: this narration line and the card's own
+// "실행 전 확인이 필요합니다" headline (which then goes on to own the entire
+// decision -- actions, warnings, the reason field, Run/Cancel). The rule
+// going forward: AN APPROVAL RENDERS ON EXACTLY ONE SURFACE, THE CARD. A step
+// that paused for one is narrated like any other step -- its own `summary`
+// text already says what it was about to do -- and carries no second status
+// chip repeating what the card two lines down already owns. Do not
+// reintroduce a suffix here keyed off `step.status === "pending_approval"`.
 function AgentStepNarration({ steps }: { steps: AgentStep[] }) {
   const { t } = useLanguage();
   return (
@@ -1367,9 +1377,6 @@ function AgentStepNarration({ steps }: { steps: AgentStep[] }) {
           {index + 1}. {step.summary}
           {step.status === "error" && (
             <span className="ml-1 font-semibold text-rose-600">({t("오류", "error", "エラー")})</span>
-          )}
-          {step.status === "pending_approval" && (
-            <span className="ml-1 font-semibold text-slate-500">({t("승인 대기", "awaiting approval", "承認待ち")})</span>
           )}
         </p>
       ))}
@@ -1439,7 +1446,7 @@ function AgentRunDashboardHint({ steps }: { steps?: AgentStep[] }) {
     <p className={onDashboard ? undefined : "mt-1"}>
       {replayMessage}{" "}
       {!pathname.startsWith("/network") && (
-        <Link href="/network" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
+        <Link href="/network" className="font-semibold text-slate-700 underline decoration-dotted underline-offset-2 hover:text-slate-900">
           {t("네트워크 프리뷰로 이동", "Go to network preview", "ネットワークプレビューへ")}
         </Link>
       )}
@@ -1451,7 +1458,7 @@ function AgentRunDashboardHint({ steps }: { steps?: AgentStep[] }) {
   ) : (
     <>
       <p>
-        <Link href="/dashboard" className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-700">
+        <Link href="/dashboard" className="font-semibold text-slate-700 underline decoration-dotted underline-offset-2 hover:text-slate-900">
           {t("대시보드에서 보기", "View in dashboard", "ダッシュボードで見る")}
         </Link>
       </p>
@@ -1476,9 +1483,14 @@ function AgentRunDashboardHint({ steps }: { steps?: AgentStep[] }) {
 }
 
 // M4 roadmap bullet ("per-action preflight status chips (pass/warn/refuse)"):
-// 통과 (pass, neutral gray) when this action's approval carries zero
-// preflight warnings, 주의 N (warn, amber) with the fired count otherwise.
-// No "refuse" tone exists here BY DESIGN, not omission: verified against
+// 통과 (pass, emerald) when this action's approval carries zero preflight
+// warnings, 주의 N (warn) with the fired count otherwise. THREE-COLOR RULE
+// (U-2 Console pass, 2026-08-14): warn is mono, not amber -- the app settled
+// this app-wide (see dashboard-contract.test.ts's "U-1: three accent
+// colours" test, 2026-08-13): rose/emerald/sky are the only three accents,
+// and a warn tier renders on the neutral ink ramp with a heavier hairline
+// instead of a fourth hue, exactly like observations.tsx's GateVerdictChip
+// WARN chip. No "refuse" tone exists here BY DESIGN, not omission: verified against
 // backend/services/agent/orchestrator.py -- a preflight report with any
 // BLOCKING finding returns a "refusal" turn (kind: "answer", a structured
 // refusal envelope) BEFORE `pending_approval` is ever constructed (see the
@@ -1501,13 +1513,13 @@ function PreflightStatusChip({ warningCount }: { warningCount: number }) {
   const { t } = useLanguage();
   if (warningCount <= 0) {
     return (
-      <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[12px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+      <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[13px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
         {t("통과", "Pass", "通過")}
       </span>
     );
   }
   return (
-    <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[12px] font-semibold text-amber-700 ring-1 ring-amber-200">
+    <span className="shrink-0 rounded-full border border-slate-400 bg-slate-100 px-2 py-0.5 text-[13px] font-semibold text-slate-800">
       {t(`주의 ${warningCount}`, `Warn ${warningCount}`, `注意 ${warningCount}`)}
     </span>
   );
@@ -1530,10 +1542,17 @@ function PreflightStatusChip({ warningCount }: { warningCount: number }) {
 function AgentModelDownloadLink({ sessionId }: { sessionId: string }) {
   const { t } = useLanguage();
   const [status, setStatus] = useState<"idle" | "busy" | "error">("idle");
+  // Named states over vague ones (U-2 Console pass): a bare "download
+  // failed" with the caught reason thrown away left the reader with nothing
+  // to act on or report. Every other catch block in this file keeps
+  // `caught.message` (see e.g. PromptSimulationStatus's own `error` state) --
+  // this one silently discarded it instead. Mechanical fix: capture it.
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   async function handleClick() {
     if (status === "busy") return;
     setStatus("busy");
+    setErrorMessage(null);
     try {
       const { blob, filename } = await downloadAgentModel(sessionId, null);
       const url = URL.createObjectURL(blob);
@@ -1545,8 +1564,9 @@ function AgentModelDownloadLink({ sessionId }: { sessionId: string }) {
       anchor.remove();
       URL.revokeObjectURL(url);
       setStatus("idle");
-    } catch {
+    } catch (caught) {
       setStatus("error");
+      setErrorMessage(caught instanceof Error ? caught.message : String(caught));
     }
   }
 
@@ -1556,7 +1576,7 @@ function AgentModelDownloadLink({ sessionId }: { sessionId: string }) {
         type="button"
         onClick={handleClick}
         disabled={status === "busy"}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-surface px-2.5 py-1.5 text-[13px] font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-wait disabled:opacity-60"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-surface px-2.5 py-1.5 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-100 hover:text-slate-900 disabled:cursor-wait disabled:opacity-60"
       >
         {status === "busy"
           ? t("모델 준비 중…", "Preparing model…", "モデル準備中…")
@@ -1565,6 +1585,7 @@ function AgentModelDownloadLink({ sessionId }: { sessionId: string }) {
       {status === "error" && (
         <span className="text-[13px] font-medium text-rose-600">
           {t("다운로드에 실패했습니다", "Download failed", "ダウンロードに失敗しました")}
+          {errorMessage ? `: ${errorMessage}` : ""}
         </span>
       )}
     </div>
@@ -1691,8 +1712,8 @@ function VehicleInputActionDetail({
   const currentVolume = baselineUsable ? baseline?.volume ?? null : null;
 
   // "차종 조성" is the vocabulary the backend's own warnings on this same card
-  // use for a vehicle composition, so the chip and the amber strips below it
-  // name the same object the same way. The varying case is already a full
+  // use for a vehicle composition, so the chip and the mono warning strips
+  // below it name the same object the same way. The varying case is already a full
   // sentence and takes no prefix -- prefixing it would read "차종 조성 차종
   // 조성 구간별 상이", and the en prefix would stutter against every real
   // composition name on this model ("Composition Class1" is fine, "Class
@@ -1733,7 +1754,9 @@ function VehicleInputActionDetail({
       </p>
 
       {compositionChip && (
-        <span className="mt-1 inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[12px] font-semibold text-blue-600">
+        // Three-color rule: this names a vehicle-class attribute, not a
+        // fail/pass/selection state -- mono, not blue.
+        <span className="mt-1 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[13px] font-semibold text-slate-600">
           {compositionChip}
         </span>
       )}
@@ -1744,10 +1767,10 @@ function VehicleInputActionDetail({
         {`${params.volume} veh/h`}
       </p>
 
-      {hiddenBaselineNote && <p className="mt-0.5 text-[12px] leading-4 text-slate-500">{hiddenBaselineNote}</p>}
+      {hiddenBaselineNote && <p className="mt-0.5 text-[13px] leading-4 text-slate-500">{hiddenBaselineNote}</p>}
 
       {stackIds.length > 1 && (
-        <p className="mt-1 text-[12px] leading-4 text-slate-500">
+        <p className="mt-1 text-[13px] leading-4 text-slate-500">
           {t(
             `같은 지점에 차량 입력 ${stackIds.length}개(${stackIds.join(", ")}) · 이번 변경은 ${inputNo}에만 적용됩니다`,
             `${stackIds.length} vehicle inputs share this point (${stackIds.join(", ")}) · this change touches ${inputNo} only`,
@@ -1776,7 +1799,18 @@ function AgentActionDetail({
   if (action.tool === "set_vehicle_input_volume") {
     return <VehicleInputActionDetail action={action} focus={focus} modelEdited={modelEdited} />;
   }
-  return <p className="mt-0.5 text-[13px] text-slate-600">{agentActionDetail(action, t)}</p>;
+  // Mono for ids/codes: a tool with no case in agentActionDetail's switch
+  // (below) falls back to a raw "key=value, key2=value2" dump instead of a
+  // sentence -- that fallback is a CODE, same reasoning as the action-row
+  // title's own fallback a few lines up in AgentApprovalCard, and
+  // AGENT_ACTION_LABELS' remaining entries are exactly agentActionDetail's
+  // known-sentence cases (set_vehicle_input_volume is handled above and
+  // never reaches here), so the same membership check identifies it.
+  return (
+    <p className={`mt-0.5 text-[13px] text-slate-600 ${AGENT_ACTION_LABELS[action.tool] ? "" : "font-mono"}`}>
+      {agentActionDetail(action, t)}
+    </p>
+  );
 }
 
 // U-2-core (D4's decision record, 2026-08-13): "the approval card does not
@@ -1809,7 +1843,7 @@ function AgentActionRationale({ summary }: { summary: string }) {
   if (!summary.trim()) return null;
   return (
     <div className="mt-1.5 border-t border-slate-200 pt-1.5">
-      <p className="text-[12px] font-bold uppercase tracking-[0.08em] text-slate-500">
+      <p className="text-[13px] font-bold uppercase tracking-[0.08em] text-slate-500">
         {t("제안 이유", "Why proposed", "提案理由")}
       </p>
       <p className="mt-0.5 text-[13px] leading-5 text-slate-700">{summary}</p>
@@ -1874,7 +1908,17 @@ function AgentApprovalCard({
         {approval.actions.map((action, index) => (
           <div key={`${action.tool}-${index}`} className="rounded-lg bg-slate-50 px-2.5 py-2">
             <div className="flex items-start justify-between gap-2">
-              <p className="text-[13px] font-semibold text-slate-700">{agentActionLabel(action.tool, t)}</p>
+              {/* Mono for ids/codes (U-2 Console pass): a tool this table has
+                  no human label for falls back to printing its raw wire
+                  identifier (agentActionLabel's own fallback below) -- that
+                  is a CODE, not a sentence, so it renders in the app's
+                  monospace convention like every other id/code, instead of
+                  silently borrowing the translated label's prose weight. */}
+              <p
+                className={`text-[13px] font-semibold text-slate-700 ${AGENT_ACTION_LABELS[action.tool] ? "" : "font-mono"}`}
+              >
+                {agentActionLabel(action.tool, t)}
+              </p>
               <PreflightStatusChip warningCount={approval.warnings.length} />
             </div>
             <AgentActionDetail action={action} focus={approval.focus} modelEdited={modelEdited} />
@@ -1888,11 +1932,16 @@ function AgentApprovalCard({
       )}
 
       {approval.warnings.length > 0 && (
+        // Three-color rule (U-2 Console pass): a preflight WARN finding is
+        // mono with a heavier hairline, same as PreflightStatusChip's own
+        // "주의" chip a few lines up and the app-wide WARN treatment
+        // (dashboard-contract.test.ts's "U-1: three accent colours" test) --
+        // never a fourth, amber hue.
         <div className="mt-2 space-y-1">
           {approval.warnings.map((warning, index) => (
             <p
               key={`${warning.constraint_id || warning.message}-${index}`}
-              className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[13px] leading-5 text-amber-800"
+              className="rounded-md border border-slate-400 bg-slate-100 px-2 py-1.5 text-[13px] leading-5 text-slate-800"
             >
               {warning.message}
             </p>
@@ -1902,7 +1951,7 @@ function AgentApprovalCard({
 
       {approval.assumptions.length > 0 && (
         <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
-          <p className="text-[12px] font-bold uppercase tracking-[0.08em] text-slate-500">{t("가정", "Assumptions", "前提")}</p>
+          <p className="text-[13px] font-bold uppercase tracking-[0.08em] text-slate-500">{t("가정", "Assumptions", "前提")}</p>
           <ul className="mt-1 space-y-0.5">
             {approval.assumptions.map((assumption, index) => (
               <li key={index} className="text-[13px] leading-5 text-slate-600">
@@ -1925,7 +1974,11 @@ function AgentApprovalCard({
           <label className="flex flex-col gap-1 text-[13px] text-slate-600">
             <span className="flex items-center justify-between gap-2">
               <span>{t("사유 (선택)", "Reason (optional)", "理由（任意）")}</span>
-              <span className={`font-mono text-[12px] ${reasonNearCap ? "text-amber-600" : "text-slate-400"}`}>
+              {/* Three-color rule (U-2 Console pass): "nearing the cap" is
+                  not a fail/pass/selection state, so it is told apart by
+                  WEIGHT (bold ink), never a fourth hue -- see PreflightStatusChip's
+                  own comment for the app-wide rule this follows. */}
+              <span className={`font-mono text-[13px] ${reasonNearCap ? "font-semibold text-slate-800" : "text-slate-400"}`}>
                 {reason.length}/{APPROVAL_REASON_MAX_CHARS}
               </span>
             </span>
@@ -2074,6 +2127,16 @@ function agentActionDetail(action: AgentAction, t: Translate): string {
   }
 }
 
+// Both chip renderers below name the SAME thing -- what is currently
+// selected/in-scope on the host page (dataset, scenarios, nodes, links,
+// elements) -- and used to disagree about how: this header strip was mono,
+// the welcome-screen card below was blue. Three-color rule (U-2 Console
+// pass): sky is the app's selection/active accent (AppShell's own step
+// indicator uses this exact border-sky-200/bg-sky-50/text-sky-600 trio for
+// the same "this is the current one" meaning), so both now use it, and
+// neither uses a color the rule does not name.
+const SELECTION_CHIP_CLASS = "rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[13px] font-semibold text-sky-600";
+
 function PageContextPills({ context }: { context: AssistantPageContext | null }) {
   const { t } = useLanguage();
   const chips = buildContextChips(context, t);
@@ -2082,7 +2145,7 @@ function PageContextPills({ context }: { context: AssistantPageContext | null })
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
       {chips.slice(0, 4).map((chip) => (
-        <span key={chip} className="rounded-full bg-slate-100 px-2 py-0.5 text-[12px] font-semibold text-slate-500">
+        <span key={chip} className={SELECTION_CHIP_CLASS}>
           {chip}
         </span>
       ))}
@@ -2105,7 +2168,7 @@ function PageContextSummary({
       {chips.length > 0 ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {chips.map((chip) => (
-            <span key={chip} className="rounded-full bg-blue-50 px-2 py-0.5 text-[12px] font-semibold text-blue-600">
+            <span key={chip} className={SELECTION_CHIP_CLASS}>
               {chip}
             </span>
           ))}
@@ -2170,8 +2233,10 @@ function AssistantAnswerContent({
     ) : (
       <div className="space-y-2">
         {sections.map((section) => (
-          <section key={`${section.heading}-${section.lines.join("").slice(0, 16)}`} className="border-l-2 border-blue-200 pl-3">
-            <div className="text-[13px] font-bold uppercase tracking-[0.08em] text-blue-600">{localizeHeading(section.heading, lang)}</div>
+          <section key={`${section.heading}-${section.lines.join("").slice(0, 16)}`} className="border-l-2 border-slate-300 pl-3">
+            {/* A content-structure divider (요약/근거/다음 조치, ...), not a
+                state -- three-color rule keeps this mono. */}
+            <div className="text-[13px] font-bold uppercase tracking-[0.08em] text-slate-500">{localizeHeading(section.heading, lang)}</div>
             <div className="mt-1">
               <AnswerLines lines={section.lines} />
             </div>
@@ -2192,7 +2257,7 @@ function AssistantAnswerContent({
 
 // M4: the deterministic warning-suffix block, styled as a muted callout with
 // a top divider -- distinct from ordinary paragraph text and from the
-// approval card's amber warning strips (this can appear on ANY answer, not
+// approval card's mono warning strips (this can appear on ANY answer, not
 // just a write approval), so a presenter/user's eye separates "the model's
 // own answer" from "a guardrail system note attached underneath it". The
 // header line (the "참고:"/"Note:"/"注意:" line itself) renders slightly
@@ -2352,14 +2417,31 @@ function PromptSimulationStatus({
     <div className="mt-2 border-t border-slate-100 pt-2 text-[14px] text-slate-600">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="font-semibold text-slate-800">{t("\uc2dc\ubbac\ub808\uc774\uc158", "Simulation")}</span>
-        {jobId && <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[12px] text-slate-500">{jobId}</span>}
-        <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-600">{currentStatus}</span>
+        {jobId && <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[13px] text-slate-500">{jobId}</span>}
+        {/* Three-color rule fix (U-2 Console pass, mechanical): this chip
+            used to render emerald for EVERY status, including "queued",
+            "running" and "error" -- an emerald "error" pill sitting right
+            above the rose error paragraph a few lines down. Named per its
+            own actual state now: rose on error, emerald once actually done,
+            sky while still in flight -- the same "active" reading the
+            progress-bar fill below and AgentRunProgressCard's dot use. */}
+        <span
+          className={`rounded-full px-2 py-0.5 font-semibold ${
+            currentStatus === "error"
+              ? "bg-rose-50 text-rose-600"
+              : currentStatus === "done"
+                ? "bg-emerald-50 text-emerald-600"
+                : "bg-sky-50 text-sky-600"
+          }`}
+        >
+          {currentStatus}
+        </span>
       </div>
 
       {result.changes && result.changes.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {result.changes.slice(0, 4).map((change) => (
-            <span key={change} className="rounded-full bg-slate-50 px-2 py-0.5 text-[12px] font-semibold text-slate-500 ring-1 ring-slate-200">
+            <span key={change} className="rounded-full bg-slate-50 px-2 py-0.5 text-[13px] font-semibold text-slate-500 ring-1 ring-slate-200">
               {change}
             </span>
           ))}
@@ -2368,12 +2450,13 @@ function PromptSimulationStatus({
 
       {result.executed && currentStatus !== "done" && currentStatus !== "error" && (
         <div className="mt-2">
-          <div className="mb-1 flex justify-between text-[12px] text-slate-400">
+          <div className="mb-1 flex justify-between text-[13px] text-slate-400">
             <span>{t("\uc9c4\ud589\ub960", "Progress")}</span>
             <span>{progress}%</span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-slate-100">
-            <div className="h-1.5 rounded-full bg-blue-500 transition-all duration-500" style={{ width: `${progress}%` }} />
+            {/* sky = active (three-color rule): a fill still in progress. */}
+            <div className="h-1.5 rounded-full bg-sky-500 transition-all duration-500" style={{ width: `${progress}%` }} />
           </div>
         </div>
       )}
@@ -2387,8 +2470,12 @@ function PromptSimulationStatus({
       {results && <PromptSimulationMetrics results={results} />}
 
       {!result.executed && result.requires_confirmation && !declined && (
-        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2">
-          <p className="text-[13px] font-semibold text-amber-800">
+        // Three-color rule: a decision the reader must make, not a
+        // pass/fail/selection state -- mono with a heavier ring, the same
+        // "must not be one click away" treatment the phases page's own
+        // stale-confirmation banner uses, never a fourth hue.
+        <div className="mt-2 rounded-lg border border-slate-400 bg-slate-100 px-2.5 py-2 ring-1 ring-slate-400">
+          <p className="text-[13px] font-semibold text-slate-800">
             {t(
               "이 변경을 실제 VISSIM 시뮬레이션에 적용할까요? 위 변경 내용을 확인 후 실행하세요.",
               "Apply this change to a real VISSIM simulation? Review the changes above before running.",
@@ -2442,14 +2529,18 @@ function PromptSimulationMetrics({ results }: { results: SimulationResultsRespon
   }
 
   return (
+    // Stat pattern (Console vocabulary): a muted label over a bold value,
+    // the same shape as app/overview/page.tsx's own `Stat` component -- no
+    // uppercase label, no divider rule, just the grid's own gap between
+    // cells, matching how every other numeric summary in the app is read.
     <div className="mt-2 grid grid-cols-2 gap-2">
       {metrics.map((metric) => (
-        <div key={metric.label} className="border-l border-slate-200 pl-2">
-          <div className="text-[12px] font-semibold uppercase text-slate-400">{metric.label}</div>
-          <div className="text-[15px] font-bold text-slate-800">
+        <div key={metric.label} className="min-w-0">
+          <p className="text-[14px] text-slate-500">{metric.label}</p>
+          <p className="mt-0.5 truncate text-[15px] font-semibold text-slate-900">
             {formatMetricValue(metric.value)}
-            {metric.unit && <span className="ml-1 text-[12px] font-semibold text-slate-400">{metric.unit}</span>}
-          </div>
+            {metric.unit && <span className="ml-1 text-[13px] font-medium text-slate-500">{metric.unit}</span>}
+          </p>
         </div>
       ))}
     </div>
@@ -2466,13 +2557,35 @@ function CompactSources({ sources }: { sources: AssistantSource[] }) {
       <summary className="cursor-pointer text-[13px] font-bold uppercase text-slate-500">
         {t("\ucd9c\ucc98", "Sources")} ({visibleSources.length})
       </summary>
-      <div className="mt-2 grid gap-1.5">
-        {visibleSources.map((source, index) => (
-          <div key={`${source.path ?? source.title}-${source.chunk_id ?? index}`} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
-            <div className="truncate text-[13px] font-semibold text-slate-700">{source.citation_label || source.title}</div>
-            <div className="mt-0.5 truncate text-[12px] text-slate-500">{source.page_range ?? source.kind}</div>
-          </div>
-        ))}
+      {/* Borderless table (Console vocabulary) -- the same shape
+          observations.tsx's SiteAggregateDetails mini-tables use inside
+          their own <details>: muted header, no cell borders except a
+          hairline between rows, mono for the location column. Column
+          headers avoid repeating "\ucd9c\ucc98" (the summary line right above
+          already says that). */}
+      <div className="mt-2 overflow-x-auto">
+        <table className="w-full text-[13px]">
+          <thead>
+            <tr className="text-left text-slate-500">
+              <th scope="col" className="py-1 font-normal">
+                {t("\uc774\ub984", "Name", "\u540d\u524d")}
+              </th>
+              <th scope="col" className="py-1 text-right font-normal">
+                {t("\uc704\uce58", "Location", "\u4f4d\u7f6e")}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleSources.map((source, index) => (
+              <tr key={`${source.path ?? source.title}-${source.chunk_id ?? index}`} className="border-t border-slate-100">
+                <td className="max-w-[220px] truncate py-1.5 pr-2 font-semibold text-slate-700">
+                  {source.citation_label || source.title}
+                </td>
+                <td className="py-1.5 text-right font-mono text-slate-500">{source.page_range ?? source.kind}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </details>
   );
@@ -2585,9 +2698,11 @@ function AgentRunProgressCard({
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2 text-[14px] font-medium text-slate-600">
+          {/* sky = active (three-color rule): still running, not yet a
+              terminal rose/emerald state. */}
           <span
             className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-              status === "error" ? "bg-rose-500" : status === "done" ? "bg-emerald-500" : "animate-pulse bg-blue-500"
+              status === "error" ? "bg-rose-500" : status === "done" ? "bg-emerald-500" : "animate-pulse bg-sky-500"
             }`}
           />
           <span className="truncate font-semibold text-slate-700">{phaseLabel}</span>
@@ -2597,7 +2712,7 @@ function AgentRunProgressCard({
           <button
             type="button"
             onClick={onCancel}
-            className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[12px] font-bold leading-none text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+            className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[13px] font-bold leading-none text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
           >
             {t("취소", "Cancel", "キャンセル")}
           </button>
@@ -2606,12 +2721,12 @@ function AgentRunProgressCard({
 
       <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200">
         <div
-          className={`h-1.5 rounded-full transition-all duration-500 ${status === "error" ? "bg-rose-400" : "bg-blue-500"}`}
+          className={`h-1.5 rounded-full transition-all duration-500 ${status === "error" ? "bg-rose-400" : "bg-sky-500"}`}
           style={{ width: `${progressPercent}%` }}
         />
       </div>
 
-      <div className="mt-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[12px] text-slate-400">
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[13px] text-slate-400">
         <span>
           {elapsedS !== null
             ? t(`경과 ${formatElapsedClock(elapsedS)}`, `Elapsed ${formatElapsedClock(elapsedS)}`, `経過 ${formatElapsedClock(elapsedS)}`)
@@ -2688,14 +2803,15 @@ function AssistantInlineProgress({
   return (
     <div className={compact ? "mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2" : "flex items-center justify-between gap-3"}>
       <div className="flex min-w-0 items-center gap-2 text-[14px] font-medium text-slate-500">
-        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500" />
+        {/* sky = active (three-color rule): the request is in flight. */}
+        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-sky-500" />
         <span className="truncate">{label}</span>
       </div>
       {onCancel && (
         <button
           type="button"
           onClick={onCancel}
-          className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[12px] font-bold leading-none text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+          className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[13px] font-bold leading-none text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
         >
           {t("\ucde8\uc18c", "Cancel")}
         </button>
@@ -2704,6 +2820,10 @@ function AssistantInlineProgress({
   );
 }
 
+// Three-color rule (U-2 Console pass): a recovered/degraded runtime mode is
+// neither a refusal (rose -- nothing was refused, an answer did arrive) nor
+// a pass/applied result worth celebrating (emerald), so it renders mono,
+// like every other former amber notice in this file.
 function AssistantRuntimeBadge({ response }: { response: AssistantQueryResponse }) {
   const { t } = useLanguage();
   const mode = response.runtime?.mode ?? "";
@@ -2711,7 +2831,7 @@ function AssistantRuntimeBadge({ response }: { response: AssistantQueryResponse 
 
   if (mode === "error-fallback") {
     return (
-      <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[13px] leading-5 text-amber-800">
+      <p className="mt-2 rounded-md border border-slate-400 bg-slate-100 px-2 py-1 text-[13px] leading-5 text-slate-800">
         {t(
           "AI \uc11c\ubc84 \uc624\ub958\ub97c \ud3f4\ubc31 \ub2f5\ubcc0\uc73c\ub85c \ubcf5\uad6c\ud588\uc2b5\ub2c8\ub2e4.",
           "Recovered an AI server error with a fallback answer.",
@@ -2723,7 +2843,7 @@ function AssistantRuntimeBadge({ response }: { response: AssistantQueryResponse 
 
   if (mode === "fallback") {
     return (
-      <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[13px] leading-5 text-amber-800">
+      <p className="mt-2 rounded-md border border-slate-400 bg-slate-100 px-2 py-1 text-[13px] leading-5 text-slate-800">
         {t(
           "\ubaa8\ub378 \uc0dd\uc131\uc774 \ubd88\uc548\uc815\ud574 \ub300\uc2dc\ubcf4\ub4dc \uae30\ubc18 \ud3f4\ubc31 \ub2f5\ubcc0\uc744 \uc0ac\uc6a9\ud588\uc2b5\ub2c8\ub2e4.",
           "Model generation was unstable, so this used a dashboard fallback answer.",
@@ -2782,7 +2902,9 @@ function AssistantRuntimeNote({
   const workerError = compactWorkerError(status.worker_error);
 
   return (
-    <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[13px] leading-5 text-amber-800">
+    // Three-color rule: model-loading/worker status is informational, not a
+    // refusal -- mono, matching AssistantRuntimeBadge's own rule above.
+    <p className="mt-2 rounded-md border border-slate-400 bg-slate-100 px-2 py-1.5 text-[13px] leading-5 text-slate-800">
       {workerError ? `${detail} ${workerError}` : detail}
     </p>
   );
