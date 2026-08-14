@@ -56,7 +56,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { ModalDialog, Panel, PageHelp, refusalHeadline } from "@/components/genesis/ui";
+import { ModalDialog, PageHelp, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   fetchGenesisJobs,
@@ -327,43 +327,38 @@ export default function GenesisPage() {
       {/* ------------------------------------------------------------- */}
       {/* Generation history -- the Console list, and now the page body   */}
       {/* ------------------------------------------------------------- */}
-      <Panel
-        density="console"
-        title={t("생성 이력", "Generations", "生成履歴")}
-        subtitle={t(
-          "이 프로젝트의 생성만 보입니다. 행을 누르면 그 생성의 상세 판정 페이지로 이동합니다.",
-          "Only this project's generations are listed. Click a row to open that generation's own detail page.",
-          "このプロジェクトの生成のみ表示されます。行を押すとその生成の詳細判定ページに移動します。",
+      {/* The list IS the page (user, live pass 2026-08-14): a card titled
+        * 생성 이력 under an h1 that already names this screen was the
+        * repeated-title disease again, and its subtitle narrated what a row
+        * click visibly does. The card chrome is gone — the table sits directly
+        * under the page header; pagination keeps its top-right seat. */}
+      <section className="mt-8">
+        {jobs.length > HISTORY_PAGE_SIZE && (
+          <div className="mb-2 flex items-center justify-end gap-1.5 text-[12px] text-slate-500">
+            <span className="font-mono">
+              {safePage * HISTORY_PAGE_SIZE + 1}–
+              {Math.min(jobs.length, (safePage + 1) * HISTORY_PAGE_SIZE)} / {jobs.length}
+            </span>
+            <button
+              type="button"
+              disabled={safePage === 0}
+              onClick={() => setPage((current) => Math.max(0, current - 1))}
+              aria-label={t("이전 쪽", "Previous page", "前のページ")}
+              className="ui-button-ghost rounded-md px-2 py-0.5 disabled:opacity-40"
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              disabled={safePage >= pageCount - 1}
+              onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
+              aria-label={t("다음 쪽", "Next page", "次のページ")}
+              className="ui-button-ghost rounded-md px-2 py-0.5 disabled:opacity-40"
+            >
+              ›
+            </button>
+          </div>
         )}
-        action={
-          jobs.length > HISTORY_PAGE_SIZE ? (
-            <div className="flex shrink-0 items-center gap-1.5 text-[12px] text-slate-500">
-              <span className="font-mono">
-                {safePage * HISTORY_PAGE_SIZE + 1}–
-                {Math.min(jobs.length, (safePage + 1) * HISTORY_PAGE_SIZE)} / {jobs.length}
-              </span>
-              <button
-                type="button"
-                disabled={safePage === 0}
-                onClick={() => setPage((current) => Math.max(0, current - 1))}
-                aria-label={t("이전 쪽", "Previous page", "前のページ")}
-                className="ui-button-ghost rounded-md px-2 py-0.5 disabled:opacity-40"
-              >
-                ‹
-              </button>
-              <button
-                type="button"
-                disabled={safePage >= pageCount - 1}
-                onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
-                aria-label={t("다음 쪽", "Next page", "次のページ")}
-                className="ui-button-ghost rounded-md px-2 py-0.5 disabled:opacity-40"
-              >
-                ›
-              </button>
-            </div>
-          ) : undefined
-        }
-      >
         {jobsError && (
           <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-800">
             {t("목록을 불러오지 못했습니다", "Failed to load the list", "一覧を読み込めませんでした")}: {jobsError}
@@ -455,7 +450,7 @@ export default function GenesisPage() {
             </table>
           </div>
         )}
-      </Panel>
+      </section>
 
       {/* ------------------------------------------------------------- */}
       {/* 새 생성 -- the generation form, transplanted whole into a       */}

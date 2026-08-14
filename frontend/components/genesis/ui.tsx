@@ -322,7 +322,10 @@ export function PageHelp({
         // the panel, so a pointerdown anywhere except the panel closes it. The
         // panel itself stops the click from reaching the backdrop underneath it.
         <div
-          className="fixed inset-0 z-50 flex justify-end bg-slate-950/50"
+          /* Literal black, same reason as ModalDialog's backdrop: the slate
+            * ramp is remapped by the dark palette, so slate-950 washed the
+            * page LIGHT instead of dimming it. */
+          className="fixed inset-0 z-50 flex justify-end bg-black/60"
           onClick={() => setOpen(false)}
         >
           <div
@@ -421,7 +424,13 @@ export function ModalDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4 py-8"
+      /* LITERAL black, not a slate token (user, live pass 2026-08-14): the
+        * dark palette remaps the slate ramp, so a slate-950 veil rendered as a
+        * LIGHT wash over the page — a backdrop must darken, and `black` is the
+        * one color no remap touches. Border dropped to a faint literal white
+        * for the same reason: the hairline token read as a bright frame on the
+        * elevated surface. */
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-8"
       onClick={onClose}
     >
       <div
@@ -429,7 +438,7 @@ export function ModalDialog({
         aria-modal="true"
         aria-labelledby={headingId}
         onClick={(event) => event.stopPropagation()}
-        className="flex max-h-full w-full max-w-xl flex-col overflow-y-auto rounded-xl border border-slate-200 bg-surface px-6 py-6 shadow-[0_16px_48px_rgba(15,23,42,0.35)]"
+        className="flex max-h-full w-full max-w-xl flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-surface px-6 py-6 shadow-[0_16px_48px_rgba(0,0,0,0.5)]"
       >
         <div className="flex items-start justify-between gap-3">
           <h2 id={headingId} className="text-[17px] font-semibold text-slate-900">

@@ -294,7 +294,11 @@ export function WorkspacePickerInline({ id }: { id: string }) {
         value={selectedWorkspaceId ?? ""}
         disabled={locked}
         onChange={(event) => handleSwitchWorkspace(event.target.value)}
-        className="ui-select w-auto rounded-md border-slate-700/60 bg-transparent px-1.5 py-0.5 font-mono text-[13px] text-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+        /* Ink-strength name (user, live pass 2026-08-14): the ghost tone made
+          * the SELECTED project — the one fact this control states — the
+          * faintest text in the header. The frame stays quiet; the name does
+          * not. */
+        className="ui-select w-auto rounded-md border-slate-700/60 bg-transparent px-1.5 py-0.5 font-mono text-[14px] font-semibold text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {workspaces.map((workspace) => (
           <option key={workspace.id} value={workspace.id}>

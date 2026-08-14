@@ -515,10 +515,16 @@ function GateCheckGrid({
                   {checkStateLabel(check.state, t)}
                 </span>
               </span>
+              {/* CORE NAME ONLY before a click (user, live pass 2026-08-14):
+                * the gate titles are "이름 — 설명 한 문장" and nine clamped
+                * sentences made the grid a wall of text. The cell shows the
+                * name; the full sentence stays on hover (title=) and in the
+                * detail below once the cell is opened. Derived by splitting
+                * the payload's own string — no client-side name table. */}
               <span
-                className={`line-clamp-2 text-[12px] leading-tight ${isSelected ? "font-semibold text-slate-900" : "font-medium"}`}
+                className={`line-clamp-1 text-[12px] leading-tight ${isSelected ? "font-semibold text-slate-900" : "font-medium"}`}
               >
-                {check.title}
+                {check.title.split(" — ")[0]}
               </span>
             </button>
           );

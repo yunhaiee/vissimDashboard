@@ -2264,7 +2264,7 @@ contractTest("unit #23: the genesis hub is a history list with one primary actio
   // and backdrop-click are ModalDialog's OWN job (components/genesis/ui.tsx,
   // checked in the dedicated ModalDialog test below), so this page only needs
   // to prove it is actually wired to that component, not a bespoke overlay.
-  pin.match(page, /import \{ ModalDialog, Panel, PageHelp, refusalHeadline \} from "@\/components\/genesis\/ui";/, "expected the hub to take its dialog from the shared primitive, not a bespoke overlay");
+  pin.match(page, /import \{ ModalDialog, PageHelp, refusalHeadline \} from "@\/components\/genesis\/ui";/, "expected the hub to take its dialog from the shared primitive, not a bespoke overlay (Panel left the import when the list lost its card chrome, user 2026-08-14)");
   pin.match(
     page,
     /<ModalDialog\s*\n\s*open=\{modalOpen\}\s*\n\s*onClose=\{\(\) => setModalOpen\(false\)\}/,
@@ -2413,8 +2413,8 @@ contractTest("unit #23: ModalDialog is the shared centered-dialog primitive, rea
   pin.match(modalBody, /event\.key === "Escape"/, "expected Escape to close it, the same as PageHelp");
   pin.match(
     modalBody,
-    /className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950\/50[^"]*"\s*\n\s*onClick=\{onClose\}/,
-    "expected a click on the backdrop to close the dialog",
+    /className="fixed inset-0 z-50 flex items-center justify-center bg-black\/60[^"]*"\s*\n\s*onClick=\{onClose\}/,
+    "expected a click on the backdrop to close the dialog, and the backdrop to be LITERAL black (user 2026-08-14: the remapped slate ramp washed the page light instead of dimming it)",
   );
   pin.match(modalBody, /closeRef\.current\?\.focus\(\);/, "expected the close button to take focus on open, the same as PageHelp");
 });
@@ -2670,8 +2670,8 @@ contractTest("unit #20: PageHelp exists and every genesis sub-screen passes it e
   pin.match(ui, /event\.key === "Escape"/, "expected Escape to close the drawer, the same as InfoTip");
   pin.match(
     ui,
-    /className="fixed inset-0 z-50 flex justify-end bg-slate-950\/50"\s*\n\s*onClick=\{\(\) => setOpen\(false\)\}/,
-    "expected a click on the backdrop to close the drawer",
+    /className="fixed inset-0 z-50 flex justify-end bg-black\/60"\s*\n\s*onClick=\{\(\) => setOpen\(false\)\}/,
+    "expected a click on the backdrop to close the drawer, on a LITERAL black backdrop (the slate ramp is palette-remapped and washed the page light)",
   );
 
   // Each of the three pages renders the trigger AND passes it real entries --
