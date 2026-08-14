@@ -88,7 +88,7 @@ import {
   type GenesisJobStatus,
   type GenesisRequestedRegion,
 } from "@/lib/api";
-import { linkWidthMeters } from "@/lib/roadWidth";
+import { laneBoundaryOffsets, linkWidthMeters } from "@/lib/roadWidth";
 
 // ---------------------------------------------------------------------------
 // The draft network -- `*.genesis.json`, DraftNetwork.model_dump(mode="json")
@@ -206,6 +206,25 @@ export interface GenesisDraftNetwork {
 export function genesisElementWidthMeters(element: { lanes: number; lane_width_m: number }): number {
   const laneCount = Math.max(Math.round(element.lanes ?? 1), 1);
   return linkWidthMeters({ lane_widths: new Array(laneCount).fill(element.lane_width_m), lanes: element.lanes });
+}
+
+// ---------------------------------------------------------------------------
+// Lane dividers -- unit #29 ("port lane markings to the genesis draft maps").
+// ---------------------------------------------------------------------------
+//
+// THE SAME ADAPTER SHAPE as genesisElementWidthMeters above, and for the same
+// reason: neither genesis type carries a `lane_widths` breakdown, only one
+// measured `lane_width_m`, so this builds the `lane_widths` array
+// `lib/roadWidth.ts`'s `laneBoundaryOffsets` expects and hands it off --
+// nothing here recomputes an offset itself. A link with N lanes gets N-1
+// interior boundary offsets (metres, signed from the centreline); a
+// single-lane link or connector gets none. Named `...LaneOffsetsM` (not
+// `...LaneBoundaryOffsets`) to read at a glance beside `...WidthMeters` as
+// the SAME unit (metres), which both genesis map renderers then convert to
+// their own view/pixel units the same way they already convert width.
+export function genesisElementLaneOffsetsM(element: { lanes: number; lane_width_m: number }): number[] {
+  const laneCount = Math.max(Math.round(element.lanes ?? 1), 1);
+  return laneBoundaryOffsets({ lane_widths: new Array(laneCount).fill(element.lane_width_m), lanes: element.lanes });
 }
 
 /** `GET /jobs/{id}/artifact/genesis_json` -- authenticated, same as every

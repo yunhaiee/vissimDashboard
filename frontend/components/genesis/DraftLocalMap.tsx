@@ -33,14 +33,23 @@ import {
   type HighlightSets,
   type Translate,
 } from "@/components/genesis/findings";
-import { genesisElementWidthMeters } from "@/lib/genesisArtifacts";
+import { genesisElementLaneOffsetsM, genesisElementWidthMeters } from "@/lib/genesisArtifacts";
 import type {
   GenesisDraftConnector,
   GenesisDraftLink,
   GenesisDraftNetwork,
   GenesisFindingHighlight,
 } from "@/lib/genesisArtifacts";
-import { MIN_ROAD_PX } from "@/lib/roadWidth";
+import {
+  LANE_DASH_M,
+  LANE_DASH_STROKE_M,
+  LANE_DASH_STROKE_MIN_PX,
+  LANE_GAP_M,
+  MARKING_COLOR,
+  MIN_ROAD_PX,
+  dividerOffsetCoord,
+  offsetPolyline,
+} from "@/lib/roadWidth";
 
 const VIEW_W = 640;
 const VIEW_H = 440;
@@ -106,6 +115,14 @@ export function fitProjection(bbox: Bbox) {
 
 function pointsAttr(points: [number, number][], projX: (x: number) => number, projY: (y: number) => number): string {
   return points.map(([x, y]) => `${projX(x).toFixed(1)},${projY(y).toFixed(1)}`).join(" ");
+}
+
+/** Same formatting as `pointsAttr` above, for points that are ALREADY in
+ * projected view-space (a lane divider's offset polyline, computed by
+ * `offsetPolyline` from already-projected centreline points) rather than raw
+ * network metres needing `projX`/`projY`. */
+function rawPointsAttr(points: [number, number][]): string {
+  return points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
 }
 
 export default function DraftLocalMap({
@@ -284,21 +301,45 @@ export default function DraftLocalMap({
             onPointerUp={handleBackgroundPointerUp}
             onPointerCancel={handleBackgroundPointerUp}
           />
-          {/* `view` (pan/zoom) is a transform on this `<g>` ONLY --
-            * `NetworkLayer` below is memoized and does not receive `view` as a
+          {/* `view` (pan/zoom) is a transform on this `<g>` ONLY -- neither
+            * `NetworkLayer` nor `HighlightLayer` below receives `view` as a
             * prop, so a drag/wheel tick (which sets `view` on every
             * pointermove) moves this one attribute without React re-rendering,
-            * diffing or re-keying the ~5,000 polylines inside it. See
-            * `NetworkLayer`'s own comment for the other half of this fix
-            * (stroke width). */}
+            * diffing or re-keying the ~5,000 polylines inside them. See
+            * `NetworkLayer`'s own comment for the other half of that fix
+            * (stroke width). `LaneDividersLayer` is the ONE exception: it
+            * takes `view.scale` on purpose (see its own comment for why a
+            * lane divider, unlike a ribbon's stroke width, cannot be frozen
+            * by `vectorEffect="non-scaling-stroke"` alone), so it sits
+            * BETWEEN the other two -- on top of `NetworkLayer`'s ribbons (a
+            * divider drawn underneath its own road would be invisible) but
+            * underneath `HighlightLayer`'s warn/refuse/selected treatments
+            * (so a lane-marking line never dulls one of those), exactly the
+            * z-order `GenesisTileMap.tsx`'s own normal/warn/refuse/selected
+            * pass order gives its own dividers -- there by insertion order
+            * into one leaflet layer group, here by sibling order under one
+            * `<g>`. */}
           <g transform={`translate(${view.tx} ${view.ty}) scale(${view.scale})`}>
             <NetworkLayer
               network={network}
+              highlights={highlights}
+              showNormal={showNormal}
+              projection={projection}
+              onSelectLink={onSelectLink}
+              onSelectConnector={onSelectConnector}
+            />
+            <LaneDividersLayer
+              network={network}
+              highlights={highlights}
+              showNormal={showNormal}
+              projection={projection}
+              viewScale={view.scale}
+            />
+            <HighlightLayer
               linksById={linksById}
               connectorsById={connectorsById}
               highlights={highlights}
               selectedHighlight={selectedHighlight}
-              showNormal={showNormal}
               showRefuse={showRefuse}
               showWarn={showWarn}
               projection={projection}
@@ -319,39 +360,35 @@ export default function DraftLocalMap({
   );
 }
 
-/** Every link/connector polyline, memoized against everything EXCEPT `view`
- * (pan/zoom) -- the parent puts `view` on the surrounding `<g transform>`
- * instead, so a drag/wheel tick that only changes `view` leaves this
- * component's props untouched and `memo` skips the re-render entirely.
- * Without this, each of the ~5,000 links+connectors in a real generation was
- * rebuilt on every `pointermove` of a drag, because the old inline JSX read
- * `view.scale` directly for `strokeWidth`. `vectorEffect="non-scaling-stroke"`
+/** Every NORMAL-tier link/connector ribbon (unit #29: NOT its lane dividers
+ * any more -- see `LaneDividersLayer` below), memoized against everything
+ * EXCEPT `view` (pan/zoom) -- the parent puts `view` on the surrounding
+ * `<g transform>` instead, so a drag/wheel tick that only changes `view`
+ * leaves this component's props untouched and `memo` skips the re-render
+ * entirely. Without this, each of the ~5,000 links+connectors in a real
+ * generation was rebuilt on every `pointermove` of a drag, because the old
+ * inline JSX read `view.scale` directly for `strokeWidth`. `vectorEffect="non-scaling-stroke"`
  * replaces that division: it asks the SVG renderer itself to keep a stroke's
  * ON-SCREEN width constant regardless of the ancestor `<g>`'s scale, which is
  * exactly what `width / view.scale` was computing by hand -- so the visual
- * result (constant apparent stroke width while zooming, including the
- * selected-finding glow) is unchanged, only how it is computed. */
+ * result (constant apparent stroke width while zooming) is unchanged, only
+ * how it is computed.
+ *
+ * Lane dividers and the warn/refuse/selected treatments live in their own
+ * sibling components now (`LaneDividersLayer`, `HighlightLayer`) -- see the
+ * parent `<g>`'s own comment for why the three are split and what order they
+ * render in. */
 const NetworkLayer = memo(function NetworkLayer({
   network,
-  linksById,
-  connectorsById,
   highlights,
-  selectedHighlight,
   showNormal,
-  showRefuse,
-  showWarn,
   projection,
   onSelectLink,
   onSelectConnector,
 }: {
   network: GenesisDraftNetwork;
-  linksById: Map<number, GenesisDraftLink>;
-  connectorsById: Map<number, GenesisDraftConnector>;
   highlights: HighlightSets;
-  selectedHighlight: GenesisFindingHighlight | null;
   showNormal: boolean;
-  showRefuse: boolean;
-  showWarn: boolean;
   projection: { projX: (x: number) => number; projY: (y: number) => number; scale: number };
   onSelectLink: (linkId: number) => void;
   onSelectConnector: (connectorId: number) => void;
@@ -369,14 +406,28 @@ const NetworkLayer = memo(function NetworkLayer({
           // points with, floored so a 1-lane connector at a wide fit-out
           // stays a real click target.
           //
-          // HONEST LIMIT (adversarial verification 2026-08-13): these widths
-          // are computed at the network-FIT scale once, and the
-          // `vectorEffect="non-scaling-stroke"` below then holds the ON-SCREEN
-          // width constant while the user zooms -- unlike GenesisTileMap and
-          // NetworkViewer, whose ribbons track zoom. That is this fallback's
-          // deliberate perf design (the memoized layer skips re-rendering
-          // ~5,000 polylines on every view tick), so the ribbons here state
+          // HONEST LIMIT (adversarial verification 2026-08-13; the
+          // coherence below added by unit #29's zoom fix): `roadW` is
+          // computed at the network-FIT scale once, and the
+          // `vectorEffect="non-scaling-stroke"` below then holds the
+          // ON-SCREEN width constant while the user zooms -- unlike
+          // GenesisTileMap and NetworkViewer, whose ribbons track zoom.
+          // That is this fallback's deliberate perf design (`NetworkLayer`
+          // is memoized against `view`, so it skips re-rendering ~5,000
+          // polylines on every view tick), so the ribbons here state
           // RELATIVE road width, not zoom-true ground width.
+          // `LaneDividersLayer`'s own divider offsets are frozen to that
+          // SAME on-screen size, for the SAME reason: a divider sits
+          // `offM * projection.scale` on-screen pixels from the centreline
+          // no matter the zoom, which is exactly this ribbon's own frozen
+          // on-screen width. The two are held constant by different
+          // mechanisms -- this ribbon's WIDTH by `vectorEffect="non-scaling-stroke"`
+          // alone, a divider's lateral OFFSET (baked into vertex positions,
+          // which non-scaling-stroke does not touch) by an explicit
+          // division in `dividerOffsetCoord` (lib/roadWidth.ts) -- but they
+          // land on the same frozen-at-fit-scale screen size, which is what
+          // keeps a divider from drifting outside its own ribbon as the
+          // user zooms.
           const roadW = Math.max(genesisElementWidthMeters(connector) * projection.scale, MIN_ROAD_PX);
           const points = pointsAttr(connector.points, projection.projX, projection.projY);
           return (
@@ -436,6 +487,159 @@ const NetworkLayer = memo(function NetworkLayer({
             />
           );
         })}
+    </>
+  );
+});
+
+/** A NORMAL-tier link's interior lane dividers (unit #29 -- "port lane
+ * markings to the genesis draft maps"; zoom fix, adversarial finding #1),
+ * split out as its own sibling of `NetworkLayer` rather than folded into it,
+ * for one reason: it is the ONE thing under this file's `<g>` that legitimately
+ * needs `view.scale` as a prop, and giving it to `NetworkLayer` instead would
+ * undo that component's own memoization (a `viewScale` prop that changes on
+ * every wheel tick would force `NetworkLayer` to rebuild all ~5,000
+ * connector+link polylines on every tick, the exact cost its memo exists to
+ * avoid). This layer's own memoized prop set -- `network`, `projection`,
+ * `viewScale` -- is deliberately the small one: everything a divider's own
+ * geometry depends on, and nothing else `NetworkLayer` also needs
+ * (`highlights`/`showNormal` ride along too, only because the SAME
+ * normal-tier gate that picks which links get a ribbon also picks which get
+ * a divider -- see the skip check below).
+ *
+ * WHY a divider needs `view.scale` when the ribbon it sits inside does not:
+ * `vectorEffect="non-scaling-stroke"` freezes a stroke's ON-SCREEN WIDTH
+ * regardless of the ancestor `<g>`'s zoom transform, but it does nothing for
+ * a VERTEX'S POSITION -- and a divider's lateral offset from the centreline
+ * is baked into vertex positions (`offsetPolyline` moves points sideways),
+ * not into a stroke-width property. Those vertices sit inside the SAME
+ * `<g transform="scale(view.scale)">` as everything else, so an offset
+ * computed once as `offM * projection.scale` (correct at fit scale, where
+ * view.scale === 1) stretches right along with the group's own scale as the
+ * user zooms in, while the ribbon's frozen width stays put -- so the
+ * outermost divider of an L-lane road walks outside its own ribbon once
+ * zoom exceeds roughly L / (L - 2) (a 6-lane road, ~1.5x, about 3
+ * `WHEEL_ZOOM_STEP` ticks). `dividerOffsetCoord` (lib/roadWidth.ts) is the
+ * fix: divide the metre-scaled offset by `view.scale` before it becomes a
+ * vertex position, so the group's own `scale(view.scale)` multiplies it
+ * right back out to the constant `offM * projection.scale` on screen, at
+ * ANY zoom -- reaching, by arithmetic, the same frozen on-screen size
+ * `vectorEffect="non-scaling-stroke"` reaches for a stroke's width alone.
+ *
+ * Rendered BETWEEN `NetworkLayer` and `HighlightLayer` in the parent's `<g>`
+ * -- a divider must draw on top of its OWN link's ribbon (drawn by
+ * `NetworkLayer`, earlier in the `<g>`) to be visible at all, and underneath
+ * any warn/refuse/selected treatment (drawn by `HighlightLayer`, later) so
+ * those are never dulled by a lane-marking line on top of them. The
+ * refuse/warn skip below already keeps a divider from ever sharing a link
+ * with a refuse/warn treatment; sibling order is what protects `selected`,
+ * which a normal-tier link can carry at the same time as its own divider.
+ * This mirrors `GenesisTileMap.tsx`'s own draw order exactly: its "normal"
+ * pass adds a link's divider immediately after that link's own ribbon, and
+ * its later "warn"/"refuse"/"selected" passes end up on top because
+ * leaflet's own insertion order is the z-order there too. */
+const LaneDividersLayer = memo(function LaneDividersLayer({
+  network,
+  highlights,
+  showNormal,
+  projection,
+  viewScale,
+}: {
+  network: GenesisDraftNetwork;
+  highlights: HighlightSets;
+  showNormal: boolean;
+  projection: { projX: (x: number) => number; projY: (y: number) => number; scale: number };
+  viewScale: number;
+}) {
+  if (!showNormal) return null;
+  return (
+    <>
+      {network.links.map((link) => {
+        if (highlights.refuseLinks.has(link.id) || highlights.warnLinks.has(link.id)) return null;
+        if (link.points.length < 2) return null;
+        // Lane dividers (unit #29) -- interior lane BOUNDARIES only, never
+        // edge lines, mirroring NetworkViewer.tsx's own Layer 3 ("the
+        // casing already reads as the road edge, and dropping [edge lines]
+        // also avoids the largest, spike-prone +/-width/2 offsets on
+        // curved arcs"). Connectors do NOT get this treatment, matching
+        // NetworkViewer: a connector's own identity is already the thin
+        // CONNECTOR_IDENTITY_DASH centreline `NetworkLayer` draws, and
+        // adding a second dash rhythm on top would read as a third,
+        // undocumented state.
+        //
+        // READABILITY GATE, not a new clamp: `roadW` is a value FROZEN at
+        // this file's own fit scale (see `NetworkLayer`'s top comment --
+        // `vectorEffect="non-scaling-stroke"` holds it constant across the
+        // user's own pan/zoom). A divider is drawn only when `roadW` is
+        // still the link's real metre-true width and not the MIN_ROAD_PX
+        // floor -- below that floor the ribbon is already wider on screen
+        // than its own geometry supports, so an interior line computed
+        // from that same geometry has nothing honest left to sit inside
+        // (see `NetworkLayer`'s "HONEST LIMIT" comment for why the
+        // ribbon's width is relative, not zoom-true, in the first place --
+        // a divider drawn from the same frozen-at-fit-scale geometry
+        // inherits exactly that limit, not a new one).
+        const roadW = Math.max(genesisElementWidthMeters(link) * projection.scale, MIN_ROAD_PX);
+        const dividerOffsetsM = roadW > MIN_ROAD_PX ? genesisElementLaneOffsetsM(link) : [];
+        if (dividerOffsetsM.length === 0) return null;
+        const projectedPoints: [number, number][] = link.points.map(
+          ([x, y]) => [projection.projX(x), projection.projY(y)] as [number, number],
+        );
+        return (
+          <g key={`ld-${link.id}`}>
+            {dividerOffsetsM.map((offM, index) => (
+              <polyline
+                key={`ld-${link.id}-${index}`}
+                points={rawPointsAttr(offsetPolyline(projectedPoints, dividerOffsetCoord(offM, projection.scale, viewScale)))}
+                fill="none"
+                stroke={MARKING_COLOR}
+                strokeWidth={Math.max(LANE_DASH_STROKE_M * projection.scale, LANE_DASH_STROKE_MIN_PX)}
+                strokeDasharray={`${LANE_DASH_M * projection.scale} ${LANE_GAP_M * projection.scale}`}
+                strokeOpacity={0.55}
+                vectorEffect="non-scaling-stroke"
+                strokeLinecap="round"
+                pointerEvents="none"
+              />
+            ))}
+          </g>
+        );
+      })}
+    </>
+  );
+});
+
+/** Warn/refuse/selected treatments, the strongest claims on the map and
+ * always the LAST thing drawn under the parent's `<g>` (see that `<g>`'s own
+ * comment for the full three-layer order) -- a sibling of `NetworkLayer` and
+ * `LaneDividersLayer`, memoized against everything except `view` for the
+ * SAME reason `NetworkLayer` is. Unlike `LaneDividersLayer`, nothing drawn
+ * here bakes a lateral offset into a vertex position -- every polyline below
+ * redraws a link/connector's own raw points -- so `vectorEffect="non-scaling-stroke"`
+ * alone is enough to hold these strokes to a constant on-screen width across
+ * zoom, exactly like `NetworkLayer`'s own ribbons; there is nothing here
+ * that needs `view.scale`. */
+const HighlightLayer = memo(function HighlightLayer({
+  linksById,
+  connectorsById,
+  highlights,
+  selectedHighlight,
+  showRefuse,
+  showWarn,
+  projection,
+  onSelectLink,
+  onSelectConnector,
+}: {
+  linksById: Map<number, GenesisDraftLink>;
+  connectorsById: Map<number, GenesisDraftConnector>;
+  highlights: HighlightSets;
+  selectedHighlight: GenesisFindingHighlight | null;
+  showRefuse: boolean;
+  showWarn: boolean;
+  projection: { projX: (x: number) => number; projY: (y: number) => number; scale: number };
+  onSelectLink: (linkId: number) => void;
+  onSelectConnector: (connectorId: number) => void;
+}) {
+  return (
+    <>
       {showWarn &&
         [...highlights.warnLinks].map((linkId) => {
           const link = linksById.get(linkId);

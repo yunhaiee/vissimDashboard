@@ -3,7 +3,22 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
 import { NetworkData, NetworkElements, ScenarioResults } from "@/lib/api";
 import { LOS_COLORS, LOS_GRADE_THRESHOLDS, calculateNodeAverageDelay, resolveLosGrade, type LosGrade } from "@/lib/los";
-import { DEFAULT_LANE_M, MIN_ROAD_PX, linkWidthMeters } from "@/lib/roadWidth";
+import {
+  CONNECTOR_DASH_M,
+  CONNECTOR_DASH_STROKE_M,
+  CONNECTOR_DASH_STROKE_MIN_PX,
+  CONNECTOR_GAP_M,
+  DEFAULT_LANE_M,
+  LANE_DASH_M,
+  LANE_DASH_STROKE_M,
+  LANE_DASH_STROKE_MIN_PX,
+  LANE_GAP_M,
+  MARKING_COLOR,
+  MIN_ROAD_PX,
+  laneBoundaryOffsets,
+  linkWidthMeters,
+  offsetPolyline,
+} from "@/lib/roadWidth";
 import { ELEMENT_TYPE_LABELS, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 import { buildVehicleInputStacks, vehicleInputCompositionLabel } from "@/lib/vehicleInputStack";
 import { useLanguage } from "@/components/LanguageProvider";
@@ -94,9 +109,12 @@ interface Props {
 
 // Road-surface palette — all drawn from the file's existing slate family; no new
 // saturated hues, gradients or shadows (Vissim-style flat asphalt ribbons).
+// MARKING_COLOR (muted light slate — lane dividers, chevrons, stop lines,
+// junction outline) moved to lib/roadWidth.ts (unit #29) and is imported
+// above, so a genesis draft map's own lane dividers draw in the exact same
+// hue rather than a second slate chosen to "look about right".
 const ASPHALT_FILL = "#3a4150";   // road surface (mid slate) — links AND connectors
 const ROAD_CASING = "#232a36";    // darker slate under the asphalt (road edge)
-const MARKING_COLOR = "#94a3b8";  // muted light slate — lane dividers, chevrons, stop lines, junction outline
 const NODE_FILL = "#1e293b";
 const NODE_STROKE = "#f8fafc";
 const ACCENT = "#4c8dff";
@@ -150,9 +168,16 @@ const PED_FILL = "#b9b2a3";      // warm light slate — pedestrian areas
 // vehicle overlay, still needs the exact on-screen road width this file draws
 // to size cars proportionally to their lane) via that shared module instead
 // of this file's own definitions, so there is one formula, not two that could
-// drift.
+// drift. Unit #29 moved the LANE_DASH_*/CONNECTOR_DASH_* geometry constants
+// and laneBoundaryOffsets()/offsetPolyline() out the same way and for the
+// same reason: the genesis draft maps now draw their own interior lane
+// dividers and need this exact metre-true geometry, not a second formula.
+// Every one of those names is imported above instead of defined here;
+// MITER_COS_MIN had no caller left once offsetPolyline moved and is gone from
+// this file entirely (it lives, unexported, beside offsetPolyline in
+// lib/roadWidth.ts). EPS stays -- sampleAlong() and the detector/element
+// glyph math further down still use it for unrelated geometry.
 const EPS = 1e-6;
-const MITER_COS_MIN = 0.5;         // clamp miter to ≤ 2× so sharp bends never spike offsets
 const MAX_CHEVRONS = 8;            // cap per link (keeps SVG node count modest)
 
 // Road-marking geometry (Defect B, 2026-07-27). Chevrons/lane dividers/connector
@@ -163,20 +188,15 @@ const MAX_CHEVRONS = 8;            // cap per link (keeps SVG node count modest)
 // drowning the roads. Now: metre-true primary terms (scale naturally with k via the
 // group transform, same as road width) with SCREEN-space floors (divide by k, same
 // convention as the element glyphs below), drawn INSIDE drawZoomDependent so they
-// rebuild on the same k-changed schedule instead of being frozen at base fit.
+// rebuild on the same k-changed schedule instead of being frozen at base fit. (The
+// lane-divider/connector-dash CONSTANTS this paragraph describes now live in
+// lib/roadWidth.ts -- see above -- only the CHEVRON constants below stayed local,
+// since chevrons are not part of what the genesis maps needed.)
 const CHEVRON_SPACING_M = 25;             // metre-true spacing target between chevrons
 const CHEVRON_SPACING_MIN_SCREEN_PX = 40; // spacing floor, screen px (keeps density sane zoomed out)
 const CHEVRON_MAX_M = 4;                  // chevron size cap, metre-true (0.5 x road width, capped)
 const CHEVRON_MIN_SCREEN_PX = 3;          // below this on-screen size, skip the chevron entirely
 const CHEVRON_STROKE_MIN_PX = 0.9;        // chevron stroke screen floor
-const LANE_DASH_M = 3;                    // lane-divider dash length, metres
-const LANE_GAP_M = 9;                     // lane-divider gap length, metres
-const LANE_DASH_STROKE_M = 0.15;          // lane-divider stroke width, metres
-const LANE_DASH_STROKE_MIN_PX = 0.7;      // lane-divider stroke screen floor
-const CONNECTOR_DASH_M = 1.5;             // connector centre-dash length, metres (shorter than lane dividers)
-const CONNECTOR_GAP_M = 4.5;              // connector centre-dash gap, metres
-const CONNECTOR_DASH_STROKE_M = 0.12;     // connector centre-dash stroke width, metres
-const CONNECTOR_DASH_STROKE_MIN_PX = 0.7; // connector centre-dash stroke screen floor
 
 // Element-glyph size floors (P1 junction-polish pass; raised 2026-07-27, Defect C —
 // user feedback found the P1 floors too stingy for legibility). These only bite when
@@ -222,71 +242,14 @@ type Pt = [number, number];
 // parameter (width_total?/lane_widths?/lanes), so every call site below is
 // unchanged.
 
-// Signed interior lane-boundary offsets from the centreline, in metres. A link
-// with L lanes yields L-1 dividers; single-lane links yield none.
-function laneBoundaryOffsets(l: NetworkLink): number[] {
-  const L = Math.round(l.lanes ?? 1);
-  if (L < 2) return [];
-  const total = linkWidthMeters(l);
-  const widths = l.lane_widths && l.lane_widths.length === L ? l.lane_widths : new Array(L).fill(total / L);
-  const sum = widths.reduce((a, b) => a + b, 0) || total;
-  const out: number[] = [];
-  let cum = 0;
-  for (let k = 0; k < L - 1; k++) {
-    cum += widths[k];
-    out.push(cum - sum / 2);
-  }
-  return out;
-}
-
-// Offset a polyline sideways by `dist` px using averaged, miter-limited segment
-// normals. Guards: zero-length segments (duplicate vertices) contribute no
-// normal; a ~180° reversal falls back to one side's normal instead of dividing
-// by a ~zero miter; the miter factor is clamped (MITER_COS_MIN) so tight bends
-// never produce spikes. 2-point links and all-degenerate inputs pass through
-// safely (endpoints just use the single/zero available normal).
-function offsetPolyline(pts: Pt[], dist: number): Pt[] {
-  const n = pts.length;
-  if (n < 2 || !Number.isFinite(dist)) return pts.slice();
-  const segN: (Pt | null)[] = [];
-  for (let i = 0; i < n - 1; i++) {
-    const dx = pts[i + 1][0] - pts[i][0];
-    const dy = pts[i + 1][1] - pts[i][1];
-    const len = Math.hypot(dx, dy);
-    segN.push(len < EPS ? null : [-dy / len, dx / len]);
-  }
-  const out: Pt[] = [];
-  for (let i = 0; i < n; i++) {
-    const prev = i > 0 ? segN[i - 1] : null;
-    const next = i < n - 1 ? segN[i] : null;
-    let nx = 0;
-    let ny = 0;
-    if (prev && next) {
-      let mx = prev[0] + next[0];
-      let my = prev[1] + next[1];
-      const mlen = Math.hypot(mx, my);
-      if (mlen < EPS) {
-        // near-180° reversal: no valid miter direction, use one normal as-is.
-        nx = next[0];
-        ny = next[1];
-      } else {
-        mx /= mlen;
-        my /= mlen;
-        const cos = Math.max(mx * next[0] + my * next[1], MITER_COS_MIN);
-        nx = mx / cos;
-        ny = my / cos;
-      }
-    } else if (next) {
-      nx = next[0];
-      ny = next[1];
-    } else if (prev) {
-      nx = prev[0];
-      ny = prev[1];
-    }
-    out.push([pts[i][0] + nx * dist, pts[i][1] + ny * dist]);
-  }
-  return out;
-}
+// laneBoundaryOffsets(l: NetworkLink) and offsetPolyline(pts, dist) moved to
+// lib/roadWidth.ts (unit #29) and are imported above -- the same "NetworkLink
+// structurally satisfies RoadWidthInput" reasoning as linkWidthMeters's own
+// move comment above applies to laneBoundaryOffsets too; offsetPolyline never
+// referenced NetworkLink at all (it is pure 2-D point geometry, unchanged by
+// the move). Both genesis map renderers now import them as well, to draw
+// their own interior lane dividers with this exact offset math instead of a
+// second implementation.
 
 // Sample `count` evenly-spaced points along a polyline, each with a local unit
 // travel direction. Degenerate (zero-length) segments are skipped; a landed

@@ -55,13 +55,22 @@ import type { GenesisGateReport } from "@/lib/api";
 import {
   fetchGenesisDraftGeoJson,
   fetchGenesisDraftNetwork,
+  genesisElementLaneOffsetsM,
   genesisElementWidthMeters,
   type GenesisDraftConnector,
   type GenesisDraftLink,
   type GenesisDraftNetwork,
   type GenesisGeoJson,
 } from "@/lib/genesisArtifacts";
-import { MIN_ROAD_PX } from "@/lib/roadWidth";
+import {
+  LANE_DASH_M,
+  LANE_DASH_STROKE_M,
+  LANE_DASH_STROKE_MIN_PX,
+  LANE_GAP_M,
+  MARKING_COLOR,
+  MIN_ROAD_PX,
+  offsetPolyline,
+} from "@/lib/roadWidth";
 
 /** The same CARTO dark basemap every other map in this app draws. */
 const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
@@ -633,6 +642,59 @@ function FindingsTileLayer({
               lineJoin: "round",
               interactive: false,
             }).addTo(layer);
+          }
+
+          // Lane dividers (unit #29, "port lane markings to the genesis
+          // draft maps") -- interior lane BOUNDARIES only, mirroring
+          // NetworkViewer.tsx's own Layer 3 (edge lines are intentionally
+          // omitted; the ribbon's own edge already reads as the road edge).
+          // LINKS only, matching NetworkViewer -- a connector already
+          // carries its own CONNECTOR_IDENTITY_DASH cue just above, and a
+          // second dash rhythm on top of that would read as a third,
+          // undocumented state.
+          //
+          // READABILITY GATE, not a new clamp: drawn only when `weight`
+          // (this ribbon's own on-screen width, computed above) is still
+          // the link's real metre-true width and not the MIN_ROAD_PX floor
+          // -- below that floor the ribbon is already wider on screen than
+          // its own geometry supports, so an interior line computed from
+          // that same geometry has nothing honest to sit inside. Reuses
+          // MIN_ROAD_PX itself rather than a second, independently-chosen
+          // number: the two floors describe the SAME regime, "this
+          // ribbon's pixels no longer represent real metres."
+          if (pass === "normal" && !isConnector && element && weight > MIN_ROAD_PX) {
+            const laneOffsetsM = genesisElementLaneOffsetsM(element);
+            if (laneOffsetsM.length > 0) {
+              // map.project/unproject work in the SAME Web Mercator pixel
+              // space `metersPerPixel` above approximates, at the map's
+              // CURRENT zoom -- so offsetPolyline's px-space offsetting (the
+              // ONE offset helper this codebase has, imported from
+              // lib/roadWidth.ts rather than reimplemented) and the
+              // divider's re-projection back to lat/lng both track live
+              // zoom exactly like `weight` itself does (recomputed on every
+              // "zoomend" redraw, see this effect's own header comment) --
+              // not frozen at a fit scale the way DraftLocalMap's SVG
+              // fallback has to be.
+              const zoom = map.getZoom();
+              const projected: [number, number][] = latlngs.map((ll) => {
+                const p = map.project(ll, zoom);
+                return [p.x, p.y];
+              });
+              for (const offM of laneOffsetsM) {
+                const dividerLatLngs = offsetPolyline(projected, offM * pxPerMeter).map(([x, y]) =>
+                  map.unproject([x, y], zoom),
+                );
+                L.polyline(dividerLatLngs, {
+                  color: MARKING_COLOR,
+                  weight: Math.max(LANE_DASH_STROKE_M * pxPerMeter, LANE_DASH_STROKE_MIN_PX),
+                  dashArray: `${LANE_DASH_M * pxPerMeter} ${LANE_GAP_M * pxPerMeter}`,
+                  opacity: 0.55,
+                  lineCap: "round",
+                  lineJoin: "round",
+                  interactive: false,
+                }).addTo(layer);
+              }
+            }
           }
         }
       }

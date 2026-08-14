@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { DEFAULT_NEXT_PATH, loginHref, safeNextPath } from "../lib/authRedirect.ts";
+import { DEFAULT_LANE_M, dividerOffsetCoord, laneBoundaryOffsets, offsetPolyline } from "../lib/roadWidth.ts";
 import {
   CRITICAL_INTERSECTION_GEH_MAX,
   SATURATION_FLOW_WITHIN_PCT,
@@ -4484,7 +4485,19 @@ contractTest("U-19 round 2: one width formula draws width-scaled ribbons in both
   // now import from the shared module instead -- a pure extraction, so the
   // dashboard/network tab's own rendering is provably unchanged.
   pin.match(roadWidth, /export function linkWidthMeters\(l: RoadWidthInput\): number \{/, "expected the shared module to export the one width formula");
-  pin.match(networkViewer, /import \{ DEFAULT_LANE_M, MIN_ROAD_PX, linkWidthMeters \} from "@\/lib\/roadWidth";/, "expected NetworkViewer to import the formula rather than defining its own");
+  // Unit #29 ("port lane markings to the genesis draft maps") widened this
+  // ONE import statement to also carry the lane-marking geometry constants
+  // and the two offset helpers -- sliceBetween isolates just the import
+  // block so this pin keeps proving the SAME thing (NetworkViewer imports
+  // the width formula rather than defining it locally) without caring about
+  // the extra names now sharing the statement.
+  const networkViewerRoadWidthImport = sliceBetween(networkViewer, "import {\n  CONNECTOR_DASH_M,", '} from "@/lib/roadWidth";');
+  pin.match(networkViewerRoadWidthImport, /\S/, "expected NetworkViewer's shared-module import block to still be found (marker moved?)");
+  pin.match(
+    networkViewerRoadWidthImport,
+    /DEFAULT_LANE_M,[\s\S]*MIN_ROAD_PX,[\s\S]*linkWidthMeters,/,
+    "expected NetworkViewer to import the formula rather than defining its own",
+  );
   pin.doesNotMatch(networkViewer, /export function linkWidthMeters\(/, "expected NetworkViewer's own local linkWidthMeters definition to be gone");
   pin.doesNotMatch(networkViewer, /export const DEFAULT_LANE_M/, "expected NetworkViewer's own local DEFAULT_LANE_M export to be gone");
   pin.doesNotMatch(networkViewer, /export const MIN_ROAD_PX/, "expected NetworkViewer's own local MIN_ROAD_PX export to be gone");
@@ -4501,7 +4514,10 @@ contractTest("U-19 round 2: one width formula draws width-scaled ribbons in both
   // one measured lane_width_m into a lane_widths array and lets the SAME
   // linkWidthMeters sum it, rather than multiplying lanes x lane_width_m by
   // hand (which would be a second formula that happens to agree today).
-  pin.match(genesisArtifacts, /import \{ linkWidthMeters \} from "@\/lib\/roadWidth";/, "expected the genesis adapter to import the shared formula");
+  // Unit #29 added a sibling import (laneBoundaryOffsets, for the genesis
+  // lane-divider adapter below) to this same statement -- still one import
+  // from the shared module, not a second linkWidthMeters copy.
+  pin.match(genesisArtifacts, /import \{ laneBoundaryOffsets, linkWidthMeters \} from "@\/lib\/roadWidth";/, "expected the genesis adapter to import the shared formula");
   pin.match(
     genesisArtifacts,
     /export function genesisElementWidthMeters\(element: \{ lanes: number; lane_width_m: number \}\): number \{/,
@@ -4589,8 +4605,15 @@ contractTest("U-19 round 2: one width formula draws width-scaled ribbons in both
   );
 
   // ---- The floor is ONE constant, not two independently-chosen numbers ------
-  pin.match(tileMap, /import \{ MIN_ROAD_PX \} from "@\/lib\/roadWidth";/, "expected the tile map to import the shared floor, not invent its own");
-  pin.match(localMap, /import \{ MIN_ROAD_PX \} from "@\/lib\/roadWidth";/, "expected the SVG fallback to import the SAME shared floor");
+  //
+  // Unit #29 widened both genesis renderers' roadWidth import to also carry
+  // the lane-marking geometry constants and offsetPolyline -- sliceBetween
+  // isolates just the import block so these two pins keep proving the SAME
+  // thing (MIN_ROAD_PX comes from the shared module, not a local invention).
+  const tileMapRoadWidthImport = sliceBetween(tileMap, "import {\n  LANE_DASH_M,", '} from "@/lib/roadWidth";');
+  const localMapRoadWidthImport = sliceBetween(localMap, "import {\n  LANE_DASH_M,", '} from "@/lib/roadWidth";');
+  pin.match(tileMapRoadWidthImport, /\bMIN_ROAD_PX,/, "expected the tile map to import the shared floor, not invent its own");
+  pin.match(localMapRoadWidthImport, /\bMIN_ROAD_PX,/, "expected the SVG fallback to import the SAME shared floor");
 
   // ---- Connector vs. link: mirrors NetworkViewer, not a third convention ----
   //
@@ -4637,6 +4660,310 @@ contractTest("U-19 round 2: one width formula draws width-scaled ribbons in both
     /1831 links \+ 3828 connectors,\s*\n\/\/ zero missing or zero\/negative `lanes` or `lane_width_m` in that file/,
     "expected the real-census honesty measurement to be cited in source, not only claimed in a report",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #29 -- "port lane markings to the genesis draft maps". NetworkViewer's
+// own lane-divider/connector-dash geometry (LANE_DASH_M and its siblings) and
+// its two offset helpers (laneBoundaryOffsets, offsetPolyline) moved to
+// lib/roadWidth.ts, the same single-source module U-19 round 2 already
+// established for road width -- so a genesis link's own interior lane
+// dividers draw with the EXACT geometry the dashboard/network tab draws, not
+// a second formula that happens to agree today.
+// ---------------------------------------------------------------------------
+
+test("unit #29: laneBoundaryOffsets/offsetPolyline -- the shared divider-offset geometry, checked by value", () => {
+  // Single-lane (and zero-lane, a defensive floor) links carry no interior
+  // boundary at all.
+  assert.deepEqual(laneBoundaryOffsets({ lanes: 1 }), []);
+  assert.deepEqual(laneBoundaryOffsets({ lanes: 0 }), []);
+
+  // UNIFORM lane widths reduce exactly to the closed form this unit's own
+  // brief states: divider i of an L-lane link sits at (i/L - 0.5) * width.
+  const closedForm = (i: number, L: number, width: number) => (i / L - 0.5) * width;
+
+  const threeLane = laneBoundaryOffsets({ lanes: 3, lane_widths: [3, 3, 3] });
+  assert.equal(threeLane.length, 2);
+  assert.ok(Math.abs(threeLane[0] - closedForm(1, 3, 9)) < 1e-9, `expected ${closedForm(1, 3, 9)}, got ${threeLane[0]}`);
+  assert.ok(Math.abs(threeLane[1] - closedForm(2, 3, 9)) < 1e-9, `expected ${closedForm(2, 3, 9)}, got ${threeLane[1]}`);
+
+  // NON-uniform lane widths -- the reason the cumulative-sum form moved
+  // verbatim rather than the simpler closed form: NetworkViewer's own
+  // NetworkLink can carry a real per-lane breakdown, and a divider must sit
+  // at the REAL cumulative boundary, not an evenly-divided one.
+  const skewed = laneBoundaryOffsets({ lanes: 3, lane_widths: [2, 4, 3] }); // sum 9
+  assert.deepEqual(skewed, [-2.5, 1.5]); // after lane 0 (w2): 2-4.5; after lane 1 (w4): 6-4.5
+
+  // No lane_widths and no width_total -- falls back to lanes x DEFAULT_LANE_M
+  // (linkWidthMeters's own fallback), the same shape every genesis element
+  // with no per-lane data ultimately goes through too.
+  const fallback = laneBoundaryOffsets({ lanes: 3 });
+  const fallbackWidth = 3 * DEFAULT_LANE_M;
+  assert.equal(fallback.length, 2);
+  assert.ok(Math.abs(fallback[0] - closedForm(1, 3, fallbackWidth)) < 1e-9);
+  assert.ok(Math.abs(fallback[1] - closedForm(2, 3, fallbackWidth)) < 1e-9);
+
+  // offsetPolyline on a straight horizontal segment: the perpendicular is
+  // straight up/down, per this module's own normal convention
+  // (`[-dy/len, dx/len]`) -- a positive offset on an eastbound segment moves
+  // +y, matching a divider drawn symmetrically about the centreline.
+  const straight: [number, number][] = [[0, 0], [10, 0]];
+  assert.deepEqual(offsetPolyline(straight, 2), [[0, 2], [10, 2]]);
+  assert.deepEqual(offsetPolyline(straight, -2), [[0, -2], [10, -2]]);
+
+  // Degenerate inputs pass through unchanged rather than throwing or NaN-ing.
+  assert.deepEqual(offsetPolyline([[1, 1]], 5), [[1, 1]]); // fewer than 2 points
+  assert.deepEqual(offsetPolyline(straight, NaN), straight); // non-finite distance
+});
+
+contractTest("unit #29: lane-marking geometry is ONE export, and NetworkViewer imports it rather than redefining it", (pin) => {
+  const roadWidth = read("lib/roadWidth.ts");
+  const networkViewer = read("components/NetworkViewer.tsx").replace(/\r\n/g, "\n");
+
+  // ---- Single source: every constant + both helper functions exported once --
+  const MOVED_CONSTANTS = [
+    "MARKING_COLOR",
+    "LANE_DASH_M",
+    "LANE_GAP_M",
+    "LANE_DASH_STROKE_M",
+    "LANE_DASH_STROKE_MIN_PX",
+    "CONNECTOR_DASH_M",
+    "CONNECTOR_GAP_M",
+    "CONNECTOR_DASH_STROKE_M",
+    "CONNECTOR_DASH_STROKE_MIN_PX",
+  ];
+  for (const name of MOVED_CONSTANTS) {
+    pin.match(roadWidth, new RegExp(`export const ${name} = `), `expected roadWidth.ts to export ${name} as the single source`);
+  }
+  pin.match(roadWidth, /export function laneBoundaryOffsets\(l: RoadWidthInput\): number\[\] \{/, "expected the divider-offset computation to be a pure, exported function");
+  pin.match(roadWidth, /export function offsetPolyline\(pts: Pt\[\], dist: number\): Pt\[\] \{/, "expected the offset-polyline helper to be a pure, exported function");
+
+  // ---- NetworkViewer imports every name, defines NONE of them locally -------
+  //
+  // Anchored on `=` right after the identifier (a local `const NAME =`) so an
+  // unrelated identifier that merely shares a prefix (e.g. a hypothetical
+  // `LANE_DASH_MAX`) cannot false-positive this doesNotMatch, and the pattern
+  // still fires on the EXACT redefinition it exists to catch.
+  for (const name of MOVED_CONSTANTS) {
+    pin.doesNotMatch(
+      networkViewer,
+      new RegExp(`const ${name}\\s*=`),
+      `expected NetworkViewer's own local \`const ${name}\` to be gone -- it must come from the import only`,
+    );
+  }
+  pin.doesNotMatch(networkViewer, /function laneBoundaryOffsets\(/, "expected NetworkViewer's own local laneBoundaryOffsets definition to be gone");
+  pin.doesNotMatch(networkViewer, /function offsetPolyline\(/, "expected NetworkViewer's own local offsetPolyline definition to be gone");
+  pin.match(networkViewer, /\blaneBoundaryOffsets,\n/, "expected NetworkViewer to import laneBoundaryOffsets rather than defining it");
+  pin.match(networkViewer, /\boffsetPolyline,\n/, "expected NetworkViewer to import offsetPolyline rather than defining it");
+
+  // ---- NetworkViewer's OWN drawing call sites are unchanged ------------------
+  //
+  // Proves rendering did not move by one pixel: these are the exact call
+  // sites that existed before the move, spelled identically, now resolving
+  // to the imported functions instead of file-local ones.
+  pin.match(networkViewer, /for \(const offM of laneBoundaryOffsets\(link\)\) \{/, "expected NetworkViewer's lane-divider loop to still call laneBoundaryOffsets(link) unchanged");
+  pin.match(networkViewer, /const line = offsetPolyline\(pts, offM \* pxPerMeter\);/, "expected NetworkViewer's divider-path construction to be byte-identical to before the move");
+  pin.match(
+    networkViewer,
+    /\.attr\("stroke-width", Math\.max\(LANE_DASH_STROKE_M \* pxPerMeter, LANE_DASH_STROKE_MIN_PX \/ k\)\)/,
+    "expected NetworkViewer's lane-divider stroke floor to be unchanged",
+  );
+  pin.match(
+    networkViewer,
+    /\.attr\("stroke-dasharray", `\$\{LANE_DASH_M \* pxPerMeter\} \$\{LANE_GAP_M \* pxPerMeter\}`\)/,
+    "expected NetworkViewer's lane-divider dash pattern to be unchanged",
+  );
+  pin.match(
+    networkViewer,
+    /\.attr\("stroke-width", Math\.max\(CONNECTOR_DASH_STROKE_M \* pxPerMeter, CONNECTOR_DASH_STROKE_MIN_PX \/ k\)\)/,
+    "expected NetworkViewer's connector centre-dash stroke floor to be unchanged",
+  );
+});
+
+contractTest("unit #29: both genesis draft maps draw their own interior lane dividers, in the shared geometry and colour", (pin) => {
+  const genesisArtifacts = read("lib/genesisArtifacts.ts");
+  const tileMap = read("components/genesis/GenesisTileMap.tsx");
+  const localMap = read("components/genesis/DraftLocalMap.tsx");
+
+  // ---- The adapter delegates, it does not reimplement ------------------------
+  //
+  // Same shape as genesisElementWidthMeters (U-19 round 2): neither genesis
+  // type carries a lane_widths breakdown, so this builds one from the single
+  // measured lane_width_m and hands it to the SAME laneBoundaryOffsets the
+  // dashboard uses, rather than computing an offset formula by hand.
+  pin.match(genesisArtifacts, /import \{ laneBoundaryOffsets, linkWidthMeters \} from "@\/lib\/roadWidth";/, "expected the genesis adapter to import laneBoundaryOffsets from the shared module");
+  pin.match(
+    genesisArtifacts,
+    /export function genesisElementLaneOffsetsM\(element: \{ lanes: number; lane_width_m: number \}\): number\[\] \{/,
+    "expected one named adapter function for lane-divider offsets, mirroring genesisElementWidthMeters's own shape",
+  );
+  pin.match(
+    genesisArtifacts,
+    /return laneBoundaryOffsets\(\{ lane_widths: new Array\(laneCount\)\.fill\(element\.lane_width_m\), lanes: element\.lanes \}\);/,
+    "expected the lane-offset adapter to hand a shaped object to laneBoundaryOffsets, not compute an offset itself",
+  );
+
+  // ---- Both renderers import the shared offset helper and mono colour, and
+  // both call the one adapter rather than hand-rolling the (i/L - 0.5)*width
+  // formula themselves. -------------------------------------------------------
+  for (const [label, source] of [["GenesisTileMap", tileMap], ["DraftLocalMap", localMap]] as const) {
+    const roadWidthImport = sliceBetween(source, "import {\n  LANE_DASH_M,", '} from "@/lib/roadWidth";');
+    pin.match(roadWidthImport, /\S/, `expected ${label}'s shared-module import block to still be found (marker moved?)`);
+    pin.match(roadWidthImport, /\bMARKING_COLOR,/, `expected ${label} to import the shared mono marking colour`);
+    pin.match(roadWidthImport, /\boffsetPolyline,/, `expected ${label} to import the shared offset helper`);
+    pin.match(source, /genesisElementLaneOffsetsM\(/, `expected ${label} to compute lane-divider offsets through the one shared adapter`);
+    pin.doesNotMatch(
+      source,
+      /i \/ L - 0\.5|- 0\.5\) \* (?:widthMeters|weight|roadW)/,
+      `expected ${label} not to reimplement the divider-offset formula itself -- it must call genesisElementLaneOffsetsM`,
+    );
+  }
+
+  // ---- DraftLocalMap: the offset formula, drawn in the shared mono colour,
+  // pointer-events none (decoration, not a second click target), and gated on
+  // the SAME MIN_ROAD_PX floor the ribbon itself is judged against. ----------
+  pin.match(
+    localMap,
+    /const dividerOffsetsM = roadW > MIN_ROAD_PX \? genesisElementLaneOffsetsM\(link\) : \[\];/,
+    "expected DraftLocalMap's lane dividers to be gated on the ribbon's own MIN_ROAD_PX floor",
+  );
+  // Zoom fix (adversarial finding #1): a divider's offset is baked into
+  // VERTEX POSITIONS, which the parent `<g transform="scale(view.scale)">`
+  // DOES scale -- unlike the ribbon's own `vectorEffect="non-scaling-stroke"`
+  // width, which the same transform leaves alone. An offset computed as bare
+  // `offM * projection.scale` (fit-scale only) is therefore correct at
+  // view.scale 1 and WRONG at every other zoom: it drifts outward with the
+  // group's own scale while the ribbon it is supposed to sit inside stays a
+  // constant on-screen width, so the outermost divider of a wide road walks
+  // outside its own ribbon as the user zooms in. The fix routes the offset
+  // through `dividerOffsetCoord`, which divides by `viewScale` so the
+  // group's `scale(view.scale)` multiplies it right back out to a constant
+  // on-screen value -- see the value test below for the invariant itself.
+  pin.doesNotMatch(
+    localMap,
+    /offsetPolyline\(projectedPoints, offM \* projection\.scale\)/,
+    "expected the OLD zoom-incoherent divider offset (baked at fit scale, never corrected for view.scale) to be gone -- see unit #29's zoom-fix test for why it drifts outside its own ribbon under zoom",
+  );
+  pin.match(
+    localMap,
+    /offsetPolyline\(projectedPoints, dividerOffsetCoord\(offM, projection\.scale, viewScale\)\)/,
+    "expected DraftLocalMap's divider path to be built via the shared offsetPolyline helper, offset through dividerOffsetCoord so the on-screen distance from the centreline stays constant across zoom instead of scaling with the group transform",
+  );
+  pin.match(
+    localMap,
+    /stroke=\{MARKING_COLOR\}[\s\S]{0,450}pointerEvents="none"/,
+    "expected DraftLocalMap's lane-divider overlay to draw in the shared mono marking colour and stay non-interactive",
+  );
+  // Anchored on the connector block specifically (bounded by the two `.map`
+  // headers) so this proves connectors do NOT get lane dividers, matching
+  // NetworkViewer -- not merely that the string is absent from the whole file.
+  const connectorBlock = sliceBetween(localMap, "network.connectors.map((connector) => {", "network.links.map((link) => {");
+  pin.match(connectorBlock, /\S/, "expected DraftLocalMap's connector-rendering block to still be found (marker moved?)");
+  pin.doesNotMatch(connectorBlock, /genesisElementLaneOffsetsM/, "expected DraftLocalMap connectors NOT to draw interior lane dividers -- only their existing CONNECTOR_IDENTITY_DASH cue");
+
+  // ---- GenesisTileMap: same formula/colour/pointer-events discipline, but
+  // gated live on the CURRENT zoom (weight, not a frozen fit-scale value) and
+  // explicitly scoped to links (`!isConnector`). ------------------------------
+  pin.match(
+    tileMap,
+    /if \(pass === "normal" && !isConnector && element && weight > MIN_ROAD_PX\) \{/,
+    "expected GenesisTileMap's lane dividers to be links-only, normal-tier-only, and gated on the SAME MIN_ROAD_PX floor the ribbon itself is judged against",
+  );
+  pin.match(
+    tileMap,
+    /offsetPolyline\(projected, offM \* pxPerMeter\)/,
+    "expected GenesisTileMap's divider path to be built via the shared offsetPolyline helper, in the map's own live px-per-metre",
+  );
+  pin.match(
+    tileMap,
+    /color: MARKING_COLOR,[\s\S]{0,400}interactive: false,/,
+    "expected GenesisTileMap's lane-divider overlay to draw in the shared mono marking colour and stay non-interactive",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #29 zoom fix (adversarial finding #1) -- DraftLocalMap's lane dividers
+// baked their offset into vertex positions at fit scale only, so under zoom
+// the offset scaled with the group transform while the ribbon's own
+// vectorEffect="non-scaling-stroke" width stayed frozen: the outermost
+// divider of a wide road walked outside its own ribbon. The fix is
+// `dividerOffsetCoord` (lib/roadWidth.ts) plus a new sibling layer
+// (`LaneDividersLayer`) that can take `view.scale` without undoing
+// `NetworkLayer`'s own memoization.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #29 zoom fix: dividerOffsetCoord is a pure, exported helper, and DraftLocalMap's divider layer takes view.scale on purpose", (pin) => {
+  const roadWidth = read("lib/roadWidth.ts");
+  const localMap = read("components/genesis/DraftLocalMap.tsx");
+
+  pin.match(
+    roadWidth,
+    /export function dividerOffsetCoord\(offM: number, projectionScale: number, viewScale: number\): number \{/,
+    "expected a pure, exported helper computing the screen-frozen divider offset",
+  );
+  pin.match(
+    roadWidth,
+    /return \(offM \* projectionScale\) \/ viewScale;/,
+    "expected the helper to divide the fit-scale offset by viewScale, so the caller's own scale(view.scale) transform multiplies it right back out to a constant on-screen value",
+  );
+
+  // The layer that needs this: a NEW sibling of NetworkLayer, deliberately
+  // NOT folded into it (a changing viewScale prop on NetworkLayer would
+  // force it to rebuild all ~5,000 polylines on every wheel tick, undoing
+  // the whole point of B3-10's memoization).
+  pin.match(localMap, /const LaneDividersLayer = memo\(function LaneDividersLayer\(/, "expected the lane-divider layer to be its own memoized sibling component, not folded back into NetworkLayer");
+  pin.match(localMap, /viewScale: number;/, "expected LaneDividersLayer to declare viewScale as a real prop, not read view.scale from a closure");
+  pin.match(localMap, /<LaneDividersLayer\b[\s\S]{0,200}viewScale=\{view\.scale\}/, "expected the parent to hand LaneDividersLayer the CURRENT view.scale on every render, so it reacts to zoom");
+  // The one thing this fix must NOT do: give NetworkLayer itself a view-
+  // reactive prop. If this ever fires, someone "fixed" the divider bug by
+  // widening NetworkLayer's own props instead of using the sibling layer,
+  // which would silently reintroduce the ~5,000-element-rebuild-per-tick
+  // regression B3-10 exists to prevent.
+  const networkLayerProps = sliceBetween(localMap, "const NetworkLayer = memo(function NetworkLayer({", "}: {");
+  pin.match(networkLayerProps, /\S/, "expected NetworkLayer's own prop list to still be found (signature moved?)");
+  pin.doesNotMatch(networkLayerProps, /viewScale/, "expected NetworkLayer to stay ignorant of view.scale -- a divider's zoom-reactivity must live in LaneDividersLayer alone");
+
+  // dividerOffsetCoord imported alongside the rest of the shared module, not
+  // reimplemented locally.
+  const localMapRoadWidthImport = sliceBetween(localMap, "import {\n  LANE_DASH_M,", '} from "@/lib/roadWidth";');
+  pin.match(localMapRoadWidthImport, /\bdividerOffsetCoord,/, "expected DraftLocalMap to import dividerOffsetCoord from the shared module rather than dividing by view.scale inline");
+});
+
+test("unit #29 zoom fix: dividerOffsetCoord keeps a lane divider's on-screen offset constant across zoom", () => {
+  // At fit scale (viewScale 1) the helper must reduce to the plain,
+  // un-corrected fit-scale offset every OTHER caller (GenesisTileMap, which
+  // has no equivalent frozen-ribbon problem to correct for) still uses.
+  const offM = 4.2; // a representative lane-boundary offset, metres
+  const projectionScale = 0.85; // a representative fit-scale metres-to-view-units factor
+  assert.ok(
+    Math.abs(dividerOffsetCoord(offM, projectionScale, 1) - offM * projectionScale) < 1e-9,
+    "expected dividerOffsetCoord(offM, projectionScale, 1) to equal the plain fit-scale offset",
+  );
+
+  // THE REFUTER'S SCENARIO: a 6-lane link, three WHEEL_ZOOM_STEP (1.18)
+  // ticks in -- the defect report's own "about 3 wheel ticks" depth at which
+  // an un-corrected offset visibly exits a 6-lane ribbon. The on-screen
+  // offset (coordinate * viewScale, i.e. what the parent's own
+  // scale(view.scale) transform produces) must be UNCHANGED from viewScale 1.
+  const zoomedViewScale = 1.18 ** 3;
+  const onScreenAtFit = offM * projectionScale;
+  const coordAtZoom = dividerOffsetCoord(offM, projectionScale, zoomedViewScale);
+  const onScreenAtZoom = coordAtZoom * zoomedViewScale;
+  assert.ok(
+    Math.abs(onScreenAtZoom - onScreenAtFit) < 1e-9,
+    `expected the on-screen offset to stay ${onScreenAtFit} at viewScale ${zoomedViewScale} (3 wheel ticks in), got ${onScreenAtZoom}`,
+  );
+
+  // THE INVARIANT ITSELF, generalized: dividerOffsetCoord(...) * viewScale
+  // === offM * projectionScale, for ANY viewScale -- not just the one zoom
+  // depth above.
+  for (const viewScale of [0.5, 1, 1.18, 1.18 ** 2, 1.18 ** 5, 24]) {
+    const coord = dividerOffsetCoord(offM, projectionScale, viewScale);
+    assert.ok(
+      Math.abs(coord * viewScale - offM * projectionScale) < 1e-9,
+      `expected dividerOffsetCoord(${offM}, ${projectionScale}, ${viewScale}) * ${viewScale} === ${offM * projectionScale}, got ${coord * viewScale}`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
