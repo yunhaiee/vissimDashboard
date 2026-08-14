@@ -623,6 +623,11 @@ export function statusLabel(status: GenesisJobStatus, t: (ko: string, en: string
       return t("등록 완료 — 게이트 통과", "PUBLISHED — gate passed", "登録完了 — ゲート通過");
     case "error":
       return t("네트워크를 만들지 못함", "No network could be built", "ネットワークを生成できません");
+    case "checked":
+      // Unit #33. Deliberately not a verdict word: this job produced V1's
+      // evidence and the verdict it changed sits on the PARENT. A label like
+      // "통과" here would claim a judgement this job never made.
+      return t("실 Vissim 확인 완료", "LIVE CHECK DONE", "実Vissim確認 完了");
     default:
       return status;
   }
@@ -715,7 +720,16 @@ export const POLL_INTERVAL_MS = 1000;
 //: that has already been overturned, slow enough to be invisible in the logs.
 export const TERMINAL_RECHECK_MS = 15000;
 
-export const TERMINAL: GenesisJobStatus[] = ["refused", "provisional", "published", "error"];
+export const TERMINAL: GenesisJobStatus[] = [
+  "refused",
+  "provisional",
+  "published",
+  "error",
+  // Unit #33: a live-check job's own end state. Terminal here for the same
+  // reason it is terminal in the backend's TERMINAL_STATUSES -- nothing will
+  // advance it -- so a page polling one stops hammering the API at 1 Hz.
+  "checked",
+];
 
 export function isTerminal(status: GenesisJobStatus): boolean {
   return TERMINAL.includes(status);
@@ -760,6 +774,11 @@ export function statusClasses(status: GenesisJobStatus): string {
     case "published":
       return "border-emerald-300 bg-emerald-50 text-emerald-800";
     case "provisional":
+    // `checked` takes the MONO treatment too, and for the same reason
+    // `provisional` does: it is not a pass. A live-check job's own end state
+    // says "the evidence was produced", never "the network is good" -- the
+    // green, if any is earned, belongs to the parent's chip.
+    case "checked":
       return "border-slate-400 bg-slate-100 text-slate-900";
     case "refused":
     case "error":

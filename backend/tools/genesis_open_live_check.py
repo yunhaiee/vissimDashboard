@@ -130,6 +130,23 @@ REPO_ROOT = BACKEND_ROOT.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+# EXTRACTED 2026-08-14 (unit #33). The COM leg of this probe -- LoadNet, the
+# .err capture, the loaded-model census, SaveNetAs -- now lives in
+# ``services/vissim_open_probe.py`` so that the queued live-check JOB
+# (``services.genesis_jobs``) runs the SAME probe rather than a second copy of
+# it. Nothing about this script's behaviour changed: ``probe_open`` returns the
+# exact dict ``_com_phase`` used to build inline, written here with the same
+# ``json.dumps`` call, so ``state.json``'s shape is unchanged. Imported AFTER
+# the sys.path insert above (that is what makes ``services`` importable), and
+# COM-free at import time -- ``vissim_open_probe`` reaches pywin32 only inside
+# its own connect seam.
+from services.vissim_open_probe import (  # noqa: E402
+    probe_open,
+    read_err_files as _read_err,
+    read_version as _read_version,
+    snapshot_err_paths as _snapshot_err_paths,
+)
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -167,19 +184,8 @@ REFERENCE_EXAMPLES = {
     "ref_lht": EXAMPLES_ROOT / "Roundabout London.UK",
 }
 
-#: Vissim-object-level ids that might carry the version/product string. Read
-#: defensively: a missing id is recorded as missing, never inferred.
-_VERSION_CANDIDATES = (
-    "Version",
-    "VersionNumber",
-    "ProductName",
-    "LicenseInfo",
-    "LicenceInfo",
-    "ServicePack",
-    "Build",
-)
-
-_MAX_ERR_CHARS = 20000
+#: The version-id list and the ``.err`` read cap moved to
+#: ``services/vissim_open_probe.py`` with the readers that use them (unit #33).
 _MAX_FRAGMENT_CHARS = 4000
 
 
@@ -789,215 +795,23 @@ def _analyse_reference(original: Path, saved: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _snapshot_err_paths(directory: Path) -> set[str]:
-    try:
-        return {p.name for p in directory.glob("*.err")}
-    except OSError:
-        return set()
-
-
-def _read_err(directory: Path, pre_existing: set[str]) -> dict[str, Any]:
-    """Every ``.err`` in ``directory``, flagged new-since-snapshot, verbatim."""
-    out: dict[str, Any] = {"files": [], "new_files": []}
-    try:
-        paths = sorted(directory.glob("*.err"))
-    except OSError as exc:
-        out["error"] = str(exc)
-        return out
-    for path in paths:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            text = f"[could not read: {exc}]"
-        if len(text) > _MAX_ERR_CHARS:
-            text = text[:_MAX_ERR_CHARS] + "\n... [truncated]"
-        entry = {"name": path.name, "bytes": path.stat().st_size, "text": text}
-        out["files"].append(entry)
-        if path.name not in pre_existing:
-            out["new_files"].append(path.name)
-    return out
-
-
-def _read_version(vissim: Any) -> dict[str, Any]:
-    info: dict[str, Any] = {"att_values": {}, "python_attrs": {}}
-    for att in _VERSION_CANDIDATES:
-        try:
-            info["att_values"][att] = str(vissim.AttValue(att))
-        except Exception as exc:
-            info["att_values"][att] = f"<unavailable: {type(exc).__name__}>"
-    for name in ("Version", "VersionNumber", "ProductName"):
-        try:
-            info["python_attrs"][name] = str(getattr(vissim, name))
-        except Exception as exc:
-            info["python_attrs"][name] = f"<unavailable: {type(exc).__name__}>"
-    return info
-
-
-def _link_census(vissim: Any) -> tuple[list[tuple[int, int]], dict[str, Any]]:
-    """``[(link no, IsConn), …]`` plus the connector/plain split, in as few COM calls as
-    possible.
-
-    MEASURED 2026-08-06: the obvious form -- ``GetAll()`` then one ``AttValue``
-    per object, three times over -- is ~15,600 marshalled round trips on the
-    2,069-link Murdoch draft and blew a 900 s wall clock without reaching
-    ``SaveNetAs``. ``GetMultipleAttributes`` returns the same numbers in ONE
-    call per attribute set. The per-object loop is kept as the fallback so a
-    Vissim build without it still answers, just slowly.
-    """
-    links = vissim.Net.Links
-    try:
-        pairs = [
-            (int(row[0]), int(row[1] or 0))
-            for row in links.GetMultipleAttributes(("No", "IsConn"))
-        ]
-        read_via = "GetMultipleAttributes"
-    except Exception as bulk_exc:
-        pairs = [
-            (int(o.AttValue("No")), int(o.AttValue("IsConn") or 0))
-            for o in links.GetAll()
-        ]
-        read_via = (
-            "per-object AttValue "
-            f"(GetMultipleAttributes unavailable: {type(bulk_exc).__name__})"
-        )
-    pairs.sort()
-    counts = {
-        "connectors": sum(1 for _no, is_conn in pairs if is_conn == 1),
-        "plain_links": sum(1 for _no, is_conn in pairs if is_conn == 0),
-        "read_via": read_via,
-    }
-    return pairs, counts
-
-
-def _read_com_topology(controller: Any, max_connectors: int = 12) -> dict[str, Any]:
-    """What COM says about the LOADED network -- counts, and for the first few
-    connectors the resolved ``from_lanes``/``to_lanes`` (``get_link()``'s
-    landmine-4 read of each connector lane's nested FromLanes/ToLanes)."""
-    out: dict[str, Any] = {}
-    vissim = controller.vissim
-    try:
-        pairs, census = _link_census(vissim)
-    except Exception as exc:
-        out["error"] = f"{type(exc).__name__}: {exc}"
-        return out
-    out["link_collection_count"] = len(pairs)
-    out["is_conn_counts"] = census
-
-    # Sampling, not a census: ``get_link()`` is several COM round trips each.
-    # The ids to sample are chosen from the census rather than by walking the
-    # collection in id order -- on Murdoch the connectors all sort AFTER the
-    # 2,069 plain links, so an id-order walk would call ``get_link()`` two
-    # thousand times before reaching the first connector. That is what timed
-    # this probe out on its first v2 Murdoch attempt.
-    wanted = [no for no, is_conn in pairs if is_conn == 0][:max_connectors] + [
-        no for no, is_conn in pairs if is_conn == 1
-    ][:max_connectors]
-    links: list[dict[str, Any]] = []
-    connectors: list[dict[str, Any]] = []
-    for no in wanted:
-        try:
-            info = controller.get_link(no)
-        except Exception as exc:
-            connectors.append({"no": no, "error": f"{type(exc).__name__}: {exc}"})
-            continue
-        (connectors if info.get("is_connector") else links).append(info)
-    out["plain_links_sample"] = links
-    out["connectors_sample"] = connectors
-    for name, accessor in (("nodes", "Nodes"), ("vehicle_compositions", "VehicleCompositions")):
-        try:
-            out[f"{name}_count"] = int(getattr(vissim.Net, accessor).Count)
-        except Exception as exc:
-            out[f"{name}_count"] = f"<unavailable: {type(exc).__name__}>"
-    return out
-
-
 def _com_phase(net_path: Path, label: str, out_path: Path) -> int:
     """LoadNet -> .err -> SaveNetAs -> disconnect. Nothing else. Child process
-    only, so the parent can bound it with a wall clock."""
-    import pythoncom
+    only, so the parent can bound it with a wall clock.
 
-    result: dict[str, Any] = {
-        "label": label,
-        "network": str(net_path),
-        "started_utc": _now(),
-        "connected": False,
-        "load_ok": None,
-        "load_error": None,
-        "save_ok": None,
-        "save_error": None,
-    }
+    The COM leg itself is ``services.vissim_open_probe.probe_open`` (unit #33 --
+    the queued live-check job runs the same function). This wrapper is what it
+    always was around it: the same ``json.dumps`` of the same dict, written
+    after EVERY step, because a probe that dies mid-COM must still leave behind
+    what it had already measured.
+    """
+    def flush(current: dict[str, Any]) -> None:
+        out_path.write_text(
+            json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+        )
 
-    def flush() -> None:
-        out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-
-    flush()
-    pythoncom.CoInitialize()
-    controller = None
-    try:
-        from services.vissim_com import VissimController
-
-        controller = VissimController()
-        t0 = time.time()
-        # attach_to_running=False, ALWAYS: GetActiveObject would grab a human's
-        # interactive session and LoadNet into it.
-        controller.connect(visible=False, launch_if_missing=True, attach_to_running=False)
-        result["connected"] = True
-        result["prog_id"] = controller.prog_id
-        result["connect_seconds"] = round(time.time() - t0, 2)
-        result["version"] = _read_version(controller.vissim)
-        flush()
-
-        pre_err = _snapshot_err_paths(net_path.parent)
-        result["err_files_before_load"] = sorted(pre_err)
-
-        t0 = time.time()
-        try:
-            controller.load_network(str(net_path))
-            result["load_ok"] = True
-        except Exception as exc:
-            result["load_ok"] = False
-            result["load_error"] = f"{type(exc).__name__}: {exc}"
-        result["load_seconds"] = round(time.time() - t0, 2)
-        result["err_after_load"] = _read_err(net_path.parent, pre_err)
-        flush()
-
-        if result["load_ok"]:
-            try:
-                result["com_topology"] = _read_com_topology(controller)
-            except Exception as exc:
-                result["com_topology"] = {"error": f"{type(exc).__name__}: {exc}"}
-            flush()
-
-            saved = net_path.with_name(f"{net_path.stem}_saved.inpx")
-            t0 = time.time()
-            try:
-                controller.save_net_as(saved)
-                result["save_ok"] = True
-                result["saved_path"] = str(saved)
-            except Exception as exc:
-                result["save_ok"] = False
-                result["save_error"] = f"{type(exc).__name__}: {exc}"
-            result["save_seconds"] = round(time.time() - t0, 2)
-            result["err_after_save"] = _read_err(net_path.parent, pre_err)
-        result["finished_utc"] = _now()
-        flush()
-        return 0
-    except Exception as exc:  # infrastructure failure (COM unavailable, etc.)
-        result["fatal_error"] = f"{type(exc).__name__}: {exc}"
-        result["finished_utc"] = _now()
-        flush()
-        return 3
-    finally:
-        try:
-            if controller is not None:
-                controller.disconnect()
-        except Exception:
-            pass
-        try:
-            pythoncom.CoUninitialize()
-        except Exception:
-            pass
-        flush()
+    result = probe_open(net_path, label, on_update=flush)
+    return 3 if result.get("fatal_error") else 0
 
 
 def _com_load_many(plan_path: Path, out_path: Path) -> int:

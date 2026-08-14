@@ -2811,13 +2811,20 @@ export async function fetchTrajectories(params?: {
 // The UI must never collapse those four into "ok / not ok" -- the tri-state IS
 // the product (tk-requirements-2026-07-31.md §R1.5).
 
+//   checked     NOT a verdict: a LIVE-CHECK job's own terminal state (unit
+//               #33). That job opens its parent's artifact in a real Vissim and
+//               hands the evidence to the PARENT's re-gate -- the verdict it
+//               changed lives on the parent, never here. `load_ok: false` still
+//               lands `checked`: the probe worked and the gate answered.
+
 export type GenesisJobStatus =
   | "queued"
   | "running"
   | "refused"
   | "provisional"
   | "published"
-  | "error";
+  | "error"
+  | "checked";
 
 export type GenesisGateVerdict = "pass" | "refused" | "incomplete";
 
@@ -2839,14 +2846,33 @@ export interface GenesisLiveEvidence {
   // weak evidence, so this renders as "not admitted", never as "pending".
   admitted: boolean;
   gap_codes: string[];
-  // What this evidence RESTS ON. It arrived over HTTP, so the app cannot prove
-  // Vissim ever ran -- a caller who knows the artifact can hand-write
-  // `load_ok: true` about it. The backend therefore records it as an operator's
-  // attestation, with a name, and the UI says so. A V1 that went green this way
-  // must never read like one the app watched happen.
+  // What this evidence RESTS ON, and there are exactly two answers.
+  //
+  //   "operator_attested"  it arrived over HTTP, so the app cannot prove Vissim
+  //                        ever ran -- a caller who knows the artifact can
+  //                        hand-write `load_ok: true` about it. Recorded as an
+  //                        operator's attestation, with a name, and the UI says
+  //                        so.
+  //   "app_observed"       a LIVE-CHECK JOB (unit #33) opened the file itself,
+  //                        on this app's own job queue, and wrote the record
+  //                        from what LoadNet returned. Nothing was claimed.
+  //
+  // The second is stronger and is still not "proven" -- the record is a file in
+  // the workspace. A V1 that went green either way must never read like one the
+  // app watched happen unless it is the one it did.
   basis: string;
   attested_by: string | null;
   attested_at: string | null;
+}
+
+/** What CAUSED this verdict to replace an earlier one, and where the earlier
+ * one's bytes were kept (unit #33). `null` on a first gate: absence is the
+ * honest answer for a generation nobody re-gated, never an empty archive. */
+export interface GenesisRegateProvenance {
+  source?: string;
+  job_id?: string;
+  at?: string;
+  previous_gate_archived: string | null;
 }
 
 export interface GenesisJobGate {
@@ -2859,8 +2885,11 @@ export interface GenesisJobGate {
   live_evidence: GenesisLiveEvidence | null;
   live_evidence_gap: string | null;
   // True when a refuse-tier check is green because a human attested it rather
-  // than because this process observed it.
+  // than because this process observed it. A live-check job's own evidence is
+  // the case where this is legitimately false WITH a green V1 -- read
+  // `live_evidence.basis` for which, never this flag alone.
   rests_on_attestation: boolean;
+  regate?: GenesisRegateProvenance | null;
 }
 
 export interface GenesisPublication {
@@ -2922,6 +2951,43 @@ export interface GenesisFixLineage {
   parent_sha256: string;
 }
 
+/** Present ONLY on a LIVE-CHECK job's record (unit #33). Same `derived_from`
+ * key as a fix job's lineage and told apart by `kind`, which a fix lineage does
+ * not carry at all -- the same "presence is itself the fact" discipline the
+ * rest of this type uses. `job_id` is the PARENT whose artifact was cloned and
+ * whose verdict this run re-decided. */
+export interface GenesisLiveCheckLineage {
+  kind: "live_check";
+  job_id: string;
+  requested_by: string | null;
+  requested_at: string;
+  parent_sha256: string;
+}
+
+export type GenesisJobLineage = GenesisFixLineage | GenesisLiveCheckLineage;
+
+/** A LIVE-CHECK job's own result, written by its runner (unit #33). Present
+ * only on that job type, and `null` until the probe has answered.
+ *
+ * `admitted` is read back off the PARENT's gate summary, not asserted by the
+ * runner: whether evidence counts is gate.py's answer to its sha256 identity
+ * rule. `load_ok: false` with `admitted: true` is a real and important state --
+ * a real Vissim refused the file, and the gate believed it. */
+export interface GenesisLiveCheckResult {
+  parent_job_id: string;
+  label: string;
+  state_file: string;
+  load_ok: boolean | null;
+  load_error: string | null;
+  save_ok: boolean | null;
+  vissim_version: string | null;
+  admitted: boolean | null;
+  gap_codes: string[];
+  parent_status: GenesisJobStatus;
+  parent_verdict: GenesisGateVerdict | null;
+  previous_gate_archived: string | null;
+}
+
 export interface GenesisJob {
   id: string;
   workspace_id: string;
@@ -2934,7 +3000,11 @@ export interface GenesisJob {
   completed_at: string | null;
   submitted_by: string | null;
   options: { exclude_service: boolean };
-  source_osm: { filename: string; bytes: number; sha256: string };
+  /** `null` on a job that has no .osm of its own -- a fix job and a live-check
+   * job both re-use the PARENT's artifact bytes and never re-parse an extract.
+   * Nullable rather than optional because the backend writes the key as `null`
+   * for those two, and a reader that assumed an object here crashed on them. */
+  source_osm: { filename: string; bytes: number; sha256: string } | null;
   /** OPTIONAL on purpose — a record written before U-1-quick carries no such
    * key, and `undefined` is what tells the UI to say "—" instead of "업로드".
    * See `GenesisRequestedRegion` for the full three-way rule. */
@@ -2946,8 +3016,11 @@ export interface GenesisJob {
   revocation?: GenesisRevocation | null;
   refusal: { code: string; reasons: string[] } | null;
   error: string | null;
-  /** See `GenesisFixLineage` -- absent means "an ordinary generation", not "unknown". */
-  derived_from?: GenesisFixLineage;
+  /** See `GenesisFixLineage` / `GenesisLiveCheckLineage` -- absent means "an
+   * ordinary generation", not "unknown". Narrow with `"kind" in derived_from`. */
+  derived_from?: GenesisJobLineage;
+  /** See `GenesisLiveCheckResult` -- present only on a live-check job. */
+  live_check?: GenesisLiveCheckResult | null;
 }
 
 export interface GenesisGateFinding {
@@ -3096,6 +3169,28 @@ export async function attachGenesisLiveCheck(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ state, label: label ?? null }),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** Queue a job that opens THIS generation's artifact in a REAL Vissim and
+ * re-gates it on what the load actually did (unit #33).
+ *
+ * The difference from `attachGenesisLiveCheck` above is who ran the probe. That
+ * one records an operator's claim about a probe they ran at a console; this one
+ * makes the app run it -- so the caller gets back a QUEUED JOB record (202), not
+ * a re-gated parent, and polls it through `fetchGenesisJob` like any other job.
+ * The parent's verdict changes on its own schedule, which is why the detail page
+ * re-keys its gate fetch on `gate.checked_at`.
+ *
+ * Nothing here decides anything: the verdict is gate.py's, from the evidence the
+ * job wrote. A parent with no gated artifact answers a NAMED refusal
+ * (`genesis_live_check_parent_not_gated` / `genesis_live_check_artifact_missing`)
+ * which the UI renders as a sentence -- never as a disabled button. */
+export async function startGenesisLiveCheck(jobId: string): Promise<GenesisJob> {
+  const r = await apiMutationFetch(`/api/genesis/jobs/${jobId}/live-check/run`, {
+    method: "POST",
   });
   if (!r.ok) throw await genesisError(r);
   return r.json();

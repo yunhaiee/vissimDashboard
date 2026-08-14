@@ -241,14 +241,22 @@ def test_the_publish_funnel_cannot_be_handed_a_verdict():
     determine.
 
     The set is pinned EXACTLY, so adding a parameter is a deliberate act rather
-    than a drift. ``attestation`` was added that way: it names the human whose
-    claim ``live_oracle`` rests on, and it is pure provenance — nothing reads it
-    to decide a verdict, a state or whether to publish. The forbidden shapes are
-    asserted absent separately, so the intent survives even if this set grows
-    again for another provenance field.
+    than a drift. Two have been added that way, and both are pure provenance —
+    nothing reads either to decide a verdict, a state or whether to publish:
+    ``attestation`` names the human whose claim ``live_oracle`` rests on (and,
+    since unit #33, which BASIS it rests on), and ``regate_source`` names what
+    caused this re-gate — the live-check job whose probe produced the evidence.
+    The forbidden shapes are asserted absent separately, so the intent survives
+    even if this set grows again for another provenance field.
     """
     parameters = set(inspect.signature(genesis_jobs.gate_and_publish).parameters)
-    assert parameters == {"job_id", "live_oracle", "live_oracle_gap", "attestation"}
+    assert parameters == {
+        "job_id",
+        "live_oracle",
+        "live_oracle_gap",
+        "attestation",
+        "regate_source",
+    }
     for forbidden in ("verdict", "skip_gate", "already_gated", "gate_result", "force"):
         assert forbidden not in parameters
     assert "run_gate(" in inspect.getsource(genesis_jobs.gate_and_publish)

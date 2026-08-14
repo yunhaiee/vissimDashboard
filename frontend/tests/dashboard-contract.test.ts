@@ -5251,17 +5251,28 @@ contractTest("B5-2 stage 4: a fix job's drawer header states its own lineage", (
     /export interface GenesisFixLineage \{\s*\n\s*job_id: string;\s*\n\s*finding_code: string;\s*\n\s*subject\?: string;\s*\n\s*verb: string;\s*\n\s*params: Record<string, unknown>;\s*\n\s*approved_by: string \| null;\s*\n\s*approval_rationale: string \| null;\s*\n\s*approved_at: string;\s*\n\s*parent_sha256: string;\s*\n\s*\}/,
     "expected the GenesisFixLineage type to mirror derived_from's exact backend shape -- subject optional, since records written before unit #30 lack the key",
   );
+  // CO-EDITED by unit #33, which added the SECOND lineage kind (a live-check
+  // job's). `derived_from` stays key-ABSENT for an ordinary generation -- the
+  // property this pin has always guarded -- and its type became the union of
+  // the two, discriminated by a `kind` the fix lineage deliberately does not
+  // carry.
   pin.match(
     api,
-    /derived_from\?: GenesisFixLineage;/,
+    /derived_from\?: GenesisJobLineage;/,
     "expected GenesisJob.derived_from to be optional (key-absent for an ordinary generation), not nullable",
   );
+  pin.match(
+    api,
+    /export type GenesisJobLineage = GenesisFixLineage \| GenesisLiveCheckLineage;/,
+    "expected the two lineage kinds to be a discriminated union, so a live-check job cannot be read as a fix job",
+  );
 
-  // The drawer header line itself: 파생 — {parent id} · {finding_code} · {approved_by}.
+  // The drawer header line itself: 파생 — {parent id} · {finding_code} · {approved_by},
+  // now behind the union's own narrowing.
   pin.match(
     page,
-    /\{selected\.derived_from && \(/,
-    "expected the lineage line to be gated on derived_from's presence, exactly like an ordinary job renders none",
+    /\{selected\.derived_from &&\s*\n\s*\("kind" in selected\.derived_from \?/,
+    "expected the lineage line to be gated on derived_from's presence and narrowed by kind, exactly like an ordinary job renders none",
   );
   pin.match(
     page,
@@ -5278,6 +5289,176 @@ contractTest("B5-2 stage 4: a fix job's drawer header states its own lineage", (
     historyHead,
     /파생|Derived from/,
     "expected the history table to grow no lineage column -- the detail page's top bar carries it",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #33 -- V1's live check becomes a UI-triggered queued COM job
+// ---------------------------------------------------------------------------
+//
+// V1 is the one gate check that cannot be answered offline, and until this unit
+// the only way to answer it was for somebody to run
+// `backend/tools/genesis_open_live_check.py` at a console. The pins below guard
+// the three things that make the button honest: it goes through the workspace-
+// header mutation helper (a bare fetch would live-check ANOTHER project's job),
+// it never renders as a disabled control, and it never prints a verdict of its
+// own -- the words a reader gets are gate.py's, through the V1 row.
+
+contractTest("unit #33: the V1 live check is queued through the typed mutation helper", (pin) => {
+  const api = read("lib/api.ts");
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  pin.match(
+    api,
+    /export async function startGenesisLiveCheck[\s\S]*?apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/live-check\/run`/,
+    "expected the queued live check to go through apiMutationFetch -- X-Workspace-Id is attached there",
+  );
+  // The SIBLING route (attach an operator's state.json) still exists and is a
+  // different thing: pinned together so neither can quietly become the other.
+  pin.match(
+    api,
+    /apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/live-check`/,
+    "expected the attestation route to survive beside the queued one -- they are two different claims",
+  );
+  pin.match(
+    page,
+    /startGenesisLiveCheck\(jobId\)/,
+    "expected the page to start the live check through the typed helper, never a hand-built request",
+  );
+  // A queued job is polled with the SAME helper and the SAME terminal rule
+  // every other job on this page uses.
+  pin.match(
+    page,
+    /fetchGenesisJob\(checkJob\.id\)/,
+    "expected the live-check job to be polled through the shared job helper",
+  );
+  pin.match(
+    page,
+    /if \(!checkJob \|\| isTerminal\(checkJob\.status\)\) return;/,
+    "expected the live-check poll to stop at a terminal status, using the shared isTerminal rule",
+  );
+});
+
+contractTest("unit #33: the V1 trigger is one button on V1, and ineligible is a sentence", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const control = sliceBetween(page, "function LiveCheckControl", "function GateCheckGrid");
+  pin.match(control, /\S/, "expected to find LiveCheckControl (markers moved?)");
+
+  // The button's own words, ko primary.
+  pin.match(
+    control,
+    /t\("실 Vissim으로 확인", "Check in a real Vissim", "実Vissimで確認"\)/,
+    "expected the V1 trigger to be spelled 실 Vissim으로 확인",
+  );
+  // ONLY V1 gets it: the other eight checks are answered offline and a control
+  // beside them would imply otherwise.
+  pin.match(
+    page,
+    /selected\.id === "V1" && \(\s*\n\s*<LiveCheckControl/,
+    "expected the live-check trigger to render on the V1 cell only",
+  );
+
+  // REFUSAL IS INFORMATION: an ineligible job renders the backend's own named
+  // reason and returns BEFORE any button exists -- never a greyed control.
+  pin.match(
+    control,
+    /if \(refusalCode\) \{[\s\S]*?refusalHeadline\(refusalCode, t\)[\s\S]*?\n  \}/,
+    "expected an ineligible job to render the named refusal and no control at all",
+  );
+  const ineligible = sliceBetween(control, "if (refusalCode) {", "const running =");
+  pin.doesNotMatch(
+    ineligible,
+    /<button/,
+    "expected NO button on the ineligible path -- a refusal is a sentence, not a disabled control",
+  );
+
+  // The control reports the JOB's progress and the load's outcome; it never
+  // words a verdict. That is the V1 row's job, re-fetched from the stored gate.
+  pin.doesNotMatch(
+    control,
+    /통과|확인 불가|PASS|NOT CHECKABLE/,
+    "the live-check control must never print a gate verdict -- gate.py owns those words",
+  );
+});
+
+contractTest("unit #33: a live-check job's own state is named, and it is not a pass", (pin) => {
+  const genesisLib = read("lib/genesisArtifacts.ts");
+  const api = read("lib/api.ts");
+  const ui = read("components/genesis/ui.tsx");
+
+  pin.match(
+    api,
+    /\| "checked";/,
+    "expected the live-check job's own terminal state in the client type",
+  );
+  pin.match(
+    genesisLib,
+    /t\("실 Vissim 확인 완료", "LIVE CHECK DONE", "実Vissim確認 完了"\)/,
+    "expected `checked` to be named as evidence produced, never as a verdict word",
+  );
+  // Mono, like `provisional` -- it is not a pass, and the three-colour rule
+  // says the green belongs to the parent's chip.
+  pin.match(
+    genesisLib,
+    /case "provisional":\s*\n(?:\s*\/\/[^\n]*\n)*\s*case "checked":\s*\n\s*return "border-slate-400 bg-slate-100 text-slate-900";/,
+    "expected `checked` to take the mono treatment, never an accent colour",
+  );
+  pin.match(
+    genesisLib,
+    /export const TERMINAL: GenesisJobStatus\[\] = \[[\s\S]*?"checked",/,
+    "expected `checked` to be terminal, so a page polling one stops at 1 Hz",
+  );
+
+  // The two eligibility refusals join the SHARED headline table, like every
+  // other backend refusal code this app renders.
+  for (const code of [
+    "genesis_live_check_parent_not_gated",
+    "genesis_live_check_artifact_missing",
+  ]) {
+    pin.match(
+      ui,
+      new RegExp(`case "${code}":`),
+      `expected ${code} to have a ko/en/ja headline in the shared refusal table`,
+    );
+  }
+});
+
+contractTest("unit #33: an app-observed V1 is not dressed as an operator's claim", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const api = read("lib/api.ts");
+
+  // Two bases, two sentences. The attestation wording must survive unchanged
+  // beside the new one -- the weaker claim keeps its label.
+  pin.match(
+    page,
+    /live_evidence\.basis === "app_observed"\s*\n\s*\? t\(\s*\n\s*"라이브 검사 \(이 앱이 직접 실행\)"/,
+    "expected an app-run live check to be worded as this app's own run",
+  );
+  pin.match(
+    page,
+    /"라이브 검사 증언 \(운영자 진술\)"/,
+    "expected the operator-attestation wording to survive beside the app-observed one",
+  );
+  pin.match(
+    page,
+    /\{selected\.gate\.rests_on_attestation && \(/,
+    "expected the rests-on-attestation disclosure to stay gated on the backend's own flag",
+  );
+  // The re-gate's lineage is on screen: which job replaced the verdict, and
+  // where the previous one was kept.
+  pin.match(
+    page,
+    /selected\.gate\.regate\?\.job_id/,
+    "expected the verdict to name the live-check job that re-decided it",
+  );
+  pin.match(
+    api,
+    // `[^}]*`, not `[\s\S]*?`: a lazy gap walks straight through the closing
+    // brace into the NEXT interface that happens to declare the same field
+    // (GenesisLiveCheckResult does), and a pin that can match across a type
+    // boundary is a pin that passes for the wrong type. Caught by mutation.
+    /export interface GenesisRegateProvenance \{[^}]*previous_gate_archived: string \| null;\s*\n\}/,
+    "expected the archived previous verdict to be carried into the re-gate provenance type",
   );
 });
 
@@ -5350,15 +5531,24 @@ contractTest("B5-2 stage 4: the genesis_fix_* refusal codes join the shared head
   // re-worded backend refusal) -- the same discipline `selected.refusal`
   // already uses elsewhere on this page. unit #23: this page is now the
   // detail route.
+  // CO-EDITED by unit #33: the helper that builds this box gained a SECOND
+  // caller (the V1 live check) and with it a caller-supplied fallback, so the
+  // call is now one line. What the pin guards is unchanged -- the code goes
+  // through the shared table, and the reasons come through untouched.
   const page = read("app/genesis/jobs/[id]/page.tsx");
   pin.match(
     page,
-    /headline: refusalHeadline\(\s*\n\s*caught\.code,\s*\n\s*t,/,
+    /headline: refusalHeadline\(caught\.code, t, fallback\)/,
     "expected the apply-error box to translate the CODE through refusalHeadline",
   );
   pin.match(
     page,
-    /reasons: caught\.reasons,/,
+    /genesisRefusalText\(\s*\n\s*applyError,\s*\n\s*t,\s*\n\s*t\("수정을 적용하지 못했습니다"/,
+    "expected the fix flow to keep its OWN fallback sentence -- a live-check refusal must never read as a failed fix",
+  );
+  pin.match(
+    page,
+    /reasons: caught\.reasons \}/,
     "expected the apply-error box to carry the backend's reasons array through unmodified",
   );
 });

@@ -59,6 +59,7 @@ import {
   fetchGenesisJob,
   fetchGenesisJobFixes,
   fetchGenesisJobs,
+  startGenesisLiveCheck,
   type GenesisArtifactKind,
   type GenesisFixDisposition,
   type GenesisFixFinding,
@@ -248,16 +249,21 @@ function fixRequiredFieldSpec(field: string, t: Translate): { label: string; num
   }
 }
 
-function applyFixErrorText(caught: unknown, t: Translate): { headline: string; reasons: string[] } {
+/** A refused genesis mutation → the headline + the reasons, verbatim.
+ *
+ * The FALLBACK is the caller's, not this function's (unit #33): a code the
+ * shared table does not know still has to produce a sentence about the thing
+ * the reader actually pressed. When this helper hard-coded the fix flow's
+ * "수정을 적용하지 못했습니다", the second caller would have reported an
+ * unrecognised live-check refusal as a failed fix. The reasons array is always
+ * rendered underneath, unrewritten. */
+function genesisRefusalText(
+  caught: unknown,
+  t: Translate,
+  fallback: string,
+): { headline: string; reasons: string[] } {
   if (caught instanceof GenesisError) {
-    return {
-      headline: refusalHeadline(
-        caught.code,
-        t,
-        t("수정을 적용하지 못했습니다", "The fix could not be applied", "修正を適用できませんでした"),
-      ),
-      reasons: caught.reasons,
-    };
+    return { headline: refusalHeadline(caught.code, t, fallback), reasons: caught.reasons };
   }
   return { headline: caught instanceof Error ? caught.message : String(caught), reasons: [] };
 }
@@ -321,7 +327,13 @@ function FixFindingRow({
     }
   }, [disposition, requiredValues, approvalRationale, jobId, finding.code, finding.subject, onApplied, t]);
 
-  const error = applyError ? applyFixErrorText(applyError, t) : null;
+  const error = applyError
+    ? genesisRefusalText(
+        applyError,
+        t,
+        t("수정을 적용하지 못했습니다", "The fix could not be applied", "修正を適用できませんでした"),
+      )
+    : null;
 
   return (
     <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-[15px] text-slate-800">
@@ -449,6 +461,221 @@ function FixFindingRow({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Unit #33 -- V1's own control. The gate check that needs a real Vissim gets
+// the button that gets it one.
+// ---------------------------------------------------------------------------
+
+/** The job states that HAVE a gated artifact on disk -- backend
+ * `genesis_jobs.GATED_STATUSES`, mirrored here for ONE purpose: deciding
+ * whether to render a control at all. The server's own eligibility check is the
+ * authoritative one and its refusal renders through the same
+ * `refusalHeadline` table below, so a drift here shows up as a 409 with a
+ * sentence, never as a button that silently does nothing. */
+const GATED_STATUSES: GenesisJob["status"][] = ["refused", "provisional", "published"];
+
+/** Why this generation cannot be live-checked, as the BACKEND's own refusal
+ * code, or `null` when it can be. */
+function liveCheckRefusalCode(job: GenesisJob): string | null {
+  if (!GATED_STATUSES.includes(job.status)) return "genesis_live_check_parent_not_gated";
+  if (!job.artifact) return "genesis_live_check_artifact_missing";
+  return null;
+}
+
+/**
+ * THE V1 TRIGGER -- "실 Vissim으로 확인".
+ *
+ * V1 is the only check that cannot be answered offline: it asks whether a REAL
+ * PTV Vissim opens this file and holds the network afterwards. Until this unit
+ * the only way to answer it was for somebody to run
+ * `backend/tools/genesis_open_live_check.py` at a console and post its
+ * state.json back, which is why every V1 that ever went green in the product
+ * did so on an operator's attestation. This button queues a JOB that opens the
+ * artifact itself; the COM turn runs on the job queue, never in the request.
+ *
+ * WHAT THIS COMPONENT MAY NOT DO, and the reason the code reads the way it
+ * does: it decides nothing. It starts a job, shows that the job is running, and
+ * gets out of the way -- the verdict comes back through the V1 row itself,
+ * re-fetched from the STORED gate the moment the parent's `checked_at` moves.
+ * A load that FAILED is not an error here either: the probe worked, the gate
+ * refused the network, and the words a reader gets are gate.py's own.
+ *
+ * INELIGIBLE IS A SENTENCE, NEVER A GREYED BUTTON (this project's
+ * refusal-is-information rule): a generation with no gated artifact renders the
+ * named reason and no control at all.
+ */
+function LiveCheckControl({
+  jobId,
+  refusalCode,
+  t,
+  onCompleted,
+}: {
+  jobId: string;
+  refusalCode: string | null;
+  t: Translate;
+  onCompleted: () => void;
+}) {
+  const [starting, setStarting] = useState(false);
+  const [checkJob, setCheckJob] = useState<GenesisJob | null>(null);
+  const [startError, setStartError] = useState<GenesisError | Error | null>(null);
+
+  // Poll the live-check job until it stops moving. One chained timeout per
+  // tick (the same shape the page's own job poll uses) rather than an
+  // interval, so a slow response can never stack requests.
+  useEffect(() => {
+    if (!checkJob || isTerminal(checkJob.status)) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      fetchGenesisJob(checkJob.id)
+        .then((next) => {
+          if (cancelled) return;
+          setCheckJob(next);
+          // The parent's verdict has just been rewritten -- ask for it NOW
+          // rather than waiting out the terminal re-check interval.
+          if (isTerminal(next.status)) onCompleted();
+        })
+        .catch(() => {
+          /* a dropped tick retries on the next one */
+        });
+    }, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [checkJob, onCompleted]);
+
+  const start = useCallback(async () => {
+    setStarting(true);
+    setStartError(null);
+    try {
+      setCheckJob(await startGenesisLiveCheck(jobId));
+    } catch (caught) {
+      setStartError(caught instanceof Error ? caught : new Error(String(caught)));
+    } finally {
+      setStarting(false);
+    }
+  }, [jobId]);
+
+  if (refusalCode) {
+    return (
+      <div className="mt-4 border-t border-slate-200 pt-3">
+        <p className="font-mono text-[15px] leading-relaxed text-slate-700">
+          {refusalHeadline(refusalCode, t)}
+        </p>
+      </div>
+    );
+  }
+
+  const running = checkJob !== null && !isTerminal(checkJob.status);
+  const failure = startError
+    ? genesisRefusalText(
+        startError,
+        t,
+        t(
+          "확인을 시작하지 못했습니다",
+          "The live check could not be started",
+          "確認を開始できませんでした",
+        ),
+      )
+    : null;
+
+  return (
+    <div className="mt-4 border-t border-slate-200 pt-3">
+      <p className="text-[14px] leading-relaxed text-slate-600">
+        {t(
+          "이 생성의 .inpx를 실제 PTV Vissim으로 열어 보고, 그 결과로 판정을 다시 받습니다. 로딩은 작업 큐에서 실행됩니다.",
+          "Opens this generation's .inpx in a real PTV Vissim and re-gates the verdict on what the load did. The load runs on the job queue.",
+          "この生成の .inpx を実際の PTV Vissim で開き、その結果で判定をやり直します。読み込みはジョブキューで実行されます。",
+        )}
+      </p>
+
+      <button
+        type="button"
+        disabled={starting || running}
+        onClick={() => void start()}
+        className="ui-button-primary mt-2 w-fit rounded-md px-3 py-1.5 text-[15px] disabled:cursor-not-allowed"
+      >
+        {starting
+          ? t("확인 작업을 넣는 중…", "Queueing…", "確認ジョブを投入中…")
+          : running
+            ? t("실 Vissim에서 확인 중…", "Checking in a real Vissim…", "実Vissimで確認中…")
+            : t("실 Vissim으로 확인", "Check in a real Vissim", "実Vissimで確認")}
+      </button>
+
+      {checkJob && (
+        <div aria-live="polite" className="mt-2 text-[14px] leading-relaxed text-slate-600">
+          {running && (
+            <p className="font-mono">
+              {checkJob.status} · {checkJob.phase}
+            </p>
+          )}
+          {checkJob.status === "checked" && checkJob.live_check && (
+            <>
+              <p>
+                {checkJob.live_check.load_ok
+                  ? t(
+                      "실 Vissim이 이 파일을 열었습니다 — 위의 판정은 그 결과로 다시 내려졌습니다.",
+                      "A real Vissim opened this file — the verdict above was re-decided on that result.",
+                      "実Vissimがこのファイルを開きました — 上の判定はその結果で下し直されました。",
+                    )
+                  : t(
+                      "실 Vissim이 이 파일을 열지 못했습니다 — 판정은 게이트가 그 증거로 다시 내렸습니다.",
+                      "A real Vissim could not open this file — the gate re-decided the verdict on that evidence.",
+                      "実Vissimがこのファイルを開けませんでした — 判定はゲートがその証拠で下し直しました。",
+                    )}
+              </p>
+              {checkJob.live_check.admitted === false && (
+                <p className="mt-1">
+                  {t(
+                    "이 증거는 채택되지 않았습니다 — 검사한 파일과 판정 대상 파일이 같은 바이트가 아닙니다",
+                    "The evidence was not admitted — the file checked and the file gated are not the same bytes",
+                    "この証拠は採用されませんでした — 検査したファイルと判定対象のファイルが同一バイトではありません",
+                  )}
+                  {checkJob.live_check.gap_codes.length > 0 &&
+                    ` (${checkJob.live_check.gap_codes.join(", ")})`}
+                </p>
+              )}
+            </>
+          )}
+          {checkJob.status === "error" && checkJob.refusal && (
+            <div className="mt-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[15px] text-rose-800">
+              <p className="font-semibold">
+                {t(
+                  "확인을 실행하지 못했습니다 — 판정은 그대로입니다",
+                  "The check could not run — the verdict is unchanged",
+                  "確認を実行できませんでした — 判定はそのままです",
+                )}
+              </p>
+              <ul className="mt-1 space-y-1">
+                {checkJob.refusal.reasons.map((reason, index) => (
+                  <li key={index} className="font-mono text-[14px] leading-relaxed">
+                    {reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {failure && (
+        <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[15px] text-rose-800">
+          <p className="font-semibold">{failure.headline}</p>
+          {failure.reasons.length > 0 && (
+            <ul className="mt-1 space-y-1">
+              {failure.reasons.map((reason, index) => (
+                <li key={index} className="font-mono text-[14px] leading-relaxed">
+                  {reason}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * V1–V9 AS A GRID -- EVERY CELL STARTS CLOSED. Transplanted verbatim from
  * app/genesis/page.tsx (2026-08-13 doctrine, unchanged by this unit).
@@ -458,6 +685,8 @@ function GateCheckGrid({
   t,
   lang,
   jobId,
+  liveCheckRefusal,
+  onLiveCheckCompleted,
   fixes,
   fixesError,
   onFixApplied,
@@ -466,6 +695,8 @@ function GateCheckGrid({
   t: Translate;
   lang: string;
   jobId: string;
+  liveCheckRefusal: string | null;
+  onLiveCheckCompleted: () => void;
   fixes: GenesisJobFixes | null;
   fixesError: GenesisError | Error | null;
   onFixApplied: (job: GenesisJob) => void;
@@ -575,6 +806,20 @@ function GateCheckGrid({
                     "この検査に記録された項目はありません。",
                   )}
                 </p>
+              )}
+
+              {/* V1 -- and ONLY V1 -- carries a control, because it is the one
+                * check whose evidence this app can go and get (unit #33). It
+                * sits inside the opened cell, under the gate's own words, so a
+                * reader has already seen WHY V1 is grey before being offered
+                * the thing that answers it. */}
+              {selected.id === "V1" && (
+                <LiveCheckControl
+                  jobId={jobId}
+                  refusalCode={liveCheckRefusal}
+                  t={t}
+                  onCompleted={onLiveCheckCompleted}
+                />
               )}
 
               {checkHasBody(selected) && (
@@ -959,6 +1204,20 @@ export default function GenesisJobDetailPage() {
     };
   }, [gatedJobId, gateCheckedAt]);
 
+  // A live check re-gates THIS job from another job's worker thread, so the
+  // verdict on screen can change without anything on this page having asked
+  // for it. `refreshJob` is the "ask now" the poll's terminal cadence (15 s)
+  // would otherwise make a reader wait for; the gate report itself then
+  // re-fetches on its own, because its key includes `gate.checked_at`.
+  const refreshJob = useCallback(() => {
+    if (!jobId) return;
+    fetchGenesisJob(jobId)
+      .then((record) => setSelectedEntry({ id: jobId, record }))
+      .catch(() => {
+        /* the poll above owns error reporting; a missed refresh is retried there */
+      });
+  }, [jobId]);
+
   // On a 202 from POST .../fixes/apply: the sibling job now HAS its own URL,
   // so approving a fix navigates there instead of re-pointing an in-page
   // selection at it -- the lineage line the sibling's own top bar renders is
@@ -1035,17 +1294,28 @@ export default function GenesisJobDetailPage() {
           {/* The date·scale meta and the sha line left the screen (user, live
             * pass 2026-08-14) -- both stay in gate.json and the compliance
             * report; the history table still carries date and scale. */}
-          {selected.source_osm.filename !== `${selected.name}.osm` && (
+          {/* `source_osm` is NULL on a job with no extract of its own -- a fix
+            * job and a live-check job both re-use the parent's artifact bytes.
+            * Reading `.filename` off it unguarded crashed this header for those
+            * two job types (found while adding the second one, unit #33). */}
+          {selected.source_osm && selected.source_osm.filename !== `${selected.name}.osm` && (
             <p className="mt-1 truncate font-mono text-[14px] text-slate-500">
               {selected.source_osm.filename}
             </p>
           )}
-          {selected.derived_from && (
-            <p className="mt-1 truncate font-mono text-[14px] text-slate-500">
-              {t("파생", "Derived from", "派生")} — {selected.derived_from.job_id} ·{" "}
-              {selected.derived_from.finding_code} · {selected.derived_from.approved_by ?? "—"}
-            </p>
-          )}
+          {selected.derived_from &&
+            ("kind" in selected.derived_from ? (
+              <p className="mt-1 truncate font-mono text-[14px] text-slate-500">
+                {t("파생", "Derived from", "派生")} — {selected.derived_from.job_id} ·{" "}
+                {t("실 Vissim 확인", "live check", "実Vissim確認")} ·{" "}
+                {selected.derived_from.requested_by ?? "—"}
+              </p>
+            ) : (
+              <p className="mt-1 truncate font-mono text-[14px] text-slate-500">
+                {t("파생", "Derived from", "派生")} — {selected.derived_from.job_id} ·{" "}
+                {selected.derived_from.finding_code} · {selected.derived_from.approved_by ?? "—"}
+              </p>
+            ))}
           {report && (
             <div className="mt-3 flex flex-wrap gap-x-8 gap-y-3">
               <Stat label={t("통과", "pass", "合格")} value={report.counts.pass} tone="text-emerald-800" />
@@ -1151,15 +1421,23 @@ export default function GenesisJobDetailPage() {
 
         {selected.gate?.live_evidence && (
           <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-[15px] text-slate-700">
-            {/* "Attestation", never "proof". The state.json arrives over
-              * HTTP, so this app cannot establish that Vissim ran — it can
-              * only record who says it did. */}
+            {/* TWO BASES, TWO SENTENCES (unit #33). An attestation's state.json
+              * arrives over HTTP, so this app cannot establish that Vissim ran —
+              * it can only record who says it did. A live-check JOB's record was
+              * written by this app, from what LoadNet returned. Both are named
+              * for what they are, and neither borrows the other's word. */}
             <p className="font-semibold text-slate-800">
-              {t(
-                "라이브 검사 증언 (운영자 진술)",
-                "Live-check attestation (operator's statement)",
-                "ライブ検査の証言（運用者の申告）",
-              )}
+              {selected.gate.live_evidence.basis === "app_observed"
+                ? t(
+                    "라이브 검사 (이 앱이 직접 실행)",
+                    "Live check (run by this app)",
+                    "ライブ検査（このアプリが実行）",
+                  )
+                : t(
+                    "라이브 검사 증언 (운영자 진술)",
+                    "Live-check attestation (operator's statement)",
+                    "ライブ検査の証言（運用者の申告）",
+                  )}
             </p>
             <p className="mt-1">
               {selected.gate.live_evidence.label} · {selected.gate.live_evidence.network} ·{" "}
@@ -1179,8 +1457,10 @@ export default function GenesisJobDetailPage() {
             </p>
             {selected.gate.live_evidence.attested_by && (
               <p className="mt-1">
-                {t("증언자", "Attested by", "申告者")}:{" "}
-                <span className="font-semibold">{selected.gate.live_evidence.attested_by}</span>
+                {selected.gate.live_evidence.basis === "app_observed"
+                  ? t("실행 요청", "Requested by", "実行依頼")
+                  : t("증언자", "Attested by", "申告者")}
+                : <span className="font-semibold">{selected.gate.live_evidence.attested_by}</span>
                 {selected.gate.live_evidence.attested_at &&
                   ` · ${formatTimestamp(selected.gate.live_evidence.attested_at, lang)}`}
               </p>
@@ -1192,6 +1472,22 @@ export default function GenesisJobDetailPage() {
                   "V1 in this verdict rests on an operator's statement — this app did not observe the Vissim load itself.",
                   "この判定のV1は運用者の申告に基づきます — このアプリがVissimの読み込みを直接観測したわけではありません。",
                 )}
+              </p>
+            )}
+            {selected.gate.live_evidence.basis === "app_observed" && (
+              <p className="mt-2 rounded border-2 border-slate-400 bg-slate-100 px-2 py-1 text-slate-900">
+                {t(
+                  "이 증거는 이 앱이 작업 큐에서 직접 실행한 로딩의 기록입니다 — 사람의 진술이 아닙니다. 다만 기록 자체는 이 프로젝트 폴더 안의 파일이며, 그 이상의 증명은 아닙니다.",
+                  "This evidence is this app's own record of a load it ran on its job queue — not a person's statement. The record is still a file inside this project's folder, and nothing stronger is claimed.",
+                  "この証拠は、このアプリがジョブキューで自ら実行した読み込みの記録です — 人の申告ではありません。ただし記録自体はこのプロジェクトのフォルダ内のファイルであり、それ以上の証明ではありません。",
+                )}
+              </p>
+            )}
+            {selected.gate.regate?.job_id && (
+              <p className="mt-2 font-mono text-[14px] text-slate-500">
+                {t("재판정", "Re-gated by", "再判定")}: {selected.gate.regate.job_id}
+                {selected.gate.regate.previous_gate_archived &&
+                  ` · ${t("이전 판정", "previous verdict", "以前の判定")}: ${selected.gate.regate.previous_gate_archived}`}
               </p>
             )}
           </div>
@@ -1234,6 +1530,8 @@ export default function GenesisJobDetailPage() {
               t={t}
               lang={lang}
               jobId={selected.id}
+              liveCheckRefusal={liveCheckRefusalCode(selected)}
+              onLiveCheckCompleted={refreshJob}
               fixes={fixes}
               fixesError={fixesError}
               onFixApplied={handleFixApplied}

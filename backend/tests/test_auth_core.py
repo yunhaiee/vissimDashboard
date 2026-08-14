@@ -1025,6 +1025,15 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       this repair" the same way a generation's record answers "who built this
       network".
 
+    **Unit #33 adds exactly one: the queued live check.**
+
+    * ``POST /api/genesis/jobs/{job_id}/live-check/run`` -- enqueues a job that
+      opens the generation's artifact in a REAL Vissim and re-gates the parent
+      on what it measured. Same reason its attesting sibling
+      ``POST .../live-check`` is guarded, plus one more: this route spends a
+      live Vissim seat and clones into the project's job tree, and
+      ``derived_from.requested_by`` has to name who asked for it.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -1058,6 +1067,7 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/genesis/jobs/{job_id}/fixes",
         "/api/genesis/jobs/{job_id}/fixes/apply",
         "/api/genesis/jobs/{job_id}/live-check",
+        "/api/genesis/jobs/{job_id}/live-check/run",
         "/api/genesis/phase-diagrams",
         "/api/genesis/phase-diagrams/signals-input",
         "/api/genesis/phase-diagrams/{review_id}",

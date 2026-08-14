@@ -554,6 +554,24 @@ export function refusalHeadline(code: string | null, t: Translate, fallback?: st
         "This proposal has gone stale since it was made -- the verb or its params no longer validate",
         "この提案はその後古くなりました — 動詞または値がもはや登録されていません",
       );
+    // ---- live check (app/genesis/jobs/[id]/page.tsx, unit #33) ----
+    // Both come from `create_live_check_job`, the one layer every caller passes
+    // through. They are two codes and not one because "this generation has not
+    // finished" and "this generation finished but its file is gone" call for
+    // completely different next moves.
+    case "genesis_live_check_parent_not_gated":
+      return t(
+        "아직 열어볼 네트워크 파일이 없습니다 — 판정이 끝난 뒤에 확인할 수 있습니다",
+        "There is no network file to open yet -- a live check runs once this generation has a verdict",
+        "まだ開くネットワークファイルがありません — 判定が出てから確認できます",
+      );
+    case "genesis_live_check_artifact_missing":
+      return t(
+        "이 생성의 .inpx가 작업 폴더에 없습니다 — 열어볼 파일이 없습니다",
+        "This generation's .inpx is no longer in its work directory -- there is nothing to open",
+        "この生成の .inpx が作業フォルダにありません — 開くファイルがありません",
+      );
+
     case "genesis_fix_no_gate_verdict":
       return t(
         "이 생성은 아직 게이트를 거치지 않았습니다",

@@ -56,7 +56,14 @@ writes into a project's tree and publishes into its dataset slot.
 **No COM.** Generation is pure Python; nothing here imports ``vissim_com`` and
 no request handler ever would (``docs/phase2/00-EXECUTION-GUIDE.md`` §1). That
 is exactly why a fresh generation publishes as ``provisional``: V1 needs a real
-``LoadNet``, and it arrives later through ``POST /jobs/{id}/live-check``.
+``LoadNet``, and it arrives later — two routes, one rule.
+``POST /jobs/{id}/live-check`` takes an operator's ``state.json`` and records it
+as their ATTESTATION. ``POST /jobs/{id}/live-check/run`` (unit #33) instead
+ENQUEUES a job that opens the artifact in a real Vissim itself and re-gates the
+parent on what it measured; this handler only mints and starts that job — the
+COM turn runs on the job queue's worker thread, exactly like
+``POST /jobs/{id}/fixes/apply``. The rule both share: the evidence is judged by
+``gate.py``'s unmodified ``LoadOracle``, and this router judges nothing.
 
 **``/region/*`` — roadmap v2 §5.B row B2.** The four routes at the bottom of
 this file put the .osm's ORIGIN inside the product: a region in,
@@ -742,6 +749,67 @@ def attach_live_check(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except genesis_jobs.GenesisJobError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/jobs/{job_id}/live-check/run", status_code=202)
+def start_live_check(
+    job_id: str,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Queue a job that opens THIS generation's artifact in a real Vissim. 202.
+
+    Unit #33 — the answer to "why does closing V1 need somebody at a console?".
+    The sibling route above (``POST .../live-check``) records an operator's
+    attestation about a probe they ran themselves; this one makes the app run
+    the probe: ``genesis_jobs.start_live_check_job`` clones the artifact into a
+    NEW job's work directory and starts that job on a daemon thread, and the
+    returned record's ``id`` is what the caller polls through
+    ``GET /jobs/{id}``. **Zero COM in this handler** — the whole point of the
+    202 (CLAUDE.md: all COM work goes through the job queue, never a request
+    handler), and the same split ``POST /jobs`` and ``POST .../fixes/apply``
+    already use.
+
+    Authenticated like every other mutation here: the run spends live Vissim
+    time against a project's job tree, and ``derived_from.requested_by`` on the
+    record is why a session is required at all.
+
+    Refusals are NAMED, never a disabled button (409 with ``{code, reasons}``):
+    ``genesis_live_check_parent_not_gated`` when the generation has no gated
+    artifact to open yet, ``genesis_live_check_artifact_missing`` when it
+    reached a verdict but its ``.inpx`` is gone. Both come from
+    ``create_live_check_job``, the one layer every caller passes through.
+    """
+    try:
+        record = genesis_jobs.start_live_check_job(
+            job_id,
+            requested_by=str(user.get("username") or user.get("id") or "unknown"),
+        )
+    except genesis_jobs.GenesisJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except genesis_jobs.GenesisRefused as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "reasons": exc.reasons}
+        ) from exc
+    except genesis_jobs.GenesisRegistryError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        # Cloning the parent's artifact is synchronous, request-thread work; a
+        # disk that refuses it is the same "nothing changed, retry" answer
+        # ``POST /jobs`` gives for the same step.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not prepare the live check's work directory. Nothing was started. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    logger.info(
+        "genesis: %s queued a live check of job %s -> live-check job %s",
+        user.get("username"),
+        job_id,
+        record["id"],
+    )
+    return record
 
 
 @router.post("/jobs/{job_id}/fixes/apply", status_code=202)

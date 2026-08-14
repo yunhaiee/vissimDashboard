@@ -38,26 +38,47 @@ a pass/fail binary):
     file at all. It publishes, and the reason is carried on the record so the UI
     can say WHY it is provisional rather than showing a green tick.
 ``published``
-    Every refuse-tier check genuinely passed, V1 included. Reachable only after
-    :func:`attach_live_check` has fed a real ``LoadNet``'s evidence back in.
+    Every refuse-tier check genuinely passed, V1 included. Reachable only after a
+    real ``LoadNet``'s evidence has been fed back in — either attested through
+    :func:`attach_live_check` or produced by a live-check job
+    (:func:`run_live_check_job`).
+``checked``
+    Not a verdict at all: a LIVE-CHECK job's own terminal state (unit #33). It
+    produced V1's evidence and handed it to its parent's re-gate; the verdict
+    that evidence changed lives on the PARENT.
 
-**No COM here, and that is why ``provisional`` exists.** A generation job runs
-in a worker thread inside the API process; ``docs/phase2/00-EXECUTION-GUIDE.md``
-§1 and this project's CLAUDE.md both forbid COM outside the dedicated lane, so
-this module never imports ``services.vissim_com`` and never shells out to a
-probe. V1's evidence arrives the same way ``tools/genesis_validation_gate.py``
-takes it — as ``tools/genesis_open_live_check.py``'s ``state.json`` — through
-:func:`attach_live_check`, and ``gate.py``'s sha256 identity rule decides
-whether it is evidence about THIS file.
+**No COM in a GENERATION, and that is why ``provisional`` exists.** A generation
+job runs in a worker thread inside the API process; ``docs/phase2/
+00-EXECUTION-GUIDE.md`` §1 and this project's CLAUDE.md both forbid COM outside
+the dedicated lane, so nothing on the generation path imports
+``services.vissim_com`` and a fresh generation can never answer V1. Its evidence
+arrives afterwards, in the ``state.json`` shape
+``tools/genesis_open_live_check.py`` writes and
+``tools/genesis_validation_gate.py`` already reads — and ``gate.py``'s sha256
+identity rule, not this module, decides whether it is evidence about THIS file.
 
-**The one exception is a FIX job (B5-2 stage 2).** :func:`run_genesis_fix_job`
-opens a real ``VissimEditSession`` to apply one already-approved verb, because
-that is the whole point of a fix job — the ``services.agent.edit_session``
-import that does it is function-local (:func:`_build_fix_edit_session`, and
-the runner's own imports), so a plain ``import services.genesis_jobs`` still
-never touches COM; only actually RUNNING a fix job does, on that job's own
-worker thread, never a request handler — the same job-queue discipline
-CLAUDE.md requires everywhere else COM is touched.
+**Two job types are the exception, and both are jobs for exactly that reason.**
+:func:`run_genesis_fix_job` (B5-2 stage 2) opens a real ``VissimEditSession`` to
+apply one already-approved verb, and :func:`run_live_check_job` (unit #33) opens
+a real Vissim to answer V1's own question — does this artifact LOAD? Every
+import that reaches COM is function-local (:func:`_build_fix_edit_session`,
+:func:`_build_live_check_probe`, and the runners' own imports), so a plain
+``import services.genesis_jobs`` still never touches COM; only actually RUNNING
+one of those jobs does, on that job's own worker thread, never a request handler
+— the same job-queue discipline CLAUDE.md requires everywhere else COM is
+touched. Both COM legs are single named seams that tests replace, which is what
+lets the whole of both runners be exercised offline.
+
+**V1's evidence therefore arrives two ways, and they are labelled apart.**
+:func:`attach_live_check` takes a ``state.json`` over HTTP — an operator's
+attestation, ``basis: "operator_attested"``, see below.
+:func:`create_live_check_job` + :func:`run_live_check_job` produce the SAME
+record here, by opening the file in this process's own job queue, and label it
+``basis: "app_observed"``. The second is genuinely stronger — nothing was
+claimed, something was measured — and it is still not a proof that survives a
+hostile workspace, so it gets its own word rather than either of the other two.
+The judgement is identical in both cases: ``gate.py``'s ``LoadOracle`` and its
+sha256 identity rule, unmodified, decide what the evidence is worth.
 
 **What that rule does and does not prove — stated precisely, because an earlier
 revision of this docstring claimed "nothing here can fake it" and an adversarial
@@ -184,6 +205,26 @@ REGISTRY_FILENAME = "registry.json"
 GATE_JSON_FILENAME = "gate.json"
 GATE_REPORT_FILENAME = "gate.report.md"
 
+#: Where a verdict that is about to be REPLACED is preserved (unit #33).
+#: ``gate.json`` is rewritten by every re-gate — attaching an operator's
+#: attestation always could, and a live-check job now does it from inside the
+#: app — and a verdict overwritten without a trace is exactly the kind of
+#: evidence loss this gate exists to prevent. Chosen shape: a sibling DIRECTORY
+#: holding ``gate.0001.json``, ``gate.0002.json``, … rather than ``gate.json.1``
+#: files beside the artifact, because the job directory is also the download
+#: surface (:func:`artifact_path` resolves fixed names in it) and a growing
+#: family of ``gate.json.N`` siblings would sit in that same namespace. The
+#: archived copies are BYTE copies of what was on disk, never a re-serialisation
+#: of a parsed verdict.
+GATE_HISTORY_DIRNAME = "gate_history"
+
+#: A live-check job's own evidence file, in ITS work directory: exactly the
+#: shape ``tools/genesis_open_live_check.py`` writes to
+#: ``runtime/genesis-open-live-check/state.json`` and exactly the shape
+#: ``gate.LoadOracle.from_probe_state`` reads. Written whatever the probe
+#: reported — a refused load is evidence too.
+LIVE_CHECK_STATE_FILENAME = "live-check.state.json"
+
 #: What the optional layers reported, beside the artifact. A FIXED name — like
 #: the two above and unlike the ``<name>.*`` artifacts — precisely so it exists
 #: for a generation that produced NO artifact: a side input that refused still
@@ -228,9 +269,16 @@ STATUS_PROVISIONAL = "provisional"
 STATUS_PUBLISHED = "published"
 #: No artifact exists — the .osm could not become a network at all.
 STATUS_ERROR = "error"
+#: A LIVE-CHECK job finished its probe (unit #33). Deliberately not one of the
+#: three gate verdicts: a live-check job never gates an artifact of its own, it
+#: produces V1's evidence and hands it to the PARENT's re-gate — the verdict
+#: lives on the parent, and a status here that read ``published``/``refused``
+#: would claim a judgement this job never made. ``load_ok: false`` still lands
+#: ``checked``: the probe did its work and the gate answered.
+STATUS_CHECKED = "checked"
 
 TERMINAL_STATUSES = frozenset(
-    {STATUS_REFUSED, STATUS_PROVISIONAL, STATUS_PUBLISHED, STATUS_ERROR}
+    {STATUS_REFUSED, STATUS_PROVISIONAL, STATUS_PUBLISHED, STATUS_ERROR, STATUS_CHECKED}
 )
 #: The states in which an artifact exists on disk and can be re-gated.
 GATED_STATUSES = frozenset({STATUS_REFUSED, STATUS_PROVISIONAL, STATUS_PUBLISHED})
@@ -247,6 +295,10 @@ PHASE_DONE = "done"
 #: Ordinary generation jobs never carry this phase; they have no equivalent
 #: step at all (they never touch COM -- see the module docstring).
 PHASE_APPLYING_FIX = "applying_fix"
+#: A LIVE-CHECK job's own COM phase (unit #33): the one ``LoadNet`` turn that
+#: produces V1's evidence, between ``PHASE_QUEUED`` and ``PHASE_GATING`` (the
+#: PARENT's re-gate).
+PHASE_LIVE_CHECKING = "live_checking"
 
 #: What a V1 that went green on ATTACHED evidence actually rests on. Carried on
 #: the job record, in the gate summary and into the UI, so a verdict resting on
@@ -254,6 +306,23 @@ PHASE_APPLYING_FIX = "applying_fix"
 #: cannot prove Vissim ran from a JSON a client uploaded (module docstring), and
 #: naming the basis is how that stays visible instead of becoming folklore.
 ATTESTATION_BASIS = "operator_attested"
+
+#: What a V1 that went green on a LIVE-CHECK JOB's evidence rests on (unit #33),
+#: and the reason it is a different word from :data:`ATTESTATION_BASIS`. Here the
+#: app itself opened the file in a real Vissim, on its own job queue, and wrote
+#: the record from what ``LoadNet`` returned — nothing arrived over HTTP and no
+#: human's claim is involved. That is a genuinely stronger basis than an
+#: attestation, and collapsing the two into one word would either flatter an
+#: operator's claim or slander the app's own measurement. It is NOT a claim of
+#: cryptographic proof: the record is still just a file this process wrote, and
+#: anyone with the workspace directory can edit it after the fact.
+LIVE_CHECK_BASIS = "app_observed"
+
+#: The lineage ``kind`` on a LIVE-CHECK job's ``derived_from``. A fix job's
+#: lineage carries no ``kind`` key at all (it predates this one), so presence
+#: alone discriminates the two — the same "presence is itself the fact"
+#: discipline ``requested_region`` and ``derived_from`` already use here.
+LIVE_CHECK_LINEAGE_KIND = "live_check"
 
 #: Progress the UI shows per phase. Coarse and honest: these are the real step
 #: boundaries this runner has, and there is no way to sample inside
@@ -264,6 +333,7 @@ _PHASE_PROGRESS = {
     PHASE_DRAFTING: 0.35,
     PHASE_EMITTING: 0.7,
     PHASE_APPLYING_FIX: 0.5,
+    PHASE_LIVE_CHECKING: 0.5,
     PHASE_GATING: 0.85,
     PHASE_PUBLISHING: 0.95,
     PHASE_DONE: 1.0,
@@ -290,6 +360,56 @@ MAX_FINDINGS_IN_PAYLOAD = 25
 STAGING_TTL_SECONDS = 24 * 3600
 
 _REGISTRY_LOCK = threading.RLock()
+
+#: Per-(workspace, job) locks around :func:`gate_and_publish`'s critical section
+#: (unit #33 finding F1). **Invariant this protects:** two callers re-gating the
+#: SAME job at once (the live-check job path and the pre-existing
+#: :func:`attach_live_check` route both land here for their shared parent, and
+#: nothing stops a double-click in two tabs from starting both) can never
+#: interleave "read the outgoing gate.json → archive it → write the new verdict
+#: → update the registry summary" — so a verdict can never be lost between two
+#: racing writers, and ``gate.json`` on disk can never disagree with the
+#: registry's summary for longer than it takes one caller to finish. Keyed per
+#: job (not one global lock) so unrelated jobs still gate in parallel — nothing
+#: COM runs inside the critical section, so the only cost of holding it is gate
+#: computation plus a handful of file writes. Entries are never evicted (a job's
+#: lock is cheap and its lifetime is bounded by the job count, not by traffic),
+#: guarded by :data:`_GATE_LOCKS_GUARD` so two threads minting a NEW job's first
+#: lock at once cannot each install their own and let a third caller pick either
+#: one.
+_GATE_LOCKS_GUARD = threading.Lock()
+_GATE_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+
+
+def _gate_lock(job_id: str) -> threading.Lock:
+    """The one lock for THIS workspace's THIS job, minted on first use.
+
+    Keyed on ``(workspaces.current_workspace_id(), job_id)`` rather than
+    ``job_id`` alone, matching every other workspace-scoped lookup in this
+    module (:func:`registry_path` and friends) — ``job_id`` is already a
+    globally unique hex token, so the workspace half changes no collision
+    behaviour today, but it keeps this lock keyed the same way its own
+    registry file is found, rather than by an assumption that will not need
+    re-checking if that ever stops being true.
+
+    A plain :class:`threading.Lock`, not an :class:`threading.RLock`: nothing
+    in this module calls :func:`gate_and_publish` re-entrantly for the SAME
+    job on the SAME thread (every caller — a generation's own runner, a fix
+    job's own runner, ``attach_live_check``, a live-check job's runner — calls
+    it exactly once per invocation, and a live-check job always re-gates its
+    PARENT while a fix job always gates its SIBLING, a different key). An RLock
+    would silently paper over a future caller that became reentrant instead of
+    deadlocking on it, which is the wrong failure mode for a lock whose entire
+    job is to make concurrent access visible.
+    """
+    key = (workspaces.current_workspace_id(), job_id)
+    with _GATE_LOCKS_GUARD:
+        lock = _GATE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _GATE_LOCKS[key] = lock
+        return lock
+
 
 #: Registry I/O retries for the Windows transient-lock family. A polling browser
 #: (or an antivirus scanner, or the search indexer) holds a read handle on the
@@ -381,6 +501,27 @@ class _FixApplyFailed(GenesisJobError):
 
     def __init__(self, step: str, reasons: list[str]) -> None:
         super().__init__(f"fix_apply_failed:{step}: {'; '.join(reasons) or step}")
+        self.step = step
+        self.reasons = reasons
+
+
+class _LiveCheckFailed(GenesisJobError):
+    """The live-check job could not PRODUCE evidence (unit #33).
+
+    Strictly "the probe never answered": COM was unavailable, the record came
+    back without a ``load_ok`` at all, the job's own derivation was missing.
+    A probe that answered ``load_ok: false`` is NOT this — that is evidence, it
+    goes to the gate like any other, and the job finishes ``checked`` with the
+    parent carrying whatever verdict the judge reached. Conflating the two would
+    turn "Vissim refused this network" into "our tooling broke", which is the
+    single most expensive lie this feature could tell.
+
+    Private, for the same reason :class:`_FixApplyFailed` is: it exists so the
+    runner builds its ``live_check_failed:{step}`` refusal code in one place.
+    """
+
+    def __init__(self, step: str, reasons: list[str]) -> None:
+        super().__init__(f"live_check_failed:{step}: {'; '.join(reasons) or step}")
         self.step = step
         self.reasons = reasons
 
@@ -1526,12 +1667,49 @@ def _compose_side_layers(
 # ---------------------------------------------------------------------------
 
 
+def _archive_previous_gate(work_dir: Path) -> str | None:
+    """Preserve the verdict bytes a re-gate is about to overwrite (unit #33).
+
+    Returns the archived copy's path RELATIVE to the job directory (so the job
+    record can name it without leaking a server path), or ``None`` when there
+    was no previous verdict — a first gate archives nothing, and that absence is
+    the honest answer, not an empty file.
+
+    See :data:`GATE_HISTORY_DIRNAME` for why the archive is a directory rather
+    than ``gate.json.N`` siblings. Best-effort by design: a job directory that
+    refuses this copy must not stop the gate from running, because refusing to
+    re-gate would leave the job carrying a verdict that new evidence has already
+    contradicted. The failure is logged, and the record then says the archive is
+    absent rather than claiming one exists.
+    """
+    current = work_dir / GATE_JSON_FILENAME
+    if not current.is_file():
+        return None
+    try:
+        history = work_dir / GATE_HISTORY_DIRNAME
+        history.mkdir(parents=True, exist_ok=True)
+        index = 1
+        while (history / f"gate.{index:04d}.json").exists():
+            index += 1
+        target = history / f"gate.{index:04d}.json"
+        # copyfile, not a re-dump of a parsed GateResult: the point is the BYTES
+        # somebody may already have downloaded and quoted.
+        shutil.copyfile(current, target)
+    except OSError:
+        logger.exception(
+            "genesis_jobs: could not archive the previous verdict in %s", work_dir
+        )
+        return None
+    return f"{GATE_HISTORY_DIRNAME}/{target.name}"
+
+
 def gate_and_publish(
     job_id: str,
     *,
     live_oracle: LoadOracle | None = None,
     live_oracle_gap: str | None = None,
     attestation: dict[str, Any] | None = None,
+    regate_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the R1.5 gate over this job's artifact and decide what happens to it.
 
@@ -1555,7 +1733,26 @@ def gate_and_publish(
     ``attestation`` names the human whose claim the ``live_oracle`` rests on
     (:func:`attach_live_check`). It is carried into the gate summary rather than
     inferred there, so no reader of a verdict has to guess whether V1 went green
-    because the app watched Vissim or because somebody said it did.
+    because the app watched Vissim or because somebody said it did. Its
+    ``basis`` field is what says which of the two this is
+    (:data:`ATTESTATION_BASIS` vs :data:`LIVE_CHECK_BASIS`); omitted, it reads as
+    an operator's attestation, which is the conservative answer.
+
+    ``regate_source`` names what CAUSED this re-gate when something did — the
+    live-check job whose probe produced the evidence, and when. It is recorded
+    beside the archived previous verdict (:func:`_archive_previous_gate`) so a
+    reader of a changed verdict can always answer "what changed it, and what did
+    it say before". ``None`` for a first gate, which has neither.
+
+    **Concurrent re-gates on the same job are serialized (unit #33 F1).** The
+    live-check job path (:func:`run_live_check_job`) and :func:`attach_live_check`
+    both re-gate their target through this same function, and nothing upstream
+    stops both from reaching it for the same job at once — a double-click across
+    two tabs is enough. :func:`_gate_lock` holds one job's whole
+    read-old-gate → archive → write-new-gate → update-registry span as a single
+    atomic unit, so the two racers' verdicts always end up ordered (one
+    superseding the other, both preserved) rather than one silently vanishing
+    when both writers picked the same old verdict to archive.
     """
     record = get_job(job_id)
     artifact = record.get("artifact")
@@ -1564,137 +1761,159 @@ def gate_and_publish(
             f"Job {job_id} has no artifact to gate — it never produced a network."
         )
 
-    work_dir = job_dir(job_id)
-    inpx_path = work_dir / str(artifact["inpx"])
-    census_path = work_dir / str(artifact["genesis_json"])
-    metadata: dict[str, Any] | None = None
-    if census_path.is_file():
+    with _gate_lock(job_id):
+        # Re-read under the lock rather than trusting the snapshot above: a
+        # caller that queued behind another racer must act on what the WINNER
+        # left behind (its fresh ``publication``, most of all — see the REFUSED
+        # branch below), never on what the record said before it waited.
+        record = get_job(job_id)
+        artifact = record.get("artifact")
+        if not artifact:  # pragma: no cover - defensive; the same check just ran
+            raise GenesisJobError(
+                f"Job {job_id} has no artifact to gate — it never produced a network."
+            )
+
+        work_dir = job_dir(job_id)
+        inpx_path = work_dir / str(artifact["inpx"])
+        census_path = work_dir / str(artifact["genesis_json"])
+        metadata: dict[str, Any] | None = None
+        if census_path.is_file():
+            try:
+                metadata = json.loads(census_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):  # pragma: no cover - we wrote this file
+                metadata = None
+
+        # The gap is resolved ONCE, here, and the same value reaches both the gate
+        # and the record — so "why is V1 grey" reads the same in the check's own gap
+        # and in the job summary the list view shows.
+        effective_gap = live_oracle_gap
+        if live_oracle is None and not effective_gap:
+            effective_gap = "no_live_check_evidence_attached"
+
+        _update(job_id, phase=PHASE_GATING)
+        result = run_gate(
+            inpx_path,
+            draft_metadata=metadata,
+            load_oracle=live_oracle,
+            load_oracle_gap=effective_gap,
+        )
+
+        # A verdict that is about to be replaced is preserved FIRST, whatever the
+        # new one turns out to be (unit #33). Nothing downstream may overwrite the
+        # evidence a reader was already shown.
+        archived_gate = _archive_previous_gate(work_dir)
+
+        # Stored BEFORE the branch: a refusal is a deliverable. The .inpx is
+        # re-hashed here rather than trusting the record, so the verdict on disk is
+        # provably about the bytes that are there now.
+        (work_dir / GATE_JSON_FILENAME).write_text(
+            json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (work_dir / GATE_REPORT_FILENAME).write_text(
+            render_report(result, language="ko"), encoding="utf-8", newline=""
+        )
+
+        gate_summary = _gate_summary(
+            result,
+            live_oracle=live_oracle,
+            live_oracle_gap=effective_gap,
+            attestation=attestation,
+            regate=(
+                {**(regate_source or {}), "previous_gate_archived": archived_gate}
+                if (regate_source or archived_gate)
+                else None
+            ),
+        )
+
+        if result.verdict is GateVerdict.REFUSED:
+            previous = record.get("publication")
+            revocation = _revoke_publication(record) if previous else None
+            return _update(
+                job_id,
+                status=STATUS_REFUSED,
+                phase=PHASE_DONE,
+                progress=1.0,
+                gate=gate_summary,
+                publication=None,
+                revocation=revocation,
+                error=None,
+            )
+
+        _update(job_id, phase=PHASE_PUBLISHING)
         try:
-            metadata = json.loads(census_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):  # pragma: no cover - we wrote this file
-            metadata = None
-
-    # The gap is resolved ONCE, here, and the same value reaches both the gate
-    # and the record — so "why is V1 grey" reads the same in the check's own gap
-    # and in the job summary the list view shows.
-    effective_gap = live_oracle_gap
-    if live_oracle is None and not effective_gap:
-        effective_gap = "no_live_check_evidence_attached"
-
-    _update(job_id, phase=PHASE_GATING)
-    result = run_gate(
-        inpx_path,
-        draft_metadata=metadata,
-        load_oracle=live_oracle,
-        load_oracle_gap=effective_gap,
-    )
-
-    # Stored BEFORE the branch: a refusal is a deliverable. The .inpx is
-    # re-hashed here rather than trusting the record, so the verdict on disk is
-    # provably about the bytes that are there now.
-    (work_dir / GATE_JSON_FILENAME).write_text(
-        json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="",
-    )
-    (work_dir / GATE_REPORT_FILENAME).write_text(
-        render_report(result, language="ko"), encoding="utf-8", newline=""
-    )
-
-    gate_summary = _gate_summary(
-        result,
-        live_oracle=live_oracle,
-        live_oracle_gap=effective_gap,
-        attestation=attestation,
-    )
-
-    if result.verdict is GateVerdict.REFUSED:
-        previous = record.get("publication")
-        revocation = _revoke_publication(record) if previous else None
-        return _update(
-            job_id,
-            status=STATUS_REFUSED,
-            phase=PHASE_DONE,
-            progress=1.0,
-            gate=gate_summary,
-            publication=None,
-            revocation=revocation,
-            error=None,
+            publication = _register_as_active_dataset(
+                record, inpx_path, draft_metadata=metadata
+            )
+        except Exception as exc:  # noqa: BLE001 - see below; recorded, then re-raised
+            # A storage refusal here is NORMAL operation on Windows, not an exotic
+            # error: ``services/datasets.py`` documents that anything holding
+            # ``uploads/current`` open (Vissim, a results reader, an explorer
+            # window) makes the promote fail — and it guarantees the previous
+            # dataset survives. What must not happen is the job being left at
+            # ``running``/``publishing`` forever with its verdict lost, so the gate
+            # result is written to the record BEFORE the exception continues on to
+            # the runner (which marks the job) or to the HTTP caller (409).
+            logger.error(
+                "genesis_jobs: job %s passed the gate but could not be registered as the "
+                "project's dataset (%s: %s). The previous dataset is unchanged.",
+                job_id,
+                type(exc).__name__,
+                exc,
+            )
+            _update(
+                job_id,
+                status=STATUS_ERROR,
+                phase=PHASE_DONE,
+                progress=1.0,
+                gate=gate_summary,
+                publication=None,
+                refusal={
+                    "code": "publish_failed",
+                    "reasons": [f"{type(exc).__name__}: {exc}"],
+                },
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+        status = (
+            STATUS_PUBLISHED if result.verdict is GateVerdict.PASS else STATUS_PROVISIONAL
         )
-
-    _update(job_id, phase=PHASE_PUBLISHING)
-    try:
-        publication = _register_as_active_dataset(
-            record, inpx_path, draft_metadata=metadata
-        )
-    except Exception as exc:  # noqa: BLE001 - see below; recorded, then re-raised
-        # A storage refusal here is NORMAL operation on Windows, not an exotic
-        # error: ``services/datasets.py`` documents that anything holding
-        # ``uploads/current`` open (Vissim, a results reader, an explorer
-        # window) makes the promote fail — and it guarantees the previous
-        # dataset survives. What must not happen is the job being left at
-        # ``running``/``publishing`` forever with its verdict lost, so the gate
-        # result is written to the record BEFORE the exception continues on to
-        # the runner (which marks the job) or to the HTTP caller (409).
-        logger.error(
-            "genesis_jobs: job %s passed the gate but could not be registered as the "
-            "project's dataset (%s: %s). The previous dataset is unchanged.",
-            job_id,
-            type(exc).__name__,
-            exc,
-        )
-        _update(
-            job_id,
-            status=STATUS_ERROR,
-            phase=PHASE_DONE,
-            progress=1.0,
-            gate=gate_summary,
-            publication=None,
-            refusal={
-                "code": "publish_failed",
-                "reasons": [f"{type(exc).__name__}: {exc}"],
-            },
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        raise
-    status = (
-        STATUS_PUBLISHED if result.verdict is GateVerdict.PASS else STATUS_PROVISIONAL
-    )
-    try:
-        return _update_with_retry(
-            job_id,
-            status=status,
-            phase=PHASE_DONE,
-            progress=1.0,
-            gate=gate_summary,
-            publication=publication,
-            # Cleared rather than left behind: a job that is published NOW must
-            # not still carry the revocation notice from an earlier refused
-            # re-gate, or the record contradicts itself and a reader has to
-            # guess which half is current.
-            revocation=None,
-            error=None,
-        )
-    except Exception as exc:  # noqa: BLE001 - the dataset is already live; see below
-        # The register above SUCCEEDED: the workspace's active dataset IS this
-        # artifact right now. Only the registry write that records that fact
-        # failed (a transient Windows lock past its retries). Falling through to
-        # the runner's generic handler would stamp ``status=error`` /
-        # ``generation_failed`` — whose contract is "no artifact exists" — over a
-        # job whose network is live, and lose the publication record forever.
-        # Raise a DISTINCT error the runner repairs instead of mislabelling, so
-        # the recorded status can never contradict what is actually live.
-        logger.critical(
-            "genesis_jobs: job %s registered its dataset but the publication record could not "
-            "be written (%s: %s). The workspace's active dataset IS this artifact; the job will "
-            "be repaired rather than marked failed.",
-            job_id,
-            type(exc).__name__,
-            exc,
-        )
-        raise GenesisPublicationRecordError(
-            job_id, status=status, gate=gate_summary, publication=publication, cause=exc
-        ) from exc
+        try:
+            return _update_with_retry(
+                job_id,
+                status=status,
+                phase=PHASE_DONE,
+                progress=1.0,
+                gate=gate_summary,
+                publication=publication,
+                # Cleared rather than left behind: a job that is published NOW must
+                # not still carry the revocation notice from an earlier refused
+                # re-gate, or the record contradicts itself and a reader has to
+                # guess which half is current.
+                revocation=None,
+                error=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - the dataset is already live; see below
+            # The register above SUCCEEDED: the workspace's active dataset IS this
+            # artifact right now. Only the registry write that records that fact
+            # failed (a transient Windows lock past its retries). Falling through to
+            # the runner's generic handler would stamp ``status=error`` /
+            # ``generation_failed`` — whose contract is "no artifact exists" — over a
+            # job whose network is live, and lose the publication record forever.
+            # Raise a DISTINCT error the runner repairs instead of mislabelling, so
+            # the recorded status can never contradict what is actually live.
+            logger.critical(
+                "genesis_jobs: job %s registered its dataset but the publication record could not "
+                "be written (%s: %s). The workspace's active dataset IS this artifact; the job will "
+                "be repaired rather than marked failed.",
+                job_id,
+                type(exc).__name__,
+                exc,
+            )
+            raise GenesisPublicationRecordError(
+                job_id, status=status, gate=gate_summary, publication=publication, cause=exc
+            ) from exc
 
 
 def _dataset_georeference(draft_metadata: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2753,6 +2972,424 @@ def attach_live_check(
     return result
 
 
+# ---------------------------------------------------------------------------
+# V1's live evidence, PRODUCED rather than attached — the live-check JOB (#33)
+# ---------------------------------------------------------------------------
+
+
+def create_live_check_job(
+    parent_job_id: str, *, requested_by: str | None
+) -> dict[str, Any]:
+    """Register a live-check job WITHOUT running it — the clone step.
+
+    A live-check job answers ONE question about its parent: does a real PTV
+    Vissim open that artifact, and what does it hold afterwards? It is the
+    same operation ``tools/genesis_open_live_check.py`` performs from a console
+    (the very same function — ``services.vissim_open_probe.probe_open``), moved
+    behind a button so closing V1 stops depending on an operator remembering to
+    run a CLI. What it does NOT do is judge: the evidence goes to the
+    UNMODIFIED gate through :func:`gate_and_publish`, and V1's verdict is
+    whatever ``gate.py`` makes of it.
+
+    **Eligibility is one fact, and it is NAMED.** Only a parent that HAS an
+    emitted ``.inpx`` can be live-checked, because the probe's whole input is
+    that file:
+
+    * a parent whose status is not one of :data:`GATED_STATUSES` (queued, still
+      running, ``error`` — or a live-check job itself, which never gates
+      anything) is refused with ``genesis_live_check_parent_not_gated``;
+    * a parent that is gated but whose artifact is gone from disk is refused
+      with ``genesis_live_check_artifact_missing``.
+
+    Both are :class:`GenesisRefused` — a named refusal the UI renders as a
+    sentence, never a greyed-out button (this project's refusal-is-information
+    rule). Neither creates a job directory: the id is minted only after both
+    pass.
+
+    The parent's artifact is then CLONED into the new job's own work directory
+    under the same base name, the same way :func:`create_genesis_fix_job` clones
+    it and for the same two reasons — CLAUDE.md forbids opening a live dataset's
+    ``.inpx`` in place, and the clone's sha256 is computed from the bytes that
+    were ACTUALLY copied (after ``copyfile`` returns, never a second read of the
+    source) so the lineage hash cannot disagree with itself.
+
+    That clone is also what makes the evidence admissible: it is byte-identical
+    to the parent's artifact, so the sha256 ``LoadOracle.from_probe_state``
+    computes over the path the probe recorded equals the digest ``run_gate``
+    computes over the parent's own file. If the parent's artifact changes
+    between this call and the run, the digests diverge and ``gate.py`` names the
+    evidence as being about another network — which is the correct answer, and
+    one this module must never paper over.
+
+    Raises:
+        GenesisJobNotFoundError: no such parent job in this workspace.
+        GenesisRefused: the parent has no gated artifact to open.
+    """
+    workspace_id = workspaces.current_workspace_id()
+    parent = get_job(parent_job_id)
+    if parent.get("status") not in GATED_STATUSES:
+        raise GenesisRefused(
+            "genesis_live_check_parent_not_gated",
+            [
+                f"Job {parent_job_id} is {parent.get('status')!r}, which carries no gated "
+                f"network file. A live check opens the generation's own .inpx in a real "
+                "Vissim, so there has to be one -- wait for the generation to reach a "
+                "verdict, or start a new one."
+            ],
+        )
+    try:
+        parent_artifact = artifact_path(parent_job_id, "inpx")
+    except GenesisJobNotFoundError as exc:
+        raise GenesisRefused(
+            "genesis_live_check_artifact_missing",
+            [
+                f"Job {parent_job_id} reached a verdict but its .inpx is no longer in the "
+                f"job's work directory, so there is nothing to open. [{exc}]"
+            ],
+        ) from exc
+
+    job_id = uuid4().hex[:12]
+    work_dir = job_dir(job_id)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    name = str(parent.get("name") or "live-check")
+    clone_path = work_dir / f"{name}.inpx"
+    # A plain copy. The parent's own artifact is read once here and never
+    # touched again by anything in this module; the COM session below opens
+    # THIS clone, in the NEW job's own work dir.
+    shutil.copyfile(parent_artifact, clone_path)
+    clone_sha256 = _sha256(clone_path)
+
+    record = {
+        "id": job_id,
+        "workspace_id": workspace_id,
+        "name": name,
+        "status": STATUS_QUEUED,
+        "phase": PHASE_QUEUED,
+        "progress": 0.0,
+        "created_at": _now_iso(),
+        "started_at": None,
+        "completed_at": None,
+        "submitted_by": requested_by,
+        "options": {},
+        # No .osm of its own: this job re-uses the parent's artifact bytes.
+        "source_osm": None,
+        "network": None,
+        "artifact": {
+            "inpx": clone_path.name,
+            "compliance_md": None,
+            # Named by convention, absent on disk: this job never emits a
+            # census and never gates its own clone.
+            "genesis_json": f"{name}.genesis.json",
+            "sha256": clone_sha256,
+            "bytes": clone_path.stat().st_size,
+        },
+        "layers": None,
+        # This job has NO verdict of its own and never will -- the verdict this
+        # run affects is the PARENT's. A ``gate`` here would invite a reader to
+        # believe otherwise.
+        "gate": None,
+        "publication": None,
+        "refusal": None,
+        "error": None,
+        # Filled by the runner: what the probe measured and what the parent's
+        # re-gate then said.
+        "live_check": None,
+        "derived_from": {
+            "kind": LIVE_CHECK_LINEAGE_KIND,
+            "job_id": parent_job_id,
+            "requested_by": requested_by,
+            "requested_at": _now_iso(),
+            "parent_sha256": clone_sha256,
+        },
+    }
+    _upsert(record)
+    return record
+
+
+def start_live_check_job(parent_job_id: str, **kwargs: Any) -> dict[str, Any]:
+    """:func:`create_live_check_job`, then run it on a daemon worker thread.
+
+    The same split :func:`start_genesis_fix_job` uses, for the same
+    non-negotiable reason: cloning the artifact and minting the record is fast
+    synchronous request-thread work, while opening Vissim is a live COM turn
+    that CLAUDE.md forbids inside a request handler. ``routers/genesis.py``
+    calls this and returns the queued record; the caller polls
+    ``GET /jobs/{id}``.
+    """
+    record = create_live_check_job(parent_job_id, **kwargs)
+    threading.Thread(
+        target=run_live_check_job,
+        args=(record["id"], record["workspace_id"]),
+        daemon=True,
+    ).start()
+    return record
+
+
+def run_live_check_job(job_id: str, workspace_id: str) -> dict[str, Any]:
+    """The live-check runner body, workspace re-bound explicitly.
+
+    Public and synchronous, mirroring :func:`run_genesis_fix_job`: a
+    ``threading.Thread`` does not inherit the request's ContextVars, so the
+    submitting workspace is re-bound here rather than trusted from
+    ``current_workspace_id()``. :func:`start_live_check_job` is the only
+    production caller; tests drive ``create_live_check_job`` +
+    ``run_live_check_job`` directly for a synchronous result.
+    """
+    with workspaces.bind_workspace(workspace_id):
+        return _run_live_check_job_locked(job_id)
+
+
+def _build_live_check_probe():
+    """The probe callable a live-check job runs — THE COM SEAM.
+
+    Thin and separately named for exactly the reason
+    :func:`_build_fix_edit_session` is: tests ``monkeypatch.setattr(
+    genesis_jobs, "_build_live_check_probe", ...)`` with a fake that returns a
+    canned probe record, so the whole runner — the clone, the state file, the
+    admissibility rule, the REAL gate, the parent's re-gate, the archive — runs
+    for real, and only the one line that needs live Vissim does not. Production
+    always returns the real probe.
+
+    Imported function-local, like every other COM-adjacent import in this
+    module: ``services.vissim_open_probe`` is itself COM-free at import time,
+    but keeping the import here means this module's import graph does not depend
+    on that staying true.
+    """
+    from services.vissim_open_probe import probe_open  # noqa: PLC0415
+
+    return probe_open
+
+
+def _run_live_check_job_locked(job_id: str) -> dict[str, Any]:
+    record = get_job(job_id)
+    work_dir = job_dir(job_id)
+    try:
+        derived = record.get("derived_from") or {}
+        parent_job_id = str(derived.get("job_id") or "")
+        artifact = record.get("artifact") or {}
+        inpx_name = artifact.get("inpx")
+        if derived.get("kind") != LIVE_CHECK_LINEAGE_KIND or not parent_job_id or not inpx_name:
+            # Defensive only -- every job create_live_check_job produces carries
+            # all three. A record missing any of them did not come from here,
+            # and guessing a parent to re-gate is the last thing this should do.
+            raise _LiveCheckFailed(
+                "missing_derivation",
+                [
+                    "This job carries no live-check derived_from/artifact.inpx -- it was not "
+                    "produced by create_live_check_job."
+                ],
+            )
+
+        clone_path = work_dir / str(inpx_name)
+        # The run label. Deterministic and job-scoped, so the oracle is read
+        # back BY NAME rather than by from_probe_state's newest-run fallback --
+        # a job must never be able to pick up another run's evidence.
+        label = f"live_check_{job_id}"
+
+        _update(job_id, status=STATUS_RUNNING, phase=PHASE_LIVE_CHECKING)
+
+        # THE COM TURN. On this worker thread, on this job's own clone, through
+        # the seam above -- never in a request handler, never on the parent's
+        # file, never attached to a running Vissim (probe_open's own
+        # _connect_controller passes attach_to_running=False).
+        probe = _build_live_check_probe()
+        started_utc = _now_iso()
+        try:
+            com = probe(clone_path, label)
+        except Exception as exc:  # noqa: BLE001 - recorded as a named refusal below
+            raise _LiveCheckFailed(
+                "probe_failed", [f"{type(exc).__name__}: {exc}"]
+            ) from exc
+
+        # The evidence file, in EXACTLY the shape LoadOracle.from_probe_state
+        # reads -- which is the shape tools/genesis_open_live_check.py's own
+        # state.json has, because both are written from the same probe record.
+        # Written BEFORE anything is judged, and whatever the probe said: a
+        # refused load is evidence, and evidence that only exists when it is
+        # convenient is not evidence.
+        state = {
+            "probe": "genesis_live_check_job",
+            "job_id": job_id,
+            "parent_job_id": parent_job_id,
+            "runs": {
+                label: {
+                    "label": label,
+                    "network": str(clone_path),
+                    "started_utc": (com or {}).get("started_utc") or started_utc,
+                    "finished_utc": (com or {}).get("finished_utc") or _now_iso(),
+                    "run": {"com": com},
+                }
+            },
+        }
+        (work_dir / LIVE_CHECK_STATE_FILENAME).write_text(
+            json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="",
+        )
+
+        if not isinstance(com, dict) or com.get("fatal_error") or "load_ok" not in com:
+            raise _LiveCheckFailed(
+                "probe_produced_no_verdict",
+                [
+                    str(
+                        (com or {}).get("fatal_error")
+                        or "The probe returned no load result at all."
+                    )
+                ],
+            )
+
+        oracle, gap = LoadOracle.from_probe_state(state, label=label)
+
+        _update(job_id, phase=PHASE_GATING)
+        parent = gate_and_publish(
+            parent_job_id,
+            live_oracle=oracle,
+            live_oracle_gap=gap,
+            attestation={
+                "by": derived.get("requested_by"),
+                "at": _now_iso(),
+                "label": label,
+                # NOT operator_attested: this record was written by this process
+                # from what LoadNet returned, not uploaded by a caller.
+                "basis": LIVE_CHECK_BASIS,
+            },
+            regate_source={
+                "source": "live_check_job",
+                "job_id": job_id,
+                "at": _now_iso(),
+            },
+        )
+        parent_gate = parent.get("gate") or {}
+        return _update(
+            job_id,
+            status=STATUS_CHECKED,
+            phase=PHASE_DONE,
+            progress=1.0,
+            live_check={
+                "parent_job_id": parent_job_id,
+                "label": label,
+                "state_file": LIVE_CHECK_STATE_FILENAME,
+                "load_ok": com.get("load_ok"),
+                "load_error": com.get("load_error"),
+                "save_ok": com.get("save_ok"),
+                "vissim_version": (
+                    ((com.get("version") or {}).get("att_values") or {}).get("Version")
+                ),
+                # Read back off the parent's own summary rather than asserted
+                # here: whether the evidence was ADMITTED is gate.py's answer to
+                # its sha256 identity rule, not this runner's opinion.
+                "admitted": (parent_gate.get("live_evidence") or {}).get("admitted"),
+                "gap_codes": (parent_gate.get("live_evidence") or {}).get("gap_codes") or [],
+                "parent_status": parent.get("status"),
+                "parent_verdict": parent_gate.get("verdict"),
+                "previous_gate_archived": (parent_gate.get("regate") or {}).get(
+                    "previous_gate_archived"
+                ),
+            },
+        )
+    except GenesisPublicationRecordError as exc:
+        # The PARENT's dataset is live but its publish record did not land. The
+        # parent is repaired the same way both other runners repair it; this
+        # job then reports itself as checked, because its own work (producing
+        # the evidence) genuinely finished.
+        logger.critical(
+            "genesis_jobs: live-check job %s re-gated its parent, whose dataset is registered "
+            "but whose publish record did not land on the first pass.",
+            job_id,
+        )
+        try:
+            _update_with_retry(
+                exc.job_id,
+                status=exc.status,
+                phase=PHASE_DONE,
+                progress=1.0,
+                gate=exc.gate,
+                publication=exc.publication,
+                revocation=None,
+                error=None,
+            )
+        except Exception:  # noqa: BLE001 - registry still unwritable; do not lie
+            logger.critical(
+                "genesis_jobs: parent %s of live-check job %s could not be repaired "
+                "(registry still unwritable); it must be reconciled by hand.",
+                exc.job_id,
+                job_id,
+                exc_info=True,
+            )
+        return _update(
+            job_id,
+            status=STATUS_ERROR,
+            phase=PHASE_DONE,
+            progress=1.0,
+            refusal={
+                "code": "live_check_failed:parent_publication_record",
+                "reasons": [str(exc)],
+            },
+            error="live_check_failed:parent_publication_record",
+        )
+    except datasets.DatasetStorageError as exc:
+        # The parent's re-gate RAN and its verdict is recorded; only promoting
+        # the artifact into the workspace's dataset slot failed (on Windows,
+        # anything holding ``uploads/current`` open — see services/datasets.py).
+        # gate_and_publish has already written that onto the PARENT with its own
+        # ``publish_failed`` code, so this job names the same cause rather than
+        # calling it unexpected.
+        logger.error(
+            "genesis_jobs: live-check job %s re-gated its parent, but the dataset promote "
+            "was refused (%s: %s)",
+            job_id,
+            type(exc).__name__,
+            exc,
+        )
+        return _update(
+            job_id,
+            status=STATUS_ERROR,
+            phase=PHASE_DONE,
+            progress=1.0,
+            refusal={
+                "code": "live_check_failed:parent_publish_refused",
+                "reasons": [
+                    "The live check produced its evidence and the verdict was re-decided, but "
+                    f"the network could not be registered as the project's dataset. [{exc}]"
+                ],
+            },
+            error=f"live_check_failed:parent_publish_refused: {exc}",
+        )
+    except _LiveCheckFailed as exc:
+        # Nothing was re-gated: this branch is only ever reached before
+        # gate_and_publish is called, so the parent keeps the verdict it had.
+        logger.info(
+            "genesis_jobs: live-check job %s produced no evidence (%s)", job_id, exc.step
+        )
+        return _update(
+            job_id,
+            status=STATUS_ERROR,
+            phase=PHASE_DONE,
+            progress=1.0,
+            refusal={"code": f"live_check_failed:{exc.step}", "reasons": exc.reasons},
+            error=f"live_check_failed:{exc.step}",
+        )
+    except Exception as exc:  # noqa: BLE001 - a job failure is data, not a crash
+        logger.exception("genesis_jobs: live-check job %s failed", job_id)
+        try:
+            already = get_job(job_id)
+        except GenesisJobError:  # pragma: no cover - the record was just read
+            already = {}
+        if (already.get("refusal") or {}).get("code"):
+            return already
+        return _update(
+            job_id,
+            status=STATUS_ERROR,
+            phase=PHASE_DONE,
+            progress=1.0,
+            refusal={
+                "code": "live_check_failed:unexpected",
+                "reasons": [f"{type(exc).__name__}: {exc}"],
+            },
+            error=f"live_check_failed:unexpected: {type(exc).__name__}: {exc}",
+        )
+
+
 def reconcile_interrupted_jobs() -> list[str]:
     """Terminate jobs a dead process left claiming to run. Called once at boot.
 
@@ -2822,6 +3459,7 @@ def _gate_summary(
     live_oracle: LoadOracle | None,
     live_oracle_gap: str | None,
     attestation: dict[str, Any] | None = None,
+    regate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The compact verdict carried on the job record (the full result is on disk).
 
@@ -2830,12 +3468,18 @@ def _gate_summary(
     "a live check was attached but it names another network" instead of showing
     a check that mysteriously stayed grey.
 
-    It also states the BASIS. Evidence that arrived over HTTP is an operator's
+    It also states the BASIS, and the basis is the ATTESTATION's own — never a
+    constant assumed here. Evidence that arrived over HTTP is an operator's
     attestation, not something this app proved (module docstring), so it carries
-    ``basis: "operator_attested"`` and the attester's name. A reader must never
-    have to infer which kind of V1 they are looking at.
+    ``basis: "operator_attested"`` and the attester's name; evidence a live-check
+    JOB produced by opening the file itself carries
+    :data:`LIVE_CHECK_BASIS` instead (unit #33). A caller that supplies no
+    attestation at all reads as the former, which is the conservative default: a
+    verdict may understate what it rests on, never overstate it. A reader must
+    never have to infer which kind of V1 they are looking at.
     """
     v1 = result.check("V1")
+    basis = str((attestation or {}).get("basis") or ATTESTATION_BASIS)
     evidence: dict[str, Any] | None = None
     if live_oracle is not None:
         admitted = v1.state is not CheckState.NOT_CHECKABLE
@@ -2846,7 +3490,7 @@ def _gate_summary(
             "sha256": live_oracle.network_sha256,
             "admitted": admitted,
             "gap_codes": [gap.code for gap in v1.gaps],
-            "basis": ATTESTATION_BASIS,
+            "basis": basis,
             "attested_by": (attestation or {}).get("by"),
             "attested_at": (attestation or {}).get("at"),
         }
@@ -2865,10 +3509,19 @@ def _gate_summary(
         "live_evidence_gap": None if live_oracle is not None else live_oracle_gap,
         # True only when a refuse-tier check went green on a human's claim
         # rather than on something this process observed. The UI reads this to
-        # avoid presenting an attested pass as a proven one.
+        # avoid presenting an attested pass as a proven one. A live-check JOB's
+        # own evidence is the case where this is legitimately False WITH a green
+        # V1: the app opened the file itself, so there is no claim to rest on
+        # (unit #33) -- and the UI still says which basis it was, because
+        # "not an attestation" is not the same sentence as "proven".
         "rests_on_attestation": bool(
-            live_oracle is not None and v1.state is CheckState.PASS
+            live_oracle is not None
+            and v1.state is CheckState.PASS
+            and basis == ATTESTATION_BASIS
         ),
+        # What caused THIS verdict to replace an earlier one, and where the
+        # earlier one's bytes were kept. ``None`` on a first gate.
+        "regate": regate,
     }
 
 
@@ -3050,14 +3703,19 @@ __all__ = [
     "COUNTS_DOC_FILENAME",
     "COUNTS_KIND",
     "GATED_STATUSES",
+    "GATE_HISTORY_DIRNAME",
     "GATE_JSON_FILENAME",
     "GATE_REPORT_FILENAME",
     "LAYERS_JSON_FILENAME",
+    "LIVE_CHECK_BASIS",
+    "LIVE_CHECK_LINEAGE_KIND",
+    "LIVE_CHECK_STATE_FILENAME",
     "GenesisJobError",
     "GenesisJobNotFoundError",
     "GenesisRefused",
     "GenesisRegistryError",
     "MAX_FINDINGS_IN_PAYLOAD",
+    "STATUS_CHECKED",
     "STATUS_ERROR",
     "STATUS_PROVISIONAL",
     "STATUS_PUBLISHED",
@@ -3067,10 +3725,12 @@ __all__ = [
     "StagedOsmNotFoundError",
     "TERMINAL_STATUSES",
     "PHASE_APPLYING_FIX",
+    "PHASE_LIVE_CHECKING",
     "artifact_path",
     "attach_live_check",
     "create_genesis_fix_job",
     "create_genesis_job",
+    "create_live_check_job",
     "derive_fix_targets",
     "derive_v6_node_evidence",
     "discard_staged_osm",
@@ -3087,6 +3747,7 @@ __all__ = [
     "registry_path",
     "run_genesis_fix_job",
     "run_genesis_job",
+    "run_live_check_job",
     "side_staging_dir",
     "stage_counts",
     "stage_osm",
@@ -3097,4 +3758,5 @@ __all__ = [
     "staging_dir",
     "start_genesis_fix_job",
     "start_genesis_job",
+    "start_live_check_job",
 ]

@@ -220,9 +220,9 @@ export function jobHelpEntries(t: Translate): HelpEntry[] {
     {
       title: t("잠정 등록", "Provisional registration", "暫定登録"),
       body: t(
-        "프로젝트에 등록되었습니다. 다만 실행되지 못한 거부 등급 검사가 있어 잠정 상태입니다 — 생성 잡은 Vissim COM을 열 수 없으므로, 실제 Vissim이 이 파일을 여는 것을 증명하는 V1은 라이브 검사 증거를 붙여야 확정됩니다.",
-        "Registered in the project, but provisional: a refuse-tier check could not run. A generation job may not open Vissim COM, so V1 — the only check that proves a real Vissim opens this file — stays open until live-check evidence is attached.",
-        "プロジェクトに登録されましたが、実行できなかった拒否ティア検査があるため暫定です。生成ジョブは Vissim COM を開けないため、実際の Vissim がこのファイルを開くことを証明する V1 はライブ検査の証拠を添付するまで確定しません。",
+        "프로젝트에 등록되었습니다. 다만 실행되지 못한 거부 등급 검사가 있어 잠정 상태입니다 — 생성 잡은 Vissim COM을 열 수 없으므로, 실제 Vissim이 이 파일을 여는 것을 증명하는 V1은 라이브 검사 증거가 있어야 확정됩니다. 증거는 두 가지 경로로 들어옵니다: 운영자가 직접 돌린 검사 결과를 첨부하거나(운영자 진술), 판정 화면의 V1 칸에서 '실 Vissim으로 확인'을 눌러 이 앱이 작업 큐에서 직접 열어 보게 하는 것입니다.",
+        "Registered in the project, but provisional: a refuse-tier check could not run. A generation job may not open Vissim COM, so V1 — the only check that proves a real Vissim opens this file — stays open until live-check evidence exists. It arrives two ways: an operator attaches the result of a check they ran themselves (their attestation), or the V1 cell's own \"실 Vissim으로 확인\" button has this app open the file on its job queue.",
+        "プロジェクトに登録されましたが、実行できなかった拒否ティア検査があるため暫定です。生成ジョブは Vissim COM を開けないため、実際の Vissim がこのファイルを開くことを証明する V1 はライブ検査の証拠がなければ確定しません。証拠は二通りで入ります：運用者が自分で実行した結果を添付する（運用者の申告）か、判定画面の V1 セルの「実Vissimで確認」ボタンでこのアプリにジョブキュー上で開かせるかです。",
       ),
     },
     {

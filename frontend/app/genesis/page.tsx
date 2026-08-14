@@ -401,8 +401,15 @@ export default function GenesisPage() {
                       {/* A derived filename that only re-spells the name above it is
                         * repetition, not information (user, live review 2026-08-13):
                         * it prints only when it actually differs — i.e. an upload
-                        * whose file was not named after the job. */}
-                      {job.source_osm.filename !== `${job.name}.osm` && (
+                        * whose file was not named after the job.
+                        *
+                        * NULL-GUARDED since unit #33: a fix job and a live-check
+                        * job carry `source_osm: null` (they re-use the parent's
+                        * artifact bytes and have no extract of their own), and
+                        * this row rendered them by reading `.filename` off null.
+                        * The client type said non-null; the backend had been
+                        * writing null since B5-2. */}
+                      {job.source_osm && job.source_osm.filename !== `${job.name}.osm` && (
                         <span className="block truncate font-mono text-[14px] text-slate-500">
                           {job.source_osm.filename}
                         </span>
