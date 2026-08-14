@@ -56,14 +56,42 @@
 //   6. the "이 화면에 일부러 넣지 않은 것" disclosure is gone (same note).
 // The FLOW is untouched: same states, same requests, same hand-off.
 // ---------------------------------------------------------------------------
+//
+// UNIT #20 (2026-08-14) — four live-tested changes on top of U-1, all from the
+// user's own instructions after driving this exact screen:
+//   1. THE MODE TOGGLE DIES. This page was "rectangle or lasso, pick one"; it
+//      is now lasso-only. `RegionMode`, the rectangle input fields, `parseBox`
+//      and `RegionGauge` (which existed ONLY for rectangle mode, per its own
+//      doc comment) are gone with it. The backend keeps accepting a rectangle
+//      shape unchanged — other callers and the contract's own API-binding test
+//      still exercise it — this file simply never sends one.
+//   2. THE LIMIT BECOMES THE BUTTON'S JOB. The measurement's stat grid, its
+//      한계 안/한계 초과 chip and its "자세한 근거" detail all come off the
+//      screen. The fetch behind them is untouched (the button still needs it);
+//      what changed is that the button now CARRIES the limit itself —
+//      disabled when over, and a title on its wrapping `<span>` (the
+//      established pattern for a disabled button's hover text) states which
+//      numbers put it there, read straight from the same measurement payload.
+//   3. The always-visible 경계 처리 ⓘ is hidden; its sentences (verbatim,
+//      still pinned) move into the page help drawer below.
+//   4. THE VERTEX LIST BECOMES A TABLE. The read-only dotted coordinate
+//      enumeration is replaced by `VertexRow` — index, an editable lat input,
+//      an editable lon input, a delete button. `vertices` (this page's own
+//      state) stays the single source of truth: a row's own text is a DRAFT
+//      that only ever reaches `setVertices` after passing a ±90°/±180° range
+//      check, so an invalid keystroke marks itself (mono ring, a message row)
+//      and never reaches the map or a submitted payload. See `VertexRow`'s own
+//      doc comment for the exact binding, because this is the one place an
+//      adversarial edit — reentrancy, NaN, editing mid-close — could corrupt
+//      the ring silently.
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { InfoTip, Panel, refusalHeadline } from "@/components/genesis/ui";
+import { PageHelp, Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   RegionFetchError,
@@ -108,7 +136,10 @@ function isTerminal(status: RegionFetchStatus): boolean {
 }
 
 /** A default that is somewhere real rather than (0, 0): Daejeon 둔산, this
- * product's first market. Small enough to be inside every cap. */
+ * product's first market. Small enough to be inside every cap. Unit #20: with
+ * the rectangle mode gone this is now used for exactly one thing — the map's
+ * opening centre (`DEFAULT_CENTRE`, below) and the one-off `GET
+ * /region/limits` lookup that reads the corner cap before anything is drawn. */
 const DEFAULT_BBOX = {
   south: "36.3444",
   west: "127.3765",
@@ -116,29 +147,12 @@ const DEFAULT_BBOX = {
   east: "127.3925",
 };
 
-type BoxFields = typeof DEFAULT_BBOX;
-type BoxKey = keyof BoxFields;
-
-/** Rectangle or lasso. Exactly one is ever sent, and which one is what the mode
- * toggle selects — never both, because a polygon's bounding box is DERIVED by the
- * backend and a second one computed here could disagree with the rectangle the
- * fetch is actually judged against. */
-type RegionMode = "rect" | "polygon";
-
 /** Where the map looks before anything is drawn: the same 둔산 default the
- * rectangle fields carry, so the two modes open on the same ground. */
+ * rectangle fields used to carry, computed once from `DEFAULT_BBOX`. */
 const DEFAULT_CENTRE: [number, number] = [
   (Number(DEFAULT_BBOX.south) + Number(DEFAULT_BBOX.north)) / 2,
   (Number(DEFAULT_BBOX.west) + Number(DEFAULT_BBOX.east)) / 2,
 ];
-
-function parseBox(fields: BoxFields): { south: number; west: number; north: number; east: number } | null {
-  const values = (Object.keys(fields) as BoxKey[]).map((key) => Number(fields[key]));
-  if (values.some((value) => !Number.isFinite(value))) return null;
-  const [south, west, north, east] = values;
-  if (north <= south || east <= west) return null;
-  return { south, west, north, east };
-}
 
 function statusLabel(status: RegionFetchStatus, t: Translate): string {
   switch (status) {
@@ -243,16 +257,6 @@ function statusClasses(status: RegionFetchStatus): string {
 // refusal client-side is how a UI starts lying about why something did not
 // happen.
 
-function bindingTermLabel(term: string, t: Translate): string {
-  if (term === "meridian_convergence") {
-    return t("자오선 수렴", "meridian convergence", "子午線収束");
-  }
-  if (term === "tangent_plane_curvature") {
-    return t("접평면 곡률", "tangent-plane curvature", "接平面曲率");
-  }
-  return term;
-}
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -267,90 +271,160 @@ function formatTimestamp(iso: string | null, lang: "ko" | "en" | "ja"): string {
   return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
 }
 
-/**
- * The requested region's EXTENT drawn inside the cap square, both to the same
- * scale.
- *
- * Not a map, and not because this app cannot draw one — `RegionLassoMap` beside
- * it draws CARTO tiles, as four other components in this app already do. It is
- * not a map because a map answers a different question. This answers the one
- * comparison that decides whether a fetch can happen at all: the region's
- * half-extent against the draft projection's validity square at this latitude.
- * Over the line, the box turns amber and the cap square is what it was measured
- * against.
- *
- * (What the product refuses is a GEOREFERENCE for generated output —
- * `services/genesis/project.py`: "NOT A GEOREFERENCE" — which is about placing an
- * emitted .inpx on the earth. Drawing a raw WGS84 region on a basemap is a
- * different act and makes no such claim.)
- *
- * Shape-agnostic on purpose: `width_m`/`height_m` are the extent of whatever was
- * measured — a rectangle's corners or a lasso's vertices — so a polygon feeds
- * this gauge unchanged rather than needing a second one.
- *
- * RECTANGLE MODE ONLY since U-1 polish (2026-08-13), and the component is kept
- * whole rather than deleted because rectangle mode still has nothing else.
- * WHAT THE USER MEASURED, in their own live use: in polygon mode this small
- * dashed square sits beside a real basemap carrying a real drawn ring, and it
- * reads as a stray rectangle somebody drew — a second, contradictory shape on a
- * screen whose whole subject is which shape is being judged. It also says
- * nothing the polygon screen does not already say: the map draws the ring AND
- * the server's derived bounding box, and the 한계 안 / 한계 초과 stat block
- * states the same half-extent-against-the-cap comparison in numbers. In
- * rectangle mode there is no map at all, so the gauge is the only picture of
- * that comparison and it stays.
- */
-function RegionGauge({ measurement, t }: { measurement: RegionMeasurement; t: Translate }) {
-  const capSide = 2 * measurement.validity_radius_m;
-  const scale = 200 / Math.max(capSide, measurement.width_m, measurement.height_m);
-  const boxW = Math.max(measurement.width_m * scale, 2);
-  const boxH = Math.max(measurement.height_m * scale, 2);
-  const capW = capSide * scale;
-  const ok = measurement.within_region_cap;
-  return (
-    <svg viewBox="0 0 240 240" role="img" className="h-40 w-40 shrink-0" aria-label={t("영역과 한계 비교", "Region against the cap", "領域と上限の比較")}>
-      <rect
-        x={120 - capW / 2}
-        y={120 - capW / 2}
-        width={capW}
-        height={capW}
-        fill="none"
-        stroke="currentColor"
-        strokeDasharray="5 4"
-        className="text-slate-400"
-      />
-      <rect
-        x={120 - boxW / 2}
-        y={120 - boxH / 2}
-        width={boxW}
-        height={boxH}
-        className={ok ? "fill-sky-200/60 stroke-sky-600" : "fill-rose-200/60 stroke-rose-500"}
-        strokeWidth={1.5}
-      />
-    </svg>
-  );
+// ---------------------------------------------------------------------------
+// The editable vertex table (unit #20)
+// ---------------------------------------------------------------------------
+
+/** ±90° / ±180° -- the only two facts a lat/lon pair has to satisfy to be a
+ * point Leaflet, Overpass and the server's own polygon parser can all agree
+ * on. Checked HERE, before a value ever reaches `setVertices`: a NaN handed to
+ * Leaflet throws inside the tile layer, and an out-of-range degree handed to
+ * the server is a round trip this screen can refuse for free instead. */
+function isValidLatitude(value: number): boolean {
+  return Number.isFinite(value) && value >= -90 && value <= 90;
+}
+function isValidLongitude(value: number): boolean {
+  return Number.isFinite(value) && value >= -180 && value <= 180;
 }
 
 /**
- * The Console stat: a small muted LABEL above a large bold VALUE, with an
- * optional quiet line under it.
+ * One row of the editable vertex table -- index, a lat input, a lon input, a
+ * delete button.
  *
- * U-1 polish (docs/ux-backlog.md, item 13 — "the Console stat pattern … for the
- * verdict counts, region measurement and history scale numbers"). What it
- * replaces here is four stacked sentences inside a tinted card inside a panel:
- * every number the region measurement produces was body text at the same weight
- * as the prose explaining it, so the figures that decide whether a fetch can
- * happen at all had no more presence than the footnote about them.
+ * THE BINDING, stated exactly because it is the part an adversarial read of
+ * this file has to be able to check: the row's OWN state (`latText`/`lonText`)
+ * is a DRAFT. Every keystroke updates the draft (so an in-progress "-" or
+ * "36." stays on screen instead of snapping back on the next render), and
+ * ALSO calls `onCommit` -- but only when BOTH fields parse to a finite number
+ * inside range. An invalid draft therefore never becomes a `setVertices`
+ * call: the page's `vertices` array, and through it the map and the eventual
+ * `startRegionFetch` payload, only ever see a value this function has
+ * already range-checked.
+ *
+ * THE RESYNC, and the bug it was written to close: this component is keyed by
+ * INDEX (see the caller), so deleting a row out of the middle of the table
+ * does not remount every row after it -- React matches the same key to the
+ * same component instance and hands it new `lat`/`lon` props, shifted down by
+ * one. Without the effect below, the row now sitting at that index would go
+ * on showing the TEXT the row that used to occupy it had typed, silently
+ * disagreeing with what `vertices` (and the map) now hold at that position --
+ * a table that lies about its own state is worse than no table. The effect
+ * resyncs the draft whenever the vertex THIS row is bound to actually changes
+ * -- a delete elsewhere, or this row's own valid commit landing back through
+ * props -- and it does NOT fire while a keystroke is merely invalid, because
+ * an invalid draft never reaches `onCommit` and so `lat`/`lon` never change;
+ * that is exactly the case that must keep the half-typed text on screen.
  */
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function VertexRow({
+  index,
+  lat,
+  lon,
+  onCommit,
+  onDelete,
+  t,
+}: {
+  index: number;
+  lat: number;
+  lon: number;
+  onCommit: (index: number, lat: number, lon: number) => void;
+  onDelete: (index: number) => void;
+  t: Translate;
+}) {
+  const [latText, setLatText] = useState(() => String(lat));
+  const [lonText, setLonText] = useState(() => String(lon));
+
+  // ADVERSARIAL FIX, found in this unit's own self-review: `key={index}` (see
+  // the caller) means deleting a row from the MIDDLE of the table does not
+  // remount every row after it -- React matches the same key to the same
+  // component instance and just hands it new `lat`/`lon` props, so without
+  // this effect the row now sitting at that index would keep showing the
+  // TEXT the row that used to live there had typed, while `vertices` itself
+  // already held the correct, shifted value. This resyncs the draft whenever
+  // the vertex THIS row is bound to actually changes underneath it -- a
+  // delete elsewhere, or this row's own valid commit landing back through
+  // props. It does NOT fire while a keystroke is merely invalid (an invalid
+  // draft never reaches `onCommit`, so `lat`/`lon` never change), which is
+  // exactly the case that must keep the half-typed text on screen.
+  useEffect(() => {
+    setLatText(String(lat));
+    setLonText(String(lon));
+  }, [lat, lon]);
+
+  const latOk = latText.trim() !== "" && isValidLatitude(Number(latText));
+  const lonOk = lonText.trim() !== "" && isValidLongitude(Number(lonText));
+
+  const commit = (nextLatText: string, nextLonText: string) => {
+    const nextLat = Number(nextLatText);
+    const nextLon = Number(nextLonText);
+    const nextLatOk = nextLatText.trim() !== "" && isValidLatitude(nextLat);
+    const nextLonOk = nextLonText.trim() !== "" && isValidLongitude(nextLon);
+    // Never feed NaN, or a value outside the range Leaflet/Overpass/the
+    // server can all agree is a coordinate, to the map or the payload -- an
+    // invalid row simply stops here and marks itself below.
+    if (nextLatOk && nextLonOk) onCommit(index, nextLat, nextLon);
+  };
+
+  const cellClasses = (ok: boolean) =>
+    `w-full rounded border px-1.5 py-1 font-mono text-[12px] text-slate-800 ${
+      ok ? "border-slate-300" : "border-slate-400 ring-1 ring-slate-400"
+    }`;
+
   return (
-    <div className="min-w-0">
-      <p className="text-xs font-medium text-slate-500">{label}</p>
-      <p className="mt-1 text-[19px] font-semibold leading-tight tracking-tight text-slate-900">
-        {value}
-      </p>
-      {hint && <p className="mt-1 text-xs leading-relaxed text-slate-500">{hint}</p>}
-    </div>
+    <>
+      <tr className="border-t border-slate-100">
+        <td className="py-1 pl-2 pr-2 font-mono text-[12px] text-slate-500">{index + 1}</td>
+        <td className="py-1 pr-2">
+          <input
+            type="text"
+            inputMode="decimal"
+            value={latText}
+            onChange={(event) => {
+              const next = event.target.value;
+              setLatText(next);
+              commit(next, lonText);
+            }}
+            aria-invalid={!latOk}
+            aria-label={t(`점 ${index + 1} 위도`, `Point ${index + 1} latitude`, `点 ${index + 1} 緯度`)}
+            className={cellClasses(latOk)}
+          />
+        </td>
+        <td className="py-1 pr-2">
+          <input
+            type="text"
+            inputMode="decimal"
+            value={lonText}
+            onChange={(event) => {
+              const next = event.target.value;
+              setLonText(next);
+              commit(latText, next);
+            }}
+            aria-invalid={!lonOk}
+            aria-label={t(`점 ${index + 1} 경도`, `Point ${index + 1} longitude`, `点 ${index + 1} 経度`)}
+            className={cellClasses(lonOk)}
+          />
+        </td>
+        <td className="py-1 pr-2 text-right">
+          <button
+            type="button"
+            onClick={() => onDelete(index)}
+            className="ui-button-ghost rounded px-2 py-0.5 text-[12px] font-semibold"
+          >
+            {t("삭제", "Delete", "削除")}
+          </button>
+        </td>
+      </tr>
+      {(!latOk || !lonOk) && (
+        <tr>
+          <td colSpan={4} className="pb-1.5 pl-6 pr-2 text-[12px] leading-snug text-slate-600">
+            {t(
+              "위도는 -90~90, 경도는 -180~180 사이의 숫자여야 합니다 — 고치기 전까지 이 점은 지도에 반영되지 않습니다.",
+              "Latitude must be between -90 and 90, longitude between -180 and 180 — this point will not update on the map until it is fixed.",
+              "緯度は-90〜90、経度は-180〜180の数値である必要があります — 修正するまでこの点は地図に反映されません。",
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -362,29 +436,21 @@ export default function GenesisRegionPage() {
   const { lang, t } = useLanguage();
   const router = useRouter();
 
-  // POLYGON IS THE DEFAULT (U-1 polish, 2026-08-13 — the user's call after live
-  // testing: the lasso over a basemap is what a study area actually looks like,
-  // and four decimal-degree fields are the fallback for someone who already has
-  // coordinates).
+  // UNIT #20: the mode toggle is gone -- this page is lasso-only, so `vertices`
+  // is now the ONLY shape state it carries (no `box`/`RegionMode` beside it).
   //
-  // THE INITIAL STATE, traced rather than assumed, because "default to polygon"
-  // is only safe if the empty ring is genuinely empty:
+  // THE INITIAL STATE, traced rather than assumed, because opening straight on
+  // an empty ring is only safe if the empty ring is genuinely empty:
   //   * `vertices` starts [], so `parsed` is null (a ring needs three corners);
   //   * null `parsed` makes the measure effect RETURN BEFORE the debounce timer
   //     is ever set, so `previewRegion` is not called on load — the screen opens
   //     with no request in flight;
-  //   * `measurement` therefore stays null, so no measurement renders at all.
-  //     DEFAULT_BBOX seeds the rectangle INPUT FIELDS and (through
-  //     DEFAULT_CENTRE) the map's opening view and the limits lookup; it has
-  //     never been a measurement, and in polygon mode nothing reads it. A stale
-  //     "한계 안: 반경 …" seeded from 둔산 is structurally impossible here;
+  //   * `measurement` therefore stays null, so no measurement renders at all;
   //   * `readyToFetch` needs `measurement?.within_region_cap`, so the extract
   //     button is disabled until a real ring has been measured by the server.
   // The page holds no URL state (no useSearchParams, no router.replace), so a
   // deep link or a browser Back lands on this same initial state rather than on
   // a half-restored one.
-  const [mode, setMode] = useState<RegionMode>("polygon");
-  const [box, setBox] = useState<BoxFields>(DEFAULT_BBOX);
   const [vertices, setVertices] = useState<Array<[number, number]>>([]);
   const [ringClosed, setRingClosed] = useState(false);
   const [name, setName] = useState("");
@@ -416,33 +482,66 @@ export default function GenesisRegionPage() {
   const [handOffError, setHandOffError] = useState<GenesisError | Error | null>(null);
 
   const selected = selectedEntry && selectedEntry.id === selectedId ? selectedEntry.record : null;
-  // ONE shape, chosen by the mode — the payload the preview measures and the
-  // payload the fetch is started with are the same object, so the two can never
-  // describe different regions.
+  // ONE shape: the polygon the lasso drew. This is the SAME object the preview
+  // measures and the fetch is started with, so the two can never describe
+  // different regions.
   const parsed = useMemo<RegionShape | null>(() => {
-    if (mode === "polygon") {
-      return vertices.length >= 3 ? { polygon: vertices } : null;
-    }
-    return parseBox(box);
-  }, [mode, box, vertices]);
-  const overVertexCap = mode === "polygon" && maxVertices !== null && vertices.length > maxVertices;
+    return vertices.length >= 3 ? { polygon: vertices } : null;
+  }, [vertices]);
+  const overVertexCap = maxVertices !== null && vertices.length > maxVertices;
   const readyToFetch = Boolean(
     parsed && measurement?.within_region_cap && !overVertexCap && !submitting,
   );
 
-  const setField = useCallback((key: BoxKey, value: string) => {
-    setBox((current) => ({ ...current, [key]: value }));
-  }, []);
+  // UNIT #20 -- "the limit becomes the button's job". Non-null EXACTLY when the
+  // button is disabled for the limit specifically (a real measurement exists
+  // and says over-cap) -- never for "fewer than three corners yet" or
+  // "already submitting", so the wrapping <span> below only carries a `title`
+  // when there is a limit-shaped reason to explain. Every number in it is read
+  // straight off the server's own measurement, never recomputed here.
+  const overLimitReason = useMemo(() => {
+    if (!measurement || measurement.within_region_cap) return null;
+    return t(
+      `반경 ${measurement.half_extent_m.toFixed(0)} m가 한계 ${measurement.validity_radius_m.toFixed(0)} m를 초과합니다 (넓이 ${measurement.area_km2.toFixed(2)} km² / 정사각형 기준 한계 ${measurement.max_area_km2.toFixed(1)} km²).`,
+      `Half-extent ${measurement.half_extent_m.toFixed(0)} m exceeds the ${measurement.validity_radius_m.toFixed(0)} m limit (area ${measurement.area_km2.toFixed(2)} km², vs a ${measurement.max_area_km2.toFixed(1)} km² square-equivalent limit).`,
+      `半径 ${measurement.half_extent_m.toFixed(0)} m が上限 ${measurement.validity_radius_m.toFixed(0)} m を超えています（面積 ${measurement.area_km2.toFixed(2)} km² / 正方形換算の上限 ${measurement.max_area_km2.toFixed(1)} km²）。`,
+    );
+  }, [measurement, t]);
 
   const addVertex = useCallback((lat: number, lon: number) => {
     setVertices((current) => [...current, [lat, lon]]);
     setRingClosed(false);
   }, []);
 
+  // The table's two-way half of the binding: a row calls this ONLY after its
+  // own range check passes (see `VertexRow`'s doc comment), so this function
+  // itself does no further validation -- it is the single place `vertices`
+  // actually changes for an edit, which is what keeps the map, the table and
+  // the eventual payload all reading the same array.
+  const updateVertex = useCallback((index: number, lat: number, lon: number) => {
+    setVertices((current) => current.map((vertex, i) => (i === index ? [lat, lon] : vertex)));
+  }, []);
+
+  const deleteVertex = useCallback((index: number) => {
+    setVertices((current) => current.filter((_, i) => i !== index));
+  }, []);
+
   const resetRing = useCallback(() => {
     setVertices([]);
     setRingClosed(false);
   }, []);
+
+  // ADVERSARIAL GUARD (unit #20): a delete (or, in principle, any future path)
+  // that drops the ring below three corners while `ringClosed` is still true
+  // would corrupt the map two ways at once -- `RegionLassoMap` draws a filled
+  // `L.polygon` for two points instead of the open polyline it should, AND its
+  // own click handler refuses every further click while `closed` is true, so
+  // the ring could never be re-opened by drawing. This effect is the single
+  // place that keeps "closed" meaning "a real ring", regardless of which path
+  // shrank `vertices` under three.
+  useEffect(() => {
+    if (vertices.length < 3 && ringClosed) setRingClosed(false);
+  }, [vertices.length, ringClosed]);
 
   const loadFetches = useCallback(async () => {
     try {
@@ -481,25 +580,19 @@ export default function GenesisRegionPage() {
     };
   }, []);
 
-  // Measure the box on the SERVER, debounced. The browser deliberately computes
-  // no limit of its own: the cap is the draft projection's validity radius and
-  // it is latitude-dependent, so a second implementation here could disagree
-  // with the one that actually refuses.
+  // Measure the polygon on the SERVER, debounced. The browser deliberately
+  // computes no limit of its own: the cap is the draft projection's validity
+  // radius and it is latitude-dependent, so a second implementation here could
+  // disagree with the one that actually refuses.
   useEffect(() => {
     if (!parsed) {
       setMeasurement(null);
       setMeasureError(
-        mode === "polygon"
-          ? t(
-              "지도를 눌러 점을 3개 이상 찍고, 두 번 눌러 영역을 닫습니다.",
-              "Click at least three points on the map, then double-click to close the shape.",
-              "地図をクリックして3点以上を打ち、ダブルクリックで領域を閉じます。",
-            )
-          : t(
-              "북위가 남위보다, 동경이 서경보다 커야 합니다.",
-              "North must be greater than south, and east greater than west.",
-              "北緯は南緯より、東経は西経より大きくなければなりません。",
-            ),
+        t(
+          "지도를 눌러 점을 3개 이상 찍고, 두 번 눌러 영역을 닫습니다.",
+          "Click at least three points on the map, then double-click to close the shape.",
+          "地図をクリックして3点以上を打ち、ダブルクリックで領域を閉じます。",
+        ),
       );
       return;
     }
@@ -521,7 +614,7 @@ export default function GenesisRegionPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [parsed, mode, t]);
+  }, [parsed, t]);
 
   // Poll the selected fetch while it is still running.
   useEffect(() => {
@@ -556,8 +649,8 @@ export default function GenesisRegionPage() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      // The SAME `parsed` the preview measured, spread whole — a rectangle's four
-      // fields or a polygon's ring, never a re-derivation of either.
+      // The SAME `parsed` the preview measured, spread whole -- the drawn ring,
+      // never a re-derivation of it.
       const started = await startRegionFetch({ ...parsed, name: name.trim() || undefined });
       setSelectedId(started.id);
       setSelectedEntry({ id: started.id, record: started });
@@ -593,11 +686,61 @@ export default function GenesisRegionPage() {
     }
   }, [selected, router]);
 
+  // UNIT #20 -- the page help drawer's content. Static strings only (no fetch,
+  // no live measurement): `경계 처리` is the boundary doctrine that used to sit
+  // in an always-visible ⓘ beside the map, moved here verbatim (still pinned
+  // against this file's own source); `넓이 한계`/`라쏘 조작`/`데이터 출처`/
+  // `추출 이후` restate, for a reader who opens the drawer on purpose, what the
+  // hidden measurement block and the map's own operation used to say inline.
+  const regionHelpEntries = [
+    {
+      title: t("경계 처리", "Boundary rule", "境界の扱い"),
+      body: t(
+        "그린 폴리곤이 그대로 기준입니다. Overpass 질의도, 도로 꼬리 잘라내기도, 모형 경계 끝점 판정도 모두 이 폴리곤으로 합니다 — 폴리곤 밖으로 뻗은 도로는 폴리곤 변에서 자르고 그 자리에 노드를 만듭니다. 옅은 점선 사각형은 폴리곤의 바운딩 박스로, 거리 기반 경계 띠와 용량 추정에만 쓰입니다. 이 내용은 생성된 준수 보고서에도 그대로 적힙니다.",
+        "The polygon you drew is the boundary. Overpass is queried with it, the way-tail trim cuts at it, and a road end is judged against it — a road running past the polygon is cut AT its edge and a node is placed there. The faint dashed rectangle is the polygon's bounding box, used only for the distance-based boundary band and the size estimate. The generated compliance report states this too.",
+        "描いたポリゴンがそのまま基準です。Overpass の問い合わせも、道路の尾部の切り詰めも、モデル境界の端点判定も、すべてこのポリゴンで行います — ポリゴンの外へ伸びる道路はその辺で切り詰め、そこにノードを作ります。薄い破線の矩形はポリゴンのバウンディングボックスで、距離ベースの境界帯と規模の見積りにのみ使います。この内容は生成される準拠レポートにも記載されます。",
+      ),
+    },
+    {
+      title: t("넓이 한계", "Area limit", "面積の上限"),
+      body: t(
+        "한계는 생성기의 투영이 1 m 오차 예산에 도달하는 반경입니다 — 이 선을 넘으면 생성기가 어차피 projection_out_of_range로 거부하므로, 이 화면은 내려받기 전에 거부합니다(잘라내지 않습니다). 정사각형이라면 한계에 대응하는 최대 넓이가 있지만, 길쭉한 영역은 넓이가 작아도 반경에서 걸릴 수 있습니다. '투영 오차'는 위경도를 평면 좌표로 바꿀 때 이 반경에서 생기는 최대 평면 오차입니다.",
+        "The limit is the half-extent at which the generator's projection reaches its 1 m error budget. Past that line the generator refuses outright (projection_out_of_range), so this screen refuses before the download rather than truncating it. A square region has a maximum area at that limit, but a long thin region can trip the half-extent even at a small area. 'Projection error' is the largest planar error the WGS84 conversion produces at that radius.",
+        "上限は、生成器の投影が 1 m の誤差予算に達する半径です。この線を越えると生成器がいずれにせよ projection_out_of_range で拒否するため、この画面は取得前に拒否します（切り詰めません）。正方形ならその上限に対応する最大面積がありますが、細長い領域は面積が小さくても半径で引っかかることがあります。「投影誤差」は、その半径で WGS84 からの変換により生じる最大の平面誤差です。",
+      ),
+    },
+    {
+      title: t("라쏘 조작", "Using the lasso", "投げ縄の操作"),
+      body: t(
+        `지도를 눌러 점을 찍고, 두 번 눌러 영역을 닫습니다. 점은 최대 ${maxVertices ?? 64}개까지 찍을 수 있습니다 — 자동으로 줄이지 않으니 모양은 단순하게 그려 주세요. '초기화'를 누르면 모든 점이 지워집니다.`,
+        `Click to add a point, double-click to close the shape. At most ${maxVertices ?? 64} corners can be added — draw with fewer, since it is never simplified for you. 'Reset' clears every point.`,
+        `地図をクリックして点を打ち、ダブルクリックで領域を閉じます。点は最大 ${maxVertices ?? 64} 個まで打てます — 自動では減らさないため、単純な形で描いてください。「初期化」を押すとすべての点が消えます。`,
+      ),
+    },
+    {
+      title: t("데이터 출처", "Data source", "データの出所"),
+      body: t(
+        "지도 데이터는 OpenStreetMap에서 받아오며, OSM의 ODbL 라이선스를 따릅니다. 영역을 추출하려면 로그인이 필요합니다.",
+        "Map data is fetched from OpenStreetMap under its ODbL licence. Extracting a region requires a signed-in user.",
+        "地図データは OpenStreetMap から取得し、OSM の ODbL ライセンスに従います。領域の抽出にはログインが必要です。",
+      ),
+    },
+    {
+      title: t("추출 이후", "After the extract", "抽出のあと"),
+      body: t(
+        "받은 추출은 업로드한 파일과 똑같은 경로로 생성·검증 게이트를 거칩니다 — 이 화면은 스테이징 문 앞에서 끝나고, 생성을 직접 시작하지 않습니다.",
+        "The extract takes exactly the same road as an uploaded file through generation and the validation gate — this screen stops at the staging door and never starts a generation itself.",
+        "取得した抽出はアップロードしたファイルとまったく同じ経路で生成・検証ゲートを通ります — この画面はステージングの入口で終わり、自ら生成を開始することはありません。",
+      ),
+    },
+  ];
+
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
       <header className="mb-6">
-        <h1 className="text-[22px] font-semibold tracking-tight text-white">
+        <h1 className="flex items-center text-[22px] font-semibold tracking-tight text-white">
           {t("영역에서 네트워크 추출", "Extract a region", "領域からネットワークを抽出")}
+          <PageHelp entries={regionHelpEntries} />
         </h1>
         <p className="mt-1 text-sm text-slate-600">
           {t(
@@ -629,133 +772,102 @@ export default function GenesisRegionPage() {
       {/* Pick a region                                                      */}
       {/* ----------------------------------------------------------------- */}
       {/* No subtitle (user text-purge, 2026-08-14): the limit behaviour speaks
-        * when the measurement row shows the number against the cap, and the
-        * refusal path names itself when it fires. */}
+        * when the extract button is enabled or not, and the refusal path names
+        * itself when it fires. */}
       <Panel density="console" title={t("① 영역 지정", "1. Name the region", "① 領域の指定")}>
-        {/* ONE shape at a time. Both modes send exactly one region, because a
-          * polygon's bounding box is derived by the server and a second box from
-          * here could disagree with the rectangle the fetch is judged against.
-          *
-          * POLYGON FIRST in the list as well as in the state: the order a
-          * toggle is read in is half of what "default" means, and a default
-          * that sits second is a default a user has to be told about. Pills on
-          * `.ui-button-ghost` — this app's existing quiet-control vocabulary —
-          * so the shape toggle stops competing with the extract button. */}
-        <div className="mb-4 flex items-center gap-2" role="group" aria-label={t("영역 모양", "Region shape", "領域の形")}>
-          {(
-            [
-              ["polygon", t("폴리곤 (라쏘)", "Polygon (lasso)", "ポリゴン（投げ縄）")],
-              ["rect", t("사각형 좌표", "Rectangle by coordinates", "矩形（座標）")],
-            ] as Array<[RegionMode, string]>
-          ).map(([value, label]) => (
+        <div className="mb-4 flex flex-col gap-3">
+          <RegionLassoMap
+            vertices={vertices}
+            closed={ringClosed}
+            // The dashed rectangle is the SERVER's derived bounding box, taken
+            // from the measurement — not computed here.
+            bbox={measurement?.region ?? null}
+            maxVertices={maxVertices}
+            onAddVertex={addVertex}
+            onClose={() => setRingClosed(true)}
+            onDiscardLastVertex={() => setVertices((current) => current.slice(0, -1))}
+            centre={DEFAULT_CENTRE}
+            ariaLabel={t(
+              "지도에서 영역 그리기",
+              "Draw the region on the map",
+              "地図で領域を描く",
+            )}
+            fitLabel={t("그린 영역으로 이동", "Zoom to shape", "描いた領域へ移動")}
+          />
+          {/* 경계 처리 ⓘ hidden (unit #20) -- its sentences moved into the page
+            * help drawer above, verbatim. This row is now just the two controls
+            * that act on the ring itself. */}
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
             <button
-              key={value}
               type="button"
-              aria-pressed={mode === value}
-              onClick={() => setMode(value)}
-              className={
-                mode === value
-                  ? "rounded-full border border-slate-400 bg-slate-100 px-3.5 py-1.5 text-xs font-semibold text-slate-900"
-                  : "ui-button-ghost rounded-full px-3.5 py-1.5 text-xs font-semibold"
-              }
+              onClick={resetRing}
+              disabled={vertices.length === 0}
+              className="ui-button-ghost rounded-full px-3 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {label}
+              {t("초기화", "Reset", "初期化")}
             </button>
-          ))}
+            {maxVertices !== null && vertices.length >= maxVertices && (
+              /* MONO: the cap is reached, which is a limit rather than a
+                * fault — ink strength and weight carry it, no hue. */
+              <span className="font-semibold text-slate-800">
+                {t(
+                  `점은 최대 ${maxVertices}개입니다 — 더 찍을 수 없습니다. 모양을 단순하게 그려 주세요(자동으로 줄이지 않습니다).`,
+                  `At most ${maxVertices} corners — no more can be added. Draw the shape with fewer (it is never simplified for you).`,
+                  `点は最大 ${maxVertices} 個です — これ以上は追加できません。形を単純に描いてください（自動では減らしません）。`,
+                )}
+              </span>
+            )}
+          </div>
         </div>
 
-        {mode === "polygon" && (
-          <div className="mb-4 flex flex-col gap-3">
-            <RegionLassoMap
-              vertices={vertices}
-              closed={ringClosed}
-              // The dashed rectangle is the SERVER's derived bounding box, taken
-              // from the measurement — not computed here.
-              bbox={measurement?.region ?? null}
-              maxVertices={maxVertices}
-              onAddVertex={addVertex}
-              onClose={() => setRingClosed(true)}
-              onDiscardLastVertex={() => setVertices((current) => current.slice(0, -1))}
-              centre={DEFAULT_CENTRE}
-              ariaLabel={t(
-                "지도에서 영역 그리기",
-                "Draw the region on the map",
-                "地図で領域を描く",
-              )}
-              fitLabel={t("그린 영역으로 이동", "Zoom to shape", "描いた領域へ移動")}
-            />
-            {/* WHAT IS CUT — the boundary doctrine, verbatim, one click away
-              * (user text-purge 2026-08-14: the always-visible sky box left the
-              * screen; the sentences are unchanged and still pinned, because
-              * the disclosure's home is now this ⓘ plus the generated
-              * compliance report). */}
-            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
-              <span className="inline-flex items-center gap-1 text-[12px] text-slate-500">
-                {t("경계 처리", "Boundary rule", "境界の扱い")}
-                <InfoTip
-                  text={t(
-                    "그린 폴리곤이 그대로 기준입니다. Overpass 질의도, 도로 꼬리 잘라내기도, 모형 경계 끝점 판정도 모두 이 폴리곤으로 합니다 — 폴리곤 밖으로 뻗은 도로는 폴리곤 변에서 자르고 그 자리에 노드를 만듭니다. 옅은 점선 사각형은 폴리곤의 바운딩 박스로, 거리 기반 경계 띠와 용량 추정에만 쓰입니다. 이 내용은 생성된 준수 보고서에도 그대로 적힙니다.",
-                    "The polygon you drew is the boundary. Overpass is queried with it, the way-tail trim cuts at it, and a road end is judged against it — a road running past the polygon is cut AT its edge and a node is placed there. The faint dashed rectangle is the polygon's bounding box, used only for the distance-based boundary band and the size estimate. The generated compliance report states this too.",
-                    "描いたポリゴンがそのまま基準です。Overpass の問い合わせも、道路の尾部の切り詰めも、モデル境界の端点判定も、すべてこのポリゴンで行います — ポリゴンの外へ伸びる道路はその辺で切り詰め、そこにノードを作ります。薄い破線の矩形はポリゴンのバウンディングボックスで、距離ベースの境界帯と規模の見積りにのみ使います。この内容は生成される準拠レポートにも記載されます。",
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+          {/* THE EDITABLE VERTEX TABLE (unit #20), replacing the old read-only
+            * dotted coordinate enumeration. See `VertexRow`'s own doc comment
+            * for the binding: this page's `vertices` state is the single
+            * source of truth, a row's inputs are controlled from it, and an
+            * invalid edit never reaches `setVertices` (so it never reaches the
+            * map or a submitted payload either). Height-capped and scrollable
+            * on purpose -- 64 rows must never turn this into a giant form. */}
+          <div className="min-w-0 flex-1">
+            <p className="mb-1.5 text-xs font-medium text-slate-500">
+              {t(`점 ${vertices.length}개`, `${vertices.length} point(s)`, `点 ${vertices.length} 個`)}
+            </p>
+            <div className="max-h-56 overflow-y-auto rounded-md border border-slate-200">
+              <table className="w-full text-left">
+                <thead className="sticky top-0 bg-slate-50 text-[12px] font-medium text-slate-500">
+                  <tr>
+                    <th className="py-1.5 pl-2 pr-2 font-medium">#</th>
+                    <th className="py-1.5 pr-2 font-medium">{t("위도", "lat", "緯度")}</th>
+                    <th className="py-1.5 pr-2 font-medium">{t("경도", "lon", "経度")}</th>
+                    <th className="py-1.5 pr-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {vertices.map(([lat, lon], index) => (
+                    <VertexRow
+                      key={index}
+                      index={index}
+                      lat={lat}
+                      lon={lon}
+                      onCommit={updateVertex}
+                      onDelete={deleteVertex}
+                      t={t}
+                    />
+                  ))}
+                  {vertices.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="px-2 py-3 text-center text-[12px] text-slate-500">
+                        {t("지도를 눌러 점을 찍으세요.", "Click the map to add a point.", "地図をクリックして点を打ってください。")}
+                      </td>
+                    </tr>
                   )}
-                />
-              </span>
-              <button
-                type="button"
-                onClick={resetRing}
-                disabled={vertices.length === 0}
-                className="ui-button-ghost rounded-full px-3 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {t("초기화", "Reset", "初期化")}
-              </button>
-              {maxVertices !== null && vertices.length >= maxVertices && (
-                /* MONO: the cap is reached, which is a limit rather than a
-                  * fault — ink strength and weight carry it, no hue. */
-                <span className="font-semibold text-slate-800">
-                  {t(
-                    `점은 최대 ${maxVertices}개입니다 — 더 찍을 수 없습니다. 모양을 단순하게 그려 주세요(자동으로 줄이지 않습니다).`,
-                    `At most ${maxVertices} corners — no more can be added. Draw the shape with fewer (it is never simplified for you).`,
-                    `点は最大 ${maxVertices} 個です — これ以上は追加できません。形を単純に描いてください（自動では減らしません）。`,
-                  )}
-                </span>
-              )}
+                </tbody>
+              </table>
             </div>
           </div>
-        )}
 
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-          <div className="grid min-w-0 flex-1 grid-cols-2 gap-2">
-            {mode === "rect" &&
-              (
-                [
-                  ["north", t("북위 (north)", "North", "北緯 (north)")],
-                  ["south", t("남위 (south)", "South", "南緯 (south)")],
-                  ["west", t("서경 (west)", "West", "西経 (west)")],
-                  ["east", t("동경 (east)", "East", "東経 (east)")],
-                ] as Array<[BoxKey, string]>
-              ).map(([key, label]) => (
-                <label key={key} className="flex flex-col gap-1 text-xs text-slate-600">
-                  {label}
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={box[key]}
-                    onChange={(event) => setField(key, event.target.value)}
-                    className="rounded-md border border-slate-300 px-2.5 py-1.5 font-mono text-xs text-slate-800"
-                  />
-                </label>
-              ))}
-            {mode === "polygon" && measurement?.polygon && (
-              /* The ring in numbers, because a shape a user cannot read back is a
-               * shape they cannot check. These are the SERVER's echo of what it
-               * measured, not the local click list. */
-              <p className="col-span-2 max-h-28 overflow-y-auto rounded-md border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs leading-relaxed text-slate-600">
-                {measurement.polygon.vertices
-                  .map(([lat, lon]) => `${lat.toFixed(5)}, ${lon.toFixed(5)}`)
-                  .join("  ·  ")}
-              </p>
-            )}
-            <label className="col-span-2 flex flex-col gap-1 text-xs text-slate-600">
+          <div className="min-w-0 flex-1">
+            <label className="flex flex-col gap-1 text-xs text-slate-600">
               {t("추출 이름 (선택)", "Extract name (optional)", "抽出名（任意）")}
               <input
                 type="text"
@@ -766,25 +878,14 @@ export default function GenesisRegionPage() {
               />
             </label>
           </div>
-
-          {/* RECTANGLE MODE ONLY — the gauge's own doc comment carries the
-            * reason. In polygon mode the basemap above draws the ring AND the
-            * server's derived bounding box, so a second, smaller, abstract
-            * rectangle down here read (the user's words, live) as a stray
-            * drawn shape. */}
-          {mode === "rect" && measurement && (
-            <div className="flex items-start gap-3 text-slate-500">
-              <RegionGauge measurement={measurement} t={t} />
-            </div>
-          )}
         </div>
 
         {measureError && (
           /* Two different things used to share one amber box. `!parsed` is not
             * an error — it is the instruction for a shape that is not finished
-            * yet, and on load in polygon mode it is the FIRST thing on screen,
-            * so an amber alert there would open the page on a warning nobody
-            * caused. A measurement the server refused stays amber. */
+            * yet, and on load it is the FIRST thing on screen, so an amber
+            * alert there would open the page on a warning nobody caused. A
+            * measurement the server refused stays amber. */
           <p
             className={`mt-5 rounded-lg border px-4 py-3 text-[13px] leading-relaxed ${
               parsed
@@ -796,121 +897,30 @@ export default function GenesisRegionPage() {
           </p>
         )}
 
-        {measurement && (
-          <div className="mt-6">
-            {/* The HEADLINE is the comparison that actually decides, and that
-              * is the half-extent against the validity radius -- never the
-              * area. A long thin region can sit well under the area figure and
-              * still be refused (measured: 1.4 x 8.4 km is 12 km² against a
-              * 17 km² square, and its half-extent is 4 195 m against a 2 079 m
-              * radius). Leading with the area would tell that user they were
-              * inside the limit right up until the refusal.
-              *
-              * U-1 polish: the verdict is a chip and the four figures are
-              * Console stat blocks (muted label, large value) laid directly on
-              * the panel. What went away is the CARD — a bordered tinted box
-              * inside a bordered panel, holding four sentences at one size, in
-              * which the two numbers that decide the outcome looked exactly
-              * like the footnote about them. Nothing was dropped: every figure
-              * and every caveat below is the same string it was. */}
-            <span
-              className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${
-                measurement.within_region_cap
-                  ? "border-emerald-300 bg-emerald-50 text-slate-800"
-                  : "border-rose-300 bg-rose-50 text-slate-800"
-              }`}
-            >
-              {measurement.within_region_cap
-                ? t("한계 안", "Within the limit", "上限内")
-                : t("한계 초과 — 이 영역은 추출할 수 없습니다", "Past the limit — this region cannot be extracted", "上限超過 — この領域は抽出できません")}
-            </span>
-
-            <div className="mt-5 flex flex-wrap gap-x-10 gap-y-6">
-              <Stat
-                label={t("반경 / 한계", "half-extent / limit", "半径 / 上限")}
-                value={`${measurement.half_extent_m.toFixed(0)} / ${measurement.validity_radius_m.toFixed(0)} m`}
-              />
-              <Stat
-                label={t("가로 × 세로", "width × height", "幅 × 高さ")}
-                value={`${(measurement.width_m / 1000).toFixed(2)} × ${(measurement.height_m / 1000).toFixed(2)} km`}
-              />
-              <Stat
-                label={t("넓이", "area", "面積")}
-                value={`${measurement.area_km2.toFixed(2)} km²`}
-                hint={t(
-                  `정사각형이라면 최대 ${measurement.max_area_km2.toFixed(1)} km² — 길쭉한 영역은 넓이가 작아도 반경에서 걸립니다`,
-                  `at most ${measurement.max_area_km2.toFixed(1)} km² if square — a long thin region trips the half-extent even at a small area`,
-                  `正方形なら最大 ${measurement.max_area_km2.toFixed(1)} km² — 細長い領域は面積が小さくても半径で引っかかります`,
-                )}
-              />
-              {/* The binding TERM stays visible: it names WHY the cap binds
-                * where it does, and it is the one number here a
-                * differently-shaped region can move. What moved into the
-                * disclosure below is the REASONING behind figures already on
-                * screen -- UX pass U-1, after a valid box was measured to fire
-                * five stacked paragraphs at once. Collapsed, never dropped: the
-                * estimate still says it is an estimate, and the bounding-box
-                * caveat still says which area the bytes were guessed from. */}
-              <Stat
-                label={t("구속 항", "Binding term", "拘束項")}
-                value={bindingTermLabel(measurement.binding_term, t)}
-                hint={`${t("투영 오차", "projection error", "投影誤差")} ${measurement.planimetric_error_bound_m.toFixed(2)} m`}
-              />
-            </div>
-
-            <details className="mt-5 text-[13px] text-slate-500">
-              <summary className="cursor-pointer text-xs font-semibold">
-                {t("자세한 근거", "The reasoning in full", "詳しい根拠")}
-              </summary>
-              <p className="mt-2 leading-relaxed">
-                {t(
-                  "한계는 생성기의 투영이 1 m 오차 예산에 도달하는 반경입니다 — 이 선을 넘으면 생성기가 어차피 projection_out_of_range로 거부하므로, 내려받기 전에 거부합니다.",
-                  "The limit is the half-extent at which the generator's projection reaches its 1 m error budget. Past that line the generator refuses outright (projection_out_of_range), so it is refused before the download rather than after.",
-                  "上限は、生成器の投影が 1 m の誤差予算に達する半径です。この線を越えると生成器がいずれにせよ projection_out_of_range で拒否するため、取得前に拒否します。",
-                )}
-              </p>
-              {measurement.polygon && measurement.estimate_area_km2 !== undefined && (
-                /* Which area is which, said in numbers. The area above is the
-                  * polygon's own (what a user means by "my study area"); the byte
-                  * estimate below is taken over the BOUNDING BOX, because Overpass
-                  * answers with whole ways and their nodes and the response is not
-                  * proportional to the ring's area in any way we can defend. */
-                <p className="mt-2 leading-relaxed">
-                  {t("폴리곤 넓이", "Polygon area", "ポリゴンの面積")} {measurement.area_km2.toFixed(2)} km² ·{" "}
-                  {t("바운딩 박스 넓이", "bounding-box area", "バウンディングボックスの面積")}{" "}
-                  {measurement.estimate_area_km2.toFixed(2)} km² ·{" "}
-                  {t("점", "corners", "点")} {measurement.polygon_vertices ?? measurement.polygon.vertices.length} —{" "}
-                  {t(
-                    "아래 예상 크기는 폴리곤이 아니라 바운딩 박스 넓이로 계산합니다(Overpass는 way를 통째로 돌려주므로 폴리곤 넓이에 비례하지 않습니다).",
-                    "the size estimate below is taken over the bounding-box area, not the polygon's: Overpass returns WHOLE ways, so the response is not proportional to the ring's area.",
-                    "以下の推定サイズはポリゴンではなくバウンディングボックスの面積で計算します（Overpass は way を丸ごと返すため、ポリゴンの面積に比例しません）。",
-                  )}
-                </p>
-              )}
-              <p className="mt-2 leading-relaxed">
-                {t("예상 크기(상한 기준)", "Estimated size (upper-ish)", "推定サイズ（上限寄り）")} ≲ {formatBytes(measurement.estimated_bytes)} /{" "}
-                {t("응답 한계", "response limit", "応答上限")} {formatBytes(measurement.max_response_bytes)} —{" "}
-                {t(
-                  "예상치일 뿐이며, 한계는 실제로 도착한 바이트에 대해 적용됩니다.",
-                  "an estimate only; the cap is enforced against the bytes that actually arrive.",
-                  "あくまで推定であり、上限は実際に到着したバイトに対して適用されます。",
-                )}
-              </p>
-            </details>
-          </div>
-        )}
+        {/* UNIT #20 -- "the limit becomes the button's job". The stat grid, the
+          * 한계 안/한계 초과 chip and the "자세한 근거" detail that used to render
+          * here are gone; the fetch behind them is untouched (`measurement`
+          * still drives `readyToFetch` below and `overLimitReason`'s hover
+          * text), only the permanent on-screen display of it is removed. */}
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            disabled={!readyToFetch}
-            onClick={() => void submit()}
-            className="rounded-md bg-slate-900 px-4 py-2 text-[13px] font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
-          >
-            {submitting
-              ? t("요청하는 중…", "Requesting…", "要求中…")
-              : t("이 영역 추출하기", "Extract this region", "この領域を抽出")}
-          </button>
+          {/* The reason lives on the WRAPPING span, not the button itself --
+            * a `title` on a disabled control does not fire in some browsers,
+            * the same reason this app already wraps its cross-navigation
+            * chips (`app/genesis/page.tsx`'s `regionHint`/`demandHint`/
+            * `phasesHint`) in a titled span rather than titling the link. */}
+          <span title={overLimitReason ?? undefined}>
+            <button
+              type="button"
+              disabled={!readyToFetch}
+              onClick={() => void submit()}
+              className="rounded-md bg-slate-900 px-4 py-2 text-[13px] font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {submitting
+                ? t("요청하는 중…", "Requesting…", "要求中…")
+                : t("이 영역 추출하기", "Extract this region", "この領域を抽出")}
+            </button>
+          </span>
         </div>
 
         {submitError && (

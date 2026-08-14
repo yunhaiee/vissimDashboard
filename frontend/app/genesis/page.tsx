@@ -56,7 +56,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
 import GenesisComparisonPanel from "@/components/genesis/GenesisComparisonPanel";
 import GenesisTileMap from "@/components/genesis/GenesisTileMap";
-import { InfoTip, Panel, refusalHeadline } from "@/components/genesis/ui";
+import { InfoTip, PageHelp, Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   applyGenesisFix,
@@ -1348,11 +1348,70 @@ export default function GenesisPage() {
     [jobs, safePage],
   );
 
+  // UNIT #20 -- the page help drawer's content. 제외 도로/판정 게이트/잠정 등록
+  // are the three doctrine sentences MOVED here verbatim from the inline ⓘs
+  // they used to sit in (see the removal comments at each of their old
+  // positions above); 생성 과정/수요·신호 입력/지도 are new entries covering
+  // ground that used to be either always-visible prose (purged 2026-08-14) or
+  // a component-local ⓘ this page's own file does not own (`GenesisTileMap`'s
+  // map ⓘ, kept inline there -- see this unit's report for why).
+  const genesisHelpEntries = [
+    {
+      title: t("생성 과정", "How generation runs", "生成の流れ"),
+      body: t(
+        "생성은 항상 잡 큐를 통해 실행됩니다 — 이 화면이 Vissim COM을 직접 여는 일은 없습니다. 생성을 시작하려면 로그인해야 합니다.",
+        "A generation always runs through the job queue — this screen never opens Vissim COM directly. Starting a generation requires a signed-in user.",
+        "生成は常にジョブキューを通じて実行されます — この画面が Vissim COM を直接開くことはありません。生成の開始にはログインが必要です。",
+      ),
+    },
+    {
+      title: t("수요·신호 입력", "Demand & signals input", "需要・信号入力"),
+      body: t(
+        "두 목록은 이미 스테이징된 입력 중에서 고르기만 합니다 — 이 화면에서 만들지 않습니다. 옆의 '만들기 →' 링크가 그 입력을 실제로 만드는 화면으로 이동합니다.",
+        "Both dropdowns only PICK from an already-staged input — nothing is built here. The '만들기 →' link beside each one goes to the screen that actually builds it.",
+        "両方の一覧は、すでにステージング済みの入力から選ぶだけです — この画面では作成しません。隣の「作成 →」リンクが、実際に作成する画面へ移動します。",
+      ),
+    },
+    {
+      title: t("제외 도로", "Excluded roads", "除外道路"),
+      body: t(
+        "제외된 도로는 버려지지 않고 이름이 남습니다 — 준수 리포트에 사유와 함께 기록됩니다.",
+        "Excluded ways are never dropped silently — each is named with its reason in the compliance report.",
+        "除外された道路は黙って捨てられず、準拠レポートに理由とともに記録されます。",
+      ),
+    },
+    {
+      title: t("판정 게이트", "The validation gate", "判定ゲート"),
+      body: t(
+        "R1.5 검증 게이트 V1–V9. 실행되지 못한 검사는 절대 통과가 아닙니다.",
+        "The R1.5 validation gate, V1–V9. A check that could not run is never a pass.",
+        "R1.5検証ゲート V1–V9。実行できなかった検査は決して合格ではありません。",
+      ),
+    },
+    {
+      title: t("잠정 등록", "Provisional registration", "暫定登録"),
+      body: t(
+        "프로젝트에 등록되었습니다. 다만 실행되지 못한 거부 등급 검사가 있어 잠정 상태입니다 — 생성 잡은 Vissim COM을 열 수 없으므로, 실제 Vissim이 이 파일을 여는 것을 증명하는 V1은 라이브 검사 증거를 붙여야 확정됩니다.",
+        "Registered in the project, but provisional: a refuse-tier check could not run. A generation job may not open Vissim COM, so V1 — the only check that proves a real Vissim opens this file — stays open until live-check evidence is attached.",
+        "プロジェクトに登録されましたが、実行できなかった拒否ティア検査があるため暫定です。生成ジョブは Vissim COM を開けないため、実際の Vissim がこのファイルを開くことを証明する V1 はライブ検査の証拠を添付するまで確定しません。",
+      ),
+    },
+    {
+      title: t("지도", "The map", "地図"),
+      body: t(
+        "지도는 이 생성이 기록한 좌표를 그립니다. 초안이 OpenStreetMap 좌표에서 만들어졌다면 서버가 역변환한 실제 WGS84 좌표를 배경지도 위에 그리고, 그렇지 않다면 배경지도 없이 이 생성만의 로컬 좌표로 그립니다 — 어느 쪽인지는 지도 제목 옆 ⓘ에 그때그때 표시됩니다.",
+        "The map draws the coordinates this generation recorded. If the draft was built from OpenStreetMap degrees, the server's own inverse projection places it on a real WGS84 basemap; otherwise it is drawn with no basemap, in this generation's own local coordinates — which one applies is stated by the ⓘ beside the map's own title.",
+        "地図はこの生成が記録した座標を描きます。下書きが OpenStreetMap の座標から作られていれば、サーバーが逆変換した実際の WGS84 座標を背景地図の上に描き、そうでなければ背景地図なしでこの生成専用のローカル座標で描きます — どちらであるかは地図タイトル横の ⓘ にその都度表示されます。",
+      ),
+    },
+  ];
+
   return (
     <div className="mx-auto max-w-[1500px] px-4 py-8">
       <header className="mb-8">
-        <h1 className="text-[22px] font-semibold tracking-tight text-white">
+        <h1 className="flex items-center text-[22px] font-semibold tracking-tight text-white">
           {t("네트워크 생성 (Genesis)", "Network Genesis", "ネットワーク生成 (Genesis)")}
+          <PageHelp entries={genesisHelpEntries} />
         </h1>
         <p className="mt-1 text-[13px] text-slate-500">
           {t(
@@ -1456,18 +1515,11 @@ export default function GenesisPage() {
                     "Exclude highway=service ways (car-park aisles, driveways, back lanes)",
                     "highway=service の道路を除外（駐車場通路・進入路・裏路地）",
                   )}
-                  {/* U-1-quick #3: the disclosure that excluding is not deleting is
-                    * doctrine, so it moved into the ⓘ verbatim rather than being
-                    * cut -- it answers a question the checkbox raises, and a
-                    * question is answered on demand, not pre-emptively in a second
-                    * grey line under every form. */}
-                  <InfoTip
-                    text={t(
-                      "제외된 도로는 버려지지 않고 이름이 남습니다 — 준수 리포트에 사유와 함께 기록됩니다.",
-                      "Excluded ways are never dropped silently — each is named with its reason in the compliance report.",
-                      "除外された道路は黙って捨てられず、準拠レポートに理由とともに記録されます。",
-                    )}
-                  />
+                  {/* Unit #20: the disclosure that excluding is not deleting is
+                    * doctrine (why-designed-this-way, not a validation-state
+                    * meaning), so it moved out of this inline ⓘ and into the
+                    * page's own help drawer (`?` beside the h1) under 제외 도로
+                    * -- same sentence, verbatim, one level up. */}
                 </span>
               </label>
 
@@ -1785,13 +1837,12 @@ export default function GenesisPage() {
                 <section className="border-t border-slate-200 pt-6">
                   <h3 className="text-[15px] font-semibold text-slate-900">
                     {t("판정", "Verdict", "判定")}
-                    <InfoTip
-                      text={t(
-                        "R1.5 검증 게이트 V1–V9. 실행되지 못한 검사는 절대 통과가 아닙니다.",
-                        "The R1.5 validation gate, V1–V9. A check that could not run is never a pass.",
-                        "R1.5検証ゲート V1–V9。実行できなかった検査は決して合格ではありません。",
-                      )}
-                    />
+                    {/* Unit #20: this doctrine sentence (what V1-V9 means, and
+                      * that a check which could not run is never a pass) moved
+                      * out of this inline ⓘ into the page's help drawer, under
+                      * 판정 게이트 -- it explains WHY the gate exists, not what a
+                      * specific check's own state means (that stays inline on
+                      * the check chips themselves, in `checkStateLabel`). */}
                   </h3>
 
                   {/* ONE HEADER, WHERE THERE WERE TWO BANNERS.
@@ -1865,13 +1916,13 @@ export default function GenesisPage() {
                           "Registered, but provisional — V1 is waiting for live-check evidence.",
                           "登録されましたが暫定です — V1 はライブ検査の証拠を待っています。",
                         )}
-                        <InfoTip
-                          text={t(
-                            "프로젝트에 등록되었습니다. 다만 실행되지 못한 거부 등급 검사가 있어 잠정 상태입니다 — 생성 잡은 Vissim COM을 열 수 없으므로, 실제 Vissim이 이 파일을 여는 것을 증명하는 V1은 라이브 검사 증거를 붙여야 확정됩니다.",
-                            "Registered in the project, but provisional: a refuse-tier check could not run. A generation job may not open Vissim COM, so V1 — the only check that proves a real Vissim opens this file — stays open until live-check evidence is attached.",
-                            "プロジェクトに登録されましたが、実行できなかった拒否ティア検査があるため暫定です。生成ジョブは Vissim COM を開けないため、実際の Vissim がこのファイルを開くことを証明する V1 はライブ検査の証拠を添付するまで確定しません。",
-                          )}
-                        />
+                        {/* Unit #20: the WHY (a generation job cannot open
+                          * Vissim COM, so V1 stays open until live-check
+                          * evidence attaches) moved out of this inline ⓘ into
+                          * the page's help drawer, under 잠정 등록. The
+                          * visible line above stays -- it is the STATUS, which
+                          * answers "what just happened" and belongs where it
+                          * already was. */}
                       </p>
                     )}
                     {selected.status === "refused" && (

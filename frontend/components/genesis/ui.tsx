@@ -39,7 +39,7 @@
 // `key` that changes with the data -- severity decides the default, the reader
 // decides the rest.
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 
@@ -224,6 +224,145 @@ export function InfoTip({ text, label }: { text: string; label?: string }) {
         </span>
       )}
     </span>
+  );
+}
+
+/**
+ * PAGE HELP (unit #20) -- the ROUND ? beside a page's own h1, opening a
+ * right-side drawer of static doctrine sections.
+ *
+ * WHY THIS IS A SEPARATE PRIMITIVE FROM `InfoTip` RATHER THAN A BIGGER ONE.
+ * `InfoTip` answers ONE question a control raises, reachable exactly where
+ * that control sits, and its content is validation-state or refusal-adjacent
+ * -- "what does this word mean", "why is this disabled right now". Unit #20's
+ * own instruction draws the line: doctrine, background and "why this was
+ * designed this way" belongs one level UP, in a single reading surface a
+ * reader opens on purpose rather than trips over beside every control. Five
+ * always-open paragraphs became five `InfoTip`s in U-1-quick; this is the next
+ * turn of that same screw -- three of THOSE tooltips (this file's own
+ * `제외 도로`, `판정 게이트`, `잠정 등록` sentences on the genesis hub) move
+ * again, out of a per-control tooltip and into this per-PAGE drawer, because
+ * they are not "what just happened" but "why the product is built this way".
+ * A control whose disabled reason or validation state a reader needs BEFORE
+ * they can act stays an inline `InfoTip` -- moving IT into a drawer would turn
+ * a one-glance answer into a two-click one.
+ *
+ * STATIC ONLY. This component fetches nothing and accepts no async content --
+ * every caller hands it a plain `{ title, body }[]` computed from strings
+ * already in hand (usually the same `t()` calls that used to sit inline). A
+ * page that wants to show something LIVE (a job's own verdict, a measurement)
+ * has that already, in its own panels; the drawer is a reference, not a view.
+ *
+ * REACHABILITY takes the same three inputs `InfoTip` insists on, because nothing
+ * about being a drawer instead of a tooltip changes who needs to reach it:
+ *   * a real `<button>` trigger (never a `title` attribute, which no keyboard
+ *     can summon and no screen reader treats as interactive);
+ *   * Escape closes it, from anywhere the drawer has focus;
+ *   * a click on the dimmed backdrop closes it too -- the touch/mouse escape
+ *     hatch `InfoTip`'s `pinned` toggle exists for, here as a backdrop instead
+ *     of a second tap on the trigger, because a drawer (unlike a tooltip) covers
+ *     enough of the screen that "tap it again" is not where a reader's hand is.
+ * `role="dialog"` + `aria-modal="true"` + a label pointing at the drawer's own
+ * heading, so a screen reader announces it as a modal region with a name,
+ * exactly the way the close button's `aria-label` names the action that undoes
+ * opening it.
+ */
+export function PageHelp({
+  entries,
+  title,
+}: {
+  /** Plain titled sections, in the order they should read. No nesting, no
+   * cards-in-cards -- `PageHelp` is a reading surface, the same rule
+   * `DrawerSection` states for the generation drawer on app/genesis/page.tsx. */
+  entries: Array<{ title: string; body: string }>;
+  /** Defaults to 도움말/Help/ヘルプ -- every caller so far wants exactly that
+   * word, so a page only overrides it if its drawer is about something
+   * narrower than "this whole screen". */
+  title?: string;
+}) {
+  const { t } = useLanguage();
+  const headingId = useId();
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  // Escape closes from anywhere inside the drawer; focus returns to the
+  // trigger so the reader lands back where they asked the question, the same
+  // hand-back `InfoTip`'s own Escape handler performs locally.
+  useEffect(() => {
+    if (!open) return;
+    closeRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
+  const heading = title ?? t("도움말", "Help", "ヘルプ");
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={t("도움말 열기", "Open help", "ヘルプを開く")}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen(true)}
+        className="ml-2 inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white/[0.06] align-middle text-[12px] font-semibold text-slate-500"
+      >
+        ?
+      </button>
+      {open && (
+        // The backdrop IS the click-outside handler: it covers everything but
+        // the panel, so a pointerdown anywhere except the panel closes it. The
+        // panel itself stops the click from reaching the backdrop underneath it.
+        <div
+          className="fixed inset-0 z-50 flex justify-end bg-slate-950/50"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={headingId}
+            onClick={(event) => event.stopPropagation()}
+            className="flex h-full w-full max-w-md flex-col overflow-y-auto border-l border-slate-200 bg-surface px-6 py-6 shadow-[0_16px_48px_rgba(15,23,42,0.35)]"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <h2 id={headingId} className="text-[17px] font-semibold text-slate-900">
+                {heading}
+              </h2>
+              <button
+                ref={closeRef}
+                type="button"
+                onClick={() => setOpen(false)}
+                aria-label={t("도움말 닫기", "Close help", "ヘルプを閉じる")}
+                className="ui-button-ghost shrink-0 rounded-md px-2 py-0.5 text-[13px]"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="mt-5 flex flex-col gap-6">
+              {entries.map((entry) => (
+                <section key={entry.title}>
+                  <h3 className="text-[13px] font-semibold text-slate-800">{entry.title}</h3>
+                  {/* Mono body -- Console typography, the same voice every
+                    * doctrine/reasons block on these screens already speaks in
+                    * (refusal reasons, provenance, the fix strip's rationale). */}
+                  <p className="mt-1.5 font-mono text-[13px] leading-relaxed text-slate-600">
+                    {entry.body}
+                  </p>
+                </section>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

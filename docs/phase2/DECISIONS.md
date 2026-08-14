@@ -6363,3 +6363,35 @@ alone under its own mutation). Contract **78/78** (+2), typecheck and build clea
 re-verified independently. A real approval card needs a live agent turn plus a signed-in
 reviewer — unreachable here, named. Residual: the broad U-2 restyling (including the
 known duplicate approve-strip/progress-bar) awaits the user's detailed feedback.
+
+## 2026-08-14 — #20: the coordinates become editable, the limit becomes the button's job, and the prose moves into a drawer
+
+**What (four live user instructions, one unit).** ① The region page's mode toggle DIES:
+lasso-only, and below the map the read-only coordinate enumeration becomes an editable
+vertex TABLE — click the map, a row appears; edit a row, the polygon moves. One source of
+truth (`vertices`); each row's text is a DRAFT that reaches the shared state only after a
+±90°/±180° finite check, so an invalid keystroke marks its own row and can never reach the
+map or a payload. The builder's own adversarial review caught the round's real bug before
+any refuter: index-keyed rows meant deleting a middle row handed the NEXT component
+instance the right props but its own stale typed text — fixed with a props-resync effect
+that fires only when the bound vertex genuinely changes, and verified live by
+DOM-dispatched clicks (delete the middle of four rows → the survivors show the shifted
+values, not ghosts). A guard also reopens the ring when edits drop it below three
+corners. The backend keeps accepting rectangles; this file just never sends one. ② The
+measurement panel (한계 안/초과 chip, 정사각형 기준 문구, 투영 오차, stat grid) leaves the
+screen; the measurement FETCH stays, because the extract button now carries the limit
+itself — disabled when over, with the reason on its wrapper's hover title quoting the
+measurement's own numbers (live-verified anonymously: a huge triangle produced the real
+"반경 1,369,323 m가 한계 2,133 m를 초과…" title). ③ The 경계 처리 ⓘ is hidden. ④ A new
+shared `PageHelp` — a ? button beside each genesis page's title opening a 도움말 drawer —
+now HOLDS the prose this whole week has been removing from screens: the boundary doctrine
+verbatim (still pinned — the sentences moved files' positions, never left the page
+source), the limit explanation, lasso usage, OSM/ODbL provenance, the hub's job-queue and
+side-input explanations, the migrated 제외 도로/판정 게이트/잠정 등록 ⓘ texts, and the
+phases confirmation doctrine. The migration rule as the user set it: an ⓘ stays inline
+only if it answers "what just happened to this control" (the per-job WGS84-vs-local map
+note, the fix-card ⓘ); background and design rationale read in the drawer. Pins: 10
+retired by name with the surfaces they described, ~33 added (binding, guards, hover
+reason, migration both-directions, PageHelp no-fetch/Escape/backdrop), high-risk ones
+mutation-verified. Contract **79/79**, typecheck and build clean, re-verified
+independently; every purged string's absence and the drawer's presence confirmed live.

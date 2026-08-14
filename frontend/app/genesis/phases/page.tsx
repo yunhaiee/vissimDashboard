@@ -47,7 +47,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { Panel, refusalHeadline } from "@/components/genesis/ui";
+import { PageHelp, Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   confirmPhaseDiagram,
@@ -320,6 +320,32 @@ export default function PhaseDiagramReviewPage() {
     approachRows.some((row) => row.phaseId) &&
     !busy;
 
+  // UNIT #20 -- the page help drawer's content. 확인 절차 restates, for a
+  // reader who opens the drawer on purpose, the same doctrine the always-visible
+  // intro paragraph below the h1 already carries (그 paragraph stays -- it is
+  // this page's foundational claim, not a tooltip, so it is not "moved" here so
+  // much as echoed for discoverability alongside the other two pages' drawers).
+  // signals 입력 recovers a sentence the 2026-08-14 text-purge removed from
+  // under the "signals 입력 만들기" panel (see the note beside that Panel).
+  const phasesHelpEntries = [
+    {
+      title: t("확인 절차", "The confirmation step", "確認手順"),
+      body: t(
+        "현시도는 그림이므로 어떤 파싱도 접근로–현시 배정을 산출할 수 없습니다. 모델의 판독은 제안일 뿐이며, 확인 버튼을 누른 사람의 진술만이 실제 신호 입력이 됩니다 — 현시도는 사람 확인만이 사실을 만듭니다.",
+        "The 현시도 is a drawing, so no parse can produce the approach→phase mapping. The model's reading is only a proposal; only the statement of the person who confirms becomes actual signal input — for a 현시도, only a human confirmation makes a fact.",
+        "現示図は図面であり、解析では流入路と現示の対応を得られません。モデルの判読は提案に過ぎず、確認した人の申告のみが実際の信号入力になります — 現示図は人の確認だけが事実を作ります。",
+      ),
+    },
+    {
+      title: t("signals 입력", "Signals input", "信号入力"),
+      body: t(
+        "확인된(CONFIRMED) 교차로만 signals 입력에 포함됩니다 — 미확인이거나 재확인이 필요한 교차로는 빠집니다.",
+        "Only CONFIRMED intersections are included in the signals input — an unconfirmed or re-confirmation-needed intersection is left out.",
+        "確認済み（CONFIRMED）の交差点のみが信号入力に含まれます — 未確認または再確認が必要な交差点は除外されます。",
+      ),
+    },
+  ];
+
   return (
     <main className="mx-auto max-w-[1500px] px-4 py-8">
       {/* One page-title size across the three genesis sub-screens (22px), body
@@ -327,8 +353,9 @@ export default function PhaseDiagramReviewPage() {
         * reason the tinted boxes left their family inks: sky-700 is outside the
         * dark remap and rendered as stock #0369a1 on a near-black page. */}
       <header className="mb-6">
-        <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
+        <h1 className="flex items-center text-[22px] font-semibold tracking-tight text-slate-900">
           {t("현시도 확인", "Phase-diagram review", "現示図の確認")}
+          <PageHelp entries={phasesHelpEntries} />
         </h1>
         <p className="mt-1.5 max-w-4xl text-[13px] leading-relaxed text-slate-600">
           {t(

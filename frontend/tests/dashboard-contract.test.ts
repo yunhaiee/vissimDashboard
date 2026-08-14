@@ -2421,15 +2421,42 @@ contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation
     /<InfoTip[\s\S]{0,200}게이트 판정과 개수만 비교합니다/,
     "expected the comparison's scope line to stay in this panel, inside the ⓘ",
   );
-  pin.match(
+  // UNIT #20: these two doctrine sentences moved AGAIN -- out of the inline
+  // ⓘ they sat in here (U-1-quick's own migration) and into the page's own
+  // `PageHelp` drawer, alongside a third ⓘ that made the same move (`판정`'s
+  // R1.5 doctrine). All three still live VERBATIM in this file, just under a
+  // drawer entry's `title`/`body` instead of an `<InfoTip>` -- checked below,
+  // together with proof that the OLD inline `<InfoTip>` is actually gone from
+  // each of the three positions, not merely duplicated.
+  pin.doesNotMatch(
     page,
-    /<InfoTip[\s\S]{0,400}프로젝트에 등록되었습니다\. 다만 실행되지 못한/,
-    "expected the provisional doctrine paragraph to be carried by the ⓘ, not shortened away",
+    /checked=\{excludeService\}[\s\S]{0,500}<InfoTip/,
+    "expected the excluded-roads ⓘ to be gone from beside the checkbox -- it now lives in the page's help drawer",
+  );
+  pin.doesNotMatch(
+    page,
+    /\{t\("판정", "Verdict", "判定"\)\}[\s\S]{0,120}<InfoTip/,
+    "expected the verdict-grid doctrine ⓘ to be gone from inline -- it now lives in the page's help drawer",
+  );
+  pin.doesNotMatch(
+    page,
+    /등록되었지만 잠정입니다[\s\S]{0,250}<InfoTip/,
+    "expected the provisional-status doctrine ⓘ to be gone from inline -- it now lives in the page's help drawer",
   );
   pin.match(
     page,
-    /<InfoTip[\s\S]{0,300}제외된 도로는 버려지지 않고/,
-    "expected the excluded-roads disclosure to hang off the checkbox that raises the question",
+    /t\("제외 도로"[\s\S]{0,300}제외된 도로는 버려지지 않고/,
+    "expected the excluded-roads disclosure to survive as a PageHelp drawer entry in this file",
+  );
+  pin.match(
+    page,
+    /t\("판정 게이트"[\s\S]{0,400}R1\.5 검증 게이트 V1–V9/,
+    "expected the R1.5 doctrine sentence to survive as a PageHelp drawer entry in this file",
+  );
+  pin.match(
+    page,
+    /t\("잠정 등록"[\s\S]{0,600}프로젝트에 등록되었습니다\. 다만 실행되지 못한/,
+    "expected the provisional doctrine paragraph to survive as a PageHelp drawer entry in this file",
   );
 
   // The one line that was DELETED rather than moved: how to use a mouse is not
@@ -2443,6 +2470,64 @@ contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation
       `expected the drag/zoom operation hint to stay deleted in ${label}, not to reappear when the renderer split in two`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Unit #20 -- PageHelp: a page-level ? drawer, on all three genesis sub-screens
+// ---------------------------------------------------------------------------
+//
+// Single-concern on purpose: THIS test only checks the component exists and
+// that every one of the three pages actually wires it in with real content --
+// not what that content says (the per-page migration pins above and in the
+// B2 lasso test already hold specific sentences to their own file).
+
+contractTest("unit #20: PageHelp exists and every genesis sub-screen passes it entries", (pin) => {
+  const ui = read("components/genesis/ui.tsx");
+  const region = read("app/genesis/region/page.tsx");
+  const hub = read("app/genesis/page.tsx");
+  const phases = read("app/genesis/phases/page.tsx");
+
+  // The primitive itself: static content only (no fetch), reachable the same
+  // three ways InfoTip is (button trigger, Escape, click-outside/backdrop).
+  pin.match(ui, /export function PageHelp\(/, "expected one shared page-level help drawer");
+  pin.doesNotMatch(
+    sliceBetween(ui, "export function PageHelp(", "export function"),
+    /await fetch|apiFetch|apiMutationFetch/,
+    "the help drawer must render static content only -- it must never fetch",
+  );
+  pin.match(ui, /role="dialog"/, "expected the drawer to announce itself as a dialog");
+  pin.match(ui, /aria-modal="true"/, "expected the drawer to be marked modal");
+  pin.match(ui, /event\.key === "Escape"/, "expected Escape to close the drawer, the same as InfoTip");
+  pin.match(
+    ui,
+    /className="fixed inset-0 z-50 flex justify-end bg-slate-950\/50"\s*\n\s*onClick=\{\(\) => setOpen\(false\)\}/,
+    "expected a click on the backdrop to close the drawer",
+  );
+
+  // Each of the three pages renders the trigger AND passes it real entries --
+  // checked with the component name plus one sentence distinctive to THAT
+  // page's own content, so a page that renders `<PageHelp entries={[]} />`
+  // (the trigger with nothing behind it) still fails this.
+  pin.match(region, /<PageHelp entries=\{regionHelpEntries\}/, "expected the region page to wire in its own help entries");
+  pin.match(
+    region,
+    /그린 폴리곤이 그대로 기준입니다/,
+    "expected the region page's drawer entries to carry its distinctive 경계 처리 sentence",
+  );
+
+  pin.match(hub, /<PageHelp entries=\{genesisHelpEntries\}/, "expected the genesis hub to wire in its own help entries");
+  pin.match(
+    hub,
+    /두 목록은 이미 스테이징된 입력 중에서 고르기만 합니다/,
+    "expected the hub's drawer entries to carry its distinctive 수요·신호 입력 sentence",
+  );
+
+  pin.match(phases, /<PageHelp entries=\{phasesHelpEntries\}/, "expected the phases review page to wire in its own help entries");
+  pin.match(
+    phases,
+    /확인 버튼을 누른 사람의 진술만이 실제 신호 입력이 됩니다/,
+    "expected the phases page's drawer entries to carry its distinctive 확인 절차 sentence",
+  );
 });
 
 contractTest("U-1-quick: a 생성 이력 row states its region and its scale, or says '—'", (pin) => {
@@ -2523,28 +2608,44 @@ contractTest("B2: the region page ends at the staging door and hands off to B1's
     /validity_radius_m\s*=[^=]/,
     "the browser must not compute a validity radius of its own",
   );
-  // An estimate presented as a guarantee is how "it will fit" becomes a refusal
-  // nobody predicted.
-  pin.match(page, /estimated_bytes/, "expected the estimated size to be shown against the cap before fetching");
-  // MEASURED against the running app 2026-08-11: a 1.4 x 8.4 km region is
-  // 12 km² against a 17 km² square limit -- comfortably "inside" by area -- and
-  // is refused, because its half-extent is 4 195 m against a 2 079 m radius.
-  // The headline has to be the comparison that actually decides, or the screen
-  // tells that user they are fine right up until the refusal.
+  // UNIT #20 -- "the limit becomes the button's job". The stat grid, the
+  // 한계 안/한계 초과 chip and the "자세한 근거" byte-estimate detail this
+  // block used to pin came OFF the screen entirely (docs the removal above
+  // `overLimitReason`'s own declaration in region/page.tsx); the fetch behind
+  // them is untouched (`estimated_bytes` still exists on the wire, in
+  // `lib/api.ts`'s `RegionMeasurement`, just never rendered here). What
+  // replaced the permanent display is the extract button's own gating: over
+  // the cap, it is disabled, and the reason -- read from this SAME
+  // measurement, never invented -- sits in a `title` on the button's wrapping
+  // span, the pattern this app already uses for a disabled cross-navigation
+  // chip. MEASURED against the running app 2026-08-11: a 1.4 x 8.4 km region
+  // is 12 km² against a 17 km² square limit -- comfortably "inside" by area --
+  // and is refused, because its half-extent is 4 195 m against a 2 079 m
+  // radius, which is why the reason leads with the half-extent, not the area.
   pin.match(
+    page,
+    /const overLimitReason = useMemo\(\(\) => \{\s*\n\s*if \(!measurement \|\| measurement\.within_region_cap\) return null;/,
+    "expected the over-limit hover reason to fire ONLY when a real measurement says over-cap -- never for 'not enough corners yet'",
+  );
+  pin.match(
+    page,
+    /half_extent_m\.toFixed\(0\)[\s\S]{0,40}validity_radius_m\.toFixed\(0\)/,
+    "expected the hover reason to lead with the half-extent-vs-limit comparison, the one that actually decides",
+  );
+  pin.match(
+    page,
+    /area_km2\.toFixed\(2\)[\s\S]{0,40}max_area_km2\.toFixed\(1\)/,
+    "expected the hover reason to also state the area against its own limit, from the same measurement",
+  );
+  pin.match(
+    page,
+    /<span title=\{overLimitReason \?\? undefined\}>/,
+    "expected the reason to sit on the button's WRAPPING span -- a title on a disabled button does not fire in some browsers",
+  );
+  pin.doesNotMatch(
     page,
     /within_region_cap\s*\n?\s*\?\s*t\("한계 안"/,
-    "expected the verdict headline to lead with the half-extent verdict, not with the area",
-  );
-  pin.match(
-    page,
-    /한계 초과 — 이 영역은 추출할 수 없습니다/,
-    "expected an over-limit region to say so in words, not only by colour",
-  );
-  pin.match(
-    page,
-    /예상치일 뿐이며, 한계는 실제로 도착한 바이트에 대해 적용됩니다/,
-    "expected the size estimate to say it is an estimate and that the cap applies to the bytes that arrive",
+    "the always-visible 한계 안/한계 초과 verdict chip was removed -- the button's own disabled state and hover reason carry the limit now",
   );
 
   // The five fetch states are five answers. `refused` in particular must read
@@ -2669,45 +2770,38 @@ contractTest("B2: the region page ends at the staging door and hands off to B1's
 // pins below moved with it, and the old sentence is pinned ABSENT -- a
 // disclosure kept past its own fix misleads exactly as much as a missing one.
 
-contractTest("B2 lasso: the page sends one shape and says the polygon is what gets cut", (pin) => {
+contractTest("B2 lasso: the page is lasso-only and says the polygon is what gets cut", (pin) => {
   const page = read("app/genesis/region/page.tsx");
   const map = read("components/genesis/RegionLassoMap.tsx");
 
-  // Two modes, one shape sent. `parsed` is the SAME object the preview measures
-  // and the fetch is started with, so the two can never describe different
-  // regions.
-  pin.match(page, /type RegionMode = "rect" \| "polygon"/, "expected an explicit rectangle/polygon mode");
-  pin.match(page, /aria-pressed=\{mode === value\}/, "expected the mode toggle to say which shape is active");
+  // UNIT #20: THE MODE TOGGLE DIED. This page used to be rectangle-or-lasso;
+  // it is now lasso-only, so there is no `RegionMode` type, no mode state and
+  // no pill toggle left to pin. `parsed` is UNCONDITIONALLY the drawn ring --
+  // the same object the preview measures and the fetch is started with, so the
+  // two can never describe different regions.
+  // `withoutComments`: the header comment above legitimately NAMES the removed
+  // `RegionMode` type as part of documenting the removal (this file's own
+  // convention -- see the doc comment on `withoutComments` itself). A raw
+  // doesNotMatch would fire on that explanation forever.
+  pin.doesNotMatch(withoutComments(page), /RegionMode/, "the rectangle/lasso mode type must be gone -- this page sends one shape now");
+  pin.doesNotMatch(page, /aria-pressed=\{mode === value\}/, "the mode toggle pills must be gone with the mode they switched");
+  pin.doesNotMatch(page, /function RegionGauge\(/, "RegionGauge existed ONLY for rectangle mode -- it must be gone with it, not left as dead code");
+  pin.doesNotMatch(page, /BoxFields|BoxKey|parseBox\(/, "the rectangle coordinate fields' types and parser must be gone -- this screen no longer sends a bbox");
+  pin.doesNotMatch(page, /북위 \(north\)/, "the rectangle north/south/east/west input fields must be gone -- lasso-only now");
   pin.match(
     page,
     /return vertices\.length >= 3 \? \{ polygon: vertices \} : null;/,
     "expected the polygon payload to be the drawn ring, and nothing before three corners",
   );
 
-  // THE LASSO IS THE DEFAULT (U-1 polish, 2026-08-13, the user's call), and the
-  // three pins below are what make that safe rather than merely true. An empty
-  // ring must be genuinely empty: `parsed` is null before three corners, the
-  // measure effect returns on null `parsed` BEFORE it arms the debounce timer,
-  // and DEFAULT_BBOX therefore reaches the rectangle fields and the map centre
-  // but never a measurement. Without the early return, opening this page would
-  // fire an Overpass-limits preview for a shape nobody drew; without the null
-  // measurement, the screen could open on a 둔산-sized "한계 안" nobody asked
-  // for. The `RegionShape` order matters too: `parsed` is read by the submit
-  // path, so a default that produced a shape would arm the extract button.
-  pin.match(
-    page,
-    /useState<RegionMode>\("polygon"\)/,
-    "expected the polygon lasso to be the DEFAULT mode, with the rectangle as the secondary toggle",
-  );
+  // An empty ring must be genuinely empty: `parsed` is null before three
+  // corners, and the measure effect returns on null `parsed` BEFORE it arms
+  // the debounce timer -- so opening this page fires no Overpass-limits
+  // preview for a shape nobody drew yet.
   pin.match(
     page,
     /if \(!parsed\) \{\s*\n\s*setMeasurement\(null\);/,
     "expected an unfinished shape to clear the measurement and return BEFORE the preview is scheduled -- zero corners must fire no request",
-  );
-  pin.match(
-    page,
-    /\["polygon", t\("폴리곤 \(라쏘\)"/,
-    "expected the polygon pill to be listed first -- the reading order is half of what a default means",
   );
   pin.match(page, /previewRegion\(parsed\)/, "the polygon must be measured by the same server preview");
   pin.match(
@@ -2756,22 +2850,70 @@ contractTest("B2 lasso: the page sends one shape and says the polygon is what ge
     /weight: 1,\s*\n\s*opacity: 0\.45,\s*\n\s*dashArray: "3 6",/,
     "expected the bounding box to be drawn as a demoted hairline, still present",
   );
-  // ONE abstract rectangle on this screen, not two. `RegionGauge` draws the
-  // region's extent inside the cap square; in polygon mode the basemap above it
-  // already draws the ring AND the server's derived bounding box, so the gauge
-  // became a third rectangle that answered a question the stat block beside it
-  // answers in numbers -- the user read it, live, as a shape somebody had
-  // drawn. It is gated to rectangle mode (which has no map at all) rather than
-  // deleted, and the two pins hold both halves of that.
+  // UNIT #20 -- THE EDITABLE VERTEX TABLE, replacing the old read-only dotted
+  // coordinate enumeration. `vertices` (this page's own state) is the single
+  // source of truth: `VertexRow` receives it as `lat`/`lon` props and reports
+  // an edit back through `onCommit`, which is wired to `updateVertex` -- the
+  // ONE place `setVertices` mutates a coordinate. The map, in turn, is handed
+  // the SAME `vertices` array as a prop, so an edit that reaches `updateVertex`
+  // is visible on the map on the very next render, not through a second copy.
   pin.match(
     page,
-    /\{mode === "rect" && measurement && \(\s*\n\s*<div[^\n]*>\s*\n\s*<RegionGauge/,
-    "expected the cap gauge to render ONLY in rectangle mode -- polygon mode has the real map",
+    /onCommit=\{updateVertex\}/,
+    "expected each vertex row to be wired to the single vertices-mutating callback",
   );
   pin.match(
     page,
-    /function RegionGauge\(\{ measurement, t \}/,
-    "expected the gauge component itself to survive -- rectangle mode still has nothing else",
+    /const updateVertex = useCallback\(\(index: number, lat: number, lon: number\) => \{\s*\n\s*setVertices\(\(current\) => current\.map\(\(vertex, i\) => \(i === index \? \[lat, lon\] : vertex\)\)\);/,
+    "expected an edited vertex to update the SAME vertices array the map reads, not a parallel copy",
+  );
+  pin.match(
+    page,
+    /<RegionLassoMap\s*\n\s*vertices=\{vertices\}/,
+    "expected the map to be driven by the exact same vertices state the table edits",
+  );
+  // THE GUARD: an invalid draft must never reach `onCommit`, so it can never
+  // reach `setVertices`, the map, or a submitted payload. Checked at the
+  // SOURCE of the commit call in `VertexRow`, not merely asserted in prose.
+  pin.match(
+    page,
+    /const nextLatOk = nextLatText\.trim\(\) !== "" && isValidLatitude\(nextLat\);/,
+    "expected a committed latitude to be range-checked before it can reach onCommit",
+  );
+  pin.match(
+    page,
+    /if \(nextLatOk && nextLonOk\) onCommit\(index, nextLat, nextLon\);/,
+    "expected the row to call onCommit ONLY when both fields are valid -- never feed NaN or an out-of-range degree to the map",
+  );
+  // ADVERSARIAL FIX (found in this unit's own self-review): a row is keyed by
+  // INDEX, so deleting a row out of the MIDDLE of the table does not remount
+  // every row after it -- without a resync, the row now sitting at a shifted
+  // index would go on showing the deleted-away neighbour's stale draft text
+  // while `vertices` (and the map) already hold the correct value there.
+  pin.match(
+    page,
+    /useEffect\(\(\) => \{\s*\n\s*setLatText\(String\(lat\)\);\s*\n\s*setLonText\(String\(lon\)\);\s*\n\s*\}, \[lat, lon\]\);/,
+    "expected a row's draft text to resync when the vertex it is bound to changes underneath it (e.g. a delete shifting every later index)",
+  );
+  pin.match(
+    page,
+    /function isValidLatitude\(value: number\): boolean \{\s*\n\s*return Number\.isFinite\(value\) && value >= -90 && value <= 90;/,
+    "expected latitude to be range-checked against -90..90, not merely parsed",
+  );
+  pin.match(
+    page,
+    /function isValidLongitude\(value: number\): boolean \{\s*\n\s*return Number\.isFinite\(value\) && value >= -180 && value <= 180;/,
+    "expected longitude to be range-checked against -180..180, not merely parsed",
+  );
+  // ADVERSARIAL GUARD: deleting a vertex down below three corners while the
+  // ring is still "closed" must not leave the map drawing a degenerate filled
+  // polygon, nor leave its own click handler refusing to accept new corners
+  // (`RegionLassoMap`'s `if (current.closed) return;`). This effect is what
+  // keeps "closed" meaning "a real ring" no matter which path shrank the array.
+  pin.match(
+    page,
+    /if \(vertices\.length < 3 && ringClosed\) setRingClosed\(false\);/,
+    "expected the ring-closed flag to reset itself if an edit or a delete drops the vertex count below three",
   );
   pin.match(
     page,
@@ -2824,6 +2966,23 @@ contractTest("B2 lasso: the page sends one shape and says the polygon is what ge
     map,
     /"[^"]*[가-힣][^"]*"/,
     "the map component must take its labels from the page's t(), not hard-code Korean",
+  );
+
+  // UNIT #20 -- THE PAGE HELP DRAWER. `PageHelp` renders beside the h1 and
+  // carries the boundary doctrine (still verbatim above, still pinned) plus
+  // four more sections; this checks the component is actually wired in and
+  // that one distinctive sentence per newly-added section survives in this
+  // file, not merely in the plan.
+  pin.match(page, /<PageHelp entries=\{regionHelpEntries\}/, "expected the page's own ? drawer to be wired in beside the h1");
+  pin.match(
+    page,
+    /점은 최대 \$\{maxVertices \?\? 64\}개까지 찍을 수 있습니다/,
+    "expected the drawer's 라쏘 조작 section to state the corner cap",
+  );
+  pin.match(
+    page,
+    /영역을 추출하려면 로그인이 필요합니다/,
+    "expected the drawer's 데이터 출처 section to state the OSM licence and the login requirement",
   );
 });
 
