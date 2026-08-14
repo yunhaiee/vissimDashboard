@@ -36,7 +36,22 @@ import { isDatasetBusy, subscribeToDatasetBusy } from "@/lib/datasetEvents";
  * listing, so recovery can fire again for a FUTURE refusal but never loop. */
 const WORKSPACE_RECOVERY_FLAG = "vissim-workspace-recovery";
 
-export default function ProjectSelector() {
+/**
+ * Unit #24 (2026-08-14 directive): the fetch/switch/create/self-heal logic
+ * every 프로젝트 picker on this app needs, factored out of the sidebar's own
+ * render so app/overview/page.tsx's new subtitle control can be the SAME
+ * implementation, not a second copy of it. `ProjectSelector` below (the
+ * sidebar chrome: label+button row, select, create-flow) and
+ * `WorkspacePickerInline` (the overview subtitle: label+select only) are two
+ * RENDER surfaces over this one hook -- neither owns a fetch, a switch
+ * decision, or the workspace_forbidden self-heal of its own. Two mounted call
+ * sites means two independent `fetchWorkspaces()` calls, exactly like this
+ * picker already coexists today with every page's own reads (the overview
+ * page has always fetched its own copy for the header/no-project branch);
+ * what this hook forecloses is a SECOND WRITTEN COPY of the switch/create/
+ * self-heal logic that could drift out of step with this one.
+ */
+export function useWorkspacePicker() {
   const { t } = useLanguage();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
@@ -148,9 +163,38 @@ export default function ProjectSelector() {
     }
   }, [handleSwitchWorkspace, newWorkspaceName, t]);
 
-  if (workspaces.length === 0) return null;
+  return {
+    workspaces,
+    selectedWorkspaceId,
+    creating,
+    setCreating,
+    newWorkspaceName,
+    setNewWorkspaceName,
+    busy,
+    error,
+    locked: busy || datasetBusy,
+    handleSwitchWorkspace,
+    handleCreateWorkspace,
+  };
+}
 
-  const locked = busy || datasetBusy;
+export default function ProjectSelector() {
+  const { t } = useLanguage();
+  const {
+    workspaces,
+    selectedWorkspaceId,
+    creating,
+    setCreating,
+    newWorkspaceName,
+    setNewWorkspaceName,
+    busy,
+    error,
+    locked,
+    handleSwitchWorkspace,
+    handleCreateWorkspace,
+  } = useWorkspacePicker();
+
+  if (workspaces.length === 0) return null;
 
   return (
     /* Under the 880px rail (globals.css turns the sidebar into a centered
@@ -159,12 +203,30 @@ export default function ProjectSelector() {
      * Korean labels one syllable per line and inflating the whole rail to
      * ~490px tall. */
     <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 max-[880px]:mb-0 max-[880px]:w-[210px] max-[880px]:shrink-0">
-      <label
-        htmlFor="vissim-workspace-picker"
-        className="whitespace-nowrap text-[11px] font-semibold text-slate-400"
-      >
-        {t("프로젝트", "Project", "プロジェクト")}
-      </label>
+      {/* Unit #24: the full-width "새 프로젝트" button became a small + icon
+        * sitting on the SAME ROW as the 프로젝트 label, label left / button
+        * right -- the create-flow it opens below is untouched. */}
+      <div className="flex items-center justify-between gap-1.5">
+        <label
+          htmlFor="vissim-workspace-picker"
+          className="whitespace-nowrap text-[11px] font-semibold text-slate-400"
+        >
+          {t("프로젝트", "Project", "プロジェクト")}
+        </label>
+        <button
+          type="button"
+          onClick={() => setCreating((open) => !open)}
+          disabled={locked}
+          aria-expanded={creating}
+          aria-label={t("새 프로젝트", "New Project", "新規プロジェクト")}
+          className="ui-button-ghost flex h-5 w-5 shrink-0 items-center justify-center rounded-md p-0 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden className="h-3 w-3">
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+          </svg>
+        </button>
+      </div>
       <select
         id="vissim-workspace-picker"
         value={selectedWorkspaceId ?? ""}
@@ -178,15 +240,6 @@ export default function ProjectSelector() {
           </option>
         ))}
       </select>
-      <button
-        type="button"
-        onClick={() => setCreating((open) => !open)}
-        disabled={locked}
-        aria-expanded={creating}
-        className="ui-button-ghost mt-1.5 w-full whitespace-nowrap px-2 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {t("새 프로젝트", "New Project", "新規プロジェクト")}
-      </button>
       {creating && (
         <div className="mt-1.5 flex flex-col gap-1.5">
           <input
@@ -211,6 +264,44 @@ export default function ProjectSelector() {
         </div>
       )}
       {error && <p className="mt-1.5 break-words text-[11px] leading-relaxed text-rose-600">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * The overview subtitle's picker (unit #24, 2026-08-14 directive): the SAME
+ * `useWorkspacePicker` hook as the sidebar `ProjectSelector` above -- same
+ * fetch, same `handleSwitchWorkspace` (switch = setWorkspaceId(null|id) +
+ * reload), same workspace_forbidden self-heal -- rendered as a quiet inline
+ * label+select pair instead of the sidebar's card chrome. No create-flow
+ * here: item 2 of this unit keeps project creation on the sidebar's + button
+ * only, so this component reads only the three hook fields a bare select
+ * needs.
+ */
+export function WorkspacePickerInline({ id }: { id: string }) {
+  const { t } = useLanguage();
+  const { workspaces, selectedWorkspaceId, locked, handleSwitchWorkspace } = useWorkspacePicker();
+
+  if (workspaces.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <label htmlFor={id} className="whitespace-nowrap text-[12px] text-slate-500">
+        {t("프로젝트", "Project", "プロジェクト")}
+      </label>
+      <select
+        id={id}
+        value={selectedWorkspaceId ?? ""}
+        disabled={locked}
+        onChange={(event) => handleSwitchWorkspace(event.target.value)}
+        className="ui-select w-auto rounded-md border-slate-700/60 bg-transparent px-1.5 py-0.5 font-mono text-[13px] text-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {workspaces.map((workspace) => (
+          <option key={workspace.id} value={workspace.id}>
+            {workspace.name}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

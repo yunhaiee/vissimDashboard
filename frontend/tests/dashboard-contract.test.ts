@@ -4964,3 +4964,105 @@ contractTest("unit #22: 개요 sits above the numbered groups, outside the pipel
   pin.doesNotMatch(shell, /"\/overview":\s*"(network|data|sim|report)"/, "expected /overview to be absent from ROUTE_STAGE entirely");
   pin.match(shell, /`\/overview` \(unit #22\) is absent for the same reason/, "expected a comment explaining why /overview carries no pipeline stage, mirroring the /admin reasoning");
 });
+
+// ---------------------------------------------------------------------------
+// Unit #24 (2026-08-14 directive): 개요 gets a fixed title and the project it
+// used to show becomes a SELECTABLE subtitle control sharing the sidebar
+// picker's own logic; the sidebar's full-width 새 프로젝트 button becomes a
+// small + icon on the 프로젝트 label's own row; the four stage cards lay out
+// 2x2 at desktop instead of 4-across.
+// ---------------------------------------------------------------------------
+
+contractTest("#24: the picker's fetch/switch/create logic lives in ONE exported hook, not two", (pin) => {
+  const selector = read("components/ProjectSelector.tsx").replace(/\r\n/g, "\n");
+
+  pin.match(selector, /export function useWorkspacePicker\(\)/, "expected the fetch/switch/create/self-heal logic to live in one exported hook");
+  pin.match(selector, /export default function ProjectSelector\(\)/, "expected the sidebar component to stay the default export");
+  pin.match(selector, /export function WorkspacePickerInline\(/, "expected a second, named export for the overview's inline control");
+
+  // The sidebar component itself holds no fetch or switch decision of its
+  // own -- scoped to its own body so a duplicate defined ABOVE the hook
+  // (rather than a call to it) could not silently satisfy this pin.
+  const projectSelectorFn = sliceBetween(selector, "export default function ProjectSelector()", "export function WorkspacePickerInline(");
+  pin.match(projectSelectorFn, /\S/, "expected to find ProjectSelector's own body (markers moved?)");
+  pin.match(projectSelectorFn, /\} = useWorkspacePicker\(\);/, "expected the sidebar component to consume the shared hook rather than its own state");
+  pin.doesNotMatch(projectSelectorFn, /fetchWorkspaces\(\)|setWorkspaceId\(isDefault/, "expected the sidebar component to hold no fetch or switch logic of its own -- only the shared hook may");
+
+  // The overview's inline control is the same story: it renders a bare
+  // label+select, no create-flow of its own, sourced from the same hook.
+  const inlineFn = selector.slice(selector.indexOf("export function WorkspacePickerInline("));
+  pin.match(inlineFn, /\S/, "expected to find WorkspacePickerInline's own body (marker moved?)");
+  pin.match(
+    inlineFn,
+    /\{ workspaces, selectedWorkspaceId, locked, handleSwitchWorkspace \} = useWorkspacePicker\(\);/,
+    "expected the inline control to read its list and switch handler from the same shared hook",
+  );
+  pin.doesNotMatch(inlineFn, /creating|handleCreateWorkspace/, "expected no create-flow inside the overview's inline control -- creation stays on the sidebar's + button");
+});
+
+contractTest("#24: the sidebar's 새 프로젝트 button is a small + icon on the 프로젝트 label's row", (pin) => {
+  const selector = read("components/ProjectSelector.tsx").replace(/\r\n/g, "\n");
+  const projectSelectorFn = sliceBetween(selector, "export default function ProjectSelector()", "export function WorkspacePickerInline(");
+
+  // Label and button share one row -- label left, button right -- scoped to
+  // that row's own wrapping div so a match elsewhere in the component cannot
+  // satisfy it.
+  const labelRow = sliceBetween(projectSelectorFn, '<div className="flex items-center justify-between', "</div>");
+  pin.match(labelRow, /\S/, "expected to find the label/button row (markers moved?)");
+  pin.match(labelRow, /htmlFor="vissim-workspace-picker"/, "expected the 프로젝트 label to open this row");
+  pin.match(labelRow, /aria-label=\{t\("새 프로젝트", "New Project", "新規プロジェクト"\)\}/, "expected the + button's accessible name to stay 새 프로젝트, now carried by aria-label since the button is icon-only");
+  pin.match(labelRow, /onClick=\{\(\) => setCreating\(\(open\) => !open\)\}/, "expected the + button to keep opening the exact same creating-flow toggle");
+  pin.match(labelRow, /<svg viewBox="0 0 24 24"/, "expected the + glyph to be drawn as SVG geometry, mono/ghost vocabulary");
+  pin.doesNotMatch(labelRow, />\s*\{t\("새 프로젝트", "New Project", "新規プロジェクト"\)\}\s*<\/button>/, "expected the old visible button text to be gone -- the button is icon-only now");
+
+  // The old full-width button chrome is gone; the create-flow it opens is not.
+  pin.doesNotMatch(projectSelectorFn, /ui-button-ghost mt-1\.5 w-full/, "expected the old full-width 새 프로젝트 button chrome to be removed");
+  pin.match(projectSelectorFn, /\{creating && \(/, "expected the creating-flow to still open exactly as before");
+  pin.match(projectSelectorFn, /void handleCreateWorkspace\(\)/, "expected the 만들기 button to still call the shared create handler");
+});
+
+contractTest("#24: 개요's title is fixed and the project becomes a selectable subtitle sharing ProjectSelector's hook", (pin) => {
+  const overview = read("app/overview/page.tsx").replace(/\r\n/g, "\n");
+
+  pin.match(
+    overview,
+    /import \{ WorkspacePickerInline \} from "@\/components\/ProjectSelector"/,
+    "expected the subtitle control to import the shared picker component, not reimplement one",
+  );
+  pin.match(overview, /\{t\("개요", "Overview", "概要"\)\}/, "expected the header title to read 개요 rather than the project name");
+  pin.match(overview, /<WorkspacePickerInline id="overview-workspace-picker" \/>/, "expected the project to render as the shared selectable control where the subtitle used to sit");
+
+  // No second implementation: the page must not compute its own "current
+  // workspace" for display, nor redefine any part of the switch decision --
+  // scoped past comments, since #18's own doctrine is legitimately NAMED in
+  // this file's prose (CreateProjectOnly's own comments quote
+  // `setWorkspaceId(isDefault ? null : workspaceId)` and `handleSwitchWorkspace`
+  // to explain an unrelated, pre-existing branch).
+  const liveCode = withoutComments(overview);
+  pin.doesNotMatch(liveCode, /currentWorkspace/, "expected the page to carry no 'current workspace' computed for display -- the shared picker owns that now");
+  pin.doesNotMatch(liveCode, /const handleSwitchWorkspace/, "expected overview to reuse the shared switch handler, never redefine one");
+  pin.doesNotMatch(liveCode, /setWorkspaceId\(isDefault/, "expected overview to carry no second copy of the isDefault switch branch");
+});
+
+contractTest("#24: the overview's four stage cards render 2x2 at desktop, one column on narrow screens", (pin) => {
+  const overview = read("app/overview/page.tsx").replace(/\r\n/g, "\n");
+
+  pin.match(
+    overview,
+    /<div className="grid grid-cols-1 gap-5 sm:grid-cols-2">/,
+    "expected a single mobile column that becomes a 2-column (2x2 for four cards) grid from sm upward",
+  );
+  pin.doesNotMatch(withoutComments(overview), /xl:grid-cols-4/, "expected the old 4-across desktop layout to be gone");
+
+  // Pipeline order is unchanged -- the four StageCards still appear in the
+  // same ①②③④ source order, which is what makes a 2-column grid read as
+  // ① ② / ③ ④ left-right, top-bottom. sliceBetween scans forward from each
+  // start marker for the next, so a non-empty slice IS the order proof: an
+  // out-of-order card would make the corresponding slice come back "".
+  const networkToData = sliceBetween(overview, 'title={`① ${t("네트워크"', 'title={`② ${t("데이터"');
+  pin.match(networkToData, /StageLink\s+href="\/genesis"/, "expected ① to precede ② in source order (top row of the 2x2 grid)");
+  const dataToSim = sliceBetween(overview, 'title={`② ${t("데이터"', 'title={`③ ${t("시뮬·보정"');
+  pin.match(dataToSim, /StageLink href="\/genesis\/demand"/, "expected ② to precede ③ in source order");
+  const simToReport = sliceBetween(overview, 'title={`③ ${t("시뮬·보정"', 'title={`④ ${t("보고서"');
+  pin.match(simToReport, /StageLink href="\/dashboard"/, "expected ③ to precede ④ in source order, completing the 2x2 reading order");
+});

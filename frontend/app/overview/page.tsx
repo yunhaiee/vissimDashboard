@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
+import { WorkspacePickerInline } from "@/components/ProjectSelector";
 import {
   createWorkspace,
   fetchActiveDataset,
@@ -364,8 +365,6 @@ export default function OverviewPage() {
     );
   }
 
-  const currentWorkspace = workspaces.workspaces.find((entry) => entry.id === workspaces.current) ?? null;
-
   const demandCount = sideInputs.filter((entry) => entry.kind === "demand").length;
   const signalsCount = sideInputs.filter((entry) => entry.kind === "signals").length;
 
@@ -375,19 +374,27 @@ export default function OverviewPage() {
   return (
     <div className="mx-auto max-w-[1500px] px-4 py-8">
       <header className="mb-8">
+        {/* Unit #24 (2026-08-14 directive): the title is 개요 itself now --
+          * this page's own name -- and the project it used to show moves to
+          * the subtitle position as a SELECTABLE control: the same workspace
+          * list and switch-semantics as the sidebar picker, one shared
+          * implementation (components/ProjectSelector.tsx's own
+          * `useWorkspacePicker`), never a second copy of the fetch/switch
+          * logic written here. */}
         <h1 className="text-[22px] font-semibold tracking-tight text-white">
-          {currentWorkspace?.name ?? t("프로젝트", "Project", "プロジェクト")}
+          {t("개요", "Overview", "概要")}
         </h1>
-        <p className="mt-1 text-[13px] text-slate-500">
-          {t(
-            "이 프로젝트의 파이프라인 현황입니다. 카드를 누르면 그 단계로 이동합니다.",
-            "This project's pipeline at a glance. Click a card to open its own stage.",
-            "このプロジェクトのパイプライン状況です。カードを押すとその段階へ移動します。",
-          )}
-        </p>
+        <div className="mt-1.5">
+          <WorkspacePickerInline id="overview-workspace-picker" />
+        </div>
       </header>
 
-      <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+      {/* Unit #24 (2026-08-14 directive): 2x2 at desktop, one column on
+        * narrow screens -- was a 4-across row (sm:grid-cols-2 xl:grid-cols-4)
+        * that only ever reached 2x2 below `xl`. Pipeline order is preserved
+        * by DOM order alone (① ② / ③ ④ reading left-right, top-bottom is
+        * exactly how four items lay out in a 2-column grid, unchanged). */}
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
         {/* ------------------------------------------------------------- */}
         {/* ① 네트워크                                                     */}
         {/* ------------------------------------------------------------- */}
