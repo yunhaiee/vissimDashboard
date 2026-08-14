@@ -219,6 +219,16 @@ class ApplyGenesisFixRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     finding_code: str = Field(min_length=1, description="One of gate.py's own finding codes.")
+    subject: str | None = Field(
+        default=None,
+        description=(
+            "The finding's own subject (e.g. the vehicle input number), naming WHICH "
+            "finding when the same code appears more than once in the parent's verdict. "
+            "Optional for backward compatibility -- omitting it on a duplicated code is "
+            "refused by name (genesis_fix_finding_ambiguous_without_subject), never "
+            "silently resolved to the first match. Unit #30."
+        ),
+    )
     verb: str = Field(min_length=1, description="Must match the finding's registered verb exactly.")
     params: dict[str, Any] = Field(
         default_factory=dict, description="The edit verb's params, approved by a human."
@@ -760,8 +770,11 @@ def apply_genesis_fix(
        own gate is the AUTHORITATIVE one.** It re-checks everything layer 1
        does PLUS what layer 1 structurally cannot: unknown parent (404),
        parent not refused (409 ``genesis_fix_parent_not_refused``), the
-       finding_code does not appear in the PARENT's OWN stored verdict (409
-       ``genesis_fix_finding_not_in_parent_verdict``), the submitted params
+       (finding_code, subject) does not appear in the PARENT's OWN stored
+       verdict (409 ``genesis_fix_finding_not_in_parent_verdict``), the
+       finding_code appears on MORE than one subject and the request named
+       none (409 ``genesis_fix_finding_ambiguous_without_subject``, listing
+       the candidates -- unit #30), the submitted params
        address a DIFFERENT object than the one the finding names (409
        ``genesis_fix_params_target_mismatch``), the fix registry RE-RUN
        against REAL server-side evidence (this workspace's own observation
@@ -815,6 +828,7 @@ def apply_genesis_fix(
         record = genesis_jobs.start_genesis_fix_job(
             job_id,
             finding_code=payload.finding_code,
+            subject=payload.subject,
             verb=payload.verb,
             params=dict(payload.params),
             approved_by=str(user.get("username") or user.get("id") or "unknown"),

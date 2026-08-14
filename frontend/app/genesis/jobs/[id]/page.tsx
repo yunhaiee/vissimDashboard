@@ -45,7 +45,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import GenesisComparisonPanel from "@/components/genesis/GenesisComparisonPanel";
@@ -270,20 +270,18 @@ function applyFixErrorText(caught: unknown, t: Translate): { headline: string; r
 function FixFindingRow({
   jobId,
   finding,
-  isFirstForCode,
   t,
   lang,
   onApplied,
 }: {
   jobId: string;
   finding: GenesisFixFinding;
-  isFirstForCode: boolean;
   t: Translate;
   lang: string;
   onApplied: (job: GenesisJob) => void;
 }) {
   const disposition = finding.disposition;
-  const actionable = isFirstForCode && fixDispositionIsActionable(disposition);
+  const actionable = fixDispositionIsActionable(disposition);
   const rationale =
     lang === "ko" ? disposition.rationale.ko : lang === "ja" ? disposition.rationale.ja : disposition.rationale.en;
 
@@ -307,6 +305,10 @@ function FixFindingRow({
       }
       const job = await applyGenesisFix(jobId, {
         finding_code: finding.code,
+        // The finding's own identity is (code, subject) -- unit #30. Sending
+        // the subject is what makes the SECOND of two same-coded findings its
+        // own apply target instead of a collision with the first.
+        subject: finding.subject,
         verb: disposition.verb,
         params,
         approval_rationale: approvalRationale.trim() || undefined,
@@ -317,7 +319,7 @@ function FixFindingRow({
     } finally {
       setApplying(false);
     }
-  }, [disposition, requiredValues, approvalRationale, jobId, finding.code, onApplied, t]);
+  }, [disposition, requiredValues, approvalRationale, jobId, finding.code, finding.subject, onApplied, t]);
 
   const error = applyError ? applyFixErrorText(applyError, t) : null;
 
@@ -335,15 +337,6 @@ function FixFindingRow({
             * status -- see fixDispositionIsActionable) -- ONE mono line, the
             * rationale verbatim, and NEVER a button. */}
           <p className="font-mono text-[15px] leading-relaxed text-slate-700">{rationale}</p>
-          {!isFirstForCode && fixDispositionIsActionable(disposition) && (
-            <p className="mt-1.5 text-[14px] leading-relaxed text-slate-500">
-              {t(
-                "같은 코드의 발견이 이 판정에 여러 건입니다 — 자동 적용은 첫 번째 발견에만 연결됩니다. 그 발견을 먼저 적용해 재게이트한 뒤, 남은 발견이 새 판정의 첫 자리에 나타나면 그때 적용하십시오.",
-                "This code appears more than once in this verdict — an apply only ever resolves to the FIRST finding carrying it. Apply that one first; once the re-gate runs, the remaining finding moves to the front of the new verdict's own list and can be applied then.",
-                "同じコードの発見がこの判定に複数あります — 自動適用は最初の発見にのみ結び付きます。まずそれを適用して再ゲートし、残りの発見が新しい判定の先頭に現れたら、その時に適用してください。",
-              )}
-            </p>
-          )}
           {disposition.reason_code && (
             <p className="mt-1 font-mono text-[14px] text-slate-500">{disposition.reason_code}</p>
           )}
@@ -481,17 +474,6 @@ function GateCheckGrid({
   // mount state and stays until a click.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = selectedId ? checks.find((check) => check.id === selectedId) ?? null : null;
-
-  const firstOccurrenceOfCode = useMemo(() => {
-    const seen = new Set<string>();
-    const map = new Map<string, boolean>();
-    for (const finding of fixes?.findings ?? []) {
-      const key = `${finding.code}::${finding.subject}`;
-      map.set(key, !seen.has(finding.code));
-      seen.add(finding.code);
-    }
-    return map;
-  }, [fixes]);
 
   return (
     <div>
@@ -639,9 +621,6 @@ function GateCheckGrid({
                             key={`${finding.code}::${finding.subject}`}
                             jobId={jobId}
                             finding={finding}
-                            isFirstForCode={
-                              firstOccurrenceOfCode.get(`${finding.code}::${finding.subject}`) ?? true
-                            }
                             t={t}
                             lang={lang}
                             onApplied={onFixApplied}

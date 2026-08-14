@@ -62,8 +62,11 @@ Usage (from ``backend/``, with the venv python)::
 
     # Apply an explicit, already-approved (verb, params) -- the normal case,
     # mirroring what a human reviewer's approval click would supply.
+    # (--subject names WHICH finding when the code appears more than once in
+    # the parent's verdict -- for a V6 finding it is the vehicle input number.)
     python tools/genesis_fix_loop_live_check.py --job-id <refused-job-id> \\
         --finding-code v6_input_volume_is_zero \\
+        --subject 113 \\
         --verb set_vehicle_input_volume \\
         --params "{\\"input_no\\": \\"113\\", \\"volume\\": 500, \\"interval_no\\": 1}"
 
@@ -227,6 +230,14 @@ def main() -> int:
         default="operator_supplied",
         help="carried on derived_from.finding_code -- the gate finding this fix answers",
     )
+    parser.add_argument(
+        "--subject",
+        default=None,
+        help="the finding's own subject (e.g. the vehicle input number) -- REQUIRED when "
+        "--finding-code appears more than once in the parent's verdict "
+        "(create_genesis_fix_job refuses a subject-less duplicate by name, unit #30); "
+        "omitting it keeps the pre-#30 single-match behavior",
+    )
     parser.add_argument("--verb", default=None, help="an explicitly-approved verb name")
     parser.add_argument(
         "--params", default=None, help="the approved verb's params, as a JSON object string"
@@ -281,6 +292,7 @@ def main() -> int:
             verb: str | None = args.verb
             params: dict[str, Any] | None = None
             finding_code = args.finding_code
+            subject: str | None = args.subject
             if verb is not None:
                 params = json.loads(args.params) if args.params else {}
             else:
@@ -308,13 +320,21 @@ def main() -> int:
                 verb = automatable["proposal"]["verb"]
                 params = automatable["proposal"]["params"]
                 finding_code = automatable["finding"].get("code") or finding_code
+                if subject is None:
+                    # The auto-picked finding knows its own subject -- carry it,
+                    # so --yes stays unambiguous even on a duplicated code.
+                    subject = automatable["finding"].get("subject") or None
 
             assert verb is not None and params is not None  # for the type checker
-            _log(f"approved verb={verb!r} params={params!r} finding_code={finding_code!r}")
+            _log(
+                f"approved verb={verb!r} params={params!r} finding_code={finding_code!r} "
+                f"subject={subject!r}"
+            )
 
             fix_record = genesis_jobs.create_genesis_fix_job(
                 args.job_id,
                 finding_code=finding_code,
+                subject=subject,
                 verb=verb,
                 params=params,
                 approved_by=args.approved_by,

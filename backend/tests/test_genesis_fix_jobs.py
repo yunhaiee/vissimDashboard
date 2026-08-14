@@ -611,10 +611,11 @@ def test_create_fix_job_refuses_params_that_address_a_different_object_than_the_
     workspace_root: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Exploit #2: v6_input_volume_is_zero fires on BOTH inputs 1 and 2 in
-    this parent's verdict; a finding_code-only lookup resolves to input 1's
-    finding (the numerically-first one). Params addressing input 2 must be
+    this parent's verdict. The approval names input 1's finding EXPLICITLY
+    (by its subject -- unit #30 made a subject-less duplicate refuse before
+    this check is ever reached, see §8) while the params address input 2:
     refused BY NAME rather than silently rewriting a DIFFERENT vehicle input
-    than the one the (matched) finding actually diagnosed."""
+    than the one the addressed finding actually diagnosed."""
     parent = _seed_two_input_refused_parent()
     before = _job_dirs(workspace_root)
 
@@ -622,10 +623,11 @@ def test_create_fix_job_refuses_params_that_address_a_different_object_than_the_
         genesis_jobs.create_genesis_fix_job(
             parent["id"],
             finding_code=_FINDING_CODE,
+            subject="1",
             verb=_VERB,
             params={"input_no": "2", "volume": 500.0, "interval_no": 1},
             approved_by="reviewer",
-            approval_rationale="should refuse: params address input 2, the matched finding is input 1",
+            approval_rationale="should refuse: params address input 2, the addressed finding is input 1",
         )
     assert excinfo.value.code == "genesis_fix_params_target_mismatch"
 
@@ -687,3 +689,159 @@ def test_the_happy_path_still_works_unverified_entrance_plus_user_supplied_volum
     assert result["derived_from"]["verb"] == _VERB
     assert result["status"] in genesis_jobs.TERMINAL_STATUSES
     assert result["gate"] is not None
+
+
+# ===========================================================================
+# §8 Unit #30 -- duplicate-coded findings, individually addressable by
+# subject. B5-2's recorded limit was that `_finding_in_stored_gate` resolved
+# by code alone to the FIRST match, so only the first of two same-coded
+# findings was treatable and a fix aimed at the second silently landed on the
+# first's identity. (code, subject) is now the address.
+# ===========================================================================
+
+
+def _stored_gate_subjects(job_id: str, code: str) -> list[str]:
+    """Every subject in this job's STORED gate.json carrying ``code`` -- read
+    through the same ``iter_stored_gate_findings`` walk the lookup itself
+    uses, so the test addresses findings by exactly the identity the service
+    resolves."""
+    raw = json.loads(
+        (genesis_jobs.job_dir(job_id) / genesis_jobs.GATE_JSON_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    return [
+        finding["subject"]
+        for _check_id, _origin, finding in genesis_jobs.iter_stored_gate_findings(raw)
+        if finding["code"] == code
+    ]
+
+
+def test_the_second_duplicate_finding_is_addressable_by_its_own_subject(
+    workspace_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The SECOND of two same-coded findings, addressed by subject, mints a
+    fix job whose params and lineage derive from THAT finding -- the exact
+    call that pre-#30 refused ``genesis_fix_params_target_mismatch`` because
+    the code-only lookup had landed on input 1's finding."""
+    parent = _seed_two_input_refused_parent()
+    subjects = _stored_gate_subjects(parent["id"], _FINDING_CODE)
+    assert subjects == ["1", "2"], subjects  # a V6 finding's subject IS the input number
+
+    record = genesis_jobs.create_genesis_fix_job(
+        parent["id"],
+        finding_code=_FINDING_CODE,
+        subject="2",
+        verb=_VERB,
+        params={"input_no": "2", "volume": 500.0, "interval_no": 1},
+        approved_by="reviewer",
+        approval_rationale="input 2 addressed by its own subject",
+    )
+
+    # The addressing cross-check (exploit #2's fix) accepted input 2's params
+    # -- proof the lookup resolved finding 2, not the numerically-first one.
+    assert record["derived_from"]["subject"] == "2"
+    assert record["derived_from"]["params"]["input_no"] == "2"
+    assert record["derived_from"]["finding_code"] == _FINDING_CODE
+
+
+def test_omitting_subject_on_a_duplicated_code_refuses_by_name_listing_the_candidates(
+    workspace_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Subject omitted while the code appears twice: the NEW named refusal,
+    listing BOTH candidate subjects, and no job directory -- never a silent
+    resolve to the first match (these params would have been accepted for
+    input 1 pre-#30)."""
+    parent = _seed_two_input_refused_parent()
+    before = _job_dirs(workspace_root)
+
+    with pytest.raises(genesis_jobs.GenesisRefused) as excinfo:
+        genesis_jobs.create_genesis_fix_job(
+            parent["id"],
+            finding_code=_FINDING_CODE,
+            verb=_VERB,
+            params=dict(_PARAMS),
+            approved_by="reviewer",
+            approval_rationale="should refuse: two findings carry this code, none was named",
+        )
+    assert excinfo.value.code == "genesis_fix_finding_ambiguous_without_subject"
+    assert "'1'" in excinfo.value.reasons[0]
+    assert "'2'" in excinfo.value.reasons[0]
+
+    after = _job_dirs(workspace_root)
+    assert after == before, "an ambiguity refusal must not create a job directory"
+
+
+def test_a_wrong_subject_refuses_not_in_parent_verdict_and_names_what_was_looked_for(
+    workspace_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A subject the verdict does not carry under this code is the SAME
+    "no diagnosis to answer" refusal an absent code gets -- and the message
+    names the (code, subject) pair that was looked for."""
+    parent = _seed_two_input_refused_parent()
+    before = _job_dirs(workspace_root)
+
+    with pytest.raises(genesis_jobs.GenesisRefused) as excinfo:
+        genesis_jobs.create_genesis_fix_job(
+            parent["id"],
+            finding_code=_FINDING_CODE,
+            subject="7",
+            verb=_VERB,
+            params=dict(_PARAMS),
+            approved_by="reviewer",
+            approval_rationale="should refuse: no finding with this subject exists",
+        )
+    assert excinfo.value.code == "genesis_fix_finding_not_in_parent_verdict"
+    assert "'7'" in excinfo.value.reasons[0]
+
+    after = _job_dirs(workspace_root)
+    assert after == before
+
+
+def test_a_single_match_code_without_subject_still_works_and_records_the_resolved_subject(
+    workspace_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Backward compatibility: a subject-less create against a code that
+    appears exactly ONCE keeps working (every pre-#30 caller), and the record
+    still stores the RESOLVED finding's subject -- lineage precision is not
+    conditional on the caller having supplied it."""
+    parent = _seed_refused_fix_parent(with_island=True)
+
+    record = genesis_jobs.create_genesis_fix_job(
+        parent["id"],
+        finding_code=_FINDING_CODE,
+        verb=_VERB,
+        params=dict(_PARAMS),
+        approved_by="reviewer",
+        approval_rationale="single match; no subject needed",
+    )
+    assert record["derived_from"]["subject"] == "1"
+    assert record["derived_from"]["finding_code"] == _FINDING_CODE
+
+
+def test_an_old_fix_record_without_a_stored_subject_still_loads(
+    workspace_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A registry record written before ``derived_from.subject`` existed
+    (key-ABSENT, the same discipline the field itself follows) must keep
+    reading fine -- no migration, no KeyError, the rest of the lineage
+    intact."""
+    parent = _seed_refused_fix_parent(with_island=True)
+    record = genesis_jobs.create_genesis_fix_job(
+        parent["id"],
+        finding_code=_FINDING_CODE,
+        subject="1",
+        verb=_VERB,
+        params=dict(_PARAMS),
+        approved_by="reviewer",
+        approval_rationale="then aged into a pre-#30 record",
+    )
+
+    aged = json.loads(json.dumps(record))
+    del aged["derived_from"]["subject"]
+    genesis_jobs._upsert(aged)
+
+    reread = genesis_jobs.get_job(record["id"])
+    assert "subject" not in reread["derived_from"]
+    assert reread["derived_from"]["finding_code"] == _FINDING_CODE
+    assert reread["derived_from"]["verb"] == _VERB

@@ -4988,11 +4988,12 @@ contractTest("B5-2 stage 4: a disposition's own status is not the actionable tes
     /function fixDispositionIsActionable\(disposition: GenesisFixDisposition\): boolean \{\s*\n\s*return disposition\.status === "AUTOMATABLE" && disposition\.params !== null;/,
     "expected the actionable test to require params !== null, not status alone -- status alone is true for a structural refusal too",
   );
-  // And the two call sites both go through it -- neither the informational
-  // branch's guard nor FixFindingRow's own `actionable` reinvents the check.
+  // And FixFindingRow's own `actionable` goes through it -- never a second
+  // copy of the params !== null logic. (unit #30: no first-for-code guard in
+  // front of it anymore -- every finding is its own (code, subject) target.)
   pin.match(
     page,
-    /const actionable = isFirstForCode && fixDispositionIsActionable\(disposition\);/,
+    /const actionable = fixDispositionIsActionable\(disposition\);/,
     "expected FixFindingRow's own actionable flag to be derived from the shared test, not a second copy of the params !== null logic",
   );
 });
@@ -5118,7 +5119,7 @@ contractTest("B5-2 stage 4: the fixes fetch is cached once per (job, verdict), a
   // fetch either in the binding itself or at its one call site.
   pin.match(
     api,
-    /export async function applyGenesisFix\(\s*\n\s*jobId: string,\s*\n\s*body: \{ finding_code: string; verb: string; params: Record<string, unknown>; approval_rationale\?: string \},\s*\n\s*\): Promise<GenesisJob> \{\s*\n\s*const r = await apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/fixes\/apply`/,
+    /export async function applyGenesisFix\(\s*\n\s*jobId: string,\s*\n\s*body: \{ finding_code: string; subject: string; verb: string; params: Record<string, unknown>; approval_rationale\?: string \},\s*\n\s*\): Promise<GenesisJob> \{\s*\n\s*const r = await apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/fixes\/apply`/,
     "expected applyGenesisFix to go through apiMutationFetch, the same workspace-header-carrying helper every other genesis mutation uses",
   );
   const findingRow = sliceBetween(page, "function FixFindingRow({", "\n/**\n * V1–V9 AS A GRID");
@@ -5144,8 +5145,8 @@ contractTest("B5-2 stage 4: a fix job's drawer header states its own lineage", (
   // `requested_region` already established on this type, pinned the same way.
   pin.match(
     api,
-    /export interface GenesisFixLineage \{\s*\n\s*job_id: string;\s*\n\s*finding_code: string;\s*\n\s*verb: string;\s*\n\s*params: Record<string, unknown>;\s*\n\s*approved_by: string \| null;\s*\n\s*approval_rationale: string \| null;\s*\n\s*approved_at: string;\s*\n\s*parent_sha256: string;\s*\n\s*\}/,
-    "expected the GenesisFixLineage type to mirror derived_from's exact backend shape",
+    /export interface GenesisFixLineage \{\s*\n\s*job_id: string;\s*\n\s*finding_code: string;\s*\n\s*subject\?: string;\s*\n\s*verb: string;\s*\n\s*params: Record<string, unknown>;\s*\n\s*approved_by: string \| null;\s*\n\s*approval_rationale: string \| null;\s*\n\s*approved_at: string;\s*\n\s*parent_sha256: string;\s*\n\s*\}/,
+    "expected the GenesisFixLineage type to mirror derived_from's exact backend shape -- subject optional, since records written before unit #30 lack the key",
   );
   pin.match(
     api,
@@ -5177,29 +5178,42 @@ contractTest("B5-2 stage 4: a fix job's drawer header states its own lineage", (
   );
 });
 
-contractTest("B5-2 stage 4: the same-code apply guard is computed job-wide, not per check", (pin) => {
+contractTest("Unit #30: a fix addresses its finding by (code, subject) -- duplicates are individually applicable", (pin) => {
   const page = read("app/genesis/jobs/[id]/page.tsx");
+  const api = read("lib/api.ts");
 
-  // `POST .../fixes/apply` addresses a finding by CODE ALONE and
-  // `_finding_in_stored_gate` (backend/services/genesis_jobs.py) resolves the
-  // FIRST match in the PARENT's WHOLE stored verdict -- so the guard here
-  // must walk `fixes.findings` (every check's findings, job-wide) rather than
-  // only the currently-selected check's own slice, or a second V6 finding
-  // under a DIFFERENT check id could still collide.
+  // The POST body carries the finding's own subject, REQUIRED in the binding
+  // (optional only on the wire, for legacy callers) -- this client is
+  // structurally unable to send the ambiguous, code-only approval the backend
+  // now refuses by name (genesis_fix_finding_ambiguous_without_subject).
+  pin.match(
+    api,
+    /body: \{ finding_code: string; subject: string; verb: string;/,
+    "expected applyGenesisFix's body type to require the finding's subject beside its code",
+  );
   pin.match(
     page,
-    /const firstOccurrenceOfCode = useMemo\(\(\) => \{\s*\n\s*const seen = new Set<string>\(\);\s*\n\s*const map = new Map<string, boolean>\(\);\s*\n\s*for \(const finding of fixes\?\.findings \?\? \[\]\) \{/,
-    "expected the first-occurrence map to walk the WHOLE fixes payload, not a per-check filtered slice",
+    /finding_code: finding\.code,[\s\S]{0,400}?subject: finding\.subject,/,
+    "expected the apply click to send the finding's own subject beside its code",
   );
+
+  // The listing type carries the subject the client sends back -- one field,
+  // read off GET .../fixes, never derived client-side.
+  pin.match(
+    api,
+    /export interface GenesisFixFinding \{[\s\S]{0,600}?\n\s*subject: string;/,
+    "expected GenesisFixFinding to carry the subject the apply call sends back",
+  );
+
+  // The old first-for-code guard is GONE: with (code, subject) as the
+  // address, the SECOND of two same-coded findings is its own apply target --
+  // the backend no longer resolves duplicates to the first match, so the UI
+  // must not either. (Its pinned rationale used to cite exactly that
+  // first-match behavior; B5-2's recorded limit, closed by this unit.)
   pin.doesNotMatch(
     page,
-    /for \(const finding of fixes\?\.findings\.filter\(/,
-    "expected the guard to walk the unfiltered findings list -- filtering to one check_id first would let two same-coded findings under DIFFERENT checks both read as first",
-  );
-  pin.match(
-    page,
-    /isFirstForCode=\{\s*\n\s*firstOccurrenceOfCode\.get\(`\$\{finding\.code\}::\$\{finding\.subject\}`\) \?\? true\s*\n\s*\}/,
-    "expected each rendered finding row to be told whether it is its code's first occurrence",
+    /firstOccurrenceOfCode|isFirstForCode/,
+    "expected the first-occurrence guard machinery to be gone -- subject addressing makes every duplicate-coded finding individually applicable",
   );
 });
 
@@ -5212,6 +5226,7 @@ contractTest("B5-2 stage 4: the genesis_fix_* refusal codes join the shared head
     "genesis_fix_parent_not_refused",
     "genesis_fix_finding_not_in_parent_verdict",
     "genesis_fix_params_target_mismatch",
+    "genesis_fix_finding_ambiguous_without_subject",
     "genesis_fix_measurement_gate_not_satisfied",
     "genesis_fix_verb_no_longer_registered",
     "genesis_fix_no_gate_verdict",

@@ -1923,23 +1923,51 @@ def iter_stored_gate_findings(
                 )
 
 
-def _finding_in_stored_gate(raw_gate: dict[str, Any], finding_code: str) -> dict[str, Any] | None:
-    """The FIRST finding (or warning) in a raw, stored ``gate.json`` whose
-    ``code`` matches ``finding_code`` -- or ``None`` when the parent's own
-    verdict never made this diagnosis at all.
+def _finding_in_stored_gate(
+    raw_gate: dict[str, Any], finding_code: str, subject: str | None = None
+) -> dict[str, Any] | None:
+    """The finding (or warning) in a raw, stored ``gate.json`` that
+    ``(finding_code, subject)`` addresses -- or ``None`` when the parent's
+    own verdict never made this diagnosis at all.
 
-    "First" mirrors ``gate.py``'s own deterministic ordering
-    (``CheckResult.build`` sorts findings by ``(code, subject)``): when TWO
-    objects share one finding code (e.g. two independent zero-volume vehicle
-    inputs), this resolves to the numerically-first one, and
-    :func:`create_genesis_fix_job`'s subject/params addressing cross-check
-    (exploit #2's fix) is exactly what stops an approver's params from
-    silently answering for a DIFFERENT one of the two.
+    ``subject`` given: the exact ``(code, subject)`` match -- the same pair
+    ``gate.py``'s own deterministic ordering already treats as a finding's
+    identity (``CheckResult.build`` sorts findings by ``(code, subject)``),
+    so EVERY finding in a verdict is individually addressable, including the
+    second of two objects sharing one finding code (e.g. two independent
+    zero-volume vehicle inputs -- B5-2's own recorded limit, closed by unit
+    #30).
+
+    ``subject`` omitted (a pre-unit-#30 caller): the match by code alone,
+    but ONLY when the code appears exactly once in the verdict. When it
+    appears MORE than once, raises :class:`GenesisRefused`
+    ``genesis_fix_finding_ambiguous_without_subject`` naming every candidate
+    subject rather than silently resolving to the first match -- a fix aimed
+    at the second object landing on the first's identity is exactly the
+    quiet wrongness this codebase exists to refuse.
     """
-    for _check_id, _origin, finding in iter_stored_gate_findings(raw_gate):
-        if finding["code"] == finding_code:
-            return finding
-    return None
+    matches = [
+        finding
+        for _check_id, _origin, finding in iter_stored_gate_findings(raw_gate)
+        if finding["code"] == finding_code
+    ]
+    if subject is not None:
+        for finding in matches:
+            if finding["subject"] == subject:
+                return finding
+        return None
+    if len(matches) > 1:
+        candidates = ", ".join(repr(finding["subject"]) for finding in matches)
+        raise GenesisRefused(
+            "genesis_fix_finding_ambiguous_without_subject",
+            [
+                f"Finding code {finding_code!r} appears {len(matches)} times in this verdict, "
+                f"once per subject: {candidates}. Name the subject this fix addresses -- "
+                "silently resolving to the first match would let a fix aimed at one object "
+                "land on another's identity."
+            ],
+        )
+    return matches[0] if matches else None
 
 
 def job_draft_or_none(job_id: str) -> "DraftNetwork | None":
@@ -2102,6 +2130,7 @@ def create_genesis_fix_job(
     parent_job_id: str,
     *,
     finding_code: str,
+    subject: str | None = None,
     verb: str,
     params: dict[str, Any],
     approved_by: str | None,
@@ -2128,11 +2157,18 @@ def create_genesis_fix_job(
        renamed or re-tiered in ``tools_edit.py`` in the meantime must refuse
        cleanly rather than crash the runner on a verb that no longer exists.
        Refused with the named code ``genesis_fix_verb_no_longer_registered``;
-    4. **``finding_code`` actually appears in the PARENT's own stored
-       verdict** (:func:`_finding_in_stored_gate`) — a caller must not be
-       able to mint a fix job for a diagnosis the parent's gate never made
-       (e.g. a V6 finding_code against a V3-only parent). Refused with the
-       named code ``genesis_fix_finding_not_in_parent_verdict``;
+    4. **``finding_code`` -- plus ``subject``, when given -- actually
+       resolves to ONE finding in the PARENT's own stored verdict**
+       (:func:`_finding_in_stored_gate`) — a caller must not be able to mint
+       a fix job for a diagnosis the parent's gate never made (e.g. a V6
+       finding_code against a V3-only parent). Refused with the named code
+       ``genesis_fix_finding_not_in_parent_verdict``, naming the subject
+       looked for when one was given. And when ``subject`` is OMITTED while
+       the code appears on more than one subject in that verdict, the lookup
+       itself refuses with the named code
+       ``genesis_fix_finding_ambiguous_without_subject`` listing every
+       candidate subject (unit #30) — silently resolving duplicates to the
+       first match was B5-2's own recorded limit, not a behavior to keep;
     5. **the submitted ``params`` ADDRESS the exact element that finding is
        about** — checked against the finding's OWN subject/context via
        ``services.agent.genesis_fixes.VERB_ADDRESSING_FIELD`` /
@@ -2180,21 +2216,26 @@ def create_genesis_fix_job(
     parent job's id or its own (possibly stale) recorded hash.
 
     ``derived_from`` is the whole point of a sibling job: ``{job_id,
-    finding_code, verb, params, approved_by, approval_rationale, approved_at,
-    parent_sha256}``, present ONLY on a fix job's record — an ordinary
-    generation's record carries no such key at all (key-ABSENT, not
+    finding_code, subject, verb, params, approved_by, approval_rationale,
+    approved_at, parent_sha256}``, present ONLY on a fix job's record — an
+    ordinary generation's record carries no such key at all (key-ABSENT, not
     ``null``), the same "presence is itself the fact" discipline
     ``requested_region`` already established in this module, and the one
     ``tests/test_genesis_fix_jobs.py`` pins across the listing route's own
-    JSON round trip.
+    JSON round trip. ``subject`` (unit #30) is always the RESOLVED finding's
+    own subject — even when the caller omitted it on a single-match code —
+    so the lineage names exactly which object the fix answered; records
+    written before this field existed simply lack the key and keep reading
+    fine.
 
     Raises:
         GenesisJobNotFoundError: no such parent job in this workspace.
         GenesisRefused: the parent is not refused, the approved verb/params
             have gone stale, the finding does not appear in the parent's own
-            verdict, the params address a different object than the finding
-            names, or the registry's real-evidence re-derivation does not
-            reach a matching proposal. None of these create a job directory.
+            verdict, the finding_code is ambiguous without a subject, the
+            params address a different object than the finding names, or the
+            registry's real-evidence re-derivation does not reach a matching
+            proposal. None of these create a job directory.
     """
     workspace_id = workspaces.current_workspace_id()
     parent = get_job(parent_job_id)
@@ -2244,12 +2285,17 @@ def create_genesis_fix_job(
     raw_parent_gate = json.loads(
         (job_dir(parent_job_id) / GATE_JSON_FILENAME).read_text(encoding="utf-8")
     )
-    finding = _finding_in_stored_gate(raw_parent_gate, finding_code)
+    finding = _finding_in_stored_gate(raw_parent_gate, finding_code, subject=subject)
     if finding is None:
+        looked_for = (
+            f"Finding code {finding_code!r} with subject {subject!r}"
+            if subject is not None
+            else f"Finding code {finding_code!r}"
+        )
         raise GenesisRefused(
             "genesis_fix_finding_not_in_parent_verdict",
             [
-                f"Finding code {finding_code!r} does not appear anywhere in job "
+                f"{looked_for} does not appear anywhere in job "
                 f"{parent_job_id}'s stored gate verdict -- there is no diagnosis for this fix "
                 "to answer."
             ],
@@ -2350,6 +2396,10 @@ def create_genesis_fix_job(
         "derived_from": {
             "job_id": parent_job_id,
             "finding_code": finding_code,
+            # The RESOLVED finding's own subject, not the caller's raw input:
+            # a code-only single-match create still records exactly which
+            # object it landed on (unit #30 -- lineage precision).
+            "subject": finding["subject"],
             "verb": verb,
             "params": dict(params),
             "approved_by": approved_by,

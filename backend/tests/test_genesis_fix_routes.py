@@ -348,17 +348,47 @@ def test_apply_fix_with_params_on_a_different_input_than_the_finding_is_409(
     client: TestClient, workspace_root: Path
 ):
     """Exploit #2, route level: the same finding-on-input-1/params-on-input-2
-    mismatch §7 proves at the service layer, driven through the HTTP door."""
+    mismatch §7 proves at the service layer, driven through the HTTP door.
+    ``subject`` names input 1's finding explicitly (unit #30): this doubles as
+    proof the route THREADS the body's subject through to the service layer --
+    a route that dropped it would answer with the ambiguity code instead."""
     parent = _seed_two_input_refused_parent()
     before = _job_dirs(workspace_root)
 
     response = client.post(
         f"/api/genesis/jobs/{parent['id']}/fixes/apply",
-        json=_apply_body(params={"input_no": "2", "volume": 500.0, "interval_no": 1}),
+        json=_apply_body(subject="1", params={"input_no": "2", "volume": 500.0, "interval_no": 1}),
         headers=admin_headers(),
     )
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "genesis_fix_params_target_mismatch"
+
+    after = _job_dirs(workspace_root)
+    assert after == before
+
+
+def test_apply_fix_without_subject_on_a_duplicated_code_is_409_ambiguous(
+    client: TestClient, workspace_root: Path
+):
+    """Unit #30, route level: a subject-less POST against a code that appears
+    twice in the parent's verdict is refused with the NEW named code, the
+    candidate subjects riding in ``reasons`` verbatim, and no sibling job
+    directory -- a legacy caller (the body simply lacks the optional field)
+    gets a refusal that tells it exactly what to send, never a silent
+    first-match."""
+    parent = _seed_two_input_refused_parent()
+    before = _job_dirs(workspace_root)
+
+    response = client.post(
+        f"/api/genesis/jobs/{parent['id']}/fixes/apply",
+        json=_apply_body(),  # no `subject` key at all
+        headers=admin_headers(),
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "genesis_fix_finding_ambiguous_without_subject"
+    assert "'1'" in detail["reasons"][0]
+    assert "'2'" in detail["reasons"][0]
 
     after = _job_dirs(workspace_root)
     assert after == before

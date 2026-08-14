@@ -2906,10 +2906,14 @@ export interface GenesisRequestedRegion {
  * own docstring) -- key-ABSENT on an ordinary generation, never `null`, the same
  * "presence is itself the fact" discipline `requested_region` already established on this
  * type. `job_id` here is the PARENT this fix job was cloned from -- not to be confused with
- * `GenesisJob.id`, which is the fix job's own id. */
+ * `GenesisJob.id`, which is the fix job's own id. `subject` (unit #30) is the RESOLVED
+ * finding's own subject (e.g. the vehicle input number) -- which of two same-coded findings
+ * this fix answered -- and is key-ABSENT on records written before the field existed, so it
+ * is optional here, never null. */
 export interface GenesisFixLineage {
   job_id: string;
   finding_code: string;
+  subject?: string;
   verb: string;
   params: Record<string, unknown>;
   approved_by: string | null;
@@ -3238,10 +3242,14 @@ export async function fetchGenesisJobFixes(jobId: string): Promise<GenesisJobFix
  * body's shape mirrors `ApplyGenesisFixRequest` in `routers/genesis.py`
  * exactly -- `approved_by` has no field here for the same reason it has none
  * there: the route stamps the signed-in session's own username, so the
- * client is structurally unable to name a different approver. */
+ * client is structurally unable to name a different approver. `subject` is
+ * optional ON THE WIRE (a legacy caller may omit it; the backend then refuses
+ * a duplicated code by name rather than resolving it silently -- unit #30)
+ * but REQUIRED here: this client always knows the finding's own subject, so
+ * it is structurally unable to send an ambiguous approval. */
 export async function applyGenesisFix(
   jobId: string,
-  body: { finding_code: string; verb: string; params: Record<string, unknown>; approval_rationale?: string },
+  body: { finding_code: string; subject: string; verb: string; params: Record<string, unknown>; approval_rationale?: string },
 ): Promise<GenesisJob> {
   const r = await apiMutationFetch(`/api/genesis/jobs/${jobId}/fixes/apply`, {
     method: "POST",

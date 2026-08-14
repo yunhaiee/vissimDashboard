@@ -536,6 +536,12 @@ export function refusalHeadline(code: string | null, t: Translate, fallback?: st
         "The submitted values address a different object than this finding names",
         "送信された値はこの発見が指し示す対象と異なります",
       );
+    case "genesis_fix_finding_ambiguous_without_subject":
+      return t(
+        "같은 코드의 발견이 여러 건입니다 — 어느 대상(subject)인지 지정해야 합니다",
+        "This finding code appears more than once -- name which subject the fix addresses",
+        "同じ発見コードが複数あります — どの対象(subject)かを指定してください",
+      );
     case "genesis_fix_measurement_gate_not_satisfied":
       return t(
         "실제 근거를 다시 확인한 결과, 이 승인은 더 이상 유효하지 않습니다",
