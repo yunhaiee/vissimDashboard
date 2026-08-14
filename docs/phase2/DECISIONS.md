@@ -6395,3 +6395,35 @@ retired by name with the surfaces they described, ~33 added (binding, guards, ho
 reason, migration both-directions, PageHelp no-fetch/Escape/backdrop), high-risk ones
 mutation-verified. Contract **79/79**, typecheck and build clean, re-verified
 independently; every purged string's absence and the drawer's presence confirmed live.
+
+## 2026-08-14 — #21: replay moves to where the run lives
+
+**What (user decision, option A).** 차량 궤적 재생 sat on the network view — a ① 네트워크
+stage page — while replay is something you do to a SIMULATION RUN. The #18 stepper made
+that mismatch legible and the user called it. Transplanted, not rewritten: the playback
+engine, projection store and canvas overlay moved into the dashboard (③), overlaying the
+NetworkViewer the dashboard already mounts, and `/network` went back to being a pure
+viewer. The panel is RUN-ANCHORED: it reads the SAME `primaryScenario` the diagram
+already colors against (no second which-run state to drift), decodes the backend's own
+deterministic `SIM_<job.id>` scenario id, and shows exactly one of three states — anchored
+(controls), refusal ("이 실행에는 저장된 궤적이 없습니다", a sentence with NO button, the
+B5-2 rule), or 데모 fallback offered ONLY when the project has zero replayable runs and
+named as demo. Pressing 재생 준비 on the 지도 view switches to 도식 first (the canvas has
+no Leaflet projection) so the click always lands somewhere visible; leaving 도식 keeps the
+clock, returning resumes. A `replayAnchorKey` effect resets the engine whenever the
+anchor changes — scenario switch, dataset change, list change — so stale frames can never
+play under a new run's name.
+
+**Verification.** The session had REAL trajectory-recorded runs (Murdoch, `691b025f`), so
+this unit got a genuine click-through: 재생 준비 fired exactly one GET
+`/api/trajectories` and zero simulation POSTs (read-only proven by network trace), the
+view auto-switched, play/pause toggled, the canvas unmounted on 지도 and remounted on
+도식, and switching the scenario selection away dropped loaded frames to idle — the
+anti-desync guard observed live, not argued. Contract 79→**83** (4 new pins, all
+mutation-verified: run-anchored wiring, demo-only-when-empty via branch slicing,
+/network's playback absence, projection-sync in its new home; ZERO retirements — the old
+panel had never been pinned). Typecheck and build clean, re-verified independently.
+Residuals: the demo-fallback state was proven by pin+code, not click-through (this
+project HAS runs — fabricating an empty project to see it was not worth the state risk);
+background-tab playback freezing is the browser's rAF throttling, pre-existing engine
+behavior, correct, and left alone.

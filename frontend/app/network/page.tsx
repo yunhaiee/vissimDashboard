@@ -6,15 +6,11 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 
 import { useLanguage } from "@/components/LanguageProvider";
 import NetworkSearchBox, { type NetworkSearchSelection } from "@/components/NetworkSearchBox";
-import TrajectoryLayer, { createProjectionStore, PLAYBACK_SPEEDS, useTrajectoryPlayback } from "@/components/TrajectoryLayer";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import {
-  fetchActiveDataset,
   fetchNetwork,
-  fetchSimulationJobs,
   type ActiveDataset,
   type NetworkData,
-  type SimulationJob,
 } from "@/lib/api";
 import { elementTypeLabel, linkKindLabel, type NetworkElementRef, type NetworkLinkRef } from "@/lib/networkElements";
 import {
@@ -45,29 +41,6 @@ import { buildVehicleInputStacks, vehicleInputCompositionLabel } from "@/lib/veh
 const NetworkViewer = dynamic(() => import("@/components/NetworkViewer"), { ssr: false });
 
 const MAX_SELECTED_NODES = 6;
-
-// Transport glyphs with U+FE0E (text presentation selector) so platforms that
-// would otherwise substitute a colour emoji keep them as plain glyphs.
-const PLAY_GLYPH = "▶︎";
-const PAUSE_GLYPH = "⏸︎";
-
-// m:ss for the scrubber readout. Sim clocks can start at a non-zero t0, so the
-// caller passes an already-relative offset; absolute sim seconds are shown
-// separately next to it.
-function formatClock(seconds: number): string {
-  const total = Number.isFinite(seconds) ? Math.max(0, Math.round(seconds)) : 0;
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-}
-
-// Label for one entry in the playback-source picker -- job name (falls back
-// to its id) plus a short local-time stamp so multiple runs are distinguishable.
-function formatJobLabel(job: SimulationJob): string {
-  const name = job.name || job.id;
-  if (!job.completed_at) return name;
-  const date = new Date(job.completed_at);
-  if (Number.isNaN(date.getTime())) return name;
-  return `${name} (${date.toLocaleString()})`;
-}
 
 // `useSearchParams` makes the client tree up to the nearest Suspense boundary
 // client-rendered (Next 16 docs, app/api-reference/functions/use-search-params
@@ -144,24 +117,6 @@ function NetworkPageContent() {
   // that session's in-progress edited working copy on demand -- see
   // docs/phase2/DECISIONS.md's P2 entry.
   const [agentSessionId, setAgentSessionId] = useState<string | null>(null);
-
-  // P3/P4: vehicle-trajectory playback. `projection` is the only channel
-  // between NetworkViewer's live zoom transform and the canvas overlay — it is
-  // deliberately not React state, because zoom emits once per animation frame
-  // and re-rendering this page that often would be wasteful. The playback hook
-  // owns the clock and fetches lazily (nothing is requested until the user
-  // presses 재생 준비).
-  const projection = useMemo(() => createProjectionStore(), []);
-  const playback = useTrajectoryPlayback();
-  const playbackEngine = playback.engine;
-
-  // Real-run replay: completed agent-run jobs that recorded a vehicle
-  // trajectory (routers/simulations.py's _run_agent_simulation_job,
-  // trajectory_recorded=true) and were run against the currently active
-  // dataset -- selecting one replays that run's own recorded .fzp instead of
-  // the default file-next-to-dataset/demo source. `null` = default source.
-  const [replayableJobs, setReplayableJobs] = useState<SimulationJob[]>([]);
-  const [trajectorySourceJobId, setTrajectorySourceJobId] = useState<string | null>(null);
 
   // --- Approval-card focus handoff (2026-07-28) --------------------------
   // The approval card's 네트워크에서 보기 button navigates here with the
@@ -296,58 +251,6 @@ function NetworkPageContent() {
     : activeFocus
       ? { ...activeFocus.bbox, nonce: activeFocus.nonce }
       : null;
-
-  useEffect(() => {
-    let cancelled = false;
-    // Fetches the active dataset independently rather than reading the
-    // `activeDataset` state above: that state is only ever populated by
-    // VissimDatasetBanner's `onDatasetChange` callback, which -- verified
-    // in VissimDatasetBanner.tsx -- fires ONLY on an explicit upload/reset
-    // action, never for the banner's own initial mount fetch. On a normal
-    // page load (no upload this session) `activeDataset` would silently
-    // stay null forever, disabling the revision filter below and showing
-    // every recorded run regardless of which network it actually belongs
-    // to -- the exact "wrong data displayed" risk this filter exists to
-    // prevent.
-    Promise.all([fetchSimulationJobs(), fetchActiveDataset().catch(() => null)])
-      .then(([jobs, dataset]) => {
-        if (cancelled) return;
-        setReplayableJobs(
-          jobs.filter(
-            (job) =>
-              job.status === "done" &&
-              job.trajectory_recorded === true &&
-              (!dataset || job.dataset_revision === dataset.revision),
-          ),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) setReplayableJobs([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [datasetRevision, reloadNonce]);
-
-  // Trajectories belong to the active dataset, so swapping datasets drops the
-  // loaded frames back to the load affordance rather than animating vehicles
-  // over a network they were never resolved against.
-  useEffect(() => {
-    playbackEngine.reset();
-    setTrajectorySourceJobId(null);
-  }, [playbackEngine, datasetRevision]);
-
-  const handleTrajectorySourceChange = useCallback(
-    (jobId: string | null) => {
-      setTrajectorySourceJobId(jobId);
-      playbackEngine.reset();
-      // Selecting a source loads it immediately (rather than requiring a
-      // separate "load" click) -- the picker only appears once at least one
-      // real run is available, so this only ever fires on a deliberate choice.
-      playbackEngine.load(jobId ?? undefined);
-    },
-    [playbackEngine],
-  );
 
   // Load the raw-coordinate network on mount, and again whenever the active
   // dataset changes or a retry is requested.
@@ -685,157 +588,28 @@ function NetworkPageContent() {
             <p className="text-sm text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
           </div>
         ) : (
-          <>
-            {/* zoomToBbox carries the focus nonce as well as the four numbers:
-                NetworkViewer keys its fit-to-region effect off a scalar built
-                from them, and on a re-trigger the numbers are by definition
-                unchanged — the nonce is the only thing that says "fly there
-                again". `focusFlash`/`zoomToBbox` are the COMBINED values
-                (search selection takes precedence over the URL-sourced
-                approval focus) computed above. */}
-            <NetworkViewer
-              network={network}
-              selectedNodeIds={selectedNodeIds}
-              selectedLinkIds={selectedLinks.map((link) => link.id)}
-              selectedElements={selectedElements}
-              onNodeClick={handleNodeClick}
-              onLinkClick={handleLinkClick}
-              onElementClick={handleElementClick}
-              onBoxSelect={handleBoxSelect}
-              onBackgroundClick={clearAllSelection}
-              onProjectionChange={projection.set}
-              focusFlash={focusFlash}
-              zoomToBbox={zoomToBbox}
-            />
-            {/* Canvas overlay: same box as the viewer's SVG, pointer-events
-                none so zoom/pan/click all still land on the SVG beneath it. */}
-            {playback.frames && (
-              <TrajectoryLayer engine={playbackEngine} frames={playback.frames} projection={projection} network={network} />
-            )}
-          </>
+          // zoomToBbox carries the focus nonce as well as the four numbers:
+          // NetworkViewer keys its fit-to-region effect off a scalar built
+          // from them, and on a re-trigger the numbers are by definition
+          // unchanged — the nonce is the only thing that says "fly there
+          // again". `focusFlash`/`zoomToBbox` are the COMBINED values
+          // (search selection takes precedence over the URL-sourced
+          // approval focus) computed above.
+          <NetworkViewer
+            network={network}
+            selectedNodeIds={selectedNodeIds}
+            selectedLinkIds={selectedLinks.map((link) => link.id)}
+            selectedElements={selectedElements}
+            onNodeClick={handleNodeClick}
+            onLinkClick={handleLinkClick}
+            onElementClick={handleElementClick}
+            onBoxSelect={handleBoxSelect}
+            onBackgroundClick={clearAllSelection}
+            focusFlash={focusFlash}
+            zoomToBbox={zoomToBbox}
+          />
         )}
       </div>
-
-      {/* Playback controls only exist once there is a network to draw over. */}
-      {!error && !loading && network && (
-        <section className="px-1">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-            {t("차량 궤적 재생", "Vehicle playback")}
-          </p>
-
-          {/* Playback-source picker: the default demo/file source plus any
-              completed agent-run job that recorded a real trajectory for the
-              currently active dataset. Only shown once a real run exists --
-              nothing changes for the common case of no recorded runs yet. */}
-          {replayableJobs.length > 0 && (
-            <label className="mt-2 flex items-center gap-2 text-xs text-slate-600">
-              {t("재생 소스", "Playback source", "再生ソース")}
-              <select
-                value={trajectorySourceJobId ?? ""}
-                onChange={(event) => handleTrajectorySourceChange(event.target.value || null)}
-                className="h-8 rounded-lg border border-slate-200 bg-surface px-2 text-xs text-slate-700"
-              >
-                <option value="">{t("데모 데이터", "Demo data", "デモデータ")}</option>
-                {replayableJobs.map((job) => (
-                  <option key={job.id} value={job.id}>
-                    {formatJobLabel(job)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-
-          {playback.status === "idle" ? (
-            <button
-              type="button"
-              onClick={() => playbackEngine.load(trajectorySourceJobId ?? undefined)}
-              className="mt-2 flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
-            >
-              {t("재생 준비", "Load playback")}
-            </button>
-          ) : playback.status === "loading" ? (
-            <p className="mt-2 text-xs text-slate-500">{t("궤적 데이터를 불러오는 중…", "Loading trajectory data…")}</p>
-          ) : playback.status === "error" ? (
-            <div className="mt-2 flex flex-wrap items-center gap-3">
-              <p className="text-xs text-slate-500">
-                {t(
-                  "궤적 데이터를 불러오지 못했습니다. 이 데이터셋에 .fzp 파일이 없을 수 있습니다.",
-                  "Couldn't load trajectory data. This dataset may have no .fzp file.",
-                )}
-              </p>
-              <button
-                type="button"
-                onClick={() => playbackEngine.load(trajectorySourceJobId ?? undefined)}
-                className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
-              >
-                {t("다시 시도", "Retry")}
-              </button>
-            </div>
-          ) : (
-            <div className="mt-3 flex flex-col gap-2.5">
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={playbackEngine.togglePlay}
-                  aria-pressed={playback.playing}
-                  className="flex h-9 min-w-[6.5rem] shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
-                >
-                  <span aria-hidden="true">{playback.playing ? PAUSE_GLYPH : PLAY_GLYPH}</span>
-                  {playback.playing ? t("일시정지", "Pause") : t("재생", "Play")}
-                </button>
-                <span className="text-xs tabular-nums text-slate-700">
-                  {formatClock(playback.time - playback.t0)} / {formatClock(playback.t1 - playback.t0)}
-                </span>
-                <span className="text-[11px] tabular-nums text-slate-500">
-                  {t("시뮬레이션", "sim")} {playback.time.toFixed(1)}
-                  {t("초", "s")}
-                </span>
-                <div
-                  role="group"
-                  aria-label={t("재생 속도", "Playback speed")}
-                  className="ml-auto flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-xs font-medium"
-                >
-                  {PLAYBACK_SPEEDS.map((option) => {
-                    const active = playback.speed === option;
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        aria-pressed={active}
-                        onClick={() => playbackEngine.setSpeed(option)}
-                        className={`flex h-full items-center rounded-md px-3 transition-colors ${
-                          active ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"
-                        }`}
-                      >
-                        ×{option}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <input
-                type="range"
-                aria-label={t("재생 위치", "Playback position")}
-                min={playback.t0}
-                max={playback.t1}
-                step={0.1}
-                value={playback.time}
-                onChange={(event) => playbackEngine.seek(Number(event.target.value))}
-                className="w-full accent-[#4c8dff]"
-              />
-
-              <p className="text-[11px] text-slate-500">
-                {t(
-                  `차량 ${playback.vehicleCount}대`,
-                  `${playback.vehicleCount} vehicle${playback.vehicleCount === 1 ? "" : "s"}`,
-                  `車両 ${playback.vehicleCount}台`,
-                )}
-              </p>
-            </div>
-          )}
-        </section>
-      )}
 
       {/* Selection chips (v2 UX unit, 2026-07-29) — the unified node/link/
           element selection, each removable on its own, plus one "clear all".

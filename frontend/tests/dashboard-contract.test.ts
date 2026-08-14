@@ -4512,3 +4512,116 @@ contractTest("B5-2 stage 4: the genesis_fix_* refusal codes join the shared head
     "expected the apply-error box to carry the backend's reasons array through unmodified",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Unit #21 (2026-08-14, option A) -- vehicle-trajectory replay moves off the
+// network view and into the dashboard as part of RUN RESULTS: replay is
+// something you do to a simulation run, not to a network. `app/dashboard/
+// page.tsx` and `app/network/page.tsx` both use CRLF line endings (same
+// landmine the U-19 round 2 block above already documents for NetworkViewer.tsx
+// / TrajectoryLayer.tsx) -- every pattern below either stays single-line (CRLF
+// is irrelevant to a substring/regex match with no embedded `\n`) or reads
+// through a CRLF-normalized copy for `sliceBetween`, which does a literal
+// `indexOf` and would silently mismatch a lone `\n` marker against a real
+// `\r\n` in the file.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #21: dashboard replay is anchored to the selected run, not a free picker", (pin) => {
+  const dashboardPage = read("app/dashboard/page.tsx").replace(/\r\n/g, "\n");
+
+  // The anchor is exactly activeScenarios[0] -- the SAME "primary" scenario
+  // NetworkDiagramView already colors the diagram against -- not an
+  // independent piece of state that could silently disagree with it.
+  pin.match(
+    dashboardPage,
+    /const primaryScenario = activeScenarios\[0\] \?\? null;/,
+    "expected the replay anchor to be the scenario comparison's own primary selection",
+  );
+  pin.match(
+    dashboardPage,
+    /const jobId = primaryScenario \? runtimeScenarioJobId\(primaryScenario\.id\) : null;/,
+    "expected the anchored run to be DECODED from the primary scenario's own id, not picked separately",
+  );
+  pin.match(
+    dashboardPage,
+    /playbackEngine\.load\(replayJob \? replayJob\.id : undefined\);/,
+    "expected the load call to play the anchored job's own trajectory (or the demo fallback), never an independently-chosen source",
+  );
+  // The old free-floating <select> and its backing state must be gone --
+  // there is no longer a "재생 소스" picker independent of the run selection.
+  pin.doesNotMatch(
+    dashboardPage,
+    /trajectorySourceJobId/,
+    "expected the standalone playback-source-picker state to be gone -- replay reads the scenario selection instead",
+  );
+
+  // Switching the run mid-playback (a different scenario becomes primary, or
+  // the dataset changes) must drop any loaded frames back to idle rather than
+  // leaving the OLD run's frames animating under the NEW run's label.
+  pin.match(
+    dashboardPage,
+    /const replayAnchorKey = replayJob \? `job:\$\{replayJob\.id\}` : replayableJobs\.length === 0 \? "demo" : "none";/,
+    "expected a key that changes identity whenever the anchored run does",
+  );
+  pin.match(
+    dashboardPage,
+    /useEffect\(\(\) => \{\s*playbackEngine\.reset\(\);\s*\}, \[playbackEngine, replayAnchorKey\]\);/,
+    "expected loaded playback to reset whenever the anchor key changes, preventing a stale run's frames from surviving a switch",
+  );
+});
+
+contractTest("unit #21: demo replay is offered only when the project has zero replayable runs", (pin) => {
+  const dashboardPage = read("app/dashboard/page.tsx").replace(/\r\n/g, "\n");
+
+  // Isolate VehicleReplaySection's three-way source-line branch so each slice
+  // below can only ever see the state it claims to.
+  const anchoredBranch = sliceBetween(dashboardPage, "{replayJob ? (", ") : hasReplayableRuns ? (");
+  const refusalBranch = sliceBetween(dashboardPage, ") : hasReplayableRuns ? (", ') : (\n        <>');
+  const demoBranch = sliceBetween(dashboardPage, ') : (\n        <>', ')}\n\n      {canLoad');
+  pin.match(anchoredBranch, /\S/, "expected to find the anchored-run branch (markers moved?)");
+  pin.match(refusalBranch, /\S/, "expected to find the no-trajectory refusal branch (markers moved?)");
+  pin.match(demoBranch, /\S/, "expected to find the demo-fallback branch (markers moved?)");
+
+  // "데모" (demo) must never be offered while the project HAS replayable runs
+  // -- whether the anchored run has a trajectory or not -- only once there are
+  // NONE anywhere in the project.
+  pin.doesNotMatch(anchoredBranch, /데모/, "expected no demo label while a real run is anchored");
+  pin.doesNotMatch(refusalBranch, /데모/, "expected no demo label in the no-trajectory refusal -- demo must not silently substitute for the selected run");
+  pin.match(demoBranch, /데모/, "expected demo to be named, in the ONE branch where the whole project has no replayable run");
+
+  // B5-2 stage 4's rule, carried into this unit: a refusal is information, not
+  // a disabled control standing in for one -- no button anywhere in that branch.
+  pin.doesNotMatch(refusalBranch, /<button/, "expected NO button in the no-trajectory refusal branch -- a refusal is information, not a disabled control");
+});
+
+contractTest("unit #21: /network carries no trajectory-playback code anymore", (pin) => {
+  const networkPage = read("app/network/page.tsx").replace(/\r\n/g, "\n");
+
+  pin.doesNotMatch(networkPage, /TrajectoryLayer/, "expected /network to import nothing from TrajectoryLayer.tsx");
+  pin.doesNotMatch(networkPage, /createProjectionStore/, "expected /network's projection store to be gone");
+  pin.doesNotMatch(networkPage, /useTrajectoryPlayback/, "expected /network's playback hook to be gone");
+  pin.doesNotMatch(networkPage, /PLAYBACK_SPEEDS/, "expected /network's speed control to be gone");
+  pin.doesNotMatch(networkPage, /replayableJobs/, "expected /network's replayable-job fetch to be gone");
+  pin.doesNotMatch(networkPage, /차량 궤적 재생/, "expected the '차량 궤적 재생' panel heading to be gone from /network");
+  pin.doesNotMatch(networkPage, /재생 준비/, "expected the '재생 준비' control to be gone from /network");
+  pin.doesNotMatch(networkPage, /fetchSimulationJobs/, "expected /network to no longer fetch simulation jobs at all");
+});
+
+contractTest("unit #21: the projection/zoom-transform sync is preserved in its new home", (pin) => {
+  const dashboardPage = read("app/dashboard/page.tsx").replace(/\r\n/g, "\n");
+
+  // The load-bearing sync call itself: NetworkViewer's live zoom transform ->
+  // the plain external store the canvas overlay reads every frame from.
+  pin.match(
+    dashboardPage,
+    /onProjectionChange=\{projection\.set\}/,
+    "expected the dashboard's diagram view to feed the SAME projection store the replay canvas reads",
+  );
+  // The overlay itself is mounted in the diagram (도식) branch only -- there is
+  // no ViewProjection for the Leaflet map, so replay draws nowhere else.
+  pin.match(
+    dashboardPage,
+    /\{playback\.frames && \(\s*<TrajectoryLayer engine=\{playbackEngine\} frames=\{playback\.frames\} projection=\{projection\} network=\{network\} \/>\s*\)\}/,
+    "expected the vehicle canvas overlay to mount in the diagram view, reading the same engine/frames/projection/network the panel below drives",
+  );
+});

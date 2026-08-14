@@ -8,6 +8,16 @@ import { useLanguage } from "@/components/LanguageProvider";
 import CurationBar from "@/components/dashboard/CurationBar";
 import NetworkSearchBox, { type NetworkSearchSelection } from "@/components/NetworkSearchBox";
 import NodeFlowPanel from "@/components/NodeFlowPanel";
+// Type-only -- the runtime component below still only ever loads through the
+// `dynamic(..., { ssr: false })` import so d3's DOM access never reaches SSR.
+import { type ViewProjection } from "@/components/NetworkViewer";
+import TrajectoryLayer, {
+  createProjectionStore,
+  PLAYBACK_SPEEDS,
+  useTrajectoryPlayback,
+  type Playback,
+  type PlaybackEngine,
+} from "@/components/TrajectoryLayer";
 import VissimDatasetBanner from "@/components/VissimDatasetBanner";
 import {
   clearStoredScenarioSelection,
@@ -21,6 +31,7 @@ import {
   fetchNetwork,
   fetchRealCounts,
   fetchScenarios,
+  fetchSimulationJobs,
   type ActiveDataset,
   type CompareSummaryResponse,
   type DashboardCurationSpec,
@@ -28,6 +39,7 @@ import {
   type NodeRealCounts,
   type ScenarioMeta,
   type ScenarioResults,
+  type SimulationJob,
 } from "@/lib/api";
 // calculateNodeAverageDelay is no longer imported here: per-direction delay is
 // measured now (unit 1.5 D5) instead of being derived from the node average.
@@ -157,6 +169,50 @@ function resolveScenarioColor(colorById: Map<string, string>, scenario: Pick<Sce
   return colorById.get(scenario.id) ?? getScenarioDisplayColor(scenario, -1);
 }
 
+// --- Unit #21 (2026-08-14, option A): vehicle-trajectory replay -----------
+// Moved here from app/network/page.tsx -- replay is something you do to a RUN
+// (this page's scenario-comparison unit), not to a network. Everything below
+// is verbatim from that page's own playback panel except the run is no longer
+// picked from a free-floating dropdown; see `replayJob` at its call site for
+// how it is anchored instead.
+
+// Transport glyphs with U+FE0E (text presentation selector) so platforms that
+// would otherwise substitute a colour emoji keep them as plain glyphs.
+const PLAY_GLYPH = "▶︎";
+const PAUSE_GLYPH = "⏸︎";
+
+// m:ss for the scrubber readout. Sim clocks can start at a non-zero t0, so the
+// caller passes an already-relative offset; absolute sim seconds are shown
+// separately next to it.
+function formatClock(seconds: number): string {
+  const total = Number.isFinite(seconds) ? Math.max(0, Math.round(seconds)) : 0;
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+// Label for the anchored run -- job name (falls back to its id) plus a short
+// local-time stamp.
+function formatJobLabel(job: SimulationJob): string {
+  const name = job.name || job.id;
+  if (!job.completed_at) return name;
+  const date = new Date(job.completed_at);
+  if (Number.isNaN(date.getTime())) return name;
+  return `${name} (${date.toLocaleString()})`;
+}
+
+// A completed agent-run job's scenario id is deterministically `SIM_<job.id>`
+// -- backend/services/simulation_runs.py's create_job_record sets every job
+// record's `scenario_result_id` to exactly `runtime_scenario_id(job_id)` at
+// creation time, and list_completed_runtime_scenarios() (which is what
+// /api/scenarios ultimately serves for a simulation-produced scenario) uses
+// that same field as the scenario's `id`. This is the ONLY place the two id
+// spaces meet on the frontend: /api/scenarios strips job_id off before a
+// runtime scenario ever reaches ScenarioMeta, so decoding the prefix back out
+// is not a guess, it is reading the one field the backend actually sends.
+const RUNTIME_SCENARIO_PREFIX = "SIM_";
+function runtimeScenarioJobId(scenarioId: string): string | null {
+  return scenarioId.startsWith(RUNTIME_SCENARIO_PREFIX) ? scenarioId.slice(RUNTIME_SCENARIO_PREFIX.length) : null;
+}
+
 export default function DashboardPage() {
   const { t, lang } = useLanguage();
   const [scenarios, setScenarios] = useState<ScenarioMeta[]>([]);
@@ -188,6 +244,22 @@ export default function DashboardPage() {
   // refetched whenever the active dataset changes.
   const [mapView, setMapView] = useState<"map" | "diagram">("map");
   const [hasRequestedDiagram, setHasRequestedDiagram] = useState(false);
+  // Unit #21: vehicle-trajectory replay. `projection` is the only channel
+  // between the diagram's live zoom transform and the canvas overlay -- it is
+  // deliberately not React state (see components/TrajectoryLayer.tsx's module
+  // doc for why: zoom emits once per animation frame, and re-rendering this
+  // page that often would be wasteful). The playback hook owns the clock and
+  // fetches lazily (nothing is requested until the user presses 재생 준비).
+  const projection = useMemo(() => createProjectionStore(), []);
+  const playback = useTrajectoryPlayback();
+  const playbackEngine = playback.engine;
+  // Completed agent-run jobs that recorded a vehicle trajectory (routers/
+  // simulations.py's _run_agent_simulation_job, trajectory_recorded=true) for
+  // the currently active dataset -- the pool replay is allowed to draw from.
+  // Which one (if any) actually anchors replay is decided by `replayJob`
+  // below, from the scenario comparison's OWN primary selection -- this list
+  // is never presented as an independent picker (see docs on VehicleReplaySection).
+  const [replayableJobs, setReplayableJobs] = useState<SimulationJob[]>([]);
   // Multi-select (v2 UX unit, 2026-07-29, lib/networkSelection.ts). Plain
   // click REPLACES the whole selection with just the clicked thing (clicking
   // the sole-selected item again clears it); shift+click adds/removes;
@@ -513,6 +585,38 @@ export default function DashboardPage() {
     [scenarios, selected],
   );
 
+  // Unit #21: the run replay is anchored to. NOT its own independent
+  // selection -- it is exactly `activeScenarios[0]`, the SAME "primary"
+  // scenario NetworkDiagramView below already colors the diagram against
+  // (`selectedScenario={activeScenarios[0]?.id}`), so a run switch in the
+  // comparison picker is also a run switch for replay; the two can never
+  // silently disagree because there is only the one selection.
+  const primaryScenario = activeScenarios[0] ?? null;
+  const replayableJobsById = useMemo(() => {
+    const map = new Map<string, SimulationJob>();
+    for (const job of replayableJobs) map.set(job.id, job);
+    return map;
+  }, [replayableJobs]);
+  const replayJob = useMemo(() => {
+    const jobId = primaryScenario ? runtimeScenarioJobId(primaryScenario.id) : null;
+    return jobId ? replayableJobsById.get(jobId) ?? null : null;
+  }, [primaryScenario, replayableJobsById]);
+  // Identifies WHICH run replay is currently pointed at, so the reset effect
+  // right below can tell "still the same run" from "switched" without
+  // re-deriving the whole object. Three distinct values, matching
+  // VehicleReplaySection's three render states.
+  const replayAnchorKey = replayJob ? `job:${replayJob.id}` : replayableJobs.length === 0 ? "demo" : "none";
+  // Adversarial case this guards: switching the scenario comparison picker
+  // (or the dataset) mid-playback must never leave the OLD run's frames
+  // animating under the NEW run's label. `playback.frames` is keyed by
+  // nothing but "whatever was last loaded" -- the only way to stop it
+  // silently surviving a switch is to drop it back to idle every time the
+  // anchor's identity changes, forcing an explicit 재생 준비 click for
+  // whatever is newly selected rather than ever assuming continuity.
+  useEffect(() => {
+    playbackEngine.reset();
+  }, [playbackEngine, replayAnchorKey]);
+
   // id -> display color, keyed off each scenario's position in the FULL
   // `scenarios` list (the same order DashboardScenarioPicker renders) so a
   // scenario's color is stable no matter which subset ends up selected. Every
@@ -739,6 +843,17 @@ export default function DashboardPage() {
     if (view === "diagram") setHasRequestedDiagram(true);
   }, []);
 
+  // Unit #21: replay overlays the 도식 canvas only (TrajectoryLayer draws
+  // through the same ViewProjection the diagram's own zoom emits -- there is
+  // no such transform on the Leaflet map). Pressing 재생 준비 while the map
+  // view is showing switches to the diagram FIRST so the click always leads
+  // somewhere visible instead of loading frames behind a view that cannot
+  // draw them; it never stays a dead button the way a disabled control would.
+  const handleLoadReplay = useCallback(() => {
+    if (mapView !== "diagram") handleMapViewChange("diagram");
+    playbackEngine.load(replayJob ? replayJob.id : undefined);
+  }, [handleMapViewChange, mapView, playbackEngine, replayJob]);
+
   // Lazily load the raw-coordinate network for the diagram view, and refetch it
   // whenever the active dataset (datasetRevision) changes or a retry is
   // requested. Stays inert until the diagram has been opened at least once.
@@ -762,6 +877,35 @@ export default function DashboardPage() {
       cancelled = true;
     };
   }, [datasetRevision, hasRequestedDiagram, networkReloadNonce, agentSessionId, t]);
+
+  // Unit #21: which completed runs are even eligible to replay -- independent
+  // of `hasRequestedDiagram` above (the diagram may not have been opened yet,
+  // but the replay panel still needs to know whether ANY run is replayable to
+  // choose between its three states). Filtered exactly like /network's former
+  // picker was: done, trajectory recorded, and run against the SAME dataset
+  // revision currently active -- a job from a stale/replaced dataset must
+  // never be offered.
+  useEffect(() => {
+    let cancelled = false;
+    fetchSimulationJobs()
+      .then((jobs) => {
+        if (cancelled) return;
+        setReplayableJobs(
+          jobs.filter(
+            (job) =>
+              job.status === "done" &&
+              job.trajectory_recorded === true &&
+              (!activeDataset || job.dataset_revision === activeDataset.revision),
+          ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setReplayableJobs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDataset]);
 
   const handleDatasetChange = useCallback((dataset?: ActiveDataset) => {
     setActiveDataset(dataset ?? null);
@@ -977,7 +1121,21 @@ export default function DashboardPage() {
                       onRetry={() => setNetworkReloadNonce((nonce) => nonce + 1)}
                       focusFlash={diagramFocusFlash}
                       zoomToBbox={diagramZoomToBbox}
+                      onProjectionChange={projection.set}
                     />
+                    {/* Unit #21: canvas overlay, same box as the diagram's SVG,
+                        pointer-events none so zoom/pan/click all still land on
+                        the SVG beneath it -- moved verbatim from /network's own
+                        overlay. Mounted only in THIS branch (mapView ===
+                        "diagram"), which is the documented answer to "what
+                        happens on the map view": vehicles simply are not drawn
+                        there (no ViewProjection exists for Leaflet), but the
+                        playback clock keeps running underneath -- switching
+                        back to 도식 resumes exactly where the clock is, it does
+                        not restart. */}
+                    {playback.frames && (
+                      <TrajectoryLayer engine={playbackEngine} frames={playback.frames} projection={projection} network={network} />
+                    )}
                     {/* Search-selection banner (v2 UX unit, 2026-07-28) --
                         mirrors /network's own "네트워크에서 보기" banner colour
                         (NetworkViewer.tsx's FOCUS_FLASH literal, #00c2ff), as a
@@ -1050,6 +1208,19 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
+
+          {/* Unit #21: replay's own panel, renders directly under the 도식 it
+              overlays -- run context (which run it is anchored to) lives right
+              here, next to the map/diagram it draws on top of, rather than as
+              a floating card elsewhere on the page. */}
+          <VehicleReplaySection
+            replayJob={replayJob}
+            hasReplayableRuns={replayableJobs.length > 0}
+            primaryScenarioName={primaryScenario?.name ?? null}
+            playback={playback}
+            playbackEngine={playbackEngine}
+            onLoad={handleLoadReplay}
+          />
 
           {/* Link/element selection chips (v2 UX unit, 2026-07-29) — nodes
               already have their own chip panel above (SelectedIntersectionPanel);
@@ -2281,6 +2452,7 @@ function NetworkDiagramView({
   onRetry,
   focusFlash,
   zoomToBbox,
+  onProjectionChange,
 }: {
   network: NetworkData | null;
   loading: boolean;
@@ -2302,6 +2474,11 @@ function NetworkDiagramView({
   // view can flash/zoom a search hit exactly like /network does.
   focusFlash?: { linkIds: string[]; elementKeys: string[]; pulsing: boolean } | null;
   zoomToBbox?: { x_min: number; y_min: number; x_max: number; y_max: number; nonce?: number | string } | null;
+  // Unit #21: forwarded straight through to NetworkViewer -- the ONLY channel
+  // between its live zoom transform and the vehicle-replay canvas overlay
+  // mounted alongside this component (see the call site). Optional so every
+  // OTHER caller of NetworkViewer that doesn't need replay is unaffected.
+  onProjectionChange?: (projection: ViewProjection | null) => void;
 }) {
   const { t } = useLanguage();
 
@@ -2343,7 +2520,171 @@ function NetworkDiagramView({
       onBackgroundClick={onBackgroundClick}
       focusFlash={focusFlash}
       zoomToBbox={zoomToBbox}
+      onProjectionChange={onProjectionChange}
     />
+  );
+}
+
+// Unit #21 (2026-08-14, option A): the replay panel, carried over from
+// /network's "차량 궤적 재생" section with its picker removed. One Panel, in
+// normal flow directly under the map/diagram box (not a floating card), same
+// Console-style uppercase label and control chrome the source panel already
+// used -- restyled minimally, not redesigned.
+//
+// Exactly three mutually exclusive states:
+//   1. `replayJob` set -- anchored to that run; the source line names it.
+//   2. `replayJob` null AND `hasReplayableRuns` false -- no run in the whole
+//      project has a recorded trajectory yet, so demo is offered, but NAMED
+//      as demo (never silently substituted for a real run).
+//   3. `replayJob` null AND `hasReplayableRuns` true -- the run the
+//      comparison picker has selected is not one that recorded a trajectory
+//      (a project-scenario baseline, or a job whose recording failed/expired).
+//      A plain sentence, and -- B5-2 stage 4's rule -- NEVER a button: a
+//      refusal is information, not a disabled control standing in for one.
+function VehicleReplaySection({
+  replayJob,
+  hasReplayableRuns,
+  primaryScenarioName,
+  playback,
+  playbackEngine,
+  onLoad,
+}: {
+  replayJob: SimulationJob | null;
+  hasReplayableRuns: boolean;
+  primaryScenarioName: string | null;
+  playback: Playback;
+  playbackEngine: PlaybackEngine;
+  onLoad: () => void;
+}) {
+  const { t } = useLanguage();
+  const canLoad = replayJob != null || !hasReplayableRuns;
+
+  return (
+    <section className="mt-4 rounded-xl border border-slate-200 bg-surface/70 px-4 py-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+        {t("차량 궤적 재생", "Vehicle playback")}
+      </p>
+
+      {replayJob ? (
+        <p className="mt-2 text-xs text-slate-600">
+          {t("재생 대상", "Replaying", "再生対象")}{" "}
+          <span className="font-medium text-slate-700">{formatJobLabel(replayJob)}</span>
+        </p>
+      ) : hasReplayableRuns ? (
+        <p className="mt-2 text-xs text-slate-500">
+          {primaryScenarioName
+            ? t(
+                `선택된 실행(${primaryScenarioName})에는 저장된 차량 궤적이 없습니다.`,
+                `The selected run (${primaryScenarioName}) has no recorded vehicle trajectory.`,
+              )
+            : t("재생할 실행이 선택되지 않았습니다.", "No run is selected for playback.")}
+        </p>
+      ) : (
+        <>
+          <p className="mt-2 text-xs text-slate-600">
+            {t("재생 소스", "Playback source", "再生ソース")}{" "}
+            <span className="font-medium text-slate-700">{t("데모", "Demo")}</span>
+          </p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            {t(
+              "재생 가능한 시뮬레이션 실행이 아직 없어 데모 데이터로 재생합니다.",
+              "No replayable simulation run exists yet, so playback uses demo data.",
+            )}
+          </p>
+        </>
+      )}
+
+      {canLoad &&
+        (playback.status === "idle" ? (
+          <button
+            type="button"
+            onClick={onLoad}
+            className="mt-2 flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+          >
+            {t("재생 준비", "Load playback")}
+          </button>
+        ) : playback.status === "loading" ? (
+          <p className="mt-2 text-xs text-slate-500">{t("궤적 데이터를 불러오는 중…", "Loading trajectory data…")}</p>
+        ) : playback.status === "error" ? (
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <p className="text-xs text-slate-500">
+              {t(
+                "궤적 데이터를 불러오지 못했습니다. 이 데이터셋에 .fzp 파일이 없을 수 있습니다.",
+                "Couldn't load trajectory data. This dataset may have no .fzp file.",
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={onLoad}
+              className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+            >
+              {t("다시 시도", "Retry")}
+            </button>
+          </div>
+        ) : (
+          <div className="mt-3 flex flex-col gap-2.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={playbackEngine.togglePlay}
+                aria-pressed={playback.playing}
+                className="flex h-9 min-w-[6.5rem] shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+              >
+                <span aria-hidden="true">{playback.playing ? PAUSE_GLYPH : PLAY_GLYPH}</span>
+                {playback.playing ? t("일시정지", "Pause") : t("재생", "Play")}
+              </button>
+              <span className="text-xs tabular-nums text-slate-700">
+                {formatClock(playback.time - playback.t0)} / {formatClock(playback.t1 - playback.t0)}
+              </span>
+              <span className="text-[11px] tabular-nums text-slate-500">
+                {t("시뮬레이션", "sim")} {playback.time.toFixed(1)}
+                {t("초", "s")}
+              </span>
+              <div
+                role="group"
+                aria-label={t("재생 속도", "Playback speed")}
+                className="ml-auto flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-xs font-medium"
+              >
+                {PLAYBACK_SPEEDS.map((option) => {
+                  const active = playback.speed === option;
+                  return (
+                    <button
+                      key={option}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => playbackEngine.setSpeed(option)}
+                      className={`flex h-full items-center rounded-md px-3 transition-colors ${
+                        active ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      ×{option}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <input
+              type="range"
+              aria-label={t("재생 위치", "Playback position")}
+              min={playback.t0}
+              max={playback.t1}
+              step={0.1}
+              value={playback.time}
+              onChange={(event) => playbackEngine.seek(Number(event.target.value))}
+              className="w-full accent-[#4c8dff]"
+            />
+
+            <p className="text-[11px] text-slate-500">
+              {t(
+                `차량 ${playback.vehicleCount}대`,
+                `${playback.vehicleCount} vehicle${playback.vehicleCount === 1 ? "" : "s"}`,
+                `車両 ${playback.vehicleCount}台`,
+              )}
+            </p>
+          </div>
+        ))}
+    </section>
   );
 }
 
