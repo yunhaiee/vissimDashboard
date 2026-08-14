@@ -6515,3 +6515,30 @@ page rather than floating over it, resizable from its left edge, width-only pers
 the bottom), which is why the commit touches nearly every page. ④ The modal's cross-link
 chips lost their arrows per the user's instruction. The other session left no narrative;
 this entry is the reconciliation, written from the diff, not from memory of intentions.
+
+## 2026-08-14 — the demo-prep script that refuses to fake its own refusal (#32)
+
+**Context.** Every refused genesis job on this box carries only doctrine-untreatable
+findings (v3 connectivity / v7 shared polylines), so the B5-2 fix-loop demo had no job
+whose drawer shows an approval card. #32 (`backend/tools/make_b52_demo_job.py`)
+manufactures one honest treatable refusal — `v6_input_volume_is_zero` — in the user's
+demo workspace, verified end-to-end by an adversarial pass (7/7 claims independently
+reproduced, byte-exact idempotence, zero contamination across 173-file tree hashes).
+
+**The finding that shaped the design.** The real counts pipeline structurally CANNOT
+produce a zero-volume input that gates as refused: `generate_demand` refuses
+`genesis_demand_zero_observed_total` at REFUSE tier, the composition is all-or-nothing,
+and `genesis_jobs` turns that into STATUS_ERROR with no gate verdict at all. So a
+"fully real" path to this demo does not exist, and pretending otherwise would mean
+weakening demand.py. The script instead hand-assembles ONLY the demand layer (the same
+frozen dataclasses compose.py uses, one input at 0.0 vph), and keeps draft, fleet,
+emission and the gate itself fully real. The manufactured layer is the point of the
+demo, and the job name says so (`DEMO-수정루프-…`).
+
+**Interface-gap deviation, recorded.** The job record is written via
+`genesis_jobs.job_dir()` + `_upsert()`, bypassing `create_genesis_job`, because the
+Korean demo marker cannot pass `_NAME_RE` (ASCII-only) — the same seam
+`tests/test_genesis_jobs.py::_seed_job` already uses. Second seam: verification calls
+`routers.genesis._render_fix_disposition` (the literal function the fixes route calls)
+rather than re-deriving ask-first logic. Both are named in the script docstring; the
+refuter confirmed the prose claims nothing stronger than the code.
