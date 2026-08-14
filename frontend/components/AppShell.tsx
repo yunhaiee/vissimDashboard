@@ -19,7 +19,8 @@ type NavIconName =
   | "downloads"
   | "report"
   | "health"
-  | "admin";
+  | "admin"
+  | "overview";
 
 type Translate = (ko: string, en: string, ja?: string) => string;
 
@@ -101,6 +102,16 @@ function NavIcon({ name }: { name: NavIconName }) {
         <path d="M18 15.5h2" />
       </>
     ),
+    // A compass, not a house: 개요 is not "home base for one stage" the way
+    // 대시보드's roofline glyph reads -- it is a reading taken ACROSS every
+    // stage, which a compass (orientation, not a place) says without
+    // colliding with the icon /dashboard already owns.
+    overview: (
+      <>
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M15.3 8.7 13 13l-4.3 2.3L11 11Z" />
+      </>
+    ),
   };
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -136,6 +147,14 @@ const PIPELINE_STAGES = ["network", "data", "sim", "report"] as const satisfies 
  * Routes that are not a pipeline stage (/admin, /login) are absent on purpose;
  * `stageForPath` returns null and the stepper renders nothing at all, which is
  * honest for a screen that is not part of the pipeline.
+ *
+ * `/overview` (unit #22) is absent for the same reason and joins them here
+ * rather than getting a fifth stage of its own: it is not one step of the
+ * pipeline, it is a page ABOUT the pipeline -- one reading taken across all
+ * four stages at once. A stepper that highlighted a stage for it would be
+ * claiming 개요 belongs to whichever stage happened to be listed first, which
+ * is not a fact this app has -- so it renders no stepper at all, exactly like
+ * /admin and /login.
  */
 const ROUTE_STAGE: Readonly<Record<string, PipelineStage>> = {
   "/genesis": "network",
@@ -290,6 +309,23 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {pathname !== "/login" && <ProjectSelector />}
 
         <nav className="app-side-nav" aria-label={t("주 메뉴", "Main navigation")}>
+          {/* 개요 (unit #22) -- directly under the 프로젝트 selector, above
+            * group ①, and deliberately NOT one of the four numbered
+            * `NavGroup`s above: it is a single link, not a group of them, and
+            * wrapping it in the `NavGroup` shape would print "개요" twice (a
+            * group header sitting right on top of its own only link). It gets
+            * the SAME `app-side-link` markup and the same `aria-current`
+            * treatment every other link on this rail gets -- see the
+            * ROUTE_STAGE comment above for why it is absent from the
+            * stepper's own route table. */}
+          <Link
+            href="/overview"
+            aria-current={pathname === "/overview" ? "page" : undefined}
+            className={`app-side-link mb-3.5 max-[880px]:mb-0 ${pathname === "/overview" ? "app-side-link-active" : ""}`}
+          >
+            <NavIcon name="overview" />
+            <span>{t("개요", "Overview", "概要")}</span>
+          </Link>
           {groups.map((group, index) => (
             <div
               key={group.id}

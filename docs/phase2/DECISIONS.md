@@ -6427,3 +6427,33 @@ Residuals: the demo-fallback state was proven by pin+code, not click-through (th
 project HAS runs — fabricating an empty project to see it was not worth the state risk);
 background-tab playback freezing is the browser's rAF throttling, pre-existing engine
 behavior, correct, and left alone.
+
+## 2026-08-14 — #22: the front door becomes the project, not stage ③
+
+**What (user directive).** `/` used to land on the dashboard — one stage of the pipeline
+posing as the whole product. It now lands on `/overview`: the SELECTED project's reading
+across all four stages, in the pipeline's own order — ① active dataset + the latest
+generation's verdict chip, ② staged 수요·신호 counts, ③ completed runs + the most recent
+one, ④ link cards to 작성/다운로드 (link-only on purpose: no cheap existing count helper,
+and a number invented for symmetry would be a fabricated stat). Every card is one of
+exactly two shapes — facts + deep link, or a NAMED empty + deep link — and the three
+non-fact tones are visually distinct (dashed empty / rose error / sky sign-in note), so a
+401 can never render as "0" (the one auth-gated read branches on the typed 401 BEFORE any
+zero-count check). When the session has no project at all — a confirmed-empty workspace
+listing or the typed WorkspaceAccessError, never a mere network hiccup — the page renders
+ONLY a centered 새 프로젝트 만들기 card reusing the selector's own create flow and reload
+doctrine. 개요 joins the sidebar unnumbered above ① with a compass glyph (orientation,
+not a place — the roofline already belongs to the dashboard), and stays OUT of
+`ROUTE_STAGE` with its reason written beside /admin's: a page ABOUT the pipeline gets no
+stage highlight, because claiming one would be a fact this app does not have.
+
+**Verification.** Contract 83→**88** (5 new tests; the root-redirect pin re-pinned with
+its story updated — "the dashboard is stage ③, not the front door"), each new pin
+mutation-verified (redirect target, the 401 branch, the nav link, a raw-fetch ban, the
+no-project branch's render scope). Live anonymous: `/` redirects, the real project's
+cards rendered real facts (Murdoch dataset, a refused generation's chip, 22 completed
+runs), card ② showed the sign-in note off a real 401, 개요 carried aria-current, and the
+stepper was confirmed ABSENT on the page. Typecheck and build clean, re-verified
+independently. Named residuals: the populated ② card, the ①/③ empty states and the true
+no-project branch were source+pin-proven only — this workspace has data, this session has
+no login, and neither fact was worth faking to watch a branch fire.

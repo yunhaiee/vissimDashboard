@@ -540,11 +540,18 @@ contractTest("#18: the 프로젝트 picker moved to the sidebar, and a switch ca
   );
 });
 
-contractTest("root entry redirects to dashboard once assistant is floating", (pin) => {
+// Re-pinned by unit #22 (2026-08-14 directive): the root used to land on the
+// dashboard "once assistant is floating" (the prompt-only home screen was
+// gone, so the dashboard was the least-wrong default). The new story is the
+// dashboard was never the front door, it is stage ③ of the pipeline -- the
+// project OVERVIEW is, and it is the one screen that can even tell whether a
+// project exists to show.
+contractTest("root entry redirects to the project overview, not the dashboard", (pin) => {
   const page = read("app/page.tsx");
 
   pin.match(page, /redirect/, "expected root route to redirect instead of rendering a prompt-only page");
-  pin.match(page, /"\/dashboard"/, "expected root path to land on the dashboard");
+  pin.match(page, /"\/overview"/, "expected root path to land on the project overview");
+  pin.doesNotMatch(page, /"\/dashboard"/, "expected root to no longer redirect straight to the dashboard -- dashboard is stage ③, not the front door");
   pin.doesNotMatch(page, /VissimPromptHome/, "expected prompt-only first screen to be removed from root");
 });
 
@@ -4624,4 +4631,165 @@ contractTest("unit #21: the projection/zoom-transform sync is preserved in its n
     /\{playback\.frames && \(\s*<TrajectoryLayer engine=\{playbackEngine\} frames=\{playback\.frames\} projection=\{projection\} network=\{network\} \/>\s*\)\}/,
     "expected the vehicle canvas overlay to mount in the diagram view, reading the same engine/frames/projection/network the panel below drives",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #22 (2026-08-14 directive): / lands on a PROJECT OVERVIEW instead of
+// the dashboard, and the overview is the one screen that decides whether
+// there is even a project to show.
+// ---------------------------------------------------------------------------
+
+contractTest("unit #22: the overview composes only existing lib/api.ts helpers, never a raw fetch", (pin) => {
+  const overview = read("app/overview/page.tsx").replace(/\r\n/g, "\n");
+
+  // The five reads this page is built from -- every one an EXISTING helper
+  // already documented (and already used) elsewhere in the app, never a new
+  // endpoint invented for this unit.
+  pin.match(overview, /fetchWorkspaces\(\)/, "expected the overview to read the current project from fetchWorkspaces");
+  pin.match(overview, /fetchActiveDataset\(\)/, "expected ① 네트워크 to read the active dataset from fetchActiveDataset");
+  pin.match(overview, /fetchGenesisJobs\(\)/, "expected ① 네트워크's verdict chip to read fetchGenesisJobs");
+  pin.match(overview, /fetchStagedSideInputs\(\)/, "expected ② 데이터 to read the same staged-input listing the genesis job form uses");
+  pin.match(overview, /fetchSimulationJobs\(\)/, "expected ③ 시뮬·보정 to read fetchSimulationJobs");
+  pin.match(overview, /createWorkspace\(trimmed\)/, "expected the no-project branch to create a project through the existing createWorkspace helper");
+
+  // No hand-rolled request of its own -- every read on this page goes through
+  // one of the five helpers above.
+  pin.doesNotMatch(withoutComments(overview), /apiFetch\(|apiMutationFetch\(|fetch\(/, "expected NO raw fetch call on the overview -- every read must be an existing named helper");
+
+  // Frontend-only, per this unit's own hard constraint: no backend route was
+  // added, so no LIVE code on this page should build a raw API path -- only
+  // this file's own doc comments may NAME one (e.g. explaining which read
+  // needs a signed-in caller), so this is scoped past comments the same way
+  // the raw-fetch pin above is.
+  pin.doesNotMatch(withoutComments(overview), /"\/api\//, "expected no code on the overview to build a raw API path string -- it must go through lib/api.ts helpers exclusively");
+});
+
+contractTest("unit #22: the overview renders four stage cards, each deep-linking to its own stage", (pin) => {
+  const overview = read("app/overview/page.tsx").replace(/\r\n/g, "\n");
+
+  // The four cards, in pipeline order, each carrying the SAME ordinal the
+  // sidebar's own NavGroups use (components/AppShell.tsx) -- one numbering,
+  // never a second one invented for this screen.
+  pin.match(overview, /title=\{`① \$\{t\("네트워크", "Network", "ネットワーク"\)\}`\}/, "expected card ① 네트워크");
+  pin.match(overview, /title=\{`② \$\{t\("데이터", "Data", "データ"\)\}`\}/, "expected card ② 데이터");
+  pin.match(overview, /title=\{`③ \$\{t\("시뮬·보정", "Simulate & Calibrate", "シミュ・補正"\)\}`\}/, "expected card ③ 시뮬·보정");
+  pin.match(overview, /title=\{`④ \$\{t\("보고서", "Report", "レポート"\)\}`\}/, "expected card ④ 보고서");
+
+  // Every card's own deep link(s) -- the whole point of a stage CARD is that
+  // it goes somewhere.
+  pin.match(overview, /StageLink\s+href="\/genesis"/, "expected ① 네트워크 to deep-link to /genesis");
+  pin.match(overview, /StageLink href="\/genesis\/demand"/, "expected ② 데이터 to deep-link to /genesis/demand");
+  pin.match(overview, /StageLink href="\/genesis\/phases"/, "expected ② 데이터 to deep-link to /genesis/phases");
+  pin.match(overview, /StageLink href="\/dashboard"/, "expected ③ 시뮬·보정 to deep-link to /dashboard");
+  pin.match(overview, /StageLink href="\/report"/, "expected ④ 보고서 to deep-link to /report");
+  pin.match(overview, /StageLink href="\/downloads"/, "expected ④ 보고서 to deep-link to /downloads");
+
+  // ① 네트워크's named empty state, exact wording from the unit's own spec.
+  pin.match(overview, /아직 생성된 네트워크 없음/, "expected ①'s named empty state when fetchGenesisJobs comes back empty");
+  pin.match(overview, /생성하기 →/, "expected ①'s empty-state link to read 생성하기");
+
+  // ② 데이터's fact shape: 수요 N · 신호 N, built from the SAME staged-input
+  // listing (filtered by kind), never a second count invented independently.
+  pin.match(
+    overview,
+    /entry\.kind === "demand"/,
+    "expected 수요 N to come from filtering the staged side-input listing by kind",
+  );
+  pin.match(
+    overview,
+    /entry\.kind === "signals"/,
+    "expected 신호 N to come from filtering the staged side-input listing by kind",
+  );
+  pin.match(
+    overview,
+    /\$\{t\("수요", "Demand", "需要"\)\} \$\{demandCount\} · \$\{t\("신호", "Signals", "信号"\)\} \$\{signalsCount\}/,
+    "expected the exact 수요 N · 신호 N fact format",
+  );
+
+  // ③ 시뮬·보정: a completed-run count derived by filtering for status "done",
+  // never counting queued/running/error jobs as completed.
+  pin.match(overview, /job\.status === "done"/, "expected ③'s count to filter simulation jobs to status done");
+});
+
+contractTest("unit #22: a 401 or a load failure never renders as a false zero", (pin) => {
+  const overview = read("app/overview/page.tsx").replace(/\r\n/g, "\n");
+
+  // GET /api/genesis/side-inputs is the one read on this page that requires a
+  // signed-in caller -- an anonymous 401 there must read as "sign in to see
+  // this", never silently fall through to the "수요 0 · 신호 0" empty state.
+  pin.match(
+    overview,
+    /sideInputsResult\.reason instanceof GenesisError && sideInputsResult\.reason\.status === 401/,
+    "expected the staged-input 401 to be typed and handled explicitly, not swallowed into the empty branch",
+  );
+  // Sliced by the two cards' own opening tags (not by the divider comments
+  // around them, which repeat identically before every card and would slice
+  // an empty span) -- from ②'s <StageCard> up to ③'s, which is everything ②
+  // actually renders.
+  const cardTwoOpen = '<StageCard title={`② ${t("데이터", "Data", "データ")}`}>';
+  const cardThreeOpen = '<StageCard title={`③ ${t("시뮬·보정", "Simulate & Calibrate", "シミュ・補正")}`}>';
+  const dataCard = sliceBetween(overview, cardTwoOpen, cardThreeOpen);
+  pin.match(dataCard, /\S/, "expected to find card ②'s own JSX span (markers moved?)");
+  pin.match(dataCard, /sideInputsAuthRequired \?/, "expected ② 데이터 to branch on the 401 BEFORE checking the zero-count empty state");
+  pin.match(dataCard, /로그인하면 등록된 데이터를 볼 수 있습니다/, "expected a named sign-in note, distinct from the empty and error notes");
+
+  // Every OTHER fetch failure on this page (network error, backend down) also
+  // gets its own named error branch -- never folded into a catch that sets
+  // state to [] / null indistinguishably from a genuine zero.
+  pin.match(overview, /genesisJobsError \?/, "expected ① to distinguish a load failure from a genuine zero generations");
+  pin.match(overview, /sideInputsError \?/, "expected ② to distinguish a load failure from a genuine zero staged inputs");
+  pin.match(overview, /simulationJobsError \?/, "expected ③ to distinguish a load failure from a genuine zero completed runs");
+
+  // The no-project branch must never fire on a plain load failure: only a
+  // confirmed empty listing or a typed WorkspaceAccessError may claim "no
+  // project exists". A page that folded a network error into this branch
+  // would tell a user their project vanished when the backend merely hiccuped.
+  pin.match(
+    overview,
+    /workspacesFailure === "access" \|\| \(workspaces !== null && workspaces\.workspaces\.length === 0\)/,
+    "expected the no-project branch to require a confirmed empty listing or a typed access error, never a bare fetch failure",
+  );
+  pin.match(
+    overview,
+    /workspacesResult\.reason instanceof WorkspaceAccessError \? "access" : "error"/,
+    "expected fetchWorkspaces failures to be typed apart -- an unrelated network fault must not be read as 'no project'",
+  );
+});
+
+contractTest("unit #22: the no-project branch renders ONLY the create-project card", (pin) => {
+  const overview = read("app/overview/page.tsx").replace(/\r\n/g, "\n");
+
+  const noProjectBranch = sliceBetween(overview, "if (noProject) {", "// fetchWorkspaces() itself failed");
+  pin.match(noProjectBranch, /return <CreateProjectOnly \/>;/, "expected the no-project branch to return ONLY the create-project component");
+  pin.doesNotMatch(noProjectBranch, /StageCard|<header/, "expected the no-project branch to render no stage card and no project header");
+
+  const createProjectFn = sliceBetween(overview, "function CreateProjectOnly()", "// The normal overview");
+  pin.match(createProjectFn, /\S/, "expected to find CreateProjectOnly's own body (markers moved?)");
+  pin.match(createProjectFn, /await createWorkspace\(trimmed\)/, "expected the create-project card to call the existing createWorkspace helper, not a new request");
+  pin.doesNotMatch(createProjectFn, /apiMutationFetch\(|apiFetch\(/, "expected no duplicated request logic inside the create-project card");
+  pin.match(createProjectFn, /setWorkspaceId\(created\.id\)/, "expected a created project to become the active workspace");
+  pin.match(createProjectFn, /window\.location\.reload\(\)/, "expected creating a project to reload, the same full-reload switch every other project change on this app uses");
+
+  // Anonymous default-workspace sessions are NOT this state -- only a
+  // confirmed-empty listing or a typed access error reaches it (also pinned
+  // above); this pin guards the RENDER side, that no-project truly means
+  // "nothing else on the page".
+  pin.match(overview, /Anonymous default-workspace sessions/, "expected the doc comment to name why the default workspace never takes this branch");
+});
+
+contractTest("unit #22: 개요 sits above the numbered groups, outside the pipeline stepper", (pin) => {
+  const shell = read("components/AppShell.tsx").replace(/\r\n/g, "\n");
+
+  // Placed inside <nav>, before the four numbered groups render -- "directly
+  // under the 프로젝트 selector, above group ①".
+  const navOpen = sliceBetween(shell, '<nav className="app-side-nav"', "{groups.map((group, index) => (");
+  pin.match(navOpen, /href="\/overview"/, "expected the 개요 link to sit before the numbered groups inside <nav>");
+  pin.match(navOpen, /<NavIcon name="overview" \/>/, "expected the 개요 link to carry its own nav icon");
+  pin.match(navOpen, /aria-current=\{pathname === "\/overview" \? "page" : undefined\}/, "expected 개요's aria-current to follow the same pattern every other nav link uses");
+
+  // NOT a pipeline stage: absent from ROUTE_STAGE, and the stepper's own
+  // reasoning says why -- mirroring the /admin comment rather than a new,
+  // unrelated justification.
+  pin.doesNotMatch(shell, /"\/overview":\s*"(network|data|sim|report)"/, "expected /overview to be absent from ROUTE_STAGE entirely");
+  pin.match(shell, /`\/overview` \(unit #22\) is absent for the same reason/, "expected a comment explaining why /overview carries no pipeline stage, mirroring the /admin reasoning");
 });
