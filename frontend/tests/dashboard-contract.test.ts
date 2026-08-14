@@ -1829,12 +1829,16 @@ contractTest("genesis view renders the gate's tri-state without collapsing it", 
     pin.match(genesisLib, new RegExp(`case "${status}":`), `expected the ${status} job state to be named in the shared status helpers`);
   }
   pin.match(genesisLib, /잠정 등록 — 미확인 검사 있음/, "expected the provisional label to state that a check could not run");
-  pin.match(genesisLib, /거부됨 — 등록하지 않음/, "expected the refused label to state that nothing was registered");
+  pin.match(genesisLib, /return t\("거부됨", "REFUSED", "拒否"\)/, "expected the refused label to be the verdict word alone (user 2026-08-14) -- the not-registered consequence lives in the detail help drawer");
 
   // Every gate sentence comes from the backend payload (gate.py's own ko/en/ja
   // table), never from a dictionary in this file.
   pin.match(page, /\{check\.title\}/, "expected the check title to come from the gate payload");
-  pin.match(page, /\{finding\.message\}/, "expected finding text to come from the gate payload");
+  pin.match(
+    page,
+    /selected\.findings\.map\(\(finding\) => finding\.message\)/,
+    "expected finding text to come from the gate payload verbatim -- the collapse fold (user 2026-08-14) passes messages through, it does not rewrite them",
+  );
   pin.match(page, /\{gap\.message\}/, "expected gap text to come from the gate payload");
 
   // A dropped finding nobody counts is the silent drop this project forbids.

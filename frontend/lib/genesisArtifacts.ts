@@ -594,7 +594,10 @@ export function statusLabel(status: GenesisJobStatus, t: (ko: string, en: string
     case "running":
       return t("생성 중", "Generating", "生成中");
     case "refused":
-      return t("거부됨 — 등록하지 않음", "REFUSED — not registered", "拒否 — 登録しません");
+      // Shortened to the verdict word alone (user, live pass 2026-08-14): the
+      // not-registered consequence reads in the detail page's help drawer, and
+      // a chip that wraps its own clause was the table's original layout bug.
+      return t("거부됨", "REFUSED", "拒否");
     case "provisional":
       return t("잠정 등록 — 미확인 검사 있음", "PROVISIONAL — a check could not run", "暫定登録 — 未確認の検査あり");
     case "published":

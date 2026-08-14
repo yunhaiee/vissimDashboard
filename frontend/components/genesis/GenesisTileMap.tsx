@@ -222,8 +222,12 @@ export default function GenesisTileMap({
 
   const header = (
     <div className="flex items-center justify-between gap-3">
-      <h3 className="text-[15px] font-semibold text-slate-900">
-        {t("지도", "Map", "地図")}
+      {/* The word 지도 left the screen (user, live pass 2026-08-14) -- the map
+        * says it is a map. It stays for screen readers, and the ⓘ stays
+        * visible because WHICH coordinate system this is (WGS84 vs local) is
+        * state a reader of the numbers needs. */}
+      <h3 className="flex items-center text-[15px] font-semibold text-slate-900">
+        <span className="sr-only">{t("지도", "Map", "地図")}</span>
         <InfoTip
           text={
             geo

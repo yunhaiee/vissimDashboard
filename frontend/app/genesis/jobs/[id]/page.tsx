@@ -555,13 +555,11 @@ function GateCheckGrid({
               )}
 
               {selected.findings.length > 0 && (
-                <ul className="mt-2 space-y-1">
-                  {selected.findings.map((finding, index) => (
-                    <li key={`${finding.code}-${index}`} className="text-[13px] leading-relaxed">
-                      {finding.message}
-                    </li>
-                  ))}
-                </ul>
+                <CollapsibleMessages
+                  key={`f-${selected.id}`}
+                  items={selected.findings.map((finding) => finding.message)}
+                  t={t}
+                />
               )}
               {selected.findings_omitted > 0 && (
                 <p className="mt-1.5 text-[12px] text-slate-600">
@@ -574,13 +572,11 @@ function GateCheckGrid({
               )}
 
               {selected.warnings.length > 0 && (
-                <ul className="mt-2 space-y-1">
-                  {selected.warnings.map((warning, index) => (
-                    <li key={`w-${warning.code}-${index}`} className="text-[13px] leading-relaxed">
-                      warn / {warning.message}
-                    </li>
-                  ))}
-                </ul>
+                <CollapsibleMessages
+                  key={`w-${selected.id}`}
+                  items={selected.warnings.map((warning) => `warn / ${warning.message}`)}
+                  t={t}
+                />
               )}
 
               {!checkHasBody(selected) && (
@@ -714,9 +710,46 @@ function downloadFailureText(caught: unknown, t: Translate): string {
   return caught instanceof Error ? caught.message : String(caught);
 }
 
+/** Long finding lists fold (user, live pass 2026-08-14): V7-class checks carry
+ * dozens of same-shaped rows — the first few state the pattern, the rest are
+ * one click away. This fold is PRESENTATION ONLY: the server-side cap's own
+ * named-omission line ("표시되지 않은 N건 — gate.json") is evidence and renders
+ * separately, untouched. Callers key this by the selected check's id so the
+ * fold resets when the reader moves to another check. */
+const FINDINGS_COLLAPSED_COUNT = 6;
+
+function CollapsibleMessages({ items, t }: { items: string[]; t: Translate }) {
+  const [expanded, setExpanded] = useState(false);
+  const overflow = items.length - FINDINGS_COLLAPSED_COUNT;
+  const visible = expanded || overflow <= 0 ? items : items.slice(0, FINDINGS_COLLAPSED_COUNT);
+  return (
+    <>
+      <ul className="mt-2 space-y-1">
+        {visible.map((message, index) => (
+          <li key={index} className="text-[13px] leading-relaxed">
+            {message}
+          </li>
+        ))}
+      </ul>
+      {overflow > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((open) => !open)}
+          className="ui-button-ghost mt-1.5 rounded-full px-2.5 py-0.5 text-[12px] font-medium"
+        >
+          {expanded
+            ? t("접기", "Collapse", "折りたたむ")
+            : t(`나머지 ${overflow}건 펼치기`, `Show ${overflow} more`, `残り${overflow}件を表示`)}
+        </button>
+      )}
+    </>
+  );
+}
+
 /** THE ARTIFACT ROW. Unchanged mechanics from app/genesis/page.tsx, only the
  * bar it sits in moved -- top bar, right side, rather than a titled section
- * under the map. */
+ * under the map. Each entry wears a download glyph (user, live pass
+ * 2026-08-14: the bare pills read as tags, not as things that download). */
 function ArtifactRow({ jobId, t }: { jobId: string; t: Translate }) {
   const [pending, setPending] = useState<GenesisArtifactKind | null>(null);
   const [failure, setFailure] = useState<{ kind: GenesisArtifactKind; message: string } | null>(null);
@@ -746,8 +779,22 @@ function ArtifactRow({ jobId, t }: { jobId: string; t: Translate }) {
             type="button"
             disabled={pending !== null}
             onClick={() => void download(artifact.kind)}
-            className="ui-button-ghost rounded-full px-3 py-1 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-60"
+            className="ui-button-ghost inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-60"
           >
+            <svg
+              viewBox="0 0 24 24"
+              className="h-3.5 w-3.5 shrink-0"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M12 4v11" />
+              <path d="m7.5 11 4.5 4.5L16.5 11" />
+              <path d="M5 20h14" />
+            </svg>
             {pending === artifact.kind
               ? t("내려받는 중…", "Downloading…", "ダウンロード中…")
               : artifact.label(t)}
@@ -945,9 +992,9 @@ export default function GenesisJobDetailPage() {
     {
       title: t("판정 게이트", "The validation gate", "判定ゲート"),
       body: t(
-        "R1.5 검증 게이트 V1–V9. 실행되지 못한 검사는 절대 통과가 아닙니다.",
-        "The R1.5 validation gate, V1–V9. A check that could not run is never a pass.",
-        "R1.5検証ゲート V1–V9。実行できなかった検査は決して合格ではありません。",
+        "R1.5 검증 게이트 V1–V9. 실행되지 못한 검사는 절대 통과가 아닙니다. 거부 등급 검사가 결함을 입증하면 그 네트워크는 프로젝트에 등록되지 않습니다 — 파일과 판정은 아티팩트에서 그대로 받아볼 수 있습니다.",
+        "The R1.5 validation gate, V1–V9. A check that could not run is never a pass. When a refuse-tier check proves a fault the network is NOT registered in the project — the file and the verdict stay downloadable from the artifacts.",
+        "R1.5検証ゲート V1–V9。実行できなかった検査は決して合格ではありません。拒否ティアの検査が欠陥を証明した場合、そのネットワークはプロジェクトに登録されません — ファイルと判定はアーティファクトからそのまま取得できます。",
       ),
     },
     {
@@ -1022,12 +1069,14 @@ export default function GenesisJobDetailPage() {
               {statusLabel(selected.status, t)}
             </span>
           </div>
-          <p className="mt-1 truncate font-mono text-[12px] text-slate-500">
-            {selected.source_osm.filename !== `${selected.name}.osm`
-              ? `${selected.source_osm.filename} · `
-              : ""}
-            {formatTimestamp(selected.created_at, lang)} · {networkScaleLabel(selected.network, t)}
-          </p>
+          {/* The date·scale meta and the sha line left the screen (user, live
+            * pass 2026-08-14) -- both stay in gate.json and the compliance
+            * report; the history table still carries date and scale. */}
+          {selected.source_osm.filename !== `${selected.name}.osm` && (
+            <p className="mt-1 truncate font-mono text-[12px] text-slate-500">
+              {selected.source_osm.filename}
+            </p>
+          )}
           {selected.derived_from && (
             <p className="mt-1 truncate font-mono text-[12px] text-slate-500">
               {t("파생", "Derived from", "派生")} — {selected.derived_from.job_id} ·{" "}
@@ -1052,14 +1101,6 @@ export default function GenesisJobDetailPage() {
                 }
               />
             </div>
-          )}
-          {report && (
-            <p className="mt-3 break-all font-mono text-[12px] text-slate-500">
-              {report.network !== selected.name && report.network !== `${selected.name}.inpx`
-                ? `${report.network} · `
-                : ""}
-              sha256 {report.network_sha256.slice(0, 16)}
-            </p>
           )}
           {pollError && (
             <p className="mt-2 text-[12px] text-slate-500">
@@ -1111,15 +1152,10 @@ export default function GenesisJobDetailPage() {
               )}
             </p>
           )}
-          {selected.status === "refused" && (
-            <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
-              {t(
-                "거부 등급 검사가 결함을 입증했으므로 이 네트워크는 프로젝트에 등록되지 않았습니다. 파일과 판정은 아래에서 그대로 받아볼 수 있습니다.",
-                "A refuse-tier check proved a fault, so this network was NOT registered in the project. The file and the verdict are both downloadable below.",
-                "拒否ティアの検査が欠陥を証明したため、このネットワークはプロジェクトに登録されていません。ファイルと判定は下からそのまま取得できます。",
-              )}
-            </p>
-          )}
+          {/* The refused-consequence paragraph left the screen (user, live
+            * pass 2026-08-14) -- the verdict headline and chip already say
+            * refused; the not-registered consequence reads in the 판정 게이트
+            * help entry below. */}
           {selected.revocation && (
             <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
               {selected.revocation.removed_from_workspace
