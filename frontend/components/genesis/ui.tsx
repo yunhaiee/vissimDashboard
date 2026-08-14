@@ -367,6 +367,91 @@ export function PageHelp({
 }
 
 /**
+ * MODAL DIALOG (unit #23) -- a CENTERED dialog over a dimmed backdrop, for a
+ * task the reader chose to start (새 생성) rather than a reference they opened
+ * to check something mid-task. That is the one real difference from
+ * `PageHelp` above, and it is why this is a second primitive instead of a
+ * `side`/`center` prop on that one: `PageHelp` is inert (static content, no
+ * form, safe to leave open while reading elsewhere), while a caller of THIS
+ * component owns a form with real state -- closing it does not discard that
+ * state (the caller's own `open` flag only hides the tree; see
+ * app/genesis/page.tsx's own comment on why the form fields live in the page,
+ * not in the modal, for exactly this reason), but the chrome around it needed
+ * to say "this is the one thing in front of you right now" rather than "this
+ * is a drawer of background reading" -- hence centred-over-a-backdrop instead
+ * of PageHelp's right-side slide-in.
+ *
+ * REACHABILITY is the SAME three guarantees `PageHelp` already insists on,
+ * because nothing about being centred instead of a drawer changes who needs
+ * to reach it: a real `<button>` close trigger (focused on open, so the very
+ * next Tab lands somewhere inside the dialog rather than back on the page
+ * behind it), Escape closes from anywhere the dialog has focus, and a
+ * pointerdown on the dimmed backdrop closes it too (the backdrop IS the
+ * click-outside handler, exactly as `PageHelp`'s is -- the panel stops its own
+ * click from reaching the backdrop underneath it). `role="dialog"` +
+ * `aria-modal="true"` + `aria-labelledby` pointing at the dialog's own heading
+ * complete the same announcement `PageHelp` makes.
+ */
+export function ModalDialog({
+  open,
+  onClose,
+  title,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: React.ReactNode;
+}) {
+  const { t } = useLanguage();
+  const headingId = useId();
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    closeRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4 py-8"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={headingId}
+        onClick={(event) => event.stopPropagation()}
+        className="flex max-h-full w-full max-w-xl flex-col overflow-y-auto rounded-xl border border-slate-200 bg-surface px-6 py-6 shadow-[0_16px_48px_rgba(15,23,42,0.35)]"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <h2 id={headingId} className="text-[17px] font-semibold text-slate-900">
+            {title}
+          </h2>
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={onClose}
+            aria-label={t("닫기", "Close", "閉じる")}
+            className="ui-button-ghost shrink-0 rounded-md px-2 py-0.5 text-[13px]"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="mt-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * ko/en/ja for the backend's stable refusal codes -- every code any genesis
  * screen can receive, in one table.
  *

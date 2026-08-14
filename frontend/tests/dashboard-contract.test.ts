@@ -1799,7 +1799,9 @@ test("U9: safeNextPath only ever returns a same-origin path", () => {
 // never be able to hide the behavioural pins below it.
 
 contractTest("genesis view renders the gate's tri-state without collapsing it", (pin) => {
-  const page = read("app/genesis/page.tsx");
+  // unit #23: the verdict grid (and everything else the drawer carried) moved
+  // off the hub and into its own route when the drawer became a detail page.
+  const page = read("app/genesis/jobs/[id]/page.tsx");
   // `statusLabel` (the four terminal job states' own wording) moved to
   // lib/genesisArtifacts.ts in B3-FIX so `GenesisComparisonPanel`'s job
   // picker could share the exact same wording instead of re-deriving it --
@@ -1820,8 +1822,11 @@ contractTest("genesis view renders the gate's tri-state without collapsing it", 
   // The four terminal job states are four answers, never ok/not-ok. In
   // particular `provisional` must not read as success: it means the network was
   // registered AND a refuse-tier check could not run.
+  // unit #23: `statusClasses` (the switch these four cases live in) moved to
+  // lib/genesisArtifacts.ts, alongside `statusLabel`, once BOTH the hub's
+  // history row and this detail page needed to colour a job's status.
   for (const status of ["refused", "provisional", "published", "error"]) {
-    pin.match(page, new RegExp(`case "${status}":`), `expected the ${status} job state to be named on the genesis page`);
+    pin.match(genesisLib, new RegExp(`case "${status}":`), `expected the ${status} job state to be named in the shared status helpers`);
   }
   pin.match(genesisLib, /잠정 등록 — 미확인 검사 있음/, "expected the provisional label to state that a check could not run");
   pin.match(genesisLib, /거부됨 — 등록하지 않음/, "expected the refused label to state that nothing was registered");
@@ -1935,6 +1940,14 @@ contractTest("genesis primary CTAs stay legible on the inverted dark palette", (
     violation,
     "expected the phases signal-staging button not to pair bg-slate-900 with text-white (renders ivory-on-ivory; use text-ink)",
   );
+  // unit #23: the drawer's own primary CTA (적용 승인) moved to its own route --
+  // swept here too so the sweep does not stop covering it just because it
+  // changed address.
+  pin.doesNotMatch(
+    read("app/genesis/jobs/[id]/page.tsx"),
+    violation,
+    "expected the detail route's 적용 승인 button not to pair bg-slate-900 with text-white (renders ivory-on-ivory; use text-ink)",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1981,7 +1994,9 @@ contractTest("genesis primary CTAs stay legible on the inverted dark palette", (
 // What was given up is only that severity no longer decides what the reader is
 // LOOKING AT. That is a presentation choice the user made; it drops no claim.
 contractTest("U-1: the R1.5 grid starts with every cell closed, and severity still reads off the cells", (pin) => {
-  const page = read("app/genesis/page.tsx");
+  // unit #23: GateCheckGrid moved to the detail route with the rest of the
+  // drawer's content.
+  const page = read("app/genesis/jobs/[id]/page.tsx");
   const gridBody = sliceBetween(page, "function GateCheckGrid(", "/** The five downloadable artifacts");
   pin.match(gridBody, /\S/, "expected to find the GateCheckGrid body (markers moved? every doesNotMatch below would pass vacuously on empty input)");
   // The two helpers that own every class a cell wears. Sliced apart from the
@@ -2168,12 +2183,28 @@ contractTest("U-1: the R1.5 grid starts with every cell closed, and severity sti
 // items 9, 10, 14 and the LIST/MASTER-DETAIL reference paragraphs).
 // ---------------------------------------------------------------------------
 
-contractTest("U-1: the genesis page is a list/detail split with ONE verdict header", (pin) => {
+// RETIRED (unit #23, 2026-08-14): "U-1: the genesis page is a list/detail
+// split with ONE verdict header". The floor plan this test pinned -- a
+// ~46%-wide right column that opened beside the history table when a row was
+// clicked -- no longer exists. That is the point of this unit (user decision,
+// docs/product/mockups/genesis-detail-layout-mockup-2026-08-14.html option
+// D): the drawer's real workflow needed the map wide, which a 46% column
+// could never give it, so every generation now gets its own route instead of
+// an in-page selection. Every BEHAVIOUR this test held onto survives below,
+// split across the two tests that replace it (the hub is a list with a modal;
+// the detail route holds the merged verdict header, the split and the fix
+// flow) -- nothing here was dropped silently. What did NOT survive, because
+// the concept it named stopped existing rather than moving: `selectedId`,
+// the auto-select guard, the `{!selected ? (` nothing-selected branch and its
+// quiet empty-state line, and `aria-selected` on a row (a row is a link now,
+// not a local selection).
+
+contractTest("unit #23: the genesis hub is a history list with one primary action opening a modal", (pin) => {
   const page = read("app/genesis/page.tsx");
 
-  // THE TABLE. The user's LIST REFERENCE names its five columns; a history row
-  // that lost one of them is a row that stopped distinguishing two generations
-  // of the same city, which is the gap U-1-quick #5 closed in the first place.
+  // THE TABLE survives verbatim -- the user's LIST REFERENCE names its five
+  // columns; a history row that lost one of them is a row that stopped
+  // distinguishing two generations of the same city (U-1-quick #5).
   for (const [ko, en] of [
     ["이름", "Name"],
     ["생성일", "Created"],
@@ -2197,32 +2228,82 @@ contractTest("U-1: the genesis page is a list/detail split with ONE verdict head
     /border-b/,
     "expected borderless history rows -- the LIST REFERENCE puts the separation in the row height",
   );
-  pin.match(page, /aria-selected=\{job\.id === selectedId\}/, "expected the clicked row to announce itself as selected");
   pin.match(
     page,
     /const HISTORY_PAGE_SIZE = 10;/,
     "expected pagination once the list grows past a page, as the LIST REFERENCE asks",
   );
 
-  // NOTHING SELECTED ON ARRIVAL, and ONE quiet line where the drawer would be.
-  // The previous version seeded `selectedId` from the newest job, so the whole
-  // right-hand column was full before the reader picked anything.
-  pin.doesNotMatch(
-    page,
-    /setSelectedId\(\(current\) => current \|\| entries\[0\]/,
-    "expected the history list to stop auto-selecting its newest row",
-  );
-  pin.match(page, /\{!selected \? \(/, "expected an explicit nothing-selected branch for the detail pane");
+  // NEW (unit #23): a row click is a real navigation, not a local selection --
+  // matched in both the click and the keyboard (Enter/Space) handler, so the
+  // row stays operable without a mouse.
+  const rowNavigations = (historyRows.match(/router\.push\(`\/genesis\/jobs\/\$\{job\.id\}`\)/g) ?? []).length;
   pin.match(
-    page,
-    /왼쪽 생성 이력에서 한 줄을 선택하면/,
-    "expected ONE quiet empty-state line in the right pane, not an empty scaffold",
+    `count=${rowNavigations}`,
+    /^count=2$/,
+    "expected the history row to navigate to its own detail route from both the click and the keyboard handler",
   );
 
-  // THE MERGED VERDICT HEADER (item 10). Two banners said the same thing in two
-  // boxes; there is now one block, and the counts are the Console stat pattern
-  // (small muted label above, large bold value below) rather than a run-on
-  // sentence. `statusLabel` stays the ONE source of the status wording.
+  // NEW (unit #23): ONE primary action, top-right of the page header, that
+  // OPENS a dialog rather than starting anything itself -- the Console list
+  // pattern's "one control" rule, now applied at the page level so the list
+  // panel's own action slot can stay reserved for pagination.
+  pin.match(
+    page,
+    /onClick=\{\(\) => setModalOpen\(true\)\}[\s\S]{0,80}className="ui-button-primary/,
+    "expected ONE primary 새 생성 button that opens the modal, styled as this app's one sanctioned primary CTA",
+  );
+  const primaryTriggers = (page.match(/setModalOpen\(true\)/g) ?? []).length;
+  pin.match(`count=${primaryTriggers}`, /^count=1$/, "expected exactly one control that can open the new-generation modal");
+
+  // NEW (unit #23): the modal reuses the shared dialog primitive -- Escape
+  // and backdrop-click are ModalDialog's OWN job (components/genesis/ui.tsx,
+  // checked in the dedicated ModalDialog test below), so this page only needs
+  // to prove it is actually wired to that component, not a bespoke overlay.
+  pin.match(page, /import \{ ModalDialog, Panel, PageHelp, refusalHeadline \} from "@\/components\/genesis\/ui";/, "expected the hub to take its dialog from the shared primitive, not a bespoke overlay");
+  pin.match(
+    page,
+    /<ModalDialog\s*\n\s*open=\{modalOpen\}\s*\n\s*onClose=\{\(\) => setModalOpen\(false\)\}/,
+    "expected the new-generation dialog to be driven by the page's own open/close state, not an uncontrolled one",
+  );
+
+  // The form itself -- file input, exclude-service checkbox, both dropdowns
+  // and the submit button -- moved INTO the dialog's children, whole. Checked
+  // by proving the submit control is textually inside the ModalDialog block
+  // (open marker to the file's end, since this is the last JSX in the file).
+  const modalBody = page.slice(page.indexOf("<ModalDialog"));
+  pin.match(modalBody, /accept=".osm,.xml"/, "expected the file input to live inside the modal");
+  pin.match(modalBody, /checked=\{excludeService\}/, "expected the exclude-service checkbox to live inside the modal");
+  pin.match(modalBody, /생성 시작/, "expected the submit button to live inside the modal");
+
+  // NEW (unit #23): the list stays live while anything on it is still
+  // running, since the per-job poll that used to do this lives on the detail
+  // route now and this page does not open it.
+  pin.match(
+    page,
+    /if \(!jobs\.some\(\(job\) => !isTerminal\(job\.status\)\)\) return;/,
+    "expected the hub to keep polling the list while any job on it is non-terminal",
+  );
+
+  // NOTHING BELOW 12px (SECOND ELABORATION item 13), still true post-split.
+  for (const [label, source] of [
+    ["app/genesis/page.tsx", page],
+    ["components/genesis/ui.tsx", read("components/genesis/ui.tsx")],
+  ] as const) {
+    pin.doesNotMatch(
+      source,
+      /text-\[(?:[0-9]|1[01])(?:\.\d+)?px\]/,
+      `expected no type below 12px in ${label} -- the Console pass sets 13px body / 12px secondary as the floor`,
+    );
+  }
+});
+
+contractTest("unit #23: the genesis detail route holds the merged verdict header and the 65/35 split", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  // THE MERGED VERDICT HEADER (item 10, unchanged by the move to a route).
+  // Two banners said the same thing in two boxes; there is one block, and the
+  // counts are the Console stat pattern rather than a run-on sentence.
   pin.match(page, /function Stat\(\{ label, value, tone \}/, "expected the Console stat pattern to exist as one named component");
   for (const [ko, en] of [["통과", "pass"], ["실패", "fail"], ["확인 불가", "not checkable"]]) {
     pin.match(
@@ -2235,7 +2316,7 @@ contractTest("U-1: the genesis page is a list/detail split with ONE verdict head
   pin.match(
     `count=${verdictBanners}`,
     /^count=2$/,
-    "expected the selected job's status phrase in exactly two places -- the drawer header chip and the verdict header's pre-report fallback -- never a second banner repeating the gate verdict",
+    "expected the selected job's status phrase in exactly two places -- the top bar's status chip and the verdict header's pre-report fallback -- never a second banner repeating the gate verdict",
   );
   pin.match(
     page,
@@ -2243,19 +2324,68 @@ contractTest("U-1: the genesis page is a list/detail split with ONE verdict head
     "expected ONE headline that is the gate verdict when there is one and the job status otherwise -- not both stacked",
   );
 
-  // The artifact download row lives in the drawer's own 아티팩트 section, under
-  // the verdict, exactly once.
-  pin.match(page, /title=\{t\("아티팩트", "Artifacts", "アーティファクト"\)\}/, "expected a titled 아티팩트 section in the drawer");
+  // The artifact row is compacted into the top bar's right side (still gated
+  // on the job actually carrying an artifact), exactly once.
   const artifactRows = (page.match(/<ArtifactRow /g) ?? []).length;
   pin.match(`count=${artifactRows}`, /^count=1$/, "expected exactly one artifact row on the page");
+  pin.match(
+    page,
+    /\{selected\.artifact && \(\s*\n\s*<div className="shrink-0[\s\S]{0,200}<ArtifactRow/,
+    "expected the artifact row to be gated on the job actually carrying an artifact",
+  );
 
-  // NOTHING BELOW 12px (SECOND ELABORATION item 13) -- on this page AND in the
-  // chrome every genesis screen shares, because a 9px ⓘ glyph or an 11px
-  // 접기 button is exactly the residual the Console pass exists to remove, and
-  // it would otherwise survive by living one file over.
+  // NEW (unit #23): the 65/35 split -- map wide on the left, verdict/fix rail
+  // narrow on the right (mockup option D, user decision 2026-08-14) --
+  // inverted from the old drawer's map-under-the-grid stack.
+  pin.match(
+    page,
+    /xl:grid-cols-\[65fr_35fr\]/,
+    "expected the map/rail split to be 65/35, per the accepted mockup option",
+  );
+  pin.match(page, /<GenesisTileMap jobId=\{selected\.id\} report=\{report\} hasArtifact=\{Boolean\(selected\.artifact\)\}/, "expected the map to sit in the split's left column");
+  pin.match(page, /<GateCheckGrid/, "expected the V1-V9 grid to sit in the split's right column");
+
+  // NEW (unit #23): every fetch keys off the URL's id, not off anything a
+  // hub visit might have left in memory -- required for a cold, deep-linked
+  // load to work at all.
+  pin.match(page, /const params = useParams<\{ id: string \}>\(\);/, "expected the job id to be read from the route's own params");
+  pin.match(page, /const record = await fetchGenesisJob\(jobId\);/, "expected the job poll to fetch by the URL's id");
+  pin.match(page, /\}, \[jobId\]\);/, "expected the job poll effect to be keyed on the URL's id");
+
+  // NEW (unit #23): the stale-flash guard -- `selected` is read back only
+  // when the cached entry's own id still matches the CURRENT url, the same
+  // discipline the old drawer used to stop one job's verdict from surviving
+  // on screen under a different job's heading.
+  pin.match(
+    page,
+    /const selected = selectedEntry && selectedEntry\.id === jobId \? selectedEntry\.record : null;/,
+    "expected the displayed job to be read back only when its cache key still matches the URL's id",
+  );
+
+  // NEW (unit #23): an unknown or foreign id renders a named empty state with
+  // a way back, never a crash -- and the back link is present in every branch
+  // (not-found, loading, and the full render), not only the happy path.
+  pin.match(
+    page,
+    /이 생성을 찾을 수 없습니다 — 삭제되었거나 다른 프로젝트의 생성일 수 있습니다\./,
+    "expected an unknown/foreign job id to render a named empty state",
+  );
+  const backLinks = (page.match(/href="\/genesis"/g) ?? []).length;
+  pin.match(`count=${backLinks}`, /^count=1$/, "expected the back-to-history link to be declared once and reused across every branch (not-found, loading, full render)");
+
+  // NEW (unit #23): approving a fix now NAVIGATES to the sibling job's own
+  // route instead of re-pointing an in-page selection at it -- the lineage
+  // line the sibling's own top bar renders is what makes the jump legible.
+  pin.match(
+    page,
+    /const handleFixApplied = useCallback\(\s*\n\s*\(appliedJob: GenesisJob\) => \{\s*\n\s*router\.push\(`\/genesis\/jobs\/\$\{appliedJob\.id\}`\);/,
+    "expected a fix apply to navigate to the sibling job's own detail route",
+  );
+
+  // NOTHING BELOW 12px (SECOND ELABORATION item 13) -- extended to the new
+  // route and the map/comparison chrome it now mounts.
   for (const [label, source] of [
-    ["app/genesis/page.tsx", page],
-    ["components/genesis/ui.tsx", read("components/genesis/ui.tsx")],
+    ["app/genesis/jobs/[id]/page.tsx", page],
     ["components/genesis/findings.tsx", read("components/genesis/findings.tsx")],
     ["components/genesis/GenesisTileMap.tsx", read("components/genesis/GenesisTileMap.tsx")],
     ["components/genesis/GenesisComparisonPanel.tsx", read("components/genesis/GenesisComparisonPanel.tsx")],
@@ -2266,6 +2396,23 @@ contractTest("U-1: the genesis page is a list/detail split with ONE verdict head
       `expected no type below 12px in ${label} -- the Console pass sets 13px body / 12px secondary as the floor`,
     );
   }
+});
+
+contractTest("unit #23: ModalDialog is the shared centered-dialog primitive, reachable the same three ways PageHelp is", (pin) => {
+  const ui = read("components/genesis/ui.tsx");
+
+  pin.match(ui, /export function ModalDialog\(/, "expected one shared centered-dialog primitive");
+  const modalBody = sliceBetween(ui, "export function ModalDialog(", "\n/**\n * ko/en/ja for the backend's stable refusal codes");
+  pin.match(modalBody, /\S/, "expected to find the ModalDialog body (markers moved?)");
+  pin.match(modalBody, /role="dialog"/, "expected the dialog to announce itself as a dialog");
+  pin.match(modalBody, /aria-modal="true"/, "expected the dialog to be marked modal");
+  pin.match(modalBody, /event\.key === "Escape"/, "expected Escape to close it, the same as PageHelp");
+  pin.match(
+    modalBody,
+    /className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950\/50[^"]*"\s*\n\s*onClick=\{onClose\}/,
+    "expected a click on the backdrop to close the dialog",
+  );
+  pin.match(modalBody, /closeRef\.current\?\.focus\(\);/, "expected the close button to take focus on open, the same as PageHelp");
 });
 
 contractTest("U-1: the comparison's scope sentence has exactly one source", (pin) => {
@@ -2339,7 +2486,9 @@ contractTest("U-1: the four genesis screens share one Panel and one refusalHeadl
 
 contractTest("U-1-quick: artifact downloads go through apiFetch, never a bare href", (pin) => {
   const api = read("lib/api.ts");
-  const page = read("app/genesis/page.tsx");
+  // unit #23: ArtifactRow moved to the detail route (compacted into its own
+  // top bar) with the rest of the drawer's content.
+  const page = read("app/genesis/jobs/[id]/page.tsx");
 
   // THE BUG, reported from live use: all five artifact buttons did nothing.
   // They were plain anchors built from `genesisArtifactUrl()` = `apiUrl(...)`,
@@ -2391,6 +2540,9 @@ contractTest("U-1-quick: artifact downloads go through apiFetch, never a bare hr
 contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation hints are deleted", (pin) => {
   const ui = read("components/genesis/ui.tsx");
   const page = read("app/genesis/page.tsx");
+  // unit #23: 판정/잠정 등록's own doctrine moved a second time -- off the hub's
+  // PageHelp (it described the DRAWER) and onto the drawer's own route.
+  const detail = read("app/genesis/jobs/[id]/page.tsx");
   // CO-EDITED by U-1-map: `GateFindingsMap.tsx` is gone. Its fetch/states/
   // detail composition became `GenesisTileMap.tsx` (leaflet + CARTO over the
   // server-computed WGS84) and its pan/zoom SVG canvas became
@@ -2435,35 +2587,42 @@ contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation
   // drawer entry's `title`/`body` instead of an `<InfoTip>` -- checked below,
   // together with proof that the OLD inline `<InfoTip>` is actually gone from
   // each of the three positions, not merely duplicated.
+  //
+  // UNIT #23: 판정 게이트 and 잠정 등록 moved a THIRD time -- off the hub's own
+  // PageHelp (genesisHelpEntries, which described the drawer) and onto the
+  // drawer's own route, alongside the R1.5 grid they were always about. 제외
+  // 도로 stayed on the hub (it is the exclude-service checkbox's own
+  // doctrine, and that checkbox is still part of the hub's generation form).
   pin.doesNotMatch(
     page,
     /checked=\{excludeService\}[\s\S]{0,500}<InfoTip/,
     "expected the excluded-roads ⓘ to be gone from beside the checkbox -- it now lives in the page's help drawer",
-  );
-  pin.doesNotMatch(
-    page,
-    /\{t\("판정", "Verdict", "判定"\)\}[\s\S]{0,120}<InfoTip/,
-    "expected the verdict-grid doctrine ⓘ to be gone from inline -- it now lives in the page's help drawer",
-  );
-  pin.doesNotMatch(
-    page,
-    /등록되었지만 잠정입니다[\s\S]{0,250}<InfoTip/,
-    "expected the provisional-status doctrine ⓘ to be gone from inline -- it now lives in the page's help drawer",
   );
   pin.match(
     page,
     /t\("제외 도로"[\s\S]{0,300}제외된 도로는 버려지지 않고/,
     "expected the excluded-roads disclosure to survive as a PageHelp drawer entry in this file",
   );
-  pin.match(
-    page,
-    /t\("판정 게이트"[\s\S]{0,400}R1\.5 검증 게이트 V1–V9/,
-    "expected the R1.5 doctrine sentence to survive as a PageHelp drawer entry in this file",
+
+  pin.doesNotMatch(
+    detail,
+    /\{t\("판정", "Verdict", "判定"\)\}[\s\S]{0,120}<InfoTip/,
+    "expected the verdict-grid doctrine ⓘ to be gone from inline -- it now lives in the detail page's own help drawer",
+  );
+  pin.doesNotMatch(
+    detail,
+    /등록되었지만 잠정입니다[\s\S]{0,250}<InfoTip/,
+    "expected the provisional-status doctrine ⓘ to be gone from inline -- it now lives in the detail page's own help drawer",
   );
   pin.match(
-    page,
+    detail,
+    /t\("판정 게이트"[\s\S]{0,400}R1\.5 검증 게이트 V1–V9/,
+    "expected the R1.5 doctrine sentence to survive as a PageHelp drawer entry on the detail route",
+  );
+  pin.match(
+    detail,
     /t\("잠정 등록"[\s\S]{0,600}프로젝트에 등록되었습니다\. 다만 실행되지 못한/,
-    "expected the provisional doctrine paragraph to survive as a PageHelp drawer entry in this file",
+    "expected the provisional doctrine paragraph to survive as a PageHelp drawer entry on the detail route",
   );
 
   // The one line that was DELETED rather than moved: how to use a mouse is not
@@ -3369,6 +3528,11 @@ contractTest("U-1-map: the genesis screens use three accent colours, and the fou
   // WORD is printed either way. A hue was dropped; no claim was.
   const files: Array<[string, string]> = [
     ["app/genesis/page.tsx", read("app/genesis/page.tsx")],
+    // unit #23: the check-state chip/card colours (checkStateTagClasses,
+    // checkCellClasses) moved to the detail route with the rest of the
+    // gate grid -- swept here too, not just on the hub that no longer
+    // renders them.
+    ["app/genesis/jobs/[id]/page.tsx", read("app/genesis/jobs/[id]/page.tsx")],
     ["components/genesis/findings.tsx", read("components/genesis/findings.tsx")],
     ["components/genesis/GenesisTileMap.tsx", read("components/genesis/GenesisTileMap.tsx")],
     ["components/genesis/DraftLocalMap.tsx", read("components/genesis/DraftLocalMap.tsx")],
@@ -3475,7 +3639,8 @@ contractTest("B3: generation comparison stays scoped to gate results and named c
   // page.tsx owns that fetch and its error state, so it must forward it.
   pin.match(panel, /currentReportError \? \(/, "expected a failed current-report fetch to branch to a named error state before the loading message");
   pin.match(panel, /현재 생성의 게이트 결과를 불러오지 못해 비교할 수 없습니다/, "expected the failed current-report state to be named on screen");
-  pin.match(read("app/genesis/page.tsx"), /currentReportError=\{reportError\}/, "expected page.tsx to forward its report-fetch error into the comparison panel");
+  // unit #23: GenesisComparisonPanel's mount point moved to the detail route.
+  pin.match(read("app/genesis/jobs/[id]/page.tsx"), /currentReportError=\{reportError\}/, "expected the detail page to forward its report-fetch error into the comparison panel");
 
   // FIX B3-6: the "compare against" picker showed a raw `job.status` and a
   // raw ISO `job.created_at` next to the job history list's already-
@@ -4254,7 +4419,9 @@ contractTest("U-19 round 2: one width formula draws width-scaled ribbons in both
 // ---------------------------------------------------------------------------
 
 contractTest("B5-2 stage 4: a disposition's own status is not the actionable test", (pin) => {
-  const page = read("app/genesis/page.tsx");
+  // unit #23: the fix strip moved to the detail route with the rest of the
+  // drawer's content.
+  const page = read("app/genesis/jobs/[id]/page.tsx");
 
   // THE TRAP: `_render_fix_disposition`'s own docstring (routers/genesis.py)
   // names "three shapes, never a fourth" -- an AUTOMATABLE-DECLARED mapping
@@ -4277,7 +4444,7 @@ contractTest("B5-2 stage 4: a disposition's own status is not the actionable tes
 });
 
 contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
-  const page = read("app/genesis/page.tsx");
+  const page = read("app/genesis/jobs/[id]/page.tsx");
 
   // The informational branch -- NOT_AUTOMATABLE, VERB_UNREGISTERED, or an
   // AUTOMATABLE mapping's structural refusal (see the test above) -- must
@@ -4311,7 +4478,7 @@ contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
 });
 
 contractTest("B5-2 stage 4: the requires-gated button and the demand-estimate confidence chip", (pin) => {
-  const page = read("app/genesis/page.tsx");
+  const page = read("app/genesis/jobs/[id]/page.tsx");
 
   // `missingRequired` is computed from EVERY field the backend named in
   // `disposition.requires`, not a hand-picked subset (e.g. only "volume").
@@ -4349,7 +4516,7 @@ contractTest("B5-2 stage 4: the requires-gated button and the demand-estimate co
 });
 
 contractTest("B5-2 stage 4: the inherited-auto-publish disclosure is on every approval card", (pin) => {
-  const page = read("app/genesis/page.tsx");
+  const page = read("app/genesis/jobs/[id]/page.tsx");
   pin.match(
     page,
     /승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다 — 통과하면 그 결과가 자동으로 이 프로젝트의 활성 데이터셋으로 등록됩니다/,
@@ -4361,7 +4528,7 @@ contractTest("B5-2 stage 4: the inherited-auto-publish disclosure is on every ap
 });
 
 contractTest("B5-2 stage 4: the fixes fetch is cached once per (job, verdict), and apply goes through the typed helper", (pin) => {
-  const page = read("app/genesis/page.tsx");
+  const page = read("app/genesis/jobs/[id]/page.tsx");
   const api = read("lib/api.ts");
 
   // Same discipline as the gate report fetch immediately above it in source,
@@ -4415,7 +4582,8 @@ contractTest("B5-2 stage 4: the fixes fetch is cached once per (job, verdict), a
 });
 
 contractTest("B5-2 stage 4: a fix job's drawer header states its own lineage", (pin) => {
-  const page = read("app/genesis/page.tsx");
+  // unit #23: the lineage line is now in the detail route's own top bar.
+  const page = read("app/genesis/jobs/[id]/page.tsx");
   const api = read("lib/api.ts");
 
   // key-ABSENT on an ordinary generation (never null) -- the same discipline
@@ -4443,18 +4611,20 @@ contractTest("B5-2 stage 4: a fix job's drawer header states its own lineage", (
     "expected the lineage line to read parent id, finding_code and approved_by, in that order",
   );
 
-  // The history table grew NO new column for this -- the drawer carries it.
-  const historyHead = sliceBetween(page, "<thead>", "</thead>");
+  // The history table grew NO new column for this -- the detail page's own
+  // top bar carries it. unit #23: the table itself stayed on the hub.
+  const hub = read("app/genesis/page.tsx");
+  const historyHead = sliceBetween(hub, "<thead>", "</thead>");
   pin.match(historyHead, /\S/, "expected to find the history table's own header row (markers moved?)");
   pin.doesNotMatch(
     historyHead,
     /파생|Derived from/,
-    "expected the history table to grow no lineage column -- the drawer carries it",
+    "expected the history table to grow no lineage column -- the detail page's top bar carries it",
   );
 });
 
 contractTest("B5-2 stage 4: the same-code apply guard is computed job-wide, not per check", (pin) => {
-  const page = read("app/genesis/page.tsx");
+  const page = read("app/genesis/jobs/[id]/page.tsx");
 
   // `POST .../fixes/apply` addresses a finding by CODE ALONE and
   // `_finding_in_stored_gate` (backend/services/genesis_jobs.py) resolves the
@@ -4506,8 +4676,9 @@ contractTest("B5-2 stage 4: the genesis_fix_* refusal codes join the shared head
 
   // The error box below the apply button quotes `reasons` verbatim (never a
   // re-worded backend refusal) -- the same discipline `selected.refusal`
-  // already uses elsewhere on this page.
-  const page = read("app/genesis/page.tsx");
+  // already uses elsewhere on this page. unit #23: this page is now the
+  // detail route.
+  const page = read("app/genesis/jobs/[id]/page.tsx");
   pin.match(
     page,
     /headline: refusalHeadline\(\s*\n\s*caught\.code,\s*\n\s*t,/,

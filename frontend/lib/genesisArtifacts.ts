@@ -671,3 +671,78 @@ export function formatTimestamp(iso: string | null, lang: "ko" | "en" | "ja"): s
   const locale = lang === "ko" ? "ko-KR" : lang === "ja" ? "ja-JP" : "en-US";
   return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
 }
+
+// ---------------------------------------------------------------------------
+// Unit #23 -- moved here from app/genesis/page.tsx when the drawer became its
+// own route (app/genesis/jobs/[id]/page.tsx). Both the hub's history table
+// AND the detail page's own header now need to colour a job's status and to
+// know whether a job is still running -- one copy each, joining `statusLabel`
+// above for the same reason it already lives here: two independently-drifting
+// copies is how a hub row and a detail header end up disagreeing about
+// whether a job is finished.
+// ---------------------------------------------------------------------------
+
+/** How often a running job is re-read. Generation is seconds-to-a-minute of
+ * pure Python (no COM, no Vissim), so a one-second poll is both cheap and
+ * fast enough to feel live. */
+export const POLL_INTERVAL_MS = 1000;
+//: A terminal job is still re-gatable (attach_live_check), so it keeps being
+//: observed -- just slowly. 15 s is chosen against what it is watching for: a
+//: human on another machine running the live probe and posting its state.json,
+//: an action measured in minutes. Fast enough that nobody stares at a verdict
+//: that has already been overturned, slow enough to be invisible in the logs.
+export const TERMINAL_RECHECK_MS = 15000;
+
+export const TERMINAL: GenesisJobStatus[] = ["refused", "provisional", "published", "error"];
+
+export function isTerminal(status: GenesisJobStatus): boolean {
+  return TERMINAL.includes(status);
+}
+
+/**
+ * THREE COLOURS, AND THE FOURTH STATE IS MONO. (User decision, 2026-08-13.)
+ *
+ * This screen may use exactly three accents and no others:
+ *   rose    — fail / refused
+ *   emerald — pass / published
+ *   sky     — selection, info, links
+ *
+ * Everything that used to be AMBER — `not_checkable`, `provisional`, warn-tier
+ * findings, a verdict resting on an attestation — is now MONO: ink-strength
+ * text inside a heavier (2px) neutral border, or a filled neutral chip. It is
+ * told apart by WEIGHT and SHAPE, never by a fourth hue.
+ *
+ * WHY THAT IS SAFE, and it is the only question that matters here. R1.5's rule
+ * is that a check which could not RUN must never read as fine. What made the
+ * old amber unsafe was that globals.css remaps the whole amber family to
+ * NEUTRAL for this theme — so the state that most needed to stand out was
+ * already rendering grey, at the SAME weight as ordinary chrome. Mono with a
+ * doubled border, beside a green pass chip, is louder than that was, and the
+ * word (확인 불가 / 잠정) is printed either way. A hue was dropped; no claim was.
+ *
+ * TINTED BOX = TINT IN THE BACKGROUND AND THE BORDER, INK IN THE TEXT — the
+ * other half of the rule, and the contrast bug it fixes (U-1 second
+ * elaboration item 11, plus the region page's blue-on-blue box reported the
+ * same day). globals.css remaps the Tailwind ramps for dark, but only the
+ * shades this app actually used: `bg-emerald-50` became a DARK green (#1e2b22)
+ * while the emerald 900 foreground was never remapped and stayed Tailwind's
+ * default #064e3b — dark green on dark green. Same trap for sky's 700/800/900
+ * over `bg-sky-50` (#032042). So a tinted box takes its foreground from the
+ * remapped LIGHT end of its own family: emerald-800 (#b0d5b6), rose-800
+ * (#ecac9c), sky-600 (#6da7ec — literally the Console badge pairing the
+ * palette lock names for this navy). Borders come from shades the remap covers
+ * (`*-200`/`*-300`), never from `*-400+` of a tinted family.
+ */
+export function statusClasses(status: GenesisJobStatus): string {
+  switch (status) {
+    case "published":
+      return "border-emerald-300 bg-emerald-50 text-emerald-800";
+    case "provisional":
+      return "border-slate-400 bg-slate-100 text-slate-900";
+    case "refused":
+    case "error":
+      return "border-rose-300 bg-rose-50 text-rose-800";
+    default:
+      return "border-sky-200 bg-sky-50 text-sky-600";
+  }
+}

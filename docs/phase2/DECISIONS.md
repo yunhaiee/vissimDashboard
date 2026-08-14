@@ -6447,7 +6447,7 @@ not a place — the roofline already belongs to the dashboard), and stays OUT of
 `ROUTE_STAGE` with its reason written beside /admin's: a page ABOUT the pipeline gets no
 stage highlight, because claiming one would be a fact this app does not have.
 
-**Verification.** Contract 83→**88** (5 new tests; the root-redirect pin re-pinned with
+**Verification (#22).** Contract 83→**88** (5 new tests; the root-redirect pin re-pinned with
 its story updated — "the dashboard is stage ③, not the front door"), each new pin
 mutation-verified (redirect target, the 401 branch, the nav link, a raw-fetch ban, the
 no-project branch's render scope). Live anonymous: `/` redirects, the real project's
@@ -6457,3 +6457,39 @@ stepper was confirmed ABSENT on the page. Typecheck and build clean, re-verified
 independently. Named residuals: the populated ② card, the ①/③ empty states and the true
 no-project branch were source+pin-proven only — this workspace has data, this session has
 no login, and neither fact was worth faking to watch a branch fire.
+
+## 2026-08-14 — #23: every generation gets an address, and the drawer retires
+
+**What (mockup option D, user-chosen, plus their hub refinement).** The #13 drawer — 46%
+of the page holding verdict, grid, fix cards, map and artifacts in one stacked column —
+was the user's named dislike: the map was always the understudy. Four floor plans were
+drawn and committed BEFORE any edit (`genesis-detail-layout-mockup-2026-08-14.html`); the
+user picked D and sharpened the hub: 새 생성 and 생성 이력 become the same level of
+choice. Shipped: the hub IS the history list with ONE primary action top-right — 새 생성
+opens the whole form as a centered `ModalDialog` (new shared primitive beside PageHelp:
+Escape, backdrop, focus, aria-modal; the HUB owns the state, so closing mid-submit hides
+JSX without orphaning the in-flight request) — and a started job appears in the list,
+which now polls. Clicking a row navigates to **`/genesis/jobs/[id]`**: top bar (back link,
+name, chip, stat counts, sha, lineage, artifacts), then the mockup's split — map LEFT at
+65%, the V1–V9 grid + finding detail + B5-2 fix cards in the right rail. A fix approval
+now NAVIGATES to the sibling job's own page — the derived_from lineage became the
+information architecture. The comparison panel sits full-width below the split, by name:
+a 35% rail would recreate the cramped column this unit exists to kill. Unknown id → named
+state + back link; deep links cold-load off the URL param.
+
+**Verification.** Pin reconciliation, fully accounted: 13 tests retargeted content-
+unchanged, 2 sweeps extended to the new route, ONE retired by name (the 46%-split test —
+its floor plan is the thing this unit removed, and its retirement comment names exactly
+which concepts died with it: selectedId, auto-select guard, the empty drawer branch), 3
+added (hub list+modal, detail split+verdict, ModalDialog primitive) with 10 targeted
+mutations each caught by exactly its intended pin (87/90 under mutation, 90/90 restored).
+The transplant's four silent-loss risks each carry a stated prevention: job-switch
+selection reset stays id-keyed so a sibling navigation blanks the old verdict BEFORE any
+fetch; the gate/fixes caches keep their (id, verdict) keys; fix-apply navigates on the
+RESPONSE's job id, never a reconstruction; the modal reuses the same submit guard
+instance. Contract **90/90**, typecheck and build clean (dynamic route listed), re-run
+independently; live anonymous: modal open/close, real-id detail render, unknown-id named
+state, back link. Named residuals: the create flow needs login; backdrop-click close is
+mutation-proven but was not literally clicked (pane tooling); hub row polling is NEW —
+the brief assumed it existed, the builder found it did not, and added it rather than
+letting a fresh job's row sit frozen (disclosed as an addition, not smuggled).
