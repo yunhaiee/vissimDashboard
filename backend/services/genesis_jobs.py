@@ -158,6 +158,7 @@ import shutil
 import threading
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Mapping
 from uuid import uuid4
@@ -170,6 +171,9 @@ from services.genesis.compose import NO_LAYERS, ComposedLayers
 from services.genesis.draft import DraftNetwork, build_draft
 from services.genesis.emit import EmitRefused, emit_inpx
 from services.genesis.gate import (
+    OVERLAP_DECIMALS,
+    SHORT_LINK_FLOOR_M,
+    ZERO_LENGTH_M,
     CheckState,
     GateResult,
     GateVerdict,
@@ -2282,12 +2286,234 @@ def derive_v6_node_evidence(link_id: str) -> dict[str, Any] | None:
     return None
 
 
+#: Every V7 finding code ``services.agent.genesis_fixes`` maps to
+#: ``set_link_geometry`` -- the codes :func:`derive_v7_corrected_polyline`
+#: answers for. Mirrors the registration block in that module; the mirror
+#: itself is pinned by ``tests/test_genesis_fix_v7_polyline.py``.
+V7_GEOMETRY_FINDING_CODES = (
+    "v7_link_without_geometry",
+    "v7_zero_length_link",
+    "v7_link_below_generator_floor",
+    "v7_links_share_one_polyline",
+)
+
+#: The one draft field a V7 correction may ever come from -- recorded verbatim
+#: in every derivation's provenance so the evidence names its own source.
+_V7_DRAFT_SOURCE_FIELD = "links[].points"
+
+
+def _rounded_polyline(points: Any, decimals: int = OVERLAP_DECIMALS) -> tuple | None:
+    """The polyline rounded for EQUALITY at the judge's own precision
+    (``gate.OVERLAP_DECIMALS`` -- the exact rounding ``_check_v7`` groups
+    shared polylines with), or ``None`` for anything malformed."""
+    try:
+        return tuple((round(float(p[0]), decimals), round(float(p[1]), decimals)) for p in points)
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+@lru_cache(maxsize=8)
+def _emitted_polylines_cached(
+    path_text: str, mtime_ns: int, size: int
+) -> dict[str, tuple] | None:
+    """``services.genesis.diff.load_topology``'s per-link geometry for one
+    ``.inpx``, cached on ``(path, mtime, size)`` so the fixes-listing route --
+    which re-derives per FINDING -- parses a real refused artifact once, not
+    once per shared-polyline group (a real Daejeon region job carries 66 of
+    them). The mtime/size key means a re-gated or fixed artifact re-parses.
+    Function-local import for the same reason :func:`derive_v6_node_evidence`
+    imports locally: keep this module's import surface minimal."""
+    from services.genesis.diff import load_topology  # noqa: PLC0415
+
+    topology, _findings = load_topology(Path(path_text))
+    if topology is None:
+        return None
+    return dict(topology.geometry)
+
+
+def _emitted_link_polylines(job_id: str) -> dict[str, tuple] | None:
+    """The polylines the job's CURRENT ``.inpx`` artifact actually carries,
+    by link id -- or ``None`` when there is no readable artifact. Never
+    raises: like :func:`job_draft_or_none`, an unreadable artifact means a
+    caller derives LESS, not that it fails outright."""
+    try:
+        path = artifact_path(job_id, "inpx")
+        stat = path.stat()
+    except (GenesisJobNotFoundError, OSError):
+        return None
+    return _emitted_polylines_cached(str(path), stat.st_mtime_ns, stat.st_size)
+
+
+def derive_v7_corrected_polyline(
+    code: str,
+    finding: Mapping[str, Any],
+    *,
+    draft: "DraftNetwork | None",
+    job_id: str | None,
+) -> dict[str, Any]:
+    """Unit #34: the ``corrected_points_xy`` a V7 geometry fix may honestly
+    carry -- the DRAFT's OWN declared polyline for the finding's link id
+    (``*.genesis.json`` ``links[].points``, the pre-emission record), and
+    NOTHING else. Never the other twin's polyline, never interpolated, never
+    invented -- when the draft's own record cannot correct the artifact, this
+    returns no points and the registry's ``NO_TOOL_WITHOUT_FABRICATION``
+    refusal stands, now carrying the measured reason.
+
+    Returns ``{"corrected_points_xy": [[x, y], ...] | None, "provenance":
+    {...}}``. ``provenance`` always names the source (``source_artifact`` /
+    ``source_field`` / ``link_id`` / ``job_id``); when no points were derived
+    it adds ``reason_code`` + ``detail`` -- the measured fact, threaded into
+    the builder's refusal evidence and rationale by
+    ``services.agent.genesis_fixes._build_v7_geometry_fix``.
+
+    The rules, in the order they are measured (each named by its
+    ``reason_code``):
+
+    * ``no_draft_record`` / ``no_draft_census`` -- the finding names no
+      addressable link, or the draft census is absent/unreadable, or it has no
+      link record for that id (connectors have no ``links[]`` record, and
+      ``set_link_geometry`` refuses connectors anyway).
+    * ``draft_record_unusable`` -- the draft's own record could not clear the
+      finding: fewer than 2 points, degenerate (duplicate consecutive points /
+      zero length -- ``SetLinkGeometryParams`` would refuse it), zero-length at
+      the file's precision for ``v7_zero_length_link``, or below the finding's
+      own floor for ``v7_link_below_generator_floor``.
+    * ``draft_shares_the_corruption`` (``v7_links_share_one_polyline`` only) --
+      the draft's OWN records for the finding's links are already identical at
+      the judge's precision: the corruption happened UPSTREAM of the draft, so
+      the census has no pre-corruption record to offer. This is what every
+      real refused Daejeon job measured as of 2026-08-14 (164/164 findings
+      across 4 jobs) -- the honest refusal IS the common case today.
+    * ``emitted_geometry_unreadable`` -- the artifact's current polyline for
+      this link could not be read, so neither the no-op rule nor the
+      point-count rule below could be measured.
+    * ``point_count_differs`` -- ``set_link_geometry`` requires exactly as
+      many points as the link already has (COM cannot add or remove a polyline
+      point; ``tools_edit.py``'s own landmine 3), so a draft record with a
+      different count can never be applied by the registered verb.
+    * ``draft_equals_emitted`` -- the draft's record IS the polyline the
+      artifact already carries, at the judge's precision: re-applying it would
+      change nothing the gate can see. A no-op dressed as a fix is a refusal.
+    """
+    provenance: dict[str, Any] = {
+        "source_artifact": "genesis_json",
+        "source_field": _V7_DRAFT_SOURCE_FIELD,
+        "link_id": None,
+        "job_id": job_id,
+    }
+
+    def _nothing(reason_code: str, detail: str) -> dict[str, Any]:
+        return {
+            "corrected_points_xy": None,
+            "provenance": {**provenance, "reason_code": reason_code, "detail": detail},
+        }
+
+    from services.agent.genesis_fixes import expected_fix_target  # noqa: PLC0415
+
+    link_id_text = expected_fix_target(code, finding)
+    if not link_id_text:
+        return _nothing("no_draft_record", "the finding names no addressable link id")
+    provenance["link_id"] = link_id_text
+
+    if draft is None:
+        return _nothing(
+            "no_draft_census",
+            "this job's *.genesis.json census is absent, unreadable, or does not validate",
+        )
+    try:
+        link = draft.link_by_id(int(link_id_text))
+    except (TypeError, ValueError):
+        link = None
+    if link is None:
+        return _nothing(
+            "no_draft_record",
+            f"the draft census declares no links[] record for id {link_id_text}",
+        )
+
+    declared = [[float(x), float(y)] for x, y in link.points]
+    if len(declared) < 2:
+        return _nothing(
+            "draft_record_unusable",
+            f"the draft's own record has {len(declared)} point(s) -- no shape to restore",
+        )
+    if any(declared[i] == declared[i - 1] for i in range(1, len(declared))) or link.length_m <= 0:
+        return _nothing(
+            "draft_record_unusable",
+            "the draft's own record is degenerate (duplicate consecutive points or zero length)",
+        )
+    if code == "v7_zero_length_link" and link.length_m < ZERO_LENGTH_M:
+        return _nothing(
+            "draft_record_unusable",
+            f"the draft's own record is {link.length_m:.6f} m -- still zero at the file's "
+            f"precision ({ZERO_LENGTH_M} m)",
+        )
+    if code == "v7_link_below_generator_floor":
+        context = dict(finding.get("context") or {})
+        try:
+            floor_m = float(context.get("floor_m"))
+        except (TypeError, ValueError):
+            floor_m = SHORT_LINK_FLOOR_M
+        if link.length_m < floor_m:
+            return _nothing(
+                "draft_record_unusable",
+                f"the draft's own record is {link.length_m:.3f} m -- still below the "
+                f"{floor_m} m floor the finding names",
+            )
+
+    declared_key = _rounded_polyline(declared)
+    if code == "v7_links_share_one_polyline":
+        context = dict(finding.get("context") or {})
+        for other_id in context.get("links") or []:
+            other_text = str(other_id)
+            if other_text == link_id_text:
+                continue
+            try:
+                other = draft.link_by_id(int(other_text))
+            except (TypeError, ValueError):
+                other = None
+            if other is not None and _rounded_polyline(other.points) == declared_key:
+                return _nothing(
+                    "draft_shares_the_corruption",
+                    f"the draft's own records for links {link_id_text} and {other_text} "
+                    "already share one polyline -- the corruption happened upstream of "
+                    "the draft",
+                )
+
+    emitted = _emitted_link_polylines(job_id) if job_id else None
+    current = emitted.get(link_id_text) if emitted else None
+    if not current:
+        return _nothing(
+            "emitted_geometry_unreadable",
+            f"the emitted artifact's current polyline for link {link_id_text} could not "
+            "be read, so the correction could not be verified against it",
+        )
+    if len(current) != len(declared):
+        return _nothing(
+            "point_count_differs",
+            f"the artifact carries {len(current)} point(s) for link {link_id_text} but the "
+            f"draft declares {len(declared)} -- set_link_geometry cannot add or remove a "
+            "polyline point (COM has no Add/Remove on the point container)",
+        )
+    if _rounded_polyline(current) == declared_key:
+        return _nothing(
+            "draft_equals_emitted",
+            f"the draft's record for link {link_id_text} is the polyline the artifact "
+            "already carries -- re-applying it would change nothing",
+        )
+
+    return {
+        "corrected_points_xy": declared,
+        "provenance": {**provenance, "draft_point_count": len(declared)},
+    }
+
+
 def derive_fix_targets(
     code: str,
     finding: Mapping[str, Any],
     *,
     draft: "DraftNetwork | None" = None,
     params: Mapping[str, Any] | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """The ``targets`` :func:`services.agent.genesis_fixes.propose_genesis_fix`
     is re-run with — built from what THIS service layer can honestly derive,
@@ -2307,11 +2533,20 @@ def derive_fix_targets(
       exactly what that join can and cannot see today). Derived
       UNCONDITIONALLY, independent of ``params`` — the measurement doctrine
       must be checkable even when nobody has proposed a volume yet.
-    * **V6** (``proposed_volume``) / **V7** (``corrected_points_xy``) — the
-      ask-first fields. Threaded from ``params`` ONLY (never derived here):
-      these are exactly the values the module docstring by
-      ``genesis_fixes._build_v6_entrance_volume`` names as the APPROVER's
-      alone to supply.
+    * **V6** (``proposed_volume``) — the ask-first field. Threaded from
+      ``params`` ONLY (never derived here): exactly the value the module
+      docstring by ``genesis_fixes._build_v6_entrance_volume`` names as the
+      APPROVER's alone to supply.
+    * **V7** (``corrected_points_xy`` + ``corrected_points_provenance``) —
+      unit #34: derived by :func:`derive_v7_corrected_polyline` from the
+      DRAFT's OWN declared polyline for the finding's link (``job_id`` names
+      the job whose census and emitted artifact are read), or nothing.
+      ``params['points_xy']`` is deliberately IGNORED here — an approver's
+      own coordinates are exactly the fabrication the V7 doctrine refuses
+      (``_build_v7_geometry_fix``'s "a polyline this module did not invent"),
+      and :func:`create_genesis_fix_job` additionally refuses submitted
+      points that differ from this derivation
+      (``genesis_fix_points_not_census_derived``).
     """
     from services.agent.fixes import node_evidence_from_real_counts  # noqa: PLC0415
     from services.agent.genesis_fixes import expected_fix_target  # noqa: PLC0415
@@ -2339,8 +2574,11 @@ def derive_fix_targets(
         if params is not None and params.get("volume") is not None:
             targets["proposed_volume"] = params.get("volume")
 
-    if code.startswith("v7_") and params is not None and params.get("points_xy") is not None:
-        targets["corrected_points_xy"] = params.get("points_xy")
+    if code in V7_GEOMETRY_FINDING_CODES:
+        derivation = derive_v7_corrected_polyline(code, finding, draft=draft, job_id=job_id)
+        if derivation["corrected_points_xy"] is not None:
+            targets["corrected_points_xy"] = derivation["corrected_points_xy"]
+        targets["corrected_points_provenance"] = derivation["provenance"]
 
     return targets
 
@@ -2408,6 +2646,14 @@ def create_genesis_fix_job(
        request looked. Refused with the named code
        ``genesis_fix_measurement_gate_not_satisfied``, carrying the
        registry's OWN reason code and rationale.
+    7. **derived coordinates cannot be swapped for the approver's own** (unit
+       #34) — when step 6's re-derivation produced ``corrected_points_xy``
+       from the parent's OWN census (:func:`derive_v7_corrected_polyline`),
+       the submitted ``params['points_xy']`` must equal that derivation.
+       The runner applies the SUBMITTED params, so without this check an
+       approval could ride a valid derivation while carrying coordinates no
+       census ever declared. Refused with the named code
+       ``genesis_fix_points_not_census_derived``.
 
     **Why THIS is the authoritative gate, not merely a convenience.**
     ``routers/genesis.py``'s ``apply_genesis_fix`` runs an equivalent but
@@ -2436,7 +2682,10 @@ def create_genesis_fix_job(
 
     ``derived_from`` is the whole point of a sibling job: ``{job_id,
     finding_code, subject, verb, params, approved_by, approval_rationale,
-    approved_at, parent_sha256}``, present ONLY on a fix job's record — an
+    approved_at, parent_sha256}`` — plus ``census_derivation`` when and only
+    when the applied coordinates were derived from the parent's own census
+    (unit #34; key-ABSENT on every other fix job) — present ONLY on a fix
+    job's record — an
     ordinary generation's record carries no such key at all (key-ABSENT, not
     ``null``), the same "presence is itself the fact" discipline
     ``requested_region`` already established in this module, and the one
@@ -2546,7 +2795,9 @@ def create_genesis_fix_job(
     # reach the SAME proposal the caller is claiming to apply.
     draft = job_draft_or_none(parent_job_id)
     census = draft.metadata if draft is not None else None
-    targets = derive_fix_targets(finding_code, finding, draft=draft, params=params)
+    targets = derive_fix_targets(
+        finding_code, finding, draft=draft, params=params, job_id=parent_job_id
+    )
     proposal = agent_genesis_fixes.propose_genesis_fix(
         finding_code, finding=finding, census=census, targets=targets
     )
@@ -2560,6 +2811,28 @@ def create_genesis_fix_job(
                 + (proposal.rationale_en or "")
             ],
         )
+
+    # --- unit #34's own guard: when the proposal's coordinates were DERIVED
+    # from the draft's own record, the approved params must carry exactly
+    # those coordinates. The runner applies derived_from.params, so without
+    # this an approver could ride a valid derivation while submitting
+    # coordinates nobody's census ever declared -- fabrication wearing an
+    # approval. (The verb/outcome check above cannot catch it: the proposal
+    # matches, only the payload lies.)
+    derived_points = targets.get("corrected_points_xy")
+    if derived_points is not None:
+        submitted_points = _rounded_polyline(params.get("points_xy"), 6)
+        if submitted_points != _rounded_polyline(derived_points, 6):
+            raise GenesisRefused(
+                "genesis_fix_points_not_census_derived",
+                [
+                    f"The submitted points_xy differ from the correction the draft's own census "
+                    f"declares for finding {finding_code!r} (subject {finding['subject']!r}). "
+                    "A V7 geometry fix's coordinates come from the draft's own pre-corruption "
+                    "record, never from the approver -- approve the derived correction or "
+                    "reject it, but do not replace it."
+                ],
+            )
 
     parent_artifact = artifact_path(parent_job_id, "inpx")
 
@@ -2625,6 +2898,15 @@ def create_genesis_fix_job(
             "approval_rationale": approval_rationale,
             "approved_at": _now_iso(),
             "parent_sha256": clone_sha256,
+            # Unit #34: when the applied coordinates were DERIVED from the
+            # parent's own census, the lineage names the exact source field
+            # and link id (key-ABSENT for every non-derived fix, the same
+            # presence-is-the-fact discipline the rest of this record keeps).
+            **(
+                {"census_derivation": targets["corrected_points_provenance"]}
+                if derived_points is not None and targets.get("corrected_points_provenance")
+                else {}
+            ),
         },
     }
     _upsert(record)
@@ -3731,8 +4013,10 @@ __all__ = [
     "create_genesis_fix_job",
     "create_genesis_job",
     "create_live_check_job",
+    "V7_GEOMETRY_FINDING_CODES",
     "derive_fix_targets",
     "derive_v6_node_evidence",
+    "derive_v7_corrected_polyline",
     "discard_staged_osm",
     "discard_staged_side_input",
     "gate_and_publish",

@@ -848,7 +848,10 @@ def apply_genesis_fix(
        against REAL server-side evidence (this workspace's own observation
        sets, unit D4) no longer reaches a matching proposal — most
        importantly a MEASURED entrance (409
-       ``genesis_fix_measurement_gate_not_satisfied``) — or ``verb``/``params``
+       ``genesis_fix_measurement_gate_not_satisfied``) — the submitted
+       coordinates differ from the census-derived correction (409
+       ``genesis_fix_points_not_census_derived``, unit #34) — or
+       ``verb``/``params``
        gone stale (409 ``genesis_fix_verb_no_longer_registered``). ONE call:
        it creates the job record (cloning the parent's artifact, synchronous,
        fast) and starts the COM run on a daemon thread, exactly the split
@@ -1271,7 +1274,13 @@ def get_job_fixes(job_id: str, user: dict[str, Any] = Depends(current_user)):
     ``params=None`` here (never a caller-supplied volume/geometry -- this is
     a GET), but V6's MEASUREMENT evidence still flows unconditionally, so a
     measured entrance's disposition shows the real structural refusal rather
-    than always reading as "just needs a volume" (fix round item 3).
+    than always reading as "just needs a volume" (fix round item 3). V7's
+    geometry evidence flows the same way since unit #34
+    (``derive_v7_corrected_polyline``, keyed by ``job_id``): a draft-
+    correctable polyline finding renders as a full PROPOSAL carrying the
+    draft's own points, and an uncorrectable one keeps the
+    ``NO_TOOL_WITHOUT_FABRICATION`` refusal with the measured reason folded
+    into its rationale.
 
     ``unmapped_finding_codes`` is the registry's own mirror check
     (:func:`genesis_fixes.get_unmapped_finding_codes`) -- every code
@@ -1311,7 +1320,9 @@ def get_job_fixes(job_id: str, user: dict[str, Any] = Depends(current_user)):
 
     entries: list[dict[str, Any]] = []
     for check_id, origin, finding in genesis_jobs.iter_stored_gate_findings(raw):
-        targets = genesis_jobs.derive_fix_targets(finding["code"], finding, draft=draft, params=None)
+        targets = genesis_jobs.derive_fix_targets(
+            finding["code"], finding, draft=draft, params=None, job_id=job_id
+        )
         proposal = genesis_fixes.propose_genesis_fix(
             finding["code"], finding=finding, census=census, targets=targets
         )

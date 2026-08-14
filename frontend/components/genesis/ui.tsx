@@ -536,6 +536,12 @@ export function refusalHeadline(code: string | null, t: Translate, fallback?: st
         "The submitted values address a different object than this finding names",
         "送信された値はこの発見が指し示す対象と異なります",
       );
+    case "genesis_fix_points_not_census_derived":
+      return t(
+        "제출된 좌표가 드래프트 기록에서 유도된 값과 다릅니다 — 좌표는 발명하지 않습니다",
+        "The submitted coordinates differ from the draft-derived ones -- coordinates are never invented",
+        "送信された座標はドラフト記録から導出された値と異なります — 座標は発明しません",
+      );
     case "genesis_fix_finding_ambiguous_without_subject":
       return t(
         "같은 코드의 발견이 여러 건입니다 — 어느 대상(subject)인지 지정해야 합니다",

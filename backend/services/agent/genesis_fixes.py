@@ -863,6 +863,76 @@ def _build_v6_entrance_volume(
 # ---------------------------------------------------------------------------
 
 
+#: Unit #34: the measured reason a V7 derivation yielded nothing, localized.
+#: Keys mirror ``genesis_jobs.derive_v7_corrected_polyline``'s own
+#: ``reason_code`` values (that function's docstring defines each); an
+#: unknown code falls back to quoting the code itself so a new reason can
+#: never silently vanish from the rationale.
+_V7_DERIVATION_REASONS: dict[str, tuple[str, str, str]] = {
+    "no_draft_census": (
+        " 측정 결과: 이 작업의 census(*.genesis.json)를 읽을 수 없어 초안이 선언한 폴리라인을 확인하지 못했습니다.",
+        " Measured: this job's census (*.genesis.json) could not be read, so the draft's own"
+        " declared polyline could not be consulted.",
+        " 測定結果: このジョブのcensus(*.genesis.json)を読めず、ドラフト自身が宣言したポリラインを確認できませんでした。",
+    ),
+    "no_draft_record": (
+        " 측정 결과: 초안 census에 이 링크의 폴리라인 기록이 없습니다.",
+        " Measured: the draft census declares no polyline record for this link.",
+        " 測定結果: ドラフトのcensusにこのリンクのポリライン記録がありません。",
+    ),
+    "draft_record_unusable": (
+        " 측정 결과: 초안 자신의 기록도 이 결함을 해소할 수 없는 형태입니다.",
+        " Measured: the draft's own record could not clear this finding either.",
+        " 測定結果: ドラフト自身の記録もこの欠陥を解消できない形状です。",
+    ),
+    "draft_shares_the_corruption": (
+        " 측정 결과: 초안 자신의 기록에서도 이 링크들이 이미 같은 폴리라인을 공유합니다 — 손상이 "
+        "초안 이전 단계에서 일어나 census로는 보정할 수 없습니다.",
+        " Measured: the draft's OWN records already share one polyline across these links --"
+        " the corruption happened upstream of the draft, so the census cannot correct it.",
+        " 測定結果: ドラフト自身の記録でもこれらのリンクは既に同じポリラインを共有しています — "
+        "破損はドラフトより上流で起きており、censusでは補正できません。",
+    ),
+    "emitted_geometry_unreadable": (
+        " 측정 결과: 산출물의 현재 폴리라인을 읽을 수 없어 보정을 검증하지 못했습니다.",
+        " Measured: the artifact's current polyline could not be read, so the correction"
+        " could not be verified against it.",
+        " 測定結果: 成果物の現在のポリラインを読めず、補正を検証できませんでした。",
+    ),
+    "point_count_differs": (
+        " 측정 결과: 초안 기록과 산출물의 점 개수가 달라 set_link_geometry로는 적용할 수 없습니다"
+        "(COM은 폴리라인 점을 추가/삭제할 수 없습니다).",
+        " Measured: the draft record and the artifact carry different point counts, so"
+        " set_link_geometry cannot apply it (COM cannot add or remove a polyline point).",
+        " 測定結果: ドラフト記録と成果物の点数が異なるため、set_link_geometryでは適用できません"
+        "(COMはポリライン点を追加・削除できません)。",
+    ),
+    "draft_equals_emitted": (
+        " 측정 결과: 초안의 기록이 산출물이 이미 담고 있는 폴리라인과 동일합니다 — 다시 적용해도 "
+        "아무것도 바뀌지 않으므로 수정이 아닙니다.",
+        " Measured: the draft's record IS the polyline the artifact already carries --"
+        " re-applying it would change nothing, which is not a fix.",
+        " 測定結果: ドラフトの記録は成果物が既に持つポリラインと同一です — 再適用しても何も変わらず、"
+        "修正にはなりません。",
+    ),
+}
+
+
+def _v7_derivation_clause(provenance: Any) -> tuple[str, str, str]:
+    """The localized measured-reason sentence for a failed V7 derivation, or
+    three empty strings when there is no derivation record to speak for."""
+    if not isinstance(provenance, Mapping):
+        return "", "", ""
+    reason_code = provenance.get("reason_code")
+    if not reason_code:
+        return "", "", ""
+    clause = _V7_DERIVATION_REASONS.get(str(reason_code))
+    if clause is None:
+        fallback = f" (census derivation: {reason_code})"
+        return fallback, fallback, fallback
+    return clause
+
+
 def _build_v7_geometry_fix(
     *,
     code: str,
@@ -875,33 +945,45 @@ def _build_v7_geometry_fix(
     ``v7_link_below_generator_floor`` / ``v7_links_share_one_polyline`` ->
     ``set_link_geometry``, only when the caller supplies
     ``targets['corrected_points_xy']`` -- a polyline this module did not
-    invent (e.g. the draft's own pre-corruption record for this link id, read
-    by the caller from the census).
+    invent: the draft's own pre-corruption record for this link id, read from
+    the census. Since unit #34 that caller EXISTS --
+    ``services.genesis_jobs.derive_v7_corrected_polyline`` (via
+    ``derive_fix_targets``) derives it from the job's own ``*.genesis.json``
+    and threads its provenance through
+    ``targets['corrected_points_provenance']``, which this builder records in
+    the proposal's evidence (``census_derivation``) and, on a refusal, folds
+    into the rationale as the measured reason.
 
-    Without it there is no census-derivable correction: this module does not
-    invent coordinates to separate two overlapping links or to give a
-    zero-length link a shape, so it refuses under
+    Without a derived correction there is no census-derivable one: this
+    module does not invent coordinates to separate two overlapping links or
+    to give a zero-length link a shape, so it refuses under
     :data:`NO_TOOL_WITHOUT_FABRICATION` rather than guess.
     """
     link_id = _link_id_from_subject(_finding_field(finding, "subject"))
     context = _finding_field(finding, "context", {}) or {}
     corrected = (targets or {}).get("corrected_points_xy")
+    provenance = (targets or {}).get("corrected_points_provenance")
     evidence: dict[str, Any] = {
         "link": link_id,
         "finding_context": dict(context) if isinstance(context, Mapping) else context,
     }
+    if isinstance(provenance, Mapping):
+        evidence["census_derivation"] = dict(provenance)
     if not corrected or len(list(corrected)) < 2:
+        measured_ko, measured_en, measured_ja = _v7_derivation_clause(provenance)
         return _refuse(
             code=code,
             reason_code=NO_TOOL_WITHOUT_FABRICATION,
             evidence=evidence,
             ko=f"링크 {link_id}의 기하 결함을 고치려면 새 폴리라인 점 좌표가 필요하지만, census에서 "
-            "유도된 보정 좌표가 제공되지 않았습니다. 좌표를 추측해서 만들어내지 않고 거부합니다.",
+            "유도된 보정 좌표가 제공되지 않았습니다. 좌표를 추측해서 만들어내지 않고 거부합니다."
+            + measured_ko,
             en=f"Repairing link {link_id}'s geometry finding needs new polyline point "
             "coordinates, and no census-derived correction was supplied. Refused rather than "
-            "inventing coordinates.",
+            "inventing coordinates." + measured_en,
             ja=f"リンク {link_id} の幾何学的な欠陥を修正するには新しいポリライン点座標が必要ですが、"
-            "census由来の補正座標が提供されませんでした。座標を推測して作り出さずに拒否します。",
+            "census由来の補正座標が提供されませんでした。座標を推測して作り出さずに拒否します。"
+            + measured_ja,
         )
     points = [[float(x), float(y)] for x, y in corrected]
     return _emit(
