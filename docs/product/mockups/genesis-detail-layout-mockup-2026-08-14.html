@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Genesis 상세 레이아웃 4안 — 2026-08-14</title>
+<style>
+  :root {
+    --bg: #10151b; --surface: #161d25; --card: #1b232d; --ink: #ece9e2;
+    --muted: #97a0ad; --faint: #6b7480; --line: rgba(236,233,226,.1);
+    --sky: #7cb3e8; --sky-dim: rgba(124,179,232,.16);
+    --rose: #ecac9c; --emerald: #b0d5b6; --map: #0b2318;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font: 14px/1.65 "Segoe UI","Malgun Gothic",system-ui,sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 44px 24px 90px; }
+  .eyebrow { font: 600 11px/1 Consolas,monospace; letter-spacing:.14em; color: var(--sky); text-transform: uppercase; }
+  h1 { font-size: 26px; font-weight: 650; margin: 10px 0 6px; letter-spacing: -.01em; }
+  .lede { color: var(--muted); max-width: 70ch; margin: 0 0 8px; }
+  .problem { border:1px solid var(--line); border-left: 3px solid var(--rose); background: var(--surface);
+    padding: 12px 16px; border-radius: 6px; color: var(--muted); font-size: 13px; max-width: 76ch; }
+  .problem b { color: var(--ink); }
+
+  section { margin-top: 52px; }
+  .opt-head { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  .opt-tag { font: 700 13px/1 Consolas,monospace; color:var(--sky); border:1px solid var(--sky);
+    border-radius: 999px; padding: 4px 10px; }
+  .opt-tag.rec { background: var(--sky); color: #0d1722; }
+  h2 { font-size: 18px; font-weight: 650; margin: 0; }
+  .opt-sub { color: var(--muted); font-size: 13px; margin: 8px 0 16px; max-width: 76ch; }
+
+  /* wireframe canvas */
+  .wf { background: var(--surface); border:1px solid var(--line); border-radius: 8px;
+    padding: 14px; display: grid; gap: 8px; }
+  .wf, .wf * { font-size: 11.5px; line-height: 1.35; }
+  .bx { border:1px solid var(--line); border-radius: 5px; background: var(--card);
+    color: var(--muted); padding: 7px 9px; display:flex; align-items:flex-start; justify-content:space-between; gap:6px; }
+  .bx b { color: var(--ink); font-weight: 600; }
+  .bx.map { background: var(--map); border-color: rgba(176,213,182,.25); color: #9ec7a8; }
+  .bx.sel { border-color: var(--sky); background: var(--sky-dim); }
+  .bx.dim { opacity: .55; }
+  .chip { font: 600 10px/1 Consolas,monospace; border:1px solid var(--line); border-radius:999px;
+    padding: 2px 7px; color: var(--faint); white-space: nowrap; }
+  .chip.rose { color: var(--rose); border-color: rgba(236,172,156,.5); }
+  .h-xs { min-height: 30px; } .h-s { min-height: 48px; } .h-m { min-height: 84px; }
+  .h-l { min-height: 130px; } .h-xl { min-height: 190px; }
+
+  .pros { display:grid; grid-template-columns: 1fr 1fr; gap: 6px 22px; margin: 14px 0 0; padding: 0; list-style: none;
+    font-size: 12.5px; color: var(--muted); max-width: 80ch; }
+  .pros li { padding-left: 16px; position: relative; }
+  .pros li.p::before { content:"+"; position:absolute; left:0; color: var(--emerald); font-weight:700; }
+  .pros li.c::before { content:"−"; position:absolute; left:0; color: var(--rose); font-weight:700; }
+
+  .verdict { margin-top: 56px; border-top:1px solid var(--line); padding-top: 22px; }
+  .verdict p { color: var(--muted); max-width: 76ch; font-size: 13.5px; }
+  .verdict b { color: var(--ink); }
+  @media (max-width: 760px){ .pros { grid-template-columns: 1fr; } .cols { grid-template-columns: 1fr !important; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Prism · Genesis · layout options</p>
+  <h1>네트워크 프리뷰, 오른쪽 드로어를 나가면 어디로 가야 하나</h1>
+  <p class="lede">현재 구조에 대한 지적을 받아, 편집 전 비교용으로 4안을 그렸습니다. 회색 상자 = 현재도 있는 요소, 초록 상자 = 지도, 파란 테두리 = 선택 상태.</p>
+  <div class="problem"><b>현재의 문제:</b> 이력 행을 누르면 오른쪽 46% 드로어에 판정 헤더 · 3×3 그리드 · 수정 카드 · <b>지도</b> · 아티팩트가 전부 세로로 쌓입니다. 지도는 언제나 좁은 폭 안에서 그리드 아래로 밀려 있고, 소견 위치를 지도에서 확인하는 순간 — 이 화면의 실제 용도 — 이 가장 갑갑합니다.</div>
+
+  <!-- ================= A ================= -->
+  <section>
+    <div class="opt-head"><span class="opt-tag">A</span><h2>지도가 배경이 되는 오버레이형</h2></div>
+    <p class="opt-sub">행을 누르면 <b>지도가 콘텐츠 전폭</b>으로 깔리고, 판정(그리드·소견·수정 카드)은 지도 위 왼쪽에 뜨는 접을 수 있는 카드가 됩니다. GIS 도구의 문법 — 지도가 지면, 판정이 레이어.</p>
+    <div class="wf">
+      <div class="bx h-xs dim"><span><b>새 생성</b> 폼 + 생성 이력 (접힘 · 클릭 시 펼침)</span></div>
+      <div class="bx map h-xl" style="position:relative;">
+        <span>지도 — 전폭 · 소견 하이라이트 · 클릭 선택</span>
+        <div class="bx sel" style="position:absolute; left:12px; top:12px; width:265px; min-height:150px; flex-direction:column; align-items:stretch;">
+          <span><b>region_n36…</b> <span class="chip rose">거부됨</span></span>
+          <span style="color:var(--faint)">판정 2·2·5 · V1–V9 그리드(축약)</span>
+          <span style="color:var(--faint)">선택 소견 · 수정 카드 · 아티팩트 ▾</span>
+        </div>
+      </div>
+    </div>
+    <ul class="pros">
+      <li class="p">지도가 처음으로 주인공 — 소견 위치 확인이 한눈에</li>
+      <li class="p">#19의 클릭 선택·폭 리본이 제값을 함</li>
+      <li class="c">판정 카드가 지도를 가림 — 그리드·수정 카드가 좁은 카드 안으로 돌아감(지금 드로어의 문제를 카드로 옮길 위험)</li>
+      <li class="c">폼·이력이 접히면 "다음 생성 시작"이 한 클릭 멀어짐</li>
+    </ul>
+  </section>
+
+  <!-- ================= B ================= -->
+  <section>
+    <div class="opt-head"><span class="opt-tag">B</span><h2>세로 흐름 단일 컬럼</h2></div>
+    <p class="opt-sub">분할을 버리고 작업 순서대로 위→아래: 폼 → 이력 → (선택 시) 판정 → <b>전폭 지도</b> → 아티팩트. 보고서처럼 읽힙니다.</p>
+    <div class="wf">
+      <div class="bx h-xs"><span><b>새 생성</b> 폼</span></div>
+      <div class="bx h-xs"><span><b>생성 이력</b> 표 · 행 선택</span><span class="chip">선택 행 하이라이트</span></div>
+      <div class="bx sel h-s"><span><b>판정 헤더</b> + 3×3 그리드 + 소견/수정 카드</span></div>
+      <div class="bx map h-l"><span>지도 — 전폭</span></div>
+      <div class="bx h-xs"><span>아티팩트 행</span></div>
+    </div>
+    <ul class="pros">
+      <li class="p">구현 최소 · 좁은 화면에서도 동일한 구조</li>
+      <li class="p">지도 전폭 확보</li>
+      <li class="c">판정을 읽는 동안 이력 표가 화면 밖으로 — 행 전환 비교가 스크롤 왕복이 됨</li>
+      <li class="c">페이지가 매우 길어짐 (그리드→지도→아티팩트 스크롤)</li>
+    </ul>
+  </section>
+
+  <!-- ================= C ================= -->
+  <section>
+    <div class="opt-head"><span class="opt-tag">C</span><h2>전폭 상세 + 탭</h2></div>
+    <p class="opt-sub">행을 누르면 전폭 상세 영역이 열리고, 안에서 <b>[판정] [지도] [아티팩트]</b> 탭이 각자 전체 폭을 씁니다.</p>
+    <div class="wf">
+      <div class="bx h-xs dim"><span>폼 + 이력 (상단, 축약)</span></div>
+      <div class="bx h-xs" style="gap:8px; justify-content:flex-start;">
+        <span class="chip" style="color:var(--sky); border-color:var(--sky);">판정</span>
+        <span class="chip">지도</span><span class="chip">아티팩트</span>
+        <span style="margin-left:auto; color:var(--faint)">region_n36… <span class="chip rose">거부됨</span></span>
+      </div>
+      <div class="bx sel h-l"><span>활성 탭 콘텐츠 — 판정이면 그리드+소견 전폭, 지도면 지도 전폭</span></div>
+    </div>
+    <ul class="pros">
+      <li class="p">모든 콘텐츠가 전폭 — 지도도 그리드도 넓게</li>
+      <li class="p">드로어의 세로 스택 문제 소멸</li>
+      <li class="c"><b>판정과 지도를 동시에 못 봄</b> — "이 소견이 지도의 어디인가"가 탭 전환 2회가 됨 (이 워크플로의 핵심 동선과 충돌)</li>
+      <li class="c">수정 카드→재게이트 관전 같은 긴 흐름에서 탭이 계속 튐</li>
+    </ul>
+  </section>
+
+  <!-- ================= D ================= -->
+  <section>
+    <div class="opt-head"><span class="opt-tag rec">D · 추천</span><h2>상세 페이지로 승격 — 허브는 목록만</h2></div>
+    <p class="opt-sub">행 클릭 = <b>/genesis/jobs/[id]</b>로 이동. 허브는 폼+이력만 남고, 상세 페이지는 <b>지도를 넓은 왼쪽(≈65%)</b>에, 판정·소견·수정 카드를 오른쪽 좁은 레일에 둡니다 — 지금과 좌우가 뒤집히고, 판정 스택이 화면 하나를 온전히 씁니다.</p>
+      <div class="wf">
+        <div class="bx h-xs"><span><b>← 생성 이력</b> · region_n36_3504_e127_3845 <span class="chip rose">거부됨</span> · 판정 2·2·5 · sha 70c5…</span><span class="chip">아티팩트 ▾</span></div>
+        <div class="cols" style="display:grid; grid-template-columns: 65fr 35fr; gap:8px;">
+          <div class="bx map h-xl"><span>지도 — 넓게 · 클릭 선택 ↔ 오른쪽 소견 연동</span></div>
+          <div class="bx h-xl" style="flex-direction:column; align-items:stretch; gap:6px;">
+            <span class="bx h-xs" style="margin:0;"><span>V1–V9 그리드 (3×3)</span></span>
+            <span class="bx sel h-s" style="margin:0;"><span>선택 소견 + 수정 카드(승인)</span></span>
+          </div>
+        </div>
+      </div>
+    <ul class="pros">
+      <li class="p">지도가 크고, <b>판정과 지도가 동시에 보임</b> — 소견 클릭↔지도 하이라이트 왕복이 한 화면</li>
+      <li class="p">생성마다 URL — B4 데모·공유·버그 제보("이 생성 봐줘")가 링크 하나</li>
+      <li class="p">허브가 가벼워짐(폼+이력) · B5-2 수정 루프가 자랄 공간(재게이트 계보 등)이 생김</li>
+      <li class="p">Console의 목록→상세 페이지 문법과 일치</li>
+      <li class="c">페이지 전환 1회 추가 (이력 행 간 빠른 비교는 뒤로가기/이력 재방문)</li>
+      <li class="c">구현 규모 중간 — 드로어 콘텐츠의 라우트 이동 + 딥링크 로딩 상태</li>
+    </ul>
+  </section>
+
+  <div class="verdict">
+    <p><b>추천은 D입니다.</b> 이 화면의 실제 동선은 "소견을 읽고 → 지도에서 그 위치를 보고 → 수정을 승인"인데, 그 왕복을 한 화면에 넓게 유지하는 건 D뿐입니다(A는 카드가 지도를 가리고, C는 탭 전환이 동선을 끊습니다). 생성별 URL은 데모·협업에서 덤이 아니라 실익입니다. <b>차선은 A</b> — 페이지 전환 없이 지도를 키우고 싶다면. B와 C는 이 워크플로에는 비추천 사유를 적어뒀습니다.</p>
+    <p style="color:var(--faint); font-size:12.5px;">결정 주시면 해당 안으로 유닛을 스펙해 진행합니다. 아직 아무것도 편집하지 않았습니다.</p>
+  </div>
+</main>
+</body>
+</html>
