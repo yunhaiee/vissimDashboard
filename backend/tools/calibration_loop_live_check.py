@@ -872,7 +872,13 @@ def stage_1_baseline(duration_s: int) -> None:
     # which is asserted rather than assumed, right here.
     by_node = {k: v["total"] for k, v in (described.get("movement_volumes_by_node") or {}).items()}
     previous = _state.get("_design_run_by_node")
-    if previous is None:
+    if _state.get("workbook_injected"):
+        # --workbook: the observed side is a prepared file, derived from NO
+        # run, so there is no design/graded split to choreograph -- one run,
+        # made AFTER the upload, is both. (The revision trap stage 1's
+        # MEASURED comment records cannot fire in this order.)
+        entry["role"] = "graded run (observed side injected via --workbook; single-run protocol)"
+    elif previous is None:
         _state["_design_run_by_node"] = by_node
         entry["role"] = "design run (the workbook is derived from this one)"
     else:
@@ -1052,11 +1058,25 @@ def _build_demo_workbook(
     return buf.getvalue()
 
 
-def stage_2_workbook(client) -> None:
+def stage_2_workbook(client, inject_path: Path | None = None) -> None:
     _banner("[STAGE 2] The observed side -- designed synthetic, honestly labelled")
     entry = _stage("2_workbook")
     entry["started_at"] = _now()
     started = time.monotonic()
+
+    if inject_path is not None:
+        # --workbook: the observed side is a PREPARED file, not derived from a
+        # run -- so this stage has no baseline dependency and no design
+        # arithmetic of its own. What the file claims about itself (its name,
+        # its DEMO_NOTES sheet) is its provenance; this stage only records
+        # what was uploaded, byte-exactly.
+        content = inject_path.read_bytes()
+        entry["workbook_injected_from"] = str(inject_path)
+        entry["workbook_sha256"] = hashlib.sha256(content).hexdigest()
+        _log(f"[2.1] INJECTED workbook (no generation): {inject_path.name}")
+        _log(f"      {len(content)} bytes, sha256={entry['workbook_sha256']}")
+        _upload_workbook(client, entry, inject_path.name, content, started)
+        return
 
     run_result = _state["_baseline_run_result"]
     baseline = _stage("1_baseline")
@@ -1104,8 +1124,13 @@ def stage_2_workbook(client) -> None:
     _log(f"      node {REFUSAL_NODE} designed: observed {design['refusal']['observed_total']} vs "
          f"modelled {design['refusal']['modelled_total']} -> GEH {design['refusal']['geh_designed']}")
 
+    _upload_workbook(client, entry, WORKBOOK_FILENAME, content, started)
+
+
+def _upload_workbook(client, entry: dict[str, Any], filename: str, content: bytes, started: float) -> None:
+    """Stage 2's shared tail: local artifact copy + the real upload route."""
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    local_copy = ARTIFACT_DIR / WORKBOOK_FILENAME
+    local_copy = ARTIFACT_DIR / filename
     local_copy.write_bytes(content)
     entry["workbook_local_copy"] = str(local_copy)
     entry["workbook_bytes"] = len(content)
@@ -1113,7 +1138,7 @@ def stage_2_workbook(client) -> None:
     from urllib.parse import quote
 
     response = client.post(
-        f"/api/validation/base-workbook?filename={quote(WORKBOOK_FILENAME)}",
+        f"/api/validation/base-workbook?filename={quote(filename)}",
         content=content,
         headers=_state["headers"],
     )
@@ -1211,7 +1236,7 @@ def _d4_refusal(outcome: dict[str, Any] | None) -> dict[str, Any] | None:
     return None
 
 
-def stage_3_reality_check() -> None:
+def stage_3_reality_check(expect: str = "refusal") -> None:
     _banner("[STAGE 3] Reality check -- dispatch('run_reality_check') against the baseline run")
     entry = _stage("3_reality_check")
     entry["started_at"] = _now()
@@ -1307,7 +1332,13 @@ def stage_3_reality_check() -> None:
     #
     # To exercise the apply-and-re-run legs again, the honest way is a demand
     # target whose entrance is NOT a count site (or a knob other than demand);
-    # that is a design change to this probe, not a flag on it.
+    # that is what --expect estimate + --workbook do: an injected observed side
+    # with NO count row on the input link, so the entrance is honestly
+    # unverified and the proposal is the NAMED estimate, not a measurement.
+    if expect == "estimate":
+        _stage_3_expect_estimate(entry, demand_node, proposal, started)
+        return
+
     d4 = _d4_refusal(proposal)
     entry["d4_refusal"] = d4
     entry["d4_refusal_present"] = d4 is not None
@@ -1344,6 +1375,101 @@ def stage_3_reality_check() -> None:
         f"unit D4: node {DEMAND_NODE}'s entrance is measured, so the demand edit is refused and "
         "stages 4-6 have nothing to apply on it. This is the designed outcome, not a failure."
     )
+
+
+def _stage_3_expect_estimate(
+    entry: dict[str, Any], demand_node: dict[str, Any], proposal: dict[str, Any], started: float
+) -> None:
+    """``--expect estimate``: the designed outcome is unit D4's OTHER half.
+
+    The injected workbook carries no count row on the input's link, so the
+    entrance must grade as unverified and the demand proposal must be the
+    NAMED estimate -- ``CONFIDENCE_DEMAND_ESTIMATE``, the
+    ``ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED`` assumption, and the
+    reject-and-supply clause in the rationale. A measured-entrance refusal
+    appearing here means the workbook did NOT make the entrance unverified,
+    and the probe stops rather than measure the wrong thing.
+    """
+    from services.agent import fixes
+
+    d4 = _d4_refusal(proposal)
+    entry["d4_refusal"] = d4
+    entry["d4_refusal_present"] = d4 is not None
+    if d4 is not None:
+        entry["ok"] = False
+        _save_state()
+        raise SystemExit(
+            "--expect estimate, but the measured-entrance refusal "
+            f"({fixes.INPUT_VOLUME_IS_OBSERVED_DATA}) appeared anyway -- the observed side "
+            "still carries a count row on the input's link, so the entrance is measured and "
+            "there is nothing here for the apply legs to do. Stopping."
+        )
+    if proposal.get("outcome") != "PROPOSAL" or proposal.get("verb") != "set_vehicle_input_volume":
+        entry["ok"] = False
+        _save_state()
+        raise SystemExit("The demand node did not produce a demand-level proposal. Stopping.")
+    if proposal.get("confidence") != fixes.CONFIDENCE_DEMAND_ESTIMATE:
+        entry["ok"] = False
+        _save_state()
+        raise SystemExit(
+            f"--expect estimate, but the proposal's confidence is {proposal.get('confidence')!r}, "
+            f"not {fixes.CONFIDENCE_DEMAND_ESTIMATE!r} -- this is not the named estimate. Stopping."
+        )
+    if fixes.ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED not in (proposal.get("assumptions") or []):
+        entry["ok"] = False
+        _save_state()
+        raise SystemExit(
+            f"--expect estimate, but {fixes.ASSUME_ENTRANCE_NOT_VERIFIED_MEASURED!r} is absent "
+            f"from the proposal's assumptions {proposal.get('assumptions')!r}. Stopping."
+        )
+
+    _banner("[STAGE 3] THE NAMED ESTIMATE (unit D4's other half) -- the designed outcome")
+    evidence = proposal.get("evidence") or {}
+    entrance = ((evidence.get("target") or {}).get("entrance_measurement")) or {}
+    _log(f"  confidence      : {proposal.get('confidence')}")
+    _log(f"  assumptions     : {proposal.get('assumptions')}")
+    _log(f"  arithmetic      : {evidence.get('arithmetic')}")
+    _log(f"  entrance status : {entrance.get('status')} ({entrance.get('why')})")
+
+    # The prediction, stated BEFORE the re-run (stage 5 measures it) --
+    # restored from the pre-D4 probe (56c0b79); stage 5's
+    # prediction_vs_measured contract still reads exactly these keys.
+    modelled = float(demand_node["modelled_total"])
+    observed = float(demand_node["observed_total"])
+    proposed = float(proposal["params"]["volume"])
+    ratio = observed / modelled
+    predicted_modelled = modelled * (1.0 + DEMAND_INPUT_SHARE * (ratio - 1.0))
+    direction = "DOWN (toward reconciliation)" if ratio < 1.0 else "UP (toward reconciliation)"
+    prediction = {
+        "input_share_of_node_feed": DEMAND_INPUT_SHARE,
+        "requested_demand_ratio": round(ratio, 6),
+        "before_geh": demand_node.get("node_total_geh"),
+        "predicted_after_modelled_total": round(predicted_modelled, 2),
+        "predicted_after_geh": _geh(predicted_modelled, observed),
+        "direction": direction,
+        "why_not_zero": (
+            f"the proposal scales ONE vehicle input ({DEMAND_INPUT_NO}) by {ratio:.4f}, but that "
+            f"input supplies only ~{DEMAND_INPUT_SHARE*100:.1f}% of what can reach node "
+            f"{DEMAND_NODE}; the arithmetic assumes 100% "
+            "(fixes.ASSUME_INPUT_DRIVES_NODE_TOTAL), so the node total is expected to move "
+            "toward the observed count without fully reaching it."
+        ),
+        "control_node": REFUSAL_NODE,
+        "control_expectation": (
+            f"node {REFUSAL_NODE} is not forward-reachable from link 617, so its GEH should stay "
+            "below the 5.0 threshold; any movement is Vissim's global RNG stream shifting, not "
+            "the edit propagating."
+        ),
+    }
+    entry["prediction"] = prediction
+    _banner("[STAGE 3] PREDICTION, recorded BEFORE the edit and the re-run")
+    for key, value in prediction.items():
+        _log(f"  {key}: {value}")
+    _log(f"  proposed volume: {proposed} veh/h (from {_state['demand_input_before_volume']} veh/h)")
+
+    entry["elapsed_s"] = round(time.monotonic() - started, 2)
+    entry["ok"] = True
+    _save_state()
 
 
 # ---------------------------------------------------------------------------
@@ -1919,7 +2045,29 @@ def main() -> int:
         "cb98a7a, which normalizes numRuns in the product at both seams). "
         "--no-skip-numruns-prep restores the prepared copy.",
     )
+    parser.add_argument(
+        "--workbook",
+        default=None,
+        help="stage 2: upload THIS workbook file instead of generating one from the "
+        "baseline run. Because the injected workbook is not derived from a run, "
+        "stage 2 can precede stage 1 (invoke --stages 0,2 then --stages 1,3,...) -- "
+        "which also sidesteps the dataset_revision over-invalidation stage 1's "
+        "MEASURED comment records.",
+    )
+    parser.add_argument(
+        "--expect",
+        choices=("refusal", "estimate"),
+        default="refusal",
+        help="stage 3's designed outcome. 'refusal' (default): the demand entrance is "
+        "measured, unit D4 must refuse the edit, stages 4-6 do not run. 'estimate': "
+        "the entrance is NOT measured (e.g. an injected workbook without a count row "
+        "on the input link), the proposal must be the NAMED demand estimate, and the "
+        "apply/re-run legs proceed on it.",
+    )
     args = parser.parse_args()
+    inject_workbook = Path(args.workbook).resolve() if args.workbook else None
+    if inject_workbook is not None and not inject_workbook.is_file():
+        parser.error(f"--workbook does not exist: {inject_workbook}")
 
     stages = {int(s) for s in args.stages.split(",") if s.strip()}
     if args.label:
@@ -1933,6 +2081,7 @@ def main() -> int:
     _log(f"# duration={args.duration}s seed={RUN_SEED} stages={sorted(stages)}")
     _log(f"# label={args.label!r} skip_numruns_prep={args.skip_numruns_prep} "
          f"workspace_name={DEMO_WORKSPACE_NAME!r}")
+    _log(f"# expect={args.expect!r} workbook={str(inject_workbook) if inject_workbook else 'generated'}")
     _log("#" * 78)
 
     # Bounded runs: never write gigabytes of vehicle records for a probe.
@@ -1945,6 +2094,8 @@ def main() -> int:
     _state["stages_requested"] = sorted(stages)
     _state["label"] = args.label
     _state["skip_numruns_prep"] = args.skip_numruns_prep
+    _state["expect"] = args.expect
+    _state["workbook_injected"] = str(inject_workbook) if inject_workbook else None
 
     pids_before = _vissim_pids()
     _state["vissim_pids_before_probe"] = sorted(pids_before)
@@ -1972,10 +2123,10 @@ def main() -> int:
                 with workspaces.bind_workspace(_state["workspace_id"]):
                     stage_1_baseline(args.duration)
             if 2 in stages:
-                stage_2_workbook(client)
+                stage_2_workbook(client, inject_path=inject_workbook)
             if 3 in stages:
                 with workspaces.bind_workspace(_state["workspace_id"]):
-                    stage_3_reality_check()
+                    stage_3_reality_check(expect=args.expect)
             if 4 in stages:
                 stage_4_approval(client)
             if 5 in stages:

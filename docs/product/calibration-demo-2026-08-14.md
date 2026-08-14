@@ -62,6 +62,43 @@
    추정은 **이름을 붙이고, 사람이 확인하고, 기록에 남기는 조건**으로만
    허용됩니다. AI가 한 일의 전부가 화면과 문서에 남습니다.
 
+## 이미 완주된 실행 (2026-08-14, 이 PC의 실제 Vissim 2026 COM)
+
+두 장면 모두 `backend/tools/calibration_loop_live_check.py`로 실기 완주했고, 증거
+zip(`캘리브레이션_데모_증거_2026-08-14.zip`)이 전달돼 있습니다 — 라이브 데모 전에
+zip의 `README_결과요약.md`만 읽어도 아래 체크리스트 전부를 파일에서 확인할 수
+있습니다.
+
+- **장면 1** (label `_demo0814s1`, 워크스페이스 `a9cbf243c5f4`): GEH 7.53에서
+  입력 113 편집이 `INPUT_VOLUME_IS_OBSERVED_DATA`로 구조 거부. 종료 판정
+  `REFUSED BY DESIGN (not a failure)`.
+- **장면 2** (label `_demo0814s2`, 워크스페이스 `026a11b5c106`): 진입부
+  `unverified(ROW_HAS_NO_OBSERVED)` → '수요 추정' 명명 제안 2063.4 → 796.76
+  (`2063.4 * 273 / 707`) → 승인 → 실 COM 적용(read-back 일치) → 재실행 →
+  **GEH 19.61 → 6.02**, 대조군 노드 5는 0.0 → 0.5로 합격 유지. 감사 DOCX 근거
+  칸 = 서명 사유 그대로.
+- 재현 명령(하네스에 `--workbook` 주입과 `--expect estimate`가 추가됨):
+
+  ```
+  # 장면 1: 설계 런 → 워크북 → 채점 런 → 거부  (두 호출로 나뉘는 이유는
+  # 워크북 업로드가 이전 런의 dataset revision을 무효화하기 때문 — 스크립트
+  # 주석의 08-07 측정 기록 참조)
+  python tools/calibration_loop_live_check.py --label _s1 --stages 0,1,2
+  python tools/calibration_loop_live_check.py --label _s1 --stages 1,3,4
+
+  # 장면 2: 변형 워크북 주입 → 런 → 명명 추정 → 승인 → 적용 → 재실행 → DOCX
+  python tools/calibration_loop_live_check.py --label _s2 --stages 0,2 --workbook "client-data/데모-교차로/DEMO_실측데이터_미실측입구_변형_2026-08-14.xlsx"
+  python tools/calibration_loop_live_check.py --label _s2 --stages 1,3,4,5,6,7 --expect estimate
+  ```
+
+- 스크립트 실행에서 ask-first는 제안문의 "거절하고 실제 값을 입력하라" 문구와
+  명시적 추정치 채택 승인으로 증빙됩니다. **값 입력이 승인 버튼을 푸는 폼
+  동작은 UI에만 있으므로, 위 장면 2 절차의 2번(ask-first)은 라이브 데모에서
+  직접 확인할 항목입니다.**
+- 장면 2의 제안이 하향(2063.4→796.76)인 이유: 변형 워크북의 노드 8 관측 합계가
+  남은 이동류만의 합(273대)이라서입니다. 데모의 핵심은 방향이 아니라
+  명명·승인·기록의 형식입니다.
+
 ## "올바른 것을 고쳤다"의 검증 체크리스트
 
 - [ ] 장면 1에서 입력 113 편집이 사유와 함께 거부됐다 (버튼 없음)
