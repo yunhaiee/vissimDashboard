@@ -6,6 +6,7 @@ import { useLanguage } from "@/components/LanguageProvider";
 import {
   genesisHelpEntries,
   jobHelpEntries,
+  observationsHelpEntries,
   phasesHelpEntries,
   regionHelpEntries,
   type HelpEntry,
@@ -63,6 +64,12 @@ export default function DocsPage() {
       title: t("생성 상세·판정", "Generation detail & verdict", "生成の詳細・判定"),
       href: "/genesis",
       entries: jobHelpEntries(t),
+    },
+    {
+      id: "observations",
+      title: t("실측 관측", "Observed counts", "実測観測"),
+      href: "/observations",
+      entries: observationsHelpEntries(t),
     },
   ];
 

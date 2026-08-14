@@ -3932,6 +3932,264 @@ export async function fetchStagedSideInputs(): Promise<StagedSideInputEntry[]> {
   return payload.side_inputs;
 }
 
+// ---------------------------------------------------------------------------
+// Observation store (unit #28) -- backend/routers/observations.py +
+// backend/services/observations.py
+// ---------------------------------------------------------------------------
+//
+// A field-count workbook, staged and gated into a stored SET that later feeds
+// `run_reality_check`'s `observation_set_id` parameter as the OBSERVED side
+// (unit U10) -- sets are leg|turn-keyed. Two-step upload for the same reason
+// every other raw-body upload in this file is (this backend has no
+// python-multipart dependency): `POST /upload` once per workbook (raw bytes,
+// the filename in the query string), then `POST /ingest` with the returned
+// tokens plus the modeller's declared periods.
+//
+// THE FILENAME IS KEPT VERBATIM ON PURPOSE, exactly like `uploadGenesisOsm`
+// above -- the Daejeon adapter reads the site id and the declared collection
+// window out of the file name (services/observations.py's module docstring),
+// so this client must never rename or otherwise transform it. `file.name`
+// goes straight into `encodeURIComponent` and nowhere else.
+//
+// A refusal (400 from `/upload`, 400/422 from `/ingest`) carries the reason
+// AS DATA -- `ObservationRefusal.to_dict()` on the wire -- so it is typed as
+// its own error class rather than a generic `Error`, the same shape
+// `GenesisError` gives the genesis screens. Unlike `GenesisError` (which
+// carries only an English `reasons[]` and needs `refusalHeadline` to
+// translate the CODE client-side), the backend already sends the full ko/en/ja
+// sentence in `.messages` here -- nothing here re-derives or rewords it. A 422
+// specifically means the quality GATE refused and nothing was stored;
+// `.detail.gate` then carries the findings verbatim (severity/code/message per
+// issue), which the caller renders as a named refusal block, never a generic
+// error toast.
+
+/** `{ko, en, ja}` -- the shape every refusal message and the registry health
+ * disclosure below carry, mirroring `HealthCheckLocalizedText` above. */
+export interface ObservationLocalizedText {
+  ko: string;
+  en: string;
+  ja: string;
+}
+
+export class ObservationRefusalError extends Error {
+  status: number;
+  /** The backend's stable reason code (`observation_gate_refused`,
+   * `observation_upload_not_a_workbook`, `observation_periods_required`, ...). */
+  code: string;
+  messages: ObservationLocalizedText;
+  /** Everything else `ObservationRefusal.to_dict()` sent beyond `reason_code`/
+   * `message` -- for a gate refusal this holds `gate`/`source_files`/`adapter`;
+   * for others it may carry `duplicates`, `known_adapters`, `sniff_scores`, or
+   * nothing at all. Rendered verbatim, never re-derived client-side. */
+  detail: Record<string, unknown>;
+
+  constructor(status: number, code: string, messages: ObservationLocalizedText, detail: Record<string, unknown>) {
+    super(messages.en || code);
+    this.name = "ObservationRefusalError";
+    this.status = status;
+    this.code = code;
+    this.messages = messages;
+    this.detail = detail;
+  }
+}
+
+async function observationError(response: Response): Promise<Error> {
+  const text = await response.text();
+  try {
+    const data = JSON.parse(text) as { detail?: unknown };
+    const detail = data.detail;
+    if (detail && typeof detail === "object") {
+      const structured = detail as { reason_code?: string; message?: ObservationLocalizedText; [key: string]: unknown };
+      if (structured.reason_code && structured.message) {
+        const { reason_code, message, ...rest } = structured;
+        return new ObservationRefusalError(response.status, reason_code, message, rest);
+      }
+    }
+    if (typeof detail === "string") return new Error(detail);
+  } catch {
+    // Plain text errors (a 409 registry conflict, a 404 stale token) are still
+    // useful as-is.
+  }
+  return new Error(text || `${response.status} ${response.statusText}`.trim());
+}
+
+export interface StagedObservationUpload {
+  token: string;
+  filename: string;
+  bytes: number;
+}
+
+/** Stage ONE observation-count workbook (`.xlsx`/`.xlsm`). `file.name` is
+ * `encodeURIComponent`-ed and otherwise untouched -- see the module comment
+ * above for why it must never be renamed. */
+export async function uploadObservationWorkbook(file: File): Promise<StagedObservationUpload> {
+  const path = `/api/observations/upload?filename=${encodeURIComponent(file.name)}`;
+  const r = await apiMutationFetch(path, { method: "POST", cache: "no-store", body: file });
+  if (!r.ok) throw await observationError(r);
+  return r.json();
+}
+
+/** One declared window the ingest aggregates counts into. Naive local
+ * timestamps only (no timezone suffix) -- a `datetime-local` input's own
+ * value shape -- because the Daejeon export states no timezone at all
+ * (`services.observations.ObservationPeriod`'s own docstring). */
+export interface ObservationPeriodInput {
+  name: string;
+  start: string;
+  end: string;
+}
+
+export interface ObservationGateIssue {
+  severity: "refuse" | "warn" | "info";
+  code: string;
+  message: string;
+  messages: Record<string, string>;
+  subject: string | null;
+  citation: string | null;
+  context: Record<string, unknown>;
+}
+
+export interface ObservationGateSummary {
+  counts: { refuse: number; warn: number; info: number };
+  codes: string[];
+  issues: ObservationGateIssue[];
+  issues_truncated: number;
+}
+
+export interface ObservationAdapterInfo {
+  name: string;
+  version: string;
+  region: string;
+  source_system: string;
+}
+
+export interface ObservationCoverage {
+  first_interval_start: string | null;
+  last_interval_end: string | null;
+  interval_minutes: number[];
+  records_read: number;
+  records_aggregated: number;
+  records_excluded_as_totals: number;
+  records_outside_every_period: number;
+  detector_records_read: number;
+  detector_records_aggregated: number;
+  detector_records_outside_every_period: number;
+}
+
+export interface ObservationPeriodCoverage {
+  name: string;
+  start: string;
+  end: string;
+  site_count: number;
+  sites_with_data: string[];
+  sites_without_data: string[];
+  total_volume: number;
+  records: number;
+  detector_total_volume: number;
+  detector_records: number;
+}
+
+/** `GET /api/observations`' per-row shape -- a set WITHOUT its aggregates
+ * (`services.observations.summarize`), which is why `ObservationSetRecord`
+ * below is a wider, separate type rather than this one reused. */
+export interface ObservationSetSummary {
+  id: string;
+  name: string;
+  workspace_id: string;
+  ingested_at: string;
+  adapter: ObservationAdapterInfo;
+  source_files: string[];
+  site_count: number;
+  site_ids: string[];
+  coverage: ObservationCoverage;
+  periods: ObservationPeriodCoverage[];
+  gate: ObservationGateSummary;
+}
+
+export interface ObservationMovementAggregate {
+  volume: number;
+  records: number;
+}
+
+export interface ObservationSiteAggregate {
+  site_id: string;
+  site_name: string | null;
+  total: number;
+  records: number;
+  interval_count: number;
+  first_interval_start: string;
+  last_interval_end: string;
+  movements: Record<string, ObservationMovementAggregate>;
+  detector_total: number | null;
+  detector_records: number;
+  detectors: Record<string, ObservationMovementAggregate>;
+  count_basis: string[];
+}
+
+/** `GET /api/observations/{set_id}` -- the summary plus its aggregates,
+ * period name -> site id -> `ObservationSiteAggregate`. */
+export interface ObservationSetRecord extends ObservationSetSummary {
+  aggregates: Record<string, Record<string, ObservationSiteAggregate>>;
+}
+
+/** `registry_health_status()`'s disclosure -- present only after a registry
+ * quarantine event, `null` when healthy. */
+export interface ObservationRegistryHealth {
+  code: "registry_quarantined";
+  at: string | null;
+  quarantine_path: string | null;
+  lost_record_count: number | null;
+  quarantine_count: number;
+  messages: ObservationLocalizedText;
+}
+
+export interface ObservationSetsResponse {
+  sets: ObservationSetSummary[];
+  registry_health: ObservationRegistryHealth | null;
+}
+
+export async function fetchObservationSets(): Promise<ObservationSetsResponse> {
+  const r = await apiFetch("/api/observations", { cache: "no-store" });
+  if (!r.ok) throw await observationError(r);
+  return r.json();
+}
+
+export async function fetchObservationSet(setId: string): Promise<ObservationSetRecord> {
+  const r = await apiFetch(`/api/observations/${encodeURIComponent(setId)}`, { cache: "no-store" });
+  if (!r.ok) throw await observationError(r);
+  return r.json();
+}
+
+/** `POST /api/observations/ingest` -- parse, gate and store one set from
+ * already-staged tokens. A 422 means the quality gate REFUSED and nothing was
+ * stored (`ObservationRefusalError.code === "observation_gate_refused"`,
+ * `.detail.gate` carries the findings) -- the caller renders that as a named
+ * refusal block, never a generic error. */
+export async function ingestObservationSet(payload: {
+  name: string;
+  upload_tokens: string[];
+  periods: ObservationPeriodInput[];
+  adapter?: string;
+  keep_uploads?: boolean;
+}): Promise<ObservationSetRecord> {
+  const r = await apiMutationFetch("/api/observations/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw await observationError(r);
+  const data = (await r.json()) as { stored: true; set: ObservationSetRecord };
+  return data.set;
+}
+
+export async function deleteObservationSet(setId: string): Promise<void> {
+  const r = await apiMutationFetch(`/api/observations/${encodeURIComponent(setId)}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!r.ok) throw await observationError(r);
+}
+
 /** One row of `GET /api/admin/workspaces/{id}/members`
  * (`services/membership._public_member`). `role` is the USER's global role;
  * `membership_role` is their role INSIDE this project — deliberately separate

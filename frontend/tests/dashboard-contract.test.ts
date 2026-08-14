@@ -403,6 +403,10 @@ contractTest("#18: the sidebar is the pipeline — selector on top, four numbere
   const dataGroup = sliceBetween(shell, 'ordinal: "②"', 'ordinal: "③"');
   pin.match(dataGroup, /href: "\/genesis\/demand"/, "expected 수요 promoted to a first-class ② 데이터 entry");
   pin.match(dataGroup, /href: "\/genesis\/phases"/, "expected 현시도 promoted to a first-class ② 데이터 entry");
+  // Unit #28: the observation STORE (backend/routers/observations.py) had a
+  // complete API and zero frontend consumers before this row.
+  pin.match(dataGroup, /href: "\/observations"/, "expected 실측 관측 as a first-class ② 데이터 entry");
+  pin.match(dataGroup, /실측 관측/, "expected the observations row to carry its Korean label");
 
   const simGroup = sliceBetween(shell, 'ordinal: "③"', 'ordinal: "④"');
   pin.match(simGroup, /href: "\/dashboard"/, "expected the dashboard under ③ 시뮬·보정");
@@ -427,6 +431,7 @@ contractTest("#18: the pipeline stepper is derived from the route and stores not
   );
   pin.match(shell, /"\/genesis\/region": "network"/, "expected the region sub-screen to map to the 네트워크 stage");
   pin.match(shell, /"\/genesis\/demand": "data"/, "expected the demand screen to map to the 데이터 stage");
+  pin.match(shell, /"\/observations": "data"/, "expected the observations screen to map to the 데이터 stage");
   pin.match(shell, /"\/base-model": "sim"/, "expected base-model validation to map to the 시뮬·보정 stage");
   pin.match(shell, /"\/downloads": "report"/, "expected downloads to map to the 보고서 stage");
   pin.match(
@@ -4023,6 +4028,111 @@ contractTest(
     );
   },
 );
+
+// ---------------------------------------------------------------------------
+// Unit #28 -- the observation STORE (backend/routers/observations.py) gets a
+// route. Two tests: the API bindings (lib/api.ts, the filename must travel
+// verbatim -- the Daejeon adapter reads the site id and window out of it) and
+// the page's own behaviour (a 422 gate refusal renders as a named block, and
+// the master-detail selection never becomes a dynamic-route navigation).
+// ---------------------------------------------------------------------------
+
+contractTest("unit #28: the observation store API bindings stay wired, filenames travel verbatim", (pin) => {
+  const api = read("lib/api.ts");
+  const observationsSection = sliceBetween(
+    api,
+    "// Observation store (unit #28)",
+    "/** One row of `GET /api/admin/workspaces/{id}/members`",
+  );
+  pin.match(observationsSection, /export class ObservationRefusalError extends Error/, "expected a dedicated refusal error type, not a generic Error");
+  pin.match(observationsSection, /export async function uploadObservationWorkbook\(file: File\)/, "expected a typed upload helper");
+  // THE FILENAME MUST TRAVEL VERBATIM -- the router's own docstring: the
+  // Daejeon adapter reads the site id and the declared collection window out
+  // of the file name, so a client-side rename would destroy both.
+  pin.match(
+    observationsSection,
+    /filename=\$\{encodeURIComponent\(file\.name\)\}/,
+    "expected the upload query string to carry file.name untouched, only percent-encoded",
+  );
+  pin.doesNotMatch(
+    observationsSection,
+    /file\.name\.replace|sanitizeFilename|renameUpload/,
+    "expected no filename transform anywhere in the observation upload path",
+  );
+  pin.match(
+    observationsSection,
+    /apiMutationFetch\(path, \{ method: "POST", cache: "no-store", body: file \}\)/,
+    "expected the upload to reuse the shared mutation-fetch helper with a raw-bytes body, exactly like uploadGenesisOsm",
+  );
+  // The gate's per-issue citation survives the wire type (refuter finding A,
+  // 2026-08-14): services/observations.py stores it verbatim, and a type that
+  // omits the field is how it silently vanished from the first cut's UI.
+  pin.match(observationsSection, /citation: string \| null;/, "expected the gate-issue wire type to carry the citation the backend stores verbatim");
+  pin.match(observationsSection, /export async function ingestObservationSet/, "expected a typed ingest helper");
+  pin.match(observationsSection, /apiMutationFetch\("\/api\/observations\/ingest"/, "expected ingest to POST the documented route");
+  pin.match(observationsSection, /export async function fetchObservationSets/, "expected a typed sets-list helper");
+  pin.match(observationsSection, /export async function fetchObservationSet\(setId: string\)/, "expected a typed set-detail helper");
+  pin.match(observationsSection, /export async function deleteObservationSet/, "expected a typed delete helper");
+  // Every call here has to go through apiFetch/apiMutationFetch (which inject
+  // X-Workspace-Id via sameOriginRequestInit/requestInitForBase) rather than a
+  // hand-rolled `fetch(...)`, which would silently drop the workspace scope --
+  // see lib/api.ts's own module comment on why the header is injected only at
+  // those two choke points.
+  pin.doesNotMatch(
+    observationsSection,
+    /(?<![A-Za-z])fetch\(/,
+    "expected every observation call to go through apiFetch/apiMutationFetch, never a bare fetch()",
+  );
+});
+
+contractTest("unit #28: the observations page renders a 422 gate refusal as a named block, and master-detail needs no dynamic route", (pin) => {
+  const page = read("app/observations/page.tsx");
+  const help = read("lib/help-content.tsx");
+  const docs = read("app/docs/page.tsx");
+
+  // A gate refusal (422, nothing stored) renders the backend's OWN localized
+  // sentence plus its findings verbatim -- never a generic error toast.
+  pin.match(page, /ingestError instanceof ObservationRefusalError/, "expected the ingest error path to distinguish a structured refusal");
+  pin.match(page, /ingestError\.messages\[lang\]/, "expected the refusal's own ko\/en\/ja sentence to render, never a re-worded one");
+  pin.match(page, /ingestError\.detail\.gate as ObservationGateSummary/, "expected a gate refusal's findings to be read from detail.gate");
+  pin.match(page, /<GateIssuesList gate=\{gate\} t=\{t\} lang=\{lang\} \/>/, "expected the gate findings to render through the shared list, verbatim per issue");
+  // Refuter finding A (2026-08-14): the backend sends each issue's citation
+  // ("every finding cites its rule" -- the MRWA-authority doctrine) and the
+  // first cut dropped it. Each issue renders ITS OWN localized sentence and,
+  // when present, its citation line.
+  pin.match(page, /issue\.messages\[lang\] \|\| issue\.message/, "expected each gate issue to render its own localized sentence, not one fixed language");
+  pin.match(page, /\{t\("근거", "Basis", "根拠"\)\}: \{issue\.citation\}/, "expected an issue's citation to render -- a finding without its rule is a bare opinion");
+
+  // Master-detail with NO dynamic route: selection is a local id, and a
+  // fetch, never a navigation to a new /observations/:id page.
+  pin.match(page, /const \[selectedId, setSelectedId\] = useState<string \| null>\(null\)/, "expected row selection to be local component state");
+  pin.match(page, /fetchObservationSet\(selectedId\)/, "expected selecting a row to fetch that set's detail inline");
+  pin.doesNotMatch(page, /useRouter|router\.push|next\/navigation/, "expected no navigation import -- this page must never grow a dynamic detail route");
+
+  // The upload call per staged file, filename untouched at the call site too.
+  pin.match(page, /uploadObservationWorkbook\(file\)/, "expected one raw upload call per selected file");
+
+  // Delete goes through the shared ModalDialog primitive, per the unit brief.
+  pin.match(page, /import \{ ModalDialog, Panel \} from "@\/components\/genesis\/ui"/, "expected the shared Panel\/ModalDialog primitives, not page-local chrome");
+  pin.match(page, /open=\{deleteTarget !== null\}/, "expected the delete confirmation to be a ModalDialog gated on the delete target");
+  pin.match(page, /await deleteObservationSet\(deleteTarget\.id\)/, "expected the confirm button to call the typed delete helper");
+
+  // THREE-COLOR RULE, frozen: rose = refusal, emerald = stored/pass, sky =
+  // selection, and nothing else takes a fourth hue.
+  pin.match(page, /border-rose-300 bg-rose-50/, "expected the refusal block to use the frozen rose palette");
+  pin.match(page, /border-emerald-300 bg-emerald-50/, "expected the stored-success block to use the frozen emerald palette");
+  pin.match(page, /selected \? "bg-sky-50" : "hover:bg-slate-50"/, "expected the selected list row to use the frozen sky selection treatment");
+  pin.doesNotMatch(page, /amber|yellow/i, "expected no fourth hue on the observations screen");
+
+  // No hand-rolled fetch on the page either -- everything goes through the
+  // typed lib/api.ts helpers, which is where the workspace header is injected.
+  pin.doesNotMatch(page, /(?<![A-Za-z])fetch\(/, "expected the page to call only the typed lib/api.ts helpers, never a bare fetch()");
+
+  // Doctrine lives at /docs, not as inline prose on the page (unit #20's
+  // retirement rule, restated in this file's own docs test below).
+  pin.match(help, /export function observationsHelpEntries/, "expected a docs entry for what an observation set is for");
+  pin.match(docs, /observationsHelpEntries\(t\)/, "expected /docs to actually render the observations entry");
+});
 
 // ---------------------------------------------------------------------------
 // U-1 polish (2026-08-13) -- the colour rules for the three genesis sub-screens

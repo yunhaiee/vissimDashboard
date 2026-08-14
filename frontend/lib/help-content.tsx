@@ -157,6 +157,51 @@ export function phasesHelpEntries(t: Translate): HelpEntry[] {
 }
 
 /**
+ * /observations -- the observation STORE (unit #28). What a set is FOR: it
+ * feeds `run_reality_check`'s `observation_set_id` parameter as the OBSERVED
+ * side (unit U10), so the doctrine here is about that later comparison, not
+ * about the upload form itself (the form's own preconditions render inline,
+ * next to the 적재 button they gate -- doctrine belongs here, a disabled-reason
+ * does not).
+ */
+export function observationsHelpEntries(t: Translate): HelpEntry[] {
+  return [
+    {
+      title: t("실측 관측이란", "What an observation set is", "実測観測とは"),
+      body: t(
+        "현장에서 잰 교통량 워크북을 게이트에 통과시켜 만든, 기간별·지점별 합계입니다. 이후 실행 결과를 이 세트와 대조할 때 '실측' 쪽 숫자가 됩니다 — 개별 레코드가 아니라 합계만 보관합니다.",
+        "The period-by-period, site-by-site totals a fieldwork counts workbook produces once it clears the data-quality gate. It becomes the 'observed' side when a later run is graded against it -- only the AGGREGATES are kept, never the individual records.",
+        "現場で計測した交通量ワークブックがデータ品質ゲートを通過してできる、期間別・地点別の合計です。以降の実行結果をこのセットと対照する際の「実測」側になります — 個々のレコードではなく合計のみを保管します。",
+      ),
+    },
+    {
+      title: t("접근로|회전 키", "The leg|turn key", "流入路|旋回キー"),
+      body: t(
+        "지점별 집계는 '접근로|회전' 형태의 이동류 키로 나뉩니다 — 접근로명은 조사 원문 그대로이고, 회전은 인식되면 좌회전/직진/우회전/유턴, 아니면 원문 토큰입니다. 이 키가 어느 Vissim 노드·이동류에 해당하는지는 대조를 실행하는 쪽이 알아야 하는 정보이며, 이 화면은 그 매핑을 만들지 않습니다.",
+        "A site's aggregate is split by a 'leg|turn' movement key -- the leg is the survey's own approach label verbatim, and the turn is left/through/right/u-turn when recognised, or the survey's own token otherwise. Which Vissim node and movement that key corresponds to is knowledge the comparison itself needs; this screen never builds that mapping.",
+        "地点別集計は「流入路|旋回」の形式の移動流キーで分かれます — 流入路名は調査原文そのままで、旋回は認識できれば左折/直進/右折/Uターン、できなければ原文のトークンです。このキーがどのVissimノード・移動流に対応するかは対照を実行する側が知るべき情報であり、この画面はその対応付けを作成しません。",
+      ),
+    },
+    {
+      title: t("시간대는 반드시 선언", "Periods are always declared", "時間帯は必ず宣言"),
+      body: t(
+        "몇 주치 조사를 한 덩어리로 합산해 짧은 실행과 비교하면 없는 수요 오차를 만들어 냅니다. 그래서 적재할 때 최소 하나의 시간대 이름·시작·끝을 반드시 선언해야 하며, 이 화면이 추측하는 일은 없습니다.",
+        "Summing a multi-week survey into one figure and comparing it to a short run would manufacture a demand error that is not real. So storing a set always requires at least one named period (name, start, end) declared up front -- this screen never infers one.",
+        "数週間分の調査を一括で合算して短い実行と比較すると、実在しない需要誤差を作り出します。そのため取り込み時には最低一つの時間帯（名前・開始・終了）を必ず宣言する必要があり、この画面が推測することはありません。",
+      ),
+    },
+    {
+      title: t("거부되면 아무것도 저장되지 않음", "A refusal stores nothing", "拒否されると何も保存されない"),
+      body: t(
+        "데이터 품질 게이트가 거부 등급 결함을 발견하면 그 세트는 저장되지 않고, 거부 사유가 그대로 화면에 표시됩니다. 거부된 데이터를 저장하면 이후 대조가 잘못된 숫자를 근거로 삼게 되기 때문입니다.",
+        "When the data-quality gate finds a refuse-tier fault, the set is not stored at all and the refusal reasons render exactly as the gate reported them. Storing refused data would let a later comparison grade a run against numbers already known to be wrong.",
+        "データ品質ゲートが拒否ティアの欠陥を発見すると、そのセットは保存されず、拒否理由がゲートの報告どおりにそのまま表示されます。拒否されたデータを保存すると、以降の対照が誤りだと分かっている数値を根拠にしてしまうためです。",
+      ),
+    },
+  ];
+}
+
+/**
  * /genesis/jobs/[id] -- one generation's detail and its verdict. These three
  * entries have moved twice: out of inline ⓘ tooltips on the hub (U-1-quick),
  * onto the hub's own drawer, then onto the detail route the R1.5 grid actually

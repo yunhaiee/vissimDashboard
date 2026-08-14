@@ -172,6 +172,7 @@ const ROUTE_STAGE: Readonly<Record<string, PipelineStage>> = {
   "/network-diff": "network",
   "/genesis/demand": "data",
   "/genesis/phases": "data",
+  "/observations": "data",
   "/dashboard": "sim",
   "/base-model": "sim",
   "/health": "sim",
@@ -251,6 +252,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       links: [
         { href: "/genesis/demand", label: t("수요", "Demand", "需要"), icon: "downloads" },
         { href: "/genesis/phases", label: t("신호 (현시도)", "Signals (현시도)", "信号 (現示図)"), icon: "validation" },
+        // Unit #28: the observation STORE (backend/routers/observations.py)
+        // had a complete API and zero frontend consumers. Same icon as 수요
+        // above -- both rows are a real-world count workbook staged INTO the
+        // platform, and the icon glyph already reads that way (an import
+        // tray), not "download a finished artifact".
+        { href: "/observations", label: t("실측 관측", "Observed Counts", "実測観測"), icon: "downloads" },
       ],
     },
     {
