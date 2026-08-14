@@ -167,7 +167,7 @@ export default function CurationBar({
           not converse. Same eyebrow-label styling FloatingAssistant already
           uses for its own route-context summary, so the two surfaces read as
           one design family while staying visually distinct in role. */}
-      <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">
+      <p className="mb-2 text-[13px] font-bold uppercase tracking-[0.12em] text-slate-400">
         {t("대시보드 큐레이션", "Dashboard curation", "ダッシュボードキュレーション")}
       </p>
       <div className="flex flex-wrap items-center gap-3">
@@ -192,12 +192,12 @@ export default function CurationBar({
               "何を見たいですか？ — 関連するチャートのみ表示します",
             )}
             disabled={disabled || loading}
-            className="w-full bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-60"
+            className="w-full bg-transparent text-[15px] text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-60"
             aria-label={t("대시보드 큐레이션 입력", "Dashboard curation input")}
           />
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex h-10 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-xs font-medium">
+          <div className="flex h-10 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-[14px] font-medium">
             <button
               type="button"
               onClick={() => onAudienceChange("plain")}
@@ -217,7 +217,7 @@ export default function CurationBar({
             <button
               type="button"
               onClick={cancel}
-              className="ui-button-ghost inline-flex h-10 items-center px-4 text-sm"
+              className="ui-button-ghost inline-flex h-10 items-center px-4 text-[15px]"
             >
               {t("취소", "Cancel", "キャンセル")}
             </button>
@@ -226,7 +226,7 @@ export default function CurationBar({
               type="button"
               onClick={submit}
               disabled={disabled || !message.trim()}
-              className="ui-button-primary inline-flex h-10 items-center px-4 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              className="ui-button-primary inline-flex h-10 items-center px-4 text-[15px] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t("보기", "View", "表示")}
             </button>
@@ -235,7 +235,7 @@ export default function CurationBar({
             <button
               type="button"
               onClick={reset}
-              className="ui-button-ghost inline-flex h-10 items-center px-4 text-sm"
+              className="ui-button-ghost inline-flex h-10 items-center px-4 text-[15px]"
             >
               {t("전체 보기", "Show everything", "すべて表示")}
             </button>
@@ -244,20 +244,20 @@ export default function CurationBar({
       </div>
 
       {loading && (
-        <p className="mt-2 text-[11px] text-slate-500">
+        <p className="mt-2 text-[13px] text-slate-500">
           {t("보통 10~20초 걸립니다…", "This usually takes 10-20 seconds…", "通常10〜20秒かかります…")}
         </p>
       )}
 
       {error && (
-        <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
+        <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[14px] text-rose-700">{error}</p>
       )}
 
       {spec && (
         <div className="mt-4 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             {hiddenSectionIds.length > 0 && (
-              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[13px] font-semibold text-slate-600">
                 {t(
                   `${applicableSectionIds.length}개 중 ${applicableSectionIds.length - hiddenSectionIds.length}개 섹션만 표시 중`,
                   `Showing ${applicableSectionIds.length - hiddenSectionIds.length} of ${applicableSectionIds.length} sections`,
@@ -268,11 +268,11 @@ export default function CurationBar({
           </div>
 
           {spec.headline && (
-            <p className="text-sm font-semibold leading-relaxed text-slate-900">{spec.headline}</p>
+            <p className="text-[15px] font-semibold leading-relaxed text-slate-900">{spec.headline}</p>
           )}
 
           {unavailableChosenIds.length > 0 && (
-            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[14px] text-amber-800">
               {t(
                 `"${unavailableChosenIds.map(chartLabel).join(", ")}"이(가) 관련 있지만, 필요한 데이터가 없어 표시할 수 없습니다.`,
                 `"${unavailableChosenIds.map(chartLabel).join(", ")}" is relevant, but the data it needs isn't available to show.`,
@@ -287,13 +287,13 @@ export default function CurationBar({
                   key={`${card.title}-${index}`}
                   className={`rounded-xl border px-4 py-3 ${TONE_STYLES[card.tone] ?? TONE_STYLES.info}`}
                 >
-                  <p className="text-sm font-semibold">{card.title}</p>
-                  <p className="mt-1 text-sm leading-relaxed">{card.body}</p>
+                  <p className="text-[15px] font-semibold">{card.title}</p>
+                  <p className="mt-1 text-[15px] leading-relaxed">{card.body}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-3">
                     {card.related_chart && applicableSectionIds.includes(card.related_chart) && (
                       <a
                         href={`#${card.related_chart}`}
-                        className="inline-block text-xs font-semibold underline decoration-dotted underline-offset-2 opacity-80 hover:opacity-100"
+                        className="inline-block text-[14px] font-semibold underline decoration-dotted underline-offset-2 opacity-80 hover:opacity-100"
                       >
                         {t(`${chartLabel(card.related_chart)} 보기 →`, `View ${chartLabel(card.related_chart)} →`)}
                       </a>
@@ -307,7 +307,7 @@ export default function CurationBar({
                     <button
                       type="button"
                       onClick={() => requestAgentHandoff(card, t)}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-800"
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-surface px-2 py-1 text-[12px] font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-800"
                     >
                       {t("에이전트에게 요청", "Ask the agent", "エージェントに依頼")}
                       <span aria-hidden>→</span>

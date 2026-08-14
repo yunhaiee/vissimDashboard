@@ -222,10 +222,10 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
       <div className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-slate-300/80 bg-surface shadow-[0_24px_60px_rgba(15,23,42,0.3)]">
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
           <div>
-            <h2 className="text-sm font-bold text-slate-900">
+            <h2 className="text-[15px] font-bold text-slate-900">
               {t("열 매핑 필요", "Column Mapping Needed")}
             </h2>
-            <p className="mt-1 text-xs leading-relaxed text-slate-600">
+            <p className="mt-1 text-[14px] leading-relaxed text-slate-600">
               {t(
                 `"${inspectResult.filename}"이(가) 표준 템플릿과 다른 구조입니다. 각 항목이 어느 열에 해당하는지 확인해주세요.`,
                 `"${inspectResult.filename}" doesn't match the standard template layout. Please confirm which column each field maps to.`,
@@ -246,14 +246,14 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {inspectResult.warnings && inspectResult.warnings.length > 0 && (
             <div className="mb-4 space-y-1 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-              <p className="text-xs font-bold uppercase tracking-wide text-amber-700">
+              <p className="text-[14px] font-bold uppercase tracking-wide text-amber-700">
                 {t(
                   "표준 템플릿으로 가져오지 못한 이유 (기존 데이터는 그대로 유지됩니다)",
                   "Why the standard template import didn't work (your existing data is untouched)",
                 )}
               </p>
               {inspectResult.warnings.map((warning, idx) => (
-                <p key={idx} className="text-xs leading-relaxed text-amber-800">
+                <p key={idx} className="text-[14px] leading-relaxed text-amber-800">
                   {warning}
                 </p>
               ))}
@@ -284,7 +284,7 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
           />
 
           <div className="mt-6 border-t border-slate-200 pt-4">
-            <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+            <label className="flex items-center gap-2 text-[14px] font-semibold text-slate-700">
               <input
                 type="checkbox"
                 checked={includeTravelTimes}
@@ -327,7 +327,7 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
 
           {preview && (
             <div className="mt-6 border-t border-slate-200 pt-4">
-              <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">
+              <h3 className="text-[14px] font-bold uppercase tracking-wide text-slate-500">
                 {t("미리보기 (Preview)", "Preview")}
               </h3>
               {preview.counts && (
@@ -351,11 +351,11 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
 
           {refusalIssues && refusalIssues.length > 0 && (
             <div className="mt-6 space-y-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
-              <p className="text-xs font-bold uppercase tracking-wide text-rose-700">
+              <p className="text-[14px] font-bold uppercase tracking-wide text-rose-700">
                 {t("가져오기가 거부되었습니다", "Import was refused")}
               </p>
               {refusalIssues.map((issue) => (
-                <p key={issue.code} className="text-sm leading-relaxed text-rose-800">
+                <p key={issue.code} className="text-[15px] leading-relaxed text-rose-800">
                   {issue[lang] ?? issue.en}
                 </p>
               ))}
@@ -363,7 +363,7 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
           )}
 
           {actionError && (
-            <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[15px] text-rose-700">
               {actionError}
             </div>
           )}
@@ -374,7 +374,7 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
             type="button"
             onClick={onClose}
             disabled={importing}
-            className="rounded-lg border border-slate-300 bg-surface px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-lg border border-slate-300 bg-surface px-3 py-2 text-[14px] font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t("취소", "Cancel")}
           </button>
@@ -382,7 +382,7 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
             type="button"
             onClick={handlePreview}
             disabled={busy || !countsSpec}
-            className="ui-button-ghost inline-flex items-center px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-ghost inline-flex items-center px-3 py-2 text-[14px] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {previewing ? t("미리보기 중", "Previewing") : t("미리보기", "Preview")}
           </button>
@@ -390,7 +390,7 @@ export default function WorkbookMappingModal({ inspectResult, onClose, onImporte
             type="button"
             onClick={handleImport}
             disabled={busy || !countsSpec}
-            className="ui-button-primary inline-flex items-center px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-primary inline-flex items-center px-3 py-2 text-[14px] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {importing ? t("가져오는 중", "Importing") : t("가져오기", "Import")}
           </button>
@@ -433,10 +433,10 @@ function MappingSection({
 
   return (
     <div>
-      {title && <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">{title}</h3>}
+      {title && <h3 className="text-[14px] font-bold uppercase tracking-wide text-slate-500">{title}</h3>}
       <div className="mt-2 grid gap-3 sm:grid-cols-2">
         <label className="block">
-          <span className="mb-1 block text-xs font-semibold text-slate-600">{t("시트", "Sheet")}</span>
+          <span className="mb-1 block text-[14px] font-semibold text-slate-600">{t("시트", "Sheet")}</span>
           <select className="ui-select" value={sheetName} onChange={(event) => onSheetChange(event.target.value)}>
             {sheetNames.map((name) => (
               <option key={name} value={name}>
@@ -446,7 +446,7 @@ function MappingSection({
           </select>
         </label>
         <label className="block">
-          <span className="mb-1 block text-xs font-semibold text-slate-600">{t("헤더 행 (Header Row)", "Header Row")}</span>
+          <span className="mb-1 block text-[14px] font-semibold text-slate-600">{t("헤더 행 (Header Row)", "Header Row")}</span>
           <input
             type="number"
             min={1}
@@ -459,7 +459,7 @@ function MappingSection({
       </div>
 
       {resolving ? (
-        <p className="mt-3 text-xs text-slate-500">{t("불러오는 중...", "Loading...")}</p>
+        <p className="mt-3 text-[14px] text-slate-500">{t("불러오는 중...", "Loading...")}</p>
       ) : (
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           {fields.map((field) => {
@@ -468,11 +468,11 @@ function MappingSection({
             const isGuessed = guess != null && selected === guess.column;
             return (
               <label key={field.key} className="block">
-                <span className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-600">
+                <span className="mb-1 flex items-center gap-1.5 text-[14px] font-semibold text-slate-600">
                   {t(field.ko, field.en, field.ja)}
                   {field.required && <span className="text-rose-500">*</span>}
                   {isGuessed && (
-                    <span className="rounded-full bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-600">
+                    <span className="rounded-full bg-blue-50 px-1.5 py-0.5 text-[12px] font-bold text-blue-600">
                       {guess?.source === "remembered" ? t("기억됨", "remembered") : t("자동 추정", "guessed")}
                     </span>
                   )}
@@ -500,7 +500,7 @@ function MappingSection({
 
       {snapshot && snapshot.sample_rows.length > 0 && (
         <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-slate-50">
-          <table className="w-full min-w-max text-left text-[11px]">
+          <table className="w-full min-w-max text-left text-[13px]">
             <thead>
               <tr className="border-b border-slate-200 text-slate-500">
                 {columns.map((letter, idx) => (
@@ -543,15 +543,15 @@ function PreviewTable({
   return (
     <div className="mt-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold text-slate-700">{title}</p>
-        <p className="text-[11px] text-slate-500">
+        <p className="text-[14px] font-semibold text-slate-700">{title}</p>
+        <p className="text-[13px] text-slate-500">
           {block.total_rows} {t("행", "rows")}
           {block.truncated ? ` (${t("일부만 표시", "showing a subset")})` : ""}
         </p>
       </div>
       {block.issues.length === 0 ? (
         <div className="mt-1 overflow-x-auto rounded-lg border border-slate-200 bg-slate-50">
-          <table className="w-full min-w-max text-left text-[11px]">
+          <table className="w-full min-w-max text-left text-[13px]">
             <thead>
               <tr className="border-b border-slate-200 text-slate-500">
                 {columns.map((col) => (
@@ -577,7 +577,7 @@ function PreviewTable({
       ) : (
         <div className="mt-1 space-y-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
           {block.issues.map((issue) => (
-            <p key={issue.code} className="text-xs leading-relaxed text-amber-800">
+            <p key={issue.code} className="text-[14px] leading-relaxed text-amber-800">
               {t(issue.ko, issue.en, issue.ja)}
             </p>
           ))}

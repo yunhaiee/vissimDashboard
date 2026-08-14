@@ -47,7 +47,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { PageHelp, Panel, refusalHeadline } from "@/components/genesis/ui";
+import { Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   confirmPhaseDiagram,
@@ -320,31 +320,11 @@ export default function PhaseDiagramReviewPage() {
     approachRows.some((row) => row.phaseId) &&
     !busy;
 
-  // UNIT #20 -- the page help drawer's content. 확인 절차 restates, for a
-  // reader who opens the drawer on purpose, the same doctrine the always-visible
-  // intro paragraph below the h1 already carries (그 paragraph stays -- it is
-  // this page's foundational claim, not a tooltip, so it is not "moved" here so
-  // much as echoed for discoverability alongside the other two pages' drawers).
-  // signals 입력 recovers a sentence the 2026-08-14 text-purge removed from
-  // under the "signals 입력 만들기" panel (see the note beside that Panel).
-  const phasesHelpEntries = [
-    {
-      title: t("확인 절차", "The confirmation step", "確認手順"),
-      body: t(
-        "현시도는 그림이므로 어떤 파싱도 접근로–현시 배정을 산출할 수 없습니다. 모델의 판독은 제안일 뿐이며, 확인 버튼을 누른 사람의 진술만이 실제 신호 입력이 됩니다 — 현시도는 사람 확인만이 사실을 만듭니다.",
-        "The 현시도 is a drawing, so no parse can produce the approach→phase mapping. The model's reading is only a proposal; only the statement of the person who confirms becomes actual signal input — for a 현시도, only a human confirmation makes a fact.",
-        "現示図は図面であり、解析では流入路と現示の対応を得られません。モデルの判読は提案に過ぎず、確認した人の申告のみが実際の信号入力になります — 現示図は人の確認だけが事実を作ります。",
-      ),
-    },
-    {
-      title: t("signals 입력", "Signals input", "信号入力"),
-      body: t(
-        "확인된(CONFIRMED) 교차로만 signals 입력에 포함됩니다 — 미확인이거나 재확인이 필요한 교차로는 빠집니다.",
-        "Only CONFIRMED intersections are included in the signals input — an unconfirmed or re-confirmation-needed intersection is left out.",
-        "確認済み（CONFIRMED）の交差点のみが信号入力に含まれます — 未確認または再確認が必要な交差点は除外されます。",
-      ),
-    },
-  ];
+  // UNIT #20's help drawer is RETIRED (2026-08-14). 확인 절차 and signals 입력
+  // are verbatim in lib/help-content.tsx (`phasesHelpEntries`) and render at
+  // /docs, opened by the book icon in the app topbar. The always-visible intro
+  // paragraph below the h1 STAYS: it is this page's foundational claim, not a
+  // tooltip, and the drawer only ever echoed it for discoverability.
 
   return (
     <main className="mx-auto max-w-[1500px] px-4 py-8">
@@ -355,16 +335,15 @@ export default function PhaseDiagramReviewPage() {
       <header className="mb-6">
         <h1 className="flex items-center text-[22px] font-semibold tracking-tight text-slate-900">
           {t("현시도 확인", "Phase-diagram review", "現示図の確認")}
-          <PageHelp entries={phasesHelpEntries} />
         </h1>
-        <p className="mt-1.5 max-w-4xl text-[13px] leading-relaxed text-slate-600">
+        <p className="mt-1.5 max-w-4xl text-[15px] leading-relaxed text-slate-600">
           {t(
             "시트의 현시도는 그림이므로 어떤 파싱도 접근로–현시 배정을 산출할 수 없습니다. 아래 제안은 모델이 도면을 읽은 결과일 뿐이며, 이 앱이 검증한 것이 아닙니다. 확인 버튼을 누른 사람의 진술만이 실제로 사용됩니다.",
             "The 현시도 is a drawing, so no parse can produce the approach→phase mapping. The proposal below is a model READING the picture — this app has not verified it. Only the statement of the person who confirms is used.",
             "現示図は図面であり、解析では流入路と現示の対応を得られません。以下の提案はモデルの判読であり、本アプリが検証したものではありません。確認した人の申告のみが使用されます。",
           )}
         </p>
-        <Link href="/genesis" className="mt-2 inline-block text-xs font-semibold text-slate-500 underline">
+        <Link href="/genesis" className="mt-2 inline-block text-[14px] font-semibold text-slate-500 underline">
           {t("← 네트워크 생성으로", "← Back to generation", "← ネットワーク生成へ")}
         </Link>
       </header>
@@ -373,13 +352,13 @@ export default function PhaseDiagramReviewPage() {
         <div className="mb-6 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-slate-800">
           <p className="text-[15px] font-semibold">{refusalHeadline(error.code, t)}</p>
           {error.reasons.length > 0 ? (
-            <ul className="mt-1.5 list-disc pl-5 text-[13px] leading-relaxed">
+            <ul className="mt-1.5 list-disc pl-5 text-[15px] leading-relaxed">
               {error.reasons.map((reason) => (
                 <li key={reason}>{reason}</li>
               ))}
             </ul>
           ) : (
-            <p className="mt-1.5 text-[13px] leading-relaxed">{error.message}</p>
+            <p className="mt-1.5 text-[15px] leading-relaxed">{error.message}</p>
           )}
         </div>
       )}
@@ -396,7 +375,7 @@ export default function PhaseDiagramReviewPage() {
             )}
           >
             {rows.length === 0 ? (
-              <p className="text-[13px] leading-relaxed text-slate-500">
+              <p className="text-[15px] leading-relaxed text-slate-500">
                 {t(
                   "렌더링된 현시도가 없습니다.",
                   "No rendered 현시도 yet.",
@@ -410,7 +389,7 @@ export default function PhaseDiagramReviewPage() {
                     <button
                       type="button"
                       onClick={() => setSelectedId(row.review_id)}
-                      className={`w-full rounded-lg border px-3 py-2.5 text-left text-[13px] ${
+                      className={`w-full rounded-lg border px-3 py-2.5 text-left text-[15px] ${
                         row.review_id === selectedId
                           ? "border-sky-400 bg-sky-50"
                           : "border-slate-200 bg-transparent hover:bg-slate-50"
@@ -421,17 +400,17 @@ export default function PhaseDiagramReviewPage() {
                         * says which intersections still need a human, so it is
                         * the last place on the screen to shrink type. */}
                       <span
-                        className={`mt-1.5 inline-block rounded border px-2 py-0.5 text-xs font-semibold ${reviewStateClasses(row)}`}
+                        className={`mt-1.5 inline-block rounded border px-2 py-0.5 text-[14px] font-semibold ${reviewStateClasses(row)}`}
                       >
                         {reviewStateLabel(row, t)}
                       </span>
                       {row.proposal_outcome === "refused" && (
-                        <span className="ml-1 inline-block rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs text-slate-600">
+                        <span className="ml-1 inline-block rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[14px] text-slate-600">
                           {t("제안 거부", "proposal refused", "提案拒否")}
                         </span>
                       )}
                       {row.flags.length > 0 && (
-                        <span className="ml-1 inline-block rounded border border-slate-400 bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-800">
+                        <span className="ml-1 inline-block rounded border border-slate-400 bg-slate-100 px-2 py-0.5 text-[14px] font-semibold text-slate-800">
                           {t(`대조 ${row.flags.length}건`, `${row.flags.length} flags`, `照合${row.flags.length}件`)}
                         </span>
                       )}
@@ -452,7 +431,7 @@ export default function PhaseDiagramReviewPage() {
               type="button"
               onClick={stageSignals}
               disabled={confirmedCount === 0 || busy}
-              className="w-full rounded-lg bg-slate-900 px-3 py-2 text-[13px] font-semibold text-ink disabled:opacity-40"
+              className="w-full rounded-lg bg-slate-900 px-3 py-2 text-[15px] font-semibold text-ink disabled:opacity-40"
             >
               {t(
                 `확인된 ${confirmedCount}건으로 만들기`,
@@ -461,7 +440,7 @@ export default function PhaseDiagramReviewPage() {
               )}
             </button>
             {stagedToken && (
-              <p className="mt-2.5 break-all rounded-md border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-xs leading-relaxed text-slate-800">
+              <p className="mt-2.5 break-all rounded-md border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[14px] leading-relaxed text-slate-800">
                 {t("side-input 토큰", "side-input token", "side-inputトークン")}: {stagedToken}
               </p>
             )}
@@ -488,7 +467,7 @@ export default function PhaseDiagramReviewPage() {
           * click away. */}
         <div>
           {!review ? (
-            <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-[13px] text-slate-500">
+            <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-[15px] text-slate-500">
               {t("왼쪽에서 교차로를 선택하십시오.", "Pick an intersection on the left.", "左で交差点を選択してください。")}
             </p>
           ) : (
@@ -523,7 +502,7 @@ export default function PhaseDiagramReviewPage() {
                   <p className="text-[15px] font-semibold">
                     {t("재확인 필요", "Re-confirmation needed", "再確認が必要です")}
                   </p>
-                  <ul className="mt-1.5 list-disc pl-5 text-[13px] leading-relaxed">
+                  <ul className="mt-1.5 list-disc pl-5 text-[15px] leading-relaxed">
                     {review.stale_reasons.map((reason) => (
                       <li key={reason}>{reason}</li>
                     ))}
@@ -545,7 +524,7 @@ export default function PhaseDiagramReviewPage() {
                 }
               >
                 {!review.proposal || review.proposal.outcome === "refused" ? (
-                  <div className="rounded-md border border-slate-300 bg-slate-50 px-3.5 py-2.5 text-[13px] leading-relaxed text-slate-700">
+                  <div className="rounded-md border border-slate-300 bg-slate-50 px-3.5 py-2.5 text-[15px] leading-relaxed text-slate-700">
                     <p className="font-semibold">
                       {t(
                         "판독 결과가 없습니다 — 아래 양식에 직접 입력하십시오.",
@@ -555,21 +534,21 @@ export default function PhaseDiagramReviewPage() {
                     </p>
                     {review.proposal?.refusal && (
                       <p className="mt-1.5">
-                        <span className="font-mono text-xs">{review.proposal.refusal.code}</span> —{" "}
+                        <span className="font-mono text-[14px]">{review.proposal.refusal.code}</span> —{" "}
                         {review.proposal.refusal.reason}
                       </p>
                     )}
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <p className="text-xs leading-relaxed text-slate-500">
+                    <p className="text-[14px] leading-relaxed text-slate-500">
                       {t("도면에 인쇄된 접근로", "Approach legs printed on the drawing", "図面に印刷された流入路")}:{" "}
                       {review.proposal.approaches.map((a) => `${a.label} (${a.side})`).join(", ") || "—"}
                     </p>
                     {review.proposal.phases.map((phase) => (
                       <div key={phase.phase_id} className="rounded-md border border-slate-200 px-3.5 py-2.5">
-                        <p className="text-[13px] font-semibold text-slate-900">{phase.phase_id}</p>
-                        <ul className="mt-1 text-[13px] leading-relaxed text-slate-700">
+                        <p className="text-[15px] font-semibold text-slate-900">{phase.phase_id}</p>
+                        <ul className="mt-1 text-[15px] leading-relaxed text-slate-700">
                           {phase.movements.map((movement, index) => (
                             <li key={`${phase.phase_id}-${index}`}>
                               {movement.approach_label} — {movement.turn}
@@ -578,7 +557,7 @@ export default function PhaseDiagramReviewPage() {
                           ))}
                         </ul>
                         {phase.ambiguity && (
-                          <p className="mt-1.5 rounded border border-slate-400 bg-slate-100 px-2.5 py-1.5 text-xs leading-relaxed text-slate-800">
+                          <p className="mt-1.5 rounded border border-slate-400 bg-slate-100 px-2.5 py-1.5 text-[14px] leading-relaxed text-slate-800">
                             {t("모델이 확정하지 못한 부분", "What the model could not resolve", "モデルが確定できなかった点")}:{" "}
                             {phase.ambiguity}
                           </p>
@@ -605,7 +584,7 @@ export default function PhaseDiagramReviewPage() {
                 )}
               >
                 {flags.length === 0 && others.length === 0 ? (
-                  <p className="text-[13px] text-slate-500">
+                  <p className="text-[15px] text-slate-500">
                     {t("대조 결과가 없습니다.", "No cross-check on file.", "照合結果がありません。")}
                   </p>
                 ) : (
@@ -613,7 +592,7 @@ export default function PhaseDiagramReviewPage() {
                     {[...flags, ...others].map((finding, index) => (
                       <li
                         key={`${finding.code}-${index}`}
-                        className={`rounded-md border px-3 py-2 text-xs leading-relaxed ${findingClasses(finding.severity)}`}
+                        className={`rounded-md border px-3 py-2 text-[14px] leading-relaxed ${findingClasses(finding.severity)}`}
                       >
                         <span className="mr-1.5 font-semibold">{findingWord(finding.severity, t)}</span>
                         {finding.message}
@@ -633,12 +612,12 @@ export default function PhaseDiagramReviewPage() {
                 )}
               >
                 <div className="mb-4 flex flex-wrap items-end gap-3">
-                  <label className="text-[13px] text-slate-700">
+                  <label className="text-[15px] text-slate-700">
                     <span className="block font-semibold">{t("생성 작업", "Generation", "生成ジョブ")}</span>
                     <select
                       value={jobId}
                       onChange={(event) => setJobId(event.target.value)}
-                      className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-xs"
+                      className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
                     >
                       <option value="">{t("선택", "select", "選択")}</option>
                       {jobs.map((job) => (
@@ -652,12 +631,12 @@ export default function PhaseDiagramReviewPage() {
                     type="button"
                     onClick={loadCandidates}
                     disabled={!jobId || busy}
-                    className="ui-button-ghost rounded-full px-3.5 py-1.5 text-xs font-semibold disabled:opacity-40"
+                    className="ui-button-ghost rounded-full px-3.5 py-1.5 text-[14px] font-semibold disabled:opacity-40"
                   >
                     {t("노드 후보 불러오기", "Load node candidates", "ノード候補を読み込む")}
                   </button>
                   {nodeId != null && (
-                    <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-slate-800">
+                    <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[14px] font-semibold text-slate-800">
                       {t("바인딩된 노드", "bound node", "対応ノード")}: {nodeId}
                     </span>
                   )}
@@ -670,7 +649,7 @@ export default function PhaseDiagramReviewPage() {
                         <button
                           type="button"
                           onClick={() => bindNode(candidate)}
-                          className={`w-full rounded-md border px-3 py-2 text-left text-xs ${
+                          className={`w-full rounded-md border px-3 py-2 text-left text-[14px] ${
                             candidate.node_id === nodeId
                               ? "border-sky-400 bg-sky-50"
                               : "border-slate-200 bg-transparent hover:bg-slate-50"
@@ -687,7 +666,7 @@ export default function PhaseDiagramReviewPage() {
                 )}
 
                 {approachRows.length === 0 ? (
-                  <p className="text-[13px] text-slate-500">
+                  <p className="text-[15px] text-slate-500">
                     {t(
                       "노드를 선택하면 그 노드의 진입 링크가 표로 나타납니다.",
                       "Pick a node and its approach links appear as rows.",
@@ -695,7 +674,7 @@ export default function PhaseDiagramReviewPage() {
                     )}
                   </p>
                 ) : (
-                  <table className="w-full text-xs">
+                  <table className="w-full text-[14px]">
                     <thead>
                       <tr className="text-left text-slate-500">
                         <th className="py-1">{t("링크", "link", "リンク")}</th>
@@ -744,12 +723,12 @@ export default function PhaseDiagramReviewPage() {
                 </datalist>
 
                 <div className="mt-5 flex flex-wrap items-end gap-3">
-                  <label className="text-[13px] text-slate-700">
+                  <label className="text-[15px] text-slate-700">
                     <span className="block font-semibold">{t("수준 / 계획 ID", "level / plan", "水準 / 計画ID")}</span>
                     <select
                       value={planChoice}
                       onChange={(event) => setPlanChoice(event.target.value)}
-                      className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-xs"
+                      className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
                     >
                       <option value="">{t("선택", "select", "選択")}</option>
                       {review.sheet.plan_choices.map((choice) => (
@@ -759,26 +738,26 @@ export default function PhaseDiagramReviewPage() {
                       ))}
                     </select>
                   </label>
-                  <label className="text-[13px] text-slate-700">
+                  <label className="text-[15px] text-slate-700">
                     <span className="block font-semibold">{t("선언 황색시간(초)", "declared amber (s)", "申告黄色時間(秒)")}</span>
                     <input
                       value={amber}
                       onChange={(event) => setAmber(event.target.value)}
                       inputMode="decimal"
-                      className="mt-1.5 w-28 rounded-md border border-slate-300 px-2.5 py-1.5 text-xs"
+                      className="mt-1.5 w-28 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
                       placeholder="3.0"
                     />
                   </label>
-                  <label className="flex-1 text-[13px] text-slate-700">
+                  <label className="flex-1 text-[15px] text-slate-700">
                     <span className="block font-semibold">{t("황색시간 근거", "amber declaration note", "黄色時間の根拠")}</span>
                     <input
                       value={amberNote}
                       onChange={(event) => setAmberNote(event.target.value)}
-                      className="mt-1.5 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs"
+                      className="mt-1.5 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
                     />
                   </label>
                 </div>
-                <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                <p className="mt-2 text-[14px] leading-relaxed text-slate-500">
                   {t(
                     "시트는 황색+전적색을 하나의 값으로만 인쇄합니다. 황색시간은 확인자가 선언하는 값이며, 이 앱은 기본값을 넣지 않습니다.",
                     "The sheet prints 황색+전적색 as one number. The amber is the reviewer's declaration — this app substitutes no default.",
@@ -786,13 +765,13 @@ export default function PhaseDiagramReviewPage() {
                   )}
                 </p>
 
-                <label className="mt-5 block text-[13px] text-slate-700">
+                <label className="mt-5 block text-[15px] text-slate-700">
                   <span className="block font-semibold">{t("확인 메모", "confirmation note", "確認メモ")}</span>
                   <textarea
                     value={note}
                     onChange={(event) => setNote(event.target.value)}
                     rows={2}
-                    className="mt-1.5 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs"
+                    className="mt-1.5 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
                   />
                 </label>
 
@@ -800,11 +779,11 @@ export default function PhaseDiagramReviewPage() {
                   type="button"
                   onClick={submit}
                   disabled={!canSubmit}
-                  className="mt-5 rounded-lg bg-sky-700 px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-40"
+                  className="mt-5 rounded-lg bg-sky-700 px-4 py-2 text-[15px] font-semibold text-white disabled:opacity-40"
                 >
                   {t("이 배정을 확인합니다", "I confirm this mapping", "この対応を確認します")}
                 </button>
-                <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                <p className="mt-2 text-[14px] leading-relaxed text-slate-500">
                   {t(
                     "확인하면 로그인한 사용자의 이름과 시각, 그리고 이 이미지의 해시가 함께 기록됩니다.",
                     "Confirming records the signed-in user's name, the time, and this image's hash.",
@@ -825,16 +804,16 @@ export default function PhaseDiagramReviewPage() {
                   defaultOpen={false}
                   title={t("확인 기록", "The attestation", "確認記録")}
                 >
-                  <p className="text-[13px] text-slate-800">
+                  <p className="text-[15px] text-slate-800">
                     {t("확인자", "attested by", "確認者")}: <b>{review.attestation.attested_by}</b> ·{" "}
                     {review.attestation.attested_at}
                   </p>
-                  <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
+                  <p className="mt-1.5 text-[14px] leading-relaxed text-slate-600">
                     {t("이미지 해시", "image sha", "画像ハッシュ")}: {review.attestation.image_sha256.slice(0, 16)}… ·{" "}
                     {t("제안", "proposal", "提案")}: {review.attestation.proposal_outcome}
                   </p>
                   {review.attestation.changes.length > 0 && (
-                    <ul className="mt-2.5 list-disc pl-5 text-xs leading-relaxed text-slate-700">
+                    <ul className="mt-2.5 list-disc pl-5 text-[14px] leading-relaxed text-slate-700">
                       {review.attestation.changes.map((change, index) => (
                         <li key={`${change.field}-${index}`}>
                           {change.field}: {change.was ?? "—"} → {change.now ?? "—"}

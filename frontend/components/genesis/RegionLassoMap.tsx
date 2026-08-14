@@ -325,7 +325,7 @@ export default function RegionLassoMap({
           onClick={() => void fit()}
           // 12px floor, U-1 polish 2026-08-13: this button sits ON the tiles,
           // which is the worst background this app has for small type.
-          className="absolute bottom-2 right-2 z-[400] rounded-full border border-slate-400 bg-surface/90 px-2.5 py-1 text-xs font-semibold text-slate-700"
+          className="absolute bottom-2 right-2 z-[400] rounded-full border border-slate-400 bg-surface/90 px-2.5 py-1 text-[14px] font-semibold text-slate-700"
         >
           {fitLabel}
         </button>

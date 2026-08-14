@@ -211,7 +211,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
 
   if (!nodes.length) {
     return (
-      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center text-sm text-slate-400">
+      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center text-[15px] text-slate-400">
         노드별 방향 차량 수 데이터가 없습니다.
       </div>
     );
@@ -288,8 +288,8 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
 
       <div className="rounded-[1.5rem] border border-rose-200 bg-rose-50/60 px-4 py-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.18)]">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-rose-500">상위 병목 노드</p>
-          <span className="rounded-full border border-rose-200 bg-surface px-2.5 py-0.5 text-[11px] font-medium text-rose-600">
+          <p className="text-[13px] font-semibold uppercase tracking-[0.22em] text-rose-500">상위 병목 노드</p>
+          <span className="rounded-full border border-rose-200 bg-surface px-2.5 py-0.5 text-[13px] font-medium text-rose-600">
             상위 {topBottleneckCount}
           </span>
         </div>
@@ -299,7 +299,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
               <button
                 key={`bottleneck-${node.node_id}`}
                 onClick={() => setActiveNodeId(node.node_id)}
-                className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                className={`rounded-full border px-3 py-1 text-[14px] font-medium transition ${
                   selectedNode?.node_id === node.node_id
                     ? "border-rose-400 bg-rose-500 text-white"
                     : "border-rose-200 bg-surface text-rose-700 hover:border-rose-300"
@@ -311,7 +311,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
             ))}
           </div>
         ) : (
-          <p className="text-xs text-rose-600/80">현재 필터 조건에서 병목 후보가 없습니다.</p>
+          <p className="text-[14px] text-rose-600/80">현재 필터 조건에서 병목 후보가 없습니다.</p>
         )}
       </div>
 
@@ -319,13 +319,13 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
         <section className="rounded-[1.5rem] border border-rose-200 bg-gradient-to-r from-rose-50 via-surface to-amber-50 px-4 py-4 shadow-sm">
           <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-rose-100 pb-3">
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-rose-500">병목 집중</p>
-              <h3 className="mt-1 text-sm font-semibold text-slate-900">교통량 기준 병목 상위 {topBottleneckCount}</h3>
-              <p className="mt-1 text-[11px] text-slate-500">
+              <p className="text-[13px] font-semibold uppercase tracking-[0.22em] text-rose-500">병목 집중</p>
+              <h3 className="mt-1 text-[15px] font-semibold text-slate-900">교통량 기준 병목 상위 {topBottleneckCount}</h3>
+              <p className="mt-1 text-[13px] text-slate-500">
                 Jump directly to the busiest nodes in the current filtered result set and compare their directional flows first.
               </p>
             </div>
-            <div className="rounded-full border border-rose-200 bg-surface px-3 py-1 text-[11px] font-medium text-rose-600">
+            <div className="rounded-full border border-rose-200 bg-surface px-3 py-1 text-[13px] font-medium text-rose-600">
               Avg total volume
             </div>
           </div>
@@ -347,20 +347,20 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full bg-slate-900 px-2 text-xs font-semibold text-ink">
+                    <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full bg-slate-900 px-2 text-[14px] font-semibold text-ink">
                       {index + 1}
                     </span>
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[12px] font-semibold text-slate-600">
                       {DIR_ARROW[direction]} {DIR_KR[direction]}
                     </span>
                   </div>
 
                   <div className="mt-3 min-w-0">
-                    <p className="truncate text-sm font-semibold text-slate-900">{node.node_name}</p>
-                    <p className="font-mono text-[11px] text-slate-400">노드 {node.node_id}</p>
+                    <p className="truncate text-[15px] font-semibold text-slate-900">{node.node_name}</p>
+                    <p className="font-mono text-[13px] text-slate-400">노드 {node.node_id}</p>
                   </div>
 
-                  <div className="mt-3 grid gap-1 text-[11px] text-slate-500">
+                  <div className="mt-3 grid gap-1 text-[13px] text-slate-500">
                     <div className="flex items-center justify-between gap-2">
                       <span>평균 교통량</span>
                       <span className="font-semibold text-slate-700">{formatVolume(node.avgTotal)}대</span>
@@ -380,10 +380,10 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
       <div className="rounded-[1.5rem] border border-slate-200 bg-surface px-4 py-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.22)]">
         <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">작업 제어</p>
-            <h3 className="mt-1 text-sm font-semibold text-slate-900">필터 및 비교 도구</h3>
+            <p className="text-[13px] font-semibold uppercase tracking-[0.22em] text-slate-400">작업 제어</p>
+            <h3 className="mt-1 text-[15px] font-semibold text-slate-900">필터 및 비교 도구</h3>
           </div>
-          <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-medium text-slate-500">
+          <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[13px] font-medium text-slate-500">
             {activeScenarios.length}개 시나리오 · {filteredNodes.length}개 노드 표시 중
           </div>
         </div>
@@ -394,10 +394,10 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="노드 이름 또는 노드 ID 검색"
-                className="w-full rounded-lg border border-slate-200 bg-surface px-3 py-2 text-sm text-slate-700 outline-none ring-blue-500/30 transition focus:border-blue-400 focus:ring-2"
+                className="w-full rounded-lg border border-slate-200 bg-surface px-3 py-2 text-[15px] text-slate-700 outline-none ring-blue-500/30 transition focus:border-blue-400 focus:ring-2"
               />
             </div>
-            <div className="flex items-center rounded-lg border border-slate-200 bg-surface p-0.5 text-xs shadow-sm">
+            <div className="flex items-center rounded-lg border border-slate-200 bg-surface p-0.5 text-[14px] shadow-sm">
               {[
                 { key: "spread", label: "편차" },
                 { key: "volume", label: "교통량" },
@@ -417,12 +417,12 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                 </button>
               ))}
             </div>
-            <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-surface px-2.5 py-2 text-[11px] text-slate-500">
+            <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-surface px-2.5 py-2 text-[13px] text-slate-500">
               <span className="font-medium text-slate-400">기준</span>
               <select
                 value={comparisonBaseline}
                 onChange={(event) => setComparisonBaseline(event.target.value)}
-                className="max-w-[170px] rounded border border-slate-200 bg-surface px-2 py-1 text-[11px] font-medium text-slate-600 outline-none ring-blue-500/30 transition focus:border-blue-400 focus:ring-2"
+                className="max-w-[170px] rounded border border-slate-200 bg-surface px-2 py-1 text-[13px] font-medium text-slate-600 outline-none ring-blue-500/30 transition focus:border-blue-400 focus:ring-2"
               >
                 <option value="average">평균</option>
                 {activeScenarios.map((scenario) => (
@@ -434,20 +434,20 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
             </label>
             <button
               onClick={() => setShowChangedOnly((prev) => !prev)}
-              className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
+              className={`rounded-lg border px-3 py-2 text-[14px] font-medium transition ${
                 showChangedOnly
                   ? "border-rose-200 bg-rose-50 text-rose-600"
                   : "border-slate-200 bg-surface text-slate-500 hover:text-slate-700"
               }`}
             >
               변화 있는 항목만
-              <span className="ml-1 rounded-full bg-surface/80 px-1.5 py-0.5 text-[10px] font-semibold">
+              <span className="ml-1 rounded-full bg-surface/80 px-1.5 py-0.5 text-[12px] font-semibold">
                 {changedNodeCount}
               </span>
             </button>
           </div>
 
-          <div className="flex items-center rounded-lg border border-slate-200 bg-surface p-0.5 text-xs shadow-sm">
+          <div className="flex items-center rounded-lg border border-slate-200 bg-surface p-0.5 text-[14px] shadow-sm">
             {[
               { key: "matrix", label: "방향 매트릭스" },
               { key: "intersection", label: "교차로 도식" },
@@ -466,14 +466,14 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
               </button>
             ))}
           </div>
-          <div className="w-full border-t border-slate-100 pt-3 text-[11px] text-slate-400">
+          <div className="w-full border-t border-slate-100 pt-3 text-[13px] text-slate-400">
             {VIEW_MODE_HELP[viewMode]}
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
-            <span className="text-[11px] font-medium text-slate-400">우세 방향</span>
+            <span className="text-[13px] font-medium text-slate-400">우세 방향</span>
             <button
               onClick={() => setDirectionFilter("all")}
-              className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
+              className={`rounded-full border px-2.5 py-1 text-[13px] font-medium transition ${
                 directionFilter === "all"
                   ? "border-slate-800 bg-slate-800 text-ink"
                   : "border-slate-200 bg-surface text-slate-500 hover:text-slate-700"
@@ -486,7 +486,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
               <button
                 key={direction}
                 onClick={() => setDirectionFilter(direction)}
-                className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
+                className={`rounded-full border px-2.5 py-1 text-[13px] font-medium transition ${
                   directionFilter === direction
                     ? "border-slate-800 bg-slate-800 text-ink"
                     : "border-slate-200 bg-surface text-slate-500 hover:text-slate-700"
@@ -498,7 +498,7 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
             ))}
           </div>
           {hasActiveFilters && (
-            <div className="flex w-full flex-wrap items-center gap-2 border-t border-slate-100 pt-3 text-[11px]">
+            <div className="flex w-full flex-wrap items-center gap-2 border-t border-slate-100 pt-3 text-[13px]">
               <span className="font-medium text-slate-400">적용 필터</span>
               {query.trim().length > 0 && (
                 <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-sky-600">
@@ -530,10 +530,10 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
         <aside className="rounded-[1.5rem] border border-slate-200 bg-surface p-4 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.24)]">
           <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-3">
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">탐색</p>
-              <h3 className="mt-1 text-sm font-semibold text-slate-900">노드 목록</h3>
+              <p className="text-[13px] font-semibold uppercase tracking-[0.22em] text-slate-400">탐색</p>
+              <h3 className="mt-1 text-[15px] font-semibold text-slate-900">노드 목록</h3>
             </div>
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-500">
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[13px] font-medium text-slate-500">
               {filteredNodes.length}개
             </span>
           </div>
@@ -559,23 +559,23 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <p className="truncate text-sm font-semibold text-slate-800">{node.node_name}</p>
+                          <p className="truncate text-[15px] font-semibold text-slate-800">{node.node_name}</p>
                           {topBottleneckIds.has(node.node_id) ? (
-                            <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-600">
+                            <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[12px] font-semibold text-rose-600">
                               상위
                             </span>
                           ) : null}
                         </div>
-                        <p className="font-mono text-[11px] text-slate-400">노드 {node.node_id}</p>
+                        <p className="font-mono text-[13px] text-slate-400">노드 {node.node_id}</p>
                       </div>
-                      <span className="rounded-full border border-slate-200 bg-surface px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+                      <span className="rounded-full border border-slate-200 bg-surface px-2 py-0.5 text-[12px] font-semibold text-slate-600">
                         {DIR_ARROW[direction]} {DIR_KR[direction]}
                       </span>
                     </div>
 
                     {bottleneckRank && (
                       <div className="mt-2">
-                        <span className="inline-flex items-center rounded-full border border-rose-200 bg-surface px-2 py-0.5 text-[10px] font-semibold text-rose-600">
+                        <span className="inline-flex items-center rounded-full border border-rose-200 bg-surface px-2 py-0.5 text-[12px] font-semibold text-rose-600">
                           병목 상위 {bottleneckRank}
                         </span>
                       </div>
@@ -587,21 +587,21 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
                           key={scenario.id}
                           className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-2 py-1"
                         >
-                          <span className="flex min-w-0 items-center gap-1.5 text-[10px] text-slate-500">
+                          <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-slate-500">
                             <span
                               className="h-1.5 w-1.5 shrink-0 rounded-full"
                               style={{ backgroundColor: scenario.color }}
                             />
                             <span className="truncate">{scenario.name}</span>
                           </span>
-                          <span className="text-[11px] font-semibold text-slate-700">
+                          <span className="text-[13px] font-semibold text-slate-700">
                             {formatVolume(node.totalsByScenario[scenario.id] ?? 0)}
                           </span>
                         </div>
                       ))}
                     </div>
 
-                    <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
+                    <div className="mt-2 flex items-center justify-between text-[13px] text-slate-500">
                       <span>평균 {formatVolume(node.avgTotal)}대</span>
                       <span className="font-semibold text-rose-500">편차 {formatVolume(node.spread)}대</span>
                     </div>
@@ -611,12 +611,12 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center">
-              <p className="text-sm font-medium text-slate-600">현재 검색 조건에 맞는 노드가 없습니다.</p>
-              <p className="mt-1 text-xs text-slate-400">검색어나 필터를 조정해 노드 목록을 다시 표시하세요.</p>
+              <p className="text-[15px] font-medium text-slate-600">현재 검색 조건에 맞는 노드가 없습니다.</p>
+              <p className="mt-1 text-[14px] text-slate-400">검색어나 필터를 조정해 노드 목록을 다시 표시하세요.</p>
               {hasActiveFilters && (
                 <button
                   onClick={resetFilters}
-                  className="mt-3 rounded-full border border-slate-200 bg-surface px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:text-slate-800"
+                  className="mt-3 rounded-full border border-slate-200 bg-surface px-3 py-1.5 text-[14px] font-medium text-slate-600 transition hover:text-slate-800"
                 >
                   필터 초기화
                 </button>
@@ -631,18 +631,18 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
               <header className="mb-4 rounded-[1.25rem] border border-slate-200 bg-gradient-to-br from-slate-50 via-surface to-slate-50 px-4 py-4 shadow-sm">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">선택 노드</p>
+                    <p className="text-[13px] font-semibold uppercase tracking-[0.2em] text-slate-400">선택 노드</p>
                     <h3 className="text-base font-semibold text-slate-900">{selectedNode.node_name}</h3>
-                    <p className="font-mono text-xs text-slate-400">노드 {selectedNode.node_id}</p>
+                    <p className="font-mono text-[14px] text-slate-400">노드 {selectedNode.node_id}</p>
                   </div>
                   {dominantDirection && (
-                    <span className="rounded-full border border-slate-200 bg-surface px-2.5 py-0.5 text-xs font-semibold text-slate-600">
+                    <span className="rounded-full border border-slate-200 bg-surface px-2.5 py-0.5 text-[14px] font-semibold text-slate-600">
                       우세 방향: {DIR_ARROW[dominantDirection]} {DIR_KR[dominantDirection]}
                     </span>
                   )}
                 </div>
                 <SelectedScenarioLegend scenarios={activeScenarios} />
-                <div className="mt-4 grid gap-2 text-xs text-slate-500 sm:grid-cols-4">
+                <div className="mt-4 grid gap-2 text-[14px] text-slate-500 sm:grid-cols-4">
                   <div className="rounded-xl border border-slate-100 bg-surface px-3 py-2.5 shadow-sm">
                     평균 교통량 <span className="ml-1 font-semibold text-slate-700">{formatVolume(selectedNode.avgTotal)}대</span>
                   </div>
@@ -694,14 +694,14 @@ export default function NodeDirectionTable({ scenarios, selected, results }: Pro
             </>
           ) : (
             <div className="flex min-h-[420px] flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 px-6 py-10 text-center">
-              <p className="text-sm font-semibold text-slate-600">조건에 맞는 노드를 먼저 선택해 주세요.</p>
-              <p className="mt-2 text-xs text-slate-400">
+              <p className="text-[15px] font-semibold text-slate-600">조건에 맞는 노드를 먼저 선택해 주세요.</p>
+              <p className="mt-2 text-[14px] text-slate-400">
                 Current filters are hiding the node workspace. Adjust the search or direction filter to bring it back.
               </p>
               {hasActiveFilters && (
                 <button
                   onClick={resetFilters}
-                  className="mt-4 rounded-full border border-slate-200 bg-surface px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:text-slate-800"
+                  className="mt-4 rounded-full border border-slate-200 bg-surface px-3 py-1.5 text-[14px] font-medium text-slate-600 transition hover:text-slate-800"
                 >
                   필터 초기화
                 </button>
@@ -718,9 +718,9 @@ function SummaryCard({ label, value, hint }: { label: string; value: string; hin
   return (
     <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-surface px-4 py-4 shadow-sm">
       <div className="pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full bg-slate-100 blur-2xl" />
-      <p className="text-[11px] font-medium text-slate-400">{label}</p>
-      <p className="relative mt-2 truncate text-sm font-semibold text-slate-800">{value}</p>
-      <p className="relative mt-2 text-[11px] leading-5 text-slate-500">{hint}</p>
+      <p className="text-[13px] font-medium text-slate-400">{label}</p>
+      <p className="relative mt-2 truncate text-[15px] font-semibold text-slate-800">{value}</p>
+      <p className="relative mt-2 text-[13px] leading-5 text-slate-500">{hint}</p>
     </div>
   );
 }
@@ -729,8 +729,8 @@ function SelectedScenarioLegend({ scenarios }: { scenarios: ScenarioMeta[] }) {
   return (
     <div className="mt-3 rounded-xl border border-slate-200 bg-surface px-3 py-2">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-[11px] font-semibold text-slate-500">Selected scenarios</p>
-        <span className="text-[10px] font-medium text-slate-400">
+        <p className="text-[13px] font-semibold text-slate-500">Selected scenarios</p>
+        <span className="text-[12px] font-medium text-slate-400">
           first scenario is the delta baseline
         </span>
       </div>
@@ -738,7 +738,7 @@ function SelectedScenarioLegend({ scenarios }: { scenarios: ScenarioMeta[] }) {
         {scenarios.map((scenario) => (
           <span
             key={scenario.id}
-            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold text-slate-600"
+            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[12px] font-semibold text-slate-600"
           >
             <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: scenario.color }} />
             <span className="truncate">{scenario.name}</span>
@@ -765,8 +765,8 @@ function ScenarioComparisonOverview({
           Scenario totals for this intersection. Compare selected scenarios against the chosen baseline.
         </div>
         <div>
-          <h4 className="text-sm font-semibold text-slate-700">선택 노드 시나리오 비교</h4>
-          <p className="text-[11px] text-slate-400">
+          <h4 className="text-[15px] font-semibold text-slate-700">선택 노드 시나리오 비교</h4>
+          <p className="text-[13px] text-slate-400">
             총 교통량과 기준({baselineLabel}) 대비 증감을 바로 읽을 수 있게 요약했습니다.
           </p>
         </div>
@@ -798,11 +798,11 @@ function ScenarioComparisonOverview({
                       className="h-2.5 w-2.5 shrink-0 rounded-full shadow-sm"
                       style={{ backgroundColor: row.scenario.color }}
                     />
-                    <p className="truncate text-sm font-semibold text-slate-700">{row.scenario.name}</p>
+                    <p className="truncate text-[15px] font-semibold text-slate-700">{row.scenario.name}</p>
                   </div>
-                  <p className="mt-1 text-xs text-slate-400">{readableDeltaSummary}</p>
+                  <p className="mt-1 text-[14px] text-slate-400">{readableDeltaSummary}</p>
                 </div>
-                <span className={`shrink-0 text-xs font-semibold ${deltaTone}`}>
+                <span className={`shrink-0 text-[14px] font-semibold ${deltaTone}`}>
                   {row.total > 0 ? `${formatVolume(row.total)}대` : "0대"}
                 </span>
               </div>
@@ -828,8 +828,8 @@ function DirectionInsightStrip({ insights }: { insights: DirectionInsight[] }) {
     <section className="rounded-[1.5rem] border border-slate-200 bg-surface px-4 py-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div>
-          <h4 className="text-sm font-semibold text-slate-700">방향별 비교 하이라이트</h4>
-          <p className="text-[11px] text-slate-400">방향별 총량, 시나리오 편차, 유입·유출 우세를 압축해서 보여줍니다.</p>
+          <h4 className="text-[15px] font-semibold text-slate-700">방향별 비교 하이라이트</h4>
+          <p className="text-[13px] text-slate-400">방향별 총량, 시나리오 편차, 유입·유출 우세를 압축해서 보여줍니다.</p>
         </div>
       </div>
 
@@ -847,24 +847,24 @@ function DirectionInsightStrip({ insights }: { insights: DirectionInsight[] }) {
             <div key={insight.direction} className="rounded-xl border border-slate-200 bg-slate-50/80 px-3.5 py-3.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-ink">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-[14px] font-bold text-ink">
                     {DIR_KR[insight.direction]}
                   </span>
                   <div>
-                    <p className="text-sm font-semibold text-slate-700">
+                    <p className="text-[15px] font-semibold text-slate-700">
                       {DIR_ARROW[insight.direction]} {DIR_KR[insight.direction]} 방향
                     </p>
-                    <p className="text-[11px] text-slate-400">{flowBalance}</p>
+                    <p className="text-[13px] text-slate-400">{flowBalance}</p>
                   </div>
                 </div>
-                <span className="text-xs font-semibold text-slate-600">{formatVolume(insight.totalAcross)}대</span>
+                <span className="text-[14px] font-semibold text-slate-600">{formatVolume(insight.totalAcross)}대</span>
               </div>
 
               <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200">
                 <div className="h-full rounded-full bg-slate-700" style={{ width: `${ratio}%` }} />
               </div>
 
-              <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-500">
+              <div className="mt-3 grid grid-cols-2 gap-2 text-[13px] text-slate-500">
                 <div className="rounded-lg border border-slate-200 bg-surface px-2.5 py-2">
                   <p className="text-slate-400">시나리오 편차</p>
                   <p className="mt-0.5 font-semibold text-rose-500">{formatVolume(insight.spread)}대</p>
@@ -883,7 +883,7 @@ function DirectionInsightStrip({ insights }: { insights: DirectionInsight[] }) {
                       key={row.scenario.id}
                      className="min-w-[110px] flex-1 rounded-xl border border-slate-200 bg-surface px-2.5 py-2 shadow-sm"
                     >
-                      <div className="flex items-center justify-between gap-2 text-[10px]">
+                      <div className="flex items-center justify-between gap-2 text-[12px]">
                         <span className="flex min-w-0 items-center gap-1.5 text-slate-500">
                           <span
                             className="h-2 w-2 shrink-0 rounded-full"
@@ -947,14 +947,14 @@ function DirectionMatrixView({
           >
             <div className="mb-2 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900 text-xs font-bold text-ink shadow-sm">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900 text-[14px] font-bold text-ink shadow-sm">
                   {DIR_KR[direction]}
                 </span>
-                <p className="text-sm font-semibold text-slate-700">
+                <p className="text-[15px] font-semibold text-slate-700">
                   {DIR_ARROW[direction]} {DIR_KR[direction]} 방향
                 </p>
               </div>
-                  <span className="rounded-full border border-slate-200 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+                  <span className="rounded-full border border-slate-200 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-600">
                     {formatVolume(totalAcross)}대
                   </span>
             </div>
@@ -971,17 +971,17 @@ function DirectionMatrixView({
                 return (
                   <div key={scenario.id} className="rounded-xl border border-slate-200 bg-surface/95 px-3 py-2.5 shadow-sm">
                     <div className="flex items-center justify-between">
-                      <span className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-600">
+                      <span className="flex min-w-0 items-center gap-2 text-[14px] font-medium text-slate-600">
                         <span
                           className="h-2 w-2 shrink-0 rounded-full"
                           style={{ backgroundColor: scenario.color }}
                         />
                         <span className="truncate">{scenario.name}</span>
                       </span>
-                      <span className="text-xs font-semibold text-slate-700">{formatVolume(total)}대</span>
+                      <span className="text-[14px] font-semibold text-slate-700">{formatVolume(total)}대</span>
                     </div>
 
-                    <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-[13px]">
                       <MetricChip label="유입" value={incoming} />
                       <MetricChip label="유출" value={outgoing} />
                       <MetricChip label="점유율" valueLabel={`${share.toFixed(1)}%`} />
@@ -1015,8 +1015,8 @@ function MetricChip({
 }) {
   return (
     <div className="rounded-lg border border-slate-100 bg-slate-50/70 px-2 py-1.5 text-center">
-      <div className="text-[10px] text-slate-400">{label}</div>
-      <div className="text-[11px] font-semibold text-slate-700">
+      <div className="text-[12px] text-slate-400">{label}</div>
+      <div className="text-[13px] font-semibold text-slate-700">
         {valueLabel ?? `${formatVolume(value ?? 0)}대`}
       </div>
     </div>
@@ -1059,9 +1059,9 @@ function ScenarioIntersectionCard({
             className="h-2.5 w-2.5 shrink-0 rounded-full shadow-sm"
             style={{ backgroundColor: scenario.color }}
           />
-          <span className="text-sm font-semibold text-slate-800">{scenario.name}</span>
+          <span className="text-[15px] font-semibold text-slate-800">{scenario.name}</span>
         </div>
-        <span className="text-xs text-slate-400">{formatVolume(total)}&thinsp;대</span>
+        <span className="text-[14px] text-slate-400">{formatVolume(total)}&thinsp;대</span>
       </div>
 
       <NodeIntersectionGrid
@@ -1114,7 +1114,7 @@ function NodeIntersectionGrid({
         />
         <div className="relative z-20 col-start-2 row-start-2 flex items-center justify-center">
           <div className="flex h-[80px] w-[80px] flex-col items-center justify-center rounded-xl border-4 border-slate-100 bg-surface shadow-xl">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-300">Node</span>
+            <span className="text-[12px] font-bold uppercase tracking-widest text-slate-300">Node</span>
             <div className="mt-1 flex gap-1">
               {DIRECTIONS.map((direction) => {
                 const volume = Number(incoming[direction] ?? 0) + Number(outgoing[direction] ?? 0);
@@ -1213,7 +1213,7 @@ function FlowBox({
 
   return (
     <div className={`rounded-xl border px-2 py-1.5 shadow-sm backdrop-blur-sm ${style.bg} ${style.border}`}>
-      <div className={`flex items-center justify-between text-[10px] font-semibold ${style.text}`}>
+      <div className={`flex items-center justify-between text-[12px] font-semibold ${style.text}`}>
         <span>{label}</span>
         <span>{Math.round(value)}</span>
       </div>
@@ -1270,7 +1270,7 @@ function DirectionBarsView({
 
   if (!activeDirections.length) {
     return (
-      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-400">
+      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-[15px] text-slate-400">
         선택한 노드의 방향별 데이터가 없습니다.
       </div>
     );
@@ -1278,7 +1278,7 @@ function DirectionBarsView({
 
   return (
     <div className="px-2 py-1">
-      <div className="mb-4 flex items-center gap-5 text-[11px] text-slate-400">
+      <div className="mb-4 flex items-center gap-5 text-[13px] text-slate-400">
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-3 w-3 rounded-sm bg-slate-400 opacity-90" />
           실선 = 유입(In)
@@ -1293,10 +1293,10 @@ function DirectionBarsView({
         {activeDirections.map((direction) => (
             <div key={direction} className="rounded-xl border border-slate-200 bg-surface px-4 py-4 shadow-sm">
               <div className="mb-2 flex items-center gap-2">
-                <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-slate-900 text-[11px] font-bold text-ink shadow-sm">
+                <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-slate-900 text-[13px] font-bold text-ink shadow-sm">
                   {DIR_KR[direction]}
                 </span>
-                <span className="text-xs font-semibold text-slate-600">
+                <span className="text-[14px] font-semibold text-slate-600">
                   {DIR_ARROW[direction]} {DIR_KR[direction]} 방향
                 </span>
               </div>
@@ -1316,12 +1316,12 @@ function DirectionBarsView({
                           className="h-2 w-2 shrink-0 rounded-full"
                           style={{ backgroundColor: scenario.color }}
                         />
-                        <span className="truncate text-[11px] text-slate-500">{scenario.name}</span>
+                        <span className="truncate text-[13px] text-slate-500">{scenario.name}</span>
                       </div>
 
                       <div className="flex min-w-0 flex-1 flex-col gap-1">
                         <div className="flex items-center gap-2">
-                          <span className="w-8 shrink-0 text-right text-[10px] font-medium text-slate-400">
+                          <span className="w-8 shrink-0 text-right text-[12px] font-medium text-slate-400">
                             유입
                           </span>
                           <div className="relative h-5 flex-1 overflow-hidden rounded-full bg-slate-100">
@@ -1331,7 +1331,7 @@ function DirectionBarsView({
                             />
                             {incoming > 0 && (
                               <span
-                                className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold"
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-[12px] font-semibold"
                                 style={{ color: inPct > 50 ? "#fff" : "#475569" }}
                               >
                                 {formatVolume(incoming)}
@@ -1341,7 +1341,7 @@ function DirectionBarsView({
                         </div>
 
                         <div className="flex items-center gap-2">
-                          <span className="w-8 shrink-0 text-right text-[10px] font-medium text-slate-400">
+                          <span className="w-8 shrink-0 text-right text-[12px] font-medium text-slate-400">
                             유출
                           </span>
                           <div className="relative h-5 flex-1 overflow-hidden rounded-full bg-slate-100">
@@ -1350,7 +1350,7 @@ function DirectionBarsView({
                               style={{ width: `${outPct}%`, backgroundColor: scenario.color, opacity: 0.4 }}
                             />
                             {outgoing > 0 && (
-                              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-500">
+                              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[12px] font-semibold text-slate-500">
                                 {formatVolume(outgoing)}
                               </span>
                             )}

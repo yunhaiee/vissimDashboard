@@ -163,7 +163,7 @@ export default function AdminPage() {
   if (status === "loading" || access === "loading") {
     return (
       <div className="mx-auto max-w-5xl px-4 py-10">
-        <p className="text-sm text-slate-500">{t("불러오는 중…", "Loading…", "読み込み中…")}</p>
+        <p className="text-[15px] text-slate-500">{t("불러오는 중…", "Loading…", "読み込み中…")}</p>
       </div>
     );
   }
@@ -175,7 +175,7 @@ export default function AdminPage() {
           <h1 className="text-lg font-bold text-slate-900">
             {t("관리자 전용 화면입니다", "Administrators only", "管理者専用の画面です")}
           </h1>
-          <p className="mt-2 text-sm text-slate-500">
+          <p className="mt-2 text-[15px] text-slate-500">
             {t(
               "이 화면은 관리자 권한이 있는 계정만 사용할 수 있습니다. 권한이 필요하면 관리자에게 요청하세요.",
               "This screen is available to administrator accounts only. Ask an administrator if you need access.",
@@ -183,10 +183,10 @@ export default function AdminPage() {
             )}
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
-            <Link href={loginHref("/admin")} className="ui-button-primary inline-flex h-10 items-center px-4 text-sm">
+            <Link href={loginHref("/admin")} className="ui-button-primary inline-flex h-10 items-center px-4 text-[15px]">
               {t("다른 계정으로 로그인", "Sign in as someone else", "別のアカウントでログイン")}
             </Link>
-            <Link href="/dashboard" className="ui-button-ghost inline-flex h-10 items-center px-4 text-sm">
+            <Link href="/dashboard" className="ui-button-ghost inline-flex h-10 items-center px-4 text-[15px]">
               {t("대시보드로", "Back to the dashboard", "ダッシュボードへ")}
             </Link>
           </div>
@@ -201,7 +201,7 @@ export default function AdminPage() {
         <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
           {t("사용자 및 프로젝트 권한", "Users and project access", "ユーザーとプロジェクト権限")}
         </h1>
-        <p className="mt-1 text-sm text-slate-600">
+        <p className="mt-1 text-[15px] text-slate-600">
           {t(
             "계정을 만들고 권한을 바꾸며, 어떤 사용자가 어떤 프로젝트를 볼 수 있는지 정합니다.",
             "Create accounts, change roles, and decide which users can see which projects.",
@@ -211,21 +211,21 @@ export default function AdminPage() {
       </header>
 
       {access === "error" && (
-        <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+        <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[15px] text-rose-700">
           <p>{t("목록을 불러오지 못했습니다", "Could not load the lists", "リストを読み込めませんでした")}: {loadError}</p>
-          <button type="button" onClick={() => void load()} className="mt-2 text-xs font-semibold underline">
+          <button type="button" onClick={() => void load()} className="mt-2 text-[14px] font-semibold underline">
             {t("다시 시도", "Retry", "再試行")}
           </button>
         </div>
       )}
 
       {notice && (
-        <p role="status" className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+        <p role="status" className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[14px] text-emerald-700">
           {notice}
         </p>
       )}
       {actionError && (
-        <p role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+        <p role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[14px] leading-5 text-rose-700">
           {actionError}
         </p>
       )}
@@ -270,8 +270,8 @@ function UserSection({
 
   return (
     <section className="mb-6 rounded-xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
-      <h2 className="text-sm font-bold text-slate-900">{t("계정", "Accounts", "アカウント")}</h2>
-      <p className="mt-0.5 text-xs text-slate-500">
+      <h2 className="text-[15px] font-bold text-slate-900">{t("계정", "Accounts", "アカウント")}</h2>
+      <p className="mt-0.5 text-[14px] text-slate-500">
         {t(
           "비밀번호는 관리자가 직접 정합니다. 자동 생성이나 가입 절차는 없습니다.",
           "An administrator sets every password. There is no generated secret and no sign-up.",
@@ -287,26 +287,26 @@ function UserSection({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold text-slate-900">
+                    <span className="text-[15px] font-semibold text-slate-900">
                       {account.display_name || account.username}
                     </span>
-                    <span className="text-xs text-slate-500">{account.username}</span>
+                    <span className="text-[14px] text-slate-500">{account.username}</span>
                     {isSelf && (
-                      <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+                      <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[12px] font-semibold text-slate-700">
                         {t("나", "You", "自分")}
                       </span>
                     )}
                     {account.disabled ? (
-                      <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+                      <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[12px] font-semibold text-rose-700">
                         {t("비활성", "Disabled", "無効")}
                       </span>
                     ) : (
-                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[12px] font-semibold text-emerald-700">
                         {t("사용 중", "Active", "有効")}
                       </span>
                     )}
                   </div>
-                  <p className="mt-0.5 text-xs text-slate-500">{roleLabel(account.role, t)}</p>
+                  <p className="mt-0.5 text-[14px] text-slate-500">{roleLabel(account.role, t)}</p>
                 </div>
 
                 <div className="flex flex-none flex-wrap items-center gap-2">
@@ -322,7 +322,7 @@ function UserSection({
                         t("권한을 변경했습니다.", "The role was changed.", "権限を変更しました。"),
                       )
                     }
-                    className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700"
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-[14px] text-slate-700"
                   >
                     {roles.map((role) => (
                       <option key={role} value={role}>
@@ -340,14 +340,14 @@ function UserSection({
                           : t("계정을 비활성화했습니다.", "The account was disabled.", "アカウントを無効化しました。"),
                       )
                     }
-                    className="ui-button-ghost inline-flex items-center px-3 py-2 text-xs"
+                    className="ui-button-ghost inline-flex items-center px-3 py-2 text-[14px]"
                   >
                     {account.disabled ? t("활성화", "Enable", "有効化") : t("비활성화", "Disable", "無効化")}
                   </button>
                   <button
                     type="button"
                     onClick={() => setResettingId(resettingId === account.id ? null : account.id)}
-                    className="ui-button-ghost inline-flex items-center px-3 py-2 text-xs"
+                    className="ui-button-ghost inline-flex items-center px-3 py-2 text-[14px]"
                   >
                     {t("비밀번호 재설정", "Reset password", "パスワード再設定")}
                   </button>
@@ -396,7 +396,7 @@ function ResetPasswordForm({ userId, run, onDone }: { userId: number; run: Run; 
   return (
     <form onSubmit={handleSubmit} className="mt-3 flex flex-wrap items-end gap-2 border-t border-slate-200 pt-3">
       <div className="min-w-0 flex-1">
-        <label htmlFor={`admin-password-${userId}`} className="block text-xs font-semibold text-slate-600">
+        <label htmlFor={`admin-password-${userId}`} className="block text-[14px] font-semibold text-slate-600">
           {t("새 비밀번호", "New password", "新しいパスワード")}
         </label>
         <input
@@ -407,7 +407,7 @@ function ResetPasswordForm({ userId, run, onDone }: { userId: number; run: Run; 
           onChange={(event) => setPassword(event.target.value)}
           className="ui-input mt-1.5"
         />
-        <p className="mt-1 text-[11px] text-slate-400">
+        <p className="mt-1 text-[13px] text-slate-400">
           {t(
             "변경하면 이 사용자의 기존 로그인 세션이 모두 만료됩니다.",
             "Changing it revokes every existing session of that user.",
@@ -418,7 +418,7 @@ function ResetPasswordForm({ userId, run, onDone }: { userId: number; run: Run; 
       <button
         type="submit"
         disabled={!password}
-        className="ui-button-primary inline-flex h-10 items-center px-4 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+        className="ui-button-primary inline-flex h-10 items-center px-4 text-[15px] disabled:cursor-not-allowed disabled:opacity-50"
       >
         {t("변경", "Change", "変更")}
       </button>
@@ -457,10 +457,10 @@ function CreateUserForm({ roles, run }: { roles: string[]; run: Run }) {
 
   return (
     <form onSubmit={handleSubmit} className="mt-5 border-t border-slate-200 pt-4">
-      <h3 className="text-xs font-bold text-slate-900">{t("새 계정 만들기", "Create an account", "新しいアカウントを作成")}</h3>
+      <h3 className="text-[14px] font-bold text-slate-900">{t("새 계정 만들기", "Create an account", "新しいアカウントを作成")}</h3>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <div>
-          <label htmlFor="admin-new-username" className="block text-xs font-semibold text-slate-600">
+          <label htmlFor="admin-new-username" className="block text-[14px] font-semibold text-slate-600">
             {t("아이디", "Username", "ユーザーID")}
           </label>
           <input
@@ -475,7 +475,7 @@ function CreateUserForm({ roles, run }: { roles: string[]; run: Run }) {
           />
         </div>
         <div>
-          <label htmlFor="admin-new-display-name" className="block text-xs font-semibold text-slate-600">
+          <label htmlFor="admin-new-display-name" className="block text-[14px] font-semibold text-slate-600">
             {t("표시 이름", "Display name", "表示名")}
           </label>
           <input
@@ -487,7 +487,7 @@ function CreateUserForm({ roles, run }: { roles: string[]; run: Run }) {
           />
         </div>
         <div>
-          <label htmlFor="admin-new-password" className="block text-xs font-semibold text-slate-600">
+          <label htmlFor="admin-new-password" className="block text-[14px] font-semibold text-slate-600">
             {t("비밀번호", "Password", "パスワード")}
           </label>
           <input
@@ -500,7 +500,7 @@ function CreateUserForm({ roles, run }: { roles: string[]; run: Run }) {
           />
         </div>
         <div>
-          <label htmlFor="admin-new-role" className="block text-xs font-semibold text-slate-600">
+          <label htmlFor="admin-new-role" className="block text-[14px] font-semibold text-slate-600">
             {t("권한", "Role", "権限")}
           </label>
           <select
@@ -520,7 +520,7 @@ function CreateUserForm({ roles, run }: { roles: string[]; run: Run }) {
       <button
         type="submit"
         disabled={!username.trim() || !password}
-        className="ui-button-primary mt-3 inline-flex h-10 items-center px-4 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+        className="ui-button-primary mt-3 inline-flex h-10 items-center px-4 text-[15px] disabled:cursor-not-allowed disabled:opacity-50"
       >
         {t("계정 만들기", "Create account", "アカウントを作成")}
       </button>
@@ -600,8 +600,8 @@ function MembershipSection({
 
   return (
     <section className="rounded-xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
-      <h2 className="text-sm font-bold text-slate-900">{t("프로젝트 접근 권한", "Project access", "プロジェクトアクセス権限")}</h2>
-      <p className="mt-0.5 text-xs text-slate-500">
+      <h2 className="text-[15px] font-bold text-slate-900">{t("프로젝트 접근 권한", "Project access", "プロジェクトアクセス権限")}</h2>
+      <p className="mt-0.5 text-[14px] text-slate-500">
         {t(
           "프로젝트에 참여한 사용자만 그 프로젝트의 모델과 결과를 볼 수 있습니다. 관리자는 모든 프로젝트를 볼 수 있습니다.",
           "Only members of a project can see its model and results. Administrators can see every project.",
@@ -610,7 +610,7 @@ function MembershipSection({
       </p>
 
       <div className="mt-4">
-        <label htmlFor="admin-workspace-picker" className="block text-xs font-semibold text-slate-600">
+        <label htmlFor="admin-workspace-picker" className="block text-[14px] font-semibold text-slate-600">
           {t("프로젝트", "Project", "プロジェクト")}
         </label>
         <select
@@ -628,13 +628,13 @@ function MembershipSection({
       </div>
 
       {membersError && (
-        <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+        <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[14px] text-rose-700">
           {membersError}
         </p>
       )}
 
       {openToEveryone && (
-        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[14px] leading-5 text-amber-800">
           {t(
             "기본 프로젝트는 로그인하지 않은 사용자도 볼 수 있습니다. 데모·연습용이며, 실제 고객 자료는 새 프로젝트에 올리세요.",
             "The default project is visible to signed-out users. It is the demo/practice project — put real client data in a new project.",
@@ -644,11 +644,11 @@ function MembershipSection({
       )}
 
       {loading ? (
-        <p className="mt-3 text-xs text-slate-500">{t("불러오는 중…", "Loading…", "読み込み中…")}</p>
+        <p className="mt-3 text-[14px] text-slate-500">{t("불러오는 중…", "Loading…", "読み込み中…")}</p>
       ) : (
         <ul className="mt-3 space-y-2">
           {members.length === 0 && (
-            <li className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center text-xs text-slate-500">
+            <li className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center text-[14px] text-slate-500">
               {t(
                 "참여한 사용자가 없습니다. 지금은 관리자만 이 프로젝트를 볼 수 있습니다.",
                 "No members yet. Right now only administrators can see this project.",
@@ -662,8 +662,8 @@ function MembershipSection({
               className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/60 px-3.5 py-2.5"
             >
               <div className="min-w-0">
-                <span className="text-sm font-semibold text-slate-900">{member.display_name || member.username}</span>
-                <span className="ml-2 text-xs text-slate-500">
+                <span className="text-[15px] font-semibold text-slate-900">{member.display_name || member.username}</span>
+                <span className="ml-2 text-[14px] text-slate-500">
                   {member.username} · {roleLabel(member.role, t)}
                 </span>
               </div>
@@ -676,7 +676,7 @@ function MembershipSection({
                     setOpenToEveryone(payload.open_to_everyone);
                   }, t("접근 권한을 해제했습니다.", "Access was removed.", "アクセス権限を解除しました。"))
                 }
-                className="ui-button-ghost inline-flex items-center px-3 py-1.5 text-xs"
+                className="ui-button-ghost inline-flex items-center px-3 py-1.5 text-[14px]"
               >
                 {t("권한 해제", "Remove", "権限を解除")}
               </button>
@@ -687,7 +687,7 @@ function MembershipSection({
 
       <div className="mt-4 flex flex-wrap items-end gap-2 border-t border-slate-200 pt-3">
         <div className="min-w-0 flex-1">
-          <label htmlFor="admin-add-member" className="block text-xs font-semibold text-slate-600">
+          <label htmlFor="admin-add-member" className="block text-[14px] font-semibold text-slate-600">
             {t("사용자 추가", "Add a user", "ユーザーを追加")}
           </label>
           <select
@@ -715,7 +715,7 @@ function MembershipSection({
               setAddUserId("");
             }, t("접근 권한을 부여했습니다.", "Access was granted.", "アクセス権限を付与しました。"))
           }
-          className="ui-button-primary inline-flex h-10 items-center px-4 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+          className="ui-button-primary inline-flex h-10 items-center px-4 text-[15px] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t("추가", "Add", "追加")}
         </button>

@@ -443,7 +443,7 @@ export default function SimulationPage() {
             <h1 className="text-[22px] font-semibold tracking-tight text-white">
               {t("시뮬레이션 실행", "Simulation Runner")}
             </h1>
-            <p className="mt-1 text-sm text-slate-600">
+            <p className="mt-1 text-[15px] text-slate-600">
               {t(
                 "지도에서 링크와 교차로를 선택해 입력 조건을 만들고, VISSIM 실행 결과를 생성합니다.",
                 "Select links and intersections on the map, prepare run inputs, and generate VISSIM results.",
@@ -499,7 +499,7 @@ export default function SimulationPage() {
       </section>
 
       {error && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm font-medium text-rose-700">
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-[15px] font-medium text-rose-700">
           {error}
         </div>
       )}
@@ -515,14 +515,14 @@ export default function SimulationPage() {
             selectedLinkId={selectedLink?.id ?? null}
             queuedLinkModes={queuedLinkModes}
           />
-          <div className="pointer-events-auto absolute left-4 top-4 z-[900] rounded-xl border border-ink/15 bg-slate-950/88 p-3 text-xs text-ink shadow-2xl backdrop-blur">
+          <div className="pointer-events-auto absolute left-4 top-4 z-[900] rounded-xl border border-ink/15 bg-slate-950/88 p-3 text-[14px] text-ink shadow-2xl backdrop-blur">
             <div className="mb-2 font-semibold">{t("편집 모드", "Edit Mode")}</div>
             <div className="grid grid-cols-3 gap-1.5">
               <ModeButton active={editMode === "speed"} label={t("속도", "Speed")} onClick={() => setEditMode("speed")} />
               <ModeButton active={editMode === "volume"} label={t("교통량", "Volume")} onClick={() => setEditMode("volume")} />
               <ModeButton active={editMode === "signal"} label={t("신호", "Signal")} onClick={() => setEditMode("signal")} />
             </div>
-            <p className="mt-2 max-w-[240px] text-[11px] leading-4 text-slate-200">
+            <p className="mt-2 max-w-[240px] text-[13px] leading-4 text-slate-200">
               {editMode === "signal"
                 ? t("교차로를 클릭하면 신호 조정 조건이 추가됩니다.", "Click an intersection to add signal timing.")
                 : t("링크를 클릭하면 선택한 조건이 실행 대기 목록에 추가됩니다.", "Click a link to add the selected input to the run queue.")}
@@ -590,11 +590,11 @@ export default function SimulationPage() {
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-slate-900">{t("최근 실행 작업", "Recent Simulation Jobs")}</h2>
-            <p className="text-sm text-slate-600">
+            <p className="text-[15px] text-slate-600">
               {t("완료된 작업은 대시보드 비교 시나리오로 등록됩니다.", "Completed jobs are registered as comparison scenarios for the dashboard.")}
             </p>
           </div>
-          <button type="button" className="ui-button-ghost px-3 py-2 text-xs" onClick={() => void loadBaseData()}>
+          <button type="button" className="ui-button-ghost px-3 py-2 text-[14px]" onClick={() => void loadBaseData()}>
             {t("새로고침", "Refresh")}
           </button>
         </div>
@@ -650,37 +650,37 @@ function DataAndRuntimePanel({
     <div className="grid h-full gap-4 lg:grid-cols-2">
         <div className="flex h-full flex-col rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-bold text-slate-900">{t("데이터 패키지", "Dataset Package")}</h2>
-            <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${hasUploadedZip ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
+            <h2 className="text-[15px] font-bold text-slate-900">{t("데이터 패키지", "Dataset Package")}</h2>
+            <span className={`rounded-full px-2 py-0.5 text-[13px] font-bold ${hasUploadedZip ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
               {hasUploadedZip ? t("업로드됨", "Uploaded") : t("기본", "Default")}
             </span>
           </div>
-          <p className="mt-2 text-sm font-semibold text-slate-800">{dataset?.filename ?? "-"}</p>
-          <p className="mt-1 text-xs text-slate-500">
+          <p className="mt-2 text-[15px] font-semibold text-slate-800">{dataset?.filename ?? "-"}</p>
+          <p className="mt-1 text-[14px] text-slate-500">
             {dataset?.kind ? `${dataset.kind} / ${dataset.source}` : t("데이터 상태를 확인 중입니다.", "Checking dataset status.")}
           </p>
           <div className="mt-auto flex flex-wrap gap-2 pt-4">
-            <button type="button" className="ui-button-primary px-3 py-2 text-xs" disabled={uploading || !canUploadZip} onClick={onSelectZip}>
+            <button type="button" className="ui-button-primary px-3 py-2 text-[14px]" disabled={uploading || !canUploadZip} onClick={onSelectZip}>
               {uploading ? t("업로드 중", "Uploading") : t("ZIP 업로드", "Upload ZIP")}
             </button>
             <button
               type="button"
-              className="ui-button-danger px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              className="ui-button-danger px-3 py-2 text-[14px] disabled:cursor-not-allowed disabled:opacity-50"
               disabled={uploading || !hasUploadedZip}
               onClick={onClearDataset}
             >
               {t("기본값 복원", "Restore Default")}
             </button>
-            <button type="button" className="ui-button-ghost px-3 py-2 text-xs" disabled={loading} onClick={onRefresh}>
+            <button type="button" className="ui-button-ghost px-3 py-2 text-[14px]" disabled={loading} onClick={onRefresh}>
               {t("상태 새로고침", "Refresh")}
             </button>
           </div>
-          {uploadError && <p className="mt-2 text-xs font-medium text-rose-600">{uploadError}</p>}
+          {uploadError && <p className="mt-2 text-[14px] font-medium text-rose-600">{uploadError}</p>}
         </div>
 
         <div className="flex h-full flex-col rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
-          <h2 className="text-sm font-bold text-slate-900">{t("실행 환경", "Runtime")}</h2>
-          <div className={`mt-2 rounded-xl border px-3 py-3 text-xs ${runtimeTone}`}>
+          <h2 className="text-[15px] font-bold text-slate-900">{t("실행 환경", "Runtime")}</h2>
+          <div className={`mt-2 rounded-xl border px-3 py-3 text-[14px] ${runtimeTone}`}>
             <p className="font-bold">
               {capabilities?.can_run ? t("실행 가능", "Ready to run") : t("실행 불가", "Run blocked")}
             </p>
@@ -689,20 +689,20 @@ function DataAndRuntimePanel({
                 ? t("VISSIM 실행 환경이 준비되었습니다.", "VISSIM runtime is ready.")
                 : t("실행 환경이 준비되지 않았습니다. VISSIM과 실행 서버 상태를 확인하세요.", "The runtime is not ready. Check VISSIM and the execution server.")}
             </p>
-            <p className="mt-1 text-[11px]">
+            <p className="mt-1 text-[13px]">
               {t("환경", "Environment")}: {capabilities?.environment ?? "-"} / pywin32 {capabilities?.pywin32_available ? "OK" : "-"}
             </p>
           </div>
           <div className="mt-auto grid gap-2 pt-4 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
-            <input className="ui-input text-xs" value={apiBaseDraft} onChange={(event) => onApiBaseDraftChange(event.target.value)} aria-label="API base URL" />
-            <button type="button" className="ui-button-ghost px-3 py-2 text-xs" onClick={onApplyApiBase}>
+            <input className="ui-input text-[14px]" value={apiBaseDraft} onChange={(event) => onApiBaseDraftChange(event.target.value)} aria-label="API base URL" />
+            <button type="button" className="ui-button-ghost px-3 py-2 text-[14px]" onClick={onApplyApiBase}>
               {t("적용", "Apply")}
             </button>
-            <button type="button" className="ui-button-ghost px-3 py-2 text-xs" onClick={onUseDefaultApiBase}>
+            <button type="button" className="ui-button-ghost px-3 py-2 text-[14px]" onClick={onUseDefaultApiBase}>
               {t("기본 주소", "Default")}
             </button>
           </div>
-          <p className="mt-1 text-[11px] text-slate-500">{t("연결 주소", "Endpoint")}: {apiBase}</p>
+          <p className="mt-1 text-[13px] text-slate-500">{t("연결 주소", "Endpoint")}: {apiBase}</p>
         </div>
     </div>
   );
@@ -740,7 +740,7 @@ function SelectionInspector({
     <div className="flex h-full flex-col rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
       <div>
         <h2 className="text-base font-bold text-slate-900">{t("선택 항목", "Selection")}</h2>
-        <p className="mt-1 text-sm text-slate-600">
+        <p className="mt-1 text-[15px] text-slate-600">
           {t("지도에서 선택한 링크와 교차로의 조건을 바로 수정합니다.", "Edit the currently selected link or intersection inputs.")}
         </p>
       </div>
@@ -757,14 +757,14 @@ function SelectionInspector({
 
         {selectedNode && (
           <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
-            <p className="mb-2 text-xs font-semibold text-slate-700">{t("연결 링크", "Connected Links")}</p>
+            <p className="mb-2 text-[14px] font-semibold text-slate-700">{t("연결 링크", "Connected Links")}</p>
             <ConnectionList links={selectedNode.connectedLinks} onPick={onPickConnectedLink} selectedLinkId={selectedLink?.id ?? null} />
           </div>
         )}
 
         {mode === "speed" && selectedSpeedRow && (
           <div className="rounded-xl border border-rose-100 bg-rose-50/70 p-3">
-            <p className="text-xs font-semibold text-rose-800">{t("속도 제한 조정", "Speed Limit Adjustment")}</p>
+            <p className="text-[14px] font-semibold text-rose-800">{t("속도 제한 조정", "Speed Limit Adjustment")}</p>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <NumberField label={t("속도", "Speed")} value={selectedSpeedRow.speedLimit} onChange={(value) => onUpdateSpeed("speedLimit", value)} suffix="km/h" />
               <NumberField label={t("적용 시간", "Duration")} value={selectedSpeedRow.duration} onChange={(value) => onUpdateSpeed("duration", value)} suffix="s" />
@@ -774,7 +774,7 @@ function SelectionInspector({
 
         {mode === "volume" && selectedVehicleRow && (
           <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
-            <p className="text-xs font-semibold text-emerald-800">{t("교통량 입력 조정", "Vehicle Input Adjustment")}</p>
+            <p className="text-[14px] font-semibold text-emerald-800">{t("교통량 입력 조정", "Vehicle Input Adjustment")}</p>
             <div className="mt-3">
               <NumberField label={t("교통량", "Volume")} value={selectedVehicleRow.volume} onChange={onUpdateVehicle} suffix="veh/h" />
             </div>
@@ -785,15 +785,15 @@ function SelectionInspector({
           <div className="rounded-xl border border-blue-100 bg-blue-50/70 p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold text-blue-800">{t("신호 제어 조정", "Signal Control Adjustment")}</p>
-                <p className="mt-1 text-[11px] leading-4 text-blue-700">
+                <p className="text-[14px] font-semibold text-blue-800">{t("신호 제어 조정", "Signal Control Adjustment")}</p>
+                <p className="mt-1 text-[13px] leading-4 text-blue-700">
                   {selectedSignal?.has_signal
                     ? t(`현재 주기 ${selectedSignal.cycle_time ?? "-"}초`, `Existing cycle ${selectedSignal.cycle_time ?? "-"}s`, `現在の周期 ${selectedSignal.cycle_time ?? "-"}秒`)
                     : t("선택 교차로에 매칭된 신호 데이터가 없으면 노드 ID로 조건을 생성합니다.", "If no matched signal data exists, the node ID is used for the input.")}
                 </p>
               </div>
               {selectedNode && !selectedSignalRow && (
-                <button type="button" className="ui-button-ghost px-2.5 py-1 text-xs" onClick={onAddSignal}>
+                <button type="button" className="ui-button-ghost px-2.5 py-1 text-[14px]" onClick={onAddSignal}>
                   {t("추가", "Add")}
                 </button>
               )}
@@ -854,20 +854,20 @@ function RunPanel({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-base font-bold text-slate-900">{t("실행 설정", "Run Setup")}</h2>
-          <p className="mt-1 text-sm text-slate-600">{t("설정한 조건으로 실제 실행 요청을 보냅니다.", "Sends a real run request with the configured inputs.")}</p>
+          <p className="mt-1 text-[15px] text-slate-600">{t("설정한 조건으로 실제 실행 요청을 보냅니다.", "Sends a real run request with the configured inputs.")}</p>
         </div>
-        <button type="button" className="ui-button-ghost px-3 py-2 text-xs" onClick={onClearDraft}>
+        <button type="button" className="ui-button-ghost px-3 py-2 text-[14px]" onClick={onClearDraft}>
           {t("조건 초기화", "Clear Inputs")}
         </button>
       </div>
 
       <div className="mt-4 space-y-3">
         <label className="block">
-          <span className="text-xs font-semibold text-slate-600">{t("결과 이름", "Result Name")}</span>
+          <span className="text-[14px] font-semibold text-slate-600">{t("결과 이름", "Result Name")}</span>
           <input className="ui-input mt-1" value={runName} onChange={(event) => onRunNameChange(event.target.value)} />
         </label>
         <label className="block">
-          <span className="text-xs font-semibold text-slate-600">{t("기준 시나리오", "Base Scenario")}</span>
+          <span className="text-[14px] font-semibold text-slate-600">{t("기준 시나리오", "Base Scenario")}</span>
           <select className="ui-select mt-1" value={selectedScenarioId} onChange={(event) => onScenarioChange(event.target.value)}>
             {scenarios.length === 0 ? (
               <option value="">{t("시나리오 없음", "No scenarios")}</option>
@@ -882,29 +882,29 @@ function RunPanel({
         </label>
         <div className="grid grid-cols-2 gap-2">
           <label className="block">
-            <span className="text-xs font-semibold text-slate-600">{t("실행 시간", "Duration")}</span>
+            <span className="text-[14px] font-semibold text-slate-600">{t("실행 시간", "Duration")}</span>
             <input type="number" className="ui-input mt-1" min={60} max={86400} value={duration} onChange={(event) => onDurationChange(Number(event.target.value))} />
           </label>
           <label className="block">
-            <span className="text-xs font-semibold text-slate-600">{t("랜덤 시드", "Seed")}</span>
+            <span className="text-[14px] font-semibold text-slate-600">{t("랜덤 시드", "Seed")}</span>
             <input type="number" className="ui-input mt-1" min={0} value={seed} onChange={(event) => onSeedChange(Number(event.target.value))} />
           </label>
         </div>
       </div>
 
       {!canRun && (
-        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-5 text-amber-800">
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-[14px] leading-5 text-amber-800">
           {disabledMessage}
         </div>
       )}
 
-      <button type="button" onClick={onRun} disabled={running || !canRun} className="ui-button-primary mt-auto w-full px-4 py-3 text-sm disabled:cursor-not-allowed disabled:opacity-50">
+      <button type="button" onClick={onRun} disabled={running || !canRun} className="ui-button-primary mt-auto w-full px-4 py-3 text-[15px] disabled:cursor-not-allowed disabled:opacity-50">
         {running ? t("실행 중", "Running") : t("시뮬레이션 실행", "Run Simulation")}
       </button>
 
       {activeStatus !== "idle" && (
         <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/80 p-3">
-          <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
+          <div className="flex items-center justify-between text-[14px] font-semibold text-slate-600">
             <span>{activeJobId ? `Job ${activeJobId}` : t("준비 중", "Preparing")}</span>
             <span>{activeProgress}%</span>
           </div>
@@ -913,10 +913,10 @@ function RunPanel({
           </div>
           {activeStatus === "done" && (
             <div className="mt-3 grid grid-cols-2 gap-2">
-              <Link className="ui-button-ghost px-3 py-2 text-center text-xs" href="/dashboard">
+              <Link className="ui-button-ghost px-3 py-2 text-center text-[14px]" href="/dashboard">
                 {t("대시보드", "Dashboard")}
               </Link>
-              <Link className="ui-button-ghost px-3 py-2 text-center text-xs" href="/base-model">
+              <Link className="ui-button-ghost px-3 py-2 text-center text-[14px]" href="/base-model">
                 {t("검증 화면", "Validation")}
               </Link>
             </div>
@@ -942,9 +942,9 @@ function ConnectionList({
     <div className="grid grid-cols-2 gap-2">
       {(["north", "east", "south", "west"] as const).map((direction) => (
         <div key={direction} className="rounded-lg border border-slate-200 bg-surface p-2">
-          <p className="mb-1 text-[10px] font-bold uppercase text-slate-500">{directionLabel(direction, t)}</p>
+          <p className="mb-1 text-[12px] font-bold uppercase text-slate-500">{directionLabel(direction, t)}</p>
           <div className="space-y-1">
-            {grouped[direction].length === 0 && <span className="text-[10px] text-slate-400">-</span>}
+            {grouped[direction].length === 0 && <span className="text-[12px] text-slate-400">-</span>}
             {grouped[direction].map((link) => {
               const active = selectedLinkId === link.id;
               return (
@@ -952,7 +952,7 @@ function ConnectionList({
                   key={`${direction}-${link.role}-${link.id}`}
                   type="button"
                   onClick={() => onPick(link)}
-                  className={`flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1 text-[10px] transition ${
+                  className={`flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1 text-[12px] transition ${
                     active ? "border-blue-500 bg-blue-100 text-slate-900" : "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300"
                   }`}
                 >
@@ -982,8 +982,8 @@ function QueuePanel({
   return (
     <section className="rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
       <div className="mb-3 flex items-center justify-between gap-2">
-        <h2 className="text-sm font-bold text-slate-900">{title}</h2>
-        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">{count}</span>
+        <h2 className="text-[15px] font-bold text-slate-900">{title}</h2>
+        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[13px] font-bold text-slate-600">{count}</span>
       </div>
       <div className="space-y-2">
         {count === 0 ? <EmptyLine text={emptyText} /> : children}
@@ -997,8 +997,8 @@ function QueueRow({ label, onRemove, children }: { label: string; onRemove: () =
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-xs font-bold text-slate-800">{label}</span>
-        <button type="button" className="text-[11px] font-semibold text-rose-600 hover:text-rose-800" onClick={onRemove}>
+        <span className="text-[14px] font-bold text-slate-800">{label}</span>
+        <button type="button" className="text-[13px] font-semibold text-rose-600 hover:text-rose-800" onClick={onRemove}>
           {t("삭제", "Remove")}
         </button>
       </div>
@@ -1020,10 +1020,10 @@ function NumberField({
 }) {
   return (
     <label className="block">
-      <span className="text-[11px] font-semibold text-slate-600">{label}</span>
+      <span className="text-[13px] font-semibold text-slate-600">{label}</span>
       <div className="mt-1 flex items-center gap-2">
         <input type="number" className="ui-input" value={value} onChange={(event) => onChange(event.target.value)} />
-        {suffix && <span className="min-w-max text-[11px] font-semibold text-slate-500">{suffix}</span>}
+        {suffix && <span className="min-w-max text-[13px] font-semibold text-slate-500">{suffix}</span>}
       </div>
     </label>
   );
@@ -1034,7 +1034,7 @@ function ModeButton({ active, label, onClick }: { active: boolean; label: string
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-lg border px-3 py-2 text-xs font-bold transition ${
+      className={`rounded-lg border px-3 py-2 text-[14px] font-bold transition ${
         active ? "border-white/30 bg-surface text-slate-900" : "border-white/10 bg-surface/8 text-white hover:bg-surface/14"
       }`}
     >
@@ -1046,15 +1046,15 @@ function ModeButton({ active, label, onClick }: { active: boolean; label: string
 function InfoBox({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2">
-      <p className="text-[10px] font-bold uppercase text-slate-500">{label}</p>
-      <p className="mt-1 text-xs font-semibold text-slate-800">{value}</p>
+      <p className="text-[12px] font-bold uppercase text-slate-500">{label}</p>
+      <p className="mt-1 text-[14px] font-semibold text-slate-800">{value}</p>
     </div>
   );
 }
 
 function EmptyLine({ text }: { text: string }) {
   return (
-    <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-3 text-xs text-slate-500">
+    <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-3 text-[14px] text-slate-500">
       {text}
     </div>
   );
@@ -1070,7 +1070,7 @@ function StatusPill({ label, value, tone = "neutral" }: { label: string; value: 
           ? "border-blue-200 bg-blue-50 text-blue-800"
           : "border-slate-200 bg-surface text-slate-600";
   return (
-    <span className={`inline-flex max-w-[260px] items-center gap-2 rounded-full border px-3 py-1 text-xs shadow-sm ${toneClass}`}>
+    <span className={`inline-flex max-w-[260px] items-center gap-2 rounded-full border px-3 py-1 text-[14px] shadow-sm ${toneClass}`}>
       <span className="font-semibold">{label}</span>
       <span className="truncate">{value}</span>
     </span>
@@ -1092,23 +1092,23 @@ function JobRow({ job }: { job: SimulationJob }) {
     <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-xs font-bold text-slate-800">{job.name || job.params?.name || job.id}</p>
-          <p className="mt-0.5 text-[11px] text-slate-500">{job.scenario_result_id ?? job.id}</p>
+          <p className="truncate text-[14px] font-bold text-slate-800">{job.name || job.params?.name || job.id}</p>
+          <p className="mt-0.5 text-[13px] text-slate-500">{job.scenario_result_id ?? job.id}</p>
         </div>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${statusStyle}`}>{job.status}</span>
+        <span className={`rounded-full px-2 py-0.5 text-[12px] font-bold ${statusStyle}`}>{job.status}</span>
       </div>
       <div className="mt-2 h-1.5 rounded-full bg-slate-200">
         <div className="h-1.5 rounded-full bg-blue-500" style={{ width: `${progress}%` }} />
       </div>
       {job.status === "done" && (
-        <p className="mt-2 text-[11px] text-emerald-700">
+        <p className="mt-2 text-[13px] text-emerald-700">
           {t(
             "완료 시점에 대시보드 비교 시나리오로 등록되었습니다. 이후 데이터셋을 교체/복원했다면 목록에서 사라졌을 수 있습니다.",
             "Registered as a comparison scenario at completion. If the dataset was replaced or reset since, it may no longer appear there.",
           )}
         </p>
       )}
-      {job.error && <p className="mt-2 text-[11px] text-rose-700">{job.error}</p>}
+      {job.error && <p className="mt-2 text-[13px] text-rose-700">{job.error}</p>}
     </div>
   );
 }

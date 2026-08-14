@@ -91,7 +91,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { useLanguage } from "@/components/LanguageProvider";
-import { PageHelp, Panel, refusalHeadline } from "@/components/genesis/ui";
+import { Panel, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   RegionFetchError,
@@ -365,14 +365,14 @@ function VertexRow({
   };
 
   const cellClasses = (ok: boolean) =>
-    `w-full rounded border px-1.5 py-1 font-mono text-[12px] text-slate-800 ${
+    `w-full rounded border px-1.5 py-1 font-mono text-[14px] text-slate-800 ${
       ok ? "border-slate-300" : "border-slate-400 ring-1 ring-slate-400"
     }`;
 
   return (
     <>
       <tr className="border-t border-slate-100">
-        <td className="py-1 pl-2 pr-2 font-mono text-[12px] text-slate-500">{index + 1}</td>
+        <td className="py-1 pl-2 pr-2 font-mono text-[14px] text-slate-500">{index + 1}</td>
         <td className="py-1 pr-2">
           <input
             type="text"
@@ -407,7 +407,7 @@ function VertexRow({
           <button
             type="button"
             onClick={() => onDelete(index)}
-            className="ui-button-ghost rounded px-2 py-0.5 text-[12px] font-semibold"
+            className="ui-button-ghost rounded px-2 py-0.5 text-[14px] font-semibold"
           >
             {t("삭제", "Delete", "削除")}
           </button>
@@ -415,7 +415,7 @@ function VertexRow({
       </tr>
       {(!latOk || !lonOk) && (
         <tr>
-          <td colSpan={4} className="pb-1.5 pl-6 pr-2 text-[12px] leading-snug text-slate-600">
+          <td colSpan={4} className="pb-1.5 pl-6 pr-2 text-[14px] leading-snug text-slate-600">
             {t(
               "위도는 -90~90, 경도는 -180~180 사이의 숫자여야 합니다 — 고치기 전까지 이 점은 지도에 반영되지 않습니다.",
               "Latitude must be between -90 and 90, longitude between -180 and 180 — this point will not update on the map until it is fixed.",
@@ -686,70 +686,28 @@ export default function GenesisRegionPage() {
     }
   }, [selected, router]);
 
-  // UNIT #20 -- the page help drawer's content. Static strings only (no fetch,
-  // no live measurement): `경계 처리` is the boundary doctrine that used to sit
-  // in an always-visible ⓘ beside the map, moved here verbatim (still pinned
-  // against this file's own source); `넓이 한계`/`라쏘 조작`/`데이터 출처`/
-  // `추출 이후` restate, for a reader who opens the drawer on purpose, what the
-  // hidden measurement block and the map's own operation used to say inline.
-  const regionHelpEntries = [
-    {
-      title: t("경계 처리", "Boundary rule", "境界の扱い"),
-      body: t(
-        "그린 폴리곤이 그대로 기준입니다. Overpass 질의도, 도로 꼬리 잘라내기도, 모형 경계 끝점 판정도 모두 이 폴리곤으로 합니다 — 폴리곤 밖으로 뻗은 도로는 폴리곤 변에서 자르고 그 자리에 노드를 만듭니다. 옅은 점선 사각형은 폴리곤의 바운딩 박스로, 거리 기반 경계 띠와 용량 추정에만 쓰입니다. 이 내용은 생성된 준수 보고서에도 그대로 적힙니다.",
-        "The polygon you drew is the boundary. Overpass is queried with it, the way-tail trim cuts at it, and a road end is judged against it — a road running past the polygon is cut AT its edge and a node is placed there. The faint dashed rectangle is the polygon's bounding box, used only for the distance-based boundary band and the size estimate. The generated compliance report states this too.",
-        "描いたポリゴンがそのまま基準です。Overpass の問い合わせも、道路の尾部の切り詰めも、モデル境界の端点判定も、すべてこのポリゴンで行います — ポリゴンの外へ伸びる道路はその辺で切り詰め、そこにノードを作ります。薄い破線の矩形はポリゴンのバウンディングボックスで、距離ベースの境界帯と規模の見積りにのみ使います。この内容は生成される準拠レポートにも記載されます。",
-      ),
-    },
-    {
-      title: t("넓이 한계", "Area limit", "面積の上限"),
-      body: t(
-        "한계는 생성기의 투영이 1 m 오차 예산에 도달하는 반경입니다 — 이 선을 넘으면 생성기가 어차피 projection_out_of_range로 거부하므로, 이 화면은 내려받기 전에 거부합니다(잘라내지 않습니다). 정사각형이라면 한계에 대응하는 최대 넓이가 있지만, 길쭉한 영역은 넓이가 작아도 반경에서 걸릴 수 있습니다. '투영 오차'는 위경도를 평면 좌표로 바꿀 때 이 반경에서 생기는 최대 평면 오차입니다.",
-        "The limit is the half-extent at which the generator's projection reaches its 1 m error budget. Past that line the generator refuses outright (projection_out_of_range), so this screen refuses before the download rather than truncating it. A square region has a maximum area at that limit, but a long thin region can trip the half-extent even at a small area. 'Projection error' is the largest planar error the WGS84 conversion produces at that radius.",
-        "上限は、生成器の投影が 1 m の誤差予算に達する半径です。この線を越えると生成器がいずれにせよ projection_out_of_range で拒否するため、この画面は取得前に拒否します（切り詰めません）。正方形ならその上限に対応する最大面積がありますが、細長い領域は面積が小さくても半径で引っかかることがあります。「投影誤差」は、その半径で WGS84 からの変換により生じる最大の平面誤差です。",
-      ),
-    },
-    {
-      title: t("라쏘 조작", "Using the lasso", "投げ縄の操作"),
-      body: t(
-        `지도를 눌러 점을 찍고, 두 번 눌러 영역을 닫습니다. 점은 최대 ${maxVertices ?? 64}개까지 찍을 수 있습니다 — 자동으로 줄이지 않으니 모양은 단순하게 그려 주세요. '초기화'를 누르면 모든 점이 지워집니다.`,
-        `Click to add a point, double-click to close the shape. At most ${maxVertices ?? 64} corners can be added — draw with fewer, since it is never simplified for you. 'Reset' clears every point.`,
-        `地図をクリックして点を打ち、ダブルクリックで領域を閉じます。点は最大 ${maxVertices ?? 64} 個まで打てます — 自動では減らさないため、単純な形で描いてください。「初期化」を押すとすべての点が消えます。`,
-      ),
-    },
-    {
-      title: t("데이터 출처", "Data source", "データの出所"),
-      body: t(
-        "지도 데이터는 OpenStreetMap에서 받아오며, OSM의 ODbL 라이선스를 따릅니다. 영역을 추출하려면 로그인이 필요합니다.",
-        "Map data is fetched from OpenStreetMap under its ODbL licence. Extracting a region requires a signed-in user.",
-        "地図データは OpenStreetMap から取得し、OSM の ODbL ライセンスに従います。領域の抽出にはログインが必要です。",
-      ),
-    },
-    {
-      title: t("추출 이후", "After the extract", "抽出のあと"),
-      body: t(
-        "받은 추출은 업로드한 파일과 똑같은 경로로 생성·검증 게이트를 거칩니다 — 이 화면은 스테이징 문 앞에서 끝나고, 생성을 직접 시작하지 않습니다.",
-        "The extract takes exactly the same road as an uploaded file through generation and the validation gate — this screen stops at the staging door and never starts a generation itself.",
-        "取得した抽出はアップロードしたファイルとまったく同じ経路で生成・検証ゲートを通ります — この画面はステージングの入口で終わり、自ら生成を開始することはありません。",
-      ),
-    },
-  ];
+  // UNIT #20's help drawer is RETIRED (2026-08-14). All five sections --
+  // 경계 처리 (the boundary doctrine), 넓이 한계, 라쏘 조작, 데이터 출처, 추출
+  // 이후 -- are verbatim in lib/help-content.tsx (`regionHelpEntries`) and
+  // render at /docs, opened by the book icon in the app topbar. The corner cap
+  // travels as that builder's one argument: this screen knows the server's
+  // `limits.max_polygon_vertices`, /docs does not and falls back to the same
+  // 64 this screen used before its limits arrived.
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8">
       <header className="mb-6">
         <h1 className="flex items-center text-[22px] font-semibold tracking-tight text-white">
           {t("영역에서 네트워크 추출", "Extract a region", "領域からネットワークを抽出")}
-          <PageHelp entries={regionHelpEntries} />
         </h1>
-        <p className="mt-1 text-sm text-slate-600">
+        <p className="mt-1 text-[15px] text-slate-600">
           {t(
             "지도 영역을 지정하면 OpenStreetMap에서 그 범위의 도로망(.osm)을 받아 옵니다. 받은 추출은 업로드한 파일과 똑같은 경로로 생성·검증 게이트를 거칩니다.",
             "Name a region and the road network for it is fetched from OpenStreetMap as an .osm. The extract then takes exactly the same road through generation and the validation gate as an uploaded file.",
             "地図の領域を指定すると、その範囲の道路網(.osm)を OpenStreetMap から取得します。取得した抽出は、アップロードしたファイルとまったく同じ経路で生成と検証ゲートを通ります。",
           )}
         </p>
-        <p className="mt-2 text-xs text-slate-500">
+        <p className="mt-2 text-[14px] text-slate-500">
           <Link href="/genesis" className="underline">
             {t("← 파일 업로드로 생성하기 / 생성 이력 보기", "← Generate from a file / see past generations", "← ファイルから生成 / 生成履歴を見る")}
           </Link>
@@ -762,9 +720,9 @@ export default function GenesisRegionPage() {
         * per-fetch poll both still set it, and an error with nowhere to render
         * is an error the screen swallows. */}
       {listError && (
-        <div className="mb-6 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[13px] text-slate-800">
+        <div className="mb-6 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[15px] text-slate-800">
           {t("추출 목록을 불러오지 못했습니다", "Failed to load the extractions", "抽出一覧を読み込めませんでした")}:{" "}
-          <span className="font-mono text-xs text-slate-700">{listError}</span>
+          <span className="font-mono text-[14px] text-slate-700">{listError}</span>
         </div>
       )}
 
@@ -797,12 +755,12 @@ export default function GenesisRegionPage() {
           {/* 경계 처리 ⓘ hidden (unit #20) -- its sentences moved into the page
             * help drawer above, verbatim. This row is now just the two controls
             * that act on the ring itself. */}
-          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+          <div className="flex flex-wrap items-center gap-3 text-[14px] text-slate-500">
             <button
               type="button"
               onClick={resetRing}
               disabled={vertices.length === 0}
-              className="ui-button-ghost rounded-full px-3 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+              className="ui-button-ghost rounded-full px-3 py-1 text-[14px] font-semibold disabled:cursor-not-allowed disabled:opacity-40"
             >
               {t("초기화", "Reset", "初期化")}
             </button>
@@ -829,12 +787,12 @@ export default function GenesisRegionPage() {
             * map or a submitted payload either). Height-capped and scrollable
             * on purpose -- 64 rows must never turn this into a giant form. */}
           <div className="min-w-0 flex-1">
-            <p className="mb-1.5 text-xs font-medium text-slate-500">
+            <p className="mb-1.5 text-[14px] font-medium text-slate-500">
               {t(`점 ${vertices.length}개`, `${vertices.length} point(s)`, `点 ${vertices.length} 個`)}
             </p>
             <div className="max-h-56 overflow-y-auto rounded-md border border-slate-200">
               <table className="w-full text-left">
-                <thead className="sticky top-0 bg-slate-50 text-[12px] font-medium text-slate-500">
+                <thead className="sticky top-0 bg-slate-50 text-[14px] font-medium text-slate-500">
                   <tr>
                     <th className="py-1.5 pl-2 pr-2 font-medium">#</th>
                     <th className="py-1.5 pr-2 font-medium">{t("위도", "lat", "緯度")}</th>
@@ -856,7 +814,7 @@ export default function GenesisRegionPage() {
                   ))}
                   {vertices.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="px-2 py-3 text-center text-[12px] text-slate-500">
+                      <td colSpan={4} className="px-2 py-3 text-center text-[14px] text-slate-500">
                         {t("지도를 눌러 점을 찍으세요.", "Click the map to add a point.", "地図をクリックして点を打ってください。")}
                       </td>
                     </tr>
@@ -867,14 +825,14 @@ export default function GenesisRegionPage() {
           </div>
 
           <div className="min-w-0 flex-1">
-            <label className="flex flex-col gap-1 text-xs text-slate-600">
+            <label className="flex flex-col gap-1 text-[14px] text-slate-600">
               {t("추출 이름 (선택)", "Extract name (optional)", "抽出名（任意）")}
               <input
                 type="text"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder={t("중심 좌표에서 자동", "derived from the centre", "中心座標から自動")}
-                className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs text-slate-800"
+                className="rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px] text-slate-800"
               />
             </label>
           </div>
@@ -887,7 +845,7 @@ export default function GenesisRegionPage() {
             * alert there would open the page on a warning nobody caused. A
             * measurement the server refused stays amber. */
           <p
-            className={`mt-5 rounded-lg border px-4 py-3 text-[13px] leading-relaxed ${
+            className={`mt-5 rounded-lg border px-4 py-3 text-[15px] leading-relaxed ${
               parsed
                 ? "border-slate-400 bg-slate-100 text-slate-800 ring-1 ring-slate-400"
                 : "border-slate-200 bg-slate-50 text-slate-600"
@@ -914,7 +872,7 @@ export default function GenesisRegionPage() {
               type="button"
               disabled={!readyToFetch}
               onClick={() => void submit()}
-              className="rounded-md bg-slate-900 px-4 py-2 text-[13px] font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="rounded-md bg-slate-900 px-4 py-2 text-[15px] font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               {submitting
                 ? t("요청하는 중…", "Requesting…", "要求中…")
@@ -924,17 +882,17 @@ export default function GenesisRegionPage() {
         </div>
 
         {submitError && (
-          <div className="mt-5 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[13px] text-slate-800">
+          <div className="mt-5 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[15px] text-slate-800">
             <p className="font-semibold">
               {submitError instanceof GenesisError
                 ? refusalHeadline(submitError.code, t)
                 : t("추출을 시작하지 못했습니다", "Could not start the extraction", "抽出を開始できませんでした")}
             </p>
-            <p className="mt-1.5 whitespace-pre-wrap font-mono text-xs leading-relaxed text-slate-700">
+            <p className="mt-1.5 whitespace-pre-wrap font-mono text-[14px] leading-relaxed text-slate-700">
               {submitError.message}
             </p>
             {submitError instanceof RegionFetchError && (
-              <p className="mt-1.5 font-mono text-xs text-slate-600">
+              <p className="mt-1.5 font-mono text-[14px] text-slate-600">
                 {JSON.stringify(submitError.measurement)}
               </p>
             )}
@@ -955,9 +913,9 @@ export default function GenesisRegionPage() {
             "取得した抽出はアップロードされた .osm と同じステージングに置かれます — 生成は既存の経路のままです。",
           )}
         >
-          <div className={`mb-5 rounded-lg border px-4 py-3.5 text-[13px] leading-relaxed ${statusClasses(selected.status)}`}>
+          <div className={`mb-5 rounded-lg border px-4 py-3.5 text-[15px] leading-relaxed ${statusClasses(selected.status)}`}>
             <p className="text-[15px] font-semibold">{statusLabel(selected.status, t)}</p>
-            <p className="mt-1.5 font-mono text-xs">
+            <p className="mt-1.5 font-mono text-[14px]">
               {selected.name} · {selected.region.south}, {selected.region.west} → {selected.region.north},{" "}
               {selected.region.east}
             </p>
@@ -984,7 +942,7 @@ export default function GenesisRegionPage() {
                 <p className="font-semibold">{refusalHeadline(selected.refusal.code, t)}</p>
                 <ul className="mt-1 space-y-0.5">
                   {selected.refusal.reasons.map((reason, index) => (
-                    <li key={index} className="font-mono text-xs leading-relaxed">
+                    <li key={index} className="font-mono text-[14px] leading-relaxed">
                       {reason}
                     </li>
                   ))}
@@ -999,8 +957,8 @@ export default function GenesisRegionPage() {
              * survives into the generation's source document and into the
              * artifact download -- a network whose origin cannot be
              * reconstructed is not auditable. */
-            <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-700">
-              <p className="text-[13px] font-semibold text-slate-800">
+            <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-[14px] leading-relaxed text-slate-700">
+              <p className="text-[15px] font-semibold text-slate-800">
                 {t("출처 기록 (provenance)", "Provenance", "出所の記録 (provenance)")}
               </p>
               <p className="mt-1.5">
@@ -1034,7 +992,7 @@ export default function GenesisRegionPage() {
               </p>
               <details className="mt-2">
                 <summary className="cursor-pointer font-semibold">{t("보낸 질의", "The query sent", "送信した問い合わせ")}</summary>
-                <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap rounded bg-white/[0.04] px-2.5 py-2 font-mono text-xs">
+                <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap rounded bg-white/[0.04] px-2.5 py-2 font-mono text-[14px]">
                   {selected.provenance.query}
                 </pre>
               </details>
@@ -1048,13 +1006,13 @@ export default function GenesisRegionPage() {
                   type="button"
                   disabled={handingOff}
                   onClick={() => void handOff()}
-                  className="rounded-md bg-slate-900 px-4 py-2 text-[13px] font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
+                  className="rounded-md bg-slate-900 px-4 py-2 text-[15px] font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
                   {handingOff
                     ? t("시작하는 중…", "Starting…", "開始中…")
                     : t("이 추출로 생성 시작 →", "Generate from this extract →", "この抽出で生成を開始 →")}
                 </button>
-                <span className="text-xs text-slate-500">
+                <span className="text-[14px] text-slate-500">
                   {t(
                     "생성 → 검증 게이트 → 등록. 게이트를 통과하지 못한 네트워크는 프로젝트에 등록되지 않습니다.",
                     "Generate → validation gate → register. A network the gate does not clear is never registered in the project.",
@@ -1063,13 +1021,13 @@ export default function GenesisRegionPage() {
                 </span>
               </div>
               {handOffError && (
-                <div className="rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[13px] text-slate-800">
+                <div className="rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[15px] text-slate-800">
                   <p className="font-semibold">
                     {handOffError instanceof GenesisError
                       ? refusalHeadline(handOffError.code, t)
                       : t("생성을 시작하지 못했습니다", "Could not start the generation", "生成を開始できませんでした")}
                   </p>
-                  <p className="mt-1.5 whitespace-pre-wrap font-mono text-xs text-slate-700">{handOffError.message}</p>
+                  <p className="mt-1.5 whitespace-pre-wrap font-mono text-[14px] text-slate-700">{handOffError.message}</p>
                 </div>
               )}
             </div>

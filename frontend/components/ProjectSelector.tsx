@@ -202,14 +202,14 @@ export default function ProjectSelector() {
      * the adversarial pass measured the unconstrained version wrapping its
      * Korean labels one syllable per line and inflating the whole rail to
      * ~490px tall. */
-    <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 max-[880px]:mb-0 max-[880px]:w-[210px] max-[880px]:shrink-0">
+    <div className="mb-3 px-1.5 py-2 max-[880px]:mb-0 max-[880px]:w-[210px] max-[880px]:shrink-0">
       {/* Unit #24: the full-width "새 프로젝트" button became a small + icon
         * sitting on the SAME ROW as the 프로젝트 label, label left / button
         * right -- the create-flow it opens below is untouched. */}
       <div className="flex items-center justify-between gap-1.5">
         <label
           htmlFor="vissim-workspace-picker"
-          className="whitespace-nowrap text-[11px] font-semibold text-slate-400"
+          className="whitespace-nowrap text-[13px] font-semibold text-slate-400"
         >
           {t("프로젝트", "Project", "プロジェクト")}
         </label>
@@ -232,7 +232,7 @@ export default function ProjectSelector() {
         value={selectedWorkspaceId ?? ""}
         disabled={locked}
         onChange={(event) => handleSwitchWorkspace(event.target.value)}
-        className="ui-select mt-1 px-2 py-1.5 text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
+        className="ui-select ui-select-quiet mt-1 px-2 py-1.5 text-[15px] disabled:cursor-not-allowed disabled:opacity-50"
       >
         {workspaces.map((workspace) => (
           <option key={workspace.id} value={workspace.id}>
@@ -251,19 +251,19 @@ export default function ProjectSelector() {
             onKeyDown={(event) => {
               if (event.key === "Enter") void handleCreateWorkspace();
             }}
-            className="ui-input px-2 py-1.5 text-[12px]"
+            className="ui-input px-2 py-1.5 text-[14px]"
           />
           <button
             type="button"
             onClick={() => void handleCreateWorkspace()}
             disabled={busy || !newWorkspaceName.trim()}
-            className="ui-button-primary px-2 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-primary px-2 py-1 text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t("만들기", "Create", "作成")}
           </button>
         </div>
       )}
-      {error && <p className="mt-1.5 break-words text-[11px] leading-relaxed text-rose-600">{error}</p>}
+      {error && <p className="mt-1.5 break-words text-[13px] leading-relaxed text-rose-600">{error}</p>}
     </div>
   );
 }
@@ -286,7 +286,7 @@ export function WorkspacePickerInline({ id }: { id: string }) {
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <label htmlFor={id} className="whitespace-nowrap text-[12px] text-slate-500">
+      <label htmlFor={id} className="whitespace-nowrap text-[14px] text-slate-500">
         {t("프로젝트", "Project", "プロジェクト")}
       </label>
       <select
@@ -296,9 +296,12 @@ export function WorkspacePickerInline({ id }: { id: string }) {
         onChange={(event) => handleSwitchWorkspace(event.target.value)}
         /* Ink-strength name (user, live pass 2026-08-14): the ghost tone made
           * the SELECTED project — the one fact this control states — the
-          * faintest text in the header. The frame stays quiet; the name does
-          * not. */
-        className="ui-select w-auto rounded-md border-slate-700/60 bg-transparent px-1.5 py-0.5 font-mono text-[14px] font-semibold text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+          * faintest text in the header. The frame now matches the overview
+          * StageLink CTA pill (app/overview/page.tsx's `ui-button-ghost
+          * rounded-full px-3 py-1 text-[14px] font-medium`); the name still
+          * stays one step above muted rather than dropping to the ghost tone
+          * the pill itself uses. */
+        className="ui-select ui-select-quiet w-auto rounded-full bg-transparent px-3 py-1 text-[14px] font-medium text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {workspaces.map((workspace) => (
           <option key={workspace.id} value={workspace.id}>

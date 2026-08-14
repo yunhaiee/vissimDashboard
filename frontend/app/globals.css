@@ -51,7 +51,7 @@
     background: #131312;
     color: var(--text-strong);
     padding: 0.6rem 0.8rem;
-    font-size: 0.875rem;
+    font-size: 0.9375rem;
     transition: border-color 150ms ease, box-shadow 150ms ease;
   }
 
@@ -64,6 +64,13 @@
     outline: none;
     border-color: color-mix(in oklab, var(--accent) 65%, transparent);
     box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.2);
+  }
+
+  /* Project pickers opt out of the accent focus ring -- focus stays visible,
+     in the same neutral tones ui-button-ghost:hover uses. */
+  .ui-select-quiet:focus-visible {
+    border-color: rgba(245, 243, 236, 0.24);
+    box-shadow: none;
   }
 
   .ui-button-primary {
@@ -326,7 +333,7 @@ body {
   padding: 0.55rem 0.65rem;
   border-radius: 0.5rem;
   color: var(--text-muted);
-  font-size: 0.88rem;
+  font-size: 0.95rem;
   font-weight: 500;
   transition: background-color 150ms ease, color 150ms ease;
 }
@@ -348,69 +355,133 @@ body {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.app-side-footer {
-  margin-top: auto;
-  padding: 0.75rem 0.25rem 0;
-  border-top: 1px solid var(--border-subtle);
+/* THE TOPBAR (2026-08-14). The sidebar's footer -- account block plus a
+   three-button language switch -- is gone; the rail now ends after its
+   navigation and carries nothing at the bottom. Both affordances describe THIS
+   BROWSER rather than the model, and they moved together into a slim right-
+   aligned row at the top of the content column, where the documentation link
+   could join them (the rail had no honest slot for it: every entry there is a
+   pipeline stage). It sits INSIDE .app-content-inner, never as a flex item of
+   .app-frame -- the frame's right edge belongs to the assistant drawer. */
+.app-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  min-height: 40px;
+  margin-bottom: 0.85rem;
 }
 
-.app-lang-switch {
+.app-topbar-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.2rem;
-  border: 1px solid var(--border-soft);
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.app-lang-btn {
+  justify-content: center;
+  height: 30px;
+  width: 30px;
+  flex: none;
   border: 0;
-  border-radius: 9999px;
+  border-radius: 0.5rem;
   background: transparent;
   color: var(--text-muted);
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 0.32rem 0.62rem;
-  line-height: 1;
   cursor: pointer;
   transition: background-color 150ms ease, color 150ms ease;
 }
 
-.app-lang-btn:hover {
+.app-topbar-btn:hover {
   color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.06);
 }
 
-.app-lang-btn-active {
-  background: var(--text-strong);
-  color: #0b0b0b;
+.app-topbar-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
-/* Unit U9: who this browser is signed in as, and the way in or out. It shares
-   the sidebar footer with the language toggle because both describe THIS
-   BROWSER rather than the model -- and because the toggle was already the
-   only "settings"-shaped affordance a user would look near. */
-/* One ROW: identity (name over role) on the left, the sign-out pill on the
-   right (user, live pass 2026-08-13 — the button used to sit on its own line
-   below the profile). */
-.app-side-account {
+.app-topbar-divider {
+  width: 1px;
+  height: 18px;
+  flex: none;
+  margin: 0 0.2rem;
+  background: var(--border-subtle);
+}
+
+.app-topbar-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Above the sticky sidebar's own 2600 so a menu opened at a narrow width, where
+   the rail becomes a horizontal bar, is not clipped behind it. */
+.app-topbar-menu {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 2700;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 9.5rem;
+  padding: 0.25rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 0.6rem;
+  background: var(--bg-deep);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.45);
+}
+
+.app-topbar-menu-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.6rem;
-  min-width: 0;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
-.app-side-account-ident {
+.app-topbar-menu-item:hover {
+  color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.app-topbar-menu-item-active {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.app-topbar-menu-check {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+/* Unit U9: who this browser is signed in as, and the way in or out. One ROW --
+   the 240px rail stacked the name over the role, but a 40px bar reads better
+   with both on the same line and the sign-out pill beside them. */
+.app-topbar-account {
   display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
+  align-items: center;
+  gap: 0.55rem;
   min-width: 0;
 }
 
-.app-side-account-name {
-  font-size: 0.78rem;
+.app-topbar-account-ident {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.app-topbar-account-name {
+  font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-strong);
   overflow: hidden;
@@ -418,18 +489,20 @@ body {
   white-space: nowrap;
 }
 
-.app-side-account-role {
-  font-size: 0.68rem;
+.app-topbar-account-role {
+  flex: none;
+  font-size: 0.75rem;
   color: var(--text-faint);
+  white-space: nowrap;
 }
 
-.app-side-account-action {
+.app-topbar-account-action {
   flex-shrink: 0;
   border: 1px solid var(--border-soft);
   border-radius: 9999px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
   padding: 0.26rem 0.62rem;
   line-height: 1;
@@ -439,7 +512,7 @@ body {
   transition: color 150ms ease, border-color 150ms ease;
 }
 
-.app-side-account-action:hover {
+.app-topbar-account-action:hover {
   color: var(--text-strong);
   border-color: rgba(245, 243, 236, 0.24);
 }
@@ -467,7 +540,7 @@ body {
   background: rgba(250, 250, 249, 0.97);
   color: #3a3936;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.45;
   padding: 0.45rem 0.55rem;
 }
@@ -496,7 +569,7 @@ body {
   border: 1px solid rgba(20, 19, 15, 0.18);
   background: rgba(250, 250, 249, 0.96);
   color: #3a3936;
-  font-size: 10.5px;
+  font-size: 11.5px;
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0;
@@ -585,22 +658,11 @@ body {
     display: none;
   }
 
-  .app-side-footer {
-    margin-top: 0;
-    margin-left: auto;
-    padding: 0;
-    border-top: 0;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  /* The sidebar becomes a horizontal bar here, so the account block folds
-     into one line beside the language toggle instead of stacking. */
-  /* The account block is a row at every width now; only the bottom margin
-     changes on small screens. */
-  .app-side-account {
-    margin-bottom: 0;
+  /* The topbar is already one right-aligned row at every width, so it needs no
+     override here -- only a little less air above the stepper. */
+  .app-topbar {
+    min-height: 34px;
+    margin-bottom: 0.6rem;
   }
 
   .app-content {

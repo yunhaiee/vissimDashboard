@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
@@ -108,20 +108,20 @@ export default function IncidentPanel({
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-surface/95 shadow-[0_22px_48px_rgba(15,23,42,0.16)] backdrop-blur">
       <div className="border-b border-slate-200/80 px-6 py-5">
-        <div className="text-sm font-semibold text-slate-900">{t("시나리오 큐", "Scenario Queue")}</div>
-        <p className="mt-1 text-xs text-slate-600">
+        <div className="text-[15px] font-semibold text-slate-900">{t("시나리오 큐", "Scenario Queue")}</div>
+        <p className="mt-1 text-[14px] text-slate-600">
           {t("노드를 선택하고 링크를 고른 뒤, 변경사항을 큐에 추가하세요.", "Pick a node, select one of its links, then add changes to the modification queue.")}
         </p>
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
         <section className="rounded-xl border border-slate-200/80 bg-slate-50/85 p-4">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("노드 정보", "Node Details")}</div>
+          <div className="text-[14px] font-semibold uppercase tracking-wide text-slate-500">{t("노드 정보", "Node Details")}</div>
           {node ? (
             <div className="mt-3 space-y-3">
                 <div>
                   <div className="text-lg font-semibold text-slate-900">{node.name}</div>
-                  <div className="text-xs text-slate-500">{node.connectedLinks.length} {t("개 링크 연결", "connected links")}</div>
+                  <div className="text-[14px] text-slate-500">{node.connectedLinks.length} {t("개 링크 연결", "connected links")}</div>
                 </div>
               <NodeMiniMap
                 groupedConnections={groupedConnections}
@@ -141,8 +141,8 @@ export default function IncidentPanel({
                           : "border-slate-200/80 bg-surface text-slate-700 hover:border-slate-400"
                       }`}
                     >
-                      <div className="text-sm font-semibold">Link {connectedLink.id}</div>
-                      <div className="mt-1 text-xs text-slate-600">
+                      <div className="text-[15px] font-semibold">Link {connectedLink.id}</div>
+                      <div className="mt-1 text-[14px] text-slate-600">
                         {connectedLink.lanes} {t("차로", "lanes")} · {connectedLink.length.toFixed(1)} m
                       </div>
                     </button>
@@ -151,19 +151,19 @@ export default function IncidentPanel({
               </div>
             </div>
           ) : (
-            <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-surface px-4 py-6 text-center text-sm text-slate-400">
+            <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-surface px-4 py-6 text-center text-[15px] text-slate-400">
               {t("그래프 노드를 클릭해 연결 링크를 확인하세요.", "Click a graph node to inspect its connected links.")}
             </div>
           )}
         </section>
 
         <section className="rounded-xl border border-slate-200/80 bg-surface p-4 shadow-sm">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("선택 링크", "Selected Link")}</div>
+          <div className="text-[14px] font-semibold uppercase tracking-wide text-slate-500">{t("선택 링크", "Selected Link")}</div>
           {link ? (
             <div className="mt-3 space-y-4">
               <div className="rounded-xl border border-blue-200/80 bg-blue-50 px-4 py-3">
-                <div className="text-sm font-semibold text-slate-800">Link {link.id}</div>
-                <div className="mt-1 text-xs text-slate-600">
+                <div className="text-[15px] font-semibold text-slate-800">Link {link.id}</div>
+                <div className="mt-1 text-[14px] text-slate-600">
                   {link.lanes} {t("차로", "lanes")} · {link.length.toFixed(1)} m
                 </div>
               </div>
@@ -188,8 +188,8 @@ export default function IncidentPanel({
                         className="mt-1 accent-[#4a83c2]"
                       />
                       <div>
-                        <div className="text-sm font-semibold text-slate-900">{option.label}</div>
-                        <div className="mt-1 text-xs text-slate-600">{option.desc}</div>
+                        <div className="text-[15px] font-semibold text-slate-900">{option.label}</div>
+                        <div className="mt-1 text-[14px] text-slate-600">{option.desc}</div>
                       </div>
                     </div>
                   </label>
@@ -199,7 +199,7 @@ export default function IncidentPanel({
               <div className="grid gap-3">
                 {type === "lane_closure" && (
                   <label className="block">
-                    <span className="text-xs font-medium text-slate-500">{t("차단 차로 수", "Closed lanes")}</span>
+                    <span className="text-[14px] font-medium text-slate-500">{t("차단 차로 수", "Closed lanes")}</span>
                     <div className="mt-2 flex items-center gap-3">
                       <input
                         type="range"
@@ -209,34 +209,34 @@ export default function IncidentPanel({
                         onChange={(event) => setClosedLanes(Number(event.target.value))}
                         className="flex-1"
                       />
-                      <span className="w-6 text-center text-sm font-semibold text-slate-900">{closedLanes}</span>
+                      <span className="w-6 text-center text-[15px] font-semibold text-slate-900">{closedLanes}</span>
                     </div>
                   </label>
                 )}
 
                 {type === "speed_limit" && (
                   <label className="block">
-                    <span className="text-xs font-medium text-slate-500">{t("속도 제한 (km/h)", "Speed limit (km/h)")}</span>
+                    <span className="text-[14px] font-medium text-slate-500">{t("속도 제한 (km/h)", "Speed limit (km/h)")}</span>
                     <input
                       type="number"
                       min={10}
                       max={80}
                       value={speedLimit}
                       onChange={(event) => setSpeedLimit(Number(event.target.value))}
-                      className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+                      className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-[15px] focus:outline-none focus:ring-2 focus:ring-accent/40"
                     />
                   </label>
                 )}
 
                 <label className="block">
-                  <span className="text-xs font-medium text-slate-500">{t("지속 시간 (s)", "Duration (s)")}</span>
+                  <span className="text-[14px] font-medium text-slate-500">{t("지속 시간 (s)", "Duration (s)")}</span>
                   <input
                     type="number"
                     min={60}
                     max={1800}
                   value={duration}
                   onChange={(event) => setDuration(Number(event.target.value))}
-                  className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-[15px] focus:outline-none focus:ring-2 focus:ring-accent/40"
                 />
               </label>
               </div>
@@ -244,14 +244,14 @@ export default function IncidentPanel({
               <div className="flex gap-2">
                 <button
                   onClick={handleQueue}
-                  className="ui-button-primary flex-1 px-4 py-3 text-sm"
+                  className="ui-button-primary flex-1 px-4 py-3 text-[15px]"
                 >
                   {existingIncident ? t("큐 항목 업데이트", "Update Queue Item") : t("수정 큐에 추가", "Add to Modification Queue")}
                 </button>
                 {existingIncident && (
                   <button
                     onClick={() => onRemove(link.id)}
-                    className="ui-button-danger px-4 py-3 text-sm"
+                    className="ui-button-danger px-4 py-3 text-[15px]"
                   >
                     {t("삭제", "Remove")}
                   </button>
@@ -259,7 +259,7 @@ export default function IncidentPanel({
               </div>
             </div>
           ) : (
-            <div className="mt-3 rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-400">
+            <div className="mt-3 rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-[15px] text-slate-400">
               {t("연결 링크를 선택해 변경사항을 설정하세요.", "Select a connected link to configure a modification.")}
             </div>
           )}
@@ -267,32 +267,32 @@ export default function IncidentPanel({
 
         <section className="rounded-xl border border-slate-200/80 bg-surface p-4 shadow-sm">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("수정 큐", "Modification Queue")}</div>
+            <div className="text-[14px] font-semibold uppercase tracking-wide text-slate-500">{t("수정 큐", "Modification Queue")}</div>
             {onClearAll && incidents.length > 0 && (
               <button
                 onClick={onClearAll}
-                className="text-[11px] font-semibold text-slate-500 transition-colors hover:text-slate-800"
+                className="text-[13px] font-semibold text-slate-500 transition-colors hover:text-slate-800"
               >
                 {t("전체 삭제", "Clear all")}
               </button>
             )}
           </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+          <div className="mt-3 grid grid-cols-3 gap-2 text-[13px]">
             <QueueMiniStat label={t("차로", "Lane")} value={queueStats.lane_closure} tone="amber" />
             <QueueMiniStat label={t("전면", "Full")} value={queueStats.full_closure} tone="rose" />
             <QueueMiniStat label={t("속도", "Speed")} value={queueStats.speed_limit} tone="cyan" />
           </div>
           <div className="mt-3 space-y-2">
             {incidents.length === 0 && (
-              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-400">
+              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-[15px] text-slate-400">
                 {t("대기 중인 수정사항이 없습니다.", "No queued modifications yet.")}
               </div>
             )}
             {incidents.map((incident) => (
               <div key={incident.linkId} className="flex items-center justify-between rounded-xl border border-amber-100 bg-amber-50 px-4 py-3">
                 <div>
-                  <div className="text-sm font-semibold text-amber-900">Link {incident.linkId}</div>
-                  <div className="mt-1 text-xs text-amber-700">
+                  <div className="text-[15px] font-semibold text-amber-900">Link {incident.linkId}</div>
+                  <div className="mt-1 text-[14px] text-amber-700">
                     {incident.type === "lane_closure"
                       ? t(`${incident.closedLanes}/${incident.totalLanes}개 차로 차단`, `${incident.closedLanes}/${incident.totalLanes} lanes closed`, `${incident.closedLanes}/${incident.totalLanes} 車線封鎖`)
                       : incident.type === "full_closure"
@@ -302,7 +302,7 @@ export default function IncidentPanel({
                 </div>
                 <button
                   onClick={() => onRemove(incident.linkId)}
-                  className="text-sm font-semibold text-amber-700 hover:text-amber-900"
+                  className="text-[15px] font-semibold text-amber-700 hover:text-amber-900"
                 >
                   {t("삭제", "Remove")}
                 </button>
@@ -313,21 +313,21 @@ export default function IncidentPanel({
 
         <section className="rounded-xl border border-slate-200/80 bg-surface p-4 shadow-sm">
           <div className="flex items-center justify-between gap-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("시나리오 이력", "Scenario History")}</div>
-            <div className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-500">
+            <div className="text-[14px] font-semibold uppercase tracking-wide text-slate-500">{t("시나리오 이력", "Scenario History")}</div>
+            <div className="rounded-full bg-slate-100 px-2 py-1 text-[13px] font-semibold text-slate-500">
               {history.length}
             </div>
           </div>
           <div className="mt-3 space-y-2">
             {history.length === 0 && (
-              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-5 text-center text-sm text-slate-400">
+              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-5 text-center text-[15px] text-slate-400">
                 {t("완료된 시나리오 실행 이력이 여기에 표시됩니다.", "Completed scenario runs will appear here.")}
               </div>
             )}
             {history.map((item) => (
               <div key={`${item.scenarioName}-${item.jobId}`} className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3">
-                <div className="text-sm font-semibold text-slate-800">{item.scenarioName}</div>
-                <div className="mt-1 font-mono text-xs text-slate-500">{item.jobId}</div>
+                <div className="text-[15px] font-semibold text-slate-800">{item.scenarioName}</div>
+                <div className="mt-1 font-mono text-[14px] text-slate-500">{item.jobId}</div>
               </div>
             ))}
           </div>
@@ -338,7 +338,7 @@ export default function IncidentPanel({
         <button
           onClick={onRunScenario}
           disabled={incidents.length === 0 || running}
-          className="ui-button-primary w-full px-4 py-3 text-sm disabled:cursor-not-allowed"
+          className="ui-button-primary w-full px-4 py-3 text-[15px] disabled:cursor-not-allowed"
         >
           {running ? t(`변경사항 적용 중... ${progress}%`, `Applying Changes... ${progress}%`, `変更を適用中... ${progress}%`) : t("모든 변경 적용", "Apply All Changes")}
         </button>
@@ -359,7 +359,7 @@ function NodeMiniMap({
   const { t } = useLanguage();
   return (
     <div className="rounded-xl border border-slate-100 bg-surface p-4">
-      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("노드 다이어그램", "Node Diagram")}</div>
+      <div className="text-[14px] font-semibold uppercase tracking-wide text-slate-500">{t("노드 다이어그램", "Node Diagram")}</div>
       <div className="relative mt-4 mx-auto h-48 w-48">
         <DirectionStack
           title={t("북", "North")}
@@ -415,7 +415,7 @@ function DirectionStack({
 }) {
   return (
     <div className={className}>
-      <div className="mb-1 text-center text-[10px] font-semibold uppercase tracking-wide text-slate-400">{title}</div>
+      <div className="mb-1 text-center text-[12px] font-semibold uppercase tracking-wide text-slate-400">{title}</div>
       <div className={`flex ${horizontal ? "flex-row" : "flex-col"} gap-1.5`}>
         {items.map((item) => {
           const selected = item.id === selectedLinkId;
@@ -423,7 +423,7 @@ function DirectionStack({
             <button
               key={item.id}
               onClick={() => onSelectLink(item)}
-              className={`rounded-lg border px-2 py-1 text-[10px] font-semibold transition-colors ${
+              className={`rounded-lg border px-2 py-1 text-[12px] font-semibold transition-colors ${
                 selected
                   ? "border-blue-500 bg-blue-500 text-white"
                   : "border-slate-200 bg-surface text-slate-600 hover:border-slate-300"
@@ -457,8 +457,8 @@ function QueueMiniStat({
 
   return (
     <div className={`rounded-xl border px-2 py-1.5 text-center ${toneClass}`}>
-      <div className="text-[10px] font-medium uppercase tracking-wide">{label}</div>
-      <div className="mt-0.5 text-sm font-bold">{value}</div>
+      <div className="text-[12px] font-medium uppercase tracking-wide">{label}</div>
+      <div className="mt-0.5 text-[15px] font-bold">{value}</div>
     </div>
   );
 }

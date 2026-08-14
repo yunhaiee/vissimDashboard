@@ -360,7 +360,7 @@ contractTest("app shell exposes the merged dashboard routes", (pin) => {
   pin.match(floatingAssistant, /parseAssistantAnswer/, "expected assistant answers to be split into stable sections");
   pin.match(floatingAssistant, /PANEL_SIZE_STORAGE_KEY/, "expected assistant panel size to persist across sessions");
   pin.match(floatingAssistant, /--assistant-panel-width/, "expected assistant panel width to be driven by resize state");
-  pin.match(floatingAssistant, /cursor-nwse-resize/, "expected assistant panel to expose a resize handle");
+  pin.match(floatingAssistant, /cursor-ew-resize/, "expected the assistant drawer to expose a width-resize handle on its left edge");
   pin.match(
     floatingAssistant,
     /vissim:assistant-simulation-complete/,
@@ -931,13 +931,13 @@ contractTest("dataset banner copy follows the language toggle", (pin) => {
 contractTest("dataset banner controls keep the shared button styling", (pin) => {
   const datasetBanner = read("components/VissimDatasetBanner.tsx");
 
-  pin.match(datasetBanner, /ui-button-primary inline-flex items-center px-3 py-2 text-xs/, "expected dataset upload button to match the Excel upload style");
+  pin.match(datasetBanner, /ui-button-primary inline-flex items-center px-3 py-2 text-\[14px\]/, "expected dataset upload button to match the Excel upload style");
   // Re-pinned 2026-08-05. This used to expect `ui-button-danger`, matching
   // base-model's Excel reset. The Console retheme (77e9149) deliberately made
   // Restore Default a ghost button while the Excel reset stayed danger, so the
   // two no longer match by design -- the destructive warning moved into
   // ConfirmDialog rather than being carried by the button colour.
-  pin.match(datasetBanner, /ui-button-ghost inline-flex items-center px-3 py-2 text-xs/, "expected dataset reset button to use the ghost style, with the destructive warning carried by ConfirmDialog");
+  pin.match(datasetBanner, /ui-button-ghost inline-flex items-center px-3 py-2 text-\[14px\]/, "expected dataset reset button to use the ghost style, with the destructive warning carried by ConfirmDialog");
   // The override hooks stay in the component even though base-model now sizes
   // the card with `h-full` instead of passing bg/shadow overrides.
   pin.match(datasetBanner, /hasCustomBackground/, "expected dataset card to allow the base-model gray background override");
@@ -1354,7 +1354,7 @@ contractTest("U-2-core: the approval card renders the proposal's own rationale v
   );
   pin.match(
     floatingAssistant,
-    /<p className="mt-0\.5 text-\[11px\] leading-5 text-slate-700">\{summary\}<\/p>/,
+    /<p className="mt-0\.5 text-\[13px\] leading-5 text-slate-700">\{summary\}<\/p>/,
     "expected the rationale to render the raw `summary` value verbatim -- not re-worded or wrapped in extra text",
   );
   pin.match(
@@ -2264,7 +2264,7 @@ contractTest("unit #23: the genesis hub is a history list with one primary actio
   // and backdrop-click are ModalDialog's OWN job (components/genesis/ui.tsx,
   // checked in the dedicated ModalDialog test below), so this page only needs
   // to prove it is actually wired to that component, not a bespoke overlay.
-  pin.match(page, /import \{ ModalDialog, PageHelp, refusalHeadline \} from "@\/components\/genesis\/ui";/, "expected the hub to take its dialog from the shared primitive, not a bespoke overlay (Panel left the import when the list lost its card chrome, user 2026-08-14)");
+  pin.match(page, /import \{ ModalDialog, refusalHeadline \} from "@\/components\/genesis\/ui";/, "expected the hub to take its dialog from the shared primitive, not a bespoke overlay (Panel left the import when the list lost its card chrome, PageHelp when the ? drawer retired to /docs -- user 2026-08-14)");
   pin.match(
     page,
     /<ModalDialog\s*\n\s*open=\{modalOpen\}\s*\n\s*onClose=\{\(\) => setModalOpen\(false\)\}/,
@@ -2402,7 +2402,7 @@ contractTest("unit #23: the genesis detail route holds the merged verdict header
   }
 });
 
-contractTest("unit #23: ModalDialog is the shared centered-dialog primitive, reachable the same three ways PageHelp is", (pin) => {
+contractTest("unit #23: ModalDialog is the shared centered-dialog primitive -- button trigger, Escape, backdrop click", (pin) => {
   const ui = read("components/genesis/ui.tsx");
 
   pin.match(ui, /export function ModalDialog\(/, "expected one shared centered-dialog primitive");
@@ -2410,13 +2410,13 @@ contractTest("unit #23: ModalDialog is the shared centered-dialog primitive, rea
   pin.match(modalBody, /\S/, "expected to find the ModalDialog body (markers moved?)");
   pin.match(modalBody, /role="dialog"/, "expected the dialog to announce itself as a dialog");
   pin.match(modalBody, /aria-modal="true"/, "expected the dialog to be marked modal");
-  pin.match(modalBody, /event\.key === "Escape"/, "expected Escape to close it, the same as PageHelp");
+  pin.match(modalBody, /event\.key === "Escape"/, "expected Escape to close it");
   pin.match(
     modalBody,
     /className="fixed inset-0 z-50 flex items-center justify-center bg-black\/60[^"]*"\s*\n\s*onClick=\{onClose\}/,
     "expected a click on the backdrop to close the dialog, and the backdrop to be LITERAL black (user 2026-08-14: the remapped slate ramp washed the page light instead of dimming it)",
   );
-  pin.match(modalBody, /closeRef\.current\?\.focus\(\);/, "expected the close button to take focus on open, the same as PageHelp");
+  pin.match(modalBody, /closeRef\.current\?\.focus\(\);/, "expected the close button to take focus on open");
 });
 
 contractTest("U-1: the comparison's scope sentence has exactly one source", (pin) => {
@@ -2557,6 +2557,7 @@ contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation
   const tileMap = read("components/genesis/GenesisTileMap.tsx");
   const localMap = read("components/genesis/DraftLocalMap.tsx");
   const panel = read("components/genesis/GenesisComparisonPanel.tsx");
+  const help = read("lib/help-content.tsx");
 
   // ONE tooltip primitive, and it must be reachable by every input a user has.
   // A `title` attribute (or a hover-only div) would DELETE these sentences for
@@ -2597,15 +2598,22 @@ contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation
   // drawer's own route, alongside the R1.5 grid they were always about. 제외
   // 도로 stayed on the hub (it is the exclude-service checkbox's own
   // doctrine, and that checkbox is still part of the hub's generation form).
+  //
+  // 2026-08-14: a FOURTH move, this time every drawer entry at once. The
+  // per-page ? drawer retired (user: the topbar book icon is the one door to
+  // the documentation), so the sentences live in lib/help-content.tsx and
+  // render at /docs. The doesNotMatch pins against the PAGE files below keep
+  // their old job regardless: the inline ⓘ positions must stay empty no
+  // matter which surface the prose reads from.
   pin.doesNotMatch(
     page,
     /checked=\{excludeService\}[\s\S]{0,500}<InfoTip/,
     "expected the excluded-roads ⓘ to be gone from beside the checkbox -- it now lives in the page's help drawer",
   );
   pin.match(
-    page,
+    help,
     /t\("제외 도로"[\s\S]{0,300}제외된 도로는 버려지지 않고/,
-    "expected the excluded-roads disclosure to survive as a PageHelp drawer entry in this file",
+    "expected the excluded-roads disclosure to survive in the doctrine module rendered at /docs",
   );
 
   pin.doesNotMatch(
@@ -2619,14 +2627,14 @@ contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation
     "expected the provisional-status doctrine ⓘ to be gone from inline -- it now lives in the detail page's own help drawer",
   );
   pin.match(
-    detail,
+    help,
     /t\("판정 게이트"[\s\S]{0,400}R1\.5 검증 게이트 V1–V9/,
-    "expected the R1.5 doctrine sentence to survive as a PageHelp drawer entry on the detail route",
+    "expected the R1.5 doctrine sentence to survive in the doctrine module rendered at /docs",
   );
   pin.match(
-    detail,
+    help,
     /t\("잠정 등록"[\s\S]{0,600}프로젝트에 등록되었습니다\. 다만 실행되지 못한/,
-    "expected the provisional doctrine paragraph to survive as a PageHelp drawer entry on the detail route",
+    "expected the provisional doctrine paragraph to survive in the doctrine module rendered at /docs",
   );
 
   // The one line that was DELETED rather than moved: how to use a mouse is not
@@ -2643,61 +2651,59 @@ contractTest("U-1-quick: doctrine sentences move into a reachable ⓘ, operation
 });
 
 // ---------------------------------------------------------------------------
-// Unit #20 -- PageHelp: a page-level ? drawer, on all three genesis sub-screens
+// Unit #20 (superseded 2026-08-14) -- the per-page ? drawer is RETIRED. The
+// doctrine it carried was not deleted: it moved verbatim into
+// lib/help-content.tsx and renders as one reading surface at /docs, reachable
+// from the book icon the topbar puts on every route. This block pins the three
+// legs of that arrangement -- the module, the page, and the door -- and pins
+// the old arrangement absent, so a private per-page drawer cannot quietly come
+// back double-entried.
 // ---------------------------------------------------------------------------
-//
-// Single-concern on purpose: THIS test only checks the component exists and
-// that every one of the three pages actually wires it in with real content --
-// not what that content says (the per-page migration pins above and in the
-// B2 lasso test already hold specific sentences to their own file).
 
-contractTest("unit #20: PageHelp exists and every genesis sub-screen passes it entries", (pin) => {
+contractTest("unit #20: the ? drawer is retired -- doctrine lives in lib/help-content and renders at /docs behind the topbar book icon", (pin) => {
   const ui = read("components/genesis/ui.tsx");
-  const region = read("app/genesis/region/page.tsx");
-  const hub = read("app/genesis/page.tsx");
-  const phases = read("app/genesis/phases/page.tsx");
+  const help = read("lib/help-content.tsx");
+  const docs = read("app/docs/page.tsx");
+  const shell = read("components/AppShell.tsx");
 
-  // The primitive itself: static content only (no fetch), reachable the same
-  // three ways InfoTip is (button trigger, Escape, click-outside/backdrop).
-  pin.match(ui, /export function PageHelp\(/, "expected one shared page-level help drawer");
+  // The primitive is gone as CODE. Its retirement note may (and does) name it;
+  // `withoutComments` keeps that note from tripping a code pin.
   pin.doesNotMatch(
-    sliceBetween(ui, "export function PageHelp(", "export function"),
-    /await fetch|apiFetch|apiMutationFetch/,
-    "the help drawer must render static content only -- it must never fetch",
-  );
-  pin.match(ui, /role="dialog"/, "expected the drawer to announce itself as a dialog");
-  pin.match(ui, /aria-modal="true"/, "expected the drawer to be marked modal");
-  pin.match(ui, /event\.key === "Escape"/, "expected Escape to close the drawer, the same as InfoTip");
-  pin.match(
-    ui,
-    /className="fixed inset-0 z-50 flex justify-end bg-black\/60"\s*\n\s*onClick=\{\(\) => setOpen\(false\)\}/,
-    "expected a click on the backdrop to close the drawer, on a LITERAL black backdrop (the slate ramp is palette-remapped and washed the page light)",
+    withoutComments(ui),
+    /PageHelp/,
+    "the ? drawer primitive must stay deleted, not linger as an unused export",
   );
 
-  // Each of the three pages renders the trigger AND passes it real entries --
-  // checked with the component name plus one sentence distinctive to THAT
-  // page's own content, so a page that renders `<PageHelp entries={[]} />`
-  // (the trigger with nothing behind it) still fails this.
-  pin.match(region, /<PageHelp entries=\{regionHelpEntries\}/, "expected the region page to wire in its own help entries");
-  pin.match(
-    region,
-    /그린 폴리곤이 그대로 기준입니다/,
-    "expected the region page's drawer entries to carry its distinctive 경계 처리 sentence",
-  );
+  // The doctrine module: all four areas' entries, t()-built, static forever.
+  pin.match(help, /export function genesisHelpEntries\(/, "expected the hub's doctrine to live in the shared module");
+  pin.match(help, /export function regionHelpEntries\(/, "expected the region doctrine to live in the shared module");
+  pin.match(help, /export function phasesHelpEntries\(/, "expected the phases doctrine to live in the shared module");
+  pin.match(help, /export function jobHelpEntries\(/, "expected the job-detail doctrine to live in the shared module");
+  pin.doesNotMatch(help, /await fetch|apiFetch|apiMutationFetch/, "doctrine is static -- the module must never fetch");
+  pin.doesNotMatch(docs, /await fetch|apiFetch|apiMutationFetch/, "the documentation page renders static doctrine only -- it must never fetch");
 
-  pin.match(hub, /<PageHelp entries=\{genesisHelpEntries\}/, "expected the genesis hub to wire in its own help entries");
-  pin.match(
-    hub,
-    /두 목록은 이미 스테이징된 입력 중에서 고르기만 합니다/,
-    "expected the hub's drawer entries to carry its distinctive 수요·신호 입력 sentence",
-  );
+  // The page renders ALL FOUR areas, not whichever subset survived a refactor.
+  pin.match(docs, /genesisHelpEntries\(t\)/, "expected /docs to render the hub's entries");
+  pin.match(docs, /regionHelpEntries\(t\)/, "expected /docs to render the region entries (no cap passed -- the ?? 64 fallback is the honest browser-side number)");
+  pin.match(docs, /phasesHelpEntries\(t\)/, "expected /docs to render the phases entries");
+  pin.match(docs, /jobHelpEntries\(t\)/, "expected /docs to render the job-detail entries");
 
-  pin.match(phases, /<PageHelp entries=\{phasesHelpEntries\}/, "expected the phases review page to wire in its own help entries");
-  pin.match(
-    phases,
-    /확인 버튼을 누른 사람의 진술만이 실제 신호 입력이 됩니다/,
-    "expected the phases page's drawer entries to carry its distinctive 확인 절차 sentence",
-  );
+  // The door: the topbar's book icon, on every route.
+  pin.match(shell, /href="\/docs"/, "expected the topbar book icon to be the standing door to the documentation");
+
+  // No page keeps a private trigger.
+  for (const [label, source] of [
+    ["hub", read("app/genesis/page.tsx")],
+    ["region", read("app/genesis/region/page.tsx")],
+    ["phases", read("app/genesis/phases/page.tsx")],
+    ["job detail", read("app/genesis/jobs/[id]/page.tsx")],
+  ] as const) {
+    pin.doesNotMatch(
+      withoutComments(source),
+      /PageHelp/,
+      `expected the ${label} page to carry no ? drawer -- doctrine is read at /docs now`,
+    );
+  }
 });
 
 contractTest("U-1-quick: a 생성 이력 row states its region and its scale, or says '—'", (pin) => {
@@ -2943,6 +2949,7 @@ contractTest("B2: the region page ends at the staging door and hands off to B1's
 contractTest("B2 lasso: the page is lasso-only and says the polygon is what gets cut", (pin) => {
   const page = read("app/genesis/region/page.tsx");
   const map = read("components/genesis/RegionLassoMap.tsx");
+  const help = read("lib/help-content.tsx");
 
   // UNIT #20: THE MODE TOGGLE DIED. This page used to be rectangle-or-lasso;
   // it is now lasso-only, so there is no `RegionMode` type, no mode state and
@@ -2980,22 +2987,24 @@ contractTest("B2 lasso: the page is lasso-only and says the polygon is what gets
     "expected the fetch to send exactly the shape the preview measured",
   );
 
-  // THE disclosure. On screen, in Korean, naming both halves: the drawn polygon
-  // is what is queried AND what is cut, and the box is what is left over.
+  // THE disclosure. In Korean, naming both halves: the drawn polygon is what
+  // is queried AND what is cut, and the box is what is left over. 2026-08-14:
+  // the sentences left this page with the ? drawer -- they live in the shared
+  // doctrine module now and render at /docs behind the topbar book icon.
   pin.match(
-    page,
+    help,
     /그린 폴리곤이 그대로 기준입니다/,
-    "expected the page to say on screen that the drawn polygon is the boundary",
+    "expected the doctrine to say that the drawn polygon is the boundary",
   );
   pin.match(
-    page,
+    help,
     /폴리곤 변에서 자르고 그 자리에 노드를 만듭니다/,
-    "expected the page to name the mechanism: a road past the ring is cut AT the ring",
+    "expected the doctrine to name the mechanism: a road past the ring is cut AT the ring",
   );
   pin.match(
-    page,
+    help,
     /거리 기반 경계 띠와 용량 추정에만 쓰입니다/,
-    "expected the page to name what the bounding box is still used for, rather than dropping it",
+    "expected the doctrine to name what the bounding box is still used for, rather than dropping it",
   );
   // The SUPERSEDED sentence, pinned absent. It was true until the trim became
   // polygon-native (backend: osm.trim_ways_to_requested_bbox chooses its kernels
@@ -3005,6 +3014,11 @@ contractTest("B2 lasso: the page is lasso-only and says the polygon is what gets
     page,
     /점선 사각형이 경계 판정 기준입니다|내부 막다른 길로 분류됩니다/,
     "the superseded bounding-box disclosure must not survive its own fix",
+  );
+  pin.doesNotMatch(
+    help,
+    /점선 사각형이 경계 판정 기준입니다|내부 막다른 길로 분류됩니다/,
+    "the superseded bounding-box disclosure must not resurface in the doctrine module either",
   );
   // And the rectangle drawn is the SERVER's derived box, not a second
   // computation in the browser -- the same rule the cap numbers already follow.
@@ -3138,21 +3152,21 @@ contractTest("B2 lasso: the page is lasso-only and says the polygon is what gets
     "the map component must take its labels from the page's t(), not hard-code Korean",
   );
 
-  // UNIT #20 -- THE PAGE HELP DRAWER. `PageHelp` renders beside the h1 and
-  // carries the boundary doctrine (still verbatim above, still pinned) plus
-  // four more sections; this checks the component is actually wired in and
-  // that one distinctive sentence per newly-added section survives in this
-  // file, not merely in the plan.
-  pin.match(page, /<PageHelp entries=\{regionHelpEntries\}/, "expected the page's own ? drawer to be wired in beside the h1");
+  // UNIT #20 RETIRED (2026-08-14) -- the page's ? drawer went with the rest of
+  // them; its five sections moved verbatim into lib/help-content.tsx's
+  // `regionHelpEntries` and render at /docs. The corner-cap sentence keeps its
+  // `${maxVertices ?? 64}` template -- the cap travels as the builder's one
+  // parameter, so the sentence still cannot state a number the server has not
+  // said. One distinctive sentence per moved section stays pinned there.
   pin.match(
-    page,
+    help,
     /점은 최대 \$\{maxVertices \?\? 64\}개까지 찍을 수 있습니다/,
-    "expected the drawer's 라쏘 조작 section to state the corner cap",
+    "expected the 라쏘 조작 doctrine to state the corner cap as a template, never a hard number",
   );
   pin.match(
-    page,
+    help,
     /영역을 추출하려면 로그인이 필요합니다/,
-    "expected the drawer's 데이터 출처 section to state the OSM licence and the login requirement",
+    "expected the 데이터 출처 doctrine to state the OSM licence and the login requirement",
   );
 });
 
@@ -4214,12 +4228,12 @@ contractTest("U-19: map selection is one state, driven by one resolver, in both 
   );
   pin.match(
     findings,
-    /<p className="mt-1\.5 font-mono text-\[13px\] font-semibold text-slate-800">\{selected\.id\}<\/p>/,
+    /<p className="mt-1\.5 font-mono text-\[15px\] font-semibold text-slate-800">\{selected\.id\}<\/p>/,
     "expected the clicked element's own id to be shown, mono",
   );
   pin.match(
     findings,
-    /\{selected\.name && <p className="mt-0\.5 text-\[12px\] text-slate-600">\{selected\.name\}<\/p>\}/,
+    /\{selected\.name && <p className="mt-0\.5 text-\[14px\] text-slate-600">\{selected\.name\}<\/p>\}/,
     "expected the element's name to show only when present, never a blank line",
   );
   pin.match(

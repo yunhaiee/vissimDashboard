@@ -83,7 +83,7 @@ export default function SimulationControl() {
 
       <div className="space-y-3">
         <label className="block">
-          <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{t("시나리오 이름", "Scenario name")}</span>
+          <span className="text-[14px] font-semibold uppercase tracking-[0.14em] text-slate-500">{t("시나리오 이름", "Scenario name")}</span>
           <input
             className="ui-input mt-1"
             value={name}
@@ -93,7 +93,7 @@ export default function SimulationControl() {
 
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
-            <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{t("지속 시간 (s)", "Duration (s)")}</span>
+            <span className="text-[14px] font-semibold uppercase tracking-[0.14em] text-slate-500">{t("지속 시간 (s)", "Duration (s)")}</span>
             <input
               type="number"
               className="ui-input mt-1"
@@ -102,7 +102,7 @@ export default function SimulationControl() {
             />
           </label>
           <label className="block">
-            <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{t("랜덤 시드", "Random seed")}</span>
+            <span className="text-[14px] font-semibold uppercase tracking-[0.14em] text-slate-500">{t("랜덤 시드", "Random seed")}</span>
             <input
               type="number"
               className="ui-input mt-1"
@@ -116,14 +116,14 @@ export default function SimulationControl() {
       <button
         onClick={handleRun}
         disabled={status === "running"}
-        className="ui-button-primary w-full px-4 py-2.5 text-sm disabled:cursor-not-allowed"
+        className="ui-button-primary w-full px-4 py-2.5 text-[15px] disabled:cursor-not-allowed"
       >
         {status === "running" ? t("실행 중...", "Running...") : t("시뮬레이션 실행", "Run simulation")}
       </button>
 
       {status === "running" && (
         <div className="rounded-xl border border-slate-200/80 bg-slate-50/90 p-3">
-          <div className="mb-1 flex justify-between text-xs text-slate-500">
+          <div className="mb-1 flex justify-between text-[14px] text-slate-500">
             <span>{t("진행률", "Progress")}</span>
             <span>{progress}%</span>
           </div>
@@ -133,20 +133,20 @@ export default function SimulationControl() {
               style={{ width: `${progress}%` }}
             />
           </div>
-          <p className="mt-1 text-xs text-slate-400">
+          <p className="mt-1 text-[14px] text-slate-400">
             {t("완료 후 대시보드에서 결과를 재사용할 수 있습니다.", "The simulation result can be reused by the dashboard after completion.")}
           </p>
         </div>
       )}
 
       {status === "done" && (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-600">
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-[15px] text-emerald-600">
           {t("시뮬레이션 완료", "Simulation completed")} (Job: {jobId})
         </div>
       )}
 
       {status === "error" && (
-        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-[15px] text-rose-600">
           {error}
         </div>
       )}

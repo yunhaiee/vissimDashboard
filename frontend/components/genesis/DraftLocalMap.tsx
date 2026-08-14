@@ -257,7 +257,7 @@ export default function DraftLocalMap({
         <button
           type="button"
           onClick={() => setView({ scale: 1, tx: 0, ty: 0 })}
-          className="ui-button-ghost rounded-full px-2.5 py-1 text-[12px]"
+          className="ui-button-ghost rounded-full px-2.5 py-1 text-[14px]"
         >
           {t("보기 초기화", "Reset view", "表示をリセット")}
         </button>

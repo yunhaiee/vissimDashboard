@@ -510,12 +510,12 @@ function NetworkPageContent() {
                 {t("네트워크 프리뷰", "Network Preview")}
               </h1>
               {network?.source?.view === "working" && (
-                <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-600">
+                <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[13px] font-semibold text-amber-600">
                   {t("편집본 표시 중", "Showing edited copy")}
                 </span>
               )}
             </div>
-            <p className="mt-1 text-sm text-slate-600">
+            <p className="mt-1 text-[15px] text-slate-600">
               {t(
                 "활성 VISSIM 데이터셋(.inpx)의 원좌표를 그대로 렌더링합니다.",
                 "Renders the active VISSIM dataset (.inpx) straight from its raw coordinates.",
@@ -523,12 +523,12 @@ function NetworkPageContent() {
             </p>
           </div>
         </div>
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="mt-4 flex flex-wrap items-end justify-between gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={() => setReloadNonce((nonce) => nonce + 1)}
-              className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+              className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-[14px] font-medium text-slate-600 transition hover:text-slate-900"
             >
               {t("새로고침", "Refresh")}
             </button>
@@ -548,7 +548,7 @@ function NetworkPageContent() {
       {(searchSelection || activeFocus) && (
         <div
           data-testid="network-focus-banner"
-          className="mx-1 flex flex-wrap items-center gap-2 rounded-lg border border-[#00c2ff]/50 bg-[#00c2ff]/10 px-3 py-2 text-xs text-slate-600"
+          className="mx-1 flex flex-wrap items-center gap-2 rounded-lg border border-[#00c2ff]/50 bg-[#00c2ff]/10 px-3 py-2 text-[14px] text-slate-600"
         >
           <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-full bg-[#00c2ff]" />
           <span className="font-semibold text-slate-700">
@@ -564,7 +564,7 @@ function NetworkPageContent() {
           <button
             type="button"
             onClick={searchSelection ? clearSearchSelection : dismissFocus}
-            className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 transition hover:text-slate-900"
+            className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[13px] font-medium text-slate-600 transition hover:text-slate-900"
           >
             {t("강조 해제", "Clear highlight", "ハイライト解除")}
           </button>
@@ -574,18 +574,18 @@ function NetworkPageContent() {
       <div className="relative h-[70vh] min-h-[420px] overflow-hidden rounded-xl border border-slate-300/70 bg-ink shadow-[0_18px_34px_rgba(15,23,42,0.16)]">
         {error ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
-            <p className="text-sm text-slate-400">{error}</p>
+            <p className="text-[15px] text-slate-400">{error}</p>
             <button
               type="button"
               onClick={() => setReloadNonce((nonce) => nonce + 1)}
-              className="rounded-lg border border-slate-300/70 bg-surface/90 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-surface"
+              className="rounded-lg border border-slate-300/70 bg-surface/90 px-3 py-1.5 text-[14px] font-semibold text-slate-700 transition hover:bg-surface"
             >
               {t("다시 시도", "Retry")}
             </button>
           </div>
         ) : loading || !network ? (
           <div className="absolute inset-0 flex items-center justify-center">
-            <p className="text-sm text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
+            <p className="text-[15px] text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
           </div>
         ) : (
           // zoomToBbox carries the focus nonce as well as the four numbers:
@@ -624,7 +624,7 @@ function NetworkPageContent() {
                 key={`node-${nodeId}`}
                 type="button"
                 onClick={() => setSelectedNodeIds((prev) => prev.filter((id) => id !== nodeId))}
-                className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
               >
                 {t("노드", "Node")} {nodeName} ×
               </button>
@@ -635,7 +635,7 @@ function NetworkPageContent() {
               key={`link-${link.id}`}
               type="button"
               onClick={() => removeLinkSelection(link.id)}
-              className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+              className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
             >
               {linkKindLabel(link.isConnector, t)} {link.name || link.id} ×
             </button>
@@ -645,7 +645,7 @@ function NetworkPageContent() {
               key={`el-${element.type}-${element.id}`}
               type="button"
               onClick={() => removeElementSelection(element)}
-              className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+              className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
             >
               {elementTypeLabel(element.type, t)} {element.name || element.id} ×
             </button>
@@ -653,14 +653,14 @@ function NetworkPageContent() {
           <button
             type="button"
             onClick={clearAllSelection}
-            className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 transition hover:text-slate-900"
+            className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[13px] font-medium text-slate-600 transition hover:text-slate-900"
           >
             {t("모두 지우기", "Clear all")}
           </button>
         </div>
       )}
       {selectionNotice && (
-        <p className="px-1 text-[11px] text-amber-600" role="status">
+        <p className="px-1 text-[13px] text-amber-600" role="status">
           {selectionNotice}
         </p>
       )}

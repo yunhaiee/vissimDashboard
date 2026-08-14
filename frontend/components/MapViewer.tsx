@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
@@ -327,9 +327,9 @@ export default function MapViewer({
   return (
     <div className="simulation-map-viewer relative w-full h-full rounded-xl overflow-hidden">
       <div ref={containerRef} className="w-full h-full" />
-      <div className="pointer-events-none select-none absolute left-4 top-32 z-[500] rounded-xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-xs text-slate-200 shadow-2xl backdrop-blur">
+      <div className="pointer-events-none select-none absolute left-4 top-32 z-[500] rounded-xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-[14px] text-slate-200 shadow-2xl backdrop-blur">
         <div className="font-semibold text-slate-100">{t("지도 컨텍스트", "Map Context")}</div>
-        <div className="mt-2 space-y-2 text-[11px] text-slate-300">
+        <div className="mt-2 space-y-2 text-[13px] text-slate-300">
           <div className="flex items-center justify-between gap-4">
             <span className="text-slate-400">{t("시나리오", "Scenario")}</span>
             <span className="font-medium text-slate-100">{scenarioId ?? t("없음", "N/A")}</span>
@@ -359,11 +359,11 @@ export default function MapViewer({
         </div>
       </div>
 
-      <div className="pointer-events-none select-none absolute right-4 top-4 z-[500] max-w-[260px] rounded-xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-xs text-slate-200 shadow-2xl backdrop-blur">
+      <div className="pointer-events-none select-none absolute right-4 top-4 z-[500] max-w-[260px] rounded-xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-[14px] text-slate-200 shadow-2xl backdrop-blur">
         <div className="font-semibold text-slate-100">{t("선택 정보", "Selection")}</div>
-        <div className="mt-2 space-y-2 text-[11px]">
+        <div className="mt-2 space-y-2 text-[13px]">
           <div className="rounded-lg border border-ink/10 bg-slate-900/80 px-3 py-2">
-            <div className="text-[10px] uppercase tracking-wide text-slate-400">{t("노드", "Node")}</div>
+            <div className="text-[12px] uppercase tracking-wide text-slate-400">{t("노드", "Node")}</div>
             <div className="mt-1 text-slate-100">
               {selectedNode
                 ? `${selectedNode.name} (${selectedNode.connectedLinks.length} ${t("개 링크", "links")})`
@@ -371,7 +371,7 @@ export default function MapViewer({
             </div>
           </div>
           <div className="rounded-lg border border-ink/10 bg-slate-900/80 px-3 py-2">
-            <div className="text-[10px] uppercase tracking-wide text-slate-400">{t("링크", "Link")}</div>
+            <div className="text-[12px] uppercase tracking-wide text-slate-400">{t("링크", "Link")}</div>
             <div className="mt-1 text-slate-100">
               {selectedLink
                 ? `Link ${selectedLink.id} | ${selectedLink.lanes} ${t("차로", "lane(s)")}`
@@ -381,7 +381,7 @@ export default function MapViewer({
         </div>
       </div>
 
-      <div className="pointer-events-none select-none absolute left-4 bottom-4 z-[500] rounded-xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-xs text-slate-200 shadow-2xl backdrop-blur">
+      <div className="pointer-events-none select-none absolute left-4 bottom-4 z-[500] rounded-xl border border-ink/10 bg-slate-950/84 px-4 py-3 text-[14px] text-slate-200 shadow-2xl backdrop-blur">
         <div className="font-semibold text-slate-100">{t("네트워크 상태", "Network Status")}</div>
         <div className="mt-2 space-y-1.5">
           {metricLegend.rows.map((item) => (
@@ -390,7 +390,7 @@ export default function MapViewer({
           <LegendRow color={INCIDENT_COLOR} label={t("대기 사고/이벤트", "Queued incident")} />
           {nodeMetricMode === "delta" && (
             <>
-              <div className="pt-1 text-[10px] uppercase tracking-wide text-slate-400">
+              <div className="pt-1 text-[12px] uppercase tracking-wide text-slate-400">
                 {t("노드 차이 (기준 - 베이스라인)", "Node delta (focused - baseline)")}
               </div>
               <LegendRow color="#dc2626" label={t("증가 (+)", "Increase (+)")} />
@@ -400,18 +400,18 @@ export default function MapViewer({
           )}
         </div>
         {!hasMetricData && metric !== "none" && (
-          <div className="mt-2 text-[10px] text-slate-400">
+          <div className="mt-2 text-[12px] text-slate-400">
             {t("시뮬레이션 결과 로드 후 지표 값이 표시됩니다.", "Metric values appear after simulation results are loaded.")}
           </div>
         )}
         {!hasNodeMetricData && nodeMetricMode === "delta" && (
-          <div className="mt-2 text-[10px] text-slate-400">
+          <div className="mt-2 text-[12px] text-slate-400">
             {t("기준 시나리오 결과 로드 후 노드 변화량이 표시됩니다.", "Node delta appears after runtime results are loaded for the focused scenario.")}
           </div>
         )}
       </div>
 
-      <div className="pointer-events-none select-none absolute right-4 bottom-4 z-[500] rounded-xl border border-ink/10 bg-slate-950/84 px-3 py-2 text-[11px] text-slate-300 shadow-2xl backdrop-blur">
+      <div className="pointer-events-none select-none absolute right-4 bottom-4 z-[500] rounded-xl border border-ink/10 bg-slate-950/84 px-3 py-2 text-[13px] text-slate-300 shadow-2xl backdrop-blur">
         {nodeMetricMode === "delta" && nodeMetricFocusedScenario
           ? t(`노드 변화 오버레이: ${nodeMetricFocusedScenario}`, `Node delta overlay: ${nodeMetricFocusedScenario}`, `ノード変化オーバーレイ: ${nodeMetricFocusedScenario}`)
           : t("지도에서 노드나 링크를 직접 클릭하면 더 빠르게 큐를 구성할 수 있습니다.", "Click node or link directly on map to queue changes faster.")}

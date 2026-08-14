@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { fetchSignals, type ScenarioMeta, type ScenarioResults, type SignalNodeInfo } from "@/lib/api";
@@ -104,7 +104,7 @@ export default function NodeFlowPanel({ nodeId, nodeName, scenarios, selected, r
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto pr-1">
       <div>
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">{t("교차로", "Node")}</p>
+        <p className="text-[12px] font-semibold uppercase tracking-widest text-slate-500">{t("교차로", "Node")}</p>
         <h2 className="mt-0.5 truncate text-base font-bold text-slate-900">{nodeName}</h2>
       </div>
 
@@ -122,7 +122,7 @@ export default function NodeFlowPanel({ nodeId, nodeName, scenarios, selected, r
             <button
               key={id}
               onClick={() => setActiveId(id)}
-              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[14px] font-medium transition-colors ${
                 active
                   ? "border-slate-300 bg-white/[0.06] text-white"
                   : "border-slate-200 text-slate-500 hover:text-slate-800"
@@ -166,7 +166,7 @@ export default function NodeFlowPanel({ nodeId, nodeName, scenarios, selected, r
           />
         </>
       ) : (
-        <div className="flex-1 rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+        <div className="flex-1 rounded-xl border border-dashed border-slate-300 p-6 text-center text-[15px] text-slate-500">
           {t("선택한 시나리오에 대한 교차로 방향 데이터가 없습니다.", "No node direction data is available for the selected scenario.")}
         </div>
       )}
@@ -253,7 +253,7 @@ function SignalPhasePanelContent({
   return (
     <section className="rounded-xl border border-slate-200 bg-surface p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-semibold tracking-tight text-slate-900">{t("신호 현시", "Signal Phase")}</p>
+        <p className="text-[15px] font-semibold tracking-tight text-slate-900">{t("신호 현시", "Signal Phase")}</p>
         {showScenarioSelector && (
           <div className="flex flex-wrap justify-end gap-1.5">
             {selected.map((id) => {
@@ -267,7 +267,7 @@ function SignalPhasePanelContent({
                 <button
                   key={`signal-phase-${id}`}
                   onClick={() => onChangeActiveId(id)}
-                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10px] font-medium transition-colors ${
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[12px] font-medium transition-colors ${
                     active ? "border-slate-300 bg-white/[0.06] text-white" : "border-slate-200 text-slate-500 hover:text-slate-800"
                   }`}
                 >
@@ -296,7 +296,7 @@ function SignalPhaseDonut({
   const { t } = useLanguage();
   if (!signalInfo || !signalInfo.has_signal || !signalInfo.cycle_time || signalInfo.cycle_time <= 0) {
     return (
-      <p className="text-[11px] text-slate-500">
+      <p className="text-[13px] text-slate-500">
         {t("이 교차로에 표시 가능한 신호 페이즈 정보가 없습니다.", "No displayable signal phase data is available for this node.")}
       </p>
     );
@@ -358,7 +358,7 @@ function SignalPhaseDonut({
 
   return (
     <div>
-      <p className="mb-2 text-[11px] text-slate-500">
+      <p className="mb-2 text-[13px] text-slate-500">
         {cycle}s {t("주기", "cycle")} · Phase {segments.length}{t("개", "")}
       </p>
 
@@ -393,7 +393,7 @@ function SignalPhaseDonut({
             })}
             <div className="absolute inset-[25%] flex items-center justify-center rounded-full bg-surface text-center">
               <div>
-                <p className="text-[10px] font-semibold text-slate-700">{cycle}s</p>
+                <p className="text-[12px] font-semibold text-slate-700">{cycle}s</p>
                 <p className="text-[9px] text-slate-500">Phase+IG</p>
               </div>
             </div>
@@ -402,7 +402,7 @@ function SignalPhaseDonut({
 
         <div className="w-full space-y-2">
           {segments.length === 0 && (
-            <p className="text-[11px] text-slate-500">{t("유효한 페이즈 구간이 없습니다.", "No valid phase segment was found.")}</p>
+            <p className="text-[13px] text-slate-500">{t("유효한 페이즈 구간이 없습니다.", "No valid phase segment was found.")}</p>
           )}
           {segments.length > 0 && (
             <div className="flex h-full flex-col gap-2">
@@ -415,7 +415,7 @@ function SignalPhaseDonut({
                         <span className="mt-0.5 h-2 w-2 rounded-full" style={{ backgroundColor: segment.color }} />
 
                         <div className="min-w-0">
-                          <p className="truncate text-[10px] font-semibold text-slate-700">Phase {segment.phaseLabel}</p>
+                          <p className="truncate text-[12px] font-semibold text-slate-700">Phase {segment.phaseLabel}</p>
                           <p className="truncate text-[9px] text-slate-500">
                             {Math.round(segment.start)}s → {Math.round(segment.end)}s
                             {wraps ? ` (${t("다음", "next")})` : ""}
@@ -423,7 +423,7 @@ function SignalPhaseDonut({
                         </div>
 
                         <div className="text-right leading-tight">
-                          <p className="whitespace-nowrap text-[10px] font-semibold text-slate-800">
+                          <p className="whitespace-nowrap text-[12px] font-semibold text-slate-800">
                             {Math.round(segment.windowDuration)}s · {Math.round(segment.pct)}%
                           </p>
                           <p className="whitespace-nowrap text-[9px] text-slate-500">
@@ -436,7 +436,7 @@ function SignalPhaseDonut({
                 </div>
               </div>
               <div className="flex flex-1 flex-col rounded-lg border border-slate-200/80 bg-surface/85 p-1.5">
-                <p className="text-[10px] font-semibold text-slate-700">{t("페이즈별 현시", "Phase Movement")}</p>
+                <p className="text-[12px] font-semibold text-slate-700">{t("페이즈별 현시", "Phase Movement")}</p>
                 <div
                   className="mt-1 grid flex-1 overflow-hidden rounded-md border border-slate-200/80"
                   style={{ gridTemplateColumns: `repeat(${Math.max(segments.length, 1)}, minmax(0, 1fr))` }}
@@ -455,7 +455,7 @@ function SignalPhaseDonut({
                         key={`phase-matrix-${idx}`}
                         className={`${idx < segments.length - 1 ? "border-r border-slate-200/80" : ""}`}
                       >
-                        <div className="border-b border-slate-200/80 bg-slate-50 px-1 py-1 text-center text-[10px] font-semibold text-slate-700">
+                        <div className="border-b border-slate-200/80 bg-slate-50 px-1 py-1 text-center text-[12px] font-semibold text-slate-700">
                           Phase {segment.phaseLabel}
                         </div>
                         <div className="flex min-h-[64px] flex-nowrap items-center justify-center overflow-hidden p-1">
@@ -511,9 +511,9 @@ function DetailedCompass({
         />
         <div className="relative flex items-center justify-center rounded-xl bg-slate-900 p-2 text-center text-ink">
           <div>
-            <p className="text-[10px] font-semibold text-slate-300">{t("교차로", "Node")}</p>
-            <p className="mt-0.5 text-xs font-bold text-white">{nodeName}</p>
-            <p className="mt-0.5 text-[11px] text-slate-200">{Math.round(total).toLocaleString()} {t("대", "veh")}</p>
+            <p className="text-[12px] font-semibold text-slate-300">{t("교차로", "Node")}</p>
+            <p className="mt-0.5 text-[14px] font-bold text-white">{nodeName}</p>
+            <p className="mt-0.5 text-[13px] text-slate-200">{Math.round(total).toLocaleString()} {t("대", "veh")}</p>
           </div>
         </div>
         <DirectionDetailCard
@@ -584,8 +584,8 @@ function DirectionDetailCard({
   return (
     <div className="rounded-xl border border-slate-300/80 bg-surface/95 p-2">
       <div className="mb-1.5 flex items-center justify-between">
-        <p className="text-[11px] font-semibold text-slate-700">{directionLabel(dir, t)}</p>
-        <p className="text-[11px] font-bold text-slate-900">{formatCompactVolume(data.total, t)}</p>
+        <p className="text-[13px] font-semibold text-slate-700">{directionLabel(dir, t)}</p>
+        <p className="text-[13px] font-bold text-slate-900">{formatCompactVolume(data.total, t)}</p>
       </div>
 
       {useVerticalGauge ? (
@@ -617,9 +617,9 @@ function DirectionDetailCard({
             const pct = maxApproachTotal > 0 ? (row.value / maxApproachTotal) * 100 : 0;
             return (
               <div key={`${dir}-${row.key}`}>
-                <div className="grid grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-1 text-[10px] text-slate-600">
+                <div className="grid grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-1 text-[12px] text-slate-600">
                   <MovementTurnIcon from={dir} turn={row.key} />
-                  <span className="truncate text-[10px] text-slate-500">{movementName(row.key, t)}</span>
+                  <span className="truncate text-[12px] text-slate-500">{movementName(row.key, t)}</span>
                   <span className="font-semibold text-slate-800">{Math.round(row.value)}</span>
                 </div>
                 <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
@@ -638,7 +638,7 @@ function DirectionDetailCard({
         </div>
       )}
 
-      <div className="mt-1 text-[10px] text-slate-500">
+      <div className="mt-1 text-[12px] text-slate-500">
         {t("진입", "In")} {formatCompactVolume(data.incomingTotal, t)} / {t("진출", "Out")} {formatCompactVolume(data.outgoingTotal, t)}
       </div>
     </div>
@@ -1234,7 +1234,7 @@ function PhaseMovementSketchBoard({
   display: { items: PhaseMovementView[]; layout: "stack" | "split" | "parallel" };
 }) {
   if (display.items.length === 0) {
-    return <span className="text-[10px] text-slate-400">-</span>;
+    return <span className="text-[12px] text-slate-400">-</span>;
   }
 
   const combined = resolveCombinedMovement(display.items);

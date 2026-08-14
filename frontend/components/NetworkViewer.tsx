@@ -2262,12 +2262,12 @@ export default function NetworkViewer({
 
       {isEmpty && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <p className="text-sm text-slate-500">{t("표시할 네트워크가 없습니다", "No network to display")}</p>
+          <p className="text-[15px] text-slate-500">{t("표시할 네트워크가 없습니다", "No network to display")}</p>
         </div>
       )}
 
       {!isEmpty && (
-        <div className="pointer-events-none absolute bottom-3 left-3 z-10 select-none rounded-lg border border-slate-200 bg-surface/80 px-3 py-2 text-[11px] text-slate-600 backdrop-blur-sm">
+        <div className="pointer-events-none absolute bottom-3 left-3 z-10 select-none rounded-lg border border-slate-200 bg-surface/80 px-3 py-2 text-[13px] text-slate-600 backdrop-blur-sm">
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center gap-2">
               <svg width="18" height="12" aria-hidden="true">
@@ -2308,7 +2308,7 @@ export default function NetworkViewer({
       )}
 
       {!isEmpty && (
-        <div className="absolute right-3 top-3 z-10 select-none rounded-lg border border-slate-200 bg-surface/80 text-[11px] text-slate-600 backdrop-blur-sm">
+        <div className="absolute right-3 top-3 z-10 select-none rounded-lg border border-slate-200 bg-surface/80 text-[13px] text-slate-600 backdrop-blur-sm">
           <button
             type="button"
             onClick={() => setPanelOpen((o) => !o)}
@@ -2352,7 +2352,7 @@ export default function NetworkViewer({
 
       {tooltip && (
         <div
-          className="fixed z-50 bg-slate-800 text-ink text-xs px-3 py-1.5 rounded shadow-lg pointer-events-none"
+          className="fixed z-50 bg-slate-800 text-ink text-[14px] px-3 py-1.5 rounded shadow-lg pointer-events-none"
           style={{ left: tooltip.x + 12, top: tooltip.y - 10 }}
         >
           {tooltip.text}

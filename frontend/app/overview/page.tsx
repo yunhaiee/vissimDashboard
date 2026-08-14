@@ -80,7 +80,7 @@ function genesisStatusClasses(status: GenesisJobStatus): string {
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="min-w-0">
-      <p className="text-[12px] text-slate-500">{label}</p>
+      <p className="text-[14px] text-slate-500">{label}</p>
       <p className="mt-0.5 truncate text-[15px] font-semibold text-slate-900">{value}</p>
     </div>
   );
@@ -91,7 +91,7 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
  * existing chip vocabulary rather than a new link style for this page. */
 function StageLink({ href, label }: { href: string; label: string }) {
   return (
-    <Link href={href} className="ui-button-ghost inline-flex rounded-full px-3 py-1 text-[12px] font-medium">
+    <Link href={href} className="ui-button-ghost inline-flex rounded-full px-3 py-1 text-[14px] font-medium">
       {label}
     </Link>
   );
@@ -121,7 +121,7 @@ function StateNote({ tone, children }: { tone: "empty" | "error" | "info"; child
       : tone === "info"
         ? "border-sky-200 bg-sky-50 text-slate-800"
         : "border-dashed border-slate-300 bg-slate-50 text-slate-500";
-  return <p className={`rounded-lg border px-3.5 py-3 text-[13px] leading-relaxed ${classes}`}>{children}</p>;
+  return <p className={`rounded-lg border px-3.5 py-3 text-[15px] leading-relaxed ${classes}`}>{children}</p>;
 }
 
 /** The card chrome every genesis screen's `Panel` (components/genesis/ui.tsx,
@@ -194,7 +194,7 @@ function CreateProjectOnly() {
         <h1 className="text-[17px] font-semibold text-slate-900">
           {t("새 프로젝트 만들기", "Create a new project", "新規プロジェクトを作成")}
         </h1>
-        <p className="mt-1.5 text-[13px] leading-relaxed text-slate-500">
+        <p className="mt-1.5 text-[15px] leading-relaxed text-slate-500">
           {t(
             "이 계정으로 볼 수 있는 프로젝트가 아직 없습니다. 이름을 정해 새 프로젝트를 만드세요.",
             "There is no project this account can see yet. Name one to create it.",
@@ -216,18 +216,18 @@ function CreateProjectOnly() {
               if (event.key === "Enter") void handleCreate();
             }}
             disabled={busy}
-            className="ui-input px-2.5 py-2 text-[13px] disabled:cursor-not-allowed disabled:opacity-60"
+            className="ui-input px-2.5 py-2 text-[15px] disabled:cursor-not-allowed disabled:opacity-60"
           />
           <button
             type="button"
             onClick={() => void handleCreate()}
             disabled={busy || !name.trim()}
-            className="ui-button-primary px-3 py-2 text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-primary px-3 py-2 text-[15px] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? t("만드는 중…", "Creating…", "作成中…") : t("만들기", "Create", "作成")}
           </button>
         </div>
-        {error && <p className="mt-2 break-words text-[12px] leading-relaxed text-rose-600">{error}</p>}
+        {error && <p className="mt-2 break-words text-[14px] leading-relaxed text-rose-600">{error}</p>}
       </div>
     </div>
   );
@@ -328,7 +328,7 @@ export default function OverviewPage() {
   if (loading) {
     return (
       <div className="mx-auto max-w-[1500px] px-4 py-8">
-        <p className="text-[13px] text-slate-500">{t("불러오는 중…", "Loading…", "読み込み中…")}</p>
+        <p className="text-[15px] text-slate-500">{t("불러오는 중…", "Loading…", "読み込み中…")}</p>
       </div>
     );
   }
@@ -422,11 +422,11 @@ export default function OverviewPage() {
                 }
               />
               <div className="min-w-0">
-                <p className="text-[12px] text-slate-500">{t("최근 생성", "Latest generation", "最新の生成")}</p>
+                <p className="text-[14px] text-slate-500">{t("최근 생성", "Latest generation", "最新の生成")}</p>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <span className="truncate text-[13px] font-medium text-slate-800">{genesisJobs[0].name}</span>
+                  <span className="truncate text-[15px] font-medium text-slate-800">{genesisJobs[0].name}</span>
                   <span
-                    className={`shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold ${genesisStatusClasses(genesisJobs[0].status)}`}
+                    className={`shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[13px] font-semibold ${genesisStatusClasses(genesisJobs[0].status)}`}
                   >
                     {statusLabel(genesisJobs[0].status, t)}
                   </span>
@@ -497,11 +497,11 @@ export default function OverviewPage() {
                 value={t(`${completedSimJobs.length}건`, `${completedSimJobs.length}`, `${completedSimJobs.length}件`)}
               />
               <div className="min-w-0">
-                <p className="text-[12px] text-slate-500">{t("최근 실행", "Most recent run", "最新の実行")}</p>
-                <p className="mt-1 truncate text-[13px] font-medium text-slate-800">
+                <p className="text-[14px] text-slate-500">{t("최근 실행", "Most recent run", "最新の実行")}</p>
+                <p className="mt-1 truncate text-[15px] font-medium text-slate-800">
                   {latestCompletedSimJob?.name || latestCompletedSimJob?.id}
                 </p>
-                <p className="mt-0.5 font-mono text-[12px] text-slate-500">
+                <p className="mt-0.5 font-mono text-[14px] text-slate-500">
                   {formatTimestamp(latestCompletedSimJob?.completed_at ?? latestCompletedSimJob?.created_at ?? null, lang)}
                 </p>
               </div>

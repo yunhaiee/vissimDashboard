@@ -45,13 +45,13 @@ export default function ComparisonChart({ scenarios, selected, results }: Props)
   });
 
   if (activeMetas.length === 0) {
-    return <p className="text-slate-400 text-sm">시나리오를 선택하세요.</p>;
+    return <p className="text-slate-400 text-[15px]">시나리오를 선택하세요.</p>;
   }
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <div>
-        <h3 className="text-sm font-semibold text-slate-600 mb-3">지표별 비교 (막대)</h3>
+        <h3 className="text-[15px] font-semibold text-slate-600 mb-3">지표별 비교 (막대)</h3>
         <ResponsiveContainer width="100%" height={280}>
           <BarChart data={barData} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#33332f" />
@@ -67,7 +67,7 @@ export default function ComparisonChart({ scenarios, selected, results }: Props)
       </div>
 
       <div>
-        <h3 className="text-sm font-semibold text-slate-600 mb-3">다지표 레이더 (정규화 0-100)</h3>
+        <h3 className="text-[15px] font-semibold text-slate-600 mb-3">다지표 레이더 (정규화 0-100)</h3>
         <ResponsiveContainer width="100%" height={280}>
           <RadarChart data={radarData}>
             <PolarGrid stroke="#33332f" />

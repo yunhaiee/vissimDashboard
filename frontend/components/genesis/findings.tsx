@@ -188,7 +188,7 @@ export function selectedHighlightOf(
 
 export function EmptyState({ text }: { text: string }) {
   return (
-    <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-[13px] text-slate-500">
+    <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-[15px] text-slate-500">
       {text}
     </p>
   );
@@ -276,9 +276,9 @@ export function FindingsDetailPanel({
 }) {
   return (
     <div className="flex w-full flex-col gap-2">
-      <div className="min-h-[140px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-[13px] text-slate-700">
+      <div className="min-h-[140px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-[15px] text-slate-700">
         {!selected && (
-          <p className="text-[12px] text-slate-500">
+          <p className="text-[14px] text-slate-500">
             {t(
               "링크나 커넥터를 클릭하면 여기에 상세 정보가 나타납니다.",
               "Click a link or connector to see its detail here.",
@@ -295,17 +295,17 @@ export function FindingsDetailPanel({
         {selected?.kind === "element" && (
           <>
             <div className="flex items-center justify-between">
-              <span className="rounded-full border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[12px] font-bold uppercase text-slate-800">
+              <span className="rounded-full border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[14px] font-bold uppercase text-slate-800">
                 {selected.elementKind === "link" ? t("링크", "Link", "リンク") : t("커넥터", "Connector", "コネクタ")}
               </span>
-              <button type="button" onClick={onClear} className="text-[12px] text-slate-500">
+              <button type="button" onClick={onClear} className="text-[14px] text-slate-500">
                 {t("닫기", "Close", "閉じる")}
               </button>
             </div>
-            <p className="mt-1.5 font-mono text-[13px] font-semibold text-slate-800">{selected.id}</p>
-            {selected.name && <p className="mt-0.5 text-[12px] text-slate-600">{selected.name}</p>}
+            <p className="mt-1.5 font-mono text-[15px] font-semibold text-slate-800">{selected.id}</p>
+            {selected.name && <p className="mt-0.5 text-[14px] text-slate-600">{selected.name}</p>}
             {selected.refs.length === 0 ? (
-              <p className="mt-1.5 text-[12px] text-slate-500">
+              <p className="mt-1.5 text-[14px] text-slate-500">
                 {t("확인된 소견 없음", "No findings on this element", "確認された所見なし")}
               </p>
             ) : (
@@ -316,7 +316,7 @@ export function FindingsDetailPanel({
                     className={index > 0 ? "border-t border-slate-200 pt-1.5" : undefined}
                   >
                     <span
-                      className={`rounded-full border px-1.5 py-0.5 text-[12px] font-bold uppercase ${
+                      className={`rounded-full border px-1.5 py-0.5 text-[14px] font-bold uppercase ${
                         ref.tier === "refuse"
                           ? "border-rose-300 bg-rose-50 text-rose-800"
                           : "border-2 border-slate-400 bg-slate-100 text-slate-900"
@@ -325,8 +325,8 @@ export function FindingsDetailPanel({
                       {ref.checkId} · {ref.tier === "refuse" ? t("거부 등급", "refuse", "拒否") : t("경고 등급", "warn", "警告")}
                     </span>
                     <p className="mt-1 font-semibold text-slate-800">{ref.checkTitle}</p>
-                    <p className="mt-0.5 font-mono text-[12px] text-slate-500">{ref.finding.code}</p>
-                    <p className="mt-0.5 text-[12px] text-slate-500">{ref.finding.subject}</p>
+                    <p className="mt-0.5 font-mono text-[14px] text-slate-500">{ref.finding.code}</p>
+                    <p className="mt-0.5 text-[14px] text-slate-500">{ref.finding.subject}</p>
                     <p className="mt-1 leading-relaxed">{ref.finding.message}</p>
                   </li>
                 ))}
@@ -337,7 +337,7 @@ export function FindingsDetailPanel({
         {selected?.kind === "finding" && (
           <>
             <div className="flex items-center justify-between">
-              <span className="text-[12px] font-bold uppercase text-slate-500">
+              <span className="text-[14px] font-bold uppercase text-slate-500">
                 {selected.refs.length > 1
                   ? t(
                       `이 요소의 발견 ${selected.refs.length}건`,
@@ -346,7 +346,7 @@ export function FindingsDetailPanel({
                     )
                   : t("이 요소의 발견", "Finding on this element", "この要素の発見")}
               </span>
-              <button type="button" onClick={onClear} className="text-[12px] text-slate-500">
+              <button type="button" onClick={onClear} className="text-[14px] text-slate-500">
                 {t("닫기", "Close", "閉じる")}
               </button>
             </div>
@@ -361,7 +361,7 @@ export function FindingsDetailPanel({
                   className={index > 0 ? "border-t border-slate-200 pt-1.5" : undefined}
                 >
                   <span
-                    className={`rounded-full border px-1.5 py-0.5 text-[12px] font-bold uppercase ${
+                    className={`rounded-full border px-1.5 py-0.5 text-[14px] font-bold uppercase ${
                       ref.tier === "refuse"
                         ? "border-rose-300 bg-rose-50 text-rose-800"
                         : "border-2 border-slate-400 bg-slate-100 text-slate-900"
@@ -370,8 +370,8 @@ export function FindingsDetailPanel({
                     {ref.checkId} · {ref.tier === "refuse" ? t("거부 등급", "refuse", "拒否") : t("경고 등급", "warn", "警告")}
                   </span>
                   <p className="mt-1 font-semibold text-slate-800">{ref.checkTitle}</p>
-                  <p className="mt-0.5 font-mono text-[12px] text-slate-500">{ref.finding.code}</p>
-                  <p className="mt-0.5 text-[12px] text-slate-500">{ref.finding.subject}</p>
+                  <p className="mt-0.5 font-mono text-[14px] text-slate-500">{ref.finding.code}</p>
+                  <p className="mt-0.5 text-[14px] text-slate-500">{ref.finding.subject}</p>
                   <p className="mt-1 leading-relaxed">{ref.finding.message}</p>
                 </li>
               ))}
@@ -381,21 +381,21 @@ export function FindingsDetailPanel({
         {selected?.kind === "excluded_zone" && (
           <>
             <div className="flex items-center justify-between">
-              <span className="rounded-full border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[12px] font-bold uppercase text-slate-700">
+              <span className="rounded-full border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[14px] font-bold uppercase text-slate-700">
                 {t("제외된 구역", "Excluded zone", "除外されたゾーン")}
               </span>
-              <button type="button" onClick={onClear} className="text-[12px] text-slate-500">
+              <button type="button" onClick={onClear} className="text-[14px] text-slate-500">
                 {t("닫기", "Close", "閉じる")}
               </button>
             </div>
             <p className="mt-1.5 font-semibold text-slate-800">{selected.zone.representative}</p>
-            <p className="mt-1 font-mono text-[12px] text-slate-500">{selected.zone.reason}</p>
+            <p className="mt-1 font-mono text-[14px] text-slate-500">{selected.zone.reason}</p>
             <p className="mt-1 leading-relaxed">{selected.zone.detail}</p>
             <p className="mt-1.5">
               {t("링크", "Links", "リンク")} {selected.zone.links} · {t("OSM way", "OSM ways", "OSM way")} {selected.zone.ways}
             </p>
             <p className="mt-1">{selected.zone.street_names.join(", ")}</p>
-            <p className="mt-1.5 rounded border border-slate-300 bg-white/[0.04] px-1.5 py-1 text-[12px] text-slate-600">
+            <p className="mt-1.5 rounded border border-slate-300 bg-white/[0.04] px-1.5 py-1 text-[14px] text-slate-600">
               {t(
                 "이 구역은 최종 좌표가 확정되기 전에 제외되어, 지도에 그릴 좌표가 없습니다.",
                 "This zone was excluded before the final coordinates were fixed -- it has no coordinates left to draw.",
@@ -408,10 +408,10 @@ export function FindingsDetailPanel({
 
       {excludedZones.length > 0 && (
         <div className="rounded-lg border border-slate-200 bg-surface/90 px-3 py-2.5">
-          <p className="text-[13px] font-bold text-slate-800">
+          <p className="text-[15px] font-bold text-slate-800">
             {t("제외된 구역", "Excluded zones", "除外されたゾーン")} ({excludedZones.length})
           </p>
-          <p className="mt-0.5 text-[12px] text-slate-500">
+          <p className="mt-0.5 text-[14px] text-slate-500">
             {t(
               "지도에 좌표가 없어 목록으로만 보여줍니다 — 이름을 누르면 사유가 나타납니다.",
               "No coordinates survive for these -- listed by name only; click one for the reason.",
@@ -424,7 +424,7 @@ export function FindingsDetailPanel({
                 <button
                   type="button"
                   onClick={() => onSelectExcludedZone(zone)}
-                  className="w-full truncate rounded border border-slate-200 bg-slate-50 px-2 py-1 text-left text-[12px] text-slate-700"
+                  className="w-full truncate rounded border border-slate-200 bg-slate-50 px-2 py-1 text-left text-[14px] text-slate-700"
                   title={zone.street_names.join(", ")}
                 >
                   {zone.representative} · {zone.links}
@@ -437,7 +437,7 @@ export function FindingsDetailPanel({
       )}
 
       {unresolvedCount > 0 && (
-        <div className="rounded-lg border-2 border-slate-400 bg-slate-100 px-3 py-2.5 text-[13px] text-slate-900">
+        <div className="rounded-lg border-2 border-slate-400 bg-slate-100 px-3 py-2.5 text-[15px] text-slate-900">
           <p className="font-semibold">
             {t(
               `지도에 표시하지 못한 발견 ${unresolvedCount}건`,
@@ -445,7 +445,7 @@ export function FindingsDetailPanel({
               `地図に表示できなかった発見 ${unresolvedCount} 件`,
             )}
           </p>
-          <p className="mt-0.5 text-[12px]">
+          <p className="mt-0.5 text-[14px]">
             {t(
               "게이트 결과가 이 항목들의 위치 참조를 전달하지 않습니다 — 위 판정 목록에서 문구는 그대로 확인할 수 있습니다.",
               "The gate result does not carry a location reference for these -- their wording is still in the check list above.",
@@ -458,7 +458,7 @@ export function FindingsDetailPanel({
                 <button
                   type="button"
                   onClick={() => onSelectUnresolved(ref)}
-                  className="w-full truncate rounded border border-slate-400 bg-white/[0.04] px-2 py-1 text-left text-[12px]"
+                  className="w-full truncate rounded border border-slate-400 bg-white/[0.04] px-2 py-1 text-left text-[14px]"
                 >
                   {ref.checkId} · {ref.finding.subject}
                 </button>

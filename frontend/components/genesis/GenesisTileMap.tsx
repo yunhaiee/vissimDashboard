@@ -269,7 +269,7 @@ export default function GenesisTileMap({
       {header}
       <div className="mt-3">
         {loading && (
-          <div className="flex h-[260px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 text-[13px] text-slate-500">
+          <div className="flex h-[260px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 text-[15px] text-slate-500">
             {t("네트워크를 불러오는 중…", "Loading the network…", "ネットワークを読み込み中…")}
           </div>
         )}
@@ -290,7 +290,7 @@ export default function GenesisTileMap({
         {!loading && !loadError && network && network.links.length > 0 && (
           <div className="flex flex-col gap-3">
             <div className="min-w-0">
-              <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-slate-600">
+              <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[14px] text-slate-600">
                 <LegendToggle
                   color={NORMAL_LINK}
                   label={t("일반", "Normal", "通常")}
@@ -334,14 +334,14 @@ export default function GenesisTileMap({
                     * quotes the server's reason. Substituting an origin here
                     * would put the whole network in the wrong place with no
                     * sign anything was wrong. */}
-                  <p className="mb-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-[13px] text-slate-700">
+                  <p className="mb-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-[15px] text-slate-700">
                     {t(
                       "배경지도 없이 이 생성의 로컬 좌표로만 그립니다 — 서버가 이 초안을 지도 위에 올리지 못했습니다.",
                       "Drawn in this generation's own local coordinates, with no basemap -- the server could not place this draft on the earth.",
                       "背景地図なしに、この生成のローカル座標のみで描画しています — サーバーがこの下書きを地図上に配置できませんでした。",
                     )}
                     {geoRefusal && (
-                      <span className="mt-1 block font-mono text-[12px] text-slate-500">{geoRefusal}</span>
+                      <span className="mt-1 block font-mono text-[14px] text-slate-500">{geoRefusal}</span>
                     )}
                   </p>
                   <DraftLocalMap
@@ -683,7 +683,7 @@ function FindingsTileLayer({
         <button
           type="button"
           onClick={() => void fit()}
-          className="ui-button-ghost absolute bottom-2 right-2 z-[400] rounded-full bg-surface px-2.5 py-1 text-[12px]"
+          className="ui-button-ghost absolute bottom-2 right-2 z-[400] rounded-full bg-surface px-2.5 py-1 text-[14px]"
         >
           {t("전체 보기", "Fit network", "全体表示")}
         </button>

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
@@ -589,17 +589,17 @@ export default function DashboardMap({
       <div ref={containerRef} className="h-full w-full" />
 
       {networkError && (
-        <div className="pointer-events-none absolute left-3 top-3 z-[650] rounded-lg border border-rose-200 bg-rose-50/95 px-3 py-2 text-xs text-rose-700 shadow-sm">
+        <div className="pointer-events-none absolute left-3 top-3 z-[650] rounded-lg border border-rose-200 bg-rose-50/95 px-3 py-2 text-[14px] text-rose-700 shadow-sm">
           {t("맵 데이터를 불러오지 못했습니다:", "Failed to load map data:")} {networkError}
         </div>
       )}
 
-      <div className="pointer-events-auto absolute right-3 top-3 z-[700] rounded-xl border border-slate-200 bg-surface/95 px-3 py-2 text-xs shadow-lg backdrop-blur-sm">
+      <div className="pointer-events-auto absolute right-3 top-3 z-[700] rounded-xl border border-slate-200 bg-surface/95 px-3 py-2 text-[14px] shadow-lg backdrop-blur-sm">
         <label className="mb-1 block font-semibold text-slate-700">{t("지도 표시 기준", "Map Overlay")}</label>
         <select
           value={overlayMode}
           onChange={(event) => setOverlayMode(event.target.value as OverlayMode)}
-          className="rounded-lg border border-slate-300 bg-surface px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          className="rounded-lg border border-slate-300 bg-surface px-2 py-1 text-[14px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
         >
           {OVERLAY_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>
@@ -609,14 +609,14 @@ export default function DashboardMap({
         </select>
       </div>
 
-      <div className="pointer-events-none absolute bottom-3 left-3 z-[500] select-none rounded-xl border border-slate-200 bg-surface/92 px-3 py-2.5 text-[11px] text-slate-700 shadow-lg backdrop-blur-sm">
+      <div className="pointer-events-none absolute bottom-3 left-3 z-[500] select-none rounded-xl border border-slate-200 bg-surface/92 px-3 py-2.5 text-[13px] text-slate-700 shadow-lg backdrop-blur-sm">
         <p className="mb-1.5 font-semibold text-slate-800">{legend.title}</p>
         <div className="space-y-1">
           {legend.rows.map((row) => (
             <LegendItem key={`${row.sign ?? row.color}-${row.label}`} row={row} />
           ))}
         </div>
-        {legend.footnote && <p className="mt-2 text-[10px] text-slate-400">{legend.footnote}</p>}
+        {legend.footnote && <p className="mt-2 text-[12px] text-slate-400">{legend.footnote}</p>}
       </div>
     </div>
   );

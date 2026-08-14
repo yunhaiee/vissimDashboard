@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -1003,25 +1003,25 @@ export default function DashboardPage() {
             <h1 className="text-[22px] font-semibold tracking-tight text-white">
               {t("교통 운영 분석", "Traffic Operations Analysis")}
             </h1>
-            <p className="text-sm text-slate-600">
+            <p className="text-[15px] text-slate-600">
               {t("시나리오와 교차로 성능을 지도, 통행시간, 네트워크 지표로 함께 확인합니다.", "Review scenario and intersection performance through the map, travel time, and network metrics.")}
             </p>
           </div>
           <div className="flex min-h-[34px] items-center">
               {(datasetLoading || loading) && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-600">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-[14px] font-medium text-blue-600">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
                   {datasetLoading ? t("데이터셋 확인 중", "Checking dataset") : t("로딩 중", "Loading")}
                 </span>
               )}
               {!datasetLoading && !hasUploadedDataset && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-600">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-[14px] font-medium text-amber-600">
                   <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
                   {t("파일 업로드 필요", "Upload required")}
                 </span>
               )}
               {!datasetLoading && !loading && hasData && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-600">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-[14px] font-medium text-emerald-600">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                   {activeScenarios.filter((scenario) => results[scenario.id]).length}/{activeScenarios.length} {t("시나리오 준비됨", "scenarios ready")}
                 </span>
@@ -1039,12 +1039,12 @@ export default function DashboardPage() {
       </section>
 
       {error && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-[15px] text-rose-700">
           <span>{error}</span>
           <button
             type="button"
             onClick={() => loadActiveDataset()}
-            className="shrink-0 rounded-lg border border-rose-300 bg-surface px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
+            className="shrink-0 rounded-lg border border-rose-300 bg-surface px-3 py-1.5 text-[14px] font-semibold text-rose-700 transition hover:bg-rose-100"
           >
             {t("다시 시도", "Retry")}
           </button>
@@ -1073,7 +1073,7 @@ export default function DashboardPage() {
             />
             <div className="flex shrink-0 flex-wrap items-center gap-2">
               {network?.source?.view === "working" && (
-                <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-600">
+                <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[13px] font-semibold text-amber-600">
                   {t("편집본 표시 중", "Showing edited copy")}
                 </span>
               )}
@@ -1090,7 +1090,7 @@ export default function DashboardPage() {
                   setHasRequestedDiagram(true);
                   setNetworkReloadNonce((nonce) => nonce + 1);
                 }}
-                className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+                className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-[14px] font-medium text-slate-600 transition hover:text-slate-900"
               >
                 {t("새로고침", "Refresh")}
               </button>
@@ -1144,7 +1144,7 @@ export default function DashboardPage() {
                     {diagramSearchSelection && (
                       <div
                         data-testid="dashboard-diagram-search-banner"
-                        className="pointer-events-none absolute left-3 right-3 top-3 z-[900] flex flex-wrap items-center gap-2 rounded-lg border border-[#00c2ff]/50 bg-[#00c2ff]/10 px-3 py-2 text-xs text-slate-600 backdrop-blur-sm"
+                        className="pointer-events-none absolute left-3 right-3 top-3 z-[900] flex flex-wrap items-center gap-2 rounded-lg border border-[#00c2ff]/50 bg-[#00c2ff]/10 px-3 py-2 text-[14px] text-slate-600 backdrop-blur-sm"
                       >
                         <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-full bg-[#00c2ff]" />
                         <span className="font-semibold text-slate-700">
@@ -1154,7 +1154,7 @@ export default function DashboardPage() {
                         <button
                           type="button"
                           onClick={() => setDiagramSearchSelection(null)}
-                          className="pointer-events-auto ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 transition hover:text-slate-900"
+                          className="pointer-events-auto ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[13px] font-medium text-slate-600 transition hover:text-slate-900"
                         >
                           {t("강조 해제", "Clear highlight", "ハイライト解除")}
                         </button>
@@ -1174,7 +1174,7 @@ export default function DashboardPage() {
                     />
                     {loading && (
                       <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-blue-50/75 backdrop-blur-sm">
-                        <div className="flex items-center gap-2 rounded-full border border-slate-300/70 bg-surface/90 px-4 py-2 text-sm font-medium text-slate-700">
+                        <div className="flex items-center gap-2 rounded-full border border-slate-300/70 bg-surface/90 px-4 py-2 text-[15px] font-medium text-slate-700">
                           <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
                           {t("지도 데이터 로딩 중", "Loading map data")}
                         </div>
@@ -1234,7 +1234,7 @@ export default function DashboardPage() {
                   key={`link-${link.id}`}
                   type="button"
                   onClick={() => removeLinkSelection(link.id)}
-                  className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                  className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
                 >
                   {linkKindLabel(link.isConnector, t)} {link.name || link.id} ×
                 </button>
@@ -1244,7 +1244,7 @@ export default function DashboardPage() {
                   key={`el-${element.type}-${element.id}`}
                   type="button"
                   onClick={() => removeElementSelection(element)}
-                  className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                  className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
                 >
                   {elementTypeLabel(element.type, t)} {element.name || element.id} ×
                 </button>
@@ -1252,14 +1252,14 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={clearAllSelection}
-                className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 transition hover:text-slate-900"
+                className="ml-auto shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[13px] font-medium text-slate-600 transition hover:text-slate-900"
               >
                 {t("모두 지우기", "Clear all")}
               </button>
             </div>
           )}
           {selectionNotice && (
-            <p className="mt-2 text-[11px] text-amber-600" role="status">
+            <p className="mt-2 text-[13px] text-amber-600" role="status">
               {selectionNotice}
             </p>
           )}
@@ -1282,7 +1282,7 @@ export default function DashboardPage() {
             subtitle={t("선택한 시나리오의 주요 네트워크 지표를 상대 막대로 비교합니다.", "Compare key network indicators across selected scenarios using relative bars.")}
           />
           {kpiMetricsFilter && !kpiMetricsExpanded && (
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[13px] text-slate-500">
               <span>
                 {t(
                   `6개 중 ${kpiMetricsFilter.length}개 지표 표시 중`,
@@ -1301,7 +1301,7 @@ export default function DashboardPage() {
             </div>
           )}
           {minRunCount === 1 && (
-            <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800">
+            <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[13px] text-amber-800">
               {t(
                 "일부 시나리오가 단일 실행(1회) 결과입니다. 무작위 변동(시드 효과) 때문에 값 차이가 시나리오 효과가 아닐 수 있습니다.",
                 "Some scenarios are based on a single run. Differences may reflect random seed variation rather than the scenario itself.",
@@ -1459,10 +1459,10 @@ function SectionJumpIndex({
         <div className="rounded-xl border border-slate-300/80 bg-surface/96 p-2.5 shadow-[0_16px_34px_rgba(15,23,42,0.18)] backdrop-blur-md">
           <div className="mb-2 flex items-center justify-between border-b border-slate-200/80 pb-2">
             <div>
-              <p className="text-[10px] font-semibold text-slate-500">{t("분석 목차", "Sections")}</p>
-              <p className="mt-0.5 text-[11px] font-bold text-slate-900">{t("빠른 이동", "Quick Jump")}</p>
+              <p className="text-[12px] font-semibold text-slate-500">{t("분석 목차", "Sections")}</p>
+              <p className="mt-0.5 text-[13px] font-bold text-slate-900">{t("빠른 이동", "Quick Jump")}</p>
             </div>
-            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-accent">
+            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[12px] font-bold text-accent">
               {items.length}
             </span>
           </div>
@@ -1471,9 +1471,9 @@ function SectionJumpIndex({
               <a
                 key={item.href}
                 href={item.href}
-                className="group/link grid h-8 grid-cols-[1.25rem_1fr] items-center gap-2 rounded-md px-1.5 text-[11px] font-semibold text-slate-700 transition hover:bg-blue-100 hover:text-blue-700 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/45"
+                className="group/link grid h-8 grid-cols-[1.25rem_1fr] items-center gap-2 rounded-md px-1.5 text-[13px] font-semibold text-slate-700 transition hover:bg-blue-100 hover:text-blue-700 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-accent/45"
               >
-                <span className="flex h-5 w-5 items-center justify-center rounded-md border border-slate-200 bg-surface text-[10px] font-bold text-slate-500 shadow-sm transition group-hover/link:border-accent group-hover/link:bg-accent group-hover/link:text-white">
+                <span className="flex h-5 w-5 items-center justify-center rounded-md border border-slate-200 bg-surface text-[12px] font-bold text-slate-500 shadow-sm transition group-hover/link:border-accent group-hover/link:bg-accent group-hover/link:text-white">
                   {index + 1}
                 </span>
                 <span className="truncate">{item.label}</span>
@@ -1502,10 +1502,10 @@ function DashboardDatasetGate() {
     <div className="flex h-full items-center rounded-xl border border-dashed border-amber-300 bg-amber-50 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold text-amber-700">
+          <p className="text-[14px] font-semibold text-amber-700">
             {t("대시보드 연결 대기", "Dashboard Waiting for Dataset")}
           </p>
-          <p className="mt-1 text-sm text-amber-800">
+          <p className="mt-1 text-[15px] text-amber-800">
             {t(
               "VISSIM 파일 또는 프로젝트 ZIP을 업로드하면 시나리오 선택과 분석 지도가 활성화됩니다.",
               "Upload a VISSIM file or project ZIP to enable scenario selection and the analysis map.",
@@ -1516,11 +1516,11 @@ function DashboardDatasetGate() {
           <button
             type="button"
             onClick={openDatasetFilePicker}
-            className="rounded-full border border-transparent bg-amber-500 px-3 py-1.5 text-xs font-bold text-ink transition hover:bg-amber-600"
+            className="rounded-full border border-transparent bg-amber-500 px-3 py-1.5 text-[14px] font-bold text-ink transition hover:bg-amber-600"
           >
             {t("지금 업로드", "Upload now")}
           </button>
-          <span className="rounded-full border border-amber-300 bg-surface px-3 py-1 text-xs font-bold text-amber-600">
+          <span className="rounded-full border border-amber-300 bg-surface px-3 py-1 text-[14px] font-bold text-amber-600">
             INPX / ZIP
           </span>
         </div>
@@ -1534,13 +1534,13 @@ function DashboardUploadRequiredPanel() {
 
   return (
     <section className="rounded-xl border border-dashed border-slate-300 bg-surface/78 px-6 py-12 text-center shadow-sm">
-      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-amber-300 bg-amber-50 text-sm font-black text-amber-600">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-amber-300 bg-amber-50 text-[15px] font-black text-amber-600">
         DATA
       </div>
       <h2 className="mt-4 text-[15px] font-semibold text-white">
         {t("업로드한 VISSIM 데이터셋이 필요합니다", "Uploaded VISSIM Dataset Required")}
       </h2>
-      <p className="mx-auto mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">
+      <p className="mx-auto mt-2 max-w-2xl text-[15px] leading-relaxed text-slate-600">
         {t(
           "기본 샘플 데이터 대신 사용자가 올린 네트워크와 시나리오 결과를 기준으로 대시보드를 연결합니다.",
           "The dashboard now connects to the network and scenario outputs from the dataset you upload instead of the default sample data.",
@@ -1549,7 +1549,7 @@ function DashboardUploadRequiredPanel() {
       <button
         type="button"
         onClick={openDatasetFilePicker}
-        className="ui-button-primary mt-4 inline-flex items-center px-4 py-2 text-sm"
+        className="ui-button-primary mt-4 inline-flex items-center px-4 py-2 text-[15px]"
       >
         {t("VISSIM 파일 업로드", "Upload a VISSIM file")}
       </button>
@@ -1574,19 +1574,19 @@ function SelectedIntersectionPanel({
     <div>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+          <p className="text-[12px] font-semibold uppercase tracking-widest text-slate-500">
             {t("교차로 비교분석", "Intersection Comparison")}
           </p>
           <h2 className="mt-0.5 text-base font-bold text-slate-900">
             {t("선택된 교차로", "Selected Intersections")}
           </h2>
         </div>
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[13px] font-semibold text-slate-600">
           {selectedNodeIds.length}/{maxSelectedNodes}
         </span>
       </div>
 
-      <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+      <p className="mt-2 text-[13px] leading-relaxed text-slate-500">
         {t(
           "지도에서 교차로를 클릭하면 비교 목록에 추가됩니다. 다시 클릭하면 제거됩니다.",
           "Click intersections on the map to add them to the comparison list. Click again to remove.",
@@ -1595,7 +1595,7 @@ function SelectedIntersectionPanel({
 
       <div className="mt-3 flex flex-wrap gap-1.5">
         {selectedNodeIds.length === 0 && (
-          <span className="rounded-full border border-dashed border-slate-300 bg-surface px-2.5 py-1 text-[11px] text-slate-500">
+          <span className="rounded-full border border-dashed border-slate-300 bg-surface px-2.5 py-1 text-[13px] text-slate-500">
             {t("선택 없음", "None selected")}
           </span>
         )}
@@ -1605,7 +1605,7 @@ function SelectedIntersectionPanel({
             key={nodeId}
             type="button"
             onClick={() => onRemove(nodeId)}
-            className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+            className="rounded-full border border-slate-300 bg-surface px-2.5 py-1 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
           >
             {index + 1}. {nodeNamesById[nodeId] ?? `Node ${nodeId}`} x
           </button>
@@ -1620,7 +1620,7 @@ function IntersectionPerformanceGrid({ cards }: { cards: IntersectionPerformance
 
   if (!cards.length) {
     return (
-      <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-surface/85 px-6 py-10 text-center text-sm text-slate-500">
+      <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-surface/85 px-6 py-10 text-center text-[15px] text-slate-500">
         {t("지도에서 교차로를 선택하면 성능평가 카드가 표시됩니다.", "Select intersections on the map to show performance cards.")}
       </div>
     );
@@ -1666,12 +1666,12 @@ function IntersectionPerformanceGrid({ cards }: { cards: IntersectionPerformance
           >
             <div className="mb-3 flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+                <p className="text-[12px] font-semibold uppercase tracking-widest text-slate-500">
                   {t("교차로", "Intersection")} {cardIndex + 1}
                 </p>
                 <h3 className="truncate text-base font-bold text-slate-900">{card.nodeName}</h3>
               </div>
-              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[12px] font-semibold text-slate-500">
                 Node {card.nodeId}
               </span>
             </div>
@@ -1700,8 +1700,8 @@ function IntersectionMetricBars({
   return (
     <div className="rounded-xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-bold text-slate-900">{title}</h3>
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">
+        <h3 className="text-[15px] font-bold text-slate-900">{title}</h3>
+        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[12px] font-semibold text-slate-600">
           {unit}
         </span>
       </div>
@@ -1712,17 +1712,17 @@ function IntersectionMetricBars({
 
           return (
             <div key={item.nodeId} className="grid grid-cols-[7.2rem_1fr_4.8rem] items-center gap-3">
-              <span className="truncate text-[11px] font-semibold text-slate-700">{item.nodeName}</span>
+              <span className="truncate text-[13px] font-semibold text-slate-700">{item.nodeName}</span>
               <span className="h-3 overflow-hidden bg-white/[0.05]">
                 {item.value != null && (
                   <span className="block h-full" style={{ width: `${width}%`, backgroundColor: METRIC_BAR_COLOR }} />
                 )}
               </span>
-              <span className="text-right text-[11px] font-bold tabular-nums text-slate-900">
+              <span className="text-right text-[13px] font-bold tabular-nums text-slate-900">
                 {item.value != null ? valueFormatter(item.value) : "-"}
               </span>
               {item.scenarioName && (
-                <span className="col-start-2 -mt-2 truncate text-[10px] text-slate-500">{item.scenarioName}</span>
+                <span className="col-start-2 -mt-2 truncate text-[12px] text-slate-500">{item.scenarioName}</span>
               )}
             </div>
           );
@@ -1730,7 +1730,7 @@ function IntersectionMetricBars({
       </div>
 
       {!values.some((item) => item.value != null) && (
-        <p className="mt-3 text-[11px] text-slate-500">
+        <p className="mt-3 text-[13px] text-slate-500">
           {t("표시할 교차로 데이터가 없습니다.", "No intersection data is available.")}
         </p>
       )}
@@ -1754,9 +1754,9 @@ function DirectionDelayChart({
   return (
     <div className="min-h-[190px] rounded-xl border border-slate-200 bg-slate-50/70 p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="truncate text-[12px] font-bold text-slate-800">{t("방향별 지체", "Delay by Direction")}</p>
+        <p className="truncate text-[14px] font-bold text-slate-800">{t("방향별 지체", "Delay by Direction")}</p>
         <span
-          className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600"
+          className="rounded-full bg-slate-100 px-2 py-0.5 text-[12px] font-semibold text-slate-600"
           title={t(
             "이동류별 측정 지체(VEHDELAY)를 접근방향별로 교통량 가중 평균한 실측값입니다.",
             "Measured: per-movement VEHDELAY, volume-weighted into each approach.",
@@ -1778,7 +1778,7 @@ function DirectionDelayChart({
 
               return (
                 <div key={direction} className="flex h-full flex-col items-center justify-end gap-1">
-                  <span className="text-[10px] font-bold tabular-nums text-slate-800">
+                  <span className="text-[12px] font-bold tabular-nums text-slate-800">
                     {value != null ? `${formatNumber(value, value < 10 ? 1 : 0)}${delayUnit}` : "-"}
                   </span>
                   <div className="flex h-[86px] w-full max-w-[42px] items-end bg-white/[0.04] px-1 py-1">
@@ -1786,7 +1786,7 @@ function DirectionDelayChart({
                       <span className="block w-full" style={{ height: `${height}%`, backgroundColor: color }} />
                     )}
                   </div>
-                  <span className="text-[10px] font-semibold text-slate-600">
+                  <span className="text-[12px] font-semibold text-slate-600">
                     {t(DIRECTION_LABELS[direction].shortKo, DIRECTION_LABELS[direction].shortEn)}
                     {los ? ` / ${los}` : ""}
                   </span>
@@ -1795,7 +1795,7 @@ function DirectionDelayChart({
             })}
           </div>
 
-          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-slate-500">
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[12px] text-slate-500">
             {LOS_GRADE_THRESHOLDS.map(({ grade, label }) => (
               <span key={grade} className="inline-flex items-center gap-1" title={t(`지체 ${label}`, `Delay ${label}`)}>
                 <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: LOS_COLORS[grade] }} />
@@ -1806,7 +1806,7 @@ function DirectionDelayChart({
         </>
       ) : (
         <div className="mt-4 flex h-32 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-slate-300 px-2 text-center">
-          <p className="text-[11px] font-bold text-slate-600">{t("데이터 없음", "No data")}</p>
+          <p className="text-[13px] font-bold text-slate-600">{t("데이터 없음", "No data")}</p>
           <p className="text-[9.5px] leading-snug text-slate-500">
             {t(
               "이 교차로에는 이동류별 측정 지체(VEHDELAY)가 없어 방향별 지체를 표시할 수 없습니다.",
@@ -1826,15 +1826,15 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
   return (
     <div className="rounded-xl border border-slate-300/70 bg-surface/95 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-bold text-slate-900">{t("통행량 구성", "Volume Composition")}</h3>
+        <h3 className="text-[15px] font-bold text-slate-900">{t("통행량 구성", "Volume Composition")}</h3>
         {/* Sibling unit chip swept with UX #24 -- ko primary like the rest. */}
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">{t("대", "veh")}</span>
+        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[12px] font-semibold text-slate-600">{t("대", "veh")}</span>
       </div>
 
       <div className="mt-4 space-y-3">
         {cards.map((card) => (
           <div key={card.nodeId} className="grid grid-cols-[7.2rem_1fr_4.8rem] items-center gap-3">
-            <span className="truncate text-[11px] font-semibold text-slate-700">{card.nodeName}</span>
+            <span className="truncate text-[13px] font-semibold text-slate-700">{card.nodeName}</span>
             <div className="h-4 overflow-hidden bg-white/[0.05]">
               {card.volumeTotal != null && card.volumeTotal > 0 && (
                 <div className="flex h-full" style={{ width: `${Math.max(8, (card.volumeTotal / maxTotal) * 100)}%` }}>
@@ -1853,7 +1853,7 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
                 </div>
               )}
             </div>
-            <span className="text-right text-[11px] font-bold tabular-nums text-slate-900">
+            <span className="text-right text-[13px] font-bold tabular-nums text-slate-900">
               {card.volumeTotal != null ? Math.round(card.volumeTotal).toLocaleString() : "-"}
             </span>
           </div>
@@ -1861,19 +1861,19 @@ function VolumeByIntersectionChart({ cards }: { cards: IntersectionPerformanceCa
       </div>
 
       {!cards.some((item) => item.volumeTotal != null) && (
-        <p className="mt-3 text-[11px] text-slate-500">
+        <p className="mt-3 text-[13px] text-slate-500">
           {t("표시할 통행량 데이터가 없습니다.", "No volume data is available.")}
         </p>
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+        <span className="text-[12px] font-semibold uppercase tracking-wide text-slate-500">
           {t("방향", "Direction")}
         </span>
         {DIRECTION_ORDER.map((direction) => (
           <span
             key={direction}
-            className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] px-2 py-1 text-[11px] font-medium text-slate-700"
+            className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] px-2 py-1 text-[13px] font-medium text-slate-700"
           >
             <span className="h-3 w-3 rounded-sm" style={{ backgroundColor: DIRECTION_COLORS[direction] }} />
             {t(DIRECTION_LABELS[direction].ko, DIRECTION_LABELS[direction].en)}
@@ -1892,14 +1892,14 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
 
   if (!populated.length || !allValues.length || !labels.length) {
     return (
-      <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-surface/85 px-6 py-10 text-center text-sm text-slate-500">
+      <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-surface/85 px-6 py-10 text-center text-[15px] text-slate-500">
         <p>
           {t(
             "통행시간 측정 결과가 없어 그래프를 표시할 수 없습니다.",
             "No travel-time measurements are available for the chart.",
           )}
         </p>
-        <p className="mt-1 text-xs text-slate-400">
+        <p className="mt-1 text-[14px] text-slate-400">
           {t(
             "VISSIM 네트워크에 통행시간 측정 구간(Vehicle Travel Time Measurement)이 정의되어 있고 시뮬레이션이 완료됐는지 확인하세요.",
             "Check that the VISSIM network defines Vehicle Travel Time Measurement sections and that the simulation run has finished.",
@@ -1949,7 +1949,7 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
   return (
     <div className="mt-4 rounded-xl border border-slate-300/70 bg-surface/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       {truncated && (
-        <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800">
+        <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[13px] text-amber-800">
           {t(
             `표시 구간이 많아 처음 ${TRAVEL_TIME_MAX_POINTS}개만 표시합니다.`,
             `Showing the first ${TRAVEL_TIME_MAX_POINTS} of more available sections/intervals.`,
@@ -2036,7 +2036,7 @@ function TravelTimeComparison({ chart }: { chart: TravelTimeChart }) {
 
       <div className="mt-3 flex flex-wrap gap-2">
         {populated.map((item) => (
-          <span key={item.scenario.id} className="inline-flex items-center gap-1.5 rounded-full bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+          <span key={item.scenario.id} className="inline-flex items-center gap-1.5 rounded-full bg-slate-50 px-2.5 py-1 text-[13px] font-semibold text-slate-600">
             <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
             {item.scenario.name}
           </span>
@@ -2136,12 +2136,12 @@ function OverallResultsSection({
       <section className="rounded-xl border border-slate-300/70 bg-surface/95 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-sm font-bold text-slate-900">{t("결과 해석", "Result Interpretation")}</p>
-            <p className="mt-1 text-[11px] text-slate-500">
+            <p className="text-[15px] font-bold text-slate-900">{t("결과 해석", "Result Interpretation")}</p>
+            <p className="mt-1 text-[13px] text-slate-500">
               {t("현재 선택값 기준으로 최종 판단 문장만 정리합니다.", "A concise decision statement from the current selection.")}
             </p>
           </div>
-          <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-bold text-accent">
+          <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[12px] font-bold text-accent">
             {t("핵심 요약", "Summary")}
           </span>
         </div>
@@ -2156,9 +2156,9 @@ function OverallResultsSection({
           // reader to trust an unverifiable one-line claim.
           return (
             <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
-              <table className="w-full text-xs">
+              <table className="w-full text-[14px]">
                 <thead>
-                  <tr className="border-b border-slate-100 bg-slate-50 text-left text-[10px] font-semibold uppercase text-slate-500">
+                  <tr className="border-b border-slate-100 bg-slate-50 text-left text-[12px] font-semibold uppercase text-slate-500">
                     <th className="px-3 py-2">{t("순위", "Rank")}</th>
                     <th className="px-3 py-2">{t("시나리오", "Scenario")}</th>
                     <th className="px-3 py-2 text-right">{t("점수", "Score")}</th>
@@ -2184,7 +2184,7 @@ function OverallResultsSection({
           );
         })()}
 
-        <div className="mt-5 flex flex-wrap gap-2 text-[11px] font-semibold text-slate-600">
+        <div className="mt-5 flex flex-wrap gap-2 text-[13px] font-semibold text-slate-600">
           <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1">
             {t("시나리오", "Scenarios")} {activeScenarios.length}
           </span>
@@ -2202,15 +2202,15 @@ function OverallResultsSection({
       <section className="rounded-xl border border-slate-300/70 bg-surface/95 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-sm font-bold text-slate-900">{t("보고서 생성", "Report Generator")}</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+            <p className="text-[15px] font-bold text-slate-900">{t("보고서 생성", "Report Generator")}</p>
+            <p className="mt-1 text-[13px] leading-relaxed text-slate-500">
               {t(
                 "선택된 시나리오와 교차로 결과로 보고서 초안을 만듭니다.",
                 "Create a draft report from the selected scenarios and intersections.",
               )}
             </p>
           </div>
-          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600">
+          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[12px] font-bold text-slate-600">
             {intersectionCards.length}
           </span>
         </div>
@@ -2220,7 +2220,7 @@ function OverallResultsSection({
             type="button"
             onClick={handleGenerateReport}
             disabled={!canGenerateReport}
-            className="ui-button-primary px-3 py-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-primary px-3 py-2.5 text-[14px] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t("보고서 생성하기", "Generate Report")}
           </button>
@@ -2229,7 +2229,7 @@ function OverallResultsSection({
               type="button"
               onClick={handleDownloadReport}
               disabled={!reportMarkdown}
-              className="ui-button-ghost px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              className="ui-button-ghost px-3 py-2 text-[14px] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t("텍스트 (.md)", "Text (.md)")}
             </button>
@@ -2241,14 +2241,14 @@ function OverallResultsSection({
                 "Word에서 열 때 '파일 형식이 확장자와 다릅니다'라는 확인 창이 뜰 수 있습니다 — 정상이며 그대로 여세요.",
                 "Word may show a \"file format doesn't match extension\" prompt when opening this — that's expected, open it anyway.",
               )}
-              className="ui-button-ghost px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              className="ui-button-ghost px-3 py-2 text-[14px] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t("Word (.doc)", "Word (.doc)")}
             </button>
           </div>
         </div>
 
-        <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+        <p className="mt-3 text-[12px] leading-relaxed text-slate-500">
           {reportGeneratedAt
             ? t(
                 `${formatDisplayDateTime(reportGeneratedAt, "ko")} 생성됨. Word 파일을 열 때 형식 확인 창이 뜨면 그대로 열면 됩니다.`,
@@ -2261,7 +2261,7 @@ function OverallResultsSection({
         </p>
         <Link
           href="/simulation"
-          className="mt-3 inline-block text-[10px] font-semibold text-slate-400 underline decoration-dotted underline-offset-2 hover:text-slate-600"
+          className="mt-3 inline-block text-[12px] font-semibold text-slate-400 underline decoration-dotted underline-offset-2 hover:text-slate-600"
         >
           {t("고급: 시뮬레이션 실행기 열기 →", "Advanced: open the Simulation Runner →")}
         </Link>
@@ -2311,8 +2311,8 @@ function KpiCard({
   return (
     <div className="rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="mb-4 flex items-start justify-between gap-2">
-        <h3 className="text-sm font-semibold text-slate-800">{label}</h3>
-        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+        <h3 className="text-[15px] font-semibold text-slate-800">{label}</h3>
+        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[12px] font-medium text-slate-600">
           {unit}
         </span>
       </div>
@@ -2335,13 +2335,13 @@ function KpiCard({
               <div className="flex h-9 flex-col items-center justify-end gap-0.5">
                 {isBest && (
                   <span
-                    className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-emerald-600"
+                    className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[12px] font-semibold leading-none text-emerald-600"
                     title={bestIsWithinNoise ? t("2위와의 차이가 표준편차보다 작습니다.", "The gap to the runner-up is smaller than the standard deviation.") : undefined}
                   >
                     {t("최적", "Best", "最良")}{showTechnicalDetail && bestIsWithinNoise ? "*" : ""}
                   </span>
                 )}
-                <div className="text-[11px] font-semibold tabular-nums text-slate-900">
+                <div className="text-[13px] font-semibold tabular-nums text-slate-900">
                   {displayVal}
                   {showTechnicalDetail && stdev != null && (
                     <span className="ml-0.5 text-slate-400">±{stdev >= 10 ? Math.round(stdev) : stdev.toFixed(1)}</span>
@@ -2354,7 +2354,7 @@ function KpiCard({
                   style={{ height: `${Math.max(pct, 8)}%`, backgroundColor: scenarioColor }}
                 />
               </div>
-              <div className="flex w-full items-center justify-center gap-1.5 text-[10px]">
+              <div className="flex w-full items-center justify-center gap-1.5 text-[12px]">
                 <span
                   className="inline-block h-2 w-2 rounded-full"
                   style={{ backgroundColor: scenarioColor }}
@@ -2367,17 +2367,17 @@ function KpiCard({
         </div>
       </div>
       {showTechnicalDetail && bestIsWithinNoise && (
-        <p className="mt-2 text-[10px] text-amber-700">
+        <p className="mt-2 text-[12px] text-amber-700">
           * {t("최상위 값과 2위의 차이가 실행 간 변동(표준편차)보다 작아 확정적 차이로 보기 어렵습니다.", "The gap between the top value and the runner-up is smaller than run-to-run variation, so it may not be a real difference.")}
         </p>
       )}
       {isTotal && (
-        <p className="mt-1 text-[10px] text-slate-400">
+        <p className="mt-1 text-[12px] text-slate-400">
           {t("네트워크 전체 합계이며 차량 수에 비례합니다 — 값이 작다고 항상 더 좋은 것은 아닙니다.", "A network-wide total that scales with vehicle count — a lower value isn't always a better outcome.")}
         </p>
       )}
       {spread > 0 && (
-        <p className="mt-1 text-[10px] text-slate-500">
+        <p className="mt-1 text-[12px] text-slate-500">
           {t("범위", "Range")} {formatNumber(minVal, 1)} ~ {formatNumber(maxVal, 1)} ({t("차이", "diff")} {formatNumber(spread, 1)})
         </p>
       )}
@@ -2389,7 +2389,7 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle: string })
   return (
     <div>
       <h2 className="text-[15px] font-semibold text-white">{title}</h2>
-      <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>
+      <p className="mt-0.5 text-[15px] text-slate-600">{subtitle}</p>
     </div>
   );
 }
@@ -2411,7 +2411,7 @@ function MapViewToggle({
   ];
 
   return (
-    <div className="flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-xs font-medium">
+    <div className="flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-[14px] font-medium">
       {options.map((option) => {
         const active = view === option.key;
         return (
@@ -2485,11 +2485,11 @@ function NetworkDiagramView({
   if (error) {
     return (
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
-        <p className="text-sm text-slate-400">{error}</p>
+        <p className="text-[15px] text-slate-400">{error}</p>
         <button
           type="button"
           onClick={onRetry}
-          className="rounded-lg border border-slate-300/70 bg-surface/90 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-surface"
+          className="rounded-lg border border-slate-300/70 bg-surface/90 px-3 py-1.5 text-[14px] font-semibold text-slate-700 transition hover:bg-surface"
         >
           {t("다시 시도", "Retry")}
         </button>
@@ -2500,7 +2500,7 @@ function NetworkDiagramView({
   if (loading || !network) {
     return (
       <div className="absolute inset-0 flex items-center justify-center">
-        <p className="text-sm text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
+        <p className="text-[15px] text-slate-400">{t("네트워크 도식을 불러오는 중…", "Loading network diagram…")}</p>
       </div>
     );
   }
@@ -2561,17 +2561,17 @@ function VehicleReplaySection({
 
   return (
     <section className="mt-4 rounded-xl border border-slate-200 bg-surface/70 px-4 py-3">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+      <p className="text-[13px] font-semibold uppercase tracking-[0.14em] text-slate-500">
         {t("차량 궤적 재생", "Vehicle playback")}
       </p>
 
       {replayJob ? (
-        <p className="mt-2 text-xs text-slate-600">
+        <p className="mt-2 text-[14px] text-slate-600">
           {t("재생 대상", "Replaying", "再生対象")}{" "}
           <span className="font-medium text-slate-700">{formatJobLabel(replayJob)}</span>
         </p>
       ) : hasReplayableRuns ? (
-        <p className="mt-2 text-xs text-slate-500">
+        <p className="mt-2 text-[14px] text-slate-500">
           {primaryScenarioName
             ? t(
                 `선택된 실행(${primaryScenarioName})에는 저장된 차량 궤적이 없습니다.`,
@@ -2581,11 +2581,11 @@ function VehicleReplaySection({
         </p>
       ) : (
         <>
-          <p className="mt-2 text-xs text-slate-600">
+          <p className="mt-2 text-[14px] text-slate-600">
             {t("재생 소스", "Playback source", "再生ソース")}{" "}
             <span className="font-medium text-slate-700">{t("데모", "Demo")}</span>
           </p>
-          <p className="mt-1 text-[11px] text-slate-500">
+          <p className="mt-1 text-[13px] text-slate-500">
             {t(
               "재생 가능한 시뮬레이션 실행이 아직 없어 데모 데이터로 재생합니다.",
               "No replayable simulation run exists yet, so playback uses demo data.",
@@ -2599,15 +2599,15 @@ function VehicleReplaySection({
           <button
             type="button"
             onClick={onLoad}
-            className="mt-2 flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+            className="mt-2 flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-[14px] font-medium text-slate-600 transition hover:text-slate-900"
           >
             {t("재생 준비", "Load playback")}
           </button>
         ) : playback.status === "loading" ? (
-          <p className="mt-2 text-xs text-slate-500">{t("궤적 데이터를 불러오는 중…", "Loading trajectory data…")}</p>
+          <p className="mt-2 text-[14px] text-slate-500">{t("궤적 데이터를 불러오는 중…", "Loading trajectory data…")}</p>
         ) : playback.status === "error" ? (
           <div className="mt-2 flex flex-wrap items-center gap-3">
-            <p className="text-xs text-slate-500">
+            <p className="text-[14px] text-slate-500">
               {t(
                 "궤적 데이터를 불러오지 못했습니다. 이 데이터셋에 .fzp 파일이 없을 수 있습니다.",
                 "Couldn't load trajectory data. This dataset may have no .fzp file.",
@@ -2616,7 +2616,7 @@ function VehicleReplaySection({
             <button
               type="button"
               onClick={onLoad}
-              className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+              className="flex h-9 shrink-0 items-center rounded-lg border border-slate-200 px-3 text-[14px] font-medium text-slate-600 transition hover:text-slate-900"
             >
               {t("다시 시도", "Retry")}
             </button>
@@ -2628,22 +2628,22 @@ function VehicleReplaySection({
                 type="button"
                 onClick={playbackEngine.togglePlay}
                 aria-pressed={playback.playing}
-                className="flex h-9 min-w-[6.5rem] shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+                className="flex h-9 min-w-[6.5rem] shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 text-[14px] font-medium text-slate-600 transition hover:text-slate-900"
               >
                 <span aria-hidden="true">{playback.playing ? PAUSE_GLYPH : PLAY_GLYPH}</span>
                 {playback.playing ? t("일시정지", "Pause") : t("재생", "Play")}
               </button>
-              <span className="text-xs tabular-nums text-slate-700">
+              <span className="text-[14px] tabular-nums text-slate-700">
                 {formatClock(playback.time - playback.t0)} / {formatClock(playback.t1 - playback.t0)}
               </span>
-              <span className="text-[11px] tabular-nums text-slate-500">
+              <span className="text-[13px] tabular-nums text-slate-500">
                 {t("시뮬레이션", "sim")} {playback.time.toFixed(1)}
                 {t("초", "s")}
               </span>
               <div
                 role="group"
                 aria-label={t("재생 속도", "Playback speed")}
-                className="ml-auto flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-xs font-medium"
+                className="ml-auto flex h-9 shrink-0 items-center gap-0.5 rounded-lg border border-slate-200 p-1 text-[14px] font-medium"
               >
                 {PLAYBACK_SPEEDS.map((option) => {
                   const active = playback.speed === option;
@@ -2675,7 +2675,7 @@ function VehicleReplaySection({
               className="w-full accent-[#4c8dff]"
             />
 
-            <p className="text-[11px] text-slate-500">
+            <p className="text-[13px] text-slate-500">
               {t(
                 `차량 ${playback.vehicleCount}대`,
                 `${playback.vehicleCount} vehicle${playback.vehicleCount === 1 ? "" : "s"}`,
@@ -2707,15 +2707,15 @@ function DashboardScenarioPicker({
     <div className="rounded-xl border border-slate-200 bg-surface p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-xs font-semibold text-slate-800">{t("시나리오 비교 세트", "Scenario Comparison Set")}</p>
-          <p className="mt-0.5 text-[11px] text-slate-500">
+          <p className="text-[14px] font-semibold text-slate-800">{t("시나리오 비교 세트", "Scenario Comparison Set")}</p>
+          <p className="mt-0.5 text-[13px] text-slate-500">
             {t(
               "KPI, 지도, 교차로 비교에 포함할 시나리오를 선택합니다. 선택 내용은 저장되어 페이지를 이동했다가 돌아와도 유지됩니다.",
               "Choose scenarios to include in KPI, map, and node comparisons. Your selection is saved and stays intact when you navigate away and back.",
             )}
           </p>
         </div>
-        <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+        <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[13px] font-medium text-slate-600">
           {selected.length}/{scenarios.length} {t("선택", "selected")}
         </span>
       </div>
@@ -2741,16 +2741,16 @@ function DashboardScenarioPicker({
                   style={{ backgroundColor: active ? scenarioColor : "#45443f" }}
                 />
                 <div className="min-w-0">
-                  <p className={`truncate text-sm font-medium ${active ? "text-slate-900" : "text-slate-500"}`}>
+                  <p className={`truncate text-[15px] font-medium ${active ? "text-slate-900" : "text-slate-500"}`}>
                     {scenario.name}
                   </p>
-                  <p className="mt-0.5 text-[10px] text-slate-500">
+                  <p className="mt-0.5 text-[12px] text-slate-500">
                     {active ? t("비교 포함", "Included") : t("클릭하여 포함", "Click to include")}
                   </p>
                 </div>
               </div>
               <span
-                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold ${
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[13px] font-semibold ${
                   active ? "bg-white/10 text-white" : "bg-slate-100 text-slate-400"
                 }`}
               >
@@ -2891,19 +2891,19 @@ function ValidationMatrix({
   return (
     <div className="mt-4 space-y-2">
       {!hasBasam && (
-        <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
+        <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-[14px] text-amber-700">
           {t("기준(base) 시나리오가 선택되지 않아 스케일 기반 검증 정확도가 낮아질 수 있습니다.", "The base scenario is not selected, so scaling-based validation may be less accurate.")}
         </p>
       )}
 
       <div className="overflow-x-auto rounded-xl border border-slate-300/70 bg-surface/92 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
-        <table className="w-full text-sm">
+        <table className="w-full text-[15px]">
           <thead>
             <tr className="border-b border-slate-100 bg-slate-50">
-              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600">{t("교차로", "Node")}</th>
-              <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600">{t("관측", "Observed")}</th>
+              <th className="px-4 py-3 text-left text-[14px] font-semibold text-slate-600">{t("교차로", "Node")}</th>
+              <th className="px-4 py-3 text-right text-[14px] font-semibold text-slate-600">{t("관측", "Observed")}</th>
               {scenarios.map((scenario) => (
-                <th key={scenario.id} className="px-4 py-3 text-center text-xs font-semibold text-slate-600">
+                <th key={scenario.id} className="px-4 py-3 text-center text-[14px] font-semibold text-slate-600">
                   <span className="flex items-center justify-center gap-1.5">
                     <span
                       className="inline-block h-2 w-2 rounded-full"
@@ -2949,10 +2949,10 @@ function ValidationMatrix({
                       <td key={scenario.id} className="px-3 py-2 text-center">
                         {sim != null ? (
                           <div className={`inline-block rounded-lg px-2.5 py-1.5 ${toneBadgeClass(tone)}`}>
-                            <div className="text-xs font-bold tabular-nums">
+                            <div className="text-[14px] font-bold tabular-nums">
                               {pct != null ? `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%` : "-"}
                             </div>
-                            <div className="mt-0.5 text-[10px] opacity-80 tabular-nums">
+                            <div className="mt-0.5 text-[12px] opacity-80 tabular-nums">
                               {Math.round(sim).toLocaleString()} {t("대", "veh")}
                               {geh != null && <span className="ml-1">GEH {geh.toFixed(1)}</span>}
                             </div>
@@ -2969,7 +2969,7 @@ function ValidationMatrix({
                             )}
                           </div>
                         ) : (
-                          <span className="text-xs text-slate-400">-</span>
+                          <span className="text-[14px] text-slate-400">-</span>
                         )}
                       </td>
                     );
@@ -2981,7 +2981,7 @@ function ValidationMatrix({
           <tfoot>
             <tr className="border-t border-slate-100 bg-slate-50">
               <td colSpan={2 + scenarios.length} className="px-4 py-2">
-                <div className="flex flex-wrap items-center gap-4 text-[10px] text-slate-500">
+                <div className="flex flex-wrap items-center gap-4 text-[12px] text-slate-500">
                   <span className="font-medium">{t("오차 구간:", "Error bands:")}</span>
                   <span className="flex items-center gap-1">
                     <span className="h-2 w-2 rounded-sm bg-emerald-200" /> {t("5% 이내", "within 5%")}
@@ -3999,7 +3999,7 @@ function EmptyNodePanel() {
       </div>
       <div>
         <p className="font-semibold text-slate-700">{t("지도에서 교차로를 선택하세요", "Select a node on the map")}</p>
-        <p className="mt-1 text-sm text-slate-500">
+        <p className="mt-1 text-[15px] text-slate-500">
           {t("교차로를 클릭하면 방향별 통행량과 시나리오 비교를 볼 수 있습니다.", "Click a node to review direction-level flow and scenario comparison.")}
         </p>
       </div>

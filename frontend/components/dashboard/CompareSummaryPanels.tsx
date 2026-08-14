@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import {
   type CompareSummaryCard,
@@ -43,12 +43,12 @@ export function SummaryCardsPanel({ cards }: { cards: CompareSummaryCard[] }) {
             key={card.id}
             className={`rounded-xl border bg-surface p-4 shadow-sm ${toneStyle.border}`}
           >
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{card.label}</p>
+            <p className="text-[14px] font-semibold uppercase tracking-[0.16em] text-slate-500">{card.label}</p>
             <p className="mt-3 text-2xl font-semibold text-slate-900">
               {formatValue(card.value)}
-              {card.unit ? <span className="ml-1 text-sm font-medium text-slate-500">{card.unit}</span> : null}
+              {card.unit ? <span className="ml-1 text-[15px] font-medium text-slate-500">{card.unit}</span> : null}
             </p>
-            {card.description ? <p className="mt-1 text-xs text-slate-500">{card.description}</p> : null}
+            {card.description ? <p className="mt-1 text-[14px] text-slate-500">{card.description}</p> : null}
           </article>
         );
       })}
@@ -87,13 +87,13 @@ export function ScenarioRankingPanel({
           <article key={`${item.scenario_id}-${rank}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
-                <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-slate-900 px-2 text-xs font-semibold text-ink">
+                <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-slate-900 px-2 text-[14px] font-semibold text-ink">
                   {rank}
                 </span>
                 <span className="h-3 w-3 rounded-full border border-white/30" style={{ backgroundColor: color }} />
-                <p className="text-sm font-semibold text-slate-900">{label}</p>
+                <p className="text-[15px] font-semibold text-slate-900">{label}</p>
               </div>
-              <p className="text-xs font-semibold text-slate-600">{scoreLabel}</p>
+              <p className="text-[14px] font-semibold text-slate-600">{scoreLabel}</p>
             </div>
           </article>
         );
@@ -118,12 +118,12 @@ export function KeyInsightsPanel({
         return (
           <article key={insight.id} className={`rounded-xl border bg-surface p-4 shadow-sm ${toneStyle.border}`}>
             <div>
-              <p className="text-sm font-semibold text-slate-900">{insight.title}</p>
-              <p className="mt-1 text-xs leading-5 text-slate-600">{insight.message}</p>
+              <p className="text-[15px] font-semibold text-slate-900">{insight.title}</p>
+              <p className="mt-1 text-[14px] leading-5 text-slate-600">{insight.message}</p>
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {scenario ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">
+                <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[13px] text-slate-600">
                   {/* Full-list index, not the no-argument default (which always
                       resolved to palette[0]/blue regardless of which scenario
                       this insight was about). */}
@@ -132,12 +132,12 @@ export function KeyInsightsPanel({
                 </span>
               ) : null}
               {insight.metric ? (
-                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[13px] text-slate-600">
                   {insight.metric}
                 </span>
               ) : null}
               {insight.value != null ? (
-                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[13px] text-slate-600">
                   {insight.value.toFixed(1)} {insight.unit ?? ""}
                 </span>
               ) : null}

@@ -155,16 +155,16 @@ type RouteAssistantContext = {
 
 type Translate = (ko: string, en: string, ja?: string) => string;
 
+// Width-only since the chat became a full-height right-side drawer (Notion
+// style): the drawer always spans the viewport height, so the only thing a
+// user can still size is how much of the page it takes horizontally.
 type AssistantPanelSize = {
   width: number;
-  height: number;
 };
 
 type AssistantPanelResizeState = {
   startX: number;
-  startY: number;
   startWidth: number;
-  startHeight: number;
 };
 
 type AssistantRequestPhase = "idle" | "context" | "querying" | "streaming" | "cancelled";
@@ -194,10 +194,13 @@ const DEFAULT_STARTERS = [
   },
 ];
 const PANEL_SIZE_STORAGE_KEY = "vissim-assistant-panel-size";
-const DEFAULT_PANEL_SIZE: AssistantPanelSize = { width: 410, height: 580 };
-const PANEL_MIN_SIZE: AssistantPanelSize = { width: 340, height: 430 };
-const PANEL_MAX_SIZE: AssistantPanelSize = { width: 860, height: 1000 };
-const PANEL_VIEWPORT_MARGIN: AssistantPanelSize = { width: 24, height: 116 };
+const DEFAULT_PANEL_SIZE: AssistantPanelSize = { width: 410 };
+const PANEL_MIN_SIZE: AssistantPanelSize = { width: 340 };
+const PANEL_MAX_SIZE: AssistantPanelSize = { width: 640 };
+// The drawer pushes the page instead of floating over it, so an unbounded
+// width could squeeze the dashboard to nothing on a narrow laptop -- never
+// let it take more than half the viewport.
+const PANEL_MAX_VIEWPORT_FRACTION = 0.5;
 const COMMON_ANSWER_HEADINGS = [
   "답변",
   "요약",
@@ -349,7 +352,6 @@ export default function FloatingAssistant() {
   const activePageContext = pageContext && pathname.startsWith(pageContext.route) ? pageContext : null;
   const panelStyle = {
     "--assistant-panel-width": `${panelSize.width}px`,
-    "--assistant-panel-height": `${panelSize.height}px`,
   } as CSSProperties;
 
   useEffect(() => {
@@ -439,9 +441,10 @@ export default function FloatingAssistant() {
     function handlePointerMove(event: PointerEvent) {
       const resize = resizeRef.current;
       if (!resize) return;
+      // The handle lives on the drawer's LEFT edge, so dragging left (a
+      // negative delta) grows the drawer and dragging right shrinks it.
       const nextSize = clampPanelSize({
         width: resize.startWidth - (event.clientX - resize.startX),
-        height: resize.startHeight - (event.clientY - resize.startY),
       });
       storePanelSize(nextSize);
       setPanelSize(nextSize);
@@ -461,6 +464,9 @@ export default function FloatingAssistant() {
     };
   }, []);
 
+  // Re-clamp the stored width whenever the viewport changes: the ceiling is
+  // half the viewport, so shrinking the window has to pull an over-wide
+  // drawer back in rather than leaving it swallowing the page.
   useEffect(() => {
     function handleWindowResize() {
       setPanelSize((current) => {
@@ -1072,21 +1078,6 @@ export default function FloatingAssistant() {
     void submitPrompt();
   }
 
-  function refreshAssistantStatus() {
-    setStatusChecking(true);
-    setStatusError(null);
-    fetchAssistantStatus()
-      .then((nextStatus) => {
-        setStatus(nextStatus);
-        setStatusError(null);
-      })
-      .catch((caught) => {
-        setStatus(null);
-        setStatusError(formatAssistantError(caught, t));
-      })
-      .finally(() => setStatusChecking(false));
-  }
-
   function cancelAssistantRequest() {
     setRequestPhase("cancelled");
     requestAbortRef.current?.abort();
@@ -1097,34 +1088,44 @@ export default function FloatingAssistant() {
     event.currentTarget.setPointerCapture(event.pointerId);
     resizeRef.current = {
       startX: event.clientX,
-      startY: event.clientY,
       startWidth: panelSize.width,
-      startHeight: panelSize.height,
     };
   }
 
+  // Notion-style drawer. At 881px+ the panel below is a plain flex child of
+  // `.app-frame` (FloatingAssistant renders after `<main>`, so it lands on
+  // the right edge) and therefore PUSHES the page instead of covering it --
+  // the same sticky/full-height mechanic as `.app-sidebar`. Narrower than
+  // that it falls back to a fixed overlay pinned to the right edge, under
+  // the modal band (3000) and over the sidebar band (2600).
+  //
+  // 881px, not Tailwind's `md` (768px), because globals.css flips
+  // `.app-frame` to `flex-direction: column` at `max-width: 880px` -- an
+  // in-flow drawer inside a COLUMN frame would stack itself under the page
+  // content instead of beside it. AppShell/ProjectSelector already pin the
+  // same seam with `max-[880px]:` variants; this is the min side of it.
   return (
     <>
       {open && (
         <section
-          className="fixed bottom-[5.75rem] left-3 right-3 z-[2700] flex h-[min(var(--assistant-panel-height),calc(100vh-7.25rem))] min-h-[430px] flex-col overflow-hidden rounded-xl border border-slate-300/80 bg-surface/95 shadow-[0_22px_60px_rgba(15,23,42,0.26)] backdrop-blur md:left-auto md:right-5 md:w-[var(--assistant-panel-width)]"
+          className="fixed inset-y-0 right-0 z-[2700] flex w-full flex-col overflow-hidden border-l border-slate-300/80 bg-surface/95 backdrop-blur min-[881px]:sticky min-[881px]:bottom-auto min-[881px]:right-auto min-[881px]:top-0 min-[881px]:z-auto min-[881px]:h-screen min-[881px]:w-[var(--assistant-panel-width)] min-[881px]:shrink-0"
           style={panelStyle}
           aria-label={t("VISSIM \uc5d0\uc774\uc804\ud2b8 \ucc44\ud305", "VISSIM agent chat")}
         >
+          {/* Left-edge width grip: drag toward the page to widen the drawer.
+              Hidden in the overlay breakpoint, where it is full-width anyway. */}
           <button
             type="button"
             onPointerDown={beginPanelResize}
-            className="absolute left-2 top-2 hidden h-7 w-7 cursor-nwse-resize items-center justify-center rounded-md border border-slate-200 bg-surface/95 text-slate-400 shadow-sm transition hover:border-slate-300 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-accent/35 md:flex"
-            aria-label={t("\ub3c4\uc6b0\ubbf8 \ud06c\uae30 \uc870\uc808", "Resize assistant")}
-            title={t("\ub3c4\uc6b0\ubbf8 \ud06c\uae30 \uc870\uc808", "Resize assistant")}
-          >
-            <span className="h-3 w-3 border-l-2 border-t-2 border-current" aria-hidden="true" />
-          </button>
+            className="absolute inset-y-0 left-0 z-10 hidden w-1.5 cursor-ew-resize bg-transparent transition hover:bg-accent/40 focus:outline-none focus-visible:bg-accent/60 min-[881px]:block"
+            aria-label={t("\ub3c4\uc6b0\ubbf8 \ub108\ube44 \uc870\uc808", "Resize assistant width", "\u30a2\u30b7\u30b9\u30bf\u30f3\u30c8\u306e\u5e45\u3092\u8abf\u7bc0")}
+            title={t("\ub3c4\uc6b0\ubbf8 \ub108\ube44 \uc870\uc808", "Resize assistant width", "\u30a2\u30b7\u30b9\u30bf\u30f3\u30c8\u306e\u5e45\u3092\u8abf\u7bc0")}
+          />
 
-          <header className="flex items-start justify-between gap-3 border-b border-slate-200/80 px-4 py-3 md:pl-11">
+          <header className="flex items-start justify-between gap-3 border-b border-slate-200/80 px-4 py-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-bold text-white">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-[14px] font-bold text-white">
                   AI
                 </span>
                 <div className="min-w-0">
@@ -1132,46 +1133,40 @@ export default function FloatingAssistant() {
                       mode is the default and only user-facing mode, so this
                       names the thing it actually is (docs/phase2/DECISIONS.md
                       UX-reorg entry) rather than a generic "assistant". */}
-                  <h2 className="truncate text-sm font-bold text-slate-900">{t("VISSIM \uc5d0\uc774\uc804\ud2b8", "VISSIM Agent", "VISSIM \u30a8\u30fc\u30b8\u30a7\u30f3\u30c8")}</h2>
-                  <p className="truncate text-xs font-medium text-slate-500">{context.label}</p>
+                  <h2 className="truncate text-[15px] font-bold text-slate-900">{t("VISSIM \uc5d0\uc774\uc804\ud2b8", "VISSIM Agent", "VISSIM \u30a8\u30fc\u30b8\u30a7\u30f3\u30c8")}</h2>
+                  <p className="truncate text-[14px] font-medium text-slate-500">{context.label}</p>
                 </div>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                <AssistantStatusPill status={status} checking={statusChecking} />
-                <ComStatusPill status={status?.tools?.vissim_com ?? null} />
-                <button
-                  type="button"
-                  onClick={refreshAssistantStatus}
-                  disabled={statusChecking}
-                  className="rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-800 disabled:cursor-wait disabled:opacity-70"
-                >
-                  {statusChecking ? t("\ud655\uc778 \uc911", "Checking") : t("\uc0c1\ud0dc \uc0c8\ub85c\uace0\uce68", "Refresh status")}
-                </button>
-                <button
-                  type="button"
-                  onClick={resetConversation}
-                  disabled={loading || messages.length === 0}
-                  className="rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-300 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                  title={t(
-                    "\ub300\ud654\uc640 \uc5d0\uc774\uc804\ud2b8 \uc138\uc158\uc744 \ucd08\uae30\ud654\ud569\ub2c8\ub2e4",
-                    "Resets the conversation and the agent session",
-                    "\u4f1a\u8a71\u3068\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30bb\u30c3\u30b7\u30e7\u30f3\u3092\u30ea\u30bb\u30c3\u30c8\u3057\u307e\u3059",
-                  )}
-                >
-                  {t("\ub300\ud654 \ucd08\uae30\ud654", "New conversation", "\u4f1a\u8a71\u3092\u30ea\u30bb\u30c3\u30c8")}
-                </button>
               </div>
               <PageContextPills context={activePageContext} />
               <AssistantRuntimeNote status={status} statusError={statusError} checking={statusChecking} />
             </div>
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-surface text-sm font-bold text-slate-500 transition hover:border-slate-300 hover:text-slate-900"
-              aria-label={t("\ub3c4\uc6b0\ubbf8 \ub2eb\uae30", "Close assistant")}
-            >
-              x
-            </button>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={resetConversation}
+                disabled={loading || messages.length === 0}
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-surface text-slate-500 transition hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label={t("\ub300\ud654 \ucd08\uae30\ud654", "New conversation", "\u4f1a\u8a71\u3092\u30ea\u30bb\u30c3\u30c8")}
+                title={t(
+                  "\ub300\ud654\uc640 \uc5d0\uc774\uc804\ud2b8 \uc138\uc158\uc744 \ucd08\uae30\ud654\ud569\ub2c8\ub2e4",
+                  "Resets the conversation and the agent session",
+                  "\u4f1a\u8a71\u3068\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u30bb\u30c3\u30b7\u30e7\u30f3\u3092\u30ea\u30bb\u30c3\u30c8\u3057\u307e\u3059",
+                )}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden className="h-3.5 w-3.5">
+                  <path d="M12 5v14" />
+                  <path d="M5 12h14" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-surface text-[15px] font-bold text-slate-500 transition hover:border-slate-300 hover:text-slate-900"
+                aria-label={t("\ub3c4\uc6b0\ubbf8 \ub2eb\uae30", "Close assistant")}
+              >
+                x
+              </button>
+            </div>
           </header>
 
           <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
@@ -1183,7 +1178,7 @@ export default function FloatingAssistant() {
                     key={starter}
                     type="button"
                     onClick={() => setPrompt(starter)}
-                    className="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-left text-xs font-medium leading-5 text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                    className="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 text-left text-[14px] font-medium leading-5 text-slate-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
                   >
                     {starter}
                   </button>
@@ -1210,7 +1205,7 @@ export default function FloatingAssistant() {
             )}
 
             {error && (
-              <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+              <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[14px] leading-5 text-rose-700">
                 {error}
               </div>
             )}
@@ -1225,12 +1220,12 @@ export default function FloatingAssistant() {
                 onChange={(event) => setPrompt(event.target.value)}
                 onKeyDown={(event) => handleComposerKeyDown(event, submitPrompt)}
                 placeholder={t("VISSIM\uc5d0 \ubb3b\uac70\ub098, \uc9c4\ub2e8\ud558\uac70\ub098, \ubcc0\uacbd\uc744 \uc2e4\ud589\ud574\ubcf4\uc138\uc694...", "Ask, diagnose, or run a VISSIM change...")}
-                className="max-h-28 min-h-10 flex-1 resize-none bg-transparent text-sm leading-5 text-slate-900 outline-none placeholder:text-slate-400"
+                className="max-h-28 min-h-10 flex-1 resize-none bg-transparent text-[15px] leading-5 text-slate-900 outline-none placeholder:text-slate-400"
               />
               <button
                 type="submit"
                 disabled={!prompt.trim() || loading}
-                className="ui-button-primary flex h-10 w-10 shrink-0 items-center justify-center text-sm font-bold disabled:cursor-not-allowed"
+                className="ui-button-primary flex h-10 w-10 shrink-0 items-center justify-center text-[15px] font-bold disabled:cursor-not-allowed"
                 aria-label={t("\uba54\uc2dc\uc9c0 \ubcf4\ub0b4\uae30", "Send prompt")}
               >
                 &gt;
@@ -1240,14 +1235,21 @@ export default function FloatingAssistant() {
         </section>
       )}
 
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="fixed bottom-5 right-5 z-[2690] flex h-14 w-14 items-center justify-center rounded-full border border-white/70 bg-accent text-sm font-bold text-white shadow-[0_16px_34px_rgba(15,23,42,0.28)] transition hover:-translate-y-0.5 hover:bg-accent-deep focus:outline-none focus:ring-4 focus:ring-accent/35"
-        aria-label={open ? t("\ub3c4\uc6b0\ubbf8 \ub2eb\uae30", "Close assistant") : t("\ub3c4\uc6b0\ubbf8 \uc5f4\uae30", "Open assistant")}
-      >
-        {open ? "x" : "AI"}
-      </button>
+      {/* Launcher only, never a closer: the drawer now occupies the right
+          edge on both breakpoints, so a FAB pinned to bottom-right would
+          float over its own composer. Notion's answer is to retire the
+          launcher while the drawer is open -- the header's close x is the
+          single close affordance at every width. */}
+      {!open && (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="fixed bottom-5 right-5 z-[2690] flex h-14 w-14 items-center justify-center rounded-full border border-white/70 bg-accent text-[15px] font-bold text-white shadow-[0_16px_34px_rgba(15,23,42,0.28)] transition hover:-translate-y-0.5 hover:bg-accent-deep focus:outline-none focus:ring-4 focus:ring-accent/35"
+          aria-label={t("\ub3c4\uc6b0\ubbf8 \uc5f4\uae30", "Open assistant")}
+        >
+          AI
+        </button>
+      )}
     </>
   );
 }
@@ -1292,8 +1294,8 @@ function FloatingChatMessage({
       <div
         className={
           isUser
-            ? "max-w-[86%] rounded-lg bg-accent px-3 py-2 text-sm leading-6 text-white shadow-sm selection:bg-surface selection:text-blue-700"
-            : "max-w-[94%] rounded-lg border border-slate-200 bg-surface px-3 py-2 text-sm leading-6 text-slate-800 shadow-sm"
+            ? "max-w-[86%] rounded-lg bg-accent px-3 py-2 text-[15px] leading-6 text-white shadow-sm selection:bg-surface selection:text-blue-700"
+            : "max-w-[94%] rounded-lg border border-slate-200 bg-surface px-3 py-2 text-[15px] leading-6 text-slate-800 shadow-sm"
         }
       >
         {isUser ? (
@@ -1361,7 +1363,7 @@ function AgentStepNarration({ steps }: { steps: AgentStep[] }) {
   return (
     <div className="mb-2 space-y-0.5 border-b border-slate-100 pb-2">
       {steps.map((step, index) => (
-        <p key={index} className="text-[11px] leading-5 text-slate-500">
+        <p key={index} className="text-[13px] leading-5 text-slate-500">
           {index + 1}. {step.summary}
           {step.status === "error" && (
             <span className="ml-1 font-semibold text-rose-600">({t("오류", "error", "エラー")})</span>
@@ -1459,14 +1461,14 @@ function AgentRunDashboardHint({ steps }: { steps?: AgentStep[] }) {
 
   if (!disclosed) {
     return (
-      <div className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">
+      <div className="mt-2 border-t border-slate-100 pt-2 text-[13px] leading-5 text-slate-500">
         <p>{message}</p>
       </div>
     );
   }
 
   return (
-    <details className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-5 text-slate-500">
+    <details className="mt-2 border-t border-slate-100 pt-2 text-[13px] leading-5 text-slate-500">
       <summary className="cursor-pointer">{message}</summary>
       <div className="mt-1">{disclosed}</div>
     </details>
@@ -1499,13 +1501,13 @@ function PreflightStatusChip({ warningCount }: { warningCount: number }) {
   const { t } = useLanguage();
   if (warningCount <= 0) {
     return (
-      <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+      <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[12px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
         {t("통과", "Pass", "通過")}
       </span>
     );
   }
   return (
-    <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 ring-1 ring-amber-200">
+    <span className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 text-[12px] font-semibold text-amber-700 ring-1 ring-amber-200">
       {t(`주의 ${warningCount}`, `Warn ${warningCount}`, `注意 ${warningCount}`)}
     </span>
   );
@@ -1554,14 +1556,14 @@ function AgentModelDownloadLink({ sessionId }: { sessionId: string }) {
         type="button"
         onClick={handleClick}
         disabled={status === "busy"}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-surface px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-wait disabled:opacity-60"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-surface px-2.5 py-1.5 text-[13px] font-semibold text-slate-700 transition hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-wait disabled:opacity-60"
       >
         {status === "busy"
           ? t("모델 준비 중…", "Preparing model…", "モデル準備中…")
           : t("편집된 모델 다운로드", "Download edited model", "編集済みモデルをダウンロード")}
       </button>
       {status === "error" && (
-        <span className="text-[11px] font-medium text-rose-600">
+        <span className="text-[13px] font-medium text-rose-600">
           {t("다운로드에 실패했습니다", "Download failed", "ダウンロードに失敗しました")}
         </span>
       )}
@@ -1720,7 +1722,7 @@ function VehicleInputActionDetail({
 
   return (
     <div className="mt-1">
-      <p className="text-[11px] leading-5 text-slate-600">
+      <p className="text-[13px] leading-5 text-slate-600">
         <span className="font-semibold text-slate-800">
           {t(`차량 입력 ${inputNo}`, `Vehicle input ${inputNo}`, `車両入力 ${inputNo}`)}
         </span>
@@ -1731,21 +1733,21 @@ function VehicleInputActionDetail({
       </p>
 
       {compositionChip && (
-        <span className="mt-1 inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">
+        <span className="mt-1 inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[12px] font-semibold text-blue-600">
           {compositionChip}
         </span>
       )}
 
-      <p className="mt-1 text-[11px] font-semibold text-slate-800">
+      <p className="mt-1 text-[13px] font-semibold text-slate-800">
         {currentVolume != null && <span className="font-normal text-slate-500">{formatVolume(currentVolume)} </span>}
         <span className="font-normal text-slate-500">→ </span>
         {`${params.volume} veh/h`}
       </p>
 
-      {hiddenBaselineNote && <p className="mt-0.5 text-[10px] leading-4 text-slate-500">{hiddenBaselineNote}</p>}
+      {hiddenBaselineNote && <p className="mt-0.5 text-[12px] leading-4 text-slate-500">{hiddenBaselineNote}</p>}
 
       {stackIds.length > 1 && (
-        <p className="mt-1 text-[10px] leading-4 text-slate-500">
+        <p className="mt-1 text-[12px] leading-4 text-slate-500">
           {t(
             `같은 지점에 차량 입력 ${stackIds.length}개(${stackIds.join(", ")}) · 이번 변경은 ${inputNo}에만 적용됩니다`,
             `${stackIds.length} vehicle inputs share this point (${stackIds.join(", ")}) · this change touches ${inputNo} only`,
@@ -1774,7 +1776,7 @@ function AgentActionDetail({
   if (action.tool === "set_vehicle_input_volume") {
     return <VehicleInputActionDetail action={action} focus={focus} modelEdited={modelEdited} />;
   }
-  return <p className="mt-0.5 text-[11px] text-slate-600">{agentActionDetail(action, t)}</p>;
+  return <p className="mt-0.5 text-[13px] text-slate-600">{agentActionDetail(action, t)}</p>;
 }
 
 // U-2-core (D4's decision record, 2026-08-13): "the approval card does not
@@ -1807,10 +1809,10 @@ function AgentActionRationale({ summary }: { summary: string }) {
   if (!summary.trim()) return null;
   return (
     <div className="mt-1.5 border-t border-slate-200 pt-1.5">
-      <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500">
+      <p className="text-[12px] font-bold uppercase tracking-[0.08em] text-slate-500">
         {t("제안 이유", "Why proposed", "提案理由")}
       </p>
-      <p className="mt-0.5 text-[11px] leading-5 text-slate-700">{summary}</p>
+      <p className="mt-0.5 text-[13px] leading-5 text-slate-700">{summary}</p>
     </div>
   );
 }
@@ -1864,7 +1866,7 @@ function AgentApprovalCard({
 
   return (
     <div className="mt-2 rounded-xl border border-slate-200 bg-surface px-3 py-2.5">
-      <p className="text-xs font-bold text-slate-800">
+      <p className="text-[14px] font-bold text-slate-800">
         {t("실행 전 확인이 필요합니다", "Approval needed before executing", "実行前に確認が必要です")}
       </p>
 
@@ -1872,7 +1874,7 @@ function AgentApprovalCard({
         {approval.actions.map((action, index) => (
           <div key={`${action.tool}-${index}`} className="rounded-lg bg-slate-50 px-2.5 py-2">
             <div className="flex items-start justify-between gap-2">
-              <p className="text-[11px] font-semibold text-slate-700">{agentActionLabel(action.tool, t)}</p>
+              <p className="text-[13px] font-semibold text-slate-700">{agentActionLabel(action.tool, t)}</p>
               <PreflightStatusChip warningCount={approval.warnings.length} />
             </div>
             <AgentActionDetail action={action} focus={approval.focus} modelEdited={modelEdited} />
@@ -1890,7 +1892,7 @@ function AgentApprovalCard({
           {approval.warnings.map((warning, index) => (
             <p
               key={`${warning.constraint_id || warning.message}-${index}`}
-              className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-5 text-amber-800"
+              className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[13px] leading-5 text-amber-800"
             >
               {warning.message}
             </p>
@@ -1900,10 +1902,10 @@ function AgentApprovalCard({
 
       {approval.assumptions.length > 0 && (
         <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
-          <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500">{t("가정", "Assumptions", "前提")}</p>
+          <p className="text-[12px] font-bold uppercase tracking-[0.08em] text-slate-500">{t("가정", "Assumptions", "前提")}</p>
           <ul className="mt-1 space-y-0.5">
             {approval.assumptions.map((assumption, index) => (
-              <li key={index} className="text-[11px] leading-5 text-slate-600">
+              <li key={index} className="text-[13px] leading-5 text-slate-600">
                 {assumption}
               </li>
             ))}
@@ -1920,10 +1922,10 @@ function AgentApprovalCard({
               and Cancel (backend/routers/assistant.py records it into the
               ledger regardless of outcome), so a real UI decision can carry
               the audit DOCX's 근거 cell instead of leaving it "-". */}
-          <label className="flex flex-col gap-1 text-[11px] text-slate-600">
+          <label className="flex flex-col gap-1 text-[13px] text-slate-600">
             <span className="flex items-center justify-between gap-2">
               <span>{t("사유 (선택)", "Reason (optional)", "理由（任意）")}</span>
-              <span className={`font-mono text-[10px] ${reasonNearCap ? "text-amber-600" : "text-slate-400"}`}>
+              <span className={`font-mono text-[12px] ${reasonNearCap ? "text-amber-600" : "text-slate-400"}`}>
                 {reason.length}/{APPROVAL_REASON_MAX_CHARS}
               </span>
             </span>
@@ -1938,7 +1940,7 @@ function AgentApprovalCard({
                 "A reason left here is recorded in the audit document",
                 "承認・却下の理由を残すと監査文書に記録されます",
               )}
-              className="rounded-md border border-slate-300 bg-surface px-2 py-1 text-[12px] text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-md border border-slate-300 bg-surface px-2 py-1 text-[14px] text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
             />
           </label>
           <div className="flex gap-2">
@@ -1946,7 +1948,7 @@ function AgentApprovalCard({
               type="button"
               onClick={() => onRun(reason.trim() || undefined)}
               disabled={runDisabled}
-              className="ui-button-primary inline-flex h-9 items-center px-4 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              className="ui-button-primary inline-flex h-9 items-center px-4 text-[14px] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {approval.resolution === "approving" ? t("실행 중...", "Running...", "実行中...") : t("실행", "Run", "実行")}
             </button>
@@ -1954,14 +1956,14 @@ function AgentApprovalCard({
               type="button"
               onClick={() => onCancelApproval(reason.trim() || undefined)}
               disabled={runDisabled}
-              className="ui-button-ghost inline-flex h-9 items-center px-4 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              className="ui-button-ghost inline-flex h-9 items-center px-4 text-[14px] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {approval.resolution === "declining" ? t("취소 중...", "Cancelling...", "キャンセル中...") : t("취소", "Cancel", "キャンセル")}
             </button>
           </div>
         </div>
       ) : approval.resolution === "error" ? (
-        <div className="mt-2.5 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] leading-5 text-rose-700">
+        <div className="mt-2.5 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[13px] leading-5 text-rose-700">
           <p>{approval.errorMessage}</p>
           {approval.errorLoginHref && (
             <Link
@@ -1973,7 +1975,7 @@ function AgentApprovalCard({
           )}
         </div>
       ) : (
-        <p className="mt-2.5 text-[11px] font-semibold text-slate-500">
+        <p className="mt-2.5 text-[13px] font-semibold text-slate-500">
           {approval.resolution === "approved" ? t("승인됨", "Approved", "承認済み") : t("취소됨", "Cancelled", "キャンセル済み")}
         </p>
       )}
@@ -2080,7 +2082,7 @@ function PageContextPills({ context }: { context: AssistantPageContext | null })
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
       {chips.slice(0, 4).map((chip) => (
-        <span key={chip} className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+        <span key={chip} className="rounded-full bg-slate-100 px-2 py-0.5 text-[12px] font-semibold text-slate-500">
           {chip}
         </span>
       ))}
@@ -2099,20 +2101,20 @@ function PageContextSummary({
   const chips = buildContextChips(context, t);
   return (
     <div className="rounded-lg border border-slate-200 bg-surface px-3 py-2">
-      <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">{routeLabel}</div>
+      <div className="text-[13px] font-bold uppercase tracking-[0.12em] text-slate-400">{routeLabel}</div>
       {chips.length > 0 ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {chips.map((chip) => (
-            <span key={chip} className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">
+            <span key={chip} className="rounded-full bg-blue-50 px-2 py-0.5 text-[12px] font-semibold text-blue-600">
               {chip}
             </span>
           ))}
         </div>
       ) : (
-        <p className="mt-1 text-xs leading-5 text-slate-500">{t("\uc544\uc9c1 \ud398\uc774\uc9c0 \uc120\ud0dd \ucee8\ud14d\uc2a4\ud2b8\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.", "No page selection is active yet.")}</p>
+        <p className="mt-1 text-[14px] leading-5 text-slate-500">{t("\uc544\uc9c1 \ud398\uc774\uc9c0 \uc120\ud0dd \ucee8\ud14d\uc2a4\ud2b8\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.", "No page selection is active yet.")}</p>
       )}
       {context?.notes && context.notes.length > 0 && (
-        <p className="mt-2 text-[11px] leading-5 text-slate-500">{context.notes.slice(0, 2).join(" ")}</p>
+        <p className="mt-2 text-[13px] leading-5 text-slate-500">{context.notes.slice(0, 2).join(" ")}</p>
       )}
     </div>
   );
@@ -2169,7 +2171,7 @@ function AssistantAnswerContent({
       <div className="space-y-2">
         {sections.map((section) => (
           <section key={`${section.heading}-${section.lines.join("").slice(0, 16)}`} className="border-l-2 border-blue-200 pl-3">
-            <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-blue-600">{localizeHeading(section.heading, lang)}</div>
+            <div className="text-[13px] font-bold uppercase tracking-[0.08em] text-blue-600">{localizeHeading(section.heading, lang)}</div>
             <div className="mt-1">
               <AnswerLines lines={section.lines} />
             </div>
@@ -2202,7 +2204,7 @@ function AssistantNoticeBlock({ text }: { text: string }) {
   return (
     <div className="mt-1 border-t border-dashed border-slate-200 pt-2">
       <div className="rounded-md bg-slate-50 px-2.5 py-2 text-slate-600">
-        <p className="text-[11px] font-semibold leading-5 text-slate-700">{headerLine}</p>
+        <p className="text-[13px] font-semibold leading-5 text-slate-700">{headerLine}</p>
         <AnswerLines lines={restLines} />
       </div>
     </div>
@@ -2245,28 +2247,28 @@ function AnswerLines({ lines }: { lines: string[] }) {
       {nodes.map((node, index) => {
         if (node.type === "num") {
           return (
-            <div key={index} className="mt-1.5 text-sm font-semibold leading-6 text-slate-800">
+            <div key={index} className="mt-1.5 text-[15px] font-semibold leading-6 text-slate-800">
               {node.text}
             </div>
           );
         }
         if (node.type === "label") {
           return (
-            <div key={index} className={`mt-0.5 text-sm font-semibold leading-6 text-slate-600 ${node.pad}`}>
+            <div key={index} className={`mt-0.5 text-[15px] font-semibold leading-6 text-slate-600 ${node.pad}`}>
               {node.text}
             </div>
           );
         }
         if (node.type === "bullet") {
           return (
-            <div key={index} className={`flex gap-2 text-sm leading-6 ${node.pad}`}>
+            <div key={index} className={`flex gap-2 text-[15px] leading-6 ${node.pad}`}>
               <span className="mt-[0.62rem] h-1 w-1 shrink-0 rounded-full bg-slate-400" />
               <span>{node.text}</span>
             </div>
           );
         }
         return (
-          <p key={index} className={`whitespace-pre-wrap text-sm leading-6 ${node.pad}`}>
+          <p key={index} className={`whitespace-pre-wrap text-[15px] leading-6 ${node.pad}`}>
             {node.text}
           </p>
         );
@@ -2347,17 +2349,17 @@ function PromptSimulationStatus({
   const progress = Math.round(Math.max(0, Math.min(1, job?.progress ?? 0)) * 100);
 
   return (
-    <div className="mt-2 border-t border-slate-100 pt-2 text-xs text-slate-600">
+    <div className="mt-2 border-t border-slate-100 pt-2 text-[14px] text-slate-600">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="font-semibold text-slate-800">{t("\uc2dc\ubbac\ub808\uc774\uc158", "Simulation")}</span>
-        {jobId && <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] text-slate-500">{jobId}</span>}
+        {jobId && <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[12px] text-slate-500">{jobId}</span>}
         <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-600">{currentStatus}</span>
       </div>
 
       {result.changes && result.changes.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {result.changes.slice(0, 4).map((change) => (
-            <span key={change} className="rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-500 ring-1 ring-slate-200">
+            <span key={change} className="rounded-full bg-slate-50 px-2 py-0.5 text-[12px] font-semibold text-slate-500 ring-1 ring-slate-200">
               {change}
             </span>
           ))}
@@ -2366,7 +2368,7 @@ function PromptSimulationStatus({
 
       {result.executed && currentStatus !== "done" && currentStatus !== "error" && (
         <div className="mt-2">
-          <div className="mb-1 flex justify-between text-[10px] text-slate-400">
+          <div className="mb-1 flex justify-between text-[12px] text-slate-400">
             <span>{t("\uc9c4\ud589\ub960", "Progress")}</span>
             <span>{progress}%</span>
           </div>
@@ -2377,7 +2379,7 @@ function PromptSimulationStatus({
       )}
 
       {currentStatus === "error" && (
-        <p className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-700">
+        <p className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[13px] text-rose-700">
           {job?.error ?? result.reason ?? t("\uc2dc\ubbac\ub808\uc774\uc158\uc774 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.", "Simulation failed.")}
         </p>
       )}
@@ -2386,7 +2388,7 @@ function PromptSimulationStatus({
 
       {!result.executed && result.requires_confirmation && !declined && (
         <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2">
-          <p className="text-[11px] font-semibold text-amber-800">
+          <p className="text-[13px] font-semibold text-amber-800">
             {t(
               "이 변경을 실제 VISSIM 시뮬레이션에 적용할까요? 위 변경 내용을 확인 후 실행하세요.",
               "Apply this change to a real VISSIM simulation? Review the changes above before running.",
@@ -2397,7 +2399,7 @@ function PromptSimulationStatus({
               type="button"
               onClick={onConfirmExecute}
               disabled={confirming}
-              className="ui-button-primary rounded-md px-3 py-1.5 text-[11px] font-bold disabled:cursor-not-allowed disabled:opacity-60"
+              className="ui-button-primary rounded-md px-3 py-1.5 text-[13px] font-bold disabled:cursor-not-allowed disabled:opacity-60"
             >
               {confirming ? t("실행 중...", "Running...") : t("시뮬레이션 실행", "Run simulation")}
             </button>
@@ -2405,7 +2407,7 @@ function PromptSimulationStatus({
               type="button"
               onClick={onDeclineExecute}
               disabled={confirming}
-              className="rounded-md border border-slate-300 bg-surface px-3 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-md border border-slate-300 bg-surface px-3 py-1.5 text-[13px] font-semibold text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {t("취소", "Cancel")}
             </button>
@@ -2413,14 +2415,14 @@ function PromptSimulationStatus({
         </div>
       )}
       {!result.executed && result.requires_confirmation && declined && (
-        <p className="mt-2 text-[11px] font-semibold text-slate-500">
+        <p className="mt-2 text-[13px] font-semibold text-slate-500">
           {t("시뮬레이션 실행을 취소했습니다.", "Simulation run was cancelled.")}
         </p>
       )}
       {!result.executed && !result.requires_confirmation && result.reason && (
-        <p className="mt-2 text-[11px] text-slate-500">{result.reason}</p>
+        <p className="mt-2 text-[13px] text-slate-500">{result.reason}</p>
       )}
-      {error && <p className="mt-2 text-[11px] text-rose-600">{error}</p>}
+      {error && <p className="mt-2 text-[13px] text-rose-600">{error}</p>}
     </div>
   );
 }
@@ -2436,17 +2438,17 @@ function PromptSimulationMetrics({ results }: { results: SimulationResultsRespon
   ].filter((metric) => typeof metric.value === "number");
 
   if (!metrics.length) {
-    return <p className="mt-2 text-[11px] text-slate-500">{t("\uc0ac\uc6a9 \uac00\ub2a5\ud55c \ub124\ud2b8\uc6cc\ud06c \uc694\uc57d \uc9c0\ud45c\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.", "No network summary metrics were available.")}</p>;
+    return <p className="mt-2 text-[13px] text-slate-500">{t("\uc0ac\uc6a9 \uac00\ub2a5\ud55c \ub124\ud2b8\uc6cc\ud06c \uc694\uc57d \uc9c0\ud45c\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.", "No network summary metrics were available.")}</p>;
   }
 
   return (
     <div className="mt-2 grid grid-cols-2 gap-2">
       {metrics.map((metric) => (
         <div key={metric.label} className="border-l border-slate-200 pl-2">
-          <div className="text-[10px] font-semibold uppercase text-slate-400">{metric.label}</div>
-          <div className="text-sm font-bold text-slate-800">
+          <div className="text-[12px] font-semibold uppercase text-slate-400">{metric.label}</div>
+          <div className="text-[15px] font-bold text-slate-800">
             {formatMetricValue(metric.value)}
-            {metric.unit && <span className="ml-1 text-[10px] font-semibold text-slate-400">{metric.unit}</span>}
+            {metric.unit && <span className="ml-1 text-[12px] font-semibold text-slate-400">{metric.unit}</span>}
           </div>
         </div>
       ))}
@@ -2461,14 +2463,14 @@ function CompactSources({ sources }: { sources: AssistantSource[] }) {
 
   return (
     <details className="mt-2 border-t border-slate-100 pt-2">
-      <summary className="cursor-pointer text-[11px] font-bold uppercase text-slate-500">
+      <summary className="cursor-pointer text-[13px] font-bold uppercase text-slate-500">
         {t("\ucd9c\ucc98", "Sources")} ({visibleSources.length})
       </summary>
       <div className="mt-2 grid gap-1.5">
         {visibleSources.map((source, index) => (
           <div key={`${source.path ?? source.title}-${source.chunk_id ?? index}`} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
-            <div className="truncate text-[11px] font-semibold text-slate-700">{source.citation_label || source.title}</div>
-            <div className="mt-0.5 truncate text-[10px] text-slate-500">{source.page_range ?? source.kind}</div>
+            <div className="truncate text-[13px] font-semibold text-slate-700">{source.citation_label || source.title}</div>
+            <div className="mt-0.5 truncate text-[12px] text-slate-500">{source.page_range ?? source.kind}</div>
           </div>
         ))}
       </div>
@@ -2582,7 +2584,7 @@ function AgentRunProgressCard({
       }
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-600">
+        <div className="flex min-w-0 items-center gap-2 text-[14px] font-medium text-slate-600">
           <span
             className={`h-1.5 w-1.5 shrink-0 rounded-full ${
               status === "error" ? "bg-rose-500" : status === "done" ? "bg-emerald-500" : "animate-pulse bg-blue-500"
@@ -2595,7 +2597,7 @@ function AgentRunProgressCard({
           <button
             type="button"
             onClick={onCancel}
-            className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold leading-none text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+            className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[12px] font-bold leading-none text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
           >
             {t("취소", "Cancel", "キャンセル")}
           </button>
@@ -2609,7 +2611,7 @@ function AgentRunProgressCard({
         />
       </div>
 
-      <div className="mt-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[10px] text-slate-400">
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[12px] text-slate-400">
         <span>
           {elapsedS !== null
             ? t(`경과 ${formatElapsedClock(elapsedS)}`, `Elapsed ${formatElapsedClock(elapsedS)}`, `経過 ${formatElapsedClock(elapsedS)}`)
@@ -2619,12 +2621,12 @@ function AgentRunProgressCard({
       </div>
 
       {status === "error" && (
-        <p className="mt-1.5 text-[11px] leading-5 text-rose-600">
+        <p className="mt-1.5 text-[13px] leading-5 text-rose-600">
           {job?.error ?? pollError ?? t("시뮬레이션이 실패했습니다.", "The simulation failed.", "シミュレーションに失敗しました。")}
         </p>
       )}
       {!job && pollError && (
-        <p className="mt-1.5 text-[11px] leading-5 text-slate-400">
+        <p className="mt-1.5 text-[13px] leading-5 text-slate-400">
           {t(
             "진행 상황을 불러오지 못했습니다. 계속 재시도합니다.",
             "Couldn't load progress yet — retrying.",
@@ -2685,7 +2687,7 @@ function AssistantInlineProgress({
 
   return (
     <div className={compact ? "mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2" : "flex items-center justify-between gap-3"}>
-      <div className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-500">
+      <div className="flex min-w-0 items-center gap-2 text-[14px] font-medium text-slate-500">
         <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500" />
         <span className="truncate">{label}</span>
       </div>
@@ -2693,7 +2695,7 @@ function AssistantInlineProgress({
         <button
           type="button"
           onClick={onCancel}
-          className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold leading-none text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+          className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[12px] font-bold leading-none text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
         >
           {t("\ucde8\uc18c", "Cancel")}
         </button>
@@ -2709,7 +2711,7 @@ function AssistantRuntimeBadge({ response }: { response: AssistantQueryResponse 
 
   if (mode === "error-fallback") {
     return (
-      <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-5 text-amber-800">
+      <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[13px] leading-5 text-amber-800">
         {t(
           "AI \uc11c\ubc84 \uc624\ub958\ub97c \ud3f4\ubc31 \ub2f5\ubcc0\uc73c\ub85c \ubcf5\uad6c\ud588\uc2b5\ub2c8\ub2e4.",
           "Recovered an AI server error with a fallback answer.",
@@ -2721,7 +2723,7 @@ function AssistantRuntimeBadge({ response }: { response: AssistantQueryResponse 
 
   if (mode === "fallback") {
     return (
-      <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-5 text-amber-800">
+      <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[13px] leading-5 text-amber-800">
         {t(
           "\ubaa8\ub378 \uc0dd\uc131\uc774 \ubd88\uc548\uc815\ud574 \ub300\uc2dc\ubcf4\ub4dc \uae30\ubc18 \ud3f4\ubc31 \ub2f5\ubcc0\uc744 \uc0ac\uc6a9\ud588\uc2b5\ub2c8\ub2e4.",
           "Model generation was unstable, so this used a dashboard fallback answer.",
@@ -2732,7 +2734,7 @@ function AssistantRuntimeBadge({ response }: { response: AssistantQueryResponse 
 
   if (attempts > 1) {
     return (
-      <p className="mt-2 text-[11px] leading-5 text-slate-400">
+      <p className="mt-2 text-[13px] leading-5 text-slate-400">
         {t("\uc790\ub3d9 \uc7ac\uc2dc\ub3c4 \ud6c4 \uc751\ub2f5\ud588\uc2b5\ub2c8\ub2e4.", "Answered after an automatic retry.")}
       </p>
     );
@@ -2754,7 +2756,7 @@ function AssistantRuntimeNote({
 
   if (statusError) {
     return (
-      <p className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[11px] leading-5 text-rose-700">
+      <p className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 text-[13px] leading-5 text-rose-700">
         {statusError}
       </p>
     );
@@ -2762,7 +2764,7 @@ function AssistantRuntimeNote({
 
   if (!status) {
     if (!checking) return null;
-    return <p className="mt-2 text-[11px] leading-5 text-slate-500">{t("AI \uc0c1\ud0dc \ud655\uc778 \uc911...", "Checking AI status...")}</p>;
+    return <p className="mt-2 text-[13px] leading-5 text-slate-500">{t("AI \uc0c1\ud0dc \ud655\uc778 \uc911...", "Checking AI status...")}</p>;
   }
 
   if (status.ready && status.state !== "generating") return null;
@@ -2780,46 +2782,9 @@ function AssistantRuntimeNote({
   const workerError = compactWorkerError(status.worker_error);
 
   return (
-    <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-5 text-amber-800">
+    <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[13px] leading-5 text-amber-800">
       {workerError ? `${detail} ${workerError}` : detail}
     </p>
-  );
-}
-
-function AssistantStatusPill({ status, checking }: { status: AssistantStatus | null; checking: boolean }) {
-  const { t } = useLanguage();
-  const ready = status?.ready;
-  const found = status?.model_path_exists;
-  const state = status?.state;
-  const color = ready
-    ? state === "generating"
-      ? "bg-sky-500"
-      : "bg-emerald-500"
-    : checking
-      ? "bg-sky-400"
-      : state === "failed"
-        ? "bg-rose-500"
-        : state === "loading" || state === "standby" || found
-        ? "bg-amber-400"
-        : "bg-slate-400";
-  const label = checking
-    ? t("AI \uc0c1\ud0dc \ud655\uc778 \uc911", "Checking AI status")
-    : state === "loading"
-      ? t("AI \ub85c\ub529 \uc911", "AI loading")
-      : state === "generating"
-        ? t("AI \uc0dd\uc131 \uc911", "AI generating")
-        : ready
-          ? t("AI \uc5d4\uc9c4 \uc900\ube44\ub428", "AI engine ready")
-          : state === "failed"
-            ? t("AI \ud655\uc778 \ud544\uc694", "AI needs attention")
-          : state === "standby" || found
-            ? t("AI \uc5d4\uc9c4 \ub300\uae30", "AI engine standby")
-            : t("AI \uc5d4\uc9c4 \uc624\ud504\ub77c\uc778", "AI engine offline");
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-600">
-      <span className={`h-1.5 w-1.5 rounded-full ${color}`} />
-      {label}
-    </span>
   );
 }
 
@@ -2829,24 +2794,6 @@ function compactWorkerError(value?: string | null): string {
   if (errorIdMatch) return `ID: ${errorIdMatch[1]}`;
   const cleaned = value.replace(/\s+/g, " ").trim();
   return cleaned.length > 120 ? `${cleaned.slice(0, 117)}...` : cleaned;
-}
-
-function ComStatusPill({ status }: { status: VissimComToolStatus | null }) {
-  const { t } = useLanguage();
-  const connected = status?.connected;
-  const available = status?.available;
-  const label = connected ? t("COM \uc5f0\uacb0\ub428", "COM connected") : available ? t("COM \uc900\ube44\ub428", "COM ready") : t("COM \uc624\ud504\ub77c\uc778", "COM offline");
-  const color = connected ? "bg-emerald-500" : available ? "bg-amber-400" : "bg-slate-400";
-
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-surface px-2 py-1 text-[10px] font-semibold text-slate-600"
-      title={status?.reason ?? status?.error ?? undefined}
-    >
-      <span className={`h-1.5 w-1.5 rounded-full ${color}`} />
-      {label}
-    </span>
-  );
 }
 
 function buildRouteAssistantContext(pathname: string, t: Translate): RouteAssistantContext {
@@ -2974,10 +2921,13 @@ function readStoredPanelSize(): AssistantPanelSize {
   try {
     const stored = window.localStorage.getItem(PANEL_SIZE_STORAGE_KEY);
     if (!stored) return clampPanelSize(DEFAULT_PANEL_SIZE);
+    // Legacy floating-panel entries are `{ width, height }`; the drawer is
+    // full-height now, so any stored `height` is read and deliberately
+    // dropped rather than migrated -- reading only `width` keeps every
+    // pre-drawer user's chosen width instead of resetting them to default.
     const parsed = JSON.parse(stored) as Partial<AssistantPanelSize>;
     return clampPanelSize({
       width: toPanelDimension(parsed.width, DEFAULT_PANEL_SIZE.width),
-      height: toPanelDimension(parsed.height, DEFAULT_PANEL_SIZE.height),
     });
   } catch {
     return clampPanelSize(DEFAULT_PANEL_SIZE);
@@ -2998,15 +2948,13 @@ function clampPanelSize(size: AssistantPanelSize): AssistantPanelSize {
   const maxWidth =
     typeof window === "undefined"
       ? PANEL_MAX_SIZE.width
-      : Math.min(PANEL_MAX_SIZE.width, Math.max(PANEL_MIN_SIZE.width, window.innerWidth - PANEL_VIEWPORT_MARGIN.width));
-  const maxHeight =
-    typeof window === "undefined"
-      ? PANEL_MAX_SIZE.height
-      : Math.min(PANEL_MAX_SIZE.height, Math.max(PANEL_MIN_SIZE.height, window.innerHeight - PANEL_VIEWPORT_MARGIN.height));
+      : Math.min(
+          PANEL_MAX_SIZE.width,
+          Math.max(PANEL_MIN_SIZE.width, Math.round(window.innerWidth * PANEL_MAX_VIEWPORT_FRACTION)),
+        );
 
   return {
     width: clampNumber(toPanelDimension(size.width, DEFAULT_PANEL_SIZE.width), PANEL_MIN_SIZE.width, maxWidth),
-    height: clampNumber(toPanelDimension(size.height, DEFAULT_PANEL_SIZE.height), PANEL_MIN_SIZE.height, maxHeight),
   };
 }
 

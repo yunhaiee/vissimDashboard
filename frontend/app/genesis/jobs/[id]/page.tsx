@@ -50,7 +50,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
 import GenesisComparisonPanel from "@/components/genesis/GenesisComparisonPanel";
 import GenesisTileMap from "@/components/genesis/GenesisTileMap";
-import { InfoTip, PageHelp, refusalHeadline } from "@/components/genesis/ui";
+import { InfoTip, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
   applyGenesisFix,
@@ -147,7 +147,7 @@ function verdictLabel(verdict: GenesisGateReport["verdict"], t: Translate): stri
 function Stat({ label, value, tone }: { label: string; value: React.ReactNode; tone?: string }) {
   return (
     <div className="min-w-[86px]">
-      <p className="text-[12px] text-slate-500">{label}</p>
+      <p className="text-[14px] text-slate-500">{label}</p>
       <p className={`mt-0.5 text-[22px] font-semibold leading-none ${tone ?? "text-slate-900"}`}>
         {value}
       </p>
@@ -322,11 +322,11 @@ function FixFindingRow({
   const error = applyError ? applyFixErrorText(applyError, t) : null;
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-[13px] text-slate-800">
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-[15px] text-slate-800">
       <div className="flex flex-wrap items-baseline gap-2">
-        {finding.origin === "warning" && <span className="text-[12px] text-slate-500">warn /</span>}
-        <span className="font-mono text-[12px] font-semibold text-slate-700">{finding.code}</span>
-        <span className="font-mono text-[12px] text-slate-500">{finding.subject}</span>
+        {finding.origin === "warning" && <span className="text-[14px] text-slate-500">warn /</span>}
+        <span className="font-mono text-[14px] font-semibold text-slate-700">{finding.code}</span>
+        <span className="font-mono text-[14px] text-slate-500">{finding.subject}</span>
       </div>
 
       {!actionable ? (
@@ -334,9 +334,9 @@ function FixFindingRow({
           {/* NOT_AUTOMATABLE (or a structural refusal wearing an AUTOMATABLE
             * status -- see fixDispositionIsActionable) -- ONE mono line, the
             * rationale verbatim, and NEVER a button. */}
-          <p className="font-mono text-[13px] leading-relaxed text-slate-700">{rationale}</p>
+          <p className="font-mono text-[15px] leading-relaxed text-slate-700">{rationale}</p>
           {!isFirstForCode && fixDispositionIsActionable(disposition) && (
-            <p className="mt-1.5 text-[12px] leading-relaxed text-slate-500">
+            <p className="mt-1.5 text-[14px] leading-relaxed text-slate-500">
               {t(
                 "같은 코드의 발견이 이 판정에 여러 건입니다 — 자동 적용은 첫 번째 발견에만 연결됩니다. 그 발견을 먼저 적용해 재게이트한 뒤, 남은 발견이 새 판정의 첫 자리에 나타나면 그때 적용하십시오.",
                 "This code appears more than once in this verdict — an apply only ever resolves to the FIRST finding carrying it. Apply that one first; once the re-gate runs, the remaining finding moves to the front of the new verdict's own list and can be applied then.",
@@ -345,18 +345,18 @@ function FixFindingRow({
             </p>
           )}
           {disposition.reason_code && (
-            <p className="mt-1 font-mono text-[12px] text-slate-500">{disposition.reason_code}</p>
+            <p className="mt-1 font-mono text-[14px] text-slate-500">{disposition.reason_code}</p>
           )}
         </div>
       ) : (
         <div className="mt-2 flex flex-col gap-2">
-          <p className="font-mono text-[12px] text-slate-600">
+          <p className="font-mono text-[14px] text-slate-600">
             {t("동사", "Verb", "動詞")}: {disposition.verb}
           </p>
           <p className="leading-relaxed text-slate-700">{rationale}</p>
 
           <span
-            className={`w-fit rounded-full border px-1.5 py-0.5 text-[12px] font-semibold ${
+            className={`w-fit rounded-full border px-1.5 py-0.5 text-[14px] font-semibold ${
               fixIsDemandEstimateFraming(disposition)
                 ? "border-2 border-slate-400 bg-slate-100 text-slate-900 underline decoration-dotted decoration-slate-400 underline-offset-4"
                 : "border-slate-300 bg-white/[0.06] text-slate-600"
@@ -366,7 +366,7 @@ function FixFindingRow({
           </span>
 
           {fixIsDemandEstimateFraming(disposition) && (
-            <p className="text-[12px] leading-relaxed text-slate-600">
+            <p className="text-[14px] leading-relaxed text-slate-600">
               {t(
                 "※ 수요 추정 — 이 값은 검증된 실측이 아니라 명시된 추정치입니다. 실제 진입 교통량을 아신다면 이 제안 대신 그 값을 직접 입력해 주십시오.",
                 "NB DEMAND ESTIMATE — this value is a named estimate, not a verified measurement. If you know the real entrance count, enter it directly instead of approving this.",
@@ -376,7 +376,7 @@ function FixFindingRow({
           )}
 
           {disposition.assumptions.length > 0 && (
-            <ul className="list-disc space-y-0.5 pl-4 text-[12px] leading-relaxed text-slate-600">
+            <ul className="list-disc space-y-0.5 pl-4 text-[14px] leading-relaxed text-slate-600">
               {disposition.assumptions.map((token) => (
                 <li key={token}>{fixAssumptionLabel(token, t)}</li>
               ))}
@@ -385,7 +385,7 @@ function FixFindingRow({
 
           {/* The inherited-auto-publish disclosure -- one sentence, not a
             * modal, on every approval card regardless of confidence. */}
-          <p className="text-[12px] leading-relaxed text-slate-500">
+          <p className="text-[14px] leading-relaxed text-slate-500">
             {t(
               "승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다 — 통과하면 그 결과가 자동으로 이 프로젝트의 활성 데이터셋으로 등록됩니다.",
               "Approving runs a real Vissim edit and re-gates the network — a pass automatically registers the result as this project's active dataset.",
@@ -398,7 +398,7 @@ function FixFindingRow({
               {disposition.requires.map((field) => {
                 const spec = fixRequiredFieldSpec(field, t);
                 return (
-                  <label key={field} className="flex items-center gap-2 text-[12px] text-slate-700">
+                  <label key={field} className="flex items-center gap-2 text-[14px] text-slate-700">
                     <span className="min-w-[120px]">{spec.label}</span>
                     <input
                       type={spec.numeric ? "number" : "text"}
@@ -406,7 +406,7 @@ function FixFindingRow({
                       onChange={(event) =>
                         setRequiredValues((current) => ({ ...current, [field]: event.target.value }))
                       }
-                      className="w-32 rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[12px] text-slate-900"
+                      className="w-32 rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[14px] text-slate-900"
                     />
                   </label>
                 );
@@ -414,14 +414,14 @@ function FixFindingRow({
             </div>
           )}
 
-          <label className="flex flex-col gap-1 text-[12px] text-slate-600">
+          <label className="flex flex-col gap-1 text-[14px] text-slate-600">
             <span>{t("사유 (선택)", "Rationale (optional)", "理由（任意）")}</span>
             <input
               type="text"
               value={approvalRationale}
               onChange={(event) => setApprovalRationale(event.target.value)}
               maxLength={600}
-              className="rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[13px] text-slate-900"
+              className="rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[15px] text-slate-900"
             />
           </label>
 
@@ -430,19 +430,19 @@ function FixFindingRow({
               type="button"
               disabled={applying || missingRequired}
               onClick={() => void submit()}
-              className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[13px] disabled:cursor-not-allowed"
+              className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px] disabled:cursor-not-allowed"
             >
               {applying ? t("적용하는 중…", "Applying…", "適用中…") : t("적용 승인", "Approve fix", "適用を承認")}
             </button>
           </div>
 
           {error && (
-            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-800">
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[15px] text-rose-800">
               <p className="font-semibold">{error.headline}</p>
               {error.reasons.length > 0 && (
                 <ul className="mt-1 space-y-1">
                   {error.reasons.map((reason, index) => (
-                    <li key={index} className="font-mono text-[12px] leading-relaxed">
+                    <li key={index} className="font-mono text-[14px] leading-relaxed">
                       {reason}
                     </li>
                   ))}
@@ -508,9 +508,9 @@ function GateCheckGrid({
               className={`flex flex-col gap-1.5 rounded-lg border px-3 py-2.5 text-left transition-[background-color,box-shadow,color] duration-100 ${checkCellClasses(isSelected)}`}
             >
               <span className="flex flex-wrap items-center gap-1.5">
-                <span className="font-mono text-[13px] font-bold">{check.id}</span>
+                <span className="font-mono text-[15px] font-bold">{check.id}</span>
                 <span
-                  className={`rounded-full border px-1.5 py-0.5 text-[12px] font-bold uppercase ${checkStateTagClasses(check.state)}`}
+                  className={`rounded-full border px-1.5 py-0.5 text-[14px] font-bold uppercase ${checkStateTagClasses(check.state)}`}
                 >
                   {checkStateLabel(check.state, t)}
                 </span>
@@ -522,7 +522,7 @@ function GateCheckGrid({
                 * detail below once the cell is opened. Derived by splitting
                 * the payload's own string — no client-side name table. */}
               <span
-                className={`line-clamp-1 text-[12px] leading-tight ${isSelected ? "font-semibold text-slate-900" : "font-medium"}`}
+                className={`line-clamp-1 text-[14px] leading-tight ${isSelected ? "font-semibold text-slate-900" : "font-medium"}`}
               >
                 {check.title.split(" — ")[0]}
               </span>
@@ -533,15 +533,15 @@ function GateCheckGrid({
 
       <div aria-live="polite">
         {selected && (
-          <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-[13px] text-slate-800">
+          <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-[15px] text-slate-800">
             <div className="flex flex-wrap items-baseline gap-2">
-              <span className="font-mono text-[13px] font-bold">{selected.id}</span>
+              <span className="font-mono text-[15px] font-bold">{selected.id}</span>
               <span
-                className={`rounded-full border px-1.5 py-0.5 text-[12px] font-bold uppercase ${checkStateTagClasses(selected.state)}`}
+                className={`rounded-full border px-1.5 py-0.5 text-[14px] font-bold uppercase ${checkStateTagClasses(selected.state)}`}
               >
                 {checkStateLabel(selected.state, t)}
               </span>
-              <span className="text-[12px] text-slate-600">
+              <span className="text-[14px] text-slate-600">
                 {selected.tier === "refuse"
                   ? t("거부 등급", "refuse tier", "拒否ティア")
                   : t("경고 등급", "warn tier", "警告ティア")}
@@ -553,7 +553,7 @@ function GateCheckGrid({
               {selected.gaps.length > 0 && (
                 <ul className="space-y-1">
                   {selected.gaps.map((gap) => (
-                    <li key={gap.code} className="text-[13px] leading-relaxed">
+                    <li key={gap.code} className="text-[15px] leading-relaxed">
                       {t("실행 불가", "could not run", "実行不可")}: {gap.message}
                     </li>
                   ))}
@@ -568,7 +568,7 @@ function GateCheckGrid({
                 />
               )}
               {selected.findings_omitted > 0 && (
-                <p className="mt-1.5 text-[12px] text-slate-600">
+                <p className="mt-1.5 text-[14px] text-slate-600">
                   {t(
                     `이 화면에 표시되지 않은 항목 ${selected.findings_omitted}건 — gate.json 전체 내려받기에 모두 들어 있습니다.`,
                     `${selected.findings_omitted} more not shown here — all of them are in the gate.json download.`,
@@ -586,7 +586,7 @@ function GateCheckGrid({
               )}
 
               {!checkHasBody(selected) && (
-                <p className="text-[13px] leading-relaxed text-slate-600">
+                <p className="text-[15px] leading-relaxed text-slate-600">
                   {t(
                     "이 검사에 기록된 항목이 없습니다.",
                     "Nothing was recorded for this check.",
@@ -597,7 +597,7 @@ function GateCheckGrid({
 
               {checkHasBody(selected) && (
                 <div className="mt-4 border-t border-slate-200 pt-3">
-                  <p className="text-[13px] font-semibold text-slate-800">
+                  <p className="text-[15px] font-semibold text-slate-800">
                     {t("수정 제안", "Fix proposals", "修正提案")}
                     <InfoTip
                       text={t(
@@ -609,13 +609,13 @@ function GateCheckGrid({
                   </p>
 
                   {!fixes && !fixesError && (
-                    <p className="mt-2 text-[13px] text-slate-500">
+                    <p className="mt-2 text-[15px] text-slate-500">
                       {t("수정 제안을 불러오는 중…", "Loading fix proposals…", "修正提案を読み込み中…")}
                     </p>
                   )}
 
                   {fixesError && (
-                    <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
+                    <p className="mt-2 text-[15px] leading-relaxed text-slate-600">
                       {fixesError instanceof GenesisError && fixesError.status === 401
                         ? t(
                             "수정 제안을 보려면 로그인이 필요합니다 — 로그인 후 다시 시도하세요.",
@@ -648,7 +648,7 @@ function GateCheckGrid({
                           />
                         ))}
                       {fixes.findings.filter((finding) => finding.check_id === selected.id).length === 0 && (
-                        <p className="text-[13px] text-slate-500">
+                        <p className="text-[15px] text-slate-500">
                           {t(
                             "이 검사에는 개별 수정 제안이 없습니다.",
                             "No individual fix proposal for this check.",
@@ -732,7 +732,7 @@ function CollapsibleMessages({ items, t }: { items: string[]; t: Translate }) {
     <>
       <ul className="mt-2 space-y-1">
         {visible.map((message, index) => (
-          <li key={index} className="text-[13px] leading-relaxed">
+          <li key={index} className="text-[15px] leading-relaxed">
             {message}
           </li>
         ))}
@@ -741,7 +741,7 @@ function CollapsibleMessages({ items, t }: { items: string[]; t: Translate }) {
         <button
           type="button"
           onClick={() => setExpanded((open) => !open)}
-          className="ui-button-ghost mt-1.5 rounded-full px-2.5 py-0.5 text-[12px] font-medium"
+          className="ui-button-ghost mt-1.5 rounded-full px-2.5 py-0.5 text-[14px] font-medium"
         >
           {expanded
             ? t("접기", "Collapse", "折りたたむ")
@@ -785,7 +785,7 @@ function ArtifactRow({ jobId, t }: { jobId: string; t: Translate }) {
             type="button"
             disabled={pending !== null}
             onClick={() => void download(artifact.kind)}
-            className="ui-button-ghost inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-60"
+            className="ui-button-ghost inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[14px] font-medium disabled:cursor-not-allowed disabled:opacity-60"
           >
             <svg
               viewBox="0 0 24 24"
@@ -808,7 +808,7 @@ function ArtifactRow({ jobId, t }: { jobId: string; t: Translate }) {
         ))}
       </div>
       {failure && (
-        <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-800">
+        <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[15px] text-rose-800">
           <p className="font-semibold">
             {t("내려받지 못했습니다", "The download did not happen", "ダウンロードできませんでした")} (
             {failure.kind})
@@ -991,40 +991,18 @@ export default function GenesisJobDetailPage() {
     [router],
   );
 
-  // Unit #20's 판정 게이트/잠정 등록/지도 doctrine entries move again -- out of
-  // the hub's PageHelp (they described the DRAWER, which no longer lives on
-  // the hub) and into this page's own. Verbatim text, new home.
-  const jobHelpEntries = [
-    {
-      title: t("판정 게이트", "The validation gate", "判定ゲート"),
-      body: t(
-        "R1.5 검증 게이트 V1–V9. 실행되지 못한 검사는 절대 통과가 아닙니다. 거부 등급 검사가 결함을 입증하면 그 네트워크는 프로젝트에 등록되지 않습니다 — 파일과 판정은 아티팩트에서 그대로 받아볼 수 있습니다.",
-        "The R1.5 validation gate, V1–V9. A check that could not run is never a pass. When a refuse-tier check proves a fault the network is NOT registered in the project — the file and the verdict stay downloadable from the artifacts.",
-        "R1.5検証ゲート V1–V9。実行できなかった検査は決して合格ではありません。拒否ティアの検査が欠陥を証明した場合、そのネットワークはプロジェクトに登録されません — ファイルと判定はアーティファクトからそのまま取得できます。",
-      ),
-    },
-    {
-      title: t("잠정 등록", "Provisional registration", "暫定登録"),
-      body: t(
-        "프로젝트에 등록되었습니다. 다만 실행되지 못한 거부 등급 검사가 있어 잠정 상태입니다 — 생성 잡은 Vissim COM을 열 수 없으므로, 실제 Vissim이 이 파일을 여는 것을 증명하는 V1은 라이브 검사 증거를 붙여야 확정됩니다.",
-        "Registered in the project, but provisional: a refuse-tier check could not run. A generation job may not open Vissim COM, so V1 — the only check that proves a real Vissim opens this file — stays open until live-check evidence is attached.",
-        "プロジェクトに登録されましたが、実行できなかった拒否ティア検査があるため暫定です。生成ジョブは Vissim COM を開けないため、実際の Vissim がこのファイルを開くことを証明する V1 はライブ検査の証拠を添付するまで確定しません。",
-      ),
-    },
-    {
-      title: t("지도", "The map", "地図"),
-      body: t(
-        "지도는 이 생성이 기록한 좌표를 그립니다. 초안이 OpenStreetMap 좌표에서 만들어졌다면 서버가 역변환한 실제 WGS84 좌표를 배경지도 위에 그리고, 그렇지 않다면 배경지도 없이 이 생성만의 로컬 좌표로 그립니다 — 어느 쪽인지는 지도 제목 옆 ⓘ에 그때그때 표시됩니다.",
-        "The map draws the coordinates this generation recorded. If the draft was built from OpenStreetMap degrees, the server's own inverse projection places it on a real WGS84 basemap; otherwise it is drawn with no basemap, in this generation's own local coordinates — which one applies is stated by the ⓘ beside the map's own title.",
-        "地図はこの生成が記録した座標を描きます。下書きが OpenStreetMap の座標から作られていれば、サーバーが逆変換した実際の WGS84 座標を背景地図の上に描き、そうでなければ背景地図なしでこの生成専用のローカル座標で描きます — どちらであるかは地図タイトル横の ⓘ にその都度表示されます。",
-      ),
-    },
-  ];
+  // UNIT #20's help drawer is RETIRED (2026-08-14). 판정 게이트/잠정 등록/지도
+  // have now moved a third time and stopped moving: they are verbatim in
+  // lib/help-content.tsx (`jobHelpEntries`) and render at /docs, opened by the
+  // book icon in the app topbar. Their journey (inline ⓘ on the hub → the hub's
+  // drawer → this route's drawer → /docs) is exactly why they ended up in one
+  // file: doctrine that follows a control around gets rewritten every time it
+  // moves, and these sentences are the product's own claims.
 
   const backLink = (
     <Link
       href="/genesis"
-      className="ui-button-ghost inline-flex w-fit items-center gap-1 rounded-md px-2 py-1 text-[13px]"
+      className="ui-button-ghost inline-flex w-fit items-center gap-1 rounded-md px-2 py-1 text-[15px]"
     >
       ← {t("생성 이력", "Generations", "生成履歴")}
     </Link>
@@ -1036,7 +1014,7 @@ export default function GenesisJobDetailPage() {
       <div className="mx-auto max-w-[1500px] px-4 py-8">
         {backLink}
         <div className="mt-6 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center">
-          <p className="text-[13px] text-slate-600">
+          <p className="text-[15px] text-slate-600">
             {t(
               "이 생성을 찾을 수 없습니다 — 삭제되었거나 다른 프로젝트의 생성일 수 있습니다.",
               "This generation could not be found — it may have been deleted, or it belongs to a different project.",
@@ -1053,7 +1031,7 @@ export default function GenesisJobDetailPage() {
     return (
       <div className="mx-auto max-w-[1500px] px-4 py-8">
         {backLink}
-        <p className="mt-6 text-[13px] text-slate-500">{t("불러오는 중…", "Loading…", "読み込み中…")}</p>
+        <p className="mt-6 text-[15px] text-slate-500">{t("불러오는 중…", "Loading…", "読み込み中…")}</p>
       </div>
     );
   }
@@ -1070,7 +1048,7 @@ export default function GenesisJobDetailPage() {
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="truncate text-[20px] font-semibold text-white">{selected.name}</h1>
             <span
-              className={`shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[12px] font-semibold ${statusClasses(selected.status)}`}
+              className={`shrink-0 whitespace-nowrap rounded-full border px-2 py-0.5 text-[14px] font-semibold ${statusClasses(selected.status)}`}
             >
               {statusLabel(selected.status, t)}
             </span>
@@ -1079,12 +1057,12 @@ export default function GenesisJobDetailPage() {
             * pass 2026-08-14) -- both stay in gate.json and the compliance
             * report; the history table still carries date and scale. */}
           {selected.source_osm.filename !== `${selected.name}.osm` && (
-            <p className="mt-1 truncate font-mono text-[12px] text-slate-500">
+            <p className="mt-1 truncate font-mono text-[14px] text-slate-500">
               {selected.source_osm.filename}
             </p>
           )}
           {selected.derived_from && (
-            <p className="mt-1 truncate font-mono text-[12px] text-slate-500">
+            <p className="mt-1 truncate font-mono text-[14px] text-slate-500">
               {t("파생", "Derived from", "派生")} — {selected.derived_from.job_id} ·{" "}
               {selected.derived_from.finding_code} · {selected.derived_from.approved_by ?? "—"}
             </p>
@@ -1109,7 +1087,7 @@ export default function GenesisJobDetailPage() {
             </div>
           )}
           {pollError && (
-            <p className="mt-2 text-[12px] text-slate-500">
+            <p className="mt-2 text-[14px] text-slate-500">
               {t(
                 "최신 상태를 다시 불러오지 못했습니다 — 마지막으로 확인된 상태를 보여줍니다.",
                 "Could not refresh this job's status — showing the last state that loaded.",
@@ -1121,7 +1099,7 @@ export default function GenesisJobDetailPage() {
 
         {selected.artifact && (
           <div className="shrink-0 lg:text-right">
-            <p className="text-[12px] text-slate-500">{t("아티팩트", "Artifacts", "アーティファクト")}</p>
+            <p className="text-[14px] text-slate-500">{t("아티팩트", "Artifacts", "アーティファクト")}</p>
             <div className="mt-1 flex flex-wrap gap-2 lg:justify-end">
               <ArtifactRow jobId={selected.id} t={t} />
             </div>
@@ -1135,7 +1113,6 @@ export default function GenesisJobDetailPage() {
       <section className="mt-6">
         <h2 className="flex items-center text-[15px] font-semibold text-slate-900">
           {t("판정", "Verdict", "判定")}
-          <PageHelp entries={jobHelpEntries} />
         </h2>
 
         <div className="mt-3">
@@ -1144,13 +1121,13 @@ export default function GenesisJobDetailPage() {
           </p>
 
           {!isTerminal(selected.status) && (
-            <p className="mt-2 text-[13px] text-slate-600">
+            <p className="mt-2 text-[15px] text-slate-600">
               {t("진행", "Phase", "進行")}: {selected.phase} ({Math.round(selected.progress * 100)}%)
             </p>
           )}
 
           {selected.status === "provisional" && (
-            <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
+            <p className="mt-2 text-[15px] leading-relaxed text-slate-600">
               {t(
                 "등록되었지만 잠정입니다 — V1은 라이브 검사 증거를 기다립니다.",
                 "Registered, but provisional — V1 is waiting for live-check evidence.",
@@ -1163,7 +1140,7 @@ export default function GenesisJobDetailPage() {
             * refused; the not-registered consequence reads in the 판정 게이트
             * help entry below. */}
           {selected.revocation && (
-            <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
+            <p className="mt-2 text-[15px] leading-relaxed text-slate-600">
               {selected.revocation.removed_from_workspace
                 ? t(
                     "라이브 증거가 들어온 뒤 게이트가 이 네트워크를 거부하여, 프로젝트에서 등록을 해제했습니다.",
@@ -1178,13 +1155,13 @@ export default function GenesisJobDetailPage() {
             </p>
           )}
           {selected.refusal && (
-            <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-800">
+            <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[15px] text-rose-800">
               <p className="font-semibold">
                 {refusalHeadline(selected.refusal.code, t, generationRefusalFallback(t))}
               </p>
               <ul className="mt-1 space-y-1">
                 {selected.refusal.reasons.map((reason, index) => (
-                  <li key={index} className="font-mono text-[12px] leading-relaxed">
+                  <li key={index} className="font-mono text-[14px] leading-relaxed">
                     {reason}
                   </li>
                 ))}
@@ -1194,7 +1171,7 @@ export default function GenesisJobDetailPage() {
         </div>
 
         {selected.gate?.live_evidence && (
-          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-[13px] text-slate-700">
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-[15px] text-slate-700">
             {/* "Attestation", never "proof". The state.json arrives over
               * HTTP, so this app cannot establish that Vissim ran — it can
               * only record who says it did. */}
@@ -1242,7 +1219,7 @@ export default function GenesisJobDetailPage() {
         )}
 
         {reportError && (
-          <div className="mt-4 rounded-lg border-2 border-slate-400 bg-slate-100 px-3 py-2 text-[13px] text-slate-900">
+          <div className="mt-4 rounded-lg border-2 border-slate-400 bg-slate-100 px-3 py-2 text-[15px] text-slate-900">
             {t("게이트 결과를 불러오지 못했습니다", "Failed to load the gate result", "ゲート結果を読み込めませんでした")}
             : {reportError}
           </div>
@@ -1253,13 +1230,13 @@ export default function GenesisJobDetailPage() {
         * LEFT wide, V1–V9 grid + selected finding + fix card RIGHT narrow --
         * inverted from the old drawer's map-under-the-grid stack, so a click
         * on a finding and the map location it names stay on screen together. */}
-      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[65fr_35fr] xl:items-start">
+      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[65fr_35fr] xl:items-start mb-8">
         <div className="min-w-0">
           {report ? (
             <GenesisTileMap jobId={selected.id} report={report} hasArtifact={Boolean(selected.artifact)} />
           ) : (
             <div className="rounded-xl border border-slate-200 bg-white/[0.03] px-6 py-10 text-center">
-              <p className="text-[13px] text-slate-500">
+              <p className="text-[15px] text-slate-500">
                 {t(
                   "아직 판정이 없어 지도를 표시할 수 없습니다.",
                   "No verdict yet, so the map cannot be shown.",
@@ -1283,7 +1260,7 @@ export default function GenesisJobDetailPage() {
               onFixApplied={handleFixApplied}
             />
           ) : (
-            <p className="text-[13px] text-slate-500">
+            <p className="text-[15px] text-slate-500">
               {t("아직 판정이 없습니다.", "No verdict yet.", "まだ判定がありません。")}
             </p>
           )}

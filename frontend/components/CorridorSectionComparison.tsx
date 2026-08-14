@@ -142,7 +142,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
                 <button
                   key={key}
                   onClick={() => setMetric(key)}
-                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  className={`rounded-full border px-3 py-1.5 text-[14px] font-semibold transition-colors ${
                     metric === key
                       ? "border-slate-900 bg-slate-900 text-ink"
                       : "border-slate-200 bg-surface text-slate-600 hover:border-slate-300 hover:text-slate-800"
@@ -154,7 +154,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">??</span>
+              <span className="text-[13px] font-semibold uppercase tracking-[0.18em] text-slate-400">??</span>
               {(
                 [
                   { key: "objectId", label: "???? ??" },
@@ -164,7 +164,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
                 <button
                   key={option.key}
                   onClick={() => setSortBy(option.key)}
-                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  className={`rounded-full border px-3 py-1.5 text-[14px] font-semibold transition-colors ${
                     sortBy === option.key
                       ? "border-slate-900 bg-slate-900 text-ink"
                       : "border-slate-200 bg-surface text-slate-600 hover:border-slate-300 hover:text-slate-800"
@@ -176,7 +176,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
             </div>
           </div>
 
-          <p className="max-w-sm text-xs leading-5 text-slate-500">
+          <p className="max-w-sm text-[14px] leading-5 text-slate-500">
             ??? ? ???? ??? ????, ?? ?? ?? ?? ? ??? ??????.
           </p>
         </div>
@@ -184,8 +184,8 @@ export default function CorridorSectionComparison({ scenarios, selected, results
 
       <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-3">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700">?? ? ??</p>
-          <span className="text-[11px] text-amber-700">?? {TOP_SEGMENT_COUNT}</span>
+          <p className="text-[13px] font-semibold uppercase tracking-[0.18em] text-amber-700">?? ? ??</p>
+          <span className="text-[13px] text-amber-700">?? {TOP_SEGMENT_COUNT}</span>
         </div>
         {topSegments.length > 0 ? (
           <div className="flex flex-wrap gap-2">
@@ -193,7 +193,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
               <button
                 key={`top-segment-${row.segmentId}`}
                 onClick={() => setActiveSegmentId(row.segmentId)}
-                className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                className={`rounded-full border px-3 py-1 text-[14px] font-semibold transition ${
                   activeSegmentId === row.segmentId
                     ? "border-amber-500 bg-amber-500 text-white"
                     : "border-amber-200 bg-surface text-amber-700 hover:border-amber-300"
@@ -204,27 +204,27 @@ export default function CorridorSectionComparison({ scenarios, selected, results
             ))}
           </div>
         ) : (
-          <p className="text-xs text-amber-700/80">??? ?? ??? ????.</p>
+          <p className="text-[14px] text-amber-700/80">??? ?? ??? ????.</p>
         )}
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-slate-200 bg-surface">
-        <table className="w-full min-w-[760px] text-sm">
+        <table className="w-full min-w-[760px] text-[15px]">
           <thead className="bg-slate-50/90">
             <tr>
-              <th className="px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+              <th className="px-3 py-2.5 text-left text-[13px] font-semibold uppercase tracking-[0.18em] text-slate-500">
                 ??
               </th>
               {activeScenarios.map((scenario) => (
                 <th
                   key={scenario.id}
-                  className="px-3 py-2.5 text-right text-[11px] font-semibold uppercase tracking-[0.18em]"
+                  className="px-3 py-2.5 text-right text-[13px] font-semibold uppercase tracking-[0.18em]"
                   style={{ color: scenario.color }}
                 >
                   {scenario.name}
                 </th>
               ))}
-              <th className="px-3 py-2.5 text-right text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+              <th className="px-3 py-2.5 text-right text-[13px] font-semibold uppercase tracking-[0.18em] text-slate-500">
                 ??
               </th>
             </tr>
@@ -248,7 +248,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={activeScenarios.length + 2} className="px-4 py-10 text-center text-sm text-slate-400">
+                <td colSpan={activeScenarios.length + 2} className="px-4 py-10 text-center text-[15px] text-slate-400">
                   ?? ?? ???? ????.
                 </td>
               </tr>
@@ -256,7 +256,7 @@ export default function CorridorSectionComparison({ scenarios, selected, results
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-slate-500">?? ??: {METRICS[metric].label} ({METRICS[metric].unit})</p>
+      <p className="text-[14px] text-slate-500">?? ??: {METRICS[metric].label} ({METRICS[metric].unit})</p>
     </div>
   );
 }

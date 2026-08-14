@@ -238,14 +238,14 @@ export default function DemandInputPage() {
         <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">
           {t("수요 입력 만들기", "Build a demand input", "需要入力の作成")}
         </h1>
-        <p className="mt-1.5 text-[13px] leading-relaxed text-slate-600">
+        <p className="mt-1.5 text-[15px] leading-relaxed text-slate-600">
           {t(
             "대전 스마트교차로 카운트 워크북을 업로드하고, 접근로를 초안 링크 ID에 연결하면 생성에 붙일 수요 입력이 만들어집니다.",
             "Upload a Daejeon smart-intersection counts workbook, bind each approach to a draft link id, and a demand input this generation can attach is built.",
             "大田スマート交差点のカウントワークブックをアップロードし、流入路を草案リンクIDに対応付けると、生成に付ける需要入力が作成されます。",
           )}
         </p>
-        <Link href="/genesis" className="mt-2 inline-block text-xs font-semibold text-slate-500 underline">
+        <Link href="/genesis" className="mt-2 inline-block text-[14px] font-semibold text-slate-500 underline">
           {t("← 네트워크 생성으로", "← Back to generation", "← ネットワーク生成へ")}
         </Link>
       </header>
@@ -265,20 +265,20 @@ export default function DemandInputPage() {
             type="file"
             accept=".xlsx,.xlsm"
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-            className="block text-[13px] text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white/[0.06] file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-700"
+            className="block text-[15px] text-slate-700 file:mr-3 file:rounded-md file:border file:border-slate-300 file:bg-white/[0.06] file:px-3 file:py-1.5 file:text-[14px] file:font-semibold file:text-slate-700"
           />
           <button
             type="button"
             disabled={!file || parsing}
             onClick={() => void upload()}
-            className="rounded-md bg-slate-900 px-4 py-2 text-[13px] font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="rounded-md bg-slate-900 px-4 py-2 text-[15px] font-semibold text-ink disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             {parsing ? t("읽는 중…", "Reading…", "読み込み中…") : t("업로드", "Upload", "アップロード")}
           </button>
         </div>
 
         {parseError && (
-          <div className="mt-5 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[13px] text-slate-800">
+          <div className="mt-5 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[15px] text-slate-800">
             <p className="font-semibold">
               {parseError instanceof GenesisError
                 ? refusalHeadline(parseError.code, t)
@@ -287,13 +287,13 @@ export default function DemandInputPage() {
             {parseError instanceof GenesisError && parseError.reasons.length > 0 ? (
               <ul className="mt-1.5 space-y-0.5">
                 {parseError.reasons.map((reason, index) => (
-                  <li key={index} className="font-mono text-xs leading-relaxed text-slate-700">
+                  <li key={index} className="font-mono text-[14px] leading-relaxed text-slate-700">
                     {reason}
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="mt-1.5 whitespace-pre-wrap font-mono text-xs leading-relaxed text-slate-700">
+              <p className="mt-1.5 whitespace-pre-wrap font-mono text-[14px] leading-relaxed text-slate-700">
                 {parseError.message}
               </p>
             )}
@@ -302,7 +302,7 @@ export default function DemandInputPage() {
 
         {staged && (
           <div className="mt-5 space-y-3">
-            <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-700">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-[14px] leading-relaxed text-slate-700">
               <p>
                 {t("어댑터", "adapter", "アダプター")}: {staged.summary.adapter} ({staged.summary.region}) ·{" "}
                 {t("레코드", "records", "レコード")} {staged.summary.counts}건 ·{" "}
@@ -323,7 +323,7 @@ export default function DemandInputPage() {
                 {staged.summary.issues.map((issue, index) => (
                   <li
                     key={`${issue.code}-${index}`}
-                    className={`rounded-md border px-3 py-2 text-xs leading-relaxed ${issueClasses(issue.severity)}`}
+                    className={`rounded-md border px-3 py-2 text-[14px] leading-relaxed ${issueClasses(issue.severity)}`}
                   >
                     <span className="mr-1 font-bold">{issueWord(issue.severity, t)}</span>
                     <span className="font-mono">{issue.code}</span> — {issue.message}
@@ -346,7 +346,7 @@ export default function DemandInputPage() {
           )}
         >
           <div className="mb-6">
-            <label className="text-[13px] text-slate-700">
+            <label className="text-[15px] text-slate-700">
               <span className="block font-semibold">
                 {t(
                   "링크 ID를 읽은 생성 (필수)",
@@ -357,7 +357,7 @@ export default function DemandInputPage() {
               <select
                 value={builtAgainstJob}
                 onChange={(event) => setBuiltAgainstJob(event.target.value)}
-                className="mt-1.5 w-full max-w-md rounded-md border border-slate-300 px-2.5 py-1.5 text-xs"
+                className="mt-1.5 w-full max-w-md rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
               >
                 <option value="">{t("선택", "select", "選択")}</option>
                 {jobs.map((job) => (
@@ -367,7 +367,7 @@ export default function DemandInputPage() {
                 ))}
               </select>
             </label>
-            <p className="mt-2 text-xs leading-relaxed text-slate-500">
+            <p className="mt-2 text-[14px] leading-relaxed text-slate-500">
               {t(
                 "링크 ID는 이 생성이 매긴 번호입니다. 재생성마다(bbox 변경 등) 번호가 바뀔 수 있어 서버가 이 생성의 번호와 대조합니다 -- 선택 없이는 만들 수 없습니다.",
                 "Link ids are numbers THIS generation assigned. A rebuild (a bbox change, a re-extract) can renumber them, so the server checks the mapping against this generation's own numbers -- required before 만들기.",
@@ -377,7 +377,7 @@ export default function DemandInputPage() {
           </div>
 
           {staged.summary.sites.length === 0 ? (
-            <p className="text-[13px] text-slate-500">
+            <p className="text-[15px] text-slate-500">
               {t(
                 "워크북에서 지점을 하나도 읽지 못했습니다.",
                 "No site was read from the workbook.",
@@ -391,11 +391,11 @@ export default function DemandInputPage() {
                   * hairlines and a heading, so the bordered card each site used
                   * to sit in was a box inside a box inside a panel. */
                 <div key={site.site_id}>
-                  <p className="text-[13px] font-semibold text-slate-900">
+                  <p className="text-[15px] font-semibold text-slate-900">
                     {site.site_name ?? site.site_id}
                     {site.site_name && site.site_name !== site.site_id ? ` (${site.site_id})` : ""}
                   </p>
-                  <table className="mt-2 w-full text-xs">
+                  <table className="mt-2 w-full text-[14px]">
                     <thead>
                       <tr className="text-left text-slate-500">
                         <th className="py-1">{t("접근로 (원문)", "approach (verbatim)", "流入路（原文）")}</th>
@@ -417,14 +417,14 @@ export default function DemandInputPage() {
                                 onChange={(event) => setCell(site.site_id, leg, event.target.value)}
                                 placeholder={t("비워두면 매핑 안 됨", "empty = unmapped", "空欄=未対応")}
                                 aria-invalid={invalid}
-                                className={`w-32 rounded border px-2 py-1 text-xs ${
+                                className={`w-32 rounded border px-2 py-1 text-[14px] ${
                                   invalid
                                     ? "border-rose-400 bg-rose-50 text-slate-800"
                                     : "border-slate-300"
                                 }`}
                               />
                               {invalid && (
-                                <p className="mt-1 max-w-[9rem] text-xs leading-tight text-rose-700">
+                                <p className="mt-1 max-w-[9rem] text-[14px] leading-tight text-rose-700">
                                   {t(
                                     "숫자만 입력 -- 만들기 불가",
                                     "digits only -- blocks 만들기",
@@ -451,14 +451,14 @@ export default function DemandInputPage() {
           title={t("3. 수요 설정 (선택)", "3. Demand settings (optional)", "3. 需要設定（任意）")}
         >
           <div className="flex flex-wrap items-end gap-5">
-            <label className="text-[13px] text-slate-700">
+            <label className="text-[15px] text-slate-700">
               <span className="block font-semibold">
                 {t("구간 대푯값", "single-interval reduction", "区間の代表値")}
               </span>
               <select
                 value={reduction}
                 onChange={(event) => setReduction(event.target.value as "peak" | "mean" | "")}
-                className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-xs"
+                className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
               >
                 <option value="peak">
                   {t("피크 (기본값)", "peak (default)", "ピーク（既定）")}
@@ -468,7 +468,7 @@ export default function DemandInputPage() {
                   {t("지정 안 함", "unset", "指定なし")}
                 </option>
               </select>
-              <span className="mt-2 block max-w-sm text-xs leading-relaxed text-slate-500">
+              <span className="mt-2 block max-w-sm text-[14px] leading-relaxed text-slate-500">
                 {t(
                   "이 값은 측정치가 아니라 이 화면이 대신 내리는 모델링 선택입니다. 구간이 여러 개인 카운트를 하나의 값으로 접을 때 쓰이며, 언제든 바꾸거나 '지정 안 함'으로 비울 수 있습니다 -- 비워둔 채로 구간이 여럿이면 생성이 거부됩니다.",
                   "Not a measurement -- a modelling choice this screen pre-selects on your behalf, used only to collapse a multi-interval count onto one value. Change it or clear it to 'unset' anytime; left unset, a multi-interval count refuses at generation time.",
@@ -477,26 +477,26 @@ export default function DemandInputPage() {
               </span>
             </label>
 
-            <label className="text-[13px] text-slate-700">
+            <label className="text-[15px] text-slate-700">
               <span className="block font-semibold">{t("분석 구간 시작 (선택)", "window start (optional)", "分析区間開始（任意）")}</span>
               <input
                 type="datetime-local"
                 value={windowStart}
                 onChange={(event) => setWindowStart(event.target.value)}
-                className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-xs"
+                className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
               />
             </label>
-            <label className="text-[13px] text-slate-700">
+            <label className="text-[15px] text-slate-700">
               <span className="block font-semibold">{t("분석 구간 끝 (선택)", "window end (optional)", "分析区間終了（任意）")}</span>
               <input
                 type="datetime-local"
                 value={windowEnd}
                 onChange={(event) => setWindowEnd(event.target.value)}
-                className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-xs"
+                className="mt-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-[14px]"
               />
             </label>
           </div>
-          <p className="mt-3 text-xs leading-relaxed text-slate-500">
+          <p className="mt-3 text-[14px] leading-relaxed text-slate-500">
             {t(
               "시작과 끝을 함께 입력해야 합니다. 하나만 입력하면 서버가 거부합니다.",
               "Both ends or neither -- entering only one is refused by the server.",
@@ -509,11 +509,11 @@ export default function DemandInputPage() {
               type="button"
               disabled={building || !builtAgainstJob || invalidCellCount > 0}
               onClick={() => void build()}
-              className="rounded-md bg-sky-700 px-4 py-2 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="rounded-md bg-sky-700 px-4 py-2 text-[15px] font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               {building ? t("만드는 중…", "Building…", "作成中…") : t("만들기", "Build", "作成")}
             </button>
-            <span className="text-xs text-slate-500">
+            <span className="text-[14px] text-slate-500">
               {t(
                 `현재 ${mappedApproachCount}개 접근로 매핑됨`,
                 `${mappedApproachCount} approach(es) mapped so far`,
@@ -522,7 +522,7 @@ export default function DemandInputPage() {
             </span>
             {!builtAgainstJob && (
               /* MONO: a precondition that is not yet met, not a fault. */
-              <span className="text-xs font-semibold text-slate-800">
+              <span className="text-[14px] font-semibold text-slate-800">
                 {t(
                   "2단계에서 생성을 선택해야 만들기가 활성화됩니다",
                   "Pick step 2's generation to enable 만들기",
@@ -531,7 +531,7 @@ export default function DemandInputPage() {
               </span>
             )}
             {invalidCellCount > 0 && (
-              <span className="text-xs font-semibold text-rose-700">
+              <span className="text-[14px] font-semibold text-rose-700">
                 {t(
                   `잘못된 링크 ID ${invalidCellCount}건 -- 숫자만 입력하세요`,
                   `${invalidCellCount} invalid link id cell(s) -- digits only`,
@@ -542,7 +542,7 @@ export default function DemandInputPage() {
           </div>
 
           {buildError && (
-            <div className="mt-5 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[13px] text-slate-800">
+            <div className="mt-5 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[15px] text-slate-800">
               <p className="font-semibold">
                 {buildError instanceof GenesisError
                   ? refusalHeadline(buildError.code, t)
@@ -551,13 +551,13 @@ export default function DemandInputPage() {
               {buildError instanceof GenesisError && buildError.reasons.length > 0 ? (
                 <ul className="mt-1.5 space-y-0.5">
                   {buildError.reasons.map((reason, index) => (
-                    <li key={index} className="font-mono text-xs leading-relaxed text-slate-700">
+                    <li key={index} className="font-mono text-[14px] leading-relaxed text-slate-700">
                       {reason}
                     </li>
                   ))}
                 </ul>
               ) : (
-                <p className="mt-1.5 whitespace-pre-wrap font-mono text-xs leading-relaxed text-slate-700">
+                <p className="mt-1.5 whitespace-pre-wrap font-mono text-[14px] leading-relaxed text-slate-700">
                   {buildError.message}
                 </p>
               )}
@@ -565,18 +565,18 @@ export default function DemandInputPage() {
           )}
 
           {built && (
-            <div className="mt-5 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-[13px] leading-relaxed text-slate-800">
+            <div className="mt-5 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-[15px] leading-relaxed text-slate-800">
               <p className="font-semibold">
                 {t("수요 입력이 만들어졌습니다", "Demand input built", "需要入力を作成しました")}
               </p>
-              <p className="mt-1.5 break-all font-mono text-xs">
+              <p className="mt-1.5 break-all font-mono text-[14px]">
                 {t("토큰", "token", "トークン")}: {built.token}
               </p>
               <p className="mt-1.5">
                 {t("매핑된 지점", "sites mapped", "対応付けされた地点")}: {built.summary.sites_mapped.join(", ") || "—"} ·{" "}
                 {t("매핑된 접근로", "approaches mapped", "対応付けされた流入路")}: {built.summary.approaches_mapped}
               </p>
-              <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
+              <p className="mt-1.5 text-[14px] leading-relaxed text-slate-600">
                 {t(
                   "이 토큰을 네트워크 생성 화면의 '수요 입력' 선택 목록에서 고르면 이번 생성에 붙습니다.",
                   "Pick this token from the 'demand input' dropdown on the generation screen to attach it to a generation.",

@@ -633,19 +633,19 @@ export default function BaseModelPage() {
             <h1 className="text-[22px] font-semibold tracking-tight text-white">
               {t("베이스모델 검증", "Base Model Validation")}
             </h1>
-            <p className="mt-1 text-sm text-slate-600">
+            <p className="mt-1 text-[15px] text-slate-600">
               {t("AM/PM 기본 시나리오의 교통량, GEH, 통행시간 검증 결과를 확인합니다.", "Validate AM/PM base scenarios with traffic volume, GEH, and travel time checks.")}
             </p>
           </div>
           <div className="flex flex-wrap items-start justify-end gap-3">
             <div className="flex min-h-[32px] flex-wrap items-center gap-2">
             {loading || resultLoading ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-600">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-[14px] font-medium text-blue-600">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
                 {t("로딩 중", "Loading")}
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-600">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-[14px] font-medium text-emerald-600">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                 {selectedScenario?.name ?? t("시나리오 선택 필요", "Choose scenario")}
               </span>
@@ -658,8 +658,8 @@ export default function BaseModelPage() {
           <div className="grid gap-3 sm:grid-cols-2">
             <VissimDatasetBanner onDatasetChange={handleDatasetChange} fullWidth className="h-full" />
             <div className="h-full rounded-xl border border-slate-200 p-5">
-              <p className="text-sm font-semibold text-slate-600">{t("실측데이터(엑셀)", "Observed Data (Excel)")}</p>
-              <p className="mt-1 truncate text-xs leading-relaxed text-slate-500">
+              <p className="text-[15px] font-semibold text-slate-600">{t("실측데이터(엑셀)", "Observed Data (Excel)")}</p>
+              <p className="mt-1 truncate text-[14px] leading-relaxed text-slate-500">
                 {workbook.exists
                   ? workbook.filename
                   : t("표준 real_counts.xlsx가 아직 연결되지 않았습니다.", "No standard real_counts.xlsx is connected yet.")}
@@ -667,17 +667,17 @@ export default function BaseModelPage() {
               <div className="mt-3 flex flex-wrap gap-2">
                 <a
                   href={BASE_WORKBOOK_TEMPLATE_PATH}
-                  className="ui-button-ghost inline-flex items-center px-3 py-2 text-xs"
+                  className="ui-button-ghost inline-flex items-center px-3 py-2 text-[14px]"
                 >
                   {t("템플릿 다운로드", "Download Template")}
                 </a>
-                <label className="ui-button-primary inline-flex cursor-pointer items-center px-3 py-2 text-xs">
+                <label className="ui-button-primary inline-flex cursor-pointer items-center px-3 py-2 text-[14px]">
                   {uploading ? t("업로드 중", "Uploading") : t("Excel 업로드", "Upload Excel")}
                   <input type="file" accept=".xlsx" className="hidden" onChange={handleWorkbookUpload} disabled={uploading || resettingWorkbook} />
                 </label>
                 <button
                   type="button"
-                  className="ui-button-danger inline-flex items-center px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+                  className="ui-button-danger inline-flex items-center px-3 py-2 text-[14px] disabled:cursor-not-allowed disabled:opacity-50"
                   onClick={handleWorkbookReset}
                   disabled={!workbook.exists || uploading || resettingWorkbook}
                 >
@@ -685,7 +685,7 @@ export default function BaseModelPage() {
                 </button>
               </div>
               {workbook.exists && (
-                <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-2 border-t border-slate-200 pt-3.5 text-xs">
+                <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-2 border-t border-slate-200 pt-3.5 text-[14px]">
                   <div className="flex items-center justify-between">
                     <dt className="text-slate-500">{t("교통량 행", "Count rows")}</dt>
                     <dd className="font-medium text-slate-700">{workbook.counts.length}</dd>
@@ -721,7 +721,7 @@ export default function BaseModelPage() {
             </div>
           </div>
           <div className="h-full rounded-xl border border-slate-200 p-5">
-            <p className="text-sm font-semibold text-slate-600">{t("분석 설정", "Analysis Setup")}</p>
+            <p className="text-[15px] font-semibold text-slate-600">{t("분석 설정", "Analysis Setup")}</p>
             <div className="mt-4 grid gap-3">
             <ControlField label={t("BaseAM Model", "BaseAM Model")}>
               <select className="ui-select" value={amScenarioId} onChange={(event) => setAmScenarioId(event.target.value)} disabled={scenarios.length === 0}>
@@ -756,13 +756,13 @@ export default function BaseModelPage() {
       </section>
 
       {error && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-[15px] text-rose-700">
           {error}
         </div>
       )}
 
       {workbook.warnings.length > 0 && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-700">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-[15px] text-amber-700">
           {workbook.warnings.join(" ")}
         </div>
       )}
@@ -825,15 +825,15 @@ export default function BaseModelPage() {
         <div className="mt-4 rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <div>
-              <p className="text-xs font-bold text-slate-800">
+              <p className="text-[14px] font-bold text-slate-800">
                 {t(`${period} 첨두 R² 차트`, `${period} Peak Hour R² Chart`, `${period} ピーク時 R² チャート`)}
               </p>
-              <p className="mt-0.5 text-[11px] text-slate-500">
+              <p className="mt-0.5 text-[13px] text-slate-500">
                 {t("교차로 방향별 실측값(Observed) vs 모델값(Modelled)", "Observed vs Modelled traffic by direction")}
               </p>
             </div>
             {rSquaredData.slope != null && rSquaredData.r2 != null && (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-right font-mono text-[11px] text-slate-700">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-right font-mono text-[13px] text-slate-700">
                 <p>y = {rSquaredData.slope.toFixed(4)}x</p>
                 <p>R² = {rSquaredData.r2.toFixed(4)}</p>
                 {/* Target only -- no pass/fail evaluated against this yet, see report gap note. */}
@@ -844,7 +844,7 @@ export default function BaseModelPage() {
             )}
           </div>
           {rSquaredData.points.length === 0 ? (
-            <p className="py-10 text-center text-xs text-slate-500">
+            <p className="py-10 text-center text-[14px] text-slate-500">
               {t("R² 차트를 그릴 수 있는 데이터가 없습니다.", "No data available for R² chart.")}
             </p>
           ) : (
@@ -890,7 +890,7 @@ export default function BaseModelPage() {
             </ResponsiveContainer>
           )}
         </div>
-        <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
+        <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-[15px] text-slate-600">
           {t("VISSIM 통행시간 측정 구간이 관측 지체 구간과 일치하는지 확인하세요.", "Please check the travel time measurement sections defined in VISSIM are consistent with the observed delay.")}
         </p>
       </section>
@@ -910,10 +910,10 @@ export default function BaseModelPage() {
             <div key={route.key} className="rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900">{route.name}</h3>
-                  <p className="text-[11px] text-slate-500">{t("루트", "Route")} {route.routeId}</p>
+                  <h3 className="text-[15px] font-bold text-slate-900">{route.name}</h3>
+                  <p className="text-[13px] text-slate-500">{t("루트", "Route")} {route.routeId}</p>
                 </div>
-                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${route.allInBand ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                <span className={`rounded-full px-2.5 py-1 text-[13px] font-semibold ${route.allInBand ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
                   {route.inBandCount}/{route.validCount} {t("허용", "in band")}
                 </span>
               </div>
@@ -969,7 +969,7 @@ export default function BaseModelPage() {
           t={t}
         />
         <div className={`mt-4 rounded-xl border px-5 py-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)] ${analysisPanelClass(countStats, travelStats, criticalEvaluation)}`}>
-          <p className="text-sm leading-relaxed">
+          <p className="text-[15px] leading-relaxed">
             {buildAnalysisText({ countStats, travelStats, profile: activeProfile, critical: criticalEvaluation, t })}
           </p>
         </div>
@@ -981,7 +981,7 @@ export default function BaseModelPage() {
 function ControlField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-xs font-semibold text-slate-600">{label}</span>
+      <span className="mb-1.5 block text-[14px] font-semibold text-slate-600">{label}</span>
       {children}
     </label>
   );
@@ -991,7 +991,7 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }
   return (
     <div>
       <h2 className="text-[15px] font-semibold text-white">{title}</h2>
-      {subtitle && <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>}
+      {subtitle && <p className="mt-0.5 text-[15px] text-slate-600">{subtitle}</p>}
     </div>
   );
 }
@@ -1014,11 +1014,11 @@ function ValidationCategorySelector({
   const activeProfile = getActiveProfile(category);
   return (
     <div className="flex flex-col items-start gap-1 sm:items-end">
-      <span className="text-[11px] font-semibold text-slate-500">
+      <span className="text-[13px] font-semibold text-slate-500">
         {t("검증 기준 (MRWA)", "Validation Category (MRWA)")}
       </span>
       <div
-        className="flex items-center rounded-lg border border-slate-200 bg-surface p-0.5 text-xs shadow-sm"
+        className="flex items-center rounded-lg border border-slate-200 bg-surface p-0.5 text-[14px] shadow-sm"
         title={activeProfile.citation}
       >
         {VALIDATION_CATEGORY_ORDER.map((key) => {
@@ -1081,10 +1081,10 @@ function CriteriaCoverageCard({
     <div className="mt-4 rounded-xl border border-slate-300/70 bg-surface/92 p-5 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-bold text-slate-800">
+          <p className="text-[14px] font-bold text-slate-800">
             {t("MRWA §5.6.3 검증 항목 커버리지", "MRWA §5.6.3 criteria coverage", "MRWA §5.6.3 検証項目カバレッジ")}
           </p>
-          <p className="mt-0.5 text-[11px] text-slate-500">
+          <p className="mt-0.5 text-[13px] text-slate-500">
             {t(
               "이 페이지가 실제로 평가한 항목과 평가할 수 없는 항목을 구분해 표시합니다.",
               "Which criteria this page actually evaluated, and which it cannot.",
@@ -1096,7 +1096,7 @@ function CriteriaCoverageCard({
 
       <div className="mt-4">
         <label className="block">
-          <span className="mb-1.5 block text-xs font-semibold text-slate-600">
+          <span className="mb-1.5 block text-[14px] font-semibold text-slate-600">
             {t("Critical 교차로 노드 ID (§5.6.3.1, p.213)", "Critical intersection node IDs (§5.6.3.1, p.213)", "Critical 交差点ノードID (§5.6.3.1, p.213)")}
           </span>
           <input
@@ -1107,7 +1107,7 @@ function CriteriaCoverageCard({
             placeholder={t("예: 12, 15, 7 (쉼표 또는 공백으로 구분)", "e.g. 12, 15, 7 (comma or space separated)", "例: 12, 15, 7 (カンマまたはスペース区切り)")}
           />
         </label>
-        <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+        <p className="mt-1.5 text-[13px] leading-relaxed text-slate-500">
           {t(
             `네트워크 전체 기준(${profile.nameKo})을 만족하더라도, 지정한 critical 교차로는 개별적으로 GEH < ${profile.criticalIntersectionGehMax} 를 만족해야 합니다. 통과율 ${profile.gehUnder5Pct}% 로는 이 조건이 충족되지 않습니다.`,
             `Even when the network-wide ${profile.nameEn} criteria are met, each designated critical intersection must individually achieve GEH < ${profile.criticalIntersectionGehMax}. The ${profile.gehUnder5Pct}% pass rate does not satisfy this.`,
@@ -1172,14 +1172,14 @@ function CriterionCoverageRow({
     <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-xs font-semibold text-slate-800">{label}</div>
-          {detail && <div className="mt-0.5 text-[11px] text-slate-500">{detail}</div>}
+          <div className="text-[14px] font-semibold text-slate-800">{label}</div>
+          {detail && <div className="mt-0.5 text-[13px] text-slate-500">{detail}</div>}
         </div>
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${badge}`}>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[12px] font-bold ${badge}`}>
           {tone === "pass" ? t("통과", "PASS") : tone === "fail" ? t("실패", "FAIL") : t("평가 불가", "N/A")}
         </span>
       </div>
-      <p className="mt-1.5 text-[11px] leading-relaxed text-slate-600">{state}</p>
+      <p className="mt-1.5 text-[13px] leading-relaxed text-slate-600">{state}</p>
     </div>
   );
 }
@@ -1265,7 +1265,7 @@ function GehFormulaExplanation({ t }: { t: (ko: string, en: string, ja?: string)
           </text>
         </svg>
       </div>
-      <dl className="mt-3 space-y-1.5 text-[11px] leading-relaxed text-slate-600">
+      <dl className="mt-3 space-y-1.5 text-[13px] leading-relaxed text-slate-600">
         <div className="flex gap-2">
           <dt className="min-w-8 font-bold text-slate-800">M</dt>
           <dd>{t("모델링으로 산출한 예측 교통량", "Modeled volume estimated by the simulation")}</dd>
@@ -1300,9 +1300,9 @@ function CriterionRow({
     <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
       <div>
         <div className="font-semibold">{label}</div>
-        <div className="text-xs text-slate-500">{value}</div>
+        <div className="text-[14px] text-slate-500">{value}</div>
       </div>
-      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${badge}`}>
+      <span className={`rounded-full px-2 py-0.5 text-[12px] font-bold ${badge}`}>
         {passed == null ? "-" : passed ? t("통과", "PASS") : t("확인", "CHECK")}
       </span>
     </div>
@@ -1329,11 +1329,11 @@ function ValidationPieCard({
   return (
     <div className="rounded-xl border border-slate-300/70 bg-surface/92 p-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       <div className="mb-2">
-        <p className="text-xs font-bold text-slate-800">{title}</p>
-        <p className="mt-0.5 text-[11px] text-slate-500">{criterion}</p>
+        <p className="text-[14px] font-bold text-slate-800">{title}</p>
+        <p className="mt-0.5 text-[13px] text-slate-500">{criterion}</p>
       </div>
       {empty ? (
-        <p className="py-10 text-center text-xs text-slate-500">{emptyText}</p>
+        <p className="py-10 text-center text-[14px] text-slate-500">{emptyText}</p>
       ) : (
         <>
           <ResponsiveContainer width="100%" height={180}>
@@ -1347,7 +1347,7 @@ function ValidationPieCard({
               <Legend wrapperStyle={{ fontSize: 11 }} />
             </PieChart>
           </ResponsiveContainer>
-          {footer && <p className="mt-1 text-center text-[11px] text-slate-600">{footer}</p>}
+          {footer && <p className="mt-1 text-center text-[13px] text-slate-600">{footer}</p>}
         </>
       )}
     </div>
@@ -1356,7 +1356,7 @@ function ValidationPieCard({
 
 function EmptyPanel({ text }: { text: string }) {
   return (
-    <div className="flex min-h-[220px] items-center justify-center rounded-xl border border-slate-300/70 bg-surface/92 p-6 text-center text-sm text-slate-500 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
+    <div className="flex min-h-[220px] items-center justify-center rounded-xl border border-slate-300/70 bg-surface/92 p-6 text-center text-[15px] text-slate-500 shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
       {text}
     </div>
   );
@@ -1434,18 +1434,18 @@ function ValidationNodeInspector({
     <aside className="flex h-[540px] min-h-0 flex-col overflow-hidden rounded-xl border border-slate-300/70 bg-surface/94 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.08)] xl:h-[62vh]">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             {t("비교 선택", "Comparison Selection")}
           </p>
           <h3 className="mt-1 text-base font-bold text-slate-900 tabular-nums">
             <span className={atSelectionCap ? "text-amber-700" : "text-slate-900"}>{selectedGroups.length}</span>
             <span className="mx-1 text-slate-400">/</span>
             <span className="text-slate-500">{MAX_SELECTED_VALIDATION_NODES}</span>
-            <span className="ml-1.5 text-xs font-semibold text-slate-500">{t("선택", "selected")}</span>
+            <span className="ml-1.5 text-[14px] font-semibold text-slate-500">{t("선택", "selected")}</span>
           </h3>
         </div>
         {topIssueGroups.length > 0 && (
-          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
+          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[13px] font-bold text-slate-600">
             Top {topIssueGroups.length}
           </span>
         )}
@@ -1453,14 +1453,14 @@ function ValidationNodeInspector({
 
       <div className="mt-3 flex min-h-[34px] flex-wrap items-center gap-1.5">
         {selectedGroups.length === 0 ? (
-          <span className="text-[11px] text-slate-400">
+          <span className="text-[13px] text-slate-400">
             {t("지도 노드 또는 아래 Top 목록에서 선택하세요.", "Pick a map node or an item below to compare.")}
           </span>
         ) : (
           selectedGroups.map((group) => (
             <span
               key={group.nodeId}
-              className={`inline-flex max-w-full items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+              className={`inline-flex max-w-full items-center gap-1 rounded-full px-2.5 py-1 text-[14px] font-semibold ${
                 group.nodeId === activeGroup?.nodeId ? "bg-slate-900 text-ink" : "bg-slate-100 text-slate-700"
               }`}
             >
@@ -1474,7 +1474,7 @@ function ValidationNodeInspector({
               </button>
               <button
                 type="button"
-                className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[11px] leading-none opacity-75 hover:bg-surface/20 hover:opacity-100"
+                className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[13px] leading-none opacity-75 hover:bg-surface/20 hover:opacity-100"
                 onClick={() => onNodeRemove(group.nodeId)}
                 aria-label={`${group.nodeName} ${t("선택 해제", "remove")}`}
               >
@@ -1485,7 +1485,7 @@ function ValidationNodeInspector({
         )}
       </div>
       {atSelectionCap && (
-        <p className="mt-1 text-[10px] font-semibold text-amber-700">
+        <p className="mt-1 text-[12px] font-semibold text-amber-700">
           {t(`최대 ${MAX_SELECTED_VALIDATION_NODES}개까지 선택 가능 — 새로 선택하려면 기존 항목을 제거하세요.`, `Up to ${MAX_SELECTED_VALIDATION_NODES} can be selected — remove one to add a new node.`, `最大 ${MAX_SELECTED_VALIDATION_NODES} 件まで選択可能 — 新しく選択するには既存の項目を削除してください。`)}
         </p>
       )}
@@ -1494,23 +1494,23 @@ function ValidationNodeInspector({
         {activeGroup ? (
           <ValidationNodeDetail group={activeGroup} t={t} />
         ) : groups.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-400">
+          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-[15px] text-slate-400">
             {t("검증 가능한 노드가 없습니다.", "No comparable validation nodes.")}
           </div>
         ) : (
-          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-[15px] text-slate-500">
             <p className="font-semibold text-slate-600">{t("노드를 선택해주세요", "Select a node")}</p>
-            <p className="mt-1 text-xs text-slate-400">{t("지도에서 클릭하거나 아래 Top 목록에서 노드를 선택하면 상세 비교가 표시됩니다.", "Click a map node or pick from the Top list below to see details.")}</p>
+            <p className="mt-1 text-[14px] text-slate-400">{t("지도에서 클릭하거나 아래 Top 목록에서 노드를 선택하면 상세 비교가 표시됩니다.", "Click a map node or pick from the Top list below to see details.")}</p>
           </div>
         )}
 
         {topIssueGroups.length > 0 && (
           <div className="mt-4 border-t border-slate-200 pt-4">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <h4 className="text-sm font-bold text-slate-900">
+              <h4 className="text-[15px] font-bold text-slate-900">
                 {t(`문제 노드 Top ${topIssueGroups.length}`, `Top ${topIssueGroups.length} Issue Nodes`, `問題ノード Top ${topIssueGroups.length}`)}
               </h4>
-              <span className="text-[11px] font-semibold text-slate-400">{t("GEH · 평균오차", "GEH · Avg Err")}</span>
+              <span className="text-[13px] font-semibold text-slate-400">{t("GEH · 평균오차", "GEH · Avg Err")}</span>
             </div>
             <div className="space-y-2">
               {topIssueGroups.map((group, index) => (
@@ -1548,14 +1548,14 @@ function ValidationNodeDetail({
     <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+          <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             {t("노드", "Node")} {group.nodeId}
           </p>
           <h4 className="mt-1 truncate text-base font-bold text-slate-950" title={group.nodeName}>
             {group.nodeName}
           </h4>
         </div>
-        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${gehBadgeClass(group.worstGeh)}`}>
+        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[13px] font-bold ${gehBadgeClass(group.worstGeh)}`}>
           GEH {formatNumber(group.worstGeh, 1)}
         </span>
       </div>
@@ -1578,16 +1578,16 @@ function ValidationNodeDetail({
       </div>
 
       <div className="mt-3 rounded-xl border border-slate-200 bg-surface px-3 py-2">
-        <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold text-slate-500">
+        <div className="mb-1.5 flex items-center justify-between text-[13px] font-semibold text-slate-500">
           <span>{t("상세 이동류", "Movement Detail")}</span>
           <span>{topRows.length}/{group.rows.length}</span>
         </div>
         <div className="space-y-1">
           {topRows.map((row) => (
-            <div key={row.key} className="grid grid-cols-[2.6rem_minmax(0,1fr)_0.6rem_minmax(0,1fr)_3.2rem] items-center gap-x-1.5 text-[11px]">
+            <div key={row.key} className="grid grid-cols-[2.6rem_minmax(0,1fr)_0.6rem_minmax(0,1fr)_3.2rem] items-center gap-x-1.5 text-[13px]">
               <span className="font-bold text-slate-600">{formatMovementLabel(row.movement)}</span>
               <span className="text-right tabular-nums text-slate-700">{formatNumber(row.observed, 0)}</span>
-              <span aria-hidden className="text-center text-[10px] text-slate-300">/</span>
+              <span aria-hidden className="text-center text-[12px] text-slate-300">/</span>
               <span className="text-left tabular-nums text-slate-500">{formatNumber(row.model, 0)}</span>
               <span className={`text-right font-bold tabular-nums ${errorToneClass(row.pctError)}`}>
                 {formatSignedPct(row.pctError)}
@@ -1621,7 +1621,7 @@ function ValidationMetricCard({
             : "text-slate-900";
   return (
     <div className="rounded-xl border border-slate-200 bg-surface px-3 py-2">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">{label}</p>
+      <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-slate-400">{label}</p>
       <p className={`mt-1 text-base font-bold tabular-nums ${toneClass}`}>{value}</p>
     </div>
   );
@@ -1639,8 +1639,8 @@ function ValidationDirectionStrip({
 
   if (isEmpty) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/60 px-3 py-1.5 text-[11px] text-slate-400">
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-slate-200 text-[10px] font-bold text-slate-500">
+      <div className="flex items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/60 px-3 py-1.5 text-[13px] text-slate-400">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-slate-200 text-[12px] font-bold text-slate-500">
           {label.short}
         </span>
         <span aria-hidden className="text-slate-400">{label.arrow}</span>
@@ -1660,17 +1660,17 @@ function ValidationDirectionStrip({
     <div className="rounded-xl border border-slate-200 bg-surface px-3 py-2">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-slate-900 text-[10px] font-bold text-ink">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-slate-900 text-[12px] font-bold text-ink">
             {label.short}
           </span>
-          <span aria-hidden className="text-xs font-bold text-slate-500">{label.arrow}</span>
-          <span className="text-xs font-bold text-slate-800">{t(label.ko, label.en)}</span>
+          <span aria-hidden className="text-[14px] font-bold text-slate-500">{label.arrow}</span>
+          <span className="text-[14px] font-bold text-slate-800">{t(label.ko, label.en)}</span>
         </div>
         <div className="text-right">
-          <span className={`text-[11px] font-bold tabular-nums ${toneTextClass(tone)}`}>
+          <span className={`text-[13px] font-bold tabular-nums ${toneTextClass(tone)}`}>
             {formatSignedPct(group.pctError)}
           </span>
-          <span className="ml-2 text-[10px] font-semibold text-slate-400">GEH {formatNumber(group.geh, 1)}</span>
+          <span className="ml-2 text-[12px] font-semibold text-slate-400">GEH {formatNumber(group.geh, 1)}</span>
         </div>
       </div>
       <div className="mt-2 flex items-center gap-2">
@@ -1686,7 +1686,7 @@ function ValidationDirectionStrip({
             style={{ width: `${biasWidthPct}%` }}
           />
         </div>
-        <span className="shrink-0 text-[10px] font-semibold tabular-nums text-slate-500">
+        <span className="shrink-0 text-[12px] font-semibold tabular-nums text-slate-500">
           {formatNumber(group.observedTotal, 0)}
           <span className="mx-1 text-slate-300">/</span>
           {formatNumber(group.modelTotal, 0)}
@@ -1723,18 +1723,18 @@ function ValidationIssueListItem({
       }`}
       onClick={() => onClick(group.nodeId, group.nodeName)}
     >
-      <span className={`text-xs font-bold tabular-nums ${active ? "text-white/70" : "text-slate-400"}`}>{rank}</span>
+      <span className={`text-[14px] font-bold tabular-nums ${active ? "text-white/70" : "text-slate-400"}`}>{rank}</span>
       <span className="min-w-0">
-        <span className="block truncate text-xs font-bold">{group.nodeName}</span>
-        <span className={`mt-0.5 block text-[10px] ${active ? "text-white/60" : "text-slate-500"}`}>
+        <span className="block truncate text-[14px] font-bold">{group.nodeName}</span>
+        <span className={`mt-0.5 block text-[12px] ${active ? "text-white/60" : "text-slate-500"}`}>
           {t("노드", "Node")} {group.nodeId} · {group.validCount}/{group.rows.length}
         </span>
       </span>
       <span className="flex flex-col items-end gap-0.5">
-        <span className={`inline-flex min-w-[2.5rem] justify-center rounded-full px-1.5 py-0.5 text-[11px] font-bold tabular-nums ${toneBadgeClass(gehTone(group.worstGeh))}`}>
+        <span className={`inline-flex min-w-[2.5rem] justify-center rounded-full px-1.5 py-0.5 text-[13px] font-bold tabular-nums ${toneBadgeClass(gehTone(group.worstGeh))}`}>
           {formatNumber(group.worstGeh, 1)}
         </span>
-        <span className="inline-flex items-center gap-1 text-[10px] font-bold tabular-nums">
+        <span className="inline-flex items-center gap-1 text-[12px] font-bold tabular-nums">
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${toneDotClass(errorTone(group.averageAbsPctError))}`} />
           <span className={active ? "text-white/85" : toneTextClass(errorTone(group.averageAbsPctError))}>
             {group.averageAbsPctError == null ? "-" : formatPct(group.averageAbsPctError)}
@@ -1769,9 +1769,9 @@ function CountMatrixStat({
 
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
+      <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
       <p className={`mt-1 text-xl font-bold tabular-nums ${valueClass}`}>{value}</p>
-      {hint && <p className={`mt-0.5 text-[10px] font-semibold ${hintClass}`}>{hint}</p>}
+      {hint && <p className={`mt-0.5 text-[12px] font-semibold ${hintClass}`}>{hint}</p>}
     </div>
   );
 }
@@ -1790,20 +1790,20 @@ function CountNodeDirectionMatrixRow({
   return (
     <div className="grid grid-cols-[190px_repeat(4,minmax(230px,1fr))] border-b border-slate-200 last:border-b-0">
       <div className="sticky left-0 z-10 border-r border-slate-200 bg-surface px-4 py-4 shadow-[5px_0_12px_rgba(15,23,42,0.04)]">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{t("노드", "Node")} {group.nodeId}</p>
-        <h3 className="mt-1 text-sm font-bold leading-snug text-slate-900">{group.nodeName}</h3>
+        <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-slate-500">{t("노드", "Node")} {group.nodeId}</p>
+        <h3 className="mt-1 text-[15px] font-bold leading-snug text-slate-900">{group.nodeName}</h3>
         <div className="mt-3 space-y-1.5">
-          <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${gehBadgeClass(group.worstGeh)}`}>
+          <span className={`inline-flex rounded-full px-2 py-0.5 text-[12px] font-bold ${gehBadgeClass(group.worstGeh)}`}>
             GEH {formatNumber(group.worstGeh, 1)}
           </span>
-          <p className="text-[11px] font-semibold text-slate-600">
+          <p className="text-[13px] font-semibold text-slate-600">
             {t("평균오차", "Avg Err")} {group.averageAbsPctError == null ? "-" : formatPct(group.averageAbsPctError)}
           </p>
-          <p className="text-[11px] text-slate-500">
+          <p className="text-[13px] text-slate-500">
             {group.validCount}/{group.rows.length} {t("비교 가능", "comparable")}
           </p>
           {totalGroup && (
-            <p className="text-[10px] text-slate-500">
+            <p className="text-[12px] text-slate-500">
               {t("전체", "Total")} {formatNumber(totalGroup.modelTotal, 0)} / {formatNumber(totalGroup.observedTotal, 0)}
             </p>
           )}
@@ -1831,7 +1831,7 @@ function CountDirectionMatrixCell({
   if (group.rows.length === 0) {
     return (
       <div className="border-l border-slate-200 bg-surface px-3 py-4">
-        <div className="flex h-full min-h-[150px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-400">
+        <div className="flex h-full min-h-[150px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-[14px] text-slate-400">
           {t("데이터 없음", "No data")}
         </div>
       </div>
@@ -1846,20 +1846,20 @@ function CountDirectionMatrixCell({
     <div className="border-l border-slate-200 bg-surface px-3 py-4">
       <div className="grid grid-cols-[1fr_auto] items-start gap-2">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+          <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-slate-400">
             {t("실측 / 모델", "Observed / Model")}
           </p>
           <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">
             {formatNumber(group.observedTotal, 0)}
-            <span className="mx-1.5 text-sm font-semibold text-slate-400">/</span>
+            <span className="mx-1.5 text-[15px] font-semibold text-slate-400">/</span>
             {formatNumber(group.modelTotal, 0)}
           </p>
         </div>
         <div className="text-right">
-          <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${gehBadgeClass(group.geh)}`}>
+          <span className={`inline-flex rounded-full px-2 py-0.5 text-[12px] font-bold ${gehBadgeClass(group.geh)}`}>
             GEH {formatNumber(group.geh, 1)}
           </span>
-          <p className={`mt-1 text-xs font-bold tabular-nums ${errorToneClass(group.pctError)}`}>
+          <p className={`mt-1 text-[14px] font-bold tabular-nums ${errorToneClass(group.pctError)}`}>
             {formatSignedPct(group.pctError)}
           </p>
         </div>
@@ -1872,7 +1872,7 @@ function CountDirectionMatrixCell({
 
       <div className="mt-3 border-t border-slate-200 pt-2">
         {group.rows.map((row) => (
-          <div key={row.key} className="grid grid-cols-[2.25rem_1fr_auto] items-center gap-2 py-1 text-[11px]">
+          <div key={row.key} className="grid grid-cols-[2.25rem_1fr_auto] items-center gap-2 py-1 text-[13px]">
             <span className="font-bold text-slate-600">{formatMovementLabel(row.movement)}</span>
             <span className="tabular-nums text-slate-600">
               {formatNumber(row.observed, 0)} / {formatNumber(row.model, 0)}
@@ -1899,7 +1899,7 @@ function ComparisonBarLine({
   color: string;
 }) {
   return (
-    <div className="grid grid-cols-[3.25rem_minmax(0,1fr)_4.75rem] items-center gap-2 text-[11px]">
+    <div className="grid grid-cols-[3.25rem_minmax(0,1fr)_4.75rem] items-center gap-2 text-[13px]">
       <span className="font-semibold text-slate-500">{label}</span>
       <div className="h-2 overflow-hidden rounded-full bg-slate-200">
         <div

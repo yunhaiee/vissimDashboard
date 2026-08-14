@@ -102,13 +102,13 @@ export function Panel({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          {/* One notch up from the body text around it (was text-sm, the same
+          {/* One notch up from the body text around it (was text-[15px], the same
             * size as the paragraphs underneath): with a single 22px h1 on the
             * page and everything else at 10-14px, a panel heading that matched
             * its own body left these screens with effectively two type sizes
             * and no middle. */}
           <h2 className="text-[15px] font-semibold text-slate-900">{title}</h2>
-          {subtitle && <p className="mt-1 text-[12px] text-slate-500">{subtitle}</p>}
+          {subtitle && <p className="mt-1 text-[14px] text-slate-500">{subtitle}</p>}
         </div>
         {action}
         {collapsible && (
@@ -116,7 +116,7 @@ export function Panel({
             type="button"
             onClick={() => setOpen((current) => !current)}
             aria-expanded={open}
-            className="shrink-0 rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 text-[12px] font-semibold text-slate-700"
+            className="shrink-0 rounded-md border border-slate-300 bg-white/[0.06] px-2.5 py-1 text-[14px] font-semibold text-slate-700"
           >
             {open ? t("접기", "Collapse", "折りたたむ") : t("펼치기", "Expand", "展開")}
           </button>
@@ -218,7 +218,7 @@ export function InfoTip({ text, label }: { text: string; label?: string }) {
         <span
           id={tooltipId}
           role="tooltip"
-          className="absolute left-0 top-6 z-30 w-72 rounded-md border border-slate-300 bg-surface px-3 py-2.5 text-left text-[13px] font-normal leading-relaxed text-slate-600 shadow-[0_16px_34px_rgba(15,23,42,0.28)]"
+          className="absolute left-0 top-6 z-30 w-72 rounded-md border border-slate-300 bg-surface px-3 py-2.5 text-left text-[15px] font-normal leading-relaxed text-slate-600 shadow-[0_16px_34px_rgba(15,23,42,0.28)]"
         >
           {text}
         </span>
@@ -227,173 +227,53 @@ export function InfoTip({ text, label }: { text: string; label?: string }) {
   );
 }
 
-/**
- * PAGE HELP (unit #20) -- the ROUND ? beside a page's own h1, opening a
- * right-side drawer of static doctrine sections.
- *
- * WHY THIS IS A SEPARATE PRIMITIVE FROM `InfoTip` RATHER THAN A BIGGER ONE.
- * `InfoTip` answers ONE question a control raises, reachable exactly where
- * that control sits, and its content is validation-state or refusal-adjacent
- * -- "what does this word mean", "why is this disabled right now". Unit #20's
- * own instruction draws the line: doctrine, background and "why this was
- * designed this way" belongs one level UP, in a single reading surface a
- * reader opens on purpose rather than trips over beside every control. Five
- * always-open paragraphs became five `InfoTip`s in U-1-quick; this is the next
- * turn of that same screw -- three of THOSE tooltips (this file's own
- * `제외 도로`, `판정 게이트`, `잠정 등록` sentences on the genesis hub) move
- * again, out of a per-control tooltip and into this per-PAGE drawer, because
- * they are not "what just happened" but "why the product is built this way".
- * A control whose disabled reason or validation state a reader needs BEFORE
- * they can act stays an inline `InfoTip` -- moving IT into a drawer would turn
- * a one-glance answer into a two-click one.
- *
- * STATIC ONLY. This component fetches nothing and accepts no async content --
- * every caller hands it a plain `{ title, body }[]` computed from strings
- * already in hand (usually the same `t()` calls that used to sit inline). A
- * page that wants to show something LIVE (a job's own verdict, a measurement)
- * has that already, in its own panels; the drawer is a reference, not a view.
- *
- * REACHABILITY takes the same three inputs `InfoTip` insists on, because nothing
- * about being a drawer instead of a tooltip changes who needs to reach it:
- *   * a real `<button>` trigger (never a `title` attribute, which no keyboard
- *     can summon and no screen reader treats as interactive);
- *   * Escape closes it, from anywhere the drawer has focus;
- *   * a click on the dimmed backdrop closes it too -- the touch/mouse escape
- *     hatch `InfoTip`'s `pinned` toggle exists for, here as a backdrop instead
- *     of a second tap on the trigger, because a drawer (unlike a tooltip) covers
- *     enough of the screen that "tap it again" is not where a reader's hand is.
- * `role="dialog"` + `aria-modal="true"` + a label pointing at the drawer's own
- * heading, so a screen reader announces it as a modal region with a name,
- * exactly the way the close button's `aria-label` names the action that undoes
- * opening it.
- */
-export function PageHelp({
-  entries,
-  title,
-}: {
-  /** Plain titled sections, in the order they should read. No nesting, no
-   * cards-in-cards -- `PageHelp` is a reading surface, the same rule
-   * `DrawerSection` states for the generation drawer on app/genesis/page.tsx. */
-  entries: Array<{ title: string; body: string }>;
-  /** Defaults to 도움말/Help/ヘルプ -- every caller so far wants exactly that
-   * word, so a page only overrides it if its drawer is about something
-   * narrower than "this whole screen". */
-  title?: string;
-}) {
-  const { t } = useLanguage();
-  const headingId = useId();
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
-
-  // Escape closes from anywhere inside the drawer; focus returns to the
-  // trigger so the reader lands back where they asked the question, the same
-  // hand-back `InfoTip`'s own Escape handler performs locally.
-  useEffect(() => {
-    if (!open) return;
-    closeRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open]);
-
-  const heading = title ?? t("도움말", "Help", "ヘルプ");
-
-  return (
-    <>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-label={t("도움말 열기", "Open help", "ヘルプを開く")}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={() => setOpen(true)}
-        className="ml-2 inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white/[0.06] align-middle text-[12px] font-semibold text-slate-500"
-      >
-        ?
-      </button>
-      {open && (
-        // The backdrop IS the click-outside handler: it covers everything but
-        // the panel, so a pointerdown anywhere except the panel closes it. The
-        // panel itself stops the click from reaching the backdrop underneath it.
-        <div
-          /* Literal black, same reason as ModalDialog's backdrop: the slate
-            * ramp is remapped by the dark palette, so slate-950 washed the
-            * page LIGHT instead of dimming it. */
-          className="fixed inset-0 z-50 flex justify-end bg-black/60"
-          onClick={() => setOpen(false)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={headingId}
-            onClick={(event) => event.stopPropagation()}
-            className="flex h-full w-full max-w-md flex-col overflow-y-auto border-l border-slate-200 bg-surface px-6 py-6 shadow-[0_16px_48px_rgba(15,23,42,0.35)]"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <h2 id={headingId} className="text-[17px] font-semibold text-slate-900">
-                {heading}
-              </h2>
-              <button
-                ref={closeRef}
-                type="button"
-                onClick={() => setOpen(false)}
-                aria-label={t("도움말 닫기", "Close help", "ヘルプを閉じる")}
-                className="ui-button-ghost shrink-0 rounded-md px-2 py-0.5 text-[13px]"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="mt-5 flex flex-col gap-6">
-              {entries.map((entry) => (
-                <section key={entry.title}>
-                  <h3 className="text-[13px] font-semibold text-slate-800">{entry.title}</h3>
-                  {/* Mono body -- Console typography, the same voice every
-                    * doctrine/reasons block on these screens already speaks in
-                    * (refusal reasons, provenance, the fix strip's rationale). */}
-                  <p className="mt-1.5 font-mono text-[13px] leading-relaxed text-slate-600">
-                    {entry.body}
-                  </p>
-                </section>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
+// PAGE HELP (unit #20) IS RETIRED, 2026-08-14 -- a NAMED retirement, because
+// what it held was doctrine and a silent deletion of doctrine is the failure
+// this whole file exists to prevent.
+//
+// It was the round `?` beside a genesis screen's h1, opening a right-side
+// drawer of static `{ title, body }` sections. Four screens each grew one, and
+// that was the fault: a reference you can only open while standing on the exact
+// screen it describes is a reference most readers never open, and four of them
+// gave the product's background four front doors and no table of contents. The
+// TEXT survives, verbatim and unabridged, in lib/help-content.tsx, and renders
+// as one reading surface at /docs -- reachable from the book icon in the app
+// topbar on EVERY route, not just the four it used to describe.
+//
+// The line the drawer drew against `InfoTip` still holds, and is now the rule
+// for what belongs at /docs: an `InfoTip` answers ONE question a control raises,
+// where that control sits ("what does this word mean", "why is this disabled
+// right now"), and a reader who needs it BEFORE they can act must not have to
+// navigate for it. Doctrine, background and "why this was designed this way"
+// belong one level up, in a surface opened on purpose. That level is now a
+// route instead of a per-page drawer.
 
 /**
  * MODAL DIALOG (unit #23) -- a CENTERED dialog over a dimmed backdrop, for a
- * task the reader chose to start (새 생성) rather than a reference they opened
- * to check something mid-task. That is the one real difference from
- * `PageHelp` above, and it is why this is a second primitive instead of a
- * `side`/`center` prop on that one: `PageHelp` is inert (static content, no
- * form, safe to leave open while reading elsewhere), while a caller of THIS
- * component owns a form with real state -- closing it does not discard that
- * state (the caller's own `open` flag only hides the tree; see
- * app/genesis/page.tsx's own comment on why the form fields live in the page,
- * not in the modal, for exactly this reason), but the chrome around it needed
- * to say "this is the one thing in front of you right now" rather than "this
- * is a drawer of background reading" -- hence centred-over-a-backdrop instead
- * of PageHelp's right-side slide-in.
+ * task the reader chose to start (새 생성). A caller of this component owns a
+ * form with real state: closing the dialog does not discard it (the caller's
+ * own `open` flag only hides the tree; see app/genesis/page.tsx's own comment
+ * on why the form fields live in the page, not in the modal, for exactly this
+ * reason), and the chrome says "this is the one thing in front of you right
+ * now" -- which is what centring over a backdrop buys, and why a task dialog is
+ * not styled like a panel the reader can work around.
  *
- * REACHABILITY is the SAME three guarantees `PageHelp` already insists on,
- * because nothing about being centred instead of a drawer changes who needs
- * to reach it: a real `<button>` close trigger (focused on open, so the very
- * next Tab lands somewhere inside the dialog rather than back on the page
- * behind it), Escape closes from anywhere the dialog has focus, and a
- * pointerdown on the dimmed backdrop closes it too (the backdrop IS the
- * click-outside handler, exactly as `PageHelp`'s is -- the panel stops its own
- * click from reaching the backdrop underneath it). `role="dialog"` +
- * `aria-modal="true"` + `aria-labelledby` pointing at the dialog's own heading
- * complete the same announcement `PageHelp` makes.
+ * REACHABILITY -- four guarantees this component owes on its own, because a
+ * dialog that only a mouse can dismiss traps the reader inside it:
+ *   * a real `<button>` close trigger, FOCUSED on open, so the very next Tab
+ *     lands somewhere inside the dialog rather than back on the page behind it;
+ *   * Escape closes from anywhere the dialog has focus;
+ *   * a pointerdown on the dimmed backdrop closes it too -- the backdrop IS the
+ *     click-outside handler, and the panel stops its own click from reaching the
+ *     backdrop underneath it;
+ *   * `role="dialog"` + `aria-modal="true"` + `aria-labelledby` pointing at the
+ *     dialog's own heading, so a screen reader announces it as a modal region
+ *     with a name, the same way the close button's `aria-label` names the action
+ *     that undoes opening it.
+ *
+ * The right-side SLIDE-IN this file used to own (unit #20's help drawer) is not
+ * a variant of this component and never was: that pattern now lives in the
+ * assistant drawer, and the static reading surface it carried lives at /docs.
  */
 export function ModalDialog({
   open,
@@ -438,7 +318,7 @@ export function ModalDialog({
         aria-modal="true"
         aria-labelledby={headingId}
         onClick={(event) => event.stopPropagation()}
-        className="flex max-h-full w-full max-w-xl flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-surface px-6 py-6 shadow-[0_16px_48px_rgba(0,0,0,0.5)]"
+        className="flex max-h-full w-full max-w-2xl flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-surface px-6 py-6 shadow-[0_16px_48px_rgba(0,0,0,0.5)]"
       >
         <div className="flex items-start justify-between gap-3">
           <h2 id={headingId} className="text-[17px] font-semibold text-slate-900">
@@ -449,7 +329,7 @@ export function ModalDialog({
             type="button"
             onClick={onClose}
             aria-label={t("닫기", "Close", "閉じる")}
-            className="ui-button-ghost shrink-0 rounded-md px-2 py-0.5 text-[13px]"
+            className="ui-button-ghost shrink-0 rounded-md px-2 py-0.5 text-[15px]"
           >
             ✕
           </button>

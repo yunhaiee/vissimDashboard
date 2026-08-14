@@ -205,8 +205,8 @@ function rewireLabel(rewire: NetworkDiffRewire): string {
 function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
     <section className="mb-5 rounded-xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
-      <h2 className="text-sm font-bold text-slate-900">{title}</h2>
-      {subtitle && <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>}
+      <h2 className="text-[15px] font-bold text-slate-900">{title}</h2>
+      {subtitle && <p className="mt-0.5 text-[14px] text-slate-500">{subtitle}</p>}
       <div className="mt-3">{children}</div>
     </section>
   );
@@ -234,15 +234,15 @@ function ChangeColumn({
   return (
     <div className={`min-w-0 rounded-r-lg border-l-4 px-3.5 py-3 ${rail}`}>
       <div className="flex items-baseline gap-2">
-        <h3 className="text-xs font-bold text-slate-800">{heading}</h3>
-        <span className="text-[11px] font-semibold text-slate-500">{items.length}</span>
+        <h3 className="text-[14px] font-bold text-slate-800">{heading}</h3>
+        <span className="text-[13px] font-semibold text-slate-500">{items.length}</span>
       </div>
       {items.length === 0 ? (
-        <p className="mt-1.5 text-[11px] text-slate-400">{emptyLabel}</p>
+        <p className="mt-1.5 text-[13px] text-slate-400">{emptyLabel}</p>
       ) : (
         <ul className="mt-1.5 space-y-1">
           {items.map((item, index) => (
-            <li key={index} className="font-mono text-[11px] leading-relaxed text-slate-700">
+            <li key={index} className="font-mono text-[13px] leading-relaxed text-slate-700">
               {item}
             </li>
           ))}
@@ -366,7 +366,7 @@ export default function NetworkDiffPage() {
         <h1 className="text-[22px] font-semibold tracking-tight text-white">
           {t("네트워크 변경 비교", "Network Diff", "ネットワーク差分比較")}
         </h1>
-        <p className="mt-1 text-sm text-slate-600">
+        <p className="mt-1 text-[15px] text-slate-600">
           {t(
             "한 세션의 두 시점을 나란히 놓고, 무엇이 바뀌었는지 구조로 확인합니다.",
             "Put two snapshots of one session side by side and read what changed, structurally.",
@@ -387,14 +387,14 @@ export default function NetworkDiffPage() {
         )}
       >
         {sessionsError && (
-          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[14px] text-rose-700">
             {t("세션 목록을 불러오지 못했습니다", "Failed to load the session list", "セッション一覧を読み込めませんでした")}
             : {sessionsError}
           </div>
         )}
 
         {sessions !== null && sessions.length === 0 && !sessionsError && (
-          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-xs text-slate-500">
+          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-[14px] text-slate-500">
             {t(
               "편집된 세션이 아직 없습니다. AI 에이전트 채팅에서 변경을 실행하면 여기에 나타납니다.",
               "No edited sessions yet. Once the AI agent executes a change in chat, one will appear here.",
@@ -405,7 +405,7 @@ export default function NetworkDiffPage() {
 
         {sessions !== null && sessions.length > 0 && (
           <div className="grid gap-3 sm:grid-cols-3">
-            <label className="block text-xs font-semibold text-slate-700">
+            <label className="block text-[14px] font-semibold text-slate-700">
               {t("세션", "Session", "セッション")}
               <select
                 value={sessionId}
@@ -414,7 +414,7 @@ export default function NetworkDiffPage() {
                   setBaseToken(TOKEN_PRISTINE);
                   setTargetToken(TOKEN_WORKING);
                 }}
-                className="mt-1 w-full rounded-lg border border-slate-300 bg-surface px-2.5 py-2 text-xs font-normal text-slate-800"
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-surface px-2.5 py-2 text-[14px] font-normal text-slate-800"
               >
                 {sessions.map((entry) => (
                   <option key={entry.session_id} value={entry.session_id}>
@@ -424,13 +424,13 @@ export default function NetworkDiffPage() {
               </select>
             </label>
 
-            <label className="block text-xs font-semibold text-slate-700">
+            <label className="block text-[14px] font-semibold text-slate-700">
               {t("기준 (이전)", "Base (before)", "基準（変更前）")}
               <select
                 value={baseToken}
                 onChange={(event) => setBaseToken(event.target.value)}
                 disabled={versionsLoading}
-                className="mt-1 w-full rounded-lg border border-slate-300 bg-surface px-2.5 py-2 text-xs font-normal text-slate-800 disabled:opacity-60"
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-surface px-2.5 py-2 text-[14px] font-normal text-slate-800 disabled:opacity-60"
               >
                 {options.map((option) => (
                   <option key={option.token} value={option.token}>
@@ -440,13 +440,13 @@ export default function NetworkDiffPage() {
               </select>
             </label>
 
-            <label className="block text-xs font-semibold text-slate-700">
+            <label className="block text-[14px] font-semibold text-slate-700">
               {t("대상 (이후)", "Target (after)", "対象（変更後）")}
               <select
                 value={targetToken}
                 onChange={(event) => setTargetToken(event.target.value)}
                 disabled={versionsLoading}
-                className="mt-1 w-full rounded-lg border border-slate-300 bg-surface px-2.5 py-2 text-xs font-normal text-slate-800 disabled:opacity-60"
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-surface px-2.5 py-2 text-[14px] font-normal text-slate-800 disabled:opacity-60"
               >
                 {options.map((option) => (
                   <option key={option.token} value={option.token}>
@@ -459,7 +459,7 @@ export default function NetworkDiffPage() {
         )}
 
         {sessions !== null && sessions.length > 0 && versions.length === 0 && !versionsLoading && (
-          <p className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+          <p className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-600">
             {t(
               "이 세션에는 저장된 편집 버전이 없습니다. 원본·현재 작업본·프로젝트 데이터셋만 비교할 수 있습니다.",
               "This session has no saved edit versions. Only the original, the working copy and the project dataset can be compared.",
@@ -473,13 +473,13 @@ export default function NetworkDiffPage() {
       {/* Error states                                                       */}
       {/* ----------------------------------------------------------------- */}
       {diffError && (
-        <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+        <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[15px] text-rose-800">
           {diffError.status === 404 && (
             <>
               <p className="font-semibold">
                 {t("해당 세션을 찾을 수 없습니다", "No matching session", "該当セッションが見つかりません")}
               </p>
-              <p className="mt-1 text-xs">
+              <p className="mt-1 text-[14px]">
                 {t(
                   "존재하지 않는 세션이거나 다른 프로젝트의 세션입니다. 서버는 이 둘을 구분해 알려주지 않습니다 — 한 프로젝트가 다른 프로젝트의 세션 존재 여부를 알아내지 못하게 하기 위한 설계입니다.",
                   "Either the session does not exist or it belongs to another project. The server deliberately does not distinguish the two, so one project cannot probe another's session ids.",
@@ -491,7 +491,7 @@ export default function NetworkDiffPage() {
           {diffError.status === 401 && (
             <>
               <p className="font-semibold">{t("로그인이 필요합니다", "Sign-in required", "ログインが必要です")}</p>
-              <Link href={loginHref(pathname)} className="mt-1 inline-block text-xs font-semibold underline">
+              <Link href={loginHref(pathname)} className="mt-1 inline-block text-[14px] font-semibold underline">
                 {t("로그인", "Sign in", "ログイン")}
               </Link>
             </>
@@ -502,13 +502,13 @@ export default function NetworkDiffPage() {
             </p>
           )}
           {diffError.status !== 404 && (
-            <p className="mt-1 font-mono text-[11px] opacity-80">{diffError.message}</p>
+            <p className="mt-1 font-mono text-[13px] opacity-80">{diffError.message}</p>
           )}
         </div>
       )}
 
       {diffLoading && !result && (
-        <p className="mb-5 text-xs text-slate-500">{t("비교하는 중…", "Comparing…", "比較中…")}</p>
+        <p className="mb-5 text-[14px] text-slate-500">{t("비교하는 중…", "Comparing…", "比較中…")}</p>
       )}
 
       {/* ----------------------------------------------------------------- */}
@@ -523,14 +523,14 @@ export default function NetworkDiffPage() {
               ["target", result.target, t("대상 (이후)", "Target (after)", "対象（変更後）")],
             ] as const).map(([key, side, caption]) => (
               <div key={key} className="rounded-xl border border-slate-200 bg-surface/90 px-4 py-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{caption}</p>
-                <p className="mt-0.5 text-sm font-bold text-slate-900">
+                <p className="text-[13px] font-semibold uppercase tracking-wide text-slate-500">{caption}</p>
+                <p className="mt-0.5 text-[15px] font-bold text-slate-900">
                   {options.find((option) => option.token === side.token)?.label ?? side.token}
                 </p>
-                <p className="mt-0.5 font-mono text-[11px] text-slate-500">{side.filename}</p>
-                <p className="mt-0.5 text-[11px] text-slate-500">{formatTimestamp(side.modified_at, lang)}</p>
+                <p className="mt-0.5 font-mono text-[13px] text-slate-500">{side.filename}</p>
+                <p className="mt-0.5 text-[13px] text-slate-500">{formatTimestamp(side.modified_at, lang)}</p>
                 {side.resolved_from === "active_dataset_fallback" && (
-                  <p className="mt-1 rounded bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+                  <p className="mt-1 rounded bg-amber-50 px-2 py-1 text-[12px] text-amber-800">
                     {t(
                       "이 세션에는 원본 기록이 없어 현재 프로젝트 데이터셋으로 대체했습니다.",
                       "This session records no original, so the project's current dataset stood in for it.",
@@ -544,11 +544,11 @@ export default function NetworkDiffPage() {
 
           {/* REFUSED — never an empty diff. */}
           {diff.refused && (
-            <div className="mb-5 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+            <div className="mb-5 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-[15px] text-rose-900">
               <p className="font-semibold">
                 {t("비교를 수행하지 못했습니다", "The comparison could not be performed", "比較を実行できませんでした")}
               </p>
-              <p className="mt-1 text-xs">
+              <p className="mt-1 text-[14px]">
                 {t(
                   "변경 목록이 비어 있는 것이 아니라, 아예 비교되지 않았습니다. 아래 사유를 확인하세요.",
                   "This is NOT an empty diff — no comparison happened at all. See the reasons below.",
@@ -560,9 +560,9 @@ export default function NetworkDiffPage() {
 
           {/* NO CHANGES — an explicit statement, with the reason when there is one. */}
           {!diff.refused && !diff.has_changes && (
-            <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+            <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-[15px] text-emerald-900">
               <p className="font-semibold">{t("차이 없음", "No differences", "差分なし")}</p>
-              <p className="mt-1 text-xs">
+              <p className="mt-1 text-[14px]">
                 {result.identical_sources
                   ? t(
                       "두 선택이 같은 파일을 가리킵니다. 비교는 실제로 수행되었고 구조 변경이 0건입니다.",
@@ -591,7 +591,7 @@ export default function NetworkDiffPage() {
                   )}
                 >
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[420px] text-xs">
+                    <table className="w-full min-w-[420px] text-[14px]">
                       <thead>
                         <tr className="text-left text-slate-500">
                           <th className="py-1 font-semibold">{t("항목", "Item", "項目")}</th>
@@ -722,7 +722,7 @@ export default function NetworkDiffPage() {
                 >
                   <ul className="space-y-1">
                     {diff.reclassified.map((item) => (
-                      <li key={item.link_id} className="font-mono text-[11px] text-slate-700">
+                      <li key={item.link_id} className="font-mono text-[13px] text-slate-700">
                         {item.link_id}: {item.base_kind} → {item.target_kind}
                       </li>
                     ))}
@@ -740,7 +740,7 @@ export default function NetworkDiffPage() {
                 )}
               >
                 {(diff.node_movements ?? []).filter((node) => node.changed).length === 0 ? (
-                  <p className="text-xs text-slate-500">
+                  <p className="text-[14px] text-slate-500">
                     {t(
                       "이동류가 바뀐 노드가 없습니다.",
                       "No node's movement set changed.",
@@ -754,19 +754,19 @@ export default function NetworkDiffPage() {
                       .map((node) => (
                         <li key={node.node_id} className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2">
                           <div className="flex flex-wrap items-baseline gap-2">
-                            <span className="text-xs font-bold text-slate-900">
+                            <span className="text-[14px] font-bold text-slate-900">
                               {t(`노드 ${node.node_id}`, `Node ${node.node_id}`, `ノード ${node.node_id}`)}
                             </span>
-                            <span className="font-mono text-[11px] text-slate-500">
+                            <span className="font-mono text-[13px] text-slate-500">
                               {node.base_movement_count} → {node.target_movement_count}
                             </span>
                             {!node.present_in_base && (
-                              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[12px] font-semibold text-emerald-700">
                                 {t("기준에 없던 노드", "Absent from base", "基準に無いノード")}
                               </span>
                             )}
                             {!node.present_in_target && (
-                              <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+                              <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[12px] font-semibold text-rose-700">
                                 {t("대상에서 사라진 노드", "Absent from target", "対象で消えたノード")}
                               </span>
                             )}
@@ -807,7 +807,7 @@ export default function NetworkDiffPage() {
                 )}
               >
                 {(diff.signal_coverage ?? []).filter((row) => row.changed).length === 0 ? (
-                  <p className="text-xs text-slate-500">
+                  <p className="text-[14px] text-slate-500">
                     {t(
                       "신호 커버리지가 바뀐 노드가 없습니다.",
                       "No node's signal coverage changed.",
@@ -816,7 +816,7 @@ export default function NetworkDiffPage() {
                   </p>
                 ) : (
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[460px] text-xs">
+                    <table className="w-full min-w-[460px] text-[14px]">
                       <thead>
                         <tr className="text-left text-slate-500">
                           <th className="py-1 font-semibold">{t("노드", "Node", "ノード")}</th>
@@ -839,7 +839,7 @@ export default function NetworkDiffPage() {
                                 {row.target_signalized.length}/{row.target_approaches.length}
                                 {row.target_coverage !== null && ` (${Math.round(row.target_coverage * 100)}%)`}
                               </td>
-                              <td className="py-1 font-mono text-[11px]">
+                              <td className="py-1 font-mono text-[13px]">
                                 {row.newly_signalized.length > 0 && (
                                   <span className="text-emerald-600">+{row.newly_signalized.join(", ")} </span>
                                 )}
@@ -868,16 +868,16 @@ export default function NetworkDiffPage() {
           {/* --------------------------------------------------------------- */}
           <section className="mb-5 rounded-xl border border-amber-300 bg-amber-50/70 px-5 py-4">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-bold text-amber-900">{t("위치", "Position", "位置")}</h2>
-              <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">
+              <h2 className="text-[15px] font-bold text-amber-900">{t("위치", "Position", "位置")}</h2>
+              <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[12px] font-bold uppercase tracking-wide text-amber-900">
                 WARN
               </span>
-              <span className="text-xs font-semibold text-amber-900">
+              <span className="text-[14px] font-semibold text-amber-900">
                 {t("비교하지 않음", "Not compared", "比較していません")}
               </span>
             </div>
 
-            <p className="mt-2 text-xs leading-relaxed text-amber-900">
+            <p className="mt-2 text-[14px] leading-relaxed text-amber-900">
               {t(
                 "이 프로젝트의 유일한 좌표 변환은 최대 잔차 약 14 m (차로폭 약 4개분)이고, 축척항 1.1782는 실측 축척이 아니라 Web-Mercator 위도 왜곡(1/cos 31.93°)입니다. 따라서 좌표·거리·방위 차이는 어떤 값이든 그 오차 바닥을 물려받습니다. 없는 정확도를 있는 것처럼 보여주느니 위치를 보고하지 않는 편이 낫다 — 이것이 이 비교의 방법론입니다.",
                 "The only georeference this project has carries a max residual of about 14 m (~4 lane widths), and its scale term 1.1782 is Web-Mercator latitude distortion (1/cos 31.93°), not a surveyed scale. Any coordinate, distance or bearing delta would inherit that floor. Declining to report position beats implying an accuracy that does not exist — that is this comparison's method, not a gap in it.",
@@ -889,7 +889,7 @@ export default function NetworkDiffPage() {
                 "0 links differ" after a failed comparison would read as a
                 finding. The band and the basis are method, so they stay. */}
             {diff.refused ? (
-              <p className="mt-3 rounded-lg border border-amber-200 bg-surface/70 px-3 py-2 text-xs text-amber-900">
+              <p className="mt-3 rounded-lg border border-amber-200 bg-surface/70 px-3 py-2 text-[14px] text-amber-900">
                 {t(
                   "비교가 수행되지 않았으므로 선형 차이 개수도 집계되지 않았습니다.",
                   "No comparison was performed, so the polyline-difference count was not tallied either.",
@@ -897,9 +897,9 @@ export default function NetworkDiffPage() {
                 )}
               </p>
             ) : (
-              <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+              <dl className="mt-3 grid gap-2 text-[14px] sm:grid-cols-2">
                 <div className="rounded-lg border border-amber-200 bg-surface/70 px-3 py-2">
-                  <dt className="text-[11px] font-semibold text-amber-900">
+                  <dt className="text-[13px] font-semibold text-amber-900">
                     {t(
                       "구조는 같고 선형만 다른 링크",
                       "Links identical in topology, different in polyline",
@@ -908,16 +908,16 @@ export default function NetworkDiffPage() {
                   </dt>
                   <dd className="mt-0.5 font-mono text-base font-bold text-amber-900">
                     {result.diff.position.geometry_differs_count}
-                    <span className="ml-1.5 font-sans text-[10px] font-semibold">
+                    <span className="ml-1.5 font-sans text-[12px] font-semibold">
                       {t("개 (세었을 뿐, 재지 않음)", "counted, not measured", "件（数えただけ、測っていません）")}
                     </span>
                   </dd>
                 </div>
                 <div className="rounded-lg border border-amber-200 bg-surface/70 px-3 py-2">
-                  <dt className="text-[11px] font-semibold text-amber-900">
+                  <dt className="text-[13px] font-semibold text-amber-900">
                     {t("불확실성 구간", "Uncertainty band", "不確実性の幅")}
                   </dt>
-                  <dd className="mt-0.5 font-mono text-xs text-amber-900">
+                  <dd className="mt-0.5 font-mono text-[14px] text-amber-900">
                     ±{result.diff.position.max_residual_m} m ·{" "}
                     {t(
                       `차로폭 ${result.diff.position.residual_lane_widths}개분`,
@@ -930,7 +930,7 @@ export default function NetworkDiffPage() {
               </dl>
             )}
 
-            <p className="mt-2 font-mono text-[10px] leading-relaxed text-amber-800/90">
+            <p className="mt-2 font-mono text-[12px] leading-relaxed text-amber-800/90">
               {result.diff.position.basis}
             </p>
           </section>
@@ -945,7 +945,7 @@ export default function NetworkDiffPage() {
             )}
           >
             {diff.findings.length === 0 ? (
-              <p className="text-xs text-slate-500">{t("없음", "None", "なし")}</p>
+              <p className="text-[14px] text-slate-500">{t("없음", "None", "なし")}</p>
             ) : (
               <ul className="space-y-2">
                 {diff.findings.map((finding, index) => (
@@ -954,15 +954,15 @@ export default function NetworkDiffPage() {
                     className={`rounded-lg border px-3 py-2 ${severityClasses(finding.severity)}`}
                   >
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded bg-black/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide">
+                      <span className="rounded bg-black/10 px-1.5 py-0.5 text-[12px] font-bold uppercase tracking-wide">
                         {finding.severity}
                       </span>
-                      <span className="text-xs font-semibold">{findingHeadline(finding, t, lang)}</span>
+                      <span className="text-[14px] font-semibold">{findingHeadline(finding, t, lang)}</span>
                       {finding.subject && (
-                        <span className="font-mono text-[10px] opacity-70">[{finding.subject}]</span>
+                        <span className="font-mono text-[12px] opacity-70">[{finding.subject}]</span>
                       )}
                     </div>
-                    <p className="mt-1 font-mono text-[10px] leading-relaxed opacity-80">{finding.message}</p>
+                    <p className="mt-1 font-mono text-[12px] leading-relaxed opacity-80">{finding.message}</p>
                   </li>
                 ))}
               </ul>

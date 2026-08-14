@@ -80,17 +80,17 @@ function LoginPageContent() {
       <div className="mx-auto w-full max-w-md py-10">
         <div className="ui-surface px-6 py-6">
           <h1 className="text-lg font-bold text-slate-900">{t("이미 로그인되어 있습니다", "Already signed in")}</h1>
-          <p className="mt-2 text-sm text-slate-500">
+          <p className="mt-2 text-[15px] text-slate-500">
             {user.display_name || user.username} · {roleLabel(user.role, t)}
           </p>
           <div className="mt-5 flex gap-2">
-            <Link href={nextPath} className="ui-button-primary inline-flex h-10 items-center px-4 text-sm">
+            <Link href={nextPath} className="ui-button-primary inline-flex h-10 items-center px-4 text-[15px]">
               {t("계속하기", "Continue")}
             </Link>
             <button
               type="button"
               onClick={() => void logout()}
-              className="ui-button-ghost inline-flex h-10 items-center px-4 text-sm"
+              className="ui-button-ghost inline-flex h-10 items-center px-4 text-[15px]"
             >
               {t("로그아웃", "Sign out")}
             </button>
@@ -104,13 +104,13 @@ function LoginPageContent() {
     <div className="mx-auto w-full max-w-md py-10">
       <div className="ui-surface px-6 py-6">
         <h1 className="text-lg font-bold text-slate-900">{t("로그인", "Sign in")}</h1>
-        <p className="mt-1.5 text-sm text-slate-500">
+        <p className="mt-1.5 text-[15px] text-slate-500">
           {t("승인·반려 등 기록이 남는 작업에는 로그인이 필요합니다.", "Actions that leave a record, such as approving or declining, require a sign-in.")}
         </p>
 
         <form onSubmit={handleSubmit} className="mt-5 space-y-4">
           <div>
-            <label htmlFor="login-username" className="block text-xs font-semibold text-slate-600">
+            <label htmlFor="login-username" className="block text-[14px] font-semibold text-slate-600">
               {t("아이디", "Username")}
             </label>
             <input
@@ -128,7 +128,7 @@ function LoginPageContent() {
           </div>
 
           <div>
-            <label htmlFor="login-password" className="block text-xs font-semibold text-slate-600">
+            <label htmlFor="login-password" className="block text-[14px] font-semibold text-slate-600">
               {t("비밀번호", "Password")}
             </label>
             <input
@@ -146,7 +146,7 @@ function LoginPageContent() {
           {failure && (
             <p
               role="alert"
-              className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700"
+              className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[14px] leading-5 text-rose-700"
             >
               {failure.message}
             </p>
@@ -155,13 +155,13 @@ function LoginPageContent() {
           <button
             type="submit"
             disabled={submitting || !username.trim() || !password}
-            className="ui-button-primary inline-flex h-10 w-full items-center justify-center px-4 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-button-primary inline-flex h-10 w-full items-center justify-center px-4 text-[15px] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? t("로그인 중...", "Signing in...") : t("로그인", "Sign in")}
           </button>
         </form>
 
-        <p className="mt-4 text-[11px] leading-5 text-slate-400">
+        <p className="mt-4 text-[13px] leading-5 text-slate-400">
           {t("계정은 관리자가 발급합니다. 가입 절차는 없습니다.", "Accounts are issued by an administrator. There is no sign-up.")}
         </p>
       </div>

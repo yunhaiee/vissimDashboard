@@ -313,7 +313,7 @@ export default function DownloadsPage() {
         <h1 className="text-[22px] font-semibold tracking-tight text-white">
           {t("데이터 다운로드", "Data Downloads")}
         </h1>
-        <p className="mt-1 text-sm text-slate-600">
+        <p className="mt-1 text-[15px] text-slate-600">
           {t(
             "모델 산출 데이터를 항목별로 Excel(.xlsx)로 내려받습니다.",
             "Download the model deliverables item by item as Excel (.xlsx).",
@@ -324,10 +324,10 @@ export default function DownloadsPage() {
       <section className="mb-6 rounded-xl border border-slate-200 bg-surface/90 px-5 py-4 shadow-[0_8px_18px_rgba(15,23,42,0.06)]">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-sm font-bold text-slate-900">
+            <h2 className="text-[15px] font-bold text-slate-900">
               {t("편집된 모델", "Edited models", "編集済みモデル")}
             </h2>
-            <p className="mt-0.5 text-xs text-slate-500">
+            <p className="mt-0.5 text-[14px] text-slate-500">
               {t(
                 "AI 에이전트가 채팅에서 변경한 VISSIM 모델(.inpx)을 내려받습니다.",
                 "Download the VISSIM model (.inpx) the AI agent edited in chat.",
@@ -339,7 +339,7 @@ export default function DownloadsPage() {
             type="button"
             onClick={loadAgentDownloads}
             disabled={agentDownloadsLoading}
-            className="rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60"
+            className="rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-[14px] font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-wait disabled:opacity-60"
           >
             {agentDownloadsLoading
               ? t("새로고침 중…", "Refreshing…", "更新中…")
@@ -348,13 +348,13 @@ export default function DownloadsPage() {
         </div>
 
         {agentDownloadsError && (
-          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[14px] text-rose-700">
             {t("목록을 불러오지 못했습니다", "Failed to load the list", "リストを読み込めませんでした")}: {agentDownloadsError}
           </div>
         )}
 
         {!agentDownloadsLoading && !agentDownloadsError && agentDownloads.length === 0 && (
-          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-xs text-slate-500">
+          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-[14px] text-slate-500">
             {t(
               "아직 편집된 모델이 없습니다. AI 에이전트 채팅에서 변경을 실행하면 여기에 표시됩니다.",
               "No edited models yet. Once the AI agent executes a change in chat, it will show up here.",
@@ -379,30 +379,30 @@ export default function DownloadsPage() {
                 >
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-semibold text-slate-900">{entry.dataset_filename}</span>
+                      <span className="text-[15px] font-semibold text-slate-900">{entry.dataset_filename}</span>
                       {entry.is_latest && (
-                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[12px] font-semibold text-emerald-700">
                           {t("최신", "Latest", "最新")}
                         </span>
                       )}
                     </div>
-                    <p className="mt-0.5 text-xs text-slate-500">
+                    <p className="mt-0.5 text-[14px] text-slate-500">
                       {t("세션", "Session", "セッション")} {entry.session_id_short} · {versionLabel} ·{" "}
                       {formatDownloadTimestamp(entry.modified_at, lang)}
                     </p>
                   </div>
                   <div className="flex flex-none items-center gap-2">
                     {status === "ok" && (
-                      <span className="text-xs font-semibold text-emerald-600">{t("완료", "Done", "完了")}</span>
+                      <span className="text-[14px] font-semibold text-emerald-600">{t("완료", "Done", "完了")}</span>
                     )}
                     {status === "err" && (
-                      <span className="text-xs font-semibold text-rose-600">{t("실패", "Failed", "失敗")}</span>
+                      <span className="text-[14px] font-semibold text-rose-600">{t("실패", "Failed", "失敗")}</span>
                     )}
                     <button
                       type="button"
                       onClick={() => downloadAgentEntry(entry)}
                       disabled={agentDownloadBusyKey === key}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3.5 py-2 text-xs font-semibold text-ink transition hover:bg-slate-950 disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3.5 py-2 text-[14px] font-semibold text-ink transition hover:bg-slate-950 disabled:opacity-50"
                     >
                       {agentDownloadBusyKey === key
                         ? t("생성 중…", "Building…", "生成中…")
@@ -417,13 +417,13 @@ export default function DownloadsPage() {
       </section>
 
       {error && (
-        <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+        <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[15px] text-rose-700">
           {t("목록을 불러오지 못했습니다", "Failed to load the list")}: {error}
         </div>
       )}
 
       {activeDataset && activeDataset.source !== "uploaded" && (
-        <div className="mb-5 rounded-xl border border-amber-300 bg-amber-100/70 px-4 py-3 text-xs font-medium text-amber-900">
+        <div className="mb-5 rounded-xl border border-amber-300 bg-amber-100/70 px-4 py-3 text-[14px] font-medium text-amber-900">
           {t(
             `※ 업로드된 VISSIM 데이터셋이 없어 기본 샘플 데이터(${activeDataset.filename})를 내려받게 됩니다. 실제 프로젝트 데이터를 원하면 대시보드에서 먼저 업로드하세요.`,
             `※ No VISSIM dataset has been uploaded — this will export the bundled sample data (${activeDataset.filename}). Upload your project data on the dashboard first if you want real results.`,
@@ -431,7 +431,7 @@ export default function DownloadsPage() {
         </div>
       )}
 
-      <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-xs text-amber-800 mb-5">
+      <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-[14px] text-amber-800 mb-5">
         {t(
           "※ 보정·검증·모델 산출물은 시나리오 시뮬레이션(.db) 결과에 기반합니다. 현재 시뮬레이션 런이 미완성이면 값이 부분적일 수 있습니다.",
           "Note: Calibration, Validation and Model outputs are based on the scenario simulation (.db). Values may be partial if the runs are incomplete.",
@@ -439,11 +439,11 @@ export default function DownloadsPage() {
       </div>
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-        <div className="flex items-center gap-3 text-sm text-slate-600">
+        <div className="flex items-center gap-3 text-[15px] text-slate-600">
           <button
             type="button"
             onClick={toggleAll}
-            className="rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+            className="rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-[14px] font-semibold text-slate-700 transition hover:bg-slate-100"
           >
             {allSelected ? t("선택 해제", "Clear all") : t("전체 선택", "Select all")}
           </button>
@@ -455,7 +455,7 @@ export default function DownloadsPage() {
           type="button"
           onClick={downloadCombined}
           disabled={selectedCount === 0 || busyCombined}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-ink transition hover:bg-slate-950 disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-[15px] font-semibold text-ink transition hover:bg-slate-950 disabled:opacity-40"
         >
           {busyCombined
             ? t("생성 중…", "Building…")
@@ -482,35 +482,35 @@ export default function DownloadsPage() {
                   className="mt-2 h-4 w-4 flex-none accent-accent"
                   aria-label={label}
                 />
-                <span className="mt-0.5 flex h-8 w-8 flex-none items-center justify-center rounded-full bg-slate-100 text-sm font-bold text-slate-600">
+                <span className="mt-0.5 flex h-8 w-8 flex-none items-center justify-center rounded-full bg-slate-100 text-[15px] font-bold text-slate-600">
                   {index + 1}
                 </span>
                 <div>
                   <div className="flex items-center gap-2">
-                    <h2 className="text-sm font-bold text-slate-900">{label}</h2>
+                    <h2 className="text-[15px] font-bold text-slate-900">{label}</h2>
                     {meta?.partial && (
-                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[12px] font-semibold text-amber-700">
                         {t("시뮬 의존", "sim-based")}
                       </span>
                     )}
                   </div>
-                  {desc && <p className="mt-0.5 text-xs text-slate-500">{desc}</p>}
-                  <p className="mt-1 font-mono text-[10px] text-slate-400">{item.filename}</p>
+                  {desc && <p className="mt-0.5 text-[14px] text-slate-500">{desc}</p>}
+                  <p className="mt-1 font-mono text-[12px] text-slate-400">{item.filename}</p>
                 </div>
               </div>
 
               <div className="flex flex-none items-center gap-2">
                 {status === "ok" && (
-                  <span className="text-xs font-semibold text-emerald-600">{t("완료", "Done")}</span>
+                  <span className="text-[14px] font-semibold text-emerald-600">{t("완료", "Done")}</span>
                 )}
                 {status === "err" && (
-                  <span className="text-xs font-semibold text-rose-600">{t("실패", "Failed")}</span>
+                  <span className="text-[14px] font-semibold text-rose-600">{t("실패", "Failed")}</span>
                 )}
                 <button
                   type="button"
                   onClick={() => download(item)}
                   disabled={busy === item.key}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3.5 py-2 text-sm font-semibold text-ink transition hover:bg-slate-950 disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3.5 py-2 text-[15px] font-semibold text-ink transition hover:bg-slate-950 disabled:opacity-50"
                 >
                   {busy === item.key ? t("생성 중…", "Building…") : t("다운로드", "Download")}
                 </button>

@@ -263,7 +263,7 @@ export default function IntersectionCompareMap({ selectedNodeIds, onToggleNode, 
     <div className="relative h-full w-full overflow-hidden rounded-xl">
       <div ref={containerRef} className="h-full w-full" />
       {networkError && (
-        <div className="pointer-events-none absolute left-3 top-3 z-[650] rounded-lg border border-rose-200 bg-rose-50/95 px-3 py-2 text-xs text-rose-700 shadow-sm">
+        <div className="pointer-events-none absolute left-3 top-3 z-[650] rounded-lg border border-rose-200 bg-rose-50/95 px-3 py-2 text-[14px] text-rose-700 shadow-sm">
           Failed to load map data: {networkError}
         </div>
       )}

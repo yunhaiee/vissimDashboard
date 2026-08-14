@@ -422,14 +422,14 @@ export default function ApprovalFocusMap({
         )}
       </div>
       <div className="mt-1 flex items-center justify-between gap-2">
-        <p className="text-[10px] font-medium text-slate-500">{caption}</p>
+        <p className="text-[12px] font-medium text-slate-500">{caption}</p>
         {networkHref && (
           <Link
             href={networkHref}
             prefetch={false}
             onClick={handleViewInNetwork}
             data-testid="approval-focus-network-link"
-            className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+            className="shrink-0 rounded-md border border-slate-200 px-2 py-1 text-[12px] font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
           >
             {t("네트워크에서 보기", "View in network", "ネットワークで見る")}
           </Link>

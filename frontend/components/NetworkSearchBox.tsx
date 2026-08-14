@@ -241,7 +241,7 @@ export default function NetworkSearchBox({
             "Search by link, node, or controller — number or name",
             "リンク、ノード、信号制御機の番号や名前で検索",
           )}
-          className={`ui-input h-9 pl-8 text-sm ${query ? "pr-8" : "pr-3"}`}
+          className={`ui-input h-9 pl-8 text-[15px] ${query ? "pr-8" : "pr-3"}`}
         />
         {query && (
           <button
@@ -250,7 +250,7 @@ export default function NetworkSearchBox({
             aria-label={t("검색어 지우기", "Clear search", "検索語を消去")}
             className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
           >
-            <span aria-hidden="true" className="text-sm leading-none">
+            <span aria-hidden="true" className="text-[15px] leading-none">
               ×
             </span>
           </button>
@@ -263,7 +263,7 @@ export default function NetworkSearchBox({
           data-testid="network-search-dropdown"
         >
           {statusMessage ? (
-            <p className="px-3 py-2.5 text-xs text-slate-500" role="status">
+            <p className="px-3 py-2.5 text-[14px] text-slate-500" role="status">
               {statusMessage}
             </p>
           ) : (
@@ -299,13 +299,13 @@ export default function NetworkSearchBox({
                             : "text-slate-700 hover:bg-slate-50"
                       }`}
                     >
-                      <span className="shrink-0 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                      <span className="shrink-0 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[12px] font-medium text-slate-600">
                         {searchHitTypeLabel(hit, t)}
                       </span>
-                      <span className="shrink-0 text-[13px] font-semibold tabular-nums">{hit.id}</span>
-                      {name && <span className="min-w-0 flex-1 truncate text-[13px]">{name}</span>}
+                      <span className="shrink-0 text-[15px] font-semibold tabular-nums">{hit.id}</span>
+                      {name && <span className="min-w-0 flex-1 truncate text-[15px]">{name}</span>}
                       {!focusable && (
-                        <span className="ml-auto shrink-0 text-[11px] text-slate-500">
+                        <span className="ml-auto shrink-0 text-[13px] text-slate-500">
                           {t("위치 정보 없음", "No location data", "位置情報なし")}
                         </span>
                       )}
@@ -317,7 +317,7 @@ export default function NetworkSearchBox({
           )}
 
           {status === "ok" && truncated && (
-            <p className="border-t border-slate-200 px-3 py-1.5 text-[11px] text-slate-500">
+            <p className="border-t border-slate-200 px-3 py-1.5 text-[13px] text-slate-500">
               {t(
                 `총 ${total}개 중 ${results.length}개 표시 · 검색어를 더 구체적으로 입력하세요`,
                 `Showing ${results.length} of ${total} · refine your search to narrow it down`,

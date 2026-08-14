@@ -19,7 +19,7 @@ export default function MovementTable({ scenarios, selected, results }: Props) {
 
   return (
     <div className="overflow-x-auto rounded-xl border border-slate-100 shadow-sm">
-      <table className="w-full text-xs">
+      <table className="w-full text-[14px]">
         <thead className="bg-slate-50 text-slate-600">
           <tr>
             <th className="px-3 py-2 text-left font-semibold">Movement ID</th>
@@ -57,7 +57,7 @@ export default function MovementTable({ scenarios, selected, results }: Props) {
         </tbody>
       </table>
       {ids.length > 30 && (
-        <p className="text-center text-xs text-slate-400 py-2">... 총 {ids.length}개 중 30개 표시</p>
+        <p className="text-center text-[14px] text-slate-400 py-2">... 총 {ids.length}개 중 30개 표시</p>
       )}
     </div>
   );

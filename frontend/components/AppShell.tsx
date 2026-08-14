@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 
 import FloatingAssistant from "@/components/FloatingAssistant";
 import ProjectSelector from "@/components/ProjectSelector";
@@ -207,7 +208,7 @@ type NavGroup = {
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { lang, setLang, t } = useLanguage();
+  const { t } = useLanguage();
   const { user } = useAuth();
 
   // Labels are shorter than the flat menu's were because the group header now
@@ -297,7 +298,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-frame">
       <aside className="app-sidebar">
-        <Link href="/dashboard" className="app-side-brand">
+        <Link href="/overview" className="app-side-brand">
           <span className="app-brand-mark" />
           VISSIM Platform
         </Link>
@@ -337,7 +338,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             >
               <p
                 id={`app-side-group-${group.id}`}
-                className="px-1.5 pb-1 text-[11px] font-bold tracking-[0.04em] text-slate-400 max-[880px]:whitespace-nowrap max-[880px]:pb-0"
+                className="px-1.5 pb-1 text-[13px] font-bold tracking-[0.04em] text-slate-400 max-[880px]:whitespace-nowrap max-[880px]:pb-0"
               >
                 {group.ordinal ? `${group.ordinal} ${group.title}` : group.title}
               </p>
@@ -358,19 +359,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           ))}
         </nav>
-
-        <div className="app-side-footer">
-          <AccountAffordance />
-          <div className="app-lang-switch" role="group" aria-label={t("Language switch", "Language switch")}>
-            <LangButton lang="ko" current={lang} onSelect={setLang} label="Korean" />
-            <LangButton lang="en" current={lang} onSelect={setLang} label="English" />
-            <LangButton lang="ja" current={lang} onSelect={setLang} label="Japanese" />
-          </div>
-        </div>
+        {/* NOTHING BELOW THE NAV (2026-08-14). The sidebar used to end in a
+          * footer carrying the account block and a three-button language
+          * switch; both moved to the topbar in the content column. The rail is
+          * now navigation and nothing else -- "where can I go" on the left,
+          * "who am I / how do I read this app" on the top right. */}
       </aside>
 
       <main className="app-content">
         <div className="app-content-inner">
+          <AppTopbar />
           <PipelineStepper current={stageForPath(pathname)} />
           {children}
         </div>
@@ -412,7 +410,7 @@ function PipelineStepper({ current }: { current: PipelineStage | null }) {
               )}
               <span
                 aria-current={active ? "step" : undefined}
-                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[12px] ${
+                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[14px] ${
                   active
                     ? "border-sky-200 bg-sky-50 font-semibold text-sky-600"
                     : "border-slate-200 text-slate-500"
@@ -440,6 +438,12 @@ function PipelineStepper({ current }: { current: PipelineStage | null }) {
 // The 로그인 link carries the current path as `next` (validated by
 // lib/authRedirect.ts on both ends) so a sign-in returns the user to the page
 // they were reading, not to the dashboard.
+//
+// 2026-08-14: it moved out of the sidebar footer and into the topbar. The
+// LOGIC is untouched -- the same three states, the same `next`-carrying login
+// href, the same server-supplied role label. Only the class names changed, and
+// only because a 240px column stacked the name over the role while a 40px bar
+// wants them on one line.
 function AccountAffordance() {
   const { t } = useLanguage();
   const { user, status, logout } = useAuth();
@@ -449,48 +453,189 @@ function AccountAffordance() {
 
   if (!user) {
     return (
-      <Link href={loginHref(pathname)} className="app-side-account-action">
+      <Link href={loginHref(pathname)} className="app-topbar-account-action">
         {t("로그인", "Sign in", "ログイン")}
       </Link>
     );
   }
 
   return (
-    <div className="app-side-account">
-      <div className="app-side-account-ident">
+    <div className="app-topbar-account">
+      <div className="app-topbar-account-ident">
         {/* display_name is what an operator typed for this person; username is
             the login id and the fallback when no display name was set. */}
-        <span className="app-side-account-name" title={user.username}>
+        <span className="app-topbar-account-name" title={user.username}>
           {user.display_name || user.username}
         </span>
-        <span className="app-side-account-role">{roleLabel(user.role, t)}</span>
+        <span className="app-topbar-account-role">{roleLabel(user.role, t)}</span>
       </div>
-      <button type="button" onClick={() => void logout()} className="app-side-account-action">
+      <button type="button" onClick={() => void logout()} className="app-topbar-account-action">
         {t("로그아웃", "Sign out", "ログアウト")}
       </button>
     </div>
   );
 }
 
-function LangButton({
-  lang,
-  current,
-  onSelect,
-  label,
-}: {
-  lang: Language;
-  current: Language;
-  onSelect: (lang: Language) => void;
-  label: string;
-}) {
-  const active = current === lang;
+/**
+ * THE TOPBAR (2026-08-14) -- three affordances that describe THIS BROWSER
+ * rather than the model, in the top-right corner of every route.
+ *
+ * WHY IT IS NOT IN THE SIDEBAR ANY MORE. The account block and the language
+ * switch used to sit in the rail's footer, which put "who am I" and "what
+ * language do I read" at the bottom of a list of PLACES -- and left the product
+ * with no home at all for a documentation link, since the rail's every other
+ * entry is a pipeline stage. Splitting the two questions apart fixes both: the
+ * rail answers "where can I go", the topbar answers "who am I, how do I read
+ * this, where is the manual".
+ *
+ * It renders on EVERY route, /login included. That is deliberate rather than an
+ * oversight: on the sign-in screen the account affordance is exactly the thing a
+ * reader wants (it renders nothing while whoami is in flight, and the language
+ * menu is the one control a person who cannot read the form needs first).
+ *
+ * NO RIGHT-SIDE FLEX ITEM. This sits inside `.app-content-inner`, not as a
+ * sibling of `.app-sidebar` in `.app-frame` -- the frame's right edge belongs to
+ * the assistant drawer, and a topbar that claimed a column there would fight it.
+ */
+function AppTopbar() {
+  const { t } = useLanguage();
+
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(lang)}
-      className={`app-lang-btn ${active ? "app-lang-btn-active" : ""}`}
-    >
-      {label}
-    </button>
+    <div className="app-topbar">
+      <Link
+        href="/docs"
+        className="app-topbar-btn"
+        aria-label={t("문서", "Documentation", "ドキュメント")}
+        title={t("문서", "Documentation", "ドキュメント")}
+      >
+        <BookIcon />
+      </Link>
+      <LanguageMenu />
+      <span aria-hidden className="app-topbar-divider" />
+      <AccountAffordance />
+    </div>
+  );
+}
+
+/** The three languages, in the script each is READ in -- a reader looking for
+ * their own language finds it by recognising its own letters, which is the one
+ * thing a translated label cannot do for them. */
+const LANGUAGE_OPTIONS: ReadonlyArray<{ lang: Language; label: string }> = [
+  { lang: "ko", label: "한국어" },
+  { lang: "en", label: "English" },
+  { lang: "ja", label: "日本語" },
+];
+
+/**
+ * The globe. Three-across pills became a menu because the pills cost a fixed
+ * slice of the bar to show two languages nobody was choosing; the icon costs one
+ * button and the choice is one click deeper.
+ *
+ * REACHABILITY, the same rule every other overlay in this app follows: a real
+ * `<button>` trigger that says what it opens (`aria-haspopup="menu"` +
+ * `aria-expanded`), Escape closes it and hands focus BACK to the trigger, and a
+ * pointerdown anywhere outside closes it -- the click-outside a menu needs
+ * because, unlike a dialog, it has no backdrop to catch the click.
+ */
+function LanguageMenu() {
+  const { lang, setLang, t } = useLanguage();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!wrapRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="app-topbar-menu-wrap" ref={wrapRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={t("언어 선택", "Change language", "言語を選択")}
+        title={t("언어 선택", "Change language", "言語を選択")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        className="app-topbar-btn"
+      >
+        <GlobeIcon />
+      </button>
+      {open && (
+        <div className="app-topbar-menu" role="menu" aria-label={t("언어", "Language", "言語")}>
+          {LANGUAGE_OPTIONS.map((option) => {
+            const active = option.lang === lang;
+            return (
+              <button
+                key={option.lang}
+                type="button"
+                role="menuitem"
+                aria-current={active ? "true" : undefined}
+                onClick={() => {
+                  setLang(option.lang);
+                  setOpen(false);
+                }}
+                className={`app-topbar-menu-item ${active ? "app-topbar-menu-item-active" : ""}`}
+              >
+                <span>{option.label}</span>
+                {active && <CheckGlyph />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Hand-drawn like `NavIcon`'s set, and separate from it on purpose: these two
+// name a SURFACE (the manual, this browser's language), not a route in the
+// pipeline, and folding them into the nav rail's icon table would invite a
+// sidebar entry for them.
+function BookIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v14.5H6.5A2.5 2.5 0 0 0 4 20Z" />
+      <path d="M4 20a2.5 2.5 0 0 0 2.5 2.5H19" />
+      <path d="M8 7.5h6.5" />
+      <path d="M8 11h4.5" />
+    </svg>
+  );
+}
+
+function GlobeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="8.6" />
+      <path d="M3.6 9.6h16.8" />
+      <path d="M3.6 14.4h16.8" />
+      <path d="M12 3.4c2.2 2.4 3.3 5.3 3.3 8.6s-1.1 6.2-3.3 8.6c-2.2-2.4-3.3-5.3-3.3-8.6S9.8 5.8 12 3.4Z" />
+    </svg>
+  );
+}
+
+/** Geometry, not the character ✓ -- the same reason `InfoTip` draws its own
+ * circled "i": a glyph missing from the ko/ja fallback stack renders as a tofu
+ * box on exactly the machines this product is sold into. */
+function CheckGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="app-topbar-menu-check">
+      <path d="m5 12.5 4.5 4.5L19 7" />
+    </svg>
   );
 }
