@@ -56,7 +56,7 @@ from __future__ import annotations
 import math
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 EXTRACT = "docs/product/reference/mrwa-section5-extract.md"
@@ -163,6 +163,73 @@ SKIP_ISOLATED_ZONE = "isolated_zone_unreachable_in_the_source"
 #: :func:`trim_ways_to_requested_bbox`, i.e. only when the caller supplied a
 #: :attr:`OsmExtract.requested_bbox`.
 SKIP_OUTSIDE_REQUESTED_BBOX = "entirely_outside_the_requested_bbox"
+#: The SAME way id appears again later in the same document, declaring exactly
+#: what the first declaration declared — same nodes, same tags, same everything
+#: this reader derives from them (:func:`_declaration_difference` compares the
+#: whole :class:`OsmWay`, so "identical" means identical *as far as anything
+#: downstream can tell*, not byte-identical XML). One carriageway is modelled and
+#: the repeat is recorded here.
+#:
+#: This is not a hypothetical. A real Overpass export — a union query whose two
+#: statements both match a way — repeats it verbatim, and every
+#: ``v7_links_share_one_polyline`` finding a HEAD re-derivation reproduces on
+#: this project's four refused Daejeon jobs — 156 of the 164 their historical
+#: gate.jsons recorded; the other 8 trace to unrelated pipeline drift since
+#: those jobs ran (2026-08-15 measurement, unit #38) — came from exactly this:
+#: 41 way ids repeated, 100 % with identical bodies, each one becoming two links
+#: on one polyline. Worse than the doubling: a repeated way visits each of its
+#: own nodes TWICE, and :meth:`OsmExtract.intersection_node_ids` counts
+#: occurrences — so every interior shape vertex of a repeated way was promoted to
+#: a junction and the way was shattered into one link per vertex. Dropping the
+#: repeat is re-derivation, not a repair: the source said it once, effectively,
+#: and modelling one road once is what the file already says.
+SKIP_REDECLARED_IDENTICALLY = "redeclared_identically_in_the_same_file"
+#: The same way id appears again — declaring something DIFFERENT. The document
+#: contradicts itself about one road, and this reader cannot survey Daejeon to
+#: settle it, so it takes the file's LAST word and says so: the superseded
+#: declaration is recorded here with the fields that differ named in its detail.
+#: Last-wins rather than first-wins for one reason — ``genesis_jobs``'s source
+#: testimony index (unit #36) already reads this file that way, and two layers
+#: disagreeing about what way N *is* would be two answers to one question.
+#:
+#: Zero occurrences in the real sources measured 2026-08-15; the branch exists
+#: because a silent first-wins would be indistinguishable from having read the
+#: file correctly.
+SKIP_REDECLARED_DIFFERENTLY = "redeclared_differently_in_the_same_file"
+
+#: The stable id of the converter defect the two codes above repair, and the
+#: vocabulary a REGENERATION names itself by
+#: (``services.genesis_jobs.create_regenerate_job`` writes it into the new job's
+#: ``derived_from.converter_fixes``). A regenerated artifact must be able to say
+#: WHICH generator change makes it different from its parent — "re-run it and
+#: hope" is not a treatment — and an id that lives beside the fix it names cannot
+#: drift away from it.
+WAY_REDECLARATION_FIX_ID = "osm_way_redeclaration_dedupe"
+
+#: Every converter defect fixed since the artifacts in this repo's job history
+#: were generated, newest last. Each entry is ``{id, unit, since, summary,
+#: skip_reasons, gate_codes}``: ``skip_reasons`` names what the fix leaves behind
+#: in the skip ledger (so its effect is auditable in the emitted census, not just
+#: claimed here) and ``gate_codes`` the gate findings it is measured to remove.
+CONVERTER_FIXES: tuple[dict[str, object], ...] = (
+    {
+        "id": WAY_REDECLARATION_FIX_ID,
+        "unit": "#38",
+        "since": "2026-08-15",
+        "summary": (
+            "One way id, one road: a source that declares the same way twice used to "
+            "become two links on one polyline (and, because a repeated way visits its "
+            "own nodes twice, a way shattered into one link per interior vertex). The "
+            "repeat is now dropped as a named skip and the last declaration wins."
+        ),
+        "skip_reasons": (SKIP_REDECLARED_IDENTICALLY, SKIP_REDECLARED_DIFFERENTLY),
+        # v3 rides along: a doubled way's shattering also manufactured silent
+        # departure points (measured on b3ef6abb9a85 — its two v3 findings
+        # clear with the same fix). gate_codes drives no behavior; it is the
+        # honest "what this fix is measured to remove" list.
+        "gate_codes": ("v7_links_share_one_polyline", "v3_silent_departure_point"),
+    },
+)
 
 #: Reason codes for a ``type=restriction`` relation this module could not read.
 #: Recorded rather than ignored: an unread restriction is a movement that stays
@@ -1044,7 +1111,21 @@ def parse_osm_file(
 def _pass1_ways(
     file_path: Path, extract: OsmExtract, *, exclude_service: bool = False
 ) -> set[int]:
-    needed: set[int] = set()
+    """Stream every ``<way>``, classify it, and keep ONE way per way id.
+
+    One id, one road. A document that declares the same way id twice is not
+    describing two roads on top of each other — it is saying the same thing
+    twice, which real Overpass union exports do routinely — and the reader that
+    believed it emitted two links on one polyline for every repeat (see
+    :data:`SKIP_REDECLARED_IDENTICALLY` for the measurement). The last
+    declaration wins, the superseded one is a NAMED skip, and
+    ``ways_seen == len(ways) + len(skipped)`` still holds because every
+    declaration lands in exactly one of the two.
+    """
+    #: way id → the declaration kept so far, in first-appearance order (a
+    #: replacement keeps the original slot, so a file with no repeats produces
+    #: byte-for-byte the list this function produced before it deduped).
+    kept: dict[int, OsmWay] = {}
     for _event, elem in ET.iterparse(str(file_path), events=("end",)):
         if elem.tag == "bounds":
             extract.declared_bounds = _declared_bounds(elem)
@@ -1068,72 +1149,169 @@ def _pass1_ways(
 
         if way_id is None:
             continue
-        highway = tags.get("highway", "").strip()
-        if not highway:
-            _record_non_drivable(extract, node_ids, "")
-            extract.skipped.append(
-                SkippedWay(way_id, SKIP_NO_HIGHWAY_TAG, "", "way carries no highway=* tag")
-            )
-            continue
-        if highway not in DRIVABLE_HIGHWAY_DEFAULT_LANES:
-            _record_non_drivable(extract, node_ids, highway)
-            extract.skipped.append(
-                SkippedWay(
-                    way_id,
-                    SKIP_HIGHWAY_NOT_DRIVABLE,
-                    highway,
-                    f"highway={highway} is not in the drivable allowlist "
-                    f"({len(DRIVABLE_HIGHWAY_DEFAULT_LANES)} values)",
-                )
-            )
-            continue
-        if exclude_service and highway == SERVICE_HIGHWAY:
-            extract.skipped.append(
-                SkippedWay(
-                    way_id,
-                    SKIP_SERVICE_EXCLUDED_BY_POLICY,
-                    highway,
-                    "highway=service excluded by an explicit exclude_service=True; the "
-                    "default policy is to model and connect service ways",
-                )
-            )
-            continue
-        if tags.get("area", "").strip().lower() in {"yes", "true", "1"}:
-            extract.skipped.append(
-                SkippedWay(way_id, SKIP_AREA, highway, "area=yes — a surface, not a carriageway")
-            )
-            continue
-        if len(node_ids) < 2:
-            extract.skipped.append(
-                SkippedWay(
-                    way_id,
-                    SKIP_TOO_FEW_NODES,
-                    highway,
-                    f"{len(node_ids)} distinct consecutive node reference(s) after deduplication",
-                )
-            )
-            continue
-
-        oneway, oneway_prov = _oneway_of(tags, highway)
-        extract.ways.append(
-            OsmWay(
-                id=way_id,
-                name=tags.get("name", ""),
-                highway=highway,
-                node_ids=node_ids,
-                oneway=oneway,
-                oneway_provenance=oneway_prov,
-                directions=_directional_lanes(tags, highway, oneway),
-                bus_lane_keys=tuple(k for k in BUS_LANE_KEYS if k in tags),
-                maxspeed=tags.get("maxspeed", ""),
-                layer=tags.get("layer", "").strip(),
-                bridge=tags.get("bridge", "").strip(),
-                tunnel=tags.get("tunnel", "").strip(),
-                noexit=tags.get("noexit", "").strip(),
-            )
+        outcome = _read_way_declaration(
+            extract, way_id, tags, node_ids, exclude_service=exclude_service
         )
-        needed.update(node_ids)
-    return needed
+        _keep_last_declaration(extract, kept, way_id, outcome)
+
+    extract.ways = list(kept.values())
+    # Derived from the SURVIVING ways rather than accumulated as declarations
+    # arrive: a superseded declaration's nodes must not stay "needed", or pass 2
+    # would keep coordinates for geometry no way references — and
+    # ``OsmExtract.bounds`` sizes the projection origin off exactly that dict.
+    return {node_id for way in kept.values() for node_id in way.node_ids}
+
+
+def _read_way_declaration(
+    extract: OsmExtract,
+    way_id: int,
+    tags: dict[str, str],
+    node_ids: tuple[int, ...],
+    *,
+    exclude_service: bool = False,
+) -> "OsmWay | SkippedWay":
+    """One ``<way>`` declaration → the way it becomes, or the skip it becomes.
+
+    Split out of :func:`_pass1_ways` so that "which declaration of this id wins"
+    is decided at ONE seam (:func:`_keep_last_declaration`) over a value, rather
+    than at six ``continue`` statements. Still mutates ``extract`` for the two
+    non-drivable branches, which record what class of way touched which nodes.
+    """
+    highway = tags.get("highway", "").strip()
+    if not highway:
+        _record_non_drivable(extract, node_ids, "")
+        return SkippedWay(way_id, SKIP_NO_HIGHWAY_TAG, "", "way carries no highway=* tag")
+    if highway not in DRIVABLE_HIGHWAY_DEFAULT_LANES:
+        _record_non_drivable(extract, node_ids, highway)
+        return SkippedWay(
+            way_id,
+            SKIP_HIGHWAY_NOT_DRIVABLE,
+            highway,
+            f"highway={highway} is not in the drivable allowlist "
+            f"({len(DRIVABLE_HIGHWAY_DEFAULT_LANES)} values)",
+        )
+    if exclude_service and highway == SERVICE_HIGHWAY:
+        return SkippedWay(
+            way_id,
+            SKIP_SERVICE_EXCLUDED_BY_POLICY,
+            highway,
+            "highway=service excluded by an explicit exclude_service=True; the "
+            "default policy is to model and connect service ways",
+        )
+    if tags.get("area", "").strip().lower() in {"yes", "true", "1"}:
+        return SkippedWay(way_id, SKIP_AREA, highway, "area=yes — a surface, not a carriageway")
+    if len(node_ids) < 2:
+        return SkippedWay(
+            way_id,
+            SKIP_TOO_FEW_NODES,
+            highway,
+            f"{len(node_ids)} distinct consecutive node reference(s) after deduplication",
+        )
+
+    oneway, oneway_prov = _oneway_of(tags, highway)
+    return OsmWay(
+        id=way_id,
+        name=tags.get("name", ""),
+        highway=highway,
+        node_ids=node_ids,
+        oneway=oneway,
+        oneway_provenance=oneway_prov,
+        directions=_directional_lanes(tags, highway, oneway),
+        bus_lane_keys=tuple(k for k in BUS_LANE_KEYS if k in tags),
+        maxspeed=tags.get("maxspeed", ""),
+        layer=tags.get("layer", "").strip(),
+        bridge=tags.get("bridge", "").strip(),
+        tunnel=tags.get("tunnel", "").strip(),
+        noexit=tags.get("noexit", "").strip(),
+    )
+
+
+def _keep_last_declaration(
+    extract: OsmExtract,
+    kept: dict[int, OsmWay],
+    way_id: int,
+    outcome: "OsmWay | SkippedWay",
+) -> None:
+    """File one declaration: into ``kept``, or into ``extract.skipped``.
+
+    The whole duplicate-declaration rule lives here, and it is three lines of
+    behaviour with a long argument behind them
+    (:data:`SKIP_REDECLARED_IDENTICALLY`, :data:`SKIP_REDECLARED_DIFFERENTLY`):
+
+    * a first declaration is kept or skipped exactly as before;
+    * a repeat of an id already kept REPLACES it — last-wins — and the
+      superseded declaration becomes a named skip;
+    * a repeat that is not drivable at all UNKEEPS the earlier one, because the
+      file's last word on that id is "not a carriageway". Modelling a road the
+      document ends up denying is the same silent invention as modelling one
+      twice, in the other direction.
+
+    A way NEVER accumulates two entries in ``extract.ways`` from here, which is
+    the invariant the rest of the pipeline (link ids, ``intersection_node_ids``'s
+    occurrence count, ``way_by_id``) was written assuming and never checked.
+    """
+    previous = kept.get(way_id)
+    if isinstance(outcome, OsmWay):
+        if previous is not None:
+            extract.skipped.append(_redeclaration_skip(previous, outcome))
+        # ``dict`` keeps the ORIGINAL slot on reassignment, so the surviving
+        # way sits where the first declaration of its id sat.
+        kept[way_id] = outcome
+        return
+    if previous is not None:
+        del kept[way_id]
+        extract.skipped.append(_redeclaration_skip(previous, outcome))
+    extract.skipped.append(outcome)
+
+
+def _redeclaration_skip(
+    superseded: OsmWay, winner: "OsmWay | SkippedWay"
+) -> SkippedWay:
+    """The named skip left behind by a declaration a later one supersedes."""
+    if isinstance(winner, OsmWay):
+        differences = _declaration_difference(superseded, winner)
+        if not differences:
+            return SkippedWay(
+                superseded.id,
+                SKIP_REDECLARED_IDENTICALLY,
+                superseded.highway,
+                f"way {superseded.id} is declared more than once in this file with the "
+                f"same nodes and tags — one carriageway is modelled, and the repeat "
+                f"adds no road",
+            )
+        return SkippedWay(
+            superseded.id,
+            SKIP_REDECLARED_DIFFERENTLY,
+            superseded.highway,
+            f"way {superseded.id} is declared more than once in this file and the "
+            f"declarations disagree ({', '.join(differences)}) — the LAST declaration "
+            f"is the one modelled, this one is not",
+        )
+    return SkippedWay(
+        superseded.id,
+        SKIP_REDECLARED_DIFFERENTLY,
+        superseded.highway,
+        f"way {superseded.id} is declared more than once in this file and the last "
+        f"declaration is not a carriageway ({winner.reason}) — the way is not modelled",
+    )
+
+
+def _declaration_difference(left: OsmWay, right: OsmWay) -> tuple[str, ...]:
+    """Which fields two declarations of one way id disagree about.
+
+    Compares the whole :class:`OsmWay`, so "identical" means *identical as far as
+    anything downstream can tell*: an ``<nd>`` list and a tag set that produce the
+    same nodes, the same oneway reading, the same lane counts and the same
+    provenance. Deliberately NOT a byte comparison of the XML — a repeat that
+    differs only in a ``version`` or ``timestamp`` attribute describes the same
+    road, and refusing to notice that would have left the real Overpass exports
+    exactly as broken as they were.
+    """
+    return tuple(
+        field.name
+        for field in fields(OsmWay)
+        if field.name != "id" and getattr(left, field.name) != getattr(right, field.name)
+    )
 
 
 def _record_non_drivable(

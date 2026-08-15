@@ -59,6 +59,7 @@ import {
   fetchGenesisJob,
   fetchGenesisJobFixes,
   fetchGenesisJobs,
+  regenerateGenesisJob,
   startGenesisLiveCheck,
   type GenesisArtifactKind,
   type GenesisFixDisposition,
@@ -321,6 +322,11 @@ function FixFindingRow({
   const [targetConfirmed, setTargetConfirmed] = useState(false);
   const [attestTarget, setAttestTarget] = useState("");
   const [attestBasis, setAttestBasis] = useState("");
+  // Unit #38 -- the regenerate treatment's own two bits of state. Separate from
+  // the apply pair above because it is a different action against a different
+  // route: nothing about this artifact is edited.
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerateError, setRegenerateError] = useState<GenesisError | Error | null>(null);
 
   const missingRequired = disposition.requires.some((field) => !requiredValues[field]?.trim());
   // A connector's to-link is DERIVED, and a reader confirming it is the point
@@ -371,6 +377,22 @@ function FixFindingRow({
     [disposition, requiredValues, approvalRationale, jobId, finding.code, finding.subject, onApplied, t],
   );
 
+  const regenerate = useCallback(async () => {
+    setRegenerating(true);
+    setRegenerateError(null);
+    try {
+      // The requester's own sentence quotes the FINDING, so the audit trail
+      // says which refusal this re-derivation was asked for. Nothing else is
+      // sent: the source, the options and the pipeline are the parent's own.
+      const job = await regenerateGenesisJob(jobId, `${finding.code} / ${finding.subject}`);
+      onApplied(job);
+    } catch (caught) {
+      setRegenerateError(caught instanceof Error ? caught : new Error(String(caught)));
+    } finally {
+      setRegenerating(false);
+    }
+  }, [jobId, finding.code, finding.subject, onApplied]);
+
   const error = applyError
     ? genesisRefusalText(
         applyError,
@@ -411,6 +433,64 @@ function FixFindingRow({
           <p className="font-mono text-[15px] leading-relaxed text-slate-700">{rationale}</p>
           {disposition.reason_code && (
             <p className="mt-1 font-mono text-[14px] text-slate-500">{disposition.reason_code}</p>
+          )}
+
+          {/* Unit #38 -- the THIRD disposition, in the same card vocabulary:
+            * the refusal above stays verbatim (the census really cannot
+            * correct this), and what follows is the treatment that CAN --
+            * re-deriving the whole generation from the same source through
+            * the corrected converter. Not a fix button: nothing about this
+            * artifact is edited, and the new job faces the gate on its own. */}
+          {disposition.regenerate && (
+            <div className="mt-3 flex flex-col gap-2 rounded-md border border-slate-300 bg-white/[0.06] px-3 py-2.5">
+              <p className="text-[15px] font-semibold text-slate-800">
+                {t(
+                  "이 결함은 편집이 아니라 재생성으로 치료합니다",
+                  "This finding is treated by regenerating, not by editing",
+                  "この欠陥は編集ではなく再生成で治療します",
+                )}
+              </p>
+              <p className="text-[14px] leading-relaxed text-slate-600">
+                {lang === "ko"
+                  ? disposition.regenerate.explanation.ko
+                  : lang === "ja"
+                    ? disposition.regenerate.explanation.ja
+                    : disposition.regenerate.explanation.en}
+              </p>
+              {(disposition.regenerate.converter_fixes ?? []).map((fix) => (
+                <p key={fix.id} className="font-mono text-[14px] leading-relaxed text-slate-500">
+                  {`${fix.id} (${fix.unit}, ${fix.since}) — ${fix.summary}`}
+                </p>
+              ))}
+              <div>
+                <button
+                  type="button"
+                  disabled={regenerating}
+                  onClick={regenerate}
+                  className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px] disabled:cursor-not-allowed"
+                >
+                  {regenerating
+                    ? t("재생성 중…", "Regenerating…", "再生成中…")
+                    : t("재생성으로 치료", "Treat by regenerating", "再生成で治療")}
+                </button>
+              </div>
+              {regenerateError && (
+                <div className="text-[14px] leading-relaxed text-rose-700">
+                  <p className="font-semibold">
+                    {
+                      genesisRefusalText(
+                        regenerateError,
+                        t,
+                        t("재생성을 시작하지 못했습니다", "The regeneration could not be started", "再生成を開始できませんでした"),
+                      ).headline
+                    }
+                  </p>
+                  {genesisRefusalText(regenerateError, t, "").reasons.map((line) => (
+                    <p key={line}>{line}</p>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
 
           {/* Unit #35 -- the ask-first QUESTION, and the ONLY thing that can

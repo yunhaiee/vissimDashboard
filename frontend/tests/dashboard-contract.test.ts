@@ -5205,15 +5205,34 @@ contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
   const informationalBranch = sliceBetween(page, "{!actionable ? (", ") : (");
   pin.match(informationalBranch, /\S/, "expected to find the informational (non-actionable) branch (markers moved?)");
   // Unit #35 put ONE control inside this branch -- the attestation block, which
-  // is a QUESTION that unlocks a proposal, not a button on a refusal. The rule
-  // is unchanged for the refusal itself, so the pin now slices the branch at
-  // the attestation block: everything the reader meets FIRST (the rationale,
-  // the reason code) still has no control of any kind.
-  const refusalOnly = informationalBranch.split("{attestation && attestation.candidates.length > 0 && (")[0];
+  // is a QUESTION that unlocks a proposal, not a button on a refusal. Unit #38
+  // put a SECOND -- the regenerate block, which is a different TREATMENT (a new
+  // generation from the same source), not a fix applied to this artifact. The
+  // rule is unchanged for the refusal itself, so the pin slices the branch at
+  // whichever treatment block comes first: everything the reader meets FIRST
+  // (the rationale, the reason code) still has no control of any kind.
+  const treatmentMarkers = [
+    "{attestation && attestation.candidates.length > 0 && (",
+    "{disposition.regenerate && (",
+  ];
+  for (const marker of treatmentMarkers) {
+    pin.match(
+      `${informationalBranch.includes(marker)}`,
+      /true/,
+      `expected the informational branch to still contain ${marker} (marker moved?)`,
+    );
+  }
+  const refusalOnly = treatmentMarkers.reduce(
+    (shortest, marker) => {
+      const prefix = informationalBranch.split(marker)[0];
+      return prefix.length < shortest.length ? prefix : shortest;
+    },
+    informationalBranch,
+  );
   pin.match(
     `${refusalOnly.length < informationalBranch.length}`,
     /true/,
-    "expected the attestation block to follow the refusal text, not replace it (marker moved?)",
+    "expected the treatment blocks to follow the refusal text, not replace it (marker moved?)",
   );
   pin.doesNotMatch(
     refusalOnly,
@@ -5236,6 +5255,62 @@ contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
     actionableBranch,
     /disabled=\{applying \|\| missingRequired \|\| \(needsTargetConfirmation && !targetConfirmed\)\}/,
     "expected the apply button disabled by an in-flight submit, any unmet required field, and (unit #35) an unconfirmed connector target",
+  );
+});
+
+contractTest("unit #38: a finding the census cannot correct is treated by regenerating", (pin) => {
+  const api = read("lib/api.ts");
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  // The route goes through the typed mutation helper -- X-Workspace-Id is
+  // attached there -- and it is a DIFFERENT route from the apply one, pinned
+  // together so neither can quietly become the other.
+  pin.match(
+    api,
+    /export async function regenerateGenesisJob[\s\S]*?apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/regenerate`/,
+    "expected the regeneration to go through apiMutationFetch, not a hand-built request",
+  );
+  pin.match(
+    api,
+    /apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/fixes\/apply`/,
+    "expected the apply route to survive beside the regenerate one -- they are two different treatments",
+  );
+  // The client sends the REASON and nothing else: no requester, no options, no
+  // source. Every other field would be a way to change the input while calling
+  // the result a treatment, and WHO asked is stamped server-side.
+  pin.match(
+    api,
+    /regenerateGenesisJob\(jobId: string, reason\?: string\)/,
+    "expected the helper to take only a job id and the requester's own sentence",
+  );
+  pin.doesNotMatch(
+    sliceBetween(api, "export async function regenerateGenesisJob", "\n}\n"),
+    /requested_by|exclude_service|source/,
+    "expected the regenerate body to carry no requester, no options and no source -- the server owns all three",
+  );
+
+  // The block renders ONLY when the backend measured that this finding has the
+  // regenerate treatment (key-ABSENT otherwise), and it sits inside the
+  // informational branch, after the refusal it does not replace.
+  pin.match(
+    page,
+    /\{disposition\.regenerate && \(/,
+    "expected the regenerate block to be gated on the backend's own measurement, never on a status string",
+  );
+  pin.match(
+    page,
+    /재생성으로 치료/,
+    "expected the treatment's ko-primary label",
+  );
+  pin.match(
+    page,
+    /disposition\.regenerate\.explanation\.ko/,
+    "expected the backend's own trilingual explanation to be rendered rather than re-worded here",
+  );
+  pin.match(
+    page,
+    /regenerateGenesisJob\(jobId, `\$\{finding\.code\} \/ \$\{finding\.subject\}`\)/,
+    "expected the audit sentence to quote the finding this re-derivation was asked for",
   );
 });
 

@@ -189,6 +189,7 @@ from services.genesis.gate import (
     run_gate,
 )
 from services.genesis.osm import (
+    CONVERTER_FIXES,
     parse_osm_file,
     requested_bbox_from_provenance,
     requested_polygon_from_provenance,
@@ -4610,6 +4611,279 @@ def reconcile_interrupted_jobs() -> list[str]:
     if reconciled:
         logger.info("genesis: reconciled %d interrupted job(s) at startup", len(reconciled))
     return reconciled
+
+
+# ---------------------------------------------------------------------------
+# Treating a finding by RE-DERIVING it — the regenerate JOB (#38)
+# ---------------------------------------------------------------------------
+
+#: The lineage ``kind`` on a REGENERATE job's ``derived_from``, beside
+#: :data:`LIVE_CHECK_LINEAGE_KIND`. A regenerate job is an ordinary generation
+#: in every other respect -- same runner, same emitter, same unmodified gate --
+#: and this key is how a reader tells one that was RE-derived from a parent's
+#: source from one somebody started by uploading a file.
+REGENERATE_LINEAGE_KIND = "regenerate"
+
+
+def regenerable_findings(job_id: str) -> list[dict[str, Any]]:
+    """Every finding in ``job_id``'s STORED verdict whose only honest treatment
+    is a re-derivation — :data:`~services.agent.genesis_fixes.REGENERATE_WITH_FIX`.
+
+    Built from exactly the pieces the fixes-listing route uses (the stored
+    ``gate.json`` through :func:`iter_stored_gate_findings`, evidence through
+    :func:`derive_fix_targets`, the registry through ``propose_genesis_fix``,
+    and the eligibility measurement through
+    ``genesis_fixes.regeneration_disposition``), so this module's own
+    eligibility gate and what the UI showed the approver cannot disagree. Empty
+    list for a job with no stored verdict, an unreadable one, or one whose
+    findings are all treatable some other way -- never a raise: the caller
+    turns emptiness into a NAMED refusal, which is a different sentence from a
+    crash.
+    """
+    from services.agent import genesis_fixes as agent_genesis_fixes  # noqa: PLC0415
+
+    stored = job_dir(job_id) / GATE_JSON_FILENAME
+    if not stored.is_file():
+        return []
+    try:
+        raw = json.loads(stored.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+
+    draft = job_draft_or_none(job_id)
+    census = draft.metadata if draft is not None else None
+    found: list[dict[str, Any]] = []
+    for check_id, origin, finding in iter_stored_gate_findings(raw):
+        targets = derive_fix_targets(
+            finding["code"], finding, draft=draft, params=None, job_id=job_id
+        )
+        proposal = agent_genesis_fixes.propose_genesis_fix(
+            finding["code"], finding=finding, census=census, targets=targets
+        )
+        disposition = agent_genesis_fixes.regeneration_disposition(
+            finding["code"], proposal, converter_fixes=CONVERTER_FIXES
+        )
+        if disposition is None:
+            continue
+        found.append(
+            {
+                "check_id": check_id,
+                "origin": origin,
+                "code": finding["code"],
+                "subject": finding["subject"],
+                "derivation_reason_code": disposition["derivation_reason_code"],
+            }
+        )
+    return found
+
+
+def create_regenerate_job(
+    parent_job_id: str, *, requested_by: str | None, reason: str | None = None
+) -> dict[str, Any]:
+    """Register a REGENERATION of ``parent_job_id`` — the same source, the
+    corrected converter — WITHOUT running it.
+
+    **Nothing is invented: the artifact is re-derived from the same source.**
+    Unit #34 measured that every real ``v7_links_share_one_polyline`` finding's
+    draft twins are byte-identical, i.e. the corruption predates the draft and
+    no census-derived edit can clear it; unit #38 found what upstream did it (a
+    source declaring one way id twice —
+    :data:`services.genesis.osm.SKIP_REDECLARED_IDENTICALLY`) and fixed the
+    converter. This function is how an artifact refused under that finding gets
+    treated *honestly*: the parent's own ``source.osm`` bytes are copied into a
+    new job and run through the NORMAL pipeline
+    (:func:`run_genesis_job` — same draft, same emitter, same UNMODIFIED gate),
+    and the new job gates on its own merits. A regeneration is not a promise
+    that the finding clears; it is a re-derivation whose verdict is its own.
+
+    **The parent is byte-untouched**, exactly as every sibling job in B5-2 is
+    required to leave it: this function only READS the parent's source file and
+    its stored verdict. Nothing is written into the parent's work directory.
+
+    **Eligibility is measured, and every refusal is NAMED** (never a greyed-out
+    button):
+
+    * ``genesis_regenerate_parent_not_gated`` — the parent holds no verdict
+      (:data:`GATED_STATUSES`), so there is no finding to treat;
+    * ``genesis_regenerate_source_missing`` — the parent has no stored source
+      ``.osm`` (a fix job and a live-check job both carry ``source_osm: None``
+      by construction, and a regeneration of a regeneration's parent needs the
+      file itself, not a lineage pointer);
+    * ``genesis_regenerate_parent_has_side_inputs`` — the parent was composed
+      with demand/signals/fleet side inputs, and a regeneration re-derives
+      geometry only; minting an artifact that silently lacks what its parent
+      carried is exactly the completed-but-wrong outcome this system refuses.
+      How side inputs travel through a regeneration is an undecided follow-up;
+    * ``genesis_regenerate_source_sha_mismatch`` — the stored bytes no longer
+      hash to the digest the parent RECORDED for them. The lineage claim is
+      "the same source", so it is verified rather than assumed; a source that
+      changed under a job would make the regenerated artifact a comparison
+      against something that no longer exists;
+    * ``genesis_regenerate_not_eligible`` — the parent's verdict carries no
+      finding whose disposition is ``REGENERATE_WITH_FIX``
+      (:func:`regenerable_findings`). This is the one that keeps the path
+      honest: a parent whose v7 findings the CENSUS can correct has unit #34's
+      ``set_link_geometry`` path and the refusal says so, and a parent with no
+      such findings at all is not made better by re-running the same pipeline.
+
+    ``reason`` is the requester's own sentence, carried into the lineage
+    verbatim and never invented here.
+    """
+    workspace_id = workspaces.current_workspace_id()
+    parent = get_job(parent_job_id)
+    if parent.get("status") not in GATED_STATUSES:
+        raise GenesisRefused(
+            "genesis_regenerate_parent_not_gated",
+            [
+                f"Job {parent_job_id} is {parent.get('status')!r}, which carries no gate "
+                "verdict. A regeneration treats a finding the gate already made -- wait for "
+                "the generation to reach a verdict, or start a new one."
+            ],
+        )
+
+    # Refuter finding F7 (2026-08-15): a regeneration re-runs osm->draft->emit
+    # with side_inputs=None, so regenerating a COMPOSED parent would mint an
+    # artifact that silently lacks the demand/signals/fleet its parent carried
+    # -- structurally indistinguishable from a job that never had them. Until a
+    # unit decides how side inputs travel through a regeneration, the honest
+    # answer is a refusal that says exactly that.
+    if parent.get("side_inputs"):
+        raise GenesisRefused(
+            "genesis_regenerate_parent_has_side_inputs",
+            [
+                f"Job {parent_job_id} was composed with side inputs "
+                f"({', '.join(sorted(parent['side_inputs']))}), and a regeneration re-derives "
+                "GEOMETRY ONLY -- the regenerated artifact would silently lack what the "
+                "parent carried. Carrying side inputs through a regeneration is a decision "
+                "no unit has made yet, so this refuses rather than minting a thinner "
+                "artifact that looks complete."
+            ],
+        )
+
+    source_record = parent.get("source_osm") or {}
+    try:
+        parent_source = artifact_path(parent_job_id, "source_osm")
+    except GenesisJobNotFoundError as exc:
+        raise GenesisRefused(
+            "genesis_regenerate_source_missing",
+            [
+                f"Job {parent_job_id} has no stored source .osm to re-derive from. [{exc}] "
+                "A regeneration re-reads the SAME source bytes; a job that never had a "
+                "source of its own (a fix job, a live check) cannot be regenerated -- "
+                "regenerate the generation those were derived from instead."
+            ],
+        ) from exc
+
+    recorded_sha = str(source_record.get("sha256") or "")
+    actual_sha = _sha256(parent_source)
+    if not recorded_sha or actual_sha != recorded_sha:
+        raise GenesisRefused(
+            "genesis_regenerate_source_sha_mismatch",
+            [
+                f"Job {parent_job_id}'s stored source .osm hashes to {actual_sha}, and its "
+                f"record says {recorded_sha or '(nothing)'}. A regeneration claims to use the "
+                "SAME source bytes, so the claim is verified rather than assumed -- and this "
+                "file is not the one the parent was judged on."
+            ],
+        )
+
+    eligible = regenerable_findings(parent_job_id)
+    if not eligible:
+        raise GenesisRefused(
+            "genesis_regenerate_not_eligible",
+            [
+                f"Job {parent_job_id}'s verdict carries no finding whose treatment is a "
+                "re-derivation. A finding the census itself can correct is treated by the "
+                "approved edit path (POST .../fixes/apply) instead, and re-running the same "
+                "source through the same pipeline would change nothing for the rest."
+            ],
+        )
+
+    job_id = uuid4().hex[:12]
+    work_dir = job_dir(job_id)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    frozen_osm = work_dir / f"source{parent_source.suffix.lower() or '.osm'}"
+    # A plain copy of the PARENT's bytes -- the parent's file is opened for
+    # reading here and nowhere else in this function.
+    shutil.copyfile(parent_source, frozen_osm)
+    copied_sha = _sha256(frozen_osm)
+    if copied_sha != recorded_sha:  # pragma: no cover - a copy that changed bytes
+        raise GenesisRefused(
+            "genesis_regenerate_source_sha_mismatch",
+            [
+                f"The copy of job {parent_job_id}'s source hashes to {copied_sha}, not the "
+                f"recorded {recorded_sha}. Nothing was started."
+            ],
+        )
+
+    record = {
+        "id": job_id,
+        "workspace_id": workspace_id,
+        "name": str(parent.get("name") or "regenerated"),
+        "status": STATUS_QUEUED,
+        "phase": PHASE_QUEUED,
+        "progress": 0.0,
+        "created_at": _now_iso(),
+        "started_at": None,
+        "completed_at": None,
+        "submitted_by": requested_by,
+        # The parent's OWN options, carried verbatim: a regeneration that
+        # quietly changed exclude_service would be comparing two different
+        # questions and calling the difference a fix.
+        "options": dict(parent.get("options") or {}),
+        "source_osm": {
+            "filename": str(source_record.get("filename") or frozen_osm.name),
+            "bytes": frozen_osm.stat().st_size,
+            "sha256": copied_sha,
+            "stored_as": frozen_osm.name,
+        },
+        # Side inputs are NOT carried. A regeneration re-derives the NETWORK
+        # from its source; the demand/signals layers a parent was composed with
+        # are separate uploads this function has no claim on, and silently
+        # re-attaching them would make the two artifacts differ in more ways
+        # than the converter fix this job exists to demonstrate. Named here
+        # rather than left as an absence -- see the unit's residuals.
+        "side_inputs": None,
+        "network": None,
+        "artifact": None,
+        "layers": None,
+        "gate": None,
+        "publication": None,
+        "refusal": None,
+        "error": None,
+        "derived_from": {
+            "kind": REGENERATE_LINEAGE_KIND,
+            "job_id": parent_job_id,
+            "requested_by": requested_by,
+            "requested_at": _now_iso(),
+            # The digest of the bytes ACTUALLY copied, proven equal to the
+            # parent's recorded one above -- so the lineage cannot claim a
+            # sameness nothing checked.
+            "source_sha256": copied_sha,
+            "parent_source_sha256": recorded_sha,
+            "converter_fixes": [dict(entry) for entry in CONVERTER_FIXES],
+            "findings": eligible,
+            "reason": reason,
+        },
+    }
+    _upsert(record)
+    return record
+
+
+def start_regenerate_job(parent_job_id: str, **kwargs: Any) -> dict[str, Any]:
+    """:func:`create_regenerate_job`, then run it on a daemon worker thread.
+
+    The regeneration runs through :func:`run_genesis_job` -- the SAME runner an
+    ordinary generation uses, deliberately, so nothing about a re-derived
+    artifact is produced by a special path the ordinary one does not have.
+    """
+    record = create_regenerate_job(parent_job_id, **kwargs)
+    threading.Thread(
+        target=run_genesis_job,
+        args=(record["id"], record["workspace_id"]),
+        daemon=True,
+    ).start()
+    return record
 
 
 # ---------------------------------------------------------------------------

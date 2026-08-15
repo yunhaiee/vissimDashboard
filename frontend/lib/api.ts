@@ -3328,6 +3328,31 @@ export interface GenesisFixAttestationInvitation {
   }>;
 }
 
+/** Unit #38: the THIRD disposition — the finding's treatment is not an edit but
+ * a NEW generation re-derived from the SAME source through a corrected
+ * converter. Present only when the backend MEASURED that the census cannot
+ * correct this finding (the draft already shares the defect); key-ABSENT
+ * otherwise, so an absent field never reads as "regeneration was considered and
+ * rejected". `verb`/`params` are `null` beside it on purpose: this finding has
+ * a treatment, and it is not the registered edit verb. */
+export interface GenesisFixRegeneration {
+  status: string;
+  finding_code: string;
+  derivation_reason_code: string;
+  explanation: { ko: string; en: string; ja: string };
+  /** What the converter now does differently, from the converter's own ledger
+   * (`services.genesis.osm.CONVERTER_FIXES`) — the same ids the regenerated
+   * job's `derived_from.converter_fixes` carries. */
+  converter_fixes?: Array<{
+    id: string;
+    unit: string;
+    since: string;
+    summary: string;
+    skip_reasons: string[];
+    gate_codes: string[];
+  }>;
+}
+
 export interface GenesisFixDisposition {
   status: string;
   verb: string | null;
@@ -3339,6 +3364,7 @@ export interface GenesisFixDisposition {
   reason_code: string | null;
   source_testimony?: GenesisFixSourceTestimony;
   attestation?: GenesisFixAttestationInvitation;
+  regenerate?: GenesisFixRegeneration;
 }
 
 export interface GenesisFixFinding {
@@ -3403,6 +3429,23 @@ export async function applyGenesisFix(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+  if (!r.ok) throw await genesisError(r);
+  return r.json();
+}
+
+/** Unit #38: re-derive this generation from its own source through the
+ * corrected converter -> the new job's record (202). Takes NO input beyond the
+ * requester's own sentence, deliberately: every parameter a caller could send
+ * would be a way to change the input while calling the result a treatment. The
+ * source bytes, the options and the pipeline are the parent's own, and
+ * `requested_by` is stamped from the session — this client is structurally
+ * unable to name a different requester. */
+export async function regenerateGenesisJob(jobId: string, reason?: string): Promise<GenesisJob> {
+  const r = await apiMutationFetch(`/api/genesis/jobs/${jobId}/regenerate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: reason?.trim() || null }),
   });
   if (!r.ok) throw await genesisError(r);
   return r.json();

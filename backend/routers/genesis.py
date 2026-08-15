@@ -98,6 +98,7 @@ from services.agent import fixes as agent_fixes
 from services.agent import genesis_fixes
 from services.datasets import DatasetStorageError
 from services.genesis import geojson as genesis_geojson
+from services.genesis import osm as genesis_osm
 from services.genesis import phase_diagram, side_inputs
 
 logger = logging.getLogger(__name__)
@@ -278,6 +279,27 @@ class ApplyGenesisFixRequest(BaseModel):
             "the registry's re-derivation reaches no proposal for such a finding and the "
             "apply is refused -- no attestation, no proposal."
         ),
+    )
+
+
+class RegenerateJobRequest(BaseModel):
+    """The requester's own sentence, and nothing else.
+
+    A regeneration takes NO parameters by design: it re-derives the parent's own
+    source with the parent's own options through the corrected converter, and
+    every field a caller could supply here would be a way to change the input
+    while calling the result a treatment. ``reason`` is carried into the
+    lineage verbatim for the audit trail; WHO requested it is stamped
+    server-side from the session, exactly as unit #35's attestation is, so
+    attribution cannot be forged from the body.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Why this generation is being re-derived, for the audit trail.",
     )
 
 
@@ -848,6 +870,79 @@ def start_live_check(
     return record
 
 
+@router.post("/jobs/{job_id}/regenerate", status_code=202)
+def regenerate_job(
+    job_id: str,
+    payload: RegenerateJobRequest | None = None,
+    user: dict[str, Any] = Depends(current_user),
+):
+    """Treat a finding by RE-DERIVING the generation from its own source. 202.
+
+    Unit #38, and the third disposition beside "apply this verb" and "there is
+    no automated fix": :data:`services.agent.genesis_fixes.REGENERATE_WITH_FIX`.
+    Some findings cannot be edited away honestly — unit #34 measured that every
+    real ``v7_links_share_one_polyline`` finding's draft twins are byte-identical,
+    so the corruption predates the draft and no census-derived coordinate exists
+    to correct it. Unit #38 fixed what upstream caused it (a source declaring
+    one way id twice), and this route is how an artifact refused under that
+    finding gets the only honest treatment: the SAME source bytes, the
+    corrected converter, the same unmodified gate.
+
+    **Nothing is invented.** ``genesis_jobs.create_regenerate_job`` copies the
+    parent's own ``source.osm`` (sha-verified against the digest the parent
+    recorded for it), carries the parent's own ``options`` verbatim, and runs
+    the NORMAL generation runner. The parent is byte-untouched — this route
+    only reads it — and the regenerated job gates on its own merits, exactly
+    like a sibling fix job.
+
+    Refusals are NAMED, never a disabled button (409 with ``{code, reasons}``):
+    ``genesis_regenerate_parent_not_gated``, ``genesis_regenerate_source_missing``,
+    ``genesis_regenerate_source_sha_mismatch``, and — the eligibility one —
+    ``genesis_regenerate_not_eligible`` when the parent's verdict carries no
+    finding whose disposition is ``REGENERATE_WITH_FIX``. That last refusal is
+    what keeps this from becoming a re-roll button: a finding the CENSUS can
+    correct has unit #34's ``POST .../fixes/apply`` path instead, and the
+    refusal says so.
+
+    Authenticated like every other mutation here: the run spends a project's
+    job tree, and ``derived_from.requested_by`` on the record is why a session
+    is required at all. The body carries at most the requester's own reason —
+    never who they are (stamped server-side) and never an input.
+    """
+    try:
+        record = genesis_jobs.start_regenerate_job(
+            job_id,
+            requested_by=str(user.get("username") or user.get("id") or "unknown"),
+            reason=(payload.reason if payload is not None else None),
+        )
+    except genesis_jobs.GenesisJobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except genesis_jobs.GenesisRefused as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "reasons": exc.reasons}
+        ) from exc
+    except genesis_jobs.GenesisRegistryError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        # Copying the parent's source is synchronous, request-thread work; a
+        # disk that refuses it is the same "nothing changed, retry" answer
+        # ``POST .../live-check/run`` gives for its own clone step.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not prepare the regeneration's work directory. Nothing was started. "
+                f"[{type(exc).__name__}: {exc}]"
+            ),
+        ) from exc
+    logger.info(
+        "genesis: %s queued a regeneration of job %s -> job %s",
+        user.get("username"),
+        job_id,
+        record["id"],
+    )
+    return record
+
+
 @router.post("/jobs/{job_id}/fixes/apply", status_code=202)
 def apply_genesis_fix(
     job_id: str,
@@ -1243,7 +1338,17 @@ def _render_fix_disposition(
       derivation) tell the true story instead of reading as "just needs a
       volume".
 
-    Two optional enrichments inside the third shape, never a fourth shape:
+    A FOURTH shape since unit #38, and the only one that is neither an edit nor
+    a refusal: :data:`genesis_fixes.REGENERATE_WITH_FIX`, when the refusal's own
+    measured reason says the DRAFT already shares the defect
+    (``genesis_fixes.regeneration_disposition``). The treatment is a new
+    generation re-derived from the same source through the corrected converter
+    -- ``POST /jobs/{id}/regenerate`` -- and the entry carries the converter-fix
+    ledger and the localized explanation so the card can say what the button
+    does. Deliberately a STATUS change rather than an enrichment: "there is no
+    automated fix" would be false about a finding that has a treatment.
+
+    Two optional enrichments inside the third shape, never a fifth shape:
     a V3 refusal whose evidence carries ``source_testimony`` (unit #36 -- the
     job's own source ``.osm`` declares the connection the network lost) and
     one whose evidence carries ``attestation_invitation`` (unit #35 -- the
@@ -1296,6 +1401,31 @@ def _render_fix_disposition(
     invitation = (proposal.evidence or {}).get("attestation_invitation")
     if isinstance(invitation, dict):
         disposition["attestation"] = invitation
+    # Unit #38: the THIRD disposition. When the refusal's own measurement says
+    # the draft already shares the defect -- so no census-derived edit exists
+    # and no coordinate may be invented -- the honest treatment is a
+    # re-derivation from the same source through the corrected converter, and
+    # the entry says so instead of ending at "no automated fix". Tier CHANGES
+    # here (uniquely among the enrichments above): this is a different kind of
+    # answer, not a footnote on a refusal, and the button it renders posts to
+    # ``POST /jobs/{id}/regenerate`` -- whose own eligibility gate re-derives
+    # this very measurement, so the two cannot disagree.
+    regenerate = genesis_fixes.regeneration_disposition(
+        finding["code"], proposal, converter_fixes=genesis_osm.CONVERTER_FIXES
+    )
+    if regenerate is not None:
+        disposition["status"] = genesis_fixes.REGENERATE_WITH_FIX
+        # The registered verb is CLEARED, not kept beside the new status. The
+        # mapping still names ``set_link_geometry`` -- it is the right verb for
+        # a v7 finding the census CAN correct -- but for this one the
+        # measurement says no census-derived params exist, so leaving the verb
+        # named would invite a client to build an apply request that
+        # ``create_genesis_fix_job`` then refuses. This finding's treatment is
+        # not an edit, and the entry should not read as if it half were.
+        disposition["verb"] = None
+        disposition["params"] = None
+        disposition["requires"] = []
+        disposition["regenerate"] = regenerate
     return {
         "check_id": check_id,
         "origin": "warning" if origin == "warnings" else "finding",

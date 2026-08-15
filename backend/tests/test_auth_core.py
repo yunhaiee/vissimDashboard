@@ -1034,6 +1034,13 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
       live Vissim seat and clones into the project's job tree, and
       ``derived_from.requested_by`` has to name who asked for it.
 
+    **Unit #38 adds exactly one: the regeneration.**
+
+    * ``POST /api/genesis/jobs/{job_id}/regenerate`` -- re-derives a generation
+      from its own source through the corrected converter. It mints and runs a
+      job in the project's tree, and ``derived_from.requested_by`` is stamped
+      from the session precisely so the body cannot claim who asked.
+
     Note what is deliberately NOT in this set: the membership 403 on every
     other data route. That is enforced structurally in
     ``main.WorkspaceScopeMiddleware``, not by a route dependency — which is
@@ -1068,6 +1075,7 @@ def test_the_authenticated_routes_are_exactly_the_ones_a_unit_declared():
         "/api/genesis/jobs/{job_id}/fixes/apply",
         "/api/genesis/jobs/{job_id}/live-check",
         "/api/genesis/jobs/{job_id}/live-check/run",
+        "/api/genesis/jobs/{job_id}/regenerate",
         "/api/genesis/phase-diagrams",
         "/api/genesis/phase-diagrams/signals-input",
         "/api/genesis/phase-diagrams/{review_id}",

@@ -91,6 +91,19 @@ DERIVED, never declared — :func:`effective_status` asks
 ``tools_edit.py`` degrades the entry to :data:`fixes.VERB_UNREGISTERED`
 without anybody having to remember to edit this catalogue.
 
+**A third disposition, also derived** (unit #38): :data:`REGENERATE_WITH_FIX`
+— the treatment is not an artifact edit at all, but a NEW genesis job
+re-derived from the SAME source through a corrected converter. Its doctrine is
+this catalogue's own, stated once more because a whole re-generation sounds
+like a bigger claim than an edit and is not: **nothing is invented — the
+artifact is re-derived from the same source**, byte-for-byte the ``.osm`` the
+parent was built from, through the same pipeline and the same unmodified gate.
+It applies where the census DEMONSTRABLY cannot correct a finding because the
+draft already shares the defect (:func:`regeneration_disposition`, keyed by
+``genesis_jobs.derive_v7_corrected_polyline``'s measured ``reason_code``) —
+never as a fallback for "no fix found", which would turn an honest refusal into
+a re-roll of the same dice.
+
 One extension beyond ``fixes.py``'s own rule: a ``NOT_AUTOMATABLE`` entry MAY
 also carry a ``builder``, used when the reason code itself depends on
 evidence rather than being fixed for the key (``v4_lane_drop_without_runway``
@@ -193,6 +206,111 @@ SIGNAL_COVERAGE_IS_C1B_TERRITORY = "SIGNAL_COVERAGE_IS_C1B_TERRITORY"
 #: connection at all") — here somebody tried to, and the claim was incomplete.
 #: Completing it with a default would make this system the attester.
 ATTESTATION_INCOMPLETE = "ATTESTATION_INCOMPLETE"
+
+
+# ---------------------------------------------------------------------------
+# The third disposition (unit #38): treat it by REGENERATING, not by editing
+# ---------------------------------------------------------------------------
+
+#: A disposition beside :data:`fixes.AUTOMATABLE` and
+#: :data:`fixes.NOT_AUTOMATABLE`, and the one that is neither an edit nor a
+#: shrug: **the treatment is a NEW generation from the SAME source, through the
+#: corrected converter.**
+#:
+#: The doctrine, unchanged from every other entry in this catalogue: *nothing is
+#: invented — the artifact is re-derived from the same source.* No coordinate is
+#: guessed, no link is deleted, no edit is applied to the refused artifact. The
+#: same ``.osm`` bytes (sha-verified against the parent's own recorded digest)
+#: go through the same pipeline and the same unmodified gate, and the
+#: regenerated job stands or falls on its own verdict. The parent stays
+#: byte-untouched, exactly as B5-2 requires of every sibling job.
+#:
+#: DERIVED, never declared. :func:`register_genesis_fix` refuses it as a
+#: declared status for the same reason ``fixes.py`` refuses
+#: :data:`fixes.VERB_UNREGISTERED`: whether regeneration is the answer for a
+#: given finding depends on what the EVIDENCE measured about that finding, not
+#: on what a catalogue author guessed when they typed the entry. The measurement
+#: is :func:`regeneration_disposition` below.
+REGENERATE_WITH_FIX = "REGENERATE_WITH_FIX"
+
+#: The measured reasons — ``genesis_jobs.derive_v7_corrected_polyline``'s own
+#: ``reason_code`` vocabulary — that mean *the census cannot correct this, and a
+#: converter fix can*. Exactly one today: unit #34 measured that all 164 real
+#: ``v7_links_share_one_polyline`` findings have draft twins byte-identical at
+#: full precision, i.e. the corruption predates the draft. Unit #38 then found
+#: what upstream did it (a source declaring one way id twice) and fixed the
+#: converter, which is what makes a re-derivation a TREATMENT rather than a
+#: re-roll of the same dice.
+#:
+#: Deliberately a SET keyed by measured reason, not by finding code: a v7
+#: finding whose census CAN correct it keeps unit #34's ``set_link_geometry``
+#: path, and only the uncorrectable ones are offered a regeneration.
+REGENERABLE_DERIVATION_REASONS: frozenset[str] = frozenset({"draft_shares_the_corruption"})
+
+#: The localized sentence a regenerable disposition adds — what the button
+#: actually does, in the vocabulary of the existing cards. Deliberately states
+#: the two facts a reviewer needs before pressing it: the same source, and a
+#: verdict of its own.
+_REGENERATE_CLAUSE: tuple[str, str, str] = (
+    " 치료 경로: 이 산출물을 편집하는 대신, 같은 원본(.osm)을 수정된 변환기로 다시 생성합니다."
+    " 원본 바이트는 부모 작업의 기록된 sha와 대조해 확인하며, 부모는 한 바이트도 변경되지 않고,"
+    " 재생성된 작업은 동일한 게이트에서 자기 자신의 판정을 받습니다.",
+    " Treatment path: instead of editing this artifact, the SAME source .osm is re-derived"
+    " through the corrected converter. The source bytes are verified against the parent's"
+    " recorded sha, the parent is left byte-untouched, and the regenerated job faces the same"
+    " gate on its own merits.",
+    " 治療の道筋: この成果物を編集する代わりに、同じ元データ(.osm)を修正済みコンバータで再生成します。"
+    " 元データのバイト列は親ジョブの記録済みshaと照合し、親は1バイトも変更されず、"
+    " 再生成されたジョブは同じゲートで自身の判定を受けます。",
+)
+
+
+def regeneration_disposition(
+    code: str, proposal: Any, *, converter_fixes: Any = None
+) -> dict[str, Any] | None:
+    """``REGENERATE_WITH_FIX`` for this finding, or ``None``.
+
+    ONE measurement, in one place, so the fixes LISTING and
+    ``genesis_jobs.create_regenerate_job``'s own eligibility gate can never
+    disagree about which findings the regeneration path is for (the same
+    shared-derivation rule ``routers/genesis.py``'s ``get_job_fixes`` docstring
+    already states for evidence).
+
+    Eligible iff the proposal's own evidence carries a census derivation whose
+    measured ``reason_code`` is in :data:`REGENERABLE_DERIVATION_REASONS` — i.e.
+    the draft ITSELF already carries the defect, so no edit derived from the
+    census can clear it and no coordinate may be invented to. A finding the
+    census CAN correct is not eligible: it already has unit #34's honest
+    ``set_link_geometry`` path, and offering a whole regeneration instead would
+    be the bigger hammer for the smaller nail.
+
+    ``converter_fixes`` is the caller's own ledger of what the converter now
+    does differently (``services.genesis.osm.CONVERTER_FIXES``), threaded in
+    rather than imported so this module keeps its no-I/O, no-genesis-pipeline
+    import surface. Absent, the disposition still names the path — a
+    regeneration whose fix ledger could not be read is still a regeneration, and
+    saying so is better than pretending the finding has no treatment.
+    """
+    evidence = getattr(proposal, "evidence", None) or {}
+    derivation = evidence.get("census_derivation") if isinstance(evidence, Mapping) else None
+    if not isinstance(derivation, Mapping):
+        return None
+    reason_code = str(derivation.get("reason_code") or "")
+    if reason_code not in REGENERABLE_DERIVATION_REASONS:
+        return None
+    disposition: dict[str, Any] = {
+        "status": REGENERATE_WITH_FIX,
+        "finding_code": code,
+        "derivation_reason_code": reason_code,
+        "explanation": {
+            "ko": _REGENERATE_CLAUSE[0].strip(),
+            "en": _REGENERATE_CLAUSE[1].strip(),
+            "ja": _REGENERATE_CLAUSE[2].strip(),
+        },
+    }
+    if converter_fixes is not None:
+        disposition["converter_fixes"] = [dict(entry) for entry in converter_fixes]
+    return disposition
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +482,8 @@ def register_genesis_fix(mapping: GenesisFixMapping) -> GenesisFixMapping:
         raise ValueError(
             f"register_genesis_fix: {mapping.code!r} declared status {mapping.status!r}; "
             f"declarable values are {fixes.AUTOMATABLE!r} and {fixes.NOT_AUTOMATABLE!r} "
-            f"({fixes.VERB_UNREGISTERED!r} is derived, never declared)"
+            f"({fixes.VERB_UNREGISTERED!r} and {REGENERATE_WITH_FIX!r} are derived, "
+            "never declared)"
         )
     if mapping.status == fixes.AUTOMATABLE:
         if not mapping.verb:
