@@ -222,17 +222,28 @@ def _orphan_entry(client: TestClient, job_id: str) -> dict[str, Any]:
 
 
 def test_v3_code_tuple_mirrors_the_fix_registry():
-    """Every code the deriver answers for is a registered NOT_AUTOMATABLE
-    ``CONNECTIVITY_IS_NOT_INVENTED`` mapping carrying the testimony builder,
-    and every registered v3 code is one the deriver answers for — a new v3
-    code cannot silently fall between."""
+    """Every code the deriver answers for is a registered mapping carrying a
+    builder, and every registered v3 code is one the deriver answers for — a
+    new v3 code cannot silently fall between.
+
+    Since unit #35 exactly ONE of the seven (``genesis_jobs.V3_TREATABLE_FINDING_CODE``)
+    is AUTOMATABLE, and this test is deliberately the place that says so: the
+    testimony this module derives is still EVIDENCE ONLY for the other six,
+    and a second code quietly acquiring a verb would fail right here. What the
+    treatable one does with the same testimony is
+    ``tests/test_genesis_fix_v3_connector.py``'s subject.
+    """
     for code in genesis_jobs.V3_CONNECTIVITY_FINDING_CODES:
         mapping = genesis_fixes.get_genesis_fix(code)
         assert mapping is not None, code
+        assert mapping.builder is not None, code
+        if code == genesis_jobs.V3_TREATABLE_FINDING_CODE:
+            assert mapping.status == agent_fixes.AUTOMATABLE, code
+            assert mapping.verb == "add_connector", code
+            continue
         assert mapping.status == agent_fixes.NOT_AUTOMATABLE, code
         assert mapping.reason_code == genesis_fixes.CONNECTIVITY_IS_NOT_INVENTED, code
         assert mapping.verb is None, code
-        assert mapping.builder is not None, code
     registered_v3 = {
         mapping.code
         for mapping in genesis_fixes.get_genesis_fix_registry()

@@ -152,6 +152,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -168,7 +169,13 @@ from services.dataimport.adapters.daejeon import DaejeonCountAdapter
 from services.dataimport.base import AdapterError, ImportResult, IssueSeverity
 from services.genesis import side_inputs as side_inputs_module
 from services.genesis.compose import NO_LAYERS, ComposedLayers
-from services.genesis.draft import DraftNetwork, build_draft
+from services.genesis.draft import (
+    NODE_HALF_SIZE_M,
+    DraftNetwork,
+    build_draft,
+    classify_turn,
+    connector_lane_pairs,
+)
 from services.genesis.emit import EmitRefused, emit_inpx
 from services.genesis.gate import (
     OVERLAP_DECIMALS,
@@ -2799,6 +2806,436 @@ def derive_v3_source_testimony(
     }
 
 
+# ---------------------------------------------------------------------------
+# Unit #35 — the V3 TREATMENT. A connection whose FACT has a named source
+# (the job's own .osm, or a human who takes responsibility for it) becomes a
+# connector this system builds MECHANICALLY out of two link ends that already
+# exist. CONNECTIVITY_IS_NOT_INVENTED survives intact: what is never invented
+# is the CONNECTION, and neither branch below invents one.
+# ---------------------------------------------------------------------------
+
+#: The ONE V3 finding code this treatment answers for. Every other V3 code
+#: stays the pure refusal unit #36 left it as, and deliberately so: a
+#: silent departure point is the only V3 finding that names ONE link END —
+#: exactly the shape ``add_connector``'s from-side needs. ``v3_orphan_link``
+#: is dead at BOTH ends (one departing connector answers half of it),
+#: ``v3_*_zone`` names a whole component, and ``v3_input_cannot_reach_an_exit``
+#: names a reachability property of a path, not an end. Deriving a from-link
+#: END out of any of those would be this module inventing the address, which
+#: is the same fabrication in a different coat.
+V3_TREATABLE_FINDING_CODE = "v3_silent_departure_point"
+
+#: How a connector plan's CONNECTION fact was established. A plan carries
+#: exactly ONE of these and a plan with neither is not a plan — the whole
+#: point of the unit is that the fact always has a named source.
+CONNECTOR_BASIS_SOURCE_TESTIMONY = "source_testimony"
+CONNECTOR_BASIS_HUMAN_ATTESTATION = "human_attestation"
+
+#: The furthest two link ends may be apart for a connector between them to be
+#: a junction MOVEMENT rather than fabricated road. INHERITED from the
+#: generator's own declared node scale (``draft.NODE_HALF_SIZE_M`` — the
+#: half-box every node this generator builds occupies), doubled because a
+#: movement crosses a WHOLE node, not half of one. Deliberately not a fresh
+#: number chosen here: a bound this module picked for itself would be exactly
+#: the kind of invented quantity ``CONNECTIVITY_IS_NOT_INVENTED`` refuses.
+MAX_CONNECTOR_SPAN_M = 2 * NODE_HALF_SIZE_M
+
+#: How many nearest candidate to-links an attestation picker is offered. A cap,
+#: not a filter: :data:`MAX_CONNECTOR_SPAN_M` already decides which links are
+#: candidates at all, and this only bounds what a UI has to render.
+MAX_ATTESTATION_CANDIDATES = 8
+
+#: The one draft field a connector plan's TO-side may ever come from, recorded
+#: verbatim in every derivation's provenance, mirroring
+#: :data:`_V7_DRAFT_SOURCE_FIELD` / :data:`_V3_SOURCE_FIELD`.
+_V3_CONNECTOR_SOURCE_FIELD = "links[].points"
+
+
+def _link_end_gap_m(from_link: Any, to_link: Any) -> float | None:
+    """Metres between the FROM link's departure end and the TO link's start —
+    the span a connector between them would have to cover. ``None`` when
+    either polyline is too short to have an end at all."""
+    try:
+        x0, y0 = from_link.points[-1]
+        x1, y1 = to_link.points[0]
+    except (IndexError, TypeError, ValueError):
+        return None
+    return math.hypot(float(x1) - float(x0), float(y1) - float(y0))
+
+
+def _v3_finding_link(finding: Mapping[str, Any], draft: "DraftNetwork | None") -> Any:
+    """The draft link a V3 finding addresses — read the SAME way
+    :func:`derive_v3_source_testimony` reads it (``context['link_id']`` first,
+    the leading id of the ``"<id> (<name>)"`` subject second), so a treatment
+    and its testimony can never end up talking about different links."""
+    context = dict(finding.get("context") or {})
+    link_id_raw = context.get("link_id")
+    if link_id_raw is None:
+        subject_head = str(finding.get("subject") or "").strip().split(" (", 1)[0].strip()
+        link_id_raw = subject_head or None
+    try:
+        link_id = int(str(link_id_raw))
+    except (TypeError, ValueError):
+        return None
+    if draft is None:
+        return None
+    return draft.link_by_id(link_id)
+
+
+def _connector_params_between(from_link: Any, to_link: Any) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """``(add_connector params | None, measurements)`` for a connector from
+    ``from_link``'s departure end to ``to_link``'s start — the WHOLE of this
+    unit's mechanical construction, in one function so the plan and the
+    attestation picker can never construct it two different ways.
+
+    Nothing here decides whether the two ends SHOULD be joined; that is the
+    named source's job (the caller's ``testimony``/``attestation``). This only
+    answers whether they CAN be, out of what the census already declares:
+    both ends must exist, the span between them must be within the
+    generator's own node scale (:data:`MAX_CONNECTOR_SPAN_M`), and the
+    generator's own ``connector_lane_pairs`` over its own ``classify_turn``
+    supplies the lane mapping. ``measurements`` always carries what was
+    measured (``span_m``/``max_span_m``, and ``turn``/``heading_change_deg``/
+    ``lane_pairs`` once they are known) plus, when no params could be built, a
+    ``reason_code`` + ``detail``.
+    """
+    measurements: dict[str, Any] = {}
+    if to_link is None or len(getattr(to_link, "points", ())) < 2 or len(from_link.points) < 2:
+        return None, {
+            **measurements,
+            "reason_code": "degenerate_link_geometry",
+            "detail": "one of the two links has fewer than 2 census points, so it has no end to "
+            "build a connector from or to",
+        }
+    if to_link.id == from_link.id:
+        return None, {
+            **measurements,
+            "reason_code": "attested_link_is_the_finding_link",
+            "detail": f"link {from_link.id} cannot be joined to itself",
+        }
+    span = _link_end_gap_m(from_link, to_link)
+    measurements["span_m"] = round(float(span), 3) if span is not None else None
+    measurements["max_span_m"] = MAX_CONNECTOR_SPAN_M
+    if span is None or span > MAX_CONNECTOR_SPAN_M:
+        return None, {
+            **measurements,
+            "reason_code": "span_exceeds_node_scale",
+            "detail": f"link {from_link.id}'s departure end and link {to_link.id}'s start are "
+            f"{measurements['span_m']} m apart, past this generator's own node scale "
+            f"({MAX_CONNECTOR_SPAN_M} m) — a connector across that gap would be road, not a "
+            "turn through a junction",
+        }
+    in_dx = float(from_link.points[-1][0]) - float(from_link.points[-2][0])
+    in_dy = float(from_link.points[-1][1]) - float(from_link.points[-2][1])
+    out_dx = float(to_link.points[1][0]) - float(to_link.points[0][0])
+    out_dy = float(to_link.points[1][1]) - float(to_link.points[0][1])
+    turn, heading_change = classify_turn(in_dx, in_dy, out_dx, out_dy)
+    pairs = connector_lane_pairs(turn, from_link.lanes, to_link.lanes)
+    measurements["turn"] = turn
+    measurements["heading_change_deg"] = round(float(heading_change), 3)
+    measurements["lane_pairs"] = [[int(a), int(b)] for a, b in pairs]
+    if not pairs:  # pragma: no cover - connector_lane_pairs always returns >=1 pair
+        return None, {
+            **measurements,
+            "reason_code": "lane_mapping_not_expressible",
+            "detail": "this generator's own lane-pairing rule produced no lane pair for this "
+            "movement",
+        }
+    params = {
+        "from_link": str(from_link.id),
+        "from_lanes": [int(a) for a, _b in pairs],
+        "from_pos_m": round(float(from_link.length_m), 3),
+        "to_link": str(to_link.id),
+        "to_lanes": [int(b) for _a, b in pairs],
+        "to_pos_m": 0.0,
+        # Deterministic, ASCII, and derived only from the two ids: a
+        # re-derivation at apply time has to produce this byte-for-byte.
+        "name": f"V3 departure {from_link.id}->{to_link.id}",
+    }
+    return params, measurements
+
+
+def derive_v3_attestation_candidates(
+    finding: Mapping[str, Any],
+    *,
+    draft: "DraftNetwork | None",
+    limit: int = MAX_ATTESTATION_CANDIDATES,
+) -> list[dict[str, Any]]:
+    """Every draft link a connector from this finding's departure end could
+    physically be BUILT to, nearest first — the picker a human attesting "the
+    real road continues here" names their target from.
+
+    MEASURED, never a proposal: each entry carries the metres between the two
+    link ends, and nothing here says the road does continue. Only ends a
+    connector could actually be CONSTRUCTED to are listed
+    (:func:`_connector_params_between` — the same construction the plan
+    itself uses, so a candidate can never be one the plan would then refuse),
+    and each entry carries that construction as ``params``: an attesting human
+    names a target, and the payload their approval submits is this derivation,
+    not something a client made up. The apply path re-derives it and refuses a
+    payload that differs, so the preview is a convenience, never the authority.
+
+    Empty is a real answer: a departure end with no reachable link end in the
+    model has nothing to attest TO, and the honest response is a regeneration
+    over a larger extract, not an attestation.
+    """
+    from_link = _v3_finding_link(finding, draft)
+    if from_link is None or draft is None:
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for link in draft.links:
+        if link.id == from_link.id:
+            continue
+        params, measurements = _connector_params_between(from_link, link)
+        if params is None:
+            continue
+        gap = float(measurements["span_m"])
+        scored.append(
+            (
+                gap,
+                {
+                    "link_id": str(link.id),
+                    "name": link.name,
+                    "way_id": link.osm_way_id,
+                    "lanes": link.lanes,
+                    "starts_at_node_osm_id": link.from_node_osm_id,
+                    "distance_m": measurements["span_m"],
+                    "turn": measurements["turn"],
+                    "params": params,
+                },
+            )
+        )
+    scored.sort(key=lambda item: (item[0], item[1]["link_id"]))
+    return [entry for _gap, entry in scored[:limit]]
+
+
+def derive_v3_connector_plan(
+    finding: Mapping[str, Any],
+    *,
+    draft: "DraftNetwork | None",
+    testimony: Mapping[str, Any] | None = None,
+    attestation: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Unit #35: the ``add_connector`` params a V3 silent-departure fix may
+    honestly carry — or nothing, with a named measured reason.
+
+    Returns ``{"connector_params": {...} | None, "provenance": {...}}``,
+    mirroring :func:`derive_v7_corrected_polyline` / :func:`derive_v3_source_testimony`.
+
+    **Where each field comes from, and which of them is nobody's invention.**
+    The CONNECTION — that a vehicle may leave this end and join that link — is
+    never derived here: it arrives either as the source's own testimony
+    (:func:`derive_v3_source_testimony`, the job's own ``.osm`` declaring ways
+    that share the node) or as a human attestation naming the target and its
+    basis. Everything else is mechanical construction from two link ends the
+    census already declares:
+
+    * ``from_link`` — the finding's own link; ``from_pos_m`` its declared
+      length (its departure end, which is what the finding is ABOUT);
+    * ``to_link`` — testified: the draft link carrying a testified way whose
+      census record says it BEGINS at the testified node (way_id -> link, the
+      reverse of the mapping unit #36 used; several candidates are ranked by
+      the measured distance between the two ends and the nearest wins, with
+      every candidate recorded). Attested: the link the human named, verified
+      to exist in the census and not to be the finding's own link;
+    * ``to_pos_m`` — ``0.0``, the to-link's start. A connector joining a link
+      anywhere else would leave the road behind it unreachable;
+    * ``from_lanes``/``to_lanes`` — ``draft.connector_lane_pairs`` over
+      ``draft.classify_turn``: the generator's OWN lane-pairing rule, the same
+      one every other connector in this network was built with, reused rather
+      than re-derived.
+
+    The span between the two ends is measured and bounded by
+    :data:`MAX_CONNECTOR_SPAN_M`; beyond it, the "connector" would be road
+    rather than a turn, and this refuses by name instead.
+
+    **Which source is asked, in which order.** The job's own ``.osm`` first;
+    a human's attestation when the source has nothing to offer OR when it
+    testifies to a connection this model has no link for (measured on job
+    ``b3ef6abb9a85``: the source's own way carries on past the node and the
+    pipeline emitted no link for the continuation). The second half matters —
+    that state is one the refusal INVITES an attestation for, and ignoring
+    the attestation it then receives would be a silent drop of the reader's
+    own claim.
+
+    Named reasons for no plan (``provenance['reason_code']``):
+    ``no_draft_census`` / ``no_draft_record`` (the finding maps to no census
+    link), ``no_named_source`` (neither testimony nor attestation — the bare
+    refusal unit #36 left, unchanged), ``no_draft_link_departs_the_node`` (the
+    source testifies, no census link carrying a testified way begins at that
+    node, and nobody attested one — a connector cannot be built to a link that
+    is not there),
+    ``attestation_without_target`` / ``attestation_without_basis`` /
+    ``attestation_without_attribution`` (an incomplete attestation is refused,
+    never completed with a default), ``attested_link_not_in_census``,
+    ``attested_link_is_the_finding_link``, ``degenerate_link_geometry``,
+    ``span_exceeds_node_scale``, ``lane_mapping_not_expressible``.
+    """
+    provenance: dict[str, Any] = {
+        "source_field": _V3_CONNECTOR_SOURCE_FIELD,
+        "basis": None,
+        "link_id": None,
+        "node_id": None,
+        "to_link": None,
+    }
+
+    def _nothing(reason_code: str, detail: str) -> dict[str, Any]:
+        return {
+            "connector_params": None,
+            "provenance": {**provenance, "reason_code": reason_code, "detail": detail},
+        }
+
+    if draft is None:
+        return _nothing(
+            "no_draft_census",
+            "this job's *.genesis.json census is absent, unreadable, or does not validate",
+        )
+    from_link = _v3_finding_link(finding, draft)
+    if from_link is None:
+        return _nothing(
+            "no_draft_record",
+            "the finding names no addressable link id, or the census declares no links[] "
+            "record for it",
+        )
+    provenance["link_id"] = str(from_link.id)
+    if len(from_link.points) < 2:
+        return _nothing(
+            "degenerate_link_geometry",
+            f"the census record for link {from_link.id} has fewer than 2 points, so it has no "
+            "departure end to build a connector from",
+        )
+
+    # The source is asked FIRST and a human second — but a human is asked at
+    # all, because the source can testify to a connection this model has no
+    # link for (measured on job b3ef6abb9a85: the source's own way carries on
+    # past the node, and the pipeline emitted no link for the continuation).
+    # Ignoring an attestation in that state would have been a silent drop of
+    # exactly the claim the reader was invited to make.
+    to_link = None
+    testimony_failure: dict[str, Any] | None = None
+    considered: list[dict[str, Any]] = []
+    if isinstance(testimony, Mapping) and testimony.get("connected_way_ids"):
+        provenance["basis"] = CONNECTOR_BASIS_SOURCE_TESTIMONY
+        node_id = testimony.get("node_id")
+        provenance["node_id"] = node_id
+        provenance["way_id"] = testimony.get("way_id")
+        provenance["connected_way_ids"] = list(testimony["connected_way_ids"])
+        testified_ways = {int(w) for w in testimony["connected_way_ids"]}
+        for link in draft.links:
+            if link.id == from_link.id or int(link.osm_way_id) not in testified_ways:
+                continue
+            # "its end sits at the testified node": the census's OWN statement
+            # that this link BEGINS there, which is the same fact expressed
+            # without trusting float geometry. Ranking below is the tie-break,
+            # never the test.
+            if node_id is None or int(link.from_node_osm_id) != int(node_id):
+                continue
+            gap = _link_end_gap_m(from_link, link)
+            if gap is None:
+                continue
+            considered.append(
+                {
+                    "link_id": str(link.id),
+                    "way_id": link.osm_way_id,
+                    "distance_m": round(gap, 3),
+                }
+            )
+        considered.sort(key=lambda entry: (entry["distance_m"], entry["link_id"]))
+        provenance["candidates_considered"] = considered
+        if considered:
+            to_link = draft.link_by_id(int(considered[0]["link_id"]))
+        else:
+            testimony_failure = _nothing(
+                "no_draft_link_departs_the_node",
+                f"the source declares way(s) "
+                f"{', '.join(str(w) for w in testimony['connected_way_ids'])} depart node "
+                f"{node_id}, but this network's census has no link carrying one of them that "
+                f"BEGINS at that node — there is no link end to connect to",
+            )
+
+    if to_link is None and attestation is not None:
+        provenance["basis"] = CONNECTOR_BASIS_HUMAN_ATTESTATION
+        to_link_text = str(attestation.get("to_link") or "").strip()
+        basis_text = str(attestation.get("basis") or "").strip()
+        attested_by = str(attestation.get("attested_by") or "").strip()
+        attested_at = str(attestation.get("attested_at") or "").strip()
+        provenance["to_link"] = to_link_text or None
+        provenance["attested_by"] = attested_by or None
+        provenance["attested_at"] = attested_at or None
+        if not to_link_text:
+            return _nothing(
+                "attestation_without_target",
+                "the attestation names no to_link — a human attesting that the road continues "
+                "must name WHERE it continues to",
+            )
+        if not basis_text:
+            return _nothing(
+                "attestation_without_basis",
+                "the attestation carries no basis sentence — an attestation without a stated "
+                "basis is a click, not a claim somebody is accountable for",
+            )
+        if not attested_by or not attested_at:
+            return _nothing(
+                "attestation_without_attribution",
+                "the attestation carries no attester and/or no timestamp — an unattributed "
+                "attestation cannot be recorded as one",
+            )
+        try:
+            to_link = draft.link_by_id(int(to_link_text))
+        except (TypeError, ValueError):
+            to_link = None
+        if to_link is None:
+            return _nothing(
+                "attested_link_not_in_census",
+                f"the attested to_link {to_link_text!r} is not a link this network's census "
+                "declares",
+            )
+        # Everything else about the pair -- including "not the finding's own
+        # link" -- is _connector_params_between's single implementation below.
+    elif to_link is None:
+        # The source could not be followed and nobody claimed the connection:
+        # the testimony's own measured reason when there was one, else the
+        # bare "nothing named this" that unit #36's refusal already covers.
+        return testimony_failure or _nothing(
+            "no_named_source",
+            "neither the job's own source .osm nor a human attestation names the connection "
+            "this fix would build — the connection fact has no source, so there is no fix",
+        )
+
+    provenance["to_link"] = str(to_link.id) if to_link is not None else None
+    provenance["to_link_way_id"] = to_link.osm_way_id if to_link is not None else None
+
+    params, measurements = _connector_params_between(from_link, to_link)
+    provenance.update({k: v for k, v in measurements.items() if k not in ("reason_code", "detail")})
+    if params is None:
+        return _nothing(str(measurements["reason_code"]), str(measurements["detail"]))
+    return {"connector_params": params, "provenance": provenance}
+
+
+def normalized_connector_params(params: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """One comparable shape for an ``add_connector`` payload, so a SUBMITTED
+    payload and this module's own DERIVED one are compared by value rather
+    than by JSON spelling (``"1"`` vs ``1``, ``100`` vs ``100.0``).
+
+    ``None`` for anything that does not carry the six fields at all — which
+    then compares unequal to any real derivation, i.e. a malformed payload is
+    refused rather than accidentally matching."""
+    if not isinstance(params, Mapping):
+        return None
+    try:
+        return {
+            "from_link": str(params["from_link"]),
+            "from_lanes": [int(v) for v in params["from_lanes"]],
+            "from_pos_m": round(float(params["from_pos_m"]), 3),
+            "to_link": str(params["to_link"]),
+            "to_lanes": [int(v) for v in params["to_lanes"]],
+            "to_pos_m": round(float(params["to_pos_m"]), 3),
+            "name": str(params.get("name") or ""),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def derive_fix_targets(
     code: str,
     finding: Mapping[str, Any],
@@ -2806,6 +3243,7 @@ def derive_fix_targets(
     draft: "DraftNetwork | None" = None,
     params: Mapping[str, Any] | None = None,
     job_id: str | None = None,
+    attestation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The ``targets`` :func:`services.agent.genesis_fixes.propose_genesis_fix`
     is re-run with — built from what THIS service layer can honestly derive,
@@ -2841,12 +3279,24 @@ def derive_fix_targets(
       (``genesis_fix_points_not_census_derived``).
     * **V3** (``source_testimony`` + ``source_testimony_provenance``) — unit
       #36: derived by :func:`derive_v3_source_testimony` from the job's own
-      stored source ``.osm``. EVIDENCE ONLY, never a proposal ingredient: the
-      registry's V3 entries stay ``NOT_AUTOMATABLE`` under
-      ``CONNECTIVITY_IS_NOT_INVENTED`` whichever way the testimony falls --
-      the derivation only lets the refusal's rationale state, measured,
-      whether the source itself shares the gap or declares the connection the
-      pipeline lost.
+      stored source ``.osm``. For six of the seven V3 codes this stays
+      EVIDENCE ONLY, exactly as unit #36 shipped it: those entries remain
+      ``NOT_AUTOMATABLE`` under ``CONNECTIVITY_IS_NOT_INVENTED`` whichever way
+      the testimony falls, and the derivation only lets the refusal's
+      rationale state, measured, whether the source itself shares the gap or
+      declares the connection the pipeline lost.
+    * **V3** (``connector_params`` + ``connector_derivation`` +
+      ``human_attestation`` + ``attestation_candidates``) — unit #35, for
+      :data:`V3_TREATABLE_FINDING_CODE` alone. The testimony above, or the
+      approver's own ``attestation``, is turned into a real
+      ``add_connector`` payload by :func:`derive_v3_connector_plan` — the
+      CONNECTION named by a source, the geometry constructed from two link
+      ends the census already declares. ``attestation`` is threaded from the
+      caller ONLY (never derived here — it is a human's claim, the same way
+      V6's ``proposed_volume`` is a human's number), and when no plan could be
+      derived the picker a human would attest FROM
+      (:func:`derive_v3_attestation_candidates`) rides along so the refusal
+      can carry the ask-first question instead of being a dead end.
     """
     from services.agent.fixes import node_evidence_from_real_counts  # noqa: PLC0415
     from services.agent.genesis_fixes import expected_fix_target  # noqa: PLC0415
@@ -2886,6 +3336,23 @@ def derive_fix_targets(
             targets["source_testimony"] = testimony["source_testimony"]
         targets["source_testimony_provenance"] = testimony["provenance"]
 
+    if code == V3_TREATABLE_FINDING_CODE:
+        plan = derive_v3_connector_plan(
+            finding,
+            draft=draft,
+            testimony=targets.get("source_testimony"),
+            attestation=attestation,
+        )
+        if plan["connector_params"] is not None:
+            targets["connector_params"] = plan["connector_params"]
+        targets["connector_derivation"] = plan["provenance"]
+        if attestation is not None:
+            targets["human_attestation"] = dict(attestation)
+        if plan["connector_params"] is None:
+            candidates = derive_v3_attestation_candidates(finding, draft=draft)
+            if candidates:
+                targets["attestation_candidates"] = candidates
+
     return targets
 
 
@@ -2898,6 +3365,7 @@ def create_genesis_fix_job(
     params: dict[str, Any],
     approved_by: str | None,
     approval_rationale: str | None,
+    attestation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Register a fix job WITHOUT starting it — the clone step.
 
@@ -2960,6 +3428,22 @@ def create_genesis_fix_job(
        approval could ride a valid derivation while carrying coordinates no
        census ever declared. Refused with the named code
        ``genesis_fix_points_not_census_derived``.
+    8. **derived CONNECTOR params cannot be swapped for the approver's own**
+       (unit #35) — the exact same guard, applied to
+       :func:`derive_v3_connector_plan`'s output: when step 6's re-derivation
+       produced ``connector_params``, the submitted ``params`` must equal them
+       field for field (:func:`normalized_connector_params`). Refused with the
+       named code ``genesis_fix_connector_not_derived``.
+
+    ``attestation`` (unit #35) is the ONE judgment call this door accepts for a
+    V3 treatment: ``{to_link, basis}`` — a human's claim that the real road
+    continues, and where to. It is stamped HERE with the approver's own name
+    and the server's clock (``attested_by``/``attested_at``: the client has no
+    field for either, the same discipline ``approved_by`` follows) and fed back
+    into the re-derivation as evidence, so the registry — not this function —
+    decides what an attestation is worth. An attestation missing its target or
+    its basis is refused by name (``genesis_fix_attestation_incomplete``)
+    rather than completed with a default.
 
     **Why THIS is the authoritative gate, not merely a convenience.**
     ``routers/genesis.py``'s ``apply_genesis_fix`` runs an equivalent but
@@ -3054,6 +3538,39 @@ def create_genesis_fix_job(
             ],
         )
 
+    # --- unit #35: an attestation is a claim somebody is accountable for, so
+    # it is stamped with WHO and WHEN here (never taken from the client) and
+    # refused outright when it is missing the two things only a human can
+    # supply. Completing an incomplete attestation with a default would be
+    # this system attesting on a person's behalf.
+    stamped_attestation: dict[str, Any] | None = None
+    if attestation is not None:
+        to_link_text = str(attestation.get("to_link") or "").strip()
+        basis_text = str(attestation.get("basis") or "").strip()
+        attested_by = str(approved_by or "").strip()
+        missing = [
+            name
+            for name, value in (("to_link", to_link_text), ("basis", basis_text))
+            if not value
+        ]
+        if not attested_by:
+            missing.append("attested_by")
+        if missing:
+            raise GenesisRefused(
+                "genesis_fix_attestation_incomplete",
+                [
+                    "An attestation must name the target link, state its basis, and be "
+                    f"attributable to a signed-in person. Missing: {', '.join(missing)}. "
+                    "Nothing here fills those in on a human's behalf."
+                ],
+            )
+        stamped_attestation = {
+            "to_link": to_link_text,
+            "basis": basis_text,
+            "attested_by": attested_by,
+            "attested_at": _now_iso(),
+        }
+
     # --- exploit #3's fix: the finding must actually be IN the parent's own
     # verdict, not merely a code this catalogue recognises in the abstract.
     raw_parent_gate = json.loads(
@@ -3102,7 +3619,12 @@ def create_genesis_fix_job(
     draft = job_draft_or_none(parent_job_id)
     census = draft.metadata if draft is not None else None
     targets = derive_fix_targets(
-        finding_code, finding, draft=draft, params=params, job_id=parent_job_id
+        finding_code,
+        finding,
+        draft=draft,
+        params=params,
+        job_id=parent_job_id,
+        attestation=stamped_attestation,
     )
     proposal = agent_genesis_fixes.propose_genesis_fix(
         finding_code, finding=finding, census=census, targets=targets
@@ -3137,6 +3659,27 @@ def create_genesis_fix_job(
                     "A V7 geometry fix's coordinates come from the draft's own pre-corruption "
                     "record, never from the approver -- approve the derived correction or "
                     "reject it, but do not replace it."
+                ],
+            )
+
+    # --- unit #35's mirror of the same guard, for the V3 connector treatment.
+    # The CONNECTION may come from a source or from an attesting human; the
+    # PARAMS never come from the approver -- they are constructed here out of
+    # two link ends the census declares, and the runner applies exactly what
+    # is stored, so a payload that differs from the derivation is refused.
+    derived_connector = targets.get("connector_params")
+    if derived_connector is not None:
+        submitted_connector = normalized_connector_params(params)
+        if submitted_connector != normalized_connector_params(derived_connector):
+            raise GenesisRefused(
+                "genesis_fix_connector_not_derived",
+                [
+                    f"The submitted add_connector params differ from the connector this "
+                    f"service re-derived for finding {finding_code!r} (subject "
+                    f"{finding['subject']!r}) from the named connection and the two link ends "
+                    f"the census declares: {normalized_connector_params(derived_connector)!r}. "
+                    "A connector's geometry and lane mapping are constructed, never approved "
+                    "in -- approve the derived connector or reject it, but do not replace it."
                 ],
             )
 
@@ -3211,6 +3754,39 @@ def create_genesis_fix_job(
             **(
                 {"census_derivation": targets["corrected_points_provenance"]}
                 if derived_points is not None and targets.get("corrected_points_provenance")
+                else {}
+            ),
+            # Unit #35: the same presence-is-the-fact discipline for the V3
+            # connector treatment -- the derivation that BUILT the applied
+            # connector, and (only when a human made the claim) the
+            # attestation verbatim, attribution included. Both key-ABSENT on
+            # every other fix job.
+            **(
+                {"connector_derivation": targets["connector_derivation"]}
+                if derived_connector is not None and targets.get("connector_derivation")
+                else {}
+            ),
+            # An attestation is recorded under "attestation" ONLY when it is the
+            # basis the connector was actually derived from. When the source's
+            # own testimony resolved the target first, the human's submission
+            # still happened -- erasing it would falsify the audit trail in the
+            # other direction -- so it is kept under a key that names its
+            # disposition, never beside applied params it did not produce.
+            **(
+                {"attestation": stamped_attestation}
+                if stamped_attestation is not None
+                and (targets.get("connector_derivation") or {}).get("basis") != "source_testimony"
+                else {}
+            ),
+            **(
+                {
+                    "attestation_superseded": {
+                        **stamped_attestation,
+                        "superseded_by": "source_testimony",
+                    }
+                }
+                if stamped_attestation is not None
+                and (targets.get("connector_derivation") or {}).get("basis") == "source_testimony"
                 else {}
             ),
         },

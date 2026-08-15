@@ -184,6 +184,13 @@ function fixConfidenceLabel(confidence: string, t: Translate): string {
       return t("제약이 계산한 상한값", "A constraint's own computed ceiling", "制約が計算した上限値");
     case "DEMAND_ESTIMATE_FROM_UNVERIFIED_ENTRANCE":
       return t("수요 추정값 (미검증 진입부)", "A demand ESTIMATE (unverified entrance)", "需要推定値（未検証の流入部）");
+    // Unit #35 — two NAMED evidence levels, neither of them arithmetic. What
+    // they qualify is the CONNECTION, never the geometry (see the assumption
+    // token that always rides with them).
+    case "SOURCE_TESTIFIED_CONNECTION":
+      return t("소스가 증언한 연결", "The SOURCE testified this connection", "ソースが証言した接続");
+    case "HUMAN_ATTESTED_CONNECTION":
+      return t("운영자가 확인한 연결", "OPERATOR-ATTESTED connection", "運営者が確認した接続");
     case "NONE":
       return t("근거 값 없음", "No confidence value", "根拠値なし");
     default:
@@ -230,6 +237,18 @@ function fixAssumptionLabel(token: string, t: Translate): string {
         "이 진입부가 실측 지점인지 확인되지 않았다는 전제입니다 (수요 추정)",
         "Assumes this entrance could not be verified as measured (a named demand estimate)",
         "この流入部が実測地点かは確認されていないという前提です（需要推定）",
+      );
+    case "CONNECTOR_GEOMETRY_CONSTRUCTED":
+      return t(
+        "연결의 사실만 출처가 있고, 연결로의 형상·차로 대응은 기존 두 링크 끝에서 구성한 값입니다",
+        "The CONNECTION has a named source; the connector's shape and lane mapping are constructed from the two existing link ends",
+        "接続という事実にのみ出典があり、コネクタの形状・車線対応は既存の2つのリンク端から構成した値です",
+      );
+    case "ATTESTED_NOT_MEASURED":
+      return t(
+        "이 연결은 측정된 사실이 아니라 사람이 책임지는 진술입니다 (확인자·시각 기록됨)",
+        "This connection is a person's accountable claim, not a measurement (attester and timestamp are recorded)",
+        "この接続は測定された事実ではなく、人が責任を負う主張です（確認者・時刻を記録）",
       );
     default:
       return token;
@@ -295,37 +314,62 @@ function FixFindingRow({
   const [requiredValues, setRequiredValues] = useState<Record<string, string>>({});
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<GenesisError | Error | null>(null);
+  // Unit #35 -- the two ask-first gates a connectivity treatment adds. Neither
+  // is a value this page computes: `targetConfirmed` is the reader saying out
+  // loud that the DERIVED to-link is the road they mean, and the attestation
+  // pair is the reader's own claim. Both start empty on purpose.
+  const [targetConfirmed, setTargetConfirmed] = useState(false);
+  const [attestTarget, setAttestTarget] = useState("");
+  const [attestBasis, setAttestBasis] = useState("");
 
   const missingRequired = disposition.requires.some((field) => !requiredValues[field]?.trim());
+  // A connector's to-link is DERIVED, and a reader confirming it is the point
+  // of the ask: no confirmation, no approve button, even though the payload
+  // has been ready since the page loaded.
+  const needsTargetConfirmation = disposition.verb === "add_connector";
+  const attestation = disposition.attestation;
+  const attestChoice = attestation?.candidates.find((c) => c.link_id === attestTarget) ?? null;
 
-  const submit = useCallback(async () => {
-    if (!disposition.verb || disposition.params === null) return;
-    setApplying(true);
-    setApplyError(null);
-    try {
-      const params: Record<string, unknown> = { ...disposition.params };
-      for (const field of disposition.requires) {
-        const spec = fixRequiredFieldSpec(field, t);
-        const raw = requiredValues[field] ?? "";
-        params[field] = spec.numeric ? Number(raw) : raw;
+  const submit = useCallback(
+    async (attested?: { params: Record<string, unknown>; to_link: string; basis: string }) => {
+      if (!disposition.verb) return;
+      if (!attested && disposition.params === null) return;
+      setApplying(true);
+      setApplyError(null);
+      try {
+        const params: Record<string, unknown> = attested
+          ? { ...attested.params }
+          : { ...(disposition.params as Record<string, unknown>) };
+        if (!attested) {
+          for (const field of disposition.requires) {
+            const spec = fixRequiredFieldSpec(field, t);
+            const raw = requiredValues[field] ?? "";
+            params[field] = spec.numeric ? Number(raw) : raw;
+          }
+        }
+        const job = await applyGenesisFix(jobId, {
+          finding_code: finding.code,
+          // The finding's own identity is (code, subject) -- unit #30. Sending
+          // the subject is what makes the SECOND of two same-coded findings its
+          // own apply target instead of a collision with the first.
+          subject: finding.subject,
+          verb: disposition.verb,
+          params,
+          approval_rationale: approvalRationale.trim() || undefined,
+          // Unit #35: the attester's NAME and the timestamp are deliberately
+          // not sent -- the route stamps both, so this client cannot attest on
+          // somebody else's behalf.
+          attestation: attested ? { to_link: attested.to_link, basis: attested.basis } : undefined,
+        });
+        onApplied(job);
+      } catch (caught) {
+        setApplyError(caught instanceof Error ? caught : new Error(String(caught)));
+      } finally {
+        setApplying(false);
       }
-      const job = await applyGenesisFix(jobId, {
-        finding_code: finding.code,
-        // The finding's own identity is (code, subject) -- unit #30. Sending
-        // the subject is what makes the SECOND of two same-coded findings its
-        // own apply target instead of a collision with the first.
-        subject: finding.subject,
-        verb: disposition.verb,
-        params,
-        approval_rationale: approvalRationale.trim() || undefined,
-      });
-      onApplied(job);
-    } catch (caught) {
-      setApplyError(caught instanceof Error ? caught : new Error(String(caught)));
-    } finally {
-      setApplying(false);
-    }
-  }, [disposition, requiredValues, approvalRationale, jobId, finding.code, finding.subject, onApplied, t]);
+    },
+    [disposition, requiredValues, approvalRationale, jobId, finding.code, finding.subject, onApplied, t],
+  );
 
   const error = applyError
     ? genesisRefusalText(
@@ -343,6 +387,22 @@ function FixFindingRow({
         <span className="font-mono text-[14px] text-slate-500">{finding.subject}</span>
       </div>
 
+      {/* Unit #36's measurement, quoted rather than paraphrased -- the job's
+        * own source .osm declaring the connection this network lost. It rides
+        * above the branch because BOTH answers can carry it: a testified
+        * finding whose target link the model never emitted is still a
+        * refusal, and the testimony is exactly what makes that refusal
+        * legible. */}
+      {disposition.source_testimony && (
+        <p className="mt-2 font-mono text-[14px] leading-relaxed text-slate-600">
+          {t(
+            `소스가 증언합니다 — way ${disposition.source_testimony.connected_way_ids.join(", ")}가 node ${disposition.source_testimony.node_id}를 공유`,
+            `The source testifies — way(s) ${disposition.source_testimony.connected_way_ids.join(", ")} share node ${disposition.source_testimony.node_id}`,
+            `ソースが証言します — way ${disposition.source_testimony.connected_way_ids.join(", ")} がノード ${disposition.source_testimony.node_id} を共有`,
+          )}
+        </p>
+      )}
+
       {!actionable ? (
         <div className="mt-2">
           {/* NOT_AUTOMATABLE (or a structural refusal wearing an AUTOMATABLE
@@ -351,6 +411,96 @@ function FixFindingRow({
           <p className="font-mono text-[15px] leading-relaxed text-slate-700">{rationale}</p>
           {disposition.reason_code && (
             <p className="mt-1 font-mono text-[14px] text-slate-500">{disposition.reason_code}</p>
+          )}
+
+          {/* Unit #35 -- the ask-first QUESTION, and the ONLY thing that can
+            * turn this refusal into a proposal. The refusal above is
+            * unchanged and stays first: what follows is a question, not a
+            * disabled button, and it appears only when the backend measured
+            * link ends a connector could actually reach. */}
+          {attestation && attestation.candidates.length > 0 && (
+            <div className="mt-3 flex flex-col gap-2 rounded-md border border-slate-300 bg-white/[0.06] px-3 py-2.5">
+              <p className="text-[15px] font-semibold text-slate-800">
+                {t("실제 도로가 이어집니까?", "Does the real road continue here?", "実際の道路はここで続いていますか？")}
+              </p>
+              <p className="text-[14px] leading-relaxed text-slate-600">
+                {t(
+                  "원본 데이터는 이 지점에서 이어지는 도로를 선언하지 않습니다. 현장을 아시는 분만 답할 수 있는 질문이며, 확인하시면 확인자와 시각이 이 수정과 함께 기록됩니다.",
+                  "The source data declares no continuation here. Only someone who knows the site can answer, and an attestation is recorded with who made it and when.",
+                  "元データはこの地点での継続を宣言していません。現場をご存じの方だけが答えられる問いであり、確認された場合は確認者と時刻がこの修正とともに記録されます。",
+                )}
+              </p>
+              <label className="flex flex-col gap-1 text-[14px] text-slate-700">
+                <span>{t("이어지는 링크", "The link it continues to", "続く先のリンク")}</span>
+                <select
+                  value={attestTarget}
+                  onChange={(event) => setAttestTarget(event.target.value)}
+                  className="rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[15px] text-slate-900"
+                >
+                  <option value="">{t("선택하십시오", "Choose one", "選択してください")}</option>
+                  {attestation.candidates.map((candidate) => (
+                    <option key={candidate.link_id} value={candidate.link_id}>
+                      {`${candidate.link_id} · ${candidate.name} · ${candidate.distance_m} m · ${candidate.turn}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-[14px] text-slate-700">
+                <span>{t("근거 (필수)", "Basis (required)", "根拠（必須）")}</span>
+                <input
+                  type="text"
+                  value={attestBasis}
+                  onChange={(event) => setAttestBasis(event.target.value)}
+                  maxLength={600}
+                  placeholder={t(
+                    "예: 2026-08-10 현장 답사 — 도로가 실제로 이어집니다",
+                    "e.g. site visit 2026-08-10 — the road really does continue",
+                    "例: 2026-08-10 現地確認 — 道路は実際に続いています",
+                  )}
+                  className="rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[15px] text-slate-900"
+                />
+              </label>
+              <p className="text-[14px] leading-relaxed text-slate-500">
+                {t(
+                  "연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다 — 확인하시는 것은 도로가 이어진다는 사실뿐입니다. 승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다.",
+                  "The connector's shape and lane mapping are constructed by the system from the two existing link ends — what you attest is only that the road continues. Approving runs a real Vissim edit and re-gates the network.",
+                  "コネクタの形状と車線対応は既存の2つのリンク端からシステムが構成します — 確認いただくのは道路が続くという事実のみです。承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します。",
+                )}
+              </p>
+              <div>
+                <button
+                  type="button"
+                  disabled={applying || !attestChoice || !attestBasis.trim()}
+                  onClick={() =>
+                    attestChoice &&
+                    void submit({
+                      params: attestChoice.params,
+                      to_link: attestChoice.link_id,
+                      basis: attestBasis.trim(),
+                    })
+                  }
+                  className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px] disabled:cursor-not-allowed"
+                >
+                  {applying
+                    ? t("적용하는 중…", "Applying…", "適用中…")
+                    : t("확인하고 적용 승인", "Attest and approve", "確認して適用を承認")}
+                </button>
+              </div>
+              {error && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[15px] text-rose-800">
+                  <p className="font-semibold">{error.headline}</p>
+                  {error.reasons.length > 0 && (
+                    <ul className="mt-1 space-y-1">
+                      {error.reasons.map((reason, index) => (
+                        <li key={index} className="font-mono text-[14px] leading-relaxed">
+                          {reason}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
           )}
         </div>
       ) : (
@@ -419,6 +569,28 @@ function FixFindingRow({
             </div>
           )}
 
+          {/* Unit #35 -- the ask-first confirmation. The to-link was DERIVED
+            * (from the source's own testimony), and the one thing a reader can
+            * check that no derivation can is whether it is the road they mean.
+            * Unticked, there is no approve button to press. */}
+          {needsTargetConfirmation && (
+            <label className="flex items-start gap-2 text-[14px] leading-relaxed text-slate-700">
+              <input
+                type="checkbox"
+                checked={targetConfirmed}
+                onChange={(event) => setTargetConfirmed(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                {t(
+                  `링크 ${String(disposition.params?.to_link ?? "")}로 이어지는 것이 맞는지 지도에서 확인했습니다`,
+                  `I checked on the map that it continues to link ${String(disposition.params?.to_link ?? "")}`,
+                  `リンク ${String(disposition.params?.to_link ?? "")} へ続くことを地図で確認しました`,
+                )}
+              </span>
+            </label>
+          )}
+
           <label className="flex flex-col gap-1 text-[14px] text-slate-600">
             <span>{t("사유 (선택)", "Rationale (optional)", "理由（任意）")}</span>
             <input
@@ -433,7 +605,7 @@ function FixFindingRow({
           <div>
             <button
               type="button"
-              disabled={applying || missingRequired}
+              disabled={applying || missingRequired || (needsTargetConfirmation && !targetConfirmed)}
               onClick={() => void submit()}
               className="ui-button-primary w-fit rounded-md px-3 py-1.5 text-[15px] disabled:cursor-not-allowed"
             >

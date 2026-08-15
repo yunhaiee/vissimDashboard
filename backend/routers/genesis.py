@@ -202,6 +202,33 @@ class AttachLiveCheckRequest(BaseModel):
     label: str | None = Field(default=None, description="Which run inside that state.json.")
 
 
+class GenesisFixAttestationRequest(BaseModel):
+    """Unit #35 — a human's claim that the real road continues, and where to.
+
+    The ONE judgment call the V3 connectivity treatment accepts. Both fields
+    are required and neither has a default: an attestation without a target is
+    not an attestation, and an attestation without a basis is a click. Who
+    attested it and when are deliberately NOT fields here — the same
+    discipline ``approved_by`` follows on the parent model, for the same
+    reason: the cheapest way to make "a caller names somebody else as the
+    attester" impossible is to give the client nowhere to put a name.
+    ``services.genesis_jobs.create_genesis_fix_job`` stamps both from the
+    signed-in session and the server's own clock.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    to_link: str = Field(
+        min_length=1,
+        description="The draft link id the attester says the real road continues to.",
+    )
+    basis: str = Field(
+        min_length=1,
+        max_length=600,
+        description="Why the attester knows it continues -- their own words, recorded verbatim.",
+    )
+
+
 class ApplyGenesisFixRequest(BaseModel):
     """One approved gate-finding fix -> a sibling fix job.
 
@@ -242,6 +269,15 @@ class ApplyGenesisFixRequest(BaseModel):
     )
     approval_rationale: str | None = Field(
         default=None, description="Why the approver is confident in this fix, for the audit trail."
+    )
+    attestation: GenesisFixAttestationRequest | None = Field(
+        default=None,
+        description=(
+            "Unit #35: for a V3 silent-departure finding whose SOURCE shares the gap, the "
+            "approver's own attestation that the real road continues. Absent (the default) "
+            "the registry's re-derivation reaches no proposal for such a finding and the "
+            "apply is refused -- no attestation, no proposal."
+        ),
     )
 
 
@@ -904,6 +940,9 @@ def apply_genesis_fix(
             params=dict(payload.params),
             approved_by=str(user.get("username") or user.get("id") or "unknown"),
             approval_rationale=payload.approval_rationale,
+            attestation=(
+                payload.attestation.model_dump() if payload.attestation is not None else None
+            ),
         )
     except genesis_jobs.GenesisJobNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1204,10 +1243,16 @@ def _render_fix_disposition(
       derivation) tell the true story instead of reading as "just needs a
       volume".
 
-    One optional enrichment inside the third shape (unit #36), never a fourth
-    shape: a V3 refusal whose evidence carries ``source_testimony`` -- the
-    job's own source ``.osm`` declares the connection the network lost --
-    surfaces that dict on the disposition verbatim, key-ABSENT otherwise.
+    Two optional enrichments inside the third shape, never a fourth shape:
+    a V3 refusal whose evidence carries ``source_testimony`` (unit #36 -- the
+    job's own source ``.osm`` declares the connection the network lost) and
+    one whose evidence carries ``attestation_invitation`` (unit #35 -- the
+    source shares the gap, but this model holds link ends a human could attest
+    the road continues to, each with the measured distance). Both surface
+    verbatim, key-ABSENT otherwise, and neither changes the tier: a testified
+    V3 silent-departure finding reaches the FIRST shape on its own (a real
+    PROPOSAL naming ``add_connector``), and a world-gap one stays a refusal
+    until somebody attests through ``POST .../fixes/apply``.
     """
     mapping = genesis_fixes.get_genesis_fix(finding["code"])
     disposition: dict[str, Any] = {
@@ -1241,6 +1286,16 @@ def _render_fix_disposition(
     testimony = (proposal.evidence or {}).get("source_testimony")
     if isinstance(testimony, dict):
         disposition["source_testimony"] = testimony
+    # Unit #35: when the refusal is a world gap the model COULD still answer --
+    # the source shares the gap, but this network holds link ends a connector
+    # could reach -- carry the ask-first question's own data: which link ends
+    # a human may attest the road continues to, each with the MEASURED metres
+    # between the two ends. Key-ABSENT everywhere else (presence is the fact),
+    # and never a tier change: the entry stays a refusal until somebody
+    # attests, and an attestation is a POST, not a rendering.
+    invitation = (proposal.evidence or {}).get("attestation_invitation")
+    if isinstance(invitation, dict):
+        disposition["attestation"] = invitation
     return {
         "check_id": check_id,
         "origin": "warning" if origin == "warnings" else "finding",

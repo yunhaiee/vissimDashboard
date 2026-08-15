@@ -3290,6 +3290,44 @@ export async function fetchGenesisArtifact(
  * client-side. `rationale` is ALREADY trilingual (`FixProposal.rationale()`),
  * so unlike the gate report this needs no `language=` query param and no
  * re-fetch when the app language toggles. */
+/** Unit #36: the job's own source `.osm` declares the connection the network
+ * lost, with the exact way/node ids it declares it with. Key-ABSENT on every
+ * disposition that has no such measurement — presence IS the fact, so a
+ * consumer must never read an absent field as "the source stayed silent". */
+export interface GenesisFixSourceTestimony {
+  source_artifact: string;
+  way_id: number;
+  node_id: number;
+  connected_way_ids: number[];
+  coordinates: { lat: number; lon: number } | null;
+}
+
+/** Unit #35: the ask-first QUESTION a V3 world-gap refusal carries. The source
+ * shares the gap, so nothing here proposes anything — these are the link ends
+ * a human who knows the site could attest the road continues to, each with the
+ * MEASURED metres between the two ends. Key-ABSENT unless the model actually
+ * holds a reachable end: an attestation with no possible target is an empty
+ * question, and the backend does not ask it. */
+export interface GenesisFixAttestationInvitation {
+  from_link: string | null;
+  node_id: number | null;
+  candidates: Array<{
+    link_id: string;
+    name: string;
+    way_id: number;
+    lanes: number;
+    starts_at_node_osm_id: number;
+    distance_m: number;
+    turn: string;
+    /** The connector that WOULD be constructed for this candidate — the exact
+     * payload an attesting approval submits. Derived server-side (positions
+     * from the two link ends, lanes from the generator's own pairing rule), so
+     * this client never composes connector params itself; the apply path
+     * re-derives them and refuses anything that differs. */
+    params: Record<string, unknown>;
+  }>;
+}
+
 export interface GenesisFixDisposition {
   status: string;
   verb: string | null;
@@ -3299,6 +3337,8 @@ export interface GenesisFixDisposition {
   assumptions: string[];
   rationale: { ko: string; en: string; ja: string };
   reason_code: string | null;
+  source_testimony?: GenesisFixSourceTestimony;
+  attestation?: GenesisFixAttestationInvitation;
 }
 
 export interface GenesisFixFinding {
@@ -3344,7 +3384,20 @@ export async function fetchGenesisJobFixes(jobId: string): Promise<GenesisJobFix
  * it is structurally unable to send an ambiguous approval. */
 export async function applyGenesisFix(
   jobId: string,
-  body: { finding_code: string; subject: string; verb: string; params: Record<string, unknown>; approval_rationale?: string },
+  body: {
+    finding_code: string;
+    subject: string;
+    verb: string;
+    params: Record<string, unknown>;
+    approval_rationale?: string;
+    /** Unit #35: for a V3 world-gap finding, the operator's own attestation
+     * that the real road continues, and to WHICH link. `attested_by` and
+     * `attested_at` are deliberately absent here — the route stamps both from
+     * the signed-in session and the server clock, so this client is
+     * structurally unable to name a different attester. No attestation, no
+     * proposal: sending this body without one is refused server-side. */
+    attestation?: { to_link: string; basis: string };
+  },
 ): Promise<GenesisJob> {
   const r = await apiMutationFetch(`/api/genesis/jobs/${jobId}/fixes/apply`, {
     method: "POST",

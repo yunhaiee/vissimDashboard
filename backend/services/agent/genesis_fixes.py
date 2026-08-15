@@ -31,18 +31,42 @@ rules are specific to what a genesis gate finding IS:
 * **Connectivity is not invented** (roadmap: "연결성 발명 금지"). Every V3
   code — a link nothing connects to, a zone the network cannot reach or
   leave, a vehicle input that cannot get out, a departure point the census
-  never declared a boundary — names a hole in the road network. No registered
-  verb closes a hole without fabricating the road that would close it, so
-  every V3 code is declared :data:`fixes.NOT_AUTOMATABLE` under
-  :data:`CONNECTIVITY_IS_NOT_INVENTED`, and where the generator's own census
-  already named a cause (``one_way_dead_end_unfixable`` and its siblings —
+  never declared a boundary — names a hole in the road network, and no
+  registered verb closes a hole without fabricating the road that would close
+  it. Six of the seven codes are therefore declared
+  :data:`fixes.NOT_AUTOMATABLE` under :data:`CONNECTIVITY_IS_NOT_INVENTED`,
+  and where the generator's own census already named a cause
+  (``one_way_dead_end_unfixable`` and its siblings —
   ``services.genesis.connectivity``'s own vocabulary), that cause is quoted
   verbatim in the rationale rather than paraphrased. Since unit #36 the
   refusal also STATES, measured from the job's own source ``.osm`` when the
   caller derived it (``genesis_jobs.derive_v3_source_testimony``, threaded
   through ``targets['source_testimony']``), whether the source itself shares
-  the gap or declares the very connection the network lost — a diagnosis for
-  a human or a regeneration to consume, never a re-tier.
+  the gap or declares the very connection the network lost.
+
+  **Unit #35 makes the seventh code treatable WITHOUT weakening that rule,
+  because the rule is about the CONNECTION, not about the connector.**
+  ``v3_silent_departure_point`` — the one V3 code that names a single link
+  END, which is exactly the shape ``add_connector``'s from-side needs — maps
+  to ``add_connector``, and its builder emits a proposal only when the
+  connection FACT has a NAMED SOURCE: either the job's own ``.osm`` testifies
+  it (unit #36's testimony, way and node ids quoted verbatim, confidence
+  :data:`CONFIDENCE_SOURCE_TESTIMONY`) or a human attests it and takes
+  responsibility for it (``targets['human_attestation']`` naming the target
+  link, a basis sentence, and who attested it when — confidence
+  :data:`CONFIDENCE_HUMAN_ATTESTATION`, assumption
+  :data:`ASSUME_ATTESTED_NOT_MEASURED`). With neither, the refusal is exactly
+  the one unit #36 left, down to the quoted cause. What the machine
+  contributes in both branches is MECHANICAL CONSTRUCTION from two link ends
+  that already exist — the params are derived by
+  ``genesis_jobs.derive_v3_connector_plan`` (the to-link from the testified
+  way or the attested id, the positions from the two ends, the lane mapping
+  from the generator's OWN ``connector_lane_pairs`` rule) and never invented
+  here, which is why every proposal carries
+  :data:`ASSUME_CONNECTOR_GEOMETRY_CONSTRUCTED`: the source testified the
+  CONNECTION, not the geometry. The gate is untouched and stays the judge —
+  a treated departure point either clears on the sibling job's re-gate or it
+  does not.
 * **A road ends where the user's requested boundary ends, and that is not a
   defect to fabricate past.** V4's ``v4_lane_drop_without_runway`` is the one
   finding whose correct answer depends on WHY the runway is short: when the
@@ -163,6 +187,47 @@ EMITTER_BUG_NOT_APPROVAL_PATCH = "EMITTER_BUG_NOT_APPROVAL_PATCH"
 #: covers is exactly what roadmap track C1-b's 현시(phase) unit is for; this
 #: catalogue does not reach ahead of that unit's own data.
 SIGNAL_COVERAGE_IS_C1B_TERRITORY = "SIGNAL_COVERAGE_IS_C1B_TERRITORY"
+#: Unit #35. An attestation arrived, but it is not one: no target link, no
+#: basis sentence, or no attributable attester. Deliberately distinct from
+#: :data:`CONNECTIVITY_IS_NOT_INVENTED` (which means "nobody named this
+#: connection at all") — here somebody tried to, and the claim was incomplete.
+#: Completing it with a default would make this system the attester.
+ATTESTATION_INCOMPLETE = "ATTESTATION_INCOMPLETE"
+
+
+# ---------------------------------------------------------------------------
+# Confidence + assumption vocabulary new to THIS catalogue (unit #35). Kept
+# here rather than in ``fixes.py`` for the same reason the reason codes above
+# are: these name evidence a GENESIS gate finding can have and an edit-time
+# constraint finding cannot. Both values are deliberately NOT arithmetic —
+# neither branch computes a number, and ranking either alongside
+# ``CONFIDENCE_ARITHMETIC`` would be exactly the confusion ``fixes.py``'s own
+# CONFIDENCE_DEMAND_ESTIMATE note warns about.
+# ---------------------------------------------------------------------------
+
+#: The connection this fix builds is declared by the job's OWN source ``.osm``
+#: (unit #36's testimony: ways sharing a node, with a drivable departure), and
+#: the way/node ids are quoted verbatim in the rationale. Strong evidence
+#: about the CONNECTION; it says nothing about the connector's geometry, which
+#: is why every such proposal also carries
+#: :data:`ASSUME_CONNECTOR_GEOMETRY_CONSTRUCTED`.
+CONFIDENCE_SOURCE_TESTIMONY = "SOURCE_TESTIFIED_CONNECTION"
+#: The connection this fix builds is a HUMAN's claim — they know the site, the
+#: source does not declare it, and they named the target link and their basis
+#: under their own name. Accountable, and not a measurement: the fix records
+#: who attested it and when, everywhere it surfaces.
+CONFIDENCE_HUMAN_ATTESTATION = "HUMAN_ATTESTED_CONNECTION"
+
+#: What the machine contributed, stated as the caveat it is: the connector's
+#: geometry, position and lane mapping are CONSTRUCTED from the two existing
+#: link ends (the generator's own ``connector_lane_pairs`` rule over its own
+#: ``classify_turn``) — the named source testified that the movement EXISTS,
+#: never what shape it has on the ground.
+ASSUME_CONNECTOR_GEOMETRY_CONSTRUCTED = "CONNECTOR_GEOMETRY_CONSTRUCTED"
+#: The connection rests on a person's declaration, not on a measurement of any
+#: kind — the machine half of the same statement the rationale makes in prose
+#: (and the reason the attester's name and timestamp ride in the evidence).
+ASSUME_ATTESTED_NOT_MEASURED = "ATTESTED_NOT_MEASURED"
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +476,14 @@ def _finding_field(finding: Any, name: str, default: Any = None) -> Any:
     if isinstance(finding, Mapping):
         return finding.get(name, default)
     return default
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    """``value`` when it is a mapping, an empty one otherwise — so a builder
+    reading a caller-supplied derivation record never has to guard each
+    ``.get`` individually, and a malformed one degrades to "no record" rather
+    than to an exception inside a rationale."""
+    return value if isinstance(value, Mapping) else {}
 
 
 def _link_id_from_subject(subject: Any) -> str:
@@ -705,6 +778,382 @@ def _build_v3_connectivity_no_fix(
         finding,
         suffixes=_v3_testimony_clause(testimony, provenance),
         extra_evidence=extra,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Builder (V3, unit #35): the ONE V3 code that can become a TREATMENT.
+# ``v3_silent_departure_point`` -> ``add_connector``, but ONLY when the
+# connection FACT has a named source. The doctrine paragraph in this module's
+# own docstring is the contract; this builder is its implementation.
+# ---------------------------------------------------------------------------
+
+#: V3's shared doctrine sentence -- module level (rather than local to
+#: :func:`_register_catalogue`) since unit #35, because the treatable code's
+#: own builder composes its refusal out of the SAME words its six siblings
+#: carry, and two copies of a doctrine sentence is one copy too many.
+_V3_DOCTRINE = (
+    " 연결성은 발명하지 않습니다(로드맵 원칙) — 현재 등록된 편집 동사 중 어느 것도 도로를 "
+    "지어내지 않고 이 구멍을 메우지 못합니다. 승인 루프가 검토할 사람의 몫입니다.",
+    " Connectivity is not invented (roadmap doctrine) -- no registered edit verb closes this "
+    "hole in the road network without fabricating the road that would close it. This is a "
+    "human reviewer's call, via the approval loop.",
+    " 連結性は発明しません(ロードマップの原則) -- 現在登録されている編集動詞のいずれも、"
+    "その穴を塞ぐ道路を作り出さずにこの穴を塞ぐことはできません。承認ループを通じて人が"
+    "判断すべき事項です。",
+)
+
+#: ``v3_silent_departure_point``'s own label, hoisted for the same reason.
+_V3_SILENT_LABEL = (
+    "링크 끝에서 어떤 커넥터도 떠나지 않는데, 그 끝이 모델 경계가 아닙니다.",
+    "A link end that no connector leaves, where that end is not the model boundary.",
+    "リンク端からどのコネクタも出発しないのに、その端がモデル境界ではありません。",
+)
+
+#: Unit #35: the measured reason a connector-plan derivation yielded nothing,
+#: localized. Keys mirror ``genesis_jobs.derive_v3_connector_plan``'s own
+#: ``reason_code`` values (that function's docstring defines each); values are
+#: ``str.format`` templates over the provenance fields, so the measured ids and
+#: distances appear verbatim. ``no_named_source`` is deliberately ABSENT here:
+#: it is the bare refusal unit #36 already writes, and adding a clause for it
+#: would restate what the doctrine sentence already says. An unknown code falls
+#: back to quoting the code itself, the same discipline
+#: :data:`_V7_DERIVATION_REASONS` and :data:`_V3_TESTIMONY_REASONS` established.
+_V3_CONNECTOR_REASONS: dict[str, tuple[str, str, str]] = {
+    "no_draft_census": (
+        " 측정 결과: 이 작업의 census(*.genesis.json)를 읽을 수 없어 연결로를 구성할 두 링크 끝을 "
+        "확인하지 못했습니다.",
+        " Measured: this job's census (*.genesis.json) could not be read, so the two link ends a"
+        " connector would be built from could not be consulted.",
+        " 測定結果: このジョブのcensus(*.genesis.json)を読めず、コネクタを構成する2つのリンク端を"
+        "確認できませんでした。",
+    ),
+    "no_draft_record": (
+        " 측정 결과: 이 발견을 census의 링크 기록으로 되짚을 수 없어 출발단을 특정하지 못했습니다.",
+        " Measured: this finding could not be mapped to a census links[] record, so its departure"
+        " end could not be addressed.",
+        " 測定結果: この検出をcensusのリンク記録まで遡れず、出発端を特定できませんでした。",
+    ),
+    "no_draft_link_departs_the_node": (
+        " 측정 결과: 소스는 연결을 증언하지만, 그 way를 실은 링크 중 노드 {node_id}에서 시작하는 "
+        "것이 이 네트워크의 census에 없습니다 — 이어붙일 링크 끝 자체가 모델에 없으므로 커넥터를 "
+        "만들 수 없습니다(더 넓은 영역으로 재생성하는 것이 답입니다).",
+        " Measured: the source testifies the connection, but this network's census holds no link"
+        " carrying one of those ways that BEGINS at node {node_id} -- there is no link end to"
+        " connect to, so no connector can be built (a regeneration over a larger extract is the"
+        " answer).",
+        " 測定結果: ソースは接続を証言していますが、そのwayを担うリンクのうちノード {node_id} から"
+        "始まるものがこのネットワークのcensusにありません — 接続先のリンク端自体がモデルに存在せず、"
+        "コネクタを作成できません(より広い範囲での再生成が答えです)。",
+    ),
+    "span_exceeds_node_scale": (
+        " 측정 결과: 두 링크 끝 사이가 {span_m} m로, 이 생성기 자신의 노드 규모({max_span_m} m)를 "
+        "넘습니다 — 그 간격을 잇는 것은 교차로 이동류가 아니라 도로를 지어내는 일입니다.",
+        " Measured: the two link ends are {span_m} m apart, past this generator's own node scale"
+        " ({max_span_m} m) -- bridging that gap would be fabricating road, not building a"
+        " junction movement.",
+        " 測定結果: 2つのリンク端の間隔は {span_m} m で、この生成器自身のノード規模"
+        "({max_span_m} m)を超えます — その間隔を繋ぐことは交差点の移動ではなく道路を作り出す"
+        "ことになります。",
+    ),
+    "attested_link_not_in_census": (
+        " 확인된 대상 링크 {to_link}가 이 네트워크의 census에 없습니다.",
+        " The attested target link {to_link} is not a link this network's census declares.",
+        " 確認された対象リンク {to_link} はこのネットワークのcensusに存在しません。",
+    ),
+    "attested_link_is_the_finding_link": (
+        " 확인된 대상 링크가 발견 자신의 링크입니다 — 링크를 자기 자신에 이을 수는 없습니다.",
+        " The attested target link IS the finding's own link -- a connector cannot join a link to"
+        " itself.",
+        " 確認された対象リンクは検出自身のリンクです — リンクを自分自身に接続することはできません。",
+    ),
+    "attestation_without_target": (
+        " 운영자 확인에 대상 링크가 지정되지 않았습니다 — 도로가 이어진다면 어디로 이어지는지를 "
+        "지정해야 합니다.",
+        " The attestation names no target link -- attesting that the road continues means naming"
+        " WHERE it continues to.",
+        " 運営者確認に対象リンクが指定されていません — 道路が続くのであれば、どこへ続くのかを"
+        "指定する必要があります。",
+    ),
+    "attestation_without_basis": (
+        " 운영자 확인에 근거 문장이 없습니다 — 근거 없는 확인은 클릭일 뿐 책임지는 주장이 아닙니다.",
+        " The attestation carries no basis sentence -- an attestation without a stated basis is a"
+        " click, not a claim somebody is accountable for.",
+        " 運営者確認に根拠の記述がありません — 根拠のない確認はクリックであって、責任を伴う主張では"
+        "ありません。",
+    ),
+    "attestation_without_attribution": (
+        " 운영자 확인에 확인자 또는 시각이 없습니다 — 귀속되지 않은 확인은 기록할 수 없습니다.",
+        " The attestation carries no attester and/or no timestamp -- an unattributed attestation"
+        " cannot be recorded as one.",
+        " 運営者確認に確認者または時刻がありません — 帰属のない確認は記録できません。",
+    ),
+    "degenerate_link_geometry": (
+        " 측정 결과: 관련 링크의 census 기록이 점 2개 미만이라 이을 끝이 없습니다.",
+        " Measured: the census record for one of the links has fewer than 2 points, so there is"
+        " no end to connect.",
+        " 測定結果: 関連リンクのcensus記録が2点未満のため、接続する端がありません。",
+    ),
+    "lane_mapping_not_expressible": (
+        " 측정 결과: 이 생성기 자신의 차로 대응 규칙이 이 이동류에 대해 차로 쌍을 산출하지 "
+        "못했습니다.",
+        " Measured: this generator's own lane-pairing rule produced no lane pair for this"
+        " movement.",
+        " 測定結果: この生成器自身の車線対応規則がこの移動に対する車線ペアを算出できませんでした。",
+    ),
+}
+
+
+def _v3_connector_clause(provenance: Any) -> tuple[str, str, str]:
+    """The localized measured-reason sentence for a failed connector-plan
+    derivation, or three empty strings when there is nothing to speak for (no
+    derivation record, or the ``no_named_source`` case the doctrine sentence
+    already covers)."""
+    if not isinstance(provenance, Mapping):
+        return "", "", ""
+    reason_code = provenance.get("reason_code")
+    if not reason_code or reason_code == "no_named_source":
+        return "", "", ""
+    clause = _V3_CONNECTOR_REASONS.get(str(reason_code))
+    if clause is None:
+        fallback = f" (connector derivation: {reason_code})"
+        return fallback, fallback, fallback
+    fields = {
+        "node_id": provenance.get("node_id"),
+        "to_link": provenance.get("to_link"),
+        "span_m": provenance.get("span_m"),
+        "max_span_m": provenance.get("max_span_m"),
+        "link_id": provenance.get("link_id"),
+    }
+    return tuple(text.format(**fields) for text in clause)  # type: ignore[return-value]
+
+
+def _v3_attestation_invitation(candidates: Any) -> tuple[str, str, str]:
+    """The ask-first QUESTION a world-gap refusal carries when the model does
+    hold link ends a connector could reach: the road may really continue, and
+    the only thing that can say so is a human who knows the site. Three empty
+    strings when there is nothing to attest TO — inviting an attestation with
+    no possible target would be an empty question."""
+    if not isinstance(candidates, list) or not candidates:
+        return "", "", ""
+    return (
+        f" 실제 도로가 여기서 이어집니까? 이어진다면 운영자가 대상 링크를 지정하고 근거를 적어 "
+        f"확인해 주십시오(도달 가능한 링크 끝 {len(candidates)}개). 확인 없이는 제안하지 않습니다 "
+        "— 확인된 연결은 확인자와 시각이 함께 기록됩니다.",
+        f" Does the real road continue here? If it does, an operator can attest it by naming the "
+        f"target link and stating the basis ({len(candidates)} reachable link end(s) in this "
+        "model). No attestation, no proposal -- and an attested connection is recorded with who "
+        "attested it and when.",
+        f" 実際の道路はここで続いていますか? 続いているのであれば、運営者が対象リンクを指定し根拠を"
+        f"記して確認してください(到達可能なリンク端 {len(candidates)} 件)。確認がなければ提案は"
+        "しません — 確認された接続は確認者と時刻とともに記録されます。",
+    )
+
+
+def _build_v3_silent_departure_connector(
+    *,
+    code: str,
+    finding: Any = None,
+    census: Mapping[str, Any] | None = None,
+    targets: Mapping[str, Any] | None = None,
+    registry: ToolRegistry | None = None,
+) -> fixes.FixProposal:
+    """``v3_silent_departure_point`` -> ``add_connector``, but ONLY on a
+    connection somebody NAMED.
+
+    Two proposal branches, one refusal, and no fourth shape:
+
+    * ``targets['connector_params']`` derived on the SOURCE's testimony
+      (``targets['connector_derivation']['basis'] == 'source_testimony'``) ->
+      a proposal at :data:`CONFIDENCE_SOURCE_TESTIMONY`, its rationale quoting
+      the testified way and node ids verbatim, its evidence carrying the FULL
+      testimony and the full derivation provenance;
+    * derived on a HUMAN's attestation (``basis == 'human_attestation'``) -> a
+      proposal at :data:`CONFIDENCE_HUMAN_ATTESTATION` with
+      :data:`ASSUME_ATTESTED_NOT_MEASURED`, its rationale carrying "운영자
+      확인" with the attester's name, the timestamp and their basis sentence
+      verbatim, so the attribution travels with the reason wherever it is
+      rendered;
+    * anything else -> the refusal, which is the pre-#35 refusal exactly
+      (label + doctrine + the census's own cause quoted verbatim + unit #36's
+      measured testimony clause) plus, when there was a derivation to speak
+      for, its own measured reason, plus the ask-first question when the model
+      holds link ends an attestation could name.
+
+    BOTH proposals carry :data:`ASSUME_CONNECTOR_GEOMETRY_CONSTRUCTED`. The
+    params are never invented here — this builder does not construct a single
+    coordinate, lane index or position; ``genesis_jobs.derive_v3_connector_plan``
+    derives every field from the two link ends the census already declares,
+    and ``genesis_jobs.create_genesis_fix_job`` re-derives them at apply time
+    and refuses a submitted payload that differs.
+    """
+    mapping = _REGISTRY[code]
+    caller_targets = targets or {}
+    testimony = caller_targets.get("source_testimony")
+    testimony_provenance = caller_targets.get("source_testimony_provenance")
+    plan = caller_targets.get("connector_params")
+    # Every derivation record is read through this: a caller may hand any
+    # object in, and a rationale that crashes on a malformed one would take
+    # the whole fixes listing down with it.
+    plan_provenance = _as_mapping(caller_targets.get("connector_derivation"))
+    attestation = caller_targets.get("human_attestation")
+    candidates = caller_targets.get("attestation_candidates")
+
+    context = _finding_field(finding, "context", {}) or {}
+    cause = context.get("cause") if isinstance(context, Mapping) else None
+    evidence: dict[str, Any] = {
+        "code": code,
+        "check_id": mapping.check_id,
+        "finding_subject": _finding_field(finding, "subject"),
+        "finding_context": dict(context) if isinstance(context, Mapping) else context,
+    }
+    if isinstance(testimony, Mapping):
+        evidence["source_testimony"] = dict(testimony)
+    if isinstance(testimony_provenance, Mapping):
+        evidence["source_testimony_provenance"] = dict(testimony_provenance)
+    if plan_provenance:
+        evidence["connector_derivation"] = dict(plan_provenance)
+    if isinstance(attestation, Mapping):
+        evidence["human_attestation"] = dict(attestation)
+
+    basis = plan_provenance.get("basis")
+    # The census's own cause, quoted verbatim -- on the PROPOSAL too, not only
+    # on the refusal. Measured on the real Daejeon jobs (2026-08-15): a
+    # testified proposal can land on a junction whose census cause is
+    # ``junction_where_every_movement_is_a_u_turn``, and an approver deciding
+    # whether to build that movement needs to read the generator's own reason
+    # for declining it, in the same sentence as the proposal.
+    cause_ko = f" 이 사례가 명명한 원인: {cause!r}." if cause else ""
+    cause_en = f" The cause this instance names: {cause!r}." if cause else ""
+    cause_ja = f" この事例が明示する原因: {cause!r}。" if cause else ""
+
+    if isinstance(plan, Mapping) and plan:
+        params = dict(plan)
+        span = plan_provenance.get("span_m")
+        turn = plan_provenance.get("turn")
+        constructed_ko = (
+            f"연결로의 기하·차로 대응은 이 시스템이 기존 두 링크 끝에서 기계적으로 구성했습니다"
+            f"(링크 {params['from_link']} 끝 {params['from_pos_m']} m → 링크 {params['to_link']} "
+            f"시작 0 m, 간격 {span} m, 이동류 {turn}, 차로 {params['from_lanes']}→"
+            f"{params['to_lanes']} — 이 생성기 자신의 차로 대응 규칙). 연결의 사실은 아래 근거가 "
+            "말하고, 형상은 시스템이 구성합니다."
+        )
+        constructed_en = (
+            f"The connector's geometry and lane mapping are CONSTRUCTED mechanically from the two "
+            f"existing link ends (link {params['from_link']} at {params['from_pos_m']} m -> link "
+            f"{params['to_link']} at 0 m, {span} m apart, {turn} movement, lanes "
+            f"{params['from_lanes']}->{params['to_lanes']} by this generator's own lane-pairing "
+            "rule). The named source below states the CONNECTION; the system constructs its shape."
+        )
+        constructed_ja = (
+            f"コネクタの幾何と車線対応は、既存の2つのリンク端からこのシステムが機械的に構成しました"
+            f"(リンク {params['from_link']} の {params['from_pos_m']} m → リンク "
+            f"{params['to_link']} の 0 m、間隔 {span} m、移動 {turn}、車線 {params['from_lanes']}→"
+            f"{params['to_lanes']} — この生成器自身の車線対応規則)。接続という事実は下記の根拠が"
+            "述べ、形状はシステムが構成します。"
+        )
+        constructed_ko += cause_ko
+        constructed_en += cause_en
+        constructed_ja += cause_ja
+
+        if basis == "source_testimony" and isinstance(testimony, Mapping):
+            ways_text = ", ".join(str(w) for w in testimony.get("connected_way_ids") or [])
+            node_id = testimony.get("node_id")
+            way_id = testimony.get("way_id")
+            return _emit(
+                code=code,
+                verb="add_connector",
+                params=params,
+                evidence=evidence,
+                ko=f"소스가 증언합니다 — 이 작업 자신의 원본 OSM에서 way {ways_text}이(가) 노드 "
+                f"{node_id}를 공유하며 그 노드에서 떠날 수 있다고 선언합니다(발견 링크의 way는 "
+                f"{way_id}). 즉 이 끊김은 세계가 아니라 파이프라인의 것이며, 연결의 사실은 "
+                f"소스가 이미 선언한 것입니다 — 이 시스템이 지어낸 것이 아닙니다. "
+                + constructed_ko,
+                en=f"The source testifies -- this job's own source OSM declares that way(s) "
+                f"{ways_text} share node {node_id} and can be departed on there (the finding's "
+                f"own link carries way {way_id}). The gap is the pipeline's, not the world's, and "
+                "the CONNECTION is a fact the source already declared -- nothing here invented "
+                "it. " + constructed_en,
+                ja=f"ソースが証言します — このジョブ自身の元のOSMが way {ways_text} がノード "
+                f"{node_id} を共有し、そのノードから離れられると宣言しています(検出リンクのwayは "
+                f"{way_id})。この断絶は世界ではなくパイプライン側のものであり、接続という事実は"
+                "ソースが既に宣言したものです — このシステムが作り出したものではありません。"
+                + constructed_ja,
+                confidence=CONFIDENCE_SOURCE_TESTIMONY,
+                assumptions=(ASSUME_CONNECTOR_GEOMETRY_CONSTRUCTED,),
+                registry=registry,
+            )
+
+        if basis == "human_attestation" and isinstance(attestation, Mapping):
+            who = attestation.get("attested_by")
+            when = attestation.get("attested_at")
+            basis_text = attestation.get("basis")
+            return _emit(
+                code=code,
+                verb="add_connector",
+                params=params,
+                evidence=evidence,
+                ko=f"운영자 확인 — 원본 OSM은 이 지점에서 이어지는 도로를 선언하지 않지만, "
+                f"{who}이(가) {when}에 실제 도로가 링크 {params['to_link']}로 이어진다고 "
+                f"확인했습니다. 근거(확인자 진술, 원문): \"{basis_text}\". 이 연결은 측정된 "
+                "사실이 아니라 사람이 책임지는 진술이며, 확인자와 시각이 이 수정과 함께 "
+                "기록됩니다. " + constructed_ko,
+                en=f"OPERATOR-ATTESTED -- the source OSM declares no continuation here, but "
+                f"{who} attested at {when} that the real road continues to link "
+                f"{params['to_link']}. Basis (the attester's own words, verbatim): "
+                f"\"{basis_text}\". This connection is a person's accountable claim, not a "
+                "measurement, and who attested it and when are recorded with this fix. "
+                + constructed_en,
+                ja=f"運営者確認 — 元のOSMはこの地点での継続を宣言していませんが、{who} が {when} "
+                f"に実際の道路がリンク {params['to_link']} へ続くと確認しました。根拠(確認者の"
+                f"原文): 「{basis_text}」。この接続は測定された事実ではなく人が責任を負う主張で"
+                "あり、確認者と時刻がこの修正とともに記録されます。" + constructed_ja,
+                confidence=CONFIDENCE_HUMAN_ATTESTATION,
+                assumptions=(
+                    ASSUME_CONNECTOR_GEOMETRY_CONSTRUCTED,
+                    ASSUME_ATTESTED_NOT_MEASURED,
+                ),
+                registry=registry,
+            )
+
+        # A plan with no recognised basis is not a plan this catalogue will
+        # sign: the whole unit rests on the connection having a NAMED source,
+        # so an unnamed one is refused rather than defaulted to either branch.
+        return _refuse(
+            code=code,
+            reason_code=CONNECTIVITY_IS_NOT_INVENTED,
+            evidence=evidence,
+            ko="연결로 파라미터가 유도되었지만 그 연결을 누가/무엇이 증언했는지가 기록되어 있지 "
+            "않습니다 — 근거 없는 연결은 제안하지 않습니다.",
+            en="Connector params were derived, but the derivation records no named source for the "
+            "CONNECTION itself -- a connection nobody named is not proposed.",
+            ja="コネクタのパラメータは導出されましたが、その接続を誰が/何が証言したのかが記録されて"
+            "いません — 根拠のない接続は提案しません。",
+        )
+
+    # ---- the refusal: exactly what unit #36 left, plus what was measured ----
+    incomplete = str(plan_provenance.get("reason_code") or "").startswith("attestation_")
+    testimony_clause = _v3_testimony_clause(testimony, testimony_provenance)
+    connector_clause = _v3_connector_clause(plan_provenance)
+    invitation = ("", "", "") if incomplete else _v3_attestation_invitation(candidates)
+    if isinstance(candidates, list) and candidates and not incomplete:
+        evidence["attestation_invitation"] = {
+            "from_link": plan_provenance.get("link_id"),
+            "node_id": _as_mapping(testimony).get("node_id")
+            or _as_mapping(testimony_provenance).get("node_id"),
+            "candidates": list(candidates),
+        }
+    return _refuse(
+        code=code,
+        reason_code=ATTESTATION_INCOMPLETE if incomplete else CONNECTIVITY_IS_NOT_INVENTED,
+        evidence=evidence,
+        ko=_V3_SILENT_LABEL[0] + _V3_DOCTRINE[0] + cause_ko + testimony_clause[0]
+        + connector_clause[0] + invitation[0],
+        en=_V3_SILENT_LABEL[1] + _V3_DOCTRINE[1] + cause_en + testimony_clause[1]
+        + connector_clause[1] + invitation[1],
+        ja=_V3_SILENT_LABEL[2] + _V3_DOCTRINE[2] + cause_ja + testimony_clause[2]
+        + connector_clause[2] + invitation[2],
     )
 
 
@@ -1311,6 +1760,13 @@ VERB_ADDRESSING_FIELD: dict[str, str] = {
     "set_vehicle_input_volume": "input_no",
     "set_link_geometry": "link_id",
     "add_queue_counter": "link_no",
+    # Unit #35. ``add_connector`` touches TWO links, and the one it must be
+    # checked against is ``from_link``: that is the link the finding
+    # diagnosed (its departure end is the fault). ``to_link`` is not an
+    # addressing key at all -- it is part of the DERIVED payload, guarded by
+    # ``genesis_jobs.create_genesis_fix_job``'s own
+    # ``genesis_fix_connector_not_derived`` check rather than by this table.
+    "add_connector": "from_link",
 }
 
 
@@ -1348,6 +1804,16 @@ def expected_fix_target(code: str, finding: Any) -> str | None:
         context = _finding_field(finding, "context", {}) or {}
         link_id = context.get("link")
         return None if link_id is None else str(link_id)
+    if code == "v3_silent_departure_point":
+        # Unit #35. This finding's SUBJECT is the census's own link NAME
+        # (``gate._check_v3`` writes ``entry['link']``, e.g. "도안동로 [FWD]
+        # w45473814s1"), never an id -- so the addressable id comes from its
+        # ``context['link_id']`` and from nowhere else. ``None`` when the
+        # context does not carry one: the connector derivation then reaches no
+        # plan either, so the fix is refused rather than aimed by guesswork.
+        context = _finding_field(finding, "context", {}) or {}
+        link_id = context.get("link_id") if isinstance(context, Mapping) else None
+        return None if link_id in (None, "") else str(link_id)
     return None
 
 
@@ -1515,16 +1981,10 @@ def _register_catalogue() -> None:
         )
 
     # ==================== V3 -- connectivity ================================
-    _v3_doctrine = (
-        " 연결성은 발명하지 않습니다(로드맵 원칙) — 현재 등록된 편집 동사 중 어느 것도 도로를 "
-        "지어내지 않고 이 구멍을 메우지 못합니다. 승인 루프가 검토할 사람의 몫입니다.",
-        " Connectivity is not invented (roadmap doctrine) -- no registered edit verb closes this "
-        "hole in the road network without fabricating the road that would close it. This is a "
-        "human reviewer's call, via the approval loop.",
-        " 連結性は発明しません(ロードマップの原則) -- 現在登録されている編集動詞のいずれも、"
-        "その穴を塞ぐ道路を作り出さずにこの穴を塞ぐことはできません。承認ループを通じて人が"
-        "判断すべき事項です。",
-    )
+    # Six pure refusals (the doctrine sentence is module-level _V3_DOCTRINE
+    # since unit #35, because the seventh code's builder composes its own
+    # refusal out of the same words), then the ONE treatable code.
+    _v3_doctrine = _V3_DOCTRINE
     for v3_code, v3_specific in (
         (
             "v3_orphan_link",
@@ -1577,14 +2037,6 @@ def _register_catalogue() -> None:
                 "ありません。",
             ),
         ),
-        (
-            "v3_silent_departure_point",
-            (
-                "링크 끝에서 어떤 커넥터도 떠나지 않는데, 그 끝이 모델 경계가 아닙니다.",
-                "A link end that no connector leaves, where that end is not the model boundary.",
-                "リンク端からどのコネクタも出発しないのに、その端がモデル境界ではありません。",
-            ),
-        ),
     ):
         register_genesis_fix(
             GenesisFixMapping(
@@ -1607,6 +2059,47 @@ def _register_catalogue() -> None:
                 builder=_build_v3_connectivity_no_fix,
             )
         )
+    # Unit #35: the ONE V3 code that names a single link END, and therefore
+    # the one a connector can answer -- AUTOMATABLE, but its builder proposes
+    # ONLY on a connection the source testified or a human attested. With
+    # neither, it refuses exactly as its six siblings do. See this module's
+    # docstring for why that leaves CONNECTIVITY_IS_NOT_INVENTED intact.
+    register_genesis_fix(
+        GenesisFixMapping(
+            code="v3_silent_departure_point",
+            status=fixes.AUTOMATABLE,
+            check_id="V3",
+            label_ko=_V3_SILENT_LABEL[0],
+            label_en=_V3_SILENT_LABEL[1],
+            label_ja=_V3_SILENT_LABEL[2],
+            reason_ko=_V3_SILENT_LABEL[0] + " 연결의 사실에 이름 붙은 출처가 있을 때에만 "
+            "add_connector로 치료합니다 — 작업 자신의 원본 OSM이 그 연결을 증언하거나, 현장을 "
+            "아는 사람이 대상 링크와 근거를 밝혀 확인한 경우입니다. 둘 다 없으면 거부가 그대로 "
+            "남습니다. 연결로의 형상은 기존 두 링크 끝에서 기계적으로 구성할 뿐 지어내지 "
+            "않습니다.",
+            reason_en=_V3_SILENT_LABEL[1] + " Treated with add_connector ONLY when the CONNECTION "
+            "has a named source -- the job's own source OSM testifying it, or a human who knows "
+            "the site attesting it with a target link and a basis. With neither, the refusal "
+            "stands. The connector's shape is constructed from the two existing link ends, never "
+            "invented.",
+            reason_ja=_V3_SILENT_LABEL[2] + " 接続という事実に名前のある出典がある場合に限り "
+            "add_connector で治療します — ジョブ自身の元のOSMがその接続を証言している場合か、"
+            "現場を知る人が対象リンクと根拠を示して確認した場合です。どちらもなければ拒否のまま"
+            "です。コネクタの形状は既存の2つのリンク端から機械的に構成するのみで、作り出しません。",
+            verb="add_connector",
+            builder=_build_v3_silent_departure_connector,
+            param_fields=(
+                "from_link",
+                "from_lanes",
+                "from_pos_m",
+                "to_link",
+                "to_lanes",
+                "to_pos_m",
+                "name",
+            ),
+            roadmap_rows=("B5-2", "B5-3"),
+        )
+    )
 
     # ==================== V4 -- lane continuity ==============================
     register_genesis_fix(
@@ -2058,6 +2551,11 @@ def build_genesis_fix_report(
 
 
 __all__ = [
+    "ASSUME_ATTESTED_NOT_MEASURED",
+    "ASSUME_CONNECTOR_GEOMETRY_CONSTRUCTED",
+    "ATTESTATION_INCOMPLETE",
+    "CONFIDENCE_HUMAN_ATTESTATION",
+    "CONFIDENCE_SOURCE_TESTIMONY",
     "CONNECTIVITY_IS_NOT_INVENTED",
     "EMITTER_BUG_NOT_APPROVAL_PATCH",
     "EVIDENCE_CANNOT_BE_EDITED_INTO_EXISTENCE",

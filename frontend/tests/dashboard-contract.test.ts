@@ -5101,6 +5101,99 @@ contractTest("B5-2 stage 4: a disposition's own status is not the actionable tes
   );
 });
 
+contractTest("unit #35: a connection is never invented -- it is testified, or attested by a named human", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const api = read("lib/api.ts");
+  const findingRow = sliceBetween(page, "function FixFindingRow({", "\n/**\n * V1–V9 AS A GRID");
+  pin.match(findingRow, /\S/, "expected to find the FixFindingRow body (markers moved?)");
+
+  // TIER 1 -- the source's own testimony, quoted with the ids it declares.
+  // Read off the payload, never a sentence this file composes about ids it
+  // guessed: the way and node numbers come from `disposition.source_testimony`.
+  pin.match(
+    findingRow,
+    /disposition\.source_testimony\.connected_way_ids\.join\(", "\)[\s\S]{0,200}?disposition\.source_testimony\.node_id/,
+    "expected the testimony quote to print the backend's own way/node ids",
+  );
+  // The derived to-link is exactly what a reader CAN check and a derivation
+  // cannot: no tick, no approve button. The gate is on the payload's own
+  // to_link, so the sentence names the link the fix would actually build to.
+  pin.match(
+    findingRow,
+    /const needsTargetConfirmation = disposition\.verb === "add_connector";/,
+    "expected the connector treatment to demand an explicit target confirmation",
+  );
+  pin.match(
+    findingRow,
+    /checked=\{targetConfirmed\}/,
+    "expected the confirmation to be a real control the reader ticks, not an implied consent",
+  );
+  pin.match(
+    findingRow,
+    /링크 \$\{String\(disposition\.params\?\.to_link \?\? ""\)\}/,
+    "expected the confirmation sentence to name the DERIVED to-link from the payload",
+  );
+
+  // TIER 2 -- the attestation. A basis is required, the target must be chosen
+  // from the backend's own measured candidates, and BOTH gate the button.
+  pin.match(
+    findingRow,
+    /disabled=\{applying \|\| !attestChoice \|\| !attestBasis\.trim\(\)\}/,
+    "expected the attestation button gated on a chosen target AND a non-empty basis",
+  );
+  pin.match(
+    findingRow,
+    /attestation\.candidates\.map\(\(candidate\) => \(/,
+    "expected the target picker to offer the backend's own measured candidates, never a free-text link id",
+  );
+  // The submitted params are the SERVER's derivation for that candidate -- this
+  // client never composes connector geometry, and the apply path re-derives
+  // and refuses anything that differs.
+  pin.match(
+    findingRow,
+    /params: attestChoice\.params,/,
+    "expected the attesting approval to submit the server-derived connector params verbatim",
+  );
+  // Structural, not merely conventional: there is nowhere in the request body
+  // to put somebody else's name, so this client cannot attest on their behalf.
+  pin.match(
+    api,
+    /attestation\?: \{ to_link: string; basis: string \};/,
+    "expected the attestation body to carry ONLY the target and the basis -- the route stamps who and when",
+  );
+  pin.doesNotMatch(
+    findingRow,
+    /attested_by|attested_at/,
+    "expected the client to be structurally unable to name an attester or a timestamp",
+  );
+
+  // Both new confidence levels are NAMED in the reader's own language, and
+  // neither borrows the arithmetic wording -- the whole point of a separate
+  // evidence level.
+  pin.match(
+    page,
+    /case "SOURCE_TESTIFIED_CONNECTION":\s*\n\s*return t\("소스가 증언한 연결"/,
+    "expected the source-testimony confidence to have its own ko/en/ja wording",
+  );
+  pin.match(
+    page,
+    /case "HUMAN_ATTESTED_CONNECTION":\s*\n\s*return t\("운영자가 확인한 연결"/,
+    "expected the human-attestation confidence to have its own ko/en/ja wording",
+  );
+  // ...and the assumption tokens say what the machine contributed, so a
+  // "source testified" badge can never be read as "the source drew this".
+  pin.match(
+    page,
+    /case "CONNECTOR_GEOMETRY_CONSTRUCTED":/,
+    "expected the constructed-geometry caveat to be rendered as a named assumption",
+  );
+  pin.match(
+    page,
+    /case "ATTESTED_NOT_MEASURED":/,
+    "expected the attested-not-measured caveat to be rendered as a named assumption",
+  );
+});
+
 contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
   const page = read("app/genesis/jobs/[id]/page.tsx");
 
@@ -5111,10 +5204,21 @@ contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
   // against the button that legitimately exists two branches over.
   const informationalBranch = sliceBetween(page, "{!actionable ? (", ") : (");
   pin.match(informationalBranch, /\S/, "expected to find the informational (non-actionable) branch (markers moved?)");
+  // Unit #35 put ONE control inside this branch -- the attestation block, which
+  // is a QUESTION that unlocks a proposal, not a button on a refusal. The rule
+  // is unchanged for the refusal itself, so the pin now slices the branch at
+  // the attestation block: everything the reader meets FIRST (the rationale,
+  // the reason code) still has no control of any kind.
+  const refusalOnly = informationalBranch.split("{attestation && attestation.candidates.length > 0 && (")[0];
+  pin.match(
+    `${refusalOnly.length < informationalBranch.length}`,
+    /true/,
+    "expected the attestation block to follow the refusal text, not replace it (marker moved?)",
+  );
   pin.doesNotMatch(
-    informationalBranch,
+    refusalOnly,
     /<button/,
-    "expected NO button in the informational branch -- a refusal is information, not a disabled control",
+    "expected NO button on the refusal itself -- a refusal is information, not a disabled control",
   );
   pin.match(
     informationalBranch,
@@ -5130,8 +5234,8 @@ contractTest("B5-2 stage 4: a refusal is never a button", (pin) => {
   pin.match(actionableBranch, /<button/, "expected the apply button to live in the actionable branch");
   pin.match(
     actionableBranch,
-    /disabled=\{applying \|\| missingRequired\}/,
-    "expected the apply button disabled by both an in-flight submit and any unmet required field",
+    /disabled=\{applying \|\| missingRequired \|\| \(needsTargetConfirmation && !targetConfirmed\)\}/,
+    "expected the apply button disabled by an in-flight submit, any unmet required field, and (unit #35) an unconfirmed connector target",
   );
 });
 
@@ -5220,9 +5324,12 @@ contractTest("B5-2 stage 4: the fixes fetch is cached once per (job, verdict), a
 
   // The apply call goes through the typed helper everywhere -- never a raw
   // fetch either in the binding itself or at its one call site.
+  // (Unit #35 broke the body type across lines when `attestation` joined it;
+  // the pin follows the formatting, and still asserts the one thing that
+  // matters here -- this helper, and no raw fetch, carries the apply.)
   pin.match(
     api,
-    /export async function applyGenesisFix\(\s*\n\s*jobId: string,\s*\n\s*body: \{ finding_code: string; subject: string; verb: string; params: Record<string, unknown>; approval_rationale\?: string \},\s*\n\s*\): Promise<GenesisJob> \{\s*\n\s*const r = await apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/fixes\/apply`/,
+    /export async function applyGenesisFix\(\s*jobId: string,\s*body: \{[\s\S]{0,1400}?\},\s*\): Promise<GenesisJob> \{\s*const r = await apiMutationFetch\(`\/api\/genesis\/jobs\/\$\{jobId\}\/fixes\/apply`/,
     "expected applyGenesisFix to go through apiMutationFetch, the same workspace-header-carrying helper every other genesis mutation uses",
   );
   const findingRow = sliceBetween(page, "function FixFindingRow({", "\n/**\n * V1–V9 AS A GRID");
@@ -5470,9 +5577,12 @@ contractTest("Unit #30: a fix addresses its finding by (code, subject) -- duplic
   // (optional only on the wire, for legacy callers) -- this client is
   // structurally unable to send the ambiguous, code-only approval the backend
   // now refuses by name (genesis_fix_finding_ambiguous_without_subject).
+  // (The body type grew a multi-line shape in unit #35, when the optional
+  // `attestation` field joined it -- the pin follows the formatting; what it
+  // asserts is unchanged: `subject` is REQUIRED, and it sits beside the code.)
   pin.match(
     api,
-    /body: \{ finding_code: string; subject: string; verb: string;/,
+    /body: \{\s*finding_code: string;\s*subject: string;\s*verb: string;/,
     "expected applyGenesisFix's body type to require the finding's subject beside its code",
   );
   pin.match(
