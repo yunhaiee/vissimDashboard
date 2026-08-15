@@ -37,7 +37,12 @@ rules are specific to what a genesis gate finding IS:
   :data:`CONNECTIVITY_IS_NOT_INVENTED`, and where the generator's own census
   already named a cause (``one_way_dead_end_unfixable`` and its siblings —
   ``services.genesis.connectivity``'s own vocabulary), that cause is quoted
-  verbatim in the rationale rather than paraphrased.
+  verbatim in the rationale rather than paraphrased. Since unit #36 the
+  refusal also STATES, measured from the job's own source ``.osm`` when the
+  caller derived it (``genesis_jobs.derive_v3_source_testimony``, threaded
+  through ``targets['source_testimony']``), whether the source itself shares
+  the gap or declares the very connection the network lost — a diagnosis for
+  a human or a regeneration to consume, never a re-tier.
 * **A road ends where the user's requested boundary ends, and that is not a
   defect to fabricate past.** V4's ``v4_lane_drop_without_runway`` is the one
   finding whose correct answer depends on WHY the runway is short: when the
@@ -518,9 +523,17 @@ def _emit(
     )
 
 
-def _no_fix(mapping: GenesisFixMapping, finding: Any) -> fixes.FixProposal:
+def _no_fix(
+    mapping: GenesisFixMapping,
+    finding: Any,
+    *,
+    suffixes: tuple[str, str, str] = ("", "", ""),
+    extra_evidence: Mapping[str, Any] | None = None,
+) -> fixes.FixProposal:
     """The fixed-reason response for a ``NOT_AUTOMATABLE`` entry with no
-    per-call builder.
+    per-call builder — and the shared base a ``NOT_AUTOMATABLE`` builder
+    (V3's) appends its measured clause to via ``suffixes``/``extra_evidence``
+    rather than restating this construction.
 
     Where the finding's own ``context`` names a ``cause`` (V3's census-sourced
     findings all do — ``services.genesis.connectivity``'s own vocabulary, e.g.
@@ -541,6 +554,7 @@ def _no_fix(mapping: GenesisFixMapping, finding: Any) -> fixes.FixProposal:
         "reason_code": mapping.reason_code,
         "finding_subject": _finding_field(finding, "subject"),
         "finding_context": dict(context) if isinstance(context, Mapping) else context,
+        **dict(extra_evidence or {}),
     }
     return fixes.FixProposal(
         key=mapping.code,
@@ -550,11 +564,147 @@ def _no_fix(mapping: GenesisFixMapping, finding: Any) -> fixes.FixProposal:
         verb=None,
         params=None,
         evidence=evidence,
-        rationale_ko=mapping.reason_ko + suffix_ko,
-        rationale_en=mapping.reason_en + suffix_en,
-        rationale_ja=mapping.reason_ja + suffix_ja,
+        rationale_ko=mapping.reason_ko + suffix_ko + suffixes[0],
+        rationale_en=mapping.reason_en + suffix_en + suffixes[1],
+        rationale_ja=mapping.reason_ja + suffix_ja + suffixes[2],
         confidence=fixes.CONFIDENCE_NONE,
         reason_code=mapping.reason_code,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Builder (V3): connectivity -- NEVER a proposal, and never a different tier.
+# Unit #36: the refusal now STATES, measured from the job's own source .osm,
+# whether the source itself shares the gap (the world ends there) or declares
+# the very connection the network lost (the gap is the pipeline's). The
+# evidence is derived by ``genesis_jobs.derive_v3_source_testimony`` and
+# threaded through ``targets['source_testimony']`` /
+# ``targets['source_testimony_provenance']``; this builder only folds it in.
+# ---------------------------------------------------------------------------
+
+
+#: Unit #36: the measured reason a V3 source-testimony derivation yielded no
+#: testimony, localized. Keys mirror
+#: ``genesis_jobs.derive_v3_source_testimony``'s own ``reason_code`` values
+#: (that function's docstring defines each); values are ``str.format``
+#: templates over ``way_id``/``node_id`` so the measured ids appear verbatim.
+#: An unknown code falls back to quoting the code itself so a new reason can
+#: never silently vanish from the rationale -- the same discipline
+#: :data:`_V7_DERIVATION_REASONS` established.
+_V3_TESTIMONY_REASONS: dict[str, tuple[str, str, str]] = {
+    "no_draft_census": (
+        " 측정 결과: 이 작업의 census(*.genesis.json)를 읽을 수 없어 발견 지점을 원본 OSM으로 "
+        "되짚지 못했습니다.",
+        " Measured: this job's census (*.genesis.json) could not be read, so the finding's"
+        " location could not be traced back to the source OSM.",
+        " 測定結果: このジョブのcensus(*.genesis.json)を読めず、検出地点を元のOSMまで遡れません"
+        "でした。",
+    ),
+    "no_draft_record": (
+        " 측정 결과: 이 발견을 원본 OSM의 way로 되짚을 수 없습니다(주소 지정 가능한 링크 id가 "
+        "없거나 census에 해당 링크 기록이 없습니다).",
+        " Measured: this finding could not be mapped back to a source way (no addressable"
+        " link id, or no census record for it).",
+        " 測定結果: この検出を元のOSMのwayまで遡れません(アドレス指定可能なリンクidがないか、"
+        "censusに該当リンクの記録がありません)。",
+    ),
+    "source_artifact_missing": (
+        " 측정 결과: 이 작업의 원본 .osm을 읽을 수 없어 소스 자신의 선언을 확인하지 못했습니다.",
+        " Measured: this job's source .osm is absent or unreadable, so the source's own"
+        " declaration could not be consulted.",
+        " 測定結果: このジョブの元の.osmを読めず、ソース自身の宣言を確認できませんでした。",
+    ),
+    "way_not_in_source": (
+        " 측정 결과: census는 이 링크를 way {way_id}로 지목하지만 원본 OSM에는 그 id의 주행 "
+        "가능한 way가 없습니다.",
+        " Measured: the census names way {way_id} for this link, but the source OSM holds"
+        " no drivable way with that id.",
+        " 測定結果: censusはこのリンクを way {way_id} と示していますが、元のOSMにはそのidの"
+        "走行可能なwayがありません。",
+    ),
+    "node_not_in_source": (
+        " 측정 결과: 노드 {node_id}는 원본 OSM의 어떤 주행 가능한 way에도 실려 있지 않습니다.",
+        " Measured: node {node_id} is on no drivable way in the source OSM.",
+        " 測定結果: ノード {node_id} は元のOSMのどの走行可能なwayにも載っていません。",
+    ),
+    "source_shares_the_gap": (
+        " 원본 OSM 실측 결과: 노드 {node_id}에서 떠날 수 있는 주행 가능한 way가 소스에 없습니다 "
+        "— 소스 자체가 같은 끊김을 담고 있으며, 도로는 소스가 선언한 대로 여기서 끝납니다.",
+        " Measured against the job's own source OSM: no drivable way departs node {node_id}"
+        " there — the source itself shares the gap; the road ends where the source declares"
+        " it ends.",
+        " 元のOSMの測定結果: ノード {node_id} から離れられる走行可能なwayがソースにありません "
+        "— ソース自体が同じ断絶を含んでおり、道路はソースが宣言したとおりここで終わっています。",
+    ),
+}
+
+
+def _v3_testimony_clause(testimony: Any, provenance: Any) -> tuple[str, str, str]:
+    """The localized measured sentence for a V3 source-testimony derivation
+    -- the affirmative testimony when the source declares the connection, the
+    named measured reason when it does not, or three empty strings when no
+    derivation record was supplied at all (a caller with no service layer,
+    e.g. the bare-registry tests)."""
+    if isinstance(testimony, Mapping) and testimony.get("connected_way_ids"):
+        ways_text = ", ".join(str(w) for w in testimony["connected_way_ids"])
+        node_id = testimony.get("node_id")
+        return (
+            f" 원본 OSM 실측 결과: 소스는 이 지점에서 way {ways_text}이(가) 노드 {node_id}를 "
+            "공유하며 그 노드에서 떠날 수 있다고 선언합니다 — 이 끊김은 세계가 아니라 "
+            "파이프라인의 것입니다.",
+            f" Measured against the job's own source OSM: the source declares ways {ways_text} "
+            f"share node {node_id} here and can be departed on — the gap is the pipeline's, "
+            "not the world's.",
+            f" 元のOSMの測定結果: ソースはこの地点で way {ways_text} がノード {node_id} を共有し、"
+            "そのノードから離れられると宣言しています — この断絶は世界ではなくパイプライン側の"
+            "ものです。",
+        )
+    if not isinstance(provenance, Mapping):
+        return "", "", ""
+    reason_code = provenance.get("reason_code")
+    if not reason_code:
+        return "", "", ""
+    clause = _V3_TESTIMONY_REASONS.get(str(reason_code))
+    if clause is None:
+        fallback = f" (source testimony: {reason_code})"
+        return fallback, fallback, fallback
+    fields = {"way_id": provenance.get("way_id"), "node_id": provenance.get("node_id")}
+    return tuple(text.format(**fields) for text in clause)  # type: ignore[return-value]
+
+
+def _build_v3_connectivity_no_fix(
+    *,
+    code: str,
+    finding: Any = None,
+    census: Mapping[str, Any] | None = None,
+    targets: Mapping[str, Any] | None = None,
+    registry: ToolRegistry | None = None,
+) -> fixes.FixProposal:
+    """Every V3 code -> always :data:`fixes.NO_AUTOMATED_FIX` under
+    :data:`CONNECTIVITY_IS_NOT_INVENTED` -- exactly ``_no_fix``'s own answer
+    (cause quoted verbatim and all), plus, when the caller derived it, the
+    SOURCE'S OWN TESTIMONY: ``targets['source_testimony']`` (the source
+    declares the connection -- the gap is the pipeline's) or the derivation's
+    named measured reason (``targets['source_testimony_provenance']`` -- the
+    source shares the gap, or why it could not be asked). The tier NEVER
+    changes with the answer: whether a registered verb may one day close a
+    pipeline-lost gap is a re-tier decision this catalogue does not make from
+    evidence alone.
+    """
+    mapping = _REGISTRY[code]
+    caller_targets = targets or {}
+    testimony = caller_targets.get("source_testimony")
+    provenance = caller_targets.get("source_testimony_provenance")
+    extra: dict[str, Any] = {}
+    if isinstance(testimony, Mapping):
+        extra["source_testimony"] = dict(testimony)
+    if isinstance(provenance, Mapping):
+        extra["source_testimony_provenance"] = dict(provenance)
+    return _no_fix(
+        mapping,
+        finding,
+        suffixes=_v3_testimony_clause(testimony, provenance),
+        extra_evidence=extra,
     )
 
 
@@ -1448,6 +1598,13 @@ def _register_catalogue() -> None:
                 reason_en=v3_specific[1] + _v3_doctrine[1],
                 reason_ja=v3_specific[2] + _v3_doctrine[2],
                 reason_code=CONNECTIVITY_IS_NOT_INVENTED,
+                # Unit #36: a builder on a NOT_AUTOMATABLE entry, the same
+                # licence v4_lane_drop_without_runway holds -- not because the
+                # REASON varies (it is always CONNECTIVITY_IS_NOT_INVENTED),
+                # but because the refusal's rationale now carries the measured
+                # source testimony when the caller derived one. The builder
+                # never emits a PROPOSAL; propose_genesis_fix asserts that.
+                builder=_build_v3_connectivity_no_fix,
             )
         )
 

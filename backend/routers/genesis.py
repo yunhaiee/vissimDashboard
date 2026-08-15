@@ -1203,6 +1203,11 @@ def _render_fix_disposition(
       evidence, via ``genesis_jobs.derive_fix_targets``'s V6 node-evidence
       derivation) tell the true story instead of reading as "just needs a
       volume".
+
+    One optional enrichment inside the third shape (unit #36), never a fourth
+    shape: a V3 refusal whose evidence carries ``source_testimony`` -- the
+    job's own source ``.osm`` declares the connection the network lost --
+    surfaces that dict on the disposition verbatim, key-ABSENT otherwise.
     """
     mapping = genesis_fixes.get_genesis_fix(finding["code"])
     disposition: dict[str, Any] = {
@@ -1227,6 +1232,15 @@ def _render_fix_disposition(
             params, requires = _partial_fix_params(mapping, finding)
             disposition["params"] = params
             disposition["requires"] = requires
+    # Unit #36: when the refusal's own evidence carries the SOURCE's testimony
+    # (a V3 finding whose job's source .osm declares the connection the
+    # network lost -- genesis_jobs.derive_v3_source_testimony), surface it on
+    # the disposition so a reviewer or a regeneration consumes the measured
+    # ids, not just the rationale prose. Key-ABSENT everywhere else (presence
+    # is the fact), and never a tier change -- the entry stays NOT_AUTOMATABLE.
+    testimony = (proposal.evidence or {}).get("source_testimony")
+    if isinstance(testimony, dict):
+        disposition["source_testimony"] = testimony
     return {
         "check_id": check_id,
         "origin": "warning" if origin == "warnings" else "finding",
@@ -1280,7 +1294,11 @@ def get_job_fixes(job_id: str, user: dict[str, Any] = Depends(current_user)):
     correctable polyline finding renders as a full PROPOSAL carrying the
     draft's own points, and an uncorrectable one keeps the
     ``NO_TOOL_WITHOUT_FABRICATION`` refusal with the measured reason folded
-    into its rationale.
+    into its rationale. And V3's source testimony flows the same way since
+    unit #36 (``derive_v3_source_testimony``): every connectivity refusal's
+    rationale states, measured from the job's own source ``.osm``, whether
+    the source shares the gap or declares the connection the pipeline lost --
+    the tier stays NOT_AUTOMATABLE either way.
 
     ``unmapped_finding_codes`` is the registry's own mirror check
     (:func:`genesis_fixes.get_unmapped_finding_codes`) -- every code

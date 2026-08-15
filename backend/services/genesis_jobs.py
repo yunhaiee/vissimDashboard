@@ -2507,6 +2507,298 @@ def derive_v7_corrected_polyline(
     }
 
 
+#: Every V3 finding code ``services.agent.genesis_fixes`` registers under
+#: ``CONNECTIVITY_IS_NOT_INVENTED`` -- the codes
+#: :func:`derive_v3_source_testimony` answers for. Mirrors the registration
+#: block in that module the same way :data:`V7_GEOMETRY_FINDING_CODES` mirrors
+#: its own; the mirror itself is pinned by
+#: ``tests/test_genesis_fix_v3_source.py``.
+V3_CONNECTIVITY_FINDING_CODES = (
+    "v3_orphan_link",
+    "v3_isolated_zone",
+    "v3_unreachable_zone",
+    "v3_trapped_zone",
+    "v3_broken_zone",
+    "v3_input_cannot_reach_an_exit",
+    "v3_silent_departure_point",
+)
+
+#: The one source declaration a V3 testimony may ever come from -- way/node
+#: membership (``<way><nd ref=.../>``) in the job's own stored source
+#: ``.osm``. Recorded verbatim in every derivation's provenance so the
+#: evidence names its own source, mirroring :data:`_V7_DRAFT_SOURCE_FIELD`.
+_V3_SOURCE_FIELD = "way/nd"
+
+
+@lru_cache(maxsize=8)
+def _source_osm_index_cached(path_text: str, mtime_ns: int, size: int) -> dict[str, Any] | None:
+    """The connectivity-relevant index of one source ``.osm`` -- which
+    drivable ways touch which nodes, each way's node order and oneway
+    declaration, and node coordinates -- cached on ``(path, mtime, size)``
+    with the same bounded discipline :func:`_emitted_polylines_cached` uses,
+    and for the same reason: the fixes-listing route re-derives per FINDING,
+    and a real refused Daejeon job's source file (0.9 MB, 534 drivable ways)
+    must be parsed once per version of the file, not once per finding.
+
+    The parse is :func:`services.genesis.osm.parse_osm_file` with DEFAULTS --
+    no ``exclude_service``, no requested-region trim -- because the question
+    this index answers is what the SOURCE ITSELF declares, not what the
+    generation kept of it. ``None`` when the file refuses to parse or holds
+    no drivable ways. Function-local import for the same import-surface
+    reason its V7 sibling states.
+    """
+    from services.genesis.osm import parse_osm_file  # noqa: PLC0415
+
+    extract = parse_osm_file(Path(path_text))
+    if extract.refusals or not extract.ways:
+        return None
+    # A file can declare the same way id twice (seen in a real Overpass
+    # export: way 1232703541 in job b3ef6abb9a85's source); last-wins here,
+    # and connected ids are deduped at measurement time.
+    ways: dict[int, tuple[tuple[int, ...], int]] = {}
+    node_ways: dict[int, set[int]] = {}
+    for way in extract.ways:
+        ways[way.id] = (tuple(way.node_ids), way.oneway)
+        for node_id in set(way.node_ids):
+            node_ways.setdefault(node_id, set()).add(way.id)
+    return {
+        "ways": ways,
+        "node_ways": {node: tuple(sorted(ids)) for node, ids in node_ways.items()},
+        "node_latlon": {node.id: (node.lat, node.lon) for node in extract.nodes.values()},
+        "non_drivable_node_highways": {
+            node: tuple(sorted(kinds))
+            for node, kinds in (extract.non_drivable_node_highways or {}).items()
+        },
+    }
+
+
+def _source_osm_index(job_id: str) -> dict[str, Any] | None:
+    """The cached source index for one job's own stored ``.osm`` -- or
+    ``None`` when the job has no source artifact (a fix job's ``source_osm``
+    is ``None`` by construction) or the file is gone/unreadable. Never
+    raises, for the same derive-LESS reason :func:`_emitted_link_polylines`
+    states."""
+    try:
+        path = artifact_path(job_id, "source_osm")
+        stat = path.stat()
+    except (GenesisJobNotFoundError, OSError):
+        return None
+    return _source_osm_index_cached(str(path), stat.st_mtime_ns, stat.st_size)
+
+
+def _way_departs_node(
+    node_ids: tuple[int, ...], oneway: int, node_id: int, *, travel_forward: bool | None
+) -> bool:
+    """Whether ONE source way's own declaration lets a vehicle travel AWAY
+    from ``node_id`` along it.
+
+    ``travel_forward`` is ``None`` for a way OTHER than the finding's own --
+    either onward direction the oneway declaration permits counts as a
+    departure. For the finding's OWN way it is the link's travel direction
+    (``DraftLink.forward``), and only CONTINUING through the node in that
+    direction counts: turning back up the carriageway just arrived on is a
+    U-turn, not a connection the network lost.
+    """
+    last = len(node_ids) - 1
+    if last < 1:
+        return False
+    positions = [i for i, ref in enumerate(node_ids) if ref == node_id]
+    if not positions:
+        return False
+    forward_possible = oneway >= 0 and any(i < last for i in positions)
+    backward_possible = oneway <= 0 and any(i > 0 for i in positions)
+    if travel_forward is None:
+        return forward_possible or backward_possible
+    return forward_possible if travel_forward else backward_possible
+
+
+def derive_v3_source_testimony(
+    code: str,
+    finding: Mapping[str, Any],
+    *,
+    draft: "DraftNetwork | None",
+    job_id: str | None,
+) -> dict[str, Any]:
+    """Unit #36: does the JOB'S OWN SOURCE ``.osm`` declare the connection a
+    V3 connectivity finding says the network lost?
+
+    A connectivity gap has two very different causes and the registry's
+    ``CONNECTIVITY_IS_NOT_INVENTED`` refusal (correctly) covers both: the
+    WORLD genuinely ends there (the source itself declares no onward way), or
+    the PIPELINE lost a connection the source declares (two ways sharing a
+    node, dropped somewhere between parse and emission). This deriver reads
+    the job's own stored source ``.osm`` at the finding's location and
+    answers which case this finding is -- evidence for the refusal's
+    rationale, NEVER a licence to invent the connector: the disposition tier
+    stays ``NOT_AUTOMATABLE`` regardless of the answer.
+
+    Returns ``{"source_testimony": {...} | None, "provenance": {...}}``,
+    mirroring :func:`derive_v7_corrected_polyline`'s own shape. When the
+    source testifies, ``source_testimony`` is ``{source_artifact, way_id,
+    node_id, connected_way_ids, coordinates}`` -- ``connected_way_ids`` the
+    deduped, sorted ids of every drivable way the source declares a vehicle
+    could depart the node on (including the finding's own way when the source
+    declares it CONTINUES past the node in the direction of travel), and
+    ``coordinates`` the node's own lat/lon from the source. ``provenance``
+    always names the source (``source_artifact`` / ``source_field`` /
+    ``link_id`` / ``way_id`` / ``node_id`` / ``node_source`` / ``job_id``);
+    when there is no testimony it adds ``reason_code`` + ``detail`` -- the
+    measured fact, threaded into the registry's refusal rationale by
+    ``services.agent.genesis_fixes._build_v3_connectivity_no_fix``.
+
+    How a finding maps back to the source: the finding's own ``context
+    ['link_id']`` (V3's census-sourced silent-departure findings carry it) or
+    the leading id of its ``"<id> (<name>)"`` subject names the draft link;
+    the draft's census record for that link carries ``osm_way_id``; the
+    questioned node is the connectivity census's own ``node_osm_id`` for that
+    link (``metadata['connectivity']['dangling_approaches']`` -- the SAME
+    census ``gate._check_v3`` reads) when an entry exists, else the link's
+    own ``to_node_osm_id`` (its departure end). ``provenance['node_source']``
+    records which. The arrival end of a ``v3_orphan_link`` is a known
+    residual: this deriver asks about the departure end only.
+
+    The named "no testimony" reasons, in the order they are measured:
+
+    * ``no_draft_record`` -- the finding names no addressable link id, or the
+      draft census has no ``links[]`` record for it.
+    * ``no_draft_census`` -- the census is absent, unreadable, or invalid.
+    * ``source_artifact_missing`` -- the job's source ``.osm`` is absent,
+      unreadable, unparseable, or holds no drivable ways.
+    * ``way_not_in_source`` -- the census names a way the source does not
+      declare (drivably).
+    * ``node_not_in_source`` -- the questioned node is on no drivable way in
+      the source.
+    * ``source_shares_the_gap`` -- the measured world-gap: no drivable way in
+      the source can be traveled away from the node (the detail counts the
+      ways that touch it and names any non-drivable continuation, e.g. a
+      corridor that carries on only as a footway).
+    """
+    provenance: dict[str, Any] = {
+        "source_artifact": "source_osm",
+        "source_field": _V3_SOURCE_FIELD,
+        "link_id": None,
+        "way_id": None,
+        "node_id": None,
+        "job_id": job_id,
+    }
+
+    def _nothing(reason_code: str, detail: str) -> dict[str, Any]:
+        return {
+            "source_testimony": None,
+            "provenance": {**provenance, "reason_code": reason_code, "detail": detail},
+        }
+
+    context = dict(finding.get("context") or {})
+    link_id_raw = context.get("link_id")
+    if link_id_raw is None:
+        subject_head = str(finding.get("subject") or "").strip().split(" (", 1)[0].strip()
+        link_id_raw = subject_head or None
+    try:
+        link_id = int(str(link_id_raw))
+    except (TypeError, ValueError):
+        return _nothing("no_draft_record", "the finding names no addressable link id")
+    provenance["link_id"] = str(link_id)
+
+    if draft is None:
+        return _nothing(
+            "no_draft_census",
+            "this job's *.genesis.json census is absent, unreadable, or does not validate",
+        )
+    link = draft.link_by_id(link_id)
+    if link is None:
+        return _nothing(
+            "no_draft_record",
+            f"the draft census declares no links[] record for id {link_id}",
+        )
+    way_id = int(link.osm_way_id)
+    provenance["way_id"] = way_id
+
+    node_id: int | None = None
+    node_source = "draft_link_departure_end"
+    connectivity = (draft.metadata or {}).get("connectivity")
+    if isinstance(connectivity, Mapping):
+        for entry in connectivity.get("dangling_approaches") or []:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                entry_link = int(str(entry.get("link_id")))
+            except (TypeError, ValueError):
+                continue
+            if entry_link == link_id and entry.get("node_osm_id") is not None:
+                try:
+                    node_id = int(str(entry.get("node_osm_id")))
+                    node_source = "connectivity_census"
+                except (TypeError, ValueError):
+                    node_id = None
+                break
+    if node_id is None:
+        node_id = int(link.to_node_osm_id)
+        node_source = "draft_link_departure_end"
+    provenance["node_id"] = node_id
+    provenance["node_source"] = node_source
+
+    index = _source_osm_index(job_id) if job_id else None
+    if index is None:
+        return _nothing(
+            "source_artifact_missing",
+            "this job's source .osm is absent, unreadable, unparseable, or holds no "
+            "drivable ways -- the source's own declaration could not be consulted",
+        )
+    if way_id not in index["ways"]:
+        return _nothing(
+            "way_not_in_source",
+            f"the census names way {way_id} for link {link_id}, but the source holds no "
+            "drivable way with that id",
+        )
+    touching = index["node_ways"].get(node_id, ())
+    if not touching:
+        return _nothing(
+            "node_not_in_source",
+            f"node {node_id} is on no drivable way in the source",
+        )
+
+    departing: set[int] = set()
+    for candidate_id in touching:
+        node_refs, oneway = index["ways"][candidate_id]
+        travel = bool(link.forward) if candidate_id == way_id else None
+        if _way_departs_node(node_refs, oneway, node_id, travel_forward=travel):
+            departing.add(candidate_id)
+
+    if not departing:
+        others = len([w for w in touching if w != way_id])
+        if others:
+            detail = (
+                f"{others} other drivable way(s) touch node {node_id} in the source, but "
+                "none can be traveled away from it (every oneway declaration points into "
+                "the node)"
+            )
+        else:
+            detail = (
+                f"the source's way {way_id} ends at node {node_id} and no other drivable "
+                "way touches that node"
+            )
+        non_drivable = index["non_drivable_node_highways"].get(node_id, ())
+        if non_drivable:
+            detail += f"; the corridor continues only as {', '.join(non_drivable)}"
+        return _nothing("source_shares_the_gap", detail)
+
+    connected = sorted(departing)
+    lat_lon = index["node_latlon"].get(node_id)
+    testimony: dict[str, Any] = {
+        "source_artifact": "source_osm",
+        "way_id": way_id,
+        "node_id": node_id,
+        "connected_way_ids": connected,
+        "coordinates": (
+            {"lat": lat_lon[0], "lon": lat_lon[1]} if lat_lon is not None else None
+        ),
+    }
+    return {
+        "source_testimony": testimony,
+        "provenance": {**provenance, "connected_way_ids": connected},
+    }
+
+
 def derive_fix_targets(
     code: str,
     finding: Mapping[str, Any],
@@ -2547,6 +2839,14 @@ def derive_fix_targets(
       and :func:`create_genesis_fix_job` additionally refuses submitted
       points that differ from this derivation
       (``genesis_fix_points_not_census_derived``).
+    * **V3** (``source_testimony`` + ``source_testimony_provenance``) — unit
+      #36: derived by :func:`derive_v3_source_testimony` from the job's own
+      stored source ``.osm``. EVIDENCE ONLY, never a proposal ingredient: the
+      registry's V3 entries stay ``NOT_AUTOMATABLE`` under
+      ``CONNECTIVITY_IS_NOT_INVENTED`` whichever way the testimony falls --
+      the derivation only lets the refusal's rationale state, measured,
+      whether the source itself shares the gap or declares the connection the
+      pipeline lost.
     """
     from services.agent.fixes import node_evidence_from_real_counts  # noqa: PLC0415
     from services.agent.genesis_fixes import expected_fix_target  # noqa: PLC0415
@@ -2579,6 +2879,12 @@ def derive_fix_targets(
         if derivation["corrected_points_xy"] is not None:
             targets["corrected_points_xy"] = derivation["corrected_points_xy"]
         targets["corrected_points_provenance"] = derivation["provenance"]
+
+    if code in V3_CONNECTIVITY_FINDING_CODES:
+        testimony = derive_v3_source_testimony(code, finding, draft=draft, job_id=job_id)
+        if testimony["source_testimony"] is not None:
+            targets["source_testimony"] = testimony["source_testimony"]
+        targets["source_testimony_provenance"] = testimony["provenance"]
 
     return targets
 
@@ -4013,8 +4319,10 @@ __all__ = [
     "create_genesis_fix_job",
     "create_genesis_job",
     "create_live_check_job",
+    "V3_CONNECTIVITY_FINDING_CODES",
     "V7_GEOMETRY_FINDING_CODES",
     "derive_fix_targets",
+    "derive_v3_source_testimony",
     "derive_v6_node_evidence",
     "derive_v7_corrected_polyline",
     "discard_staged_osm",
