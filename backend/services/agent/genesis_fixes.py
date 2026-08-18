@@ -78,7 +78,13 @@ rules are specific to what a genesis gate finding IS:
   simply no registered verb that lengthens a link's runway without inventing
   new road (``set_link_geometry`` REPOSITIONS a link's existing points, it
   cannot add the point count a genuinely longer runway would need) —
-  :data:`NO_TOOL_WITHOUT_FABRICATION`.
+  :data:`NO_TOOL_WITHOUT_FABRICATION`. Since unit #39 that WHY is MEASURED
+  when the caller derived it (``genesis_jobs.derive_v4_boundary_attribution``,
+  threaded through ``targets['boundary_attribution']``): the judge's own
+  runway walk re-traced to its upstream terminus, the terminus classified by
+  the census's own boundary markers, and the source asked what road it
+  declares beyond — the refusal then states the measured attribution instead
+  of "no evidence", under the same reason codes and the same tier.
 
 Registry shape — DECLARED status, DERIVED liveness
 ---------------------------------------------------
@@ -1346,8 +1352,210 @@ def _build_v4_more_mapped_lanes(
 # ---------------------------------------------------------------------------
 # Builder (V4b): a lane drop with no runway -- NEVER a real proposal. Which
 # NO_AUTOMATED_FIX reason applies depends on evidence, so this is a builder
-# on a NOT_AUTOMATABLE entry rather than a fixed reason.
+# on a NOT_AUTOMATABLE entry rather than a fixed reason. Unit #39: when the
+# caller derived a boundary attribution
+# (``genesis_jobs.derive_v4_boundary_attribution``, threaded through
+# ``targets['boundary_attribution']`` / ``targets['boundary_attribution_provenance']``),
+# the refusal's rationale STATES the measured answer -- the corridor ends at
+# the requested model boundary (and what the source declares beyond it), or
+# it ends in the model's interior -- instead of "there is no evidence".
 # ---------------------------------------------------------------------------
+
+
+#: Unit #39: the measured reason a V4 boundary-attribution derivation yielded
+#: no attribution, localized. Keys mirror
+#: ``genesis_jobs.derive_v4_boundary_attribution``'s own ``reason_code``
+#: values (that function's docstring defines each); values are ``str.format``
+#: templates over the provenance fields so the measured numbers appear
+#: verbatim. An unknown code falls back to quoting the code itself, the same
+#: discipline :data:`_V7_DERIVATION_REASONS` / :data:`_V3_TESTIMONY_REASONS`
+#: established.
+_V4_ATTRIBUTION_REASONS: dict[str, tuple[str, str, str]] = {
+    "judge_measurement_missing": (
+        " 측정 결과: 발견 자체에 사용할 수 있는 required_m/available_m 쌍이 없어 부족분을 "
+        "귀속시킬 기준이 없습니다.",
+        " Measured: the finding itself carries no usable required_m/available_m pair, so"
+        " there is no deficit to attribute.",
+        " 測定結果: 検出自体に使用可能な required_m/available_m の組がなく、不足分を帰属させる"
+        "基準がありません。",
+    ),
+    "no_draft_census": (
+        " 측정 결과: 이 작업의 census(*.genesis.json)를 읽을 수 없어 여유 회랑을 되짚지 "
+        "못했습니다.",
+        " Measured: this job's census (*.genesis.json) could not be read, so the runway"
+        " corridor could not be re-traced.",
+        " 測定結果: このジョブのcensus(*.genesis.json)を読めず、余裕回廊を遡れませんでした。",
+    ),
+    "no_draft_record": (
+        " 측정 결과: 이 발견을 census의 링크 기록으로 되짚을 수 없어 회랑의 끝을 특정하지 "
+        "못했습니다.",
+        " Measured: this finding could not be mapped to a census links[] record, so the"
+        " corridor's end could not be located.",
+        " 測定結果: この検出をcensusのリンク記録まで遡れず、回廊の端を特定できませんでした。",
+    ),
+    "trace_budget_exhausted": (
+        " 측정 결과: 상류 재추적이 판정기의 탐색 예산을 소진해 회랑의 끝을 확정하지 못했습니다.",
+        " Measured: the upstream re-trace exhausted the judge's own search budget before the"
+        " corridor's end could be established.",
+        " 測定結果: 上流の再トレースが判定器の探索予算を使い切り、回廊の端を確定できませんでした。",
+    ),
+    "trace_disagrees_with_judge": (
+        " 측정 결과: census 재추적은 상류 여유를 {traced_available_m} m로 측정했지만 판정 기록은 "
+        "{available_m} m입니다 — 두 측정이 어긋나므로 어느 쪽도 신뢰하지 않고 귀속을 도출하지 "
+        "않습니다.",
+        " Measured: the census re-trace found {traced_available_m} m of upstream runway where"
+        " the judge's verdict recorded {available_m} m -- the two measurements disagree, so"
+        " neither is trusted and no attribution is derived.",
+        " 測定結果: censusの再トレースは上流余裕を {traced_available_m} m と測定しましたが、判定"
+        "記録は {available_m} m です — 2つの測定が食い違うため、どちらも信頼せず帰属を導出しません。",
+    ),
+    "trim_way_mismatch": (
+        " 측정 결과: 회랑 끝 노드의 절단 기록이 회랑의 way와 다른 way를 지목합니다 — census 증거가 "
+        "서로 어긋나므로 판단하지 않고 보고만 합니다.",
+        " Measured: the trim record at the corridor's end names a different way than the"
+        " corridor carries -- conflicting census evidence is reported, not adjudicated.",
+        " 測定結果: 回廊端ノードの切断記録が回廊のwayとは別のwayを指しています — census証拠が"
+        "食い違うため、判断せず報告のみ行います。",
+    ),
+    "way_not_in_source": (
+        " 측정 결과: census는 회랑 끝을 way {way_id}로 지목하지만 원본 OSM에는 그 id의 주행 "
+        "가능한 way가 없습니다.",
+        " Measured: the census names way {way_id} at the corridor's end, but the source OSM"
+        " holds no drivable way with that id.",
+        " 測定結果: censusは回廊端を way {way_id} と示していますが、元のOSMにはそのidの走行可能な"
+        "wayがありません。",
+    ),
+    "source_artifact_missing": (
+        " 측정 결과: 회랑은 모델 경계 노드에서 끝나지만, 원본 .osm을 읽을 수 없고 census에 절단 "
+        "측정 기록도 없어 경계 너머의 도로를 진술할 수 없습니다.",
+        " Measured: the corridor ends at a model-boundary node, but the job's source .osm is"
+        " absent or unreadable and the census records no trim measurement there, so nothing"
+        " can be stated about the road beyond.",
+        " 測定結果: 回廊はモデル境界ノードで終わりますが、元の.osmを読めず、censusに切断測定の"
+        "記録もないため、境界の先の道路について述べることができません。",
+    ),
+}
+
+
+def _v4_attribution_reason_clause(provenance: Any, judge_available_m: Any) -> tuple[str, str, str]:
+    """The localized measured sentence for a V4 attribution derivation that
+    yielded NO attribution -- or three empty strings when no derivation
+    record was supplied at all (a caller with no service layer, e.g. the
+    bare-registry tests, keeps the exact pre-#39 answer)."""
+    if not isinstance(provenance, Mapping):
+        return "", "", ""
+    reason_code = provenance.get("reason_code")
+    if not reason_code:
+        return "", "", ""
+    clause = _V4_ATTRIBUTION_REASONS.get(str(reason_code))
+    if clause is None:
+        fallback = f" (boundary attribution: {reason_code})"
+        return fallback, fallback, fallback
+    fields = {
+        "way_id": provenance.get("way_id"),
+        "traced_available_m": provenance.get("traced_available_m"),
+        "available_m": judge_available_m,
+    }
+    return tuple(text.format(**fields) for text in clause)  # type: ignore[return-value]
+
+
+def _v4_boundary_clause(attribution: Mapping[str, Any]) -> tuple[str, str, str]:
+    """The localized measured sentence for a BOUNDARY-ATTRIBUTED runway
+    shortage -- which of its three shapes depends on what the source could
+    testify about the road beyond the boundary node: it continues with at
+    least the deficit, the extract itself is cut at the same lasso and
+    cannot testify past its own edge, or the source declares less road than
+    the deficit needs (the boundary explains only part of the shortage)."""
+    continuation = attribution.get("continuation_evidence")
+    continuation = continuation if isinstance(continuation, Mapping) else {}
+    deficit = attribution.get("deficit_m")
+    node = attribution.get("boundary_node")
+    way = attribution.get("way_id")
+    length = continuation.get("source_length_available_m")
+    if continuation.get("meets_deficit"):
+        return (
+            f" 측정됨: 부족분 {deficit} m의 여유 회랑은 이 생성기가 요청된 모델 경계 위에 만든 "
+            f"노드 {node}에서 끝나며, 원본 OSM은 way {way}의 도로가 그 너머로 {length} m 이상 "
+            "계속됨을 증언합니다 — 부족은 도로가 아니라 모델 경계의 것입니다.",
+            f" Measured: the {deficit} m-deficit runway corridor ends at node {node}, a node"
+            f" this generator itself placed ON the requested model boundary, and the source OSM"
+            f" testifies that way {way}'s road continues at least {length} m beyond it -- the"
+            " shortage belongs to the model boundary, not to the road.",
+            f" 測定結果: 不足分 {deficit} m の余裕回廊は、この生成器が要求されたモデル境界上に"
+            f"作ったノード {node} で終わり、元のOSMは way {way} の道路がその先へ {length} m 以上"
+            "続くことを証言しています — 不足は道路ではなくモデル境界のものです。",
+        )
+    if continuation.get("continuation_beyond_extract"):
+        return (
+            f" 측정됨: 부족분 {deficit} m의 여유 회랑은 요청된 모델 경계의 노드 {node}에서 끝나고, "
+            f"원본은 way {way}의 도로를 경계 너머로 {length} m까지 선언한 뒤 추출 자체가 같은 "
+            "경계에서 잘려 그 너머를 증언할 수 없습니다 — 여기서 끝나는 것은 도로가 아니라 "
+            "모델(추출)의 가장자리입니다.",
+            f" Measured: the {deficit} m-deficit runway corridor ends at node {node} on the"
+            f" requested model boundary; the source declares way {way}'s road for {length} m"
+            " beyond it and then the extract itself is cut at that same boundary -- an extract"
+            " cut at the lasso cannot testify past its own edge, so what ends here is the"
+            " MODEL's edge, not the road.",
+            f" 測定結果: 不足分 {deficit} m の余裕回廊は要求されたモデル境界のノード {node} で"
+            f"終わり、ソースは way {way} の道路を境界の先 {length} m まで宣言した後、抽出自体が"
+            "同じ境界で切られておりその先を証言できません — ここで終わっているのは道路ではなく"
+            "モデル(抽出)の縁です。",
+        )
+    return (
+        f" 측정됨: 여유 회랑은 요청된 모델 경계의 노드 {node}에서 끝나지만, 원본이 경계 너머로 "
+        f"선언하는 도로는 {length} m뿐입니다(부족분 {deficit} m 미달) — 경계가 부족의 일부만 "
+        "설명합니다.",
+        f" Measured: the runway corridor ends at node {node} on the requested model boundary,"
+        f" but the source declares only {length} m of road beyond it (short of the {deficit} m"
+        " deficit) -- the boundary explains only part of the shortage.",
+        f" 測定結果: 余裕回廊は要求されたモデル境界のノード {node} で終わりますが、ソースが境界の"
+        f"先に宣言する道路は {length} m のみです(不足分 {deficit} m に満たない) — 境界は不足の"
+        "一部しか説明しません。",
+    )
+
+
+def _v4_interior_clause(attribution: Mapping[str, Any]) -> tuple[str, str, str]:
+    """The localized measured sentence for an INTERIOR runway shortage --
+    the honest opposite of :func:`_v4_boundary_clause`, keyed on whether the
+    source could confirm the dead end, declares upstream ways the draft
+    lost, or could not be asked."""
+    node = attribution.get("terminus_node")
+    confirms = attribution.get("source_confirms")
+    if confirms is True:
+        return (
+            f" 측정됨: 여유 회랑은 모델 경계가 아니라 내부(노드 {node})에서 끝나며, 원본 OSM도 그 "
+            "지점에 도착하는 주행 가능한 way가 없음을 확인합니다 — 부족은 모델 경계의 것이 아니라 "
+            "도로 자체의 것입니다.",
+            f" Measured: the runway corridor ends in the model's INTERIOR (node {node}), not at"
+            " the requested boundary, and the source OSM confirms no drivable way arrives there"
+            " either -- the deficit is the road's, not the model boundary's.",
+            f" 測定結果: 余裕回廊はモデル境界ではなく内部(ノード {node})で終わり、元のOSMもその"
+            "地点に到着する走行可能なwayがないことを確認しています — 不足はモデル境界のものでは"
+            "なく、道路自体のものです。",
+        )
+    if confirms is False:
+        ways_text = ", ".join(str(w) for w in attribution.get("source_upstream_way_ids") or [])
+        return (
+            f" 측정됨: 여유 회랑은 모델 경계가 아니라 내부(노드 {node})에서 끝납니다. 원본은 way "
+            f"{ways_text}이(가) 그 지점에 도달함을 선언하므로 초안이 잃어버린 상류 연속이 있을 수 "
+            "있지만, 어느 쪽이든 부족은 요청된 경계의 것이 아닙니다.",
+            f" Measured: the runway corridor ends in the model's INTERIOR (node {node}), not at"
+            f" the requested boundary. The source declares way(s) {ways_text} arriving there, so"
+            " the draft may have lost an upstream continuation -- either way, the shortage is"
+            " not the requested boundary's.",
+            f" 測定結果: 余裕回廊はモデル境界ではなく内部(ノード {node})で終わります。ソースは "
+            f"way {ways_text} がその地点に到達することを宣言しているため、ドラフトが失った上流の"
+            "連続がある可能性がありますが、いずれにせよ不足は要求された境界のものではありません。",
+        )
+    return (
+        f" 측정됨: 여유 회랑은 모델 경계 표식이 없는 내부 노드 {node}에서 끝납니다. 원본을 그 "
+        "지점에 대해 물을 수 없어 도로가 실제로 이어지는지는 확인하지 못했습니다.",
+        f" Measured: the runway corridor ends at interior node {node}, which carries no"
+        " model-boundary marker in the census. The source could not be asked about that point,"
+        " so whether the road really continues there is unconfirmed.",
+        f" 測定結果: 余裕回廊は、censusにモデル境界の標識がない内部ノード {node} で終わります。"
+        "その地点についてソースに問い合わせられず、道路が実際に続くかは未確認です。",
+    )
 
 
 def _build_v4_lane_drop_without_runway(
@@ -1362,22 +1570,40 @@ def _build_v4_lane_drop_without_runway(
     reason depends on whether the shortfall traces to the model's own
     requested boundary.
 
-    Which upstream link the runway search's shortfall traces back to is
-    NETWORK-WALK knowledge (``gate._upstream_runway``'s own BFS) that this
-    module does not recompute — the same "this module does not guess network
-    knowledge it was not handed" rule ``fixes._build_routing_proposal`` states
-    for ``decision_movements``. The caller supplies the traced link via
+    **Unit #39: the attribution is now MEASURED when the caller derived it.**
+    ``genesis_jobs.derive_v4_boundary_attribution`` re-traces the judge's own
+    upstream runway walk over the draft census, classifies the corridor's
+    upstream terminus against the census's own boundary markers, and asks the
+    job's stored source ``.osm`` what it declares beyond -- threaded through
+    ``targets['boundary_attribution']`` /
+    ``targets['boundary_attribution_provenance']``, which this builder only
+    folds in (the same division of labour as V3's source testimony). A
+    boundary-attributed corridor refuses under
+    :data:`RUNWAY_ENDS_AT_REQUESTED_BOUNDARY` with the measured clause; an
+    interior one refuses under :data:`NO_TOOL_WITHOUT_FABRICATION` with the
+    honest opposite; a derivation that could not answer appends its NAMED
+    measured reason to the pre-#39 "no evidence" refusal. The tier NEVER
+    changes with the answer -- the boundary-extension treatment is unit
+    #40's, not this catalogue's.
+
+    Without a derivation record, the pre-#39 behaviour is kept exactly:
+    which upstream link the shortfall traces back to is NETWORK-WALK
+    knowledge (``gate._upstream_runway``'s own BFS) that this module does not
+    recompute — the same "this module does not guess network knowledge it was
+    not handed" rule ``fixes._build_routing_proposal`` states for
+    ``decision_movements``. The caller supplies the traced link via
     ``targets['upstream_boundary_link']`` when it has walked the graph;
     absent that, the finding's own subject link (the lane-dropping link
     itself) is used, which still correctly classifies the common case where
-    the dropping link IS the boundary-adjacent one.
-
-    The census consulted is the SAME one V3's silent-departure clause reads
+    the dropping link IS the boundary-adjacent one. The census consulted for
+    that legacy path is the SAME one V3's silent-departure clause reads
     (``metadata['connectivity']['dangling_approaches']``, ``gate._check_v3``)
     — an entry there whose ``cause`` is
     ``services.genesis.connectivity.DANGLING_MODEL_BOUNDARY`` means this
     generator itself synthesized a node at the requested extract's edge and
-    the road correctly ends there.
+    the road correctly ends there. (That census records only DEPARTURE ends,
+    which is exactly why it could never see a runway corridor's upstream
+    ENTRY end -- the measured gap unit #39 closes.)
     """
     context = _finding_field(finding, "context", {}) or {}
     subject = _finding_field(finding, "subject")
@@ -1411,6 +1637,92 @@ def _build_v4_lane_drop_without_runway(
         "boundary_entry": boundary_entry,
     }
 
+    # ---- unit #39: a derived attribution record trumps the legacy census
+    # shortcut -- it is the deeper measurement of the same question. Shared
+    # sentence components so the legacy path below stays byte-identical.
+    intro_ko = (
+        f"링크 {link_id}의 차로 감소에 {evidence['required_m']} m의 차로변경 여유가 필요하지만 "
+        f"{evidence['available_m']} m밖에 없습니다."
+    )
+    intro_en = (
+        f"Link {link_id}'s lane drop needs {evidence['required_m']} m of lane-change runway "
+        f"and only has {evidence['available_m']} m."
+    )
+    intro_ja = (
+        f"リンク {link_id} の車線減少には {evidence['required_m']} m の車線変更余裕が必要ですが "
+        f"{evidence['available_m']} m しかありません。"
+    )
+    no_evidence_ko = " 이 부족이 요청된 모델 경계에서 비롯된 것이라는 증거는 없습니다."
+    no_evidence_en = " There is no evidence this shortfall traces to the requested model boundary."
+    no_evidence_ja = "この不足が要求されたモデル境界に起因するという証拠はありません。"
+    core_ko = (
+        " 현재 등록된 도구 중 링크의 lnChgDist를 늘리거나 상류 도로를 연장하는 "
+        "동사는 없으며, set_link_geometry는 기존 폴리라인 점을 재배치할 뿐 새 점(즉 새 길이)을 "
+        "추가하지 못합니다. 존재하지 않는 도로를 만들어내지 않고는 이 부족을 메울 수 없으므로 "
+        "자동 수정을 제안하지 않습니다."
+    )
+    core_en = (
+        " No registered verb lengthens a link's lnChgDist runway "
+        "or extends the upstream road: set_link_geometry only REPOSITIONS a link's EXISTING "
+        "polyline points, it cannot add new ones (new length). Closing this gap without "
+        "fabricating road that is not there is not something this system can do, so no automated "
+        "fix is proposed."
+    )
+    core_ja = (
+        "現在登録されているツールにリンクのlnChgDistを延ばす、または上流の"
+        "道路を延長する動詞はなく、set_link_geometryは既存のポリライン点を再配置するのみで新しい"
+        "点(すなわち新しい長さ)を追加できません。存在しない道路を作り出さずにこの不足を埋めること"
+        "はできないため、自動修正は提案しません。"
+    )
+
+    attribution = _as_mapping((targets or {}).get("boundary_attribution"))
+    attribution_prov = _as_mapping((targets or {}).get("boundary_attribution_provenance"))
+    if attribution or attribution_prov:
+        if attribution:
+            evidence["boundary_attribution"] = dict(attribution)
+        if attribution_prov:
+            evidence["boundary_attribution_provenance"] = dict(attribution_prov)
+        if attribution.get("status") == "boundary_attributed":
+            clause_ko, clause_en, clause_ja = _v4_boundary_clause(attribution)
+            return _refuse(
+                code=code,
+                reason_code=RUNWAY_ENDS_AT_REQUESTED_BOUNDARY,
+                evidence=evidence,
+                ko=intro_ko + clause_ko
+                + " 그 지점을 넘겨 도로를 늘리는 것은 사용자가 요청하지 않은 구역으로 네트워크를 "
+                "확장하는 것과 같으므로 자동 수정을 제안하지 않습니다.",
+                en=intro_en + clause_en
+                + " Lengthening it past that point would extend the network beyond the requested "
+                "area, so no automated fix is proposed.",
+                ja=intro_ja + clause_ja
+                + " その地点を越えて延長することは要求されていない区域までネットワークを拡張する"
+                "ことになるため、自動修正は提案しません。",
+            )
+        if attribution.get("status") == "interior":
+            clause_ko, clause_en, clause_ja = _v4_interior_clause(attribution)
+            return _refuse(
+                code=code,
+                reason_code=NO_TOOL_WITHOUT_FABRICATION,
+                evidence=evidence,
+                ko=intro_ko + clause_ko + core_ko,
+                en=intro_en + clause_en + core_en,
+                ja=intro_ja + clause_ja + core_ja,
+            )
+        # A derivation was attempted and could not answer: the pre-#39 "no
+        # evidence" refusal, now carrying the derivation's NAMED measured
+        # reason instead of silence about why nothing was measured.
+        clause_ko, clause_en, clause_ja = _v4_attribution_reason_clause(
+            attribution_prov, evidence["available_m"]
+        )
+        return _refuse(
+            code=code,
+            reason_code=NO_TOOL_WITHOUT_FABRICATION,
+            evidence=evidence,
+            ko=intro_ko + no_evidence_ko + core_ko + clause_ko,
+            en=intro_en + no_evidence_en + core_en + clause_en,
+            ja=intro_ja + no_evidence_ja + core_ja + clause_ja,
+        )
+
     if boundary_entry is not None:
         return _refuse(
             code=code,
@@ -1441,25 +1753,9 @@ def _build_v4_lane_drop_without_runway(
         code=code,
         reason_code=NO_TOOL_WITHOUT_FABRICATION,
         evidence=evidence,
-        ko=f"링크 {link_id}의 차로 감소에 {evidence['required_m']} m의 차로변경 여유가 필요하지만 "
-        f"{evidence['available_m']} m밖에 없습니다. 이 부족이 요청된 모델 경계에서 비롯된 것이라는 "
-        "증거는 없습니다. 현재 등록된 도구 중 링크의 lnChgDist를 늘리거나 상류 도로를 연장하는 "
-        "동사는 없으며, set_link_geometry는 기존 폴리라인 점을 재배치할 뿐 새 점(즉 새 길이)을 "
-        "추가하지 못합니다. 존재하지 않는 도로를 만들어내지 않고는 이 부족을 메울 수 없으므로 "
-        "자동 수정을 제안하지 않습니다.",
-        en=f"Link {link_id}'s lane drop needs {evidence['required_m']} m of lane-change runway "
-        f"and only has {evidence['available_m']} m. There is no evidence this shortfall traces "
-        "to the requested model boundary. No registered verb lengthens a link's lnChgDist runway "
-        "or extends the upstream road: set_link_geometry only REPOSITIONS a link's EXISTING "
-        "polyline points, it cannot add new ones (new length). Closing this gap without "
-        "fabricating road that is not there is not something this system can do, so no automated "
-        "fix is proposed.",
-        ja=f"リンク {link_id} の車線減少には {evidence['required_m']} m の車線変更余裕が必要ですが "
-        f"{evidence['available_m']} m しかありません。この不足が要求されたモデル境界に起因すると"
-        "いう証拠はありません。現在登録されているツールにリンクのlnChgDistを延ばす、または上流の"
-        "道路を延長する動詞はなく、set_link_geometryは既存のポリライン点を再配置するのみで新しい"
-        "点(すなわち新しい長さ)を追加できません。存在しない道路を作り出さずにこの不足を埋めること"
-        "はできないため、自動修正は提案しません。",
+        ko=intro_ko + no_evidence_ko + core_ko,
+        en=intro_en + no_evidence_en + core_en,
+        ja=intro_ja + no_evidence_ja + core_ja,
     )
 
 

@@ -169,6 +169,7 @@ from services.dataimport.adapters.daejeon import DaejeonCountAdapter
 from services.dataimport.base import AdapterError, ImportResult, IssueSeverity
 from services.genesis import side_inputs as side_inputs_module
 from services.genesis.compose import NO_LAYERS, ComposedLayers
+from services.genesis.connectivity import DANGLING_MODEL_BOUNDARY
 from services.genesis.draft import (
     NODE_HALF_SIZE_M,
     DraftNetwork,
@@ -183,6 +184,7 @@ from services.genesis.gate import (
     ZERO_LENGTH_M,
     CheckState,
     GateResult,
+    GateSettings,
     GateVerdict,
     LoadOracle,
     render_report,
@@ -2564,13 +2566,18 @@ def _source_osm_index_cached(path_text: str, mtime_ns: int, size: int) -> dict[s
     # export: way 1232703541 in job b3ef6abb9a85's source); last-wins here,
     # and connected ids are deduped at measurement time.
     ways: dict[int, tuple[tuple[int, ...], int]] = {}
+    way_names: dict[int, str] = {}
     node_ways: dict[int, set[int]] = {}
     for way in extract.ways:
         ways[way.id] = (tuple(way.node_ids), way.oneway)
+        # The name rides along for unit #39's same-road continuation walk
+        # (last-wins with the same duplicate-id discipline as ``ways``).
+        way_names[way.id] = way.name
         for node_id in set(way.node_ids):
             node_ways.setdefault(node_id, set()).add(way.id)
     return {
         "ways": ways,
+        "way_names": way_names,
         "node_ways": {node: tuple(sorted(ids)) for node, ids in node_ways.items()},
         "node_latlon": {node.id: (node.lat, node.lon) for node in extract.nodes.values()},
         "non_drivable_node_highways": {
@@ -3237,6 +3244,599 @@ def normalized_connector_params(params: Mapping[str, Any] | None) -> dict[str, A
         return None
 
 
+# ---------------------------------------------------------------------------
+# Unit #39 — a V4 runway shortage LEARNS whether the boundary did it. The
+# registry's v4_lane_drop_without_runway refusal used to say, honestly, "there
+# is no evidence this shortfall traces to the requested model boundary" —
+# because nothing MEASURED that attribution (the only existing check read the
+# DEPARTURE-side dangling census for the finding's own link, and a runway
+# shortage's boundary sits at the corridor's upstream ENTRY end, which that
+# census never records). This deriver measures it: the judge's own upstream
+# runway walk re-traced over the draft, the corridor's upstream terminus
+# classified against the census's own boundary markers
+# (``metadata['boundary']['way_trims']``'s synthesized nodes — B5-1's
+# boundary-synthesized ends — and the dangling census's
+# ``model_boundary_correct`` entries), and the SOURCE asked, through unit
+# #36's own cached index, how much road it declares beyond that point.
+# Evidence for the refusal's rationale, never a tier change: the treatment
+# (a boundary-extension proposal) is unit #40's, not this one's.
+# ---------------------------------------------------------------------------
+
+#: The ONE V4 finding code this attribution answers for, mirroring
+#: :data:`V3_CONNECTIVITY_FINDING_CODES` / :data:`V7_GEOMETRY_FINDING_CODES`.
+V4_RUNWAY_FINDING_CODE = "v4_lane_drop_without_runway"
+
+#: Where an attribution's facts may ever come from — the census's own trim
+#: records plus way/node membership in the job's stored source ``.osm`` —
+#: recorded verbatim in every derivation's provenance, mirroring
+#: :data:`_V3_SOURCE_FIELD`.
+_V4_ATTRIBUTION_SOURCE_FIELD = "metadata.boundary.way_trims + way/nd"
+
+#: How far the re-trace may disagree with the judge's own ``available_m``
+#: before the disagreement is reported instead of an attribution. The judge
+#: rounds to 2 decimals and the census stores mm-rounded coordinates, so an
+#: honest agreement sits within a few millimetres (measured 0.0003 m on the
+#: real job 5e550c739aed); 0.06 m absorbs both roundings and nothing else.
+_V4_TRACE_TOLERANCE_M = 0.06
+
+#: Loop bound for the source-side continuation walk — a cap on WAY HOPS, not
+#: a measurement: the walk already stops at the deficit, at a name change and
+#: at a cycle (visited set), so this only bounds a pathological source.
+_V4_SOURCE_WALK_MAX_WAYS = 64
+
+
+def _latlon_metres(a: tuple[float, float] | None, b: tuple[float, float] | None) -> float:
+    """Haversine metres between two ``(lat, lon)`` pairs — 0.0 when either
+    is unknown, so a node the source holds no coordinate for contributes no
+    invented length (derive LESS, the same rule every deriver here states)."""
+    if a is None or b is None:
+        return 0.0
+    phi1, phi2 = math.radians(a[0]), math.radians(b[0])
+    half_dphi = (phi2 - phi1) / 2.0
+    half_dlmb = math.radians(b[1] - a[1]) / 2.0
+    h = math.sin(half_dphi) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(half_dlmb) ** 2
+    return 2.0 * 6371008.8 * math.asin(math.sqrt(h))
+
+
+def _way_arrives_node(
+    node_ids: tuple[int, ...], oneway: int, node_id: int, *, travel_forward: bool | None
+) -> bool:
+    """Whether ONE source way's own declaration lets a vehicle travel INTO
+    ``node_id`` along it — the arrival mirror of :func:`_way_departs_node`,
+    with the same ``travel_forward`` semantics: ``None`` for a way other than
+    the finding's own (either permitted direction counts), the link's travel
+    direction for the finding's own way (only a run that genuinely comes from
+    UPSTREAM counts; doubling back down the kept carriageway is a U-turn, not
+    a continuation)."""
+    last = len(node_ids) - 1
+    if last < 1:
+        return False
+    positions = [i for i, ref in enumerate(node_ids) if ref == node_id]
+    if not positions:
+        return False
+    forward_possible = oneway >= 0 and any(i > 0 for i in positions)
+    backward_possible = oneway <= 0 and any(i < last for i in positions)
+    if travel_forward is None:
+        return forward_possible or backward_possible
+    return forward_possible if travel_forward else backward_possible
+
+
+def _arriving_run(
+    node_ids: tuple[int, ...],
+    oneway: int,
+    node_id: int,
+    node_latlon: Mapping[int, tuple[float, float]],
+    *,
+    travel_forward: bool | None = None,
+) -> tuple[float, int] | None:
+    """The longest run of ONE source way a vehicle may travel INTO
+    ``node_id`` on — ``(metres, far_entry_node)`` — or ``None`` when the
+    way's own declaration permits no arrival there. ``travel_forward`` as in
+    :func:`_way_arrives_node`. The run is measured node-to-node from the
+    source's own coordinates; where both directions of a two-way way arrive,
+    the longer run is the dominant continuation and wins."""
+    last = len(node_ids) - 1
+    positions = [i for i, ref in enumerate(node_ids) if ref == node_id]
+    if last < 1 or not positions:
+        return None
+
+    def _segment(i: int) -> float:
+        return _latlon_metres(node_latlon.get(node_ids[i]), node_latlon.get(node_ids[i + 1]))
+
+    best: tuple[float, int] | None = None
+    if oneway >= 0 and travel_forward is not False:
+        position = max(positions)
+        if position > 0:
+            best = (sum(_segment(j) for j in range(position)), node_ids[0])
+    if oneway <= 0 and travel_forward is not True:
+        position = min(positions)
+        if position < last:
+            length = sum(_segment(j) for j in range(position, last))
+            if best is None or length > best[0]:
+                best = (length, node_ids[-1])
+    return best
+
+
+def _point_in_requested_region(
+    lat: float, lon: float, boundary_meta: Mapping[str, Any]
+) -> bool | None:
+    """Whether a source coordinate lies inside the REQUESTED region the
+    census's own boundary metadata records — the polygon when the region was
+    drawn as one, its bbox otherwise, judged by the trim's OWN kernels
+    (``osm._inside_polygon`` / ``osm._inside_bbox``, boundary-inclusive) so
+    this test and the cut that synthesized the node cannot disagree about
+    what "inside" means. ``None`` when the census records no region shape."""
+    from services.genesis.osm import _inside_bbox, _inside_polygon  # noqa: PLC0415
+
+    polygon = boundary_meta.get("requested_polygon_wgs84")
+    if isinstance(polygon, list) and len(polygon) >= 3:
+        try:
+            ring = tuple((float(p["lat"]), float(p["lon"])) for p in polygon)
+        except (KeyError, TypeError, ValueError):
+            ring = None
+        if ring:
+            return _inside_polygon(lat, lon, ring)
+    bbox = boundary_meta.get("requested_bbox_wgs84")
+    if isinstance(bbox, Mapping):
+        try:
+            box = (
+                float(bbox["min_lat"]),
+                float(bbox["min_lon"]),
+                float(bbox["max_lat"]),
+                float(bbox["max_lon"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+        return _inside_bbox(lat, lon, box)
+    return None
+
+
+def _draft_upstream_runway_terminus(
+    draft: "DraftNetwork", start_link_id: int, cap_m: float, budget: int
+) -> tuple[float, int | None, bool]:
+    """``gate._upstream_runway``'s own walk, re-traced over the DRAFT census,
+    additionally recording WHERE the best runway runs out.
+
+    Returns ``(best_available_m, terminus_link_id, budget_exhausted)`` —
+    the longest simple path of census road feeding ``start_link_id`` (capped
+    at ``cap_m``, link lengths only, connectors as edges — exactly the
+    judge's own measure), and the upstream-most link of that best path. The
+    caller CROSS-CHECKS the distance against the judge's stored
+    ``available_m`` before trusting the terminus: this is a re-derivation of
+    the judge's number, never a rival measurement.
+
+    Ties between equally long paths resolve deterministically to the smallest
+    terminus link id. A corridor that reaches ``cap_m`` is returned capped,
+    like the judge's — the caller reports it as a disagreement, since the
+    judge only emits this finding when the runway measured SHORT.
+    """
+    links_by_id = {int(link.id): link for link in draft.links}
+    feeders: dict[int, list[int]] = {}
+    for connector in draft.connectors:
+        feeders.setdefault(int(connector.to_link), []).append(int(connector.from_link))
+    for feeding in feeders.values():
+        feeding.sort()
+
+    start = links_by_id[start_link_id]
+    if start.length_m >= cap_m:
+        return start.length_m, start_link_id, False
+
+    best_m = start.length_m
+    candidates: list[tuple[float, int]] = []
+    stack: list[tuple[int, float, frozenset[int]]] = [
+        (start_link_id, start.length_m, frozenset({start_link_id}))
+    ]
+    expansions = 0
+    while stack:
+        current, distance, path = stack.pop()
+        expansions += 1
+        if expansions > budget:
+            return best_m, None, True
+        extended_any = False
+        for previous in feeders.get(current, ()):
+            if previous in path:
+                continue
+            host = links_by_id.get(previous)
+            if host is None:
+                continue
+            extended_any = True
+            extended = distance + host.length_m
+            if extended >= cap_m:
+                return cap_m, previous, False
+            if extended > best_m:
+                best_m = extended
+            stack.append((previous, extended, path | {previous}))
+        if not extended_any:
+            candidates.append((distance, current))
+    candidates.sort(key=lambda entry: (-entry[0], entry[1]))
+    terminus = candidates[0][1] if candidates else start_link_id
+    return best_m, terminus, False
+
+
+def derive_v4_boundary_attribution(
+    code: str,
+    finding: Mapping[str, Any],
+    *,
+    draft: "DraftNetwork | None",
+    job_id: str | None,
+) -> dict[str, Any]:
+    """Unit #39: did the REQUESTED MODEL BOUNDARY cause this runway shortage?
+
+    A ``v4_lane_drop_without_runway`` finding says a lane drop's upstream
+    corridor holds less road than the file's own lane-change distance needs.
+    That shortage has two very different causes, and until this unit the
+    refusal could only say it had no evidence which: the corridor's upstream
+    end is a node THIS GENERATOR synthesized on the requested extract
+    boundary (the lasso cut a road that continues in reality — the shortage
+    is the MODEL's edge), or the corridor genuinely ends inside the model
+    (the shortage is the road's). This deriver measures which, and how much
+    road the job's own stored source declares beyond the boundary when the
+    boundary did it.
+
+    Known conservatism, measured by this unit's adversarial pass: the
+    beyond-boundary walk matches a continuing road by way id first and then
+    by EXACT name, so a Korean name written with a spacing variant
+    (``둔산로31번길`` vs ``둔산로 31번길``) under-matches and the walk stops
+    early. That can only SHORTEN a declared continuation, never invent one,
+    and it cannot flip the ``status`` — a shortage attributed to the boundary
+    stays attributed. Whoever builds the extension proposal (unit #40) reads
+    ``source_length_available_m`` as a floor, not a survey.
+
+    Returns ``{"boundary_attribution": {...} | None, "provenance": {...}}``,
+    mirroring :func:`derive_v3_source_testimony`'s shape. ``provenance``
+    always names its sources (``source_artifact`` / ``source_field`` /
+    ``link_id`` / ``job_id``) plus the re-trace's own measurement
+    (``traced_available_m`` / ``terminus_link_id`` /
+    ``terminus_node_osm_id`` once traced); when no attribution could be
+    derived it adds ``reason_code`` + ``detail``.
+
+    The measurement, in the order it is taken:
+
+    1. **The judge's numbers are the anchor.** ``required_m``/``available_m``
+       come from the finding's own context — the gate already measured the
+       deficit and this deriver never re-litigates it. The corridor is then
+       RE-TRACED over the draft census with the judge's own walk
+       (:func:`_draft_upstream_runway_terminus` — longest simple feeding
+       path, link lengths only, the judge's own search budget) purely to
+       learn WHERE the best runway runs out, and the re-traced distance must
+       agree with the judge's ``available_m`` within
+       :data:`_V4_TRACE_TOLERANCE_M`; a disagreement is reported by name
+       (``trace_disagrees_with_judge``), never resolved by trusting either
+       side silently.
+    2. **The corridor's upstream terminus is classified by the census's own
+       boundary markers.** The terminus is the best path's upstream-most
+       link's ENTRY node (``from_node_osm_id``). It is the boundary when
+       ``metadata['boundary']['way_trims']`` records it as a
+       ``synthesized_node_id`` (the generator cut a source way there and put
+       this node ON the requested boundary — the primary marker, and the one
+       the pre-#39 check could never see because it read only the
+       DEPARTURE-side dangling census), or when a
+       ``dangling_approaches`` entry with cause ``model_boundary_correct``
+       names the same node (the reverse carriageway's witness for an
+       untrimmed boundary end). No marker → interior.
+    3. **Boundary → the SOURCE testifies about the road beyond.** Through
+       unit #36's own cached index (:func:`_source_osm_index`, same cache),
+       starting from the trim's own measured ``metres_cut`` (the road the
+       generator itself removed — census evidence, named as such), the walk
+       continues upstream along ways that ARRIVE at each stop, following the
+       SAME way id and then the same road name (a junction does not end a
+       road that continues through it; a differently named road is not this
+       corridor continuing). It stops at the deficit, at a name change, or
+       at the extract's own edge. ``continuation_evidence`` then carries
+       ``source_length_available_m`` (+ ``meets_deficit``), and — when the
+       walk ran out at a node OUTSIDE the requested region —
+       ``continuation_beyond_extract``: an extract cut at the same lasso
+       cannot testify past its own edge, which is itself boundary-attribution
+       evidence that the MODEL's edge (not the road) ends there.
+    4. **Interior → the honest opposite**, with the source consulted the
+       same way: ``source_confirms`` records whether the source declares no
+       drivable arrival at the terminus either (the world agrees the
+       corridor ends here), declares upstream ways the draft lost
+       (``source_upstream_way_ids``), could not name the node at all, or
+       could not be read.
+
+    The named "no attribution" reasons, in the order they are measured:
+    ``judge_measurement_missing`` (the finding carries no usable
+    required/available pair), ``no_draft_record`` / ``no_draft_census``
+    (the finding maps to no census link), ``trace_budget_exhausted``,
+    ``trace_disagrees_with_judge``, ``trim_way_mismatch`` (the trim at the
+    terminus names a different way than the corridor's — conflicting census
+    evidence is reported, not adjudicated), ``way_not_in_source``, and
+    ``source_artifact_missing`` (boundary marked, but neither a trim
+    measurement nor a readable source exists to state any continuation).
+
+    Evidence for the registry's refusal rationale
+    (``services.agent.genesis_fixes._build_v4_lane_drop_without_runway``),
+    NEVER a tier change: whichever way the attribution lands there is still
+    no automated fix — the boundary-extension treatment is unit #40's.
+    """
+    provenance: dict[str, Any] = {
+        "source_artifact": "genesis_json+source_osm",
+        "source_field": _V4_ATTRIBUTION_SOURCE_FIELD,
+        "link_id": None,
+        "job_id": job_id,
+    }
+
+    def _nothing(reason_code: str, detail: str) -> dict[str, Any]:
+        return {
+            "boundary_attribution": None,
+            "provenance": {**provenance, "reason_code": reason_code, "detail": detail},
+        }
+
+    context = dict(finding.get("context") or {})
+    try:
+        required_m = float(context["required_m"])
+        available_m = float(context["available_m"])
+    except (KeyError, TypeError, ValueError):
+        return _nothing(
+            "judge_measurement_missing",
+            "the finding's context carries no usable required_m/available_m pair -- the "
+            "judge's own deficit is the anchor this attribution starts from",
+        )
+    deficit_m = round(required_m - available_m, 2)
+    if deficit_m <= 0:
+        return _nothing(
+            "judge_measurement_missing",
+            f"required_m {required_m} does not exceed available_m {available_m} -- there is "
+            "no deficit to attribute",
+        )
+    provenance["deficit_m"] = deficit_m
+
+    subject_head = str(finding.get("subject") or "").strip().split(" (", 1)[0].strip()
+    try:
+        link_id = int(subject_head)
+    except (TypeError, ValueError):
+        return _nothing("no_draft_record", "the finding names no addressable link id")
+    provenance["link_id"] = str(link_id)
+
+    if draft is None:
+        return _nothing(
+            "no_draft_census",
+            "this job's *.genesis.json census is absent, unreadable, or does not validate",
+        )
+    link = draft.link_by_id(link_id)
+    if link is None:
+        return _nothing(
+            "no_draft_record",
+            f"the draft census declares no links[] record for id {link_id}",
+        )
+
+    budget = GateSettings().lane_change_search_budget
+    traced_m, terminus_link_id, exhausted = _draft_upstream_runway_terminus(
+        draft, link_id, required_m, budget
+    )
+    provenance["traced_available_m"] = round(traced_m, 2)
+    if exhausted or terminus_link_id is None:
+        return _nothing(
+            "trace_budget_exhausted",
+            f"the upstream re-trace exhausted the judge's own search budget ({budget}) "
+            "before the corridor's end could be established",
+        )
+    if abs(traced_m - available_m) > _V4_TRACE_TOLERANCE_M:
+        return _nothing(
+            "trace_disagrees_with_judge",
+            f"the census re-trace measured {round(traced_m, 2)} m of upstream runway where "
+            f"the judge's verdict recorded {available_m} m -- the two measurements disagree, "
+            "so no terminus is trusted and no attribution is derived",
+        )
+    terminus_link = draft.link_by_id(int(terminus_link_id))
+    terminus_node = int(terminus_link.from_node_osm_id)
+    provenance["terminus_link_id"] = str(terminus_link_id)
+    provenance["terminus_node_osm_id"] = terminus_node
+
+    metadata = draft.metadata or {}
+    boundary_meta = metadata.get("boundary")
+    boundary_meta = boundary_meta if isinstance(boundary_meta, Mapping) else {}
+    trim_entry: dict[str, Any] | None = None
+    for entry in boundary_meta.get("way_trims") or []:
+        if not isinstance(entry, Mapping) or entry.get("synthesized_node_id") is None:
+            continue
+        try:
+            if int(str(entry.get("synthesized_node_id"))) == terminus_node:
+                trim_entry = dict(entry)
+                break
+        except (TypeError, ValueError):
+            continue
+    dangling_marker: dict[str, Any] | None = None
+    if trim_entry is None:
+        connectivity = metadata.get("connectivity")
+        if isinstance(connectivity, Mapping):
+            for entry in connectivity.get("dangling_approaches") or []:
+                if not isinstance(entry, Mapping) or entry.get("cause") != DANGLING_MODEL_BOUNDARY:
+                    continue
+                try:
+                    if int(str(entry.get("node_osm_id"))) == terminus_node:
+                        dangling_marker = dict(entry)
+                        break
+                except (TypeError, ValueError):
+                    continue
+
+    corridor_way_id = int(terminus_link.osm_way_id)
+    index = _source_osm_index(job_id) if job_id else None
+
+    # ---- no boundary marker: the corridor ends INSIDE the model ------------
+    if trim_entry is None and dangling_marker is None:
+        provenance["way_id"] = corridor_way_id
+        attribution: dict[str, Any] = {
+            "status": "interior",
+            "terminus_node": terminus_node,
+            "deficit_m": deficit_m,
+        }
+        if index is None:
+            attribution["source_confirms"] = None
+            attribution["reason"] = (
+                f"the corridor's upstream end (node {terminus_node}) carries no boundary "
+                "marker in the census, and the job's source .osm is absent or unreadable, "
+                "so whether the road continues there could not be confirmed"
+            )
+        elif terminus_node not in index["node_ways"] and terminus_node not in index["node_latlon"]:
+            attribution["source_confirms"] = None
+            attribution["reason"] = (
+                f"the corridor's upstream end (node {terminus_node}) carries no boundary "
+                "marker in the census, and the source holds no drivable way touching that "
+                "node id, so the source could not be asked about it"
+            )
+        else:
+            arriving: list[int] = []
+            for candidate_id in index["node_ways"].get(terminus_node, ()):
+                node_refs, oneway = index["ways"][candidate_id]
+                travel = bool(terminus_link.forward) if candidate_id == corridor_way_id else None
+                if _way_arrives_node(node_refs, oneway, terminus_node, travel_forward=travel):
+                    arriving.append(candidate_id)
+            if arriving:
+                attribution["source_confirms"] = False
+                attribution["source_upstream_way_ids"] = sorted(arriving)
+                attribution["reason"] = (
+                    f"the corridor ends inside the model at node {terminus_node}, but the "
+                    f"source declares drivable way(s) {', '.join(str(w) for w in sorted(arriving))} "
+                    "arriving there -- an upstream continuation the draft does not carry; "
+                    "either way, the shortage is not the requested boundary's"
+                )
+            else:
+                attribution["source_confirms"] = True
+                attribution["reason"] = (
+                    f"the corridor ends inside the model at node {terminus_node} and the "
+                    "source declares no drivable way arriving there either -- the road "
+                    "genuinely ends here; the deficit is the road's, not the boundary's"
+                )
+        return {"boundary_attribution": attribution, "provenance": dict(provenance)}
+
+    # ---- boundary marker found ---------------------------------------------
+    marker = "way_trim" if trim_entry is not None else "dangling_approach"
+    provenance["boundary_marker"] = marker
+    provenance["boundary_node"] = terminus_node
+    if trim_entry is not None:
+        try:
+            trim_way_id = int(str(trim_entry.get("way_id")))
+        except (TypeError, ValueError):
+            trim_way_id = corridor_way_id
+        if trim_way_id != corridor_way_id:
+            return _nothing(
+                "trim_way_mismatch",
+                f"the trim record at node {terminus_node} names way {trim_way_id}, but the "
+                f"corridor's terminus link {terminus_link_id} carries way {corridor_way_id} "
+                "-- conflicting census evidence is reported, not adjudicated",
+            )
+    way_id = corridor_way_id
+    provenance["way_id"] = way_id
+
+    metres_cut = 0.0
+    if trim_entry is not None:
+        try:
+            metres_cut = max(float(trim_entry.get("metres_cut") or 0.0), 0.0)
+        except (TypeError, ValueError):
+            metres_cut = 0.0
+
+    continuation: dict[str, Any]
+    if index is None:
+        if trim_entry is None or metres_cut <= 0:
+            return _nothing(
+                "source_artifact_missing",
+                f"the corridor ends at boundary node {terminus_node}, but the job's source "
+                ".osm is absent or unreadable and the census records no trim measurement "
+                "there -- no continuation beyond the boundary can be stated",
+            )
+        continuation = {
+            "source_length_available_m": round(metres_cut, 2),
+            "meets_deficit": metres_cut >= deficit_m,
+            "measured_from": "way_trim_record",
+        }
+    else:
+        if way_id not in index["ways"]:
+            return _nothing(
+                "way_not_in_source",
+                f"the census names way {way_id} for the corridor's terminus link, but the "
+                "source holds no drivable way with that id",
+            )
+        node_refs, _oneway = index["ways"][way_id]
+        if trim_entry is not None:
+            visited = {way_id}
+            current_node = node_refs[0] if str(trim_entry.get("end") or "start") == "start" else node_refs[-1]
+        else:
+            visited = set()
+            current_node = terminus_node
+        accumulated = metres_cut
+        road_name = index["way_names"].get(way_id, "")
+        walked: list[int] = []
+        other_arrivals: list[int] = []
+        hops = 0
+        while accumulated < deficit_m and hops < _V4_SOURCE_WALK_MAX_WAYS:
+            hops += 1
+            best_step: tuple[float, int, int] | None = None
+            others: list[int] = []
+            for candidate_id in index["node_ways"].get(current_node, ()):
+                if candidate_id in visited:
+                    continue
+                cand_refs, cand_oneway = index["ways"][candidate_id]
+                travel = bool(terminus_link.forward) if candidate_id == way_id else None
+                run = _arriving_run(
+                    cand_refs, cand_oneway, current_node, index["node_latlon"], travel_forward=travel
+                )
+                if run is None:
+                    continue
+                same_road = candidate_id == way_id or (
+                    bool(road_name) and index["way_names"].get(candidate_id, "") == road_name
+                )
+                if not same_road:
+                    others.append(candidate_id)
+                    continue
+                if (
+                    best_step is None
+                    or run[0] > best_step[0]
+                    or (run[0] == best_step[0] and candidate_id < best_step[2])
+                ):
+                    best_step = (run[0], run[1], candidate_id)
+            if best_step is None:
+                other_arrivals = sorted(others)
+                break
+            accumulated += best_step[0]
+            visited.add(best_step[2])
+            walked.append(best_step[2])
+            current_node = best_step[1]
+
+        meets = accumulated >= deficit_m
+        continuation = {
+            "source_length_available_m": round(accumulated, 2),
+            "meets_deficit": meets,
+            "measured_from": (
+                "way_trim_record+source_osm" if trim_entry is not None else "source_osm"
+            ),
+        }
+        if walked:
+            continuation["continuation_way_ids"] = walked
+        if other_arrivals:
+            continuation["other_arriving_way_ids"] = other_arrivals
+        if not meets:
+            lat_lon = index["node_latlon"].get(current_node)
+            inside = (
+                _point_in_requested_region(lat_lon[0], lat_lon[1], boundary_meta)
+                if lat_lon is not None
+                else None
+            )
+            if inside is False:
+                # The walk ran out at a point OUTSIDE the requested region: an
+                # extract fetched with that same region cannot testify past
+                # its own edge, so the absence of onward road there is the
+                # EXTRACT's edge, not the road's end -- named, never inferred
+                # into a length.
+                continuation["continuation_beyond_extract"] = True
+                continuation["extract_edge_node"] = current_node
+            else:
+                continuation["road_ends_in_source_at_node"] = current_node
+
+    attribution = {
+        "status": "boundary_attributed",
+        "way_id": way_id,
+        "boundary_node": terminus_node,
+        "deficit_m": deficit_m,
+        "boundary_marker": marker,
+        "continuation_evidence": continuation,
+    }
+    if trim_entry is not None:
+        attribution["way_trim"] = trim_entry
+    return {"boundary_attribution": attribution, "provenance": dict(provenance)}
+
+
 def derive_fix_targets(
     code: str,
     finding: Mapping[str, Any],
@@ -3298,6 +3898,15 @@ def derive_fix_targets(
       derived the picker a human would attest FROM
       (:func:`derive_v3_attestation_candidates`) rides along so the refusal
       can carry the ask-first question instead of being a dead end.
+    * **V4** (``boundary_attribution`` + ``boundary_attribution_provenance``)
+      — unit #39, for :data:`V4_RUNWAY_FINDING_CODE` alone: derived by
+      :func:`derive_v4_boundary_attribution` from the judge's own stored
+      numbers, the draft census's boundary markers and the job's stored
+      source ``.osm``. EVIDENCE ONLY, like V3's testimony: the refusal's
+      rationale states, measured, whether the runway shortage is the
+      requested boundary's or the road's — the tier never changes with the
+      answer (the boundary-extension treatment is unit #40's, not built
+      here).
     """
     from services.agent.fixes import node_evidence_from_real_counts  # noqa: PLC0415
     from services.agent.genesis_fixes import expected_fix_target  # noqa: PLC0415
@@ -3336,6 +3945,12 @@ def derive_fix_targets(
         if testimony["source_testimony"] is not None:
             targets["source_testimony"] = testimony["source_testimony"]
         targets["source_testimony_provenance"] = testimony["provenance"]
+
+    if code == V4_RUNWAY_FINDING_CODE:
+        attribution = derive_v4_boundary_attribution(code, finding, draft=draft, job_id=job_id)
+        if attribution["boundary_attribution"] is not None:
+            targets["boundary_attribution"] = attribution["boundary_attribution"]
+        targets["boundary_attribution_provenance"] = attribution["provenance"]
 
     if code == V3_TREATABLE_FINDING_CODE:
         plan = derive_v3_connector_plan(

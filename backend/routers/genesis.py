@@ -1391,6 +1391,17 @@ def _render_fix_disposition(
     testimony = (proposal.evidence or {}).get("source_testimony")
     if isinstance(testimony, dict):
         disposition["source_testimony"] = testimony
+    # Unit #39: when the V4 refusal's own evidence carries a MEASURED boundary
+    # attribution (the runway corridor's upstream end classified against the
+    # census's own boundary markers and the source's declared continuation --
+    # genesis_jobs.derive_v4_boundary_attribution), surface it on the
+    # disposition so a reviewer or unit #40's boundary-extension proposal
+    # consumes the measured ids and metres, not just the rationale prose.
+    # Key-ABSENT everywhere else (presence is the fact), and never a tier
+    # change -- the entry stays a refusal whichever way the attribution lands.
+    attribution = (proposal.evidence or {}).get("boundary_attribution")
+    if isinstance(attribution, dict):
+        disposition["boundary_attribution"] = attribution
     # Unit #35: when the refusal is a world gap the model COULD still answer --
     # the source shares the gap, but this network holds link ends a connector
     # could reach -- carry the ask-first question's own data: which link ends
