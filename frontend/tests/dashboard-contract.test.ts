@@ -5656,16 +5656,29 @@ contractTest("B5-2 stage 4: the requires-gated button and the demand-estimate co
   );
 });
 
-contractTest("B5-2 stage 4: the inherited-auto-publish disclosure is on every approval card", (pin) => {
+contractTest("B5-2 stage 4: an approval is a card, never a modal", (pin) => {
   const page = read("app/genesis/jobs/[id]/page.tsx");
-  pin.match(
+  // THE TWO PINS THIS TEST WAS BUILT AROUND ARE REMOVED BY THE PRODUCT OWNER'S
+  // OWN INSTRUCTION (unit #41-c, user 2026-08-18: "1번 승인 카드 문장도 없애고").
+  // They required the auto-publish disclosure -- "승인하면 실제 Vissim 편집이
+  // 실행되고 네트워크가 다시 게이트를 거칩니다 — 통과하면 그 결과가 자동으로 이
+  // 프로젝트의 활성 데이터셋으로 등록됩니다." and its English twin -- to be on
+  // every approval card. Unit #41-b had already deleted the attestation card's
+  // shorter form of the same sentence under the same authority; this was the
+  // longer one, and both halves of the family are now pinned ABSENT instead,
+  // in the unit #42/#41-b consent test. Recorded rather than silently dropped:
+  // a pin removed without a named authority is indistinguishable from a pin
+  // lost in a rebase.
+  //
+  // What did NOT come from that instruction, and so survives here: an approval
+  // on this page is a CARD the reader can read, scroll and leave, never a
+  // dialog that blocks until it is dismissed. Nothing in the source has ever
+  // called `window.confirm`, and this is the only pin that says so.
+  pin.doesNotMatch(
     page,
-    /승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다 — 통과하면 그 결과가 자동으로 이 프로젝트의 활성 데이터셋으로 등록됩니다/,
-    "expected the one-sentence auto-publish disclosure on the approval card",
+    /window\.confirm/,
+    "expected an approval to stay a card the reader can read and leave, never a confirm() dialog that blocks the page",
   );
-  pin.match(page, /Approving runs a real Vissim edit and re-gates the network/, "expected the English disclosure sentence");
-  // ONE sentence, not a modal -- no dialog/confirm wrapper introduced for it.
-  pin.doesNotMatch(page, /window\.confirm/, "expected the disclosure to be a sentence on the card, not a confirm() dialog");
 });
 
 contractTest("B5-2 stage 4: the fixes fetch is cached once per (job, verdict), and apply goes through the typed helper", (pin) => {
@@ -7020,32 +7033,30 @@ contractTest("unit #42: a confirmed dead end excludes ONE way, and the scope is 
     /\{deadEndChosen && \(\s*\n[\s\S]{0,200}?t\(\s*\n?\s*"확인하면 이 way를 명명 제외한 새 생성이 같은 원본으로 시작됩니다/,
     "expected the dead-end consent line to say a NEW generation starts and this artifact is not edited, and to render only for the answer it is about",
   );
-  // The auto-publish disclosure on the APPROVAL card is a different sentence on
-  // a different card and was NOT part of that instruction -- pinned in its own
-  // test above, and pinned absent here so the deleted short form cannot creep
-  // back in beside it.
-  // Matched WITHOUT the surrounding quotes and against de-commented source
-  // (refuter, 2026-08-18): quoting the sentence made the pin blind to the same
-  // string re-added as a single-quoted or template-literal argument, and the
-  // page carries the sentence in a comment (the instruction that deleted it),
-  // which is why the quotes were there. The trailing period is what separates
-  // the deleted short form from the approval card's longer one -- that one
-  // reads "…거칩니다 — 통과하면…", so it cannot trip these.
-  pin.doesNotMatch(
-    withoutComments(page),
-    /승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다\./,
-    "expected the attestation card's short consent sentence to stay deleted (user instruction, 2026-08-18) -- the approval card's own auto-publish disclosure is a different, longer sentence",
-  );
-  pin.doesNotMatch(
-    withoutComments(page),
-    /Approving runs a real Vissim edit and re-gates the network\./,
-    "expected the deleted sentence to stay deleted in en as well as ko -- a three-language string comes back one language at a time",
-  );
-  pin.doesNotMatch(
-    withoutComments(page),
-    /承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します。/,
-    "expected the deleted sentence to stay deleted in ja as well as ko",
-  );
+  // THE WHOLE "A REAL VISSIM EDIT RUNS" SENTENCE FAMILY IS NOW BANNED, in
+  // every language and both lengths (unit #41-c, user 2026-08-18: "1번 승인
+  // 카드 문장도 없애고"). Unit #41-b deleted the attestation card's short form
+  // and these pins carried a trailing period precisely to let the approval
+  // card's longer form through; that exemption is spent -- the long form is
+  // deleted too, and the B5-2 pins that required it are removed under the same
+  // authority (see "B5-2 stage 4: an approval is a card, never a modal").
+  //
+  // So the pattern is now the STEM the two forms share, with no terminal
+  // punctuation and no surrounding quotes: that covers the short form, the
+  // long form, and a re-add spelled with single quotes or a template literal,
+  // in one pattern per language. Against de-commented source, because both
+  // pages explain the deletion in prose that necessarily quotes it.
+  for (const [stem, language] of [
+    ["승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다", "ko"],
+    ["Approving runs a real Vissim edit and re-gates the network", "en"],
+    ["承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します", "ja"],
+  ] as const) {
+    pin.doesNotMatch(
+      withoutComments(page),
+      new RegExp(stem),
+      `expected the "a real Vissim edit runs" sentence to stay deleted in ${language}, in EITHER length (user instruction, 2026-08-18) -- a three-language string comes back one language at a time, and the longer form is how it came back once already`,
+    );
+  }
 });
 
 contractTest("unit #42: the dead-end refusal is a sentence, never a control", (pin) => {
@@ -7207,10 +7218,28 @@ contractTest("unit #41-b: one 자세히 per card, and the sentences the second o
     /\{worldGapAsked && \([\s\S]{0,1200}?원본 데이터는 이 지점에서 이어지는 도로를 선언하지 않습니다/,
     "expected the 'the source declares no continuation' sentence to render only where it used to -- when the world gap is actually asked",
   );
+  // UNIT #41-c NARROWED THIS ONE. It describes how the system would BUILD a
+  // connector and ends "확인하시는 것은 도로가 이어진다는 사실뿐입니다" -- but it
+  // rode in on `worldGapAsked`, which is ALSO true when the only answer on
+  // offer is the dead end (`candidates || deadEnd`). On a road the source
+  // shares the gap on with no reachable link end, the reader was told what
+  // they attest is that the road continues, on the one card whose single
+  // answer is that it does not. Its condition is the offer it was always
+  // about. A card carrying BOTH answers is unchanged.
+  pin.match(
+    page,
+    /const connectorOffered = Boolean\(attestation && attestation\.candidates\.length > 0\);/,
+    "expected 'is a connector actually on offer' to be its own named answer, not folded back into worldGapAsked",
+  );
+  pin.match(
+    page,
+    /const worldGapAsked = connectorOffered \|\| Boolean\(deadEnd\);/,
+    "expected worldGapAsked to keep meaning 'either answer is on offer' -- the narrowing is which sentence reads it, not what it means",
+  );
   pin.match(
     refusalDisclosure,
-    /연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다/,
-    "expected the 'the system constructs the connector' sentence to move with it",
+    /\{connectorOffered && \([\s\S]{0,800}?연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다/,
+    "expected the 'the system constructs the connector' sentence to render ONLY where a connector is on offer -- on a dead-end-only card it contradicts the single answer that card has",
   );
   pin.match(
     refusalDisclosure,

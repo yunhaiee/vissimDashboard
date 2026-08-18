@@ -480,7 +480,14 @@ function FixFindingRow({
   // disposition that no longer offers it must fall back to no answer rather
   // than rendering a button whose action cannot run.
   const deadEndChosen = Boolean(deadEnd) && attestTarget === DEAD_END_ANSWER;
-  const worldGapAsked = (attestation && attestation.candidates.length > 0) || Boolean(deadEnd);
+  // Unit #41-c -- IS A CONNECTOR ACTUALLY ON OFFER HERE? Named apart from
+  // `worldGapAsked` because the two answer different questions and one card
+  // shape can hold the second without the first: a road the source shares the
+  // gap on, with no reachable link end for a connector to land on, offers ONLY
+  // the dead-end answer. Doctrine about how a connector would be built has no
+  // subject on that card -- see its use below.
+  const connectorOffered = Boolean(attestation && attestation.candidates.length > 0);
+  const worldGapAsked = connectorOffered || Boolean(deadEnd);
 
   const submit = useCallback(
     async (attested?: { params: Record<string, unknown>; to_link: string; basis: string }) => {
@@ -729,23 +736,36 @@ function FixFindingRow({
             * disclosure itself was created under. */}
           <CardDetails summary={moreLabel(t)}>
             <p className="font-mono leading-relaxed text-slate-700">{rationale}</p>
+            {/* TRUE OF EITHER ANSWER: the source really does declare no
+              * continuation here (that measured state is what opens this
+              * question at all), only someone who knows the site can settle
+              * it, and both answers are recorded with who gave them and when.
+              * Stays on the dead-end-only card. */}
             {worldGapAsked && (
-              <>
-                <p className="leading-relaxed">
-                  {t(
-                    "원본 데이터는 이 지점에서 이어지는 도로를 선언하지 않습니다. 현장을 아시는 분만 답할 수 있는 질문이며, 확인하시면 확인자와 시각이 이 수정과 함께 기록됩니다.",
-                    "The source data declares no continuation here. Only someone who knows the site can answer, and an attestation is recorded with who made it and when.",
-                    "元データはこの地点での継続を宣言していません。現場をご存じの方だけが答えられる問いであり、確認された場合は確認者と時刻がこの修正とともに記録されます。",
-                  )}
-                </p>
-                <p className="leading-relaxed">
-                  {t(
-                    "연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다 — 확인하시는 것은 도로가 이어진다는 사실뿐입니다.",
-                    "The connector's shape and lane mapping are constructed by the system from the two existing link ends — what you attest is only that the road continues.",
-                    "コネクタの形状と車線対応は既存の2つのリンク端からシステムが構成します — 確認いただくのは道路が続くという事実のみです。",
-                  )}
-                </p>
-              </>
+              <p className="leading-relaxed">
+                {t(
+                  "원본 데이터는 이 지점에서 이어지는 도로를 선언하지 않습니다. 현장을 아시는 분만 답할 수 있는 질문이며, 확인하시면 확인자와 시각이 이 수정과 함께 기록됩니다.",
+                  "The source data declares no continuation here. Only someone who knows the site can answer, and an attestation is recorded with who made it and when.",
+                  "元データはこの地点での継続を宣言していません。現場をご存じの方だけが答えられる問いであり、確認された場合は確認者と時刻がこの修正とともに記録されます。",
+                )}
+              </p>
+            )}
+            {/* Unit #41-c -- ONLY WHERE A CONNECTOR IS ON OFFER. This sentence
+              * describes how the system would BUILD one and closes with "what
+              * you attest is only that the road continues" -- on a card whose
+              * single answer is that the road does NOT continue, that is a
+              * contradiction the reader has to talk themselves out of, and it
+              * rode in on `worldGapAsked`, which is true for the dead-end
+              * offer alone. `connectorOffered` is the condition it was always
+              * about. A card carrying both answers is unchanged. */}
+            {connectorOffered && (
+              <p className="leading-relaxed">
+                {t(
+                  "연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다 — 확인하시는 것은 도로가 이어진다는 사실뿐입니다.",
+                  "The connector's shape and lane mapping are constructed by the system from the two existing link ends — what you attest is only that the road continues.",
+                  "コネクタの形状と車線対応は既存の2つのリンク端からシステムが構成します — 確認いただくのは道路が続くという事実のみです。",
+                )}
+              </p>
             )}
             {deadEnd && (
               <p className="leading-relaxed">
@@ -1241,15 +1261,21 @@ function FixFindingRow({
             </p>
           </CardDetails>
 
-          {/* The inherited-auto-publish disclosure -- one sentence, not a
-            * modal, on every approval card regardless of confidence. */}
-          <p className="text-[14px] leading-relaxed text-slate-500">
-            {t(
-              "승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다 — 통과하면 그 결과가 자동으로 이 프로젝트의 활성 데이터셋으로 등록됩니다.",
-              "Approving runs a real Vissim edit and re-gates the network — a pass automatically registers the result as this project's active dataset.",
-              "承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します — 合格すればその結果は自動的にこのプロジェクトのアクティブなデータセットとして登録されます。",
-            )}
-          </p>
+          {/* Unit #41-c -- THE AUTO-PUBLISH DISCLOSURE IS DELETED, on the
+            * product owner's own instruction (user, 2026-08-18: "1번 승인 카드
+            * 문장도 없애고"). Unit #41-b had already deleted the attestation
+            * card's shorter form of the same sentence by the same authority;
+            * this was the longer one it was scoped to leave behind, and the
+            * refuter's report named it as the surviving half. The B5-2 pins
+            * that required it are removed with it, under that authority --
+            * recorded here and in the contract file rather than dropped
+            * silently, because a pin deleted without a named authority is
+            * indistinguishable from one lost in a rebase.
+            *
+            * What the button does is not hidden by this: the verb, the
+            * rationale and every machine identifier stay in the 자세히 block
+            * directly above, and the sibling job the apply mints announces
+            * itself with its own lineage line. */}
 
           {disposition.requires.length > 0 && (
             <div className="flex flex-col gap-1.5">
