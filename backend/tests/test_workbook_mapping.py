@@ -19,6 +19,7 @@ import openpyxl
 import pytest
 from fastapi.testclient import TestClient
 
+import config
 import main
 from services import datasets, validation, workbook_mapping
 from services.validation import create_base_workbook_template
@@ -338,6 +339,29 @@ def test_no_false_positive_self_comparison_when_values_genuinely_differ(client):
     response = client.post("/api/validation/base-workbook/mapping/import", json=body)
     assert response.status_code == 200
     assert response.json()["exists"] is True
+
+
+def test_ambient_real_counts_fallback_is_isolated_from_dev_machine_state():
+    """Regression pin for the isolation gap that made the self-comparison-trap
+    test above flaky: ``services.datasets.get_active_real_counts_excel()``
+    falls back to the module-level ``services.datasets.REAL_COUNTS_EXCEL``
+    (bound by name from ``config.REAL_COUNTS_EXCEL`` at import time) whenever
+    no workbook has been uploaded into the current workspace. On any checkout
+    that has been through ``python backend/tools/make_demo_data.py`` -- the
+    exact setup CLAUDE.md instructs every contributor to run -- that fallback
+    resolves to a real, populated ``data/real_counts.xlsx``, so a test relying
+    on "no workbook uploaded" meaning ``exists: False`` would silently see the
+    developer's ambient file instead (which is exactly what happened before
+    ``conftest.py``'s session-scoped ``_isolate_ambient_machine_state`` fixture
+    redirected this attribute: it patched every other ambient root but missed
+    this one).
+
+    Without that redirect, ``services.datasets.REAL_COUNTS_EXCEL`` and
+    ``config.REAL_COUNTS_EXCEL`` are the SAME object (plain name-binding
+    import), so this would trivially fail.
+    """
+    assert datasets.REAL_COUNTS_EXCEL != config.REAL_COUNTS_EXCEL
+    assert not datasets.REAL_COUNTS_EXCEL.exists()
 
 
 # --------------------------------------------------------------------------

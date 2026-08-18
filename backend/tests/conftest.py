@@ -75,7 +75,7 @@ def _isolate_ambient_machine_state(tmp_path_factory: pytest.TempPathFactory):
     from routers import agent_downloads as agent_downloads_router
     from routers import assistant as assistant_router_module
     from routers import network as network_router
-    from services import audit_trail, db, simulation_runs, workspaces
+    from services import audit_trail, datasets, db, simulation_runs, workspaces
     from services.agent import sessions as agent_sessions
 
     mp = pytest.MonkeyPatch()
@@ -113,6 +113,23 @@ def _isolate_ambient_machine_state(tmp_path_factory: pytest.TempPathFactory):
     # confirmed mappings; since unit 1.4 both live INSIDE the workspace
     # (``<workspace>/uploads/{staging,mapping_memory.json}``), so the
     # WORKSPACES_ROOT patch above already isolates them -- no separate seam.
+
+    # ``services.datasets.get_active_real_counts_excel()`` falls back to
+    # ``config.REAL_COUNTS_EXCEL`` (default ``data/real_counts.xlsx``) whenever
+    # no workbook has been uploaded into the current workspace -- and that
+    # fallback lives OUTSIDE WORKSPACES_ROOT, so the patch above does not reach
+    # it. ``data/real_counts.xlsx`` does not ship in the repo (``.gitignore``),
+    # but ``python backend/tools/make_demo_data.py`` -- the exact setup
+    # CLAUDE.md tells every contributor to run -- writes it there, so on any
+    # checkout that has been through that setup this ambient file leaks into
+    # every test that reads the fallback path, indistinguishable from a real
+    # "no workbook uploaded" state. ``tests/test_base_workbook_validation.py``
+    # and ``tests/test_workbook_mapping.py`` already monkeypatch this same
+    # attribute per-test for exactly this reason; redirecting it here once,
+    # session-scoped, closes the gap for every OTHER test that never knew it
+    # needed to. Per-test patches of the same attribute still compose fine, as
+    # with the roots above.
+    mp.setattr(datasets, "REAL_COUNTS_EXCEL", ambient_root / "real_counts_fallback.xlsx")
 
     default_id = workspaces.default_workspace_id()
     token = workspaces.set_current_workspace_id(default_id)
