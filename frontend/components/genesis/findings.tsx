@@ -19,6 +19,7 @@
 
 import type { GenesisGateCheck, GenesisGateFinding, GenesisGateReport } from "@/lib/api";
 import {
+  describeGenesisSubject,
   resolveFindingHighlight,
   type GenesisDraftNetwork,
   type GenesisFindingHighlight,
@@ -85,7 +86,18 @@ export type FindingRef = {
 // in `GenesisTileMap.tsx`) -- never a second, independent id/name match.
 export type SelectedItem =
   | { kind: "element"; elementKind: "link" | "connector"; id: number; name: string; refs: FindingRef[] }
-  | { kind: "finding"; refs: FindingRef[] }
+  | {
+      kind: "finding";
+      refs: FindingRef[];
+      /** Unit #41 -- a MEASURED point to mark and centre on, carried only when
+       * the backend supplied one (a V3 testimony's own
+       * `source_testimony.coordinates`, in WGS84). Optional and never derived:
+       * a finding with no coordinate in the payload gets no marker rather than
+       * a plausible-looking pin at a link end this client picked. The
+       * local-coordinates fallback renderer ignores it on purpose — it has no
+       * projection to place a WGS84 point with. */
+      point?: { lat: number; lon: number; label: string };
+    }
   | { kind: "excluded_zone"; zone: GenesisIsolatedZone }
   | null;
 
@@ -97,6 +109,22 @@ export interface HighlightSets {
   byLink: Map<number, FindingRef[]>;
   byConnector: Map<number, FindingRef[]>;
   unresolved: FindingRef[];
+  /** Unit #41 -- `findingKeyOf` for every finding whose subject DID resolve to
+   * geometry. The verdict rail reads it to decide which finding rows may be
+   * offered as "click to see it on the map": a row that cannot highlight
+   * anything must not look like it can, which is the whole of the bug this
+   * unit was opened for. Built in the same pass as everything else here, off
+   * the same single `resolveFindingHighlight` call. */
+  placeable: Set<string>;
+}
+
+/** The identity a finding is looked up by ACROSS the two payloads that
+ * describe it -- the gate report (`check.findings`) and the fix catalogue
+ * (`GET .../fixes`). `code + subject` is the same pair the backend itself
+ * addresses a finding by (unit #30's apply target), so nothing here invents a
+ * key: two findings the backend treats as one are one here too. */
+export function findingKeyOf(finding: { code: string; subject: string }): string {
+  return `${finding.code}::${finding.subject}`;
 }
 
 export function collectFindingRefs(report: GenesisGateReport): FindingRef[] {
@@ -129,6 +157,7 @@ export function buildHighlights(
   const byLink = new Map<number, FindingRef[]>();
   const byConnector = new Map<number, FindingRef[]>();
   const unresolved: FindingRef[] = [];
+  const placeable = new Set<string>();
   if (network) {
     for (const ref of findingRefs) {
       const highlight = resolveFindingHighlight(ref.finding, network);
@@ -136,6 +165,7 @@ export function buildHighlights(
         unresolved.push(ref);
         continue;
       }
+      placeable.add(findingKeyOf(ref.finding));
       const isRefuse = ref.tier === "refuse";
       for (const linkId of highlight.linkIds) {
         (isRefuse ? refuseLinks : warnLinks).add(linkId);
@@ -149,7 +179,16 @@ export function buildHighlights(
       }
     }
   }
-  return { refuseLinks, warnLinks, refuseConnectors, warnConnectors, byLink, byConnector, unresolved };
+  return {
+    refuseLinks,
+    warnLinks,
+    refuseConnectors,
+    warnConnectors,
+    byLink,
+    byConnector,
+    unresolved,
+    placeable,
+  };
 }
 
 /** The currently-selected finding(s), as one highlight to redraw on top in the
@@ -184,6 +223,61 @@ export function selectedHighlightOf(
     for (const connectorId of highlight.connectorIds) connectorIds.add(connectorId);
   }
   return { linkIds: [...linkIds], connectorIds: [...connectorIds], resolved: true };
+}
+
+/** Unit #41 -- ONE way to print a subject, road name first and the machine
+ * numbers small behind it, shared by the map's detail panel and the verdict
+ * rail's finding rows so the same element cannot read two ways on one screen.
+ * The split itself is `describeGenesisSubject`'s (lib/genesisArtifacts.ts);
+ * this only decides the type treatment. */
+export function SubjectLabel({
+  subject,
+  id,
+  className,
+}: {
+  subject: string;
+  /** An id the caller knows from somewhere OTHER than the subject string
+   * (a fix finding's own `context.link_id`, for one). Printed only when the
+   * subject did not already carry one -- never as a second, conflicting id. */
+  id?: number | null;
+  className?: string;
+}) {
+  const parts = describeGenesisSubject(subject);
+  const shownId = parts.id ?? id ?? null;
+  const tail = [parts.trailing, shownId === null ? "" : `#${shownId}`].filter(Boolean).join(" · ");
+  return (
+    <span className={className}>
+      <span className="font-semibold text-slate-900">{parts.lead}</span>
+      {tail && <span className="ml-1.5 font-mono text-[14px] font-normal text-slate-500">{tail}</span>}
+    </span>
+  );
+}
+
+/** ONE finding, as the map's detail panel prints it. Extracted in unit #41
+ * because the two arms below ("element" and "finding") carried two identical
+ * copies of it, and a road-name-first rewrite of one copy is how the same
+ * finding starts reading two ways depending on which way the reader reached
+ * it. Order is the unit's own: what it IS (subject), what it SAYS (the gate's
+ * verbatim sentence), then the machine identity, small and last. */
+function FindingRefLine({ entry, t }: { entry: FindingRef; t: Translate }) {
+  return (
+    <>
+      <span
+        className={`rounded-full border px-1.5 py-0.5 text-[14px] font-bold uppercase ${
+          entry.tier === "refuse"
+            ? "border-rose-300 bg-rose-50 text-rose-800"
+            : "border-2 border-slate-400 bg-slate-100 text-slate-900"
+        }`}
+      >
+        {entry.checkId} · {entry.tier === "refuse" ? t("거부 등급", "refuse", "拒否") : t("경고 등급", "warn", "警告")}
+      </span>
+      <SubjectLabel subject={entry.finding.subject} className="mt-1 block text-[15px]" />
+      <p className="mt-1 leading-relaxed">{entry.finding.message}</p>
+      <p className="mt-1 font-mono text-[14px] text-slate-500">
+        {entry.checkTitle.split(" — ")[0]} · {entry.finding.code}
+      </p>
+    </>
+  );
 }
 
 export function EmptyState({ text }: { text: string }) {
@@ -302,8 +396,15 @@ export function FindingsDetailPanel({
                 {t("닫기", "Close", "閉じる")}
               </button>
             </div>
-            <p className="mt-1.5 font-mono text-[15px] font-semibold text-slate-800">{selected.id}</p>
-            {selected.name && <p className="mt-0.5 text-[14px] text-slate-600">{selected.name}</p>}
+            {/* Unit #41 -- road name first, the id small behind it. The name
+              * is the census's own; `selected.id` is what the machine calls
+              * it, and a nameless element falls back to exactly the bare id
+              * this line used to lead with. */}
+            <SubjectLabel
+              subject={selected.name}
+              id={selected.id}
+              className="mt-1.5 block text-[15px]"
+            />
             {selected.refs.length === 0 ? (
               <p className="mt-1.5 text-[14px] text-slate-500">
                 {t("확인된 소견 없음", "No findings on this element", "確認された所見なし")}
@@ -315,19 +416,7 @@ export function FindingsDetailPanel({
                     key={`${ref.checkId}-${ref.finding.code}-${index}`}
                     className={index > 0 ? "border-t border-slate-200 pt-1.5" : undefined}
                   >
-                    <span
-                      className={`rounded-full border px-1.5 py-0.5 text-[14px] font-bold uppercase ${
-                        ref.tier === "refuse"
-                          ? "border-rose-300 bg-rose-50 text-rose-800"
-                          : "border-2 border-slate-400 bg-slate-100 text-slate-900"
-                      }`}
-                    >
-                      {ref.checkId} · {ref.tier === "refuse" ? t("거부 등급", "refuse", "拒否") : t("경고 등급", "warn", "警告")}
-                    </span>
-                    <p className="mt-1 font-semibold text-slate-800">{ref.checkTitle}</p>
-                    <p className="mt-0.5 font-mono text-[14px] text-slate-500">{ref.finding.code}</p>
-                    <p className="mt-0.5 text-[14px] text-slate-500">{ref.finding.subject}</p>
-                    <p className="mt-1 leading-relaxed">{ref.finding.message}</p>
+                    <FindingRefLine entry={ref} t={t} />
                   </li>
                 ))}
               </ul>
@@ -360,22 +449,19 @@ export function FindingsDetailPanel({
                   key={`${ref.checkId}-${ref.finding.code}-${index}`}
                   className={index > 0 ? "border-t border-slate-200 pt-1.5" : undefined}
                 >
-                  <span
-                    className={`rounded-full border px-1.5 py-0.5 text-[14px] font-bold uppercase ${
-                      ref.tier === "refuse"
-                        ? "border-rose-300 bg-rose-50 text-rose-800"
-                        : "border-2 border-slate-400 bg-slate-100 text-slate-900"
-                    }`}
-                  >
-                    {ref.checkId} · {ref.tier === "refuse" ? t("거부 등급", "refuse", "拒否") : t("경고 등급", "warn", "警告")}
-                  </span>
-                  <p className="mt-1 font-semibold text-slate-800">{ref.checkTitle}</p>
-                  <p className="mt-0.5 font-mono text-[14px] text-slate-500">{ref.finding.code}</p>
-                  <p className="mt-0.5 text-[14px] text-slate-500">{ref.finding.subject}</p>
-                  <p className="mt-1 leading-relaxed">{ref.finding.message}</p>
+                  <FindingRefLine entry={ref} t={t} />
                 </li>
               ))}
             </ul>
+            {/* Unit #41 -- the MEASURED departure point, when the payload
+              * carried one. Named as what it is (the source's own node
+              * coordinate) so nobody reads the sky ring on the map as a
+              * position this client computed. */}
+            {selected.point && (
+              <p className="mt-1.5 font-mono text-[14px] text-slate-500">
+                {selected.point.label} · {selected.point.lat.toFixed(6)}, {selected.point.lon.toFixed(6)}
+              </p>
+            )}
           </>
         )}
         {selected?.kind === "excluded_zone" && (
@@ -427,7 +513,7 @@ export function FindingsDetailPanel({
                   className="w-full truncate rounded border border-slate-200 bg-slate-50 px-2 py-1 text-left text-[14px] text-slate-700"
                   title={zone.street_names.join(", ")}
                 >
-                  {zone.representative} · {zone.links}
+                  <SubjectLabel subject={zone.representative} className="text-[14px]" /> · {zone.links}
                   {t("개 링크", " links", "リンク")}
                 </button>
               </li>
@@ -460,7 +546,7 @@ export function FindingsDetailPanel({
                   onClick={() => onSelectUnresolved(ref)}
                   className="w-full truncate rounded border border-slate-400 bg-white/[0.04] px-2 py-1 text-left text-[14px]"
                 >
-                  {ref.checkId} · {ref.finding.subject}
+                  {ref.checkId} · <SubjectLabel subject={ref.finding.subject} className="text-[14px]" />
                 </button>
               </li>
             ))}

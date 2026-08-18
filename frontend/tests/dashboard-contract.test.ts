@@ -2047,10 +2047,21 @@ contractTest("genesis view renders the gate's tri-state without collapsing it", 
   // Every gate sentence comes from the backend payload (gate.py's own ko/en/ja
   // table), never from a dictionary in this file.
   pin.match(page, /\{check\.title\}/, "expected the check title to come from the gate payload");
+  // RE-AIMED, unit #41: `CollapsibleMessages` now takes the FINDINGS rather
+  // than a pre-mapped array of message strings (it needs each finding's own
+  // identity to sort proposals first, badge them, and make a placeable row a
+  // map control). What this pin has always guarded is unchanged and is now
+  // asserted where it actually happens: the check's own findings array goes in
+  // untouched, and the sentence that comes out is `finding.message`, verbatim.
   pin.match(
     page,
-    /selected\.findings\.map\(\(finding\) => finding\.message\)/,
-    "expected finding text to come from the gate payload verbatim -- the collapse fold (user 2026-08-14) passes messages through, it does not rewrite them",
+    /findings=\{selected\.findings\}/,
+    "expected the gate's own findings array to be handed to the list untouched -- no client-side filtering of what the gate said",
+  );
+  pin.match(
+    page,
+    /\{row\.finding\.message\}/,
+    "expected finding text to come from the gate payload verbatim -- the collapse fold (user 2026-08-14) and the unit #41 reorder pass messages through, they do not rewrite them",
   );
   pin.match(page, /\{gap\.message\}/, "expected gap text to come from the gate payload");
 
@@ -3624,7 +3635,14 @@ contractTest("B3: the gate findings map never draws a silent blank and never inv
   // V4 lane findings on one connector is a real shape) -- the detail panel
   // must list every finding touching the clicked element, not silently
   // collapse to the first and hide the rest.
-  pin.match(detail, /kind: "finding"; refs: FindingRef\[\]/, "expected a selection to carry EVERY finding on the clicked element, not just one");
+  // RE-AIMED, unit #41: the union member broke across lines when it grew an
+  // optional measured `point` (a V3 testimony's own coordinate). `refs` is
+  // still a LIST and that is still the claim being held here.
+  pin.match(
+    detail,
+    /kind: "finding";\s*\n\s*refs: FindingRef\[\];/,
+    "expected a selection to carry EVERY finding on the clicked element, not just one",
+  );
   pin.match(detail, /selected\.refs\.map\(/, "expected the detail panel to render the full list of findings for the clicked element");
   for (const [label, source] of [["GenesisTileMap", tileMap], ["DraftLocalMap", localMap]] as const) {
     pin.doesNotMatch(
@@ -4544,15 +4562,24 @@ contractTest("U-19: map selection is one state, driven by one resolver, in both 
     /\{selected\.elementKind === "link" \? t\("링크", "Link", "リンク"\) : t\("커넥터", "Connector", "コネクタ"\)\}/,
     "expected the detail strip's kind label to read 링크/커넥터",
   );
+  // RE-AIMED, unit #41: the strip reads ROAD NAME first with the machine
+  // identity small behind it (the user could not place "1547" on a map). Both
+  // halves of the original claim still hold and are pinned where they now
+  // live: the id still travels, and nothing renders as a blank line.
   pin.match(
     findings,
-    /<p className="mt-1\.5 font-mono text-\[15px\] font-semibold text-slate-800">\{selected\.id\}<\/p>/,
-    "expected the clicked element's own id to be shown, mono",
+    /<SubjectLabel\s+subject=\{selected\.name\}\s+id=\{selected\.id\}/,
+    "expected the clicked element's own id to still travel with the strip -- unit #41 moved it behind the name, it did not drop it",
   );
   pin.match(
     findings,
-    /\{selected\.name && <p className="mt-0\.5 text-\[14px\] text-slate-600">\{selected\.name\}<\/p>\}/,
-    "expected the element's name to show only when present, never a blank line",
+    /const tail = \[parts\.trailing, shownId === null \? "" : `#\$\{shownId\}`\]\.filter\(Boolean\)\.join\(" · "\);/,
+    "expected the trailing identity to be assembled from the parts that EXIST -- an absent id or direction must not print a stray separator",
+  );
+  pin.match(
+    findings,
+    /\{tail && <span className="ml-1\.5 font-mono text-\[14px\] font-normal text-slate-500">\{tail\}<\/span>\}/,
+    "expected the machine identity to render mono and small, and only when there is one -- never a blank line",
   );
   pin.match(
     findings,
@@ -5146,10 +5173,27 @@ contractTest("unit #35: a connection is never invented -- it is testified, or at
     /disabled=\{applying \|\| !attestChoice \|\| !attestBasis\.trim\(\)\}/,
     "expected the attestation button gated on a chosen target AND a non-empty basis",
   );
+  // RE-AIMED, unit #41: the picker stopped being a <select> of strings and
+  // became a radio list whose rows light their own link on the map (a native
+  // <option> cannot answer a pointer, so "이 후보가 어디인가" had no answer at
+  // all). WHAT is offered is unchanged and is what this pin holds: the
+  // backend's own measured candidate array, mapped one row per candidate, with
+  // the value bound to the candidate's own link id -- never a text field a
+  // reader could type an arbitrary id into.
   pin.match(
     findingRow,
-    /attestation\.candidates\.map\(\(candidate\) => \(/,
+    /attestation\.candidates\.map\(\(candidate\) => \{/,
     "expected the target picker to offer the backend's own measured candidates, never a free-text link id",
+  );
+  pin.match(
+    findingRow,
+    /type="radio"[\s\S]{0,200}?value=\{candidate\.link_id\}/,
+    "expected each candidate row to submit the candidate's OWN link id, not a value this client composed",
+  );
+  pin.doesNotMatch(
+    sliceBetween(findingRow, "{attestation && attestation.candidates.length > 0 && (", "{t(\"근거 (필수)\""),
+    /type="text"/,
+    "expected no free-text link-id field beside the measured candidate list",
   );
   // The submitted params are the SERVER's derivation for that candidate -- this
   // client never composes connector geometry, and the apply path re-derives
@@ -6352,4 +6396,387 @@ contractTest("#24: the overview's four stage cards render 2x2 at desktop, one co
   pin.match(dataToSim, /StageLink href="\/genesis\/demand"/, "expected ② to precede ③ in source order");
   const simToReport = sliceBetween(overview, 'title={`③ ${t("시뮬·보정"', 'title={`④ ${t("보고서"');
   pin.match(simToReport, /StageLink href="\/dashboard"/, "expected ③ to precede ④ in source order, completing the 2x2 reading order");
+});
+
+// ---------------------------------------------------------------------------
+// Unit #41 (2026-08-17) -- the finding card, repaired against a live session
+// ---------------------------------------------------------------------------
+//
+// Five things the user hit using the job-detail screen on a real refused
+// generation (job 2712071437d0: 1831 links; V3 raised ten findings, exactly one
+// of which carried an applicable proposal). Every pin below holds ONE of them,
+// and the doctrine each protects is the same one this product has always run
+// on: a refusal must stay complete, and nothing on the screen may claim more
+// than the payload measured.
+//
+//   1. A finding was not clickable -> the map never reacted.
+//   2. The testimony card had no map context at all.
+//   3. Doctrine paragraphs and raw machine codes covered the card.
+//   4. Card inside card inside card.
+//   5. The one real proposal was ninth, under a six-item fold.
+
+contractTest("unit #41: a finding row is a map control exactly when the census can place it", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const findings = read("components/genesis/findings.tsx");
+  const tileMap = read("components/genesis/GenesisTileMap.tsx");
+
+  // THE ANSWER TO "IS THERE ANYWHERE TO GO" IS THE RESOLVER'S, not a guess.
+  // `placeable` is filled inside buildHighlights' existing loop, from the SAME
+  // `resolveFindingHighlight` result that decides the colours -- the U-19 pin
+  // above still counts the call sites, so this cannot become a third one.
+  pin.match(
+    findings,
+    /placeable\.add\(findingKeyOf\(ref\.finding\)\);/,
+    "expected placeable to be filled from the resolver's own answer, in the pass that already ran it",
+  );
+  pin.match(
+    findings,
+    /if \(!highlight\.resolved\) \{\s*\n\s*unresolved\.push\(ref\);\s*\n\s*continue;\s*\n\s*\}\s*\n\s*placeable\.add\(/,
+    "expected an UNRESOLVED finding to be excluded from placeable -- it is named in the unresolved list instead, with no invented coordinates",
+  );
+
+  // ...and it travels OUT of the map, because the census that answers it is
+  // fetched there and nowhere else.
+  pin.match(
+    tileMap,
+    /onPlaceableChange\?\.\(highlights\.placeable\);/,
+    "expected the map to publish which findings it can place, rather than the rail deriving a second answer",
+  );
+
+  // THE ROW ITSELF: a control when there is somewhere to go, plain text when
+  // there is not. Both halves pinned -- a version that made every row a button
+  // would be the same lie in the other direction.
+  pin.match(
+    page,
+    /placeable\.has\(row\.key\) \? \(\s*\n\s*<button/,
+    "expected a placeable finding row to be a real control that reaches the map",
+  );
+  pin.match(
+    page,
+    /onClick=\{\(\) => onFocusFinding\(row\.ref\)\}/,
+    "expected the row's click to hand the map the finding itself, not a re-derived id",
+  );
+  pin.match(
+    page,
+    /\) : \(\s*\n\s*<span className="block px-1\.5 py-1">\{body\}<\/span>\s*\n\s*\)/,
+    "expected an unplaceable finding to render as text, never as a control that would do nothing",
+  );
+
+  // ONE selection state still, owned by the map: an outside request PUSHES
+  // into it and is applied on the sequence number alone, so the census
+  // arriving cannot re-stamp a click the reader made after the request.
+  const selectionStates = (tileMap.match(/useState<SelectedItem>/g) ?? []).length;
+  pin.match(`count=${selectionStates}`, /^count=1$/, "expected the map to keep owning exactly one selection state");
+  pin.match(
+    tileMap,
+    /\}, \[requestSeq\]\);/,
+    "expected the external-request effect to depend on the sequence number ALONE",
+  );
+  // An element request carries an id and nothing else, so it is re-resolved
+  // through the map's own handler -- otherwise an externally selected link
+  // would render nameless and finding-less.
+  pin.match(
+    tileMap,
+    /if \(item\?\.kind === "element"\) \{\s*\n\s*if \(item\.elementKind === "link"\) selectLink\(item\.id\);\s*\n\s*else selectConnector\(item\.id\);/,
+    "expected an externally requested element to go through the map's own resolver, not to be taken at face value",
+  );
+});
+
+contractTest("unit #41: a proposal sorts first, wears the sky badge, and the fold can never close over it", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  // A BADGE MAY NOT PROMISE A BUTTON THAT IS NOT THERE: the same
+  // `fixDispositionIsActionable` the approve branch itself is gated on.
+  pin.match(
+    page,
+    /function fixFindingIsProposal\(finding: GenesisFixFinding\): boolean \{\s*\n\s*return fixDispositionIsActionable\(finding\.disposition\);/,
+    "expected the proposal badge to be driven by the SAME actionable test the apply button is gated on",
+  );
+
+  // DISPLAY ORDER ONLY -- a partition of the payload, never a mutation of it.
+  // `.sort()` on the fetched array would reorder the cached payload itself.
+  pin.match(
+    page,
+    /const orderedFixes = \[\s*\n\s*\.\.\.checkFixes\.filter\(\(entry\) => fixFindingIsProposal\(entry\)\),\s*\n\s*\.\.\.checkFixes\.filter\(\(entry\) => !fixFindingIsProposal\(entry\)\),\s*\n\s*\];/,
+    "expected the proposal-first order to be a stable partition into a NEW array, never an in-place sort of the fetched payload",
+  );
+  const gridBody = sliceBetween(page, "function GateCheckGrid(", "/** The five downloadable artifacts");
+  pin.match(gridBody, /\S/, "expected to find the GateCheckGrid body (markers moved? the doesNotMatch below would pass vacuously)");
+  pin.doesNotMatch(gridBody, /\.sort\(/, "expected nothing in the grid to sort a fetched array in place");
+
+  // THE FOLD. `FINDINGS_COLLAPSED_COUNT` stays the standing cut, but the
+  // visible slice is never smaller than the number of proposals -- which is
+  // exactly the case that opened this unit (one proposal, ninth of ten, cut
+  // at six).
+  pin.match(
+    page,
+    /const visibleCount = Math\.max\(FINDINGS_COLLAPSED_COUNT, withProposal\.length\);/,
+    "expected the collapsed slice to grow rather than ever hide a proposal behind the fold",
+  );
+  pin.match(
+    page,
+    /const ordered = \[\.\.\.withProposal, \.\.\.rows\.filter\(\(row\) => !proposalKeys\.has\(row\.key\)\)\];/,
+    "expected the finding list to put proposal-bearing rows first, as a partition of the gate's own array",
+  );
+  // The SERVER-side omission line is evidence and is untouched by any of this.
+  pin.match(
+    page,
+    /selected\.findings_omitted > 0/,
+    "expected the gate's own omitted-findings count to keep rendering separately from the presentation fold",
+  );
+
+  // THE COLOUR comes through a named helper, so the grid's markup still names
+  // no tint of its own (the 2026-08-13 rule) -- and sky is the ONLY new one.
+  pin.match(
+    page,
+    /function fixProposalBadgeClasses\(\): string \{\s*\n\s*return "border-sky-300 bg-sky-50 text-slate-900";/,
+    "expected the proposal badge's colour to live in one named helper, in the sky selection/suggestion accent",
+  );
+  pin.doesNotMatch(
+    withoutComments(page),
+    /bg-(?:amber|violet|indigo|teal|orange)-/,
+    "expected no fourth hue to arrive with the proposal badge -- rose/emerald/sky and mono is the whole palette",
+  );
+});
+
+contractTest("unit #41: the doctrine moved behind a disclosure, and nothing was deleted", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  // A NATIVE <details>, not a button -- load-bearing here: the refusal branch
+  // of a fix card may carry no control at all, and a disclosure spelled as a
+  // <button> would make the refusal itself read as actionable (the "a refusal
+  // is never a button" pin above slices exactly that region).
+  pin.match(
+    page,
+    /function CardDetails\(\{ summary, children \}[\s\S]{0,400}?<details/,
+    "expected the disclosure to be a native <details>, so a refusal keeps carrying no button",
+  );
+  pin.doesNotMatch(
+    sliceBetween(page, "function CardDetails(", "/** The one summary label"),
+    /<button/,
+    "expected the disclosure toggle never to be spelled as a button",
+  );
+
+  // MOVED, NOT DROPPED. The backend's full rationale, the assumption tokens
+  // and every machine identifier are still rendered -- inside the disclosure.
+  // The completeness of a refusal is this product's whole claim.
+  // COUNTED, not matched once. The refusal branch and the approval branch each
+  // open their own disclosure with the same first line, so a single `match`
+  // here stays green while ONE of the two silently drops the rationale --
+  // proved by mutation (deleting the approval branch's copy failed no pin).
+  const rationaleInDetails = (
+    page.match(
+      /<CardDetails summary=\{moreLabel\(t\)\}>\s*\n\s*<p className="font-mono leading-relaxed text-slate-700">\{rationale\}<\/p>/g,
+    ) ?? []
+  ).length;
+  pin.match(
+    `count=${rationaleInDetails}`,
+    /^count=2$/,
+    "expected BOTH the refusal card and the approval card to keep the backend's own rationale verbatim inside their disclosure",
+  );
+  pin.match(
+    page,
+    /\{finding\.code\}\s*\n\s*\{disposition\.reason_code \? ` · \$\{disposition\.reason_code\}` : ""\}/,
+    "expected the raw finding code and reason code to keep rendering (a bug report needs them) -- behind the toggle, not on the card face",
+  );
+  pin.match(
+    page,
+    /disposition\.assumptions\.map\(\(token\) => \(\s*\n\s*<li key=\{token\}>\{fixAssumptionLabel\(token, t\)\}<\/li>/,
+    "expected every assumption token to keep its named sentence",
+  );
+  // The two standing attestation explanations moved into the disclosure with
+  // their exact wording -- a moved sentence must be the SAME sentence.
+  pin.match(
+    page,
+    /원본 데이터는 이 지점에서 이어지는 도로를 선언하지 않습니다\./,
+    "expected the 'the source declares no continuation' sentence to survive the move, word for word",
+  );
+  pin.match(
+    page,
+    /연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다/,
+    "expected the 'the system constructs the connector' sentence to survive the move, word for word",
+  );
+
+  // THE TRIPLE CARD. A fix row is a rule between rows now, and a treatment
+  // block is a left rule -- not a bordered box inside a bordered box inside a
+  // bordered box.
+  pin.doesNotMatch(
+    page,
+    /<div className="rounded-lg border border-slate-200 bg-slate-50 px-3\.5 py-3 text-\[15px\] text-slate-800">/,
+    "expected the fix row to stop being its own card inside the opened check's card",
+  );
+  pin.match(
+    page,
+    /<div className="mt-2 flex flex-col divide-y divide-slate-200">/,
+    "expected the fix rows to be separated by rules rather than stacked as cards",
+  );
+  const treatmentBoxes = (page.match(/mt-3 flex flex-col gap-2 border-l-2 border-slate-300 pl-3/g) ?? []).length;
+  pin.match(
+    `count=${treatmentBoxes}`,
+    /^count=3$/,
+    "expected all three treatment blocks (regenerate, widen-boundary, attest) to read as a left rule, not a nested box",
+  );
+});
+
+contractTest("unit #41: the testimony card can be placed on the map, and only from a measured coordinate", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const tileMap = read("components/genesis/GenesisTileMap.tsx");
+  const api = read("lib/api.ts");
+
+  // The coordinate is the BACKEND's, on the testimony it already ships.
+  pin.match(
+    api,
+    /coordinates: \{ lat: number; lon: number \} \| null;/,
+    "expected the source testimony to carry its own measured coordinate, nullable",
+  );
+  pin.match(
+    page,
+    /lat: disposition\.source_testimony!\.coordinates!\.lat,/,
+    "expected the map jump to use the testimony's OWN coordinate, never a position this client derived",
+  );
+  pin.match(
+    page,
+    /\{disposition\.source_testimony\.coordinates && \(/,
+    "expected the control to appear only when a coordinate was actually measured",
+  );
+
+  // NO FALLBACK PIN. A finding with no coordinate gets no marker at all --
+  // dropping one at a link end this file picked would be a location the
+  // product invented.
+  pin.match(
+    tileMap,
+    /if \(selectedPoint\) \{\s*\n\s*L\.circleMarker/,
+    "expected the departure marker to be drawn only from a supplied point",
+  );
+  pin.doesNotMatch(
+    withoutComments(tileMap),
+    /selectedPoint \?\? \{|selectedPoint \|\| \{/,
+    "expected no substituted coordinate when the payload carries none",
+  );
+
+  // The candidate list answers "where is this one" -- on hover, on focus and
+  // on pick, all three, because a keyboard reader needs the same answer a
+  // mouse gets.
+  pin.match(page, /onMouseEnter=\{focus\}/, "expected hovering a candidate to show it on the map");
+  pin.match(page, /onFocus=\{focus\}/, "expected keyboard focus to show a candidate on the map too");
+  pin.match(
+    page,
+    /setAttestTarget\(event\.target\.value\);\s*\n\s*focus\(\);/,
+    "expected picking a candidate to show it on the map as well as select it",
+  );
+});
+
+contractTest("unit #41: a subject reads road-name first, and no name is ever invented", (pin) => {
+  const lib = read("lib/genesisArtifacts.ts");
+  const findings = read("components/genesis/findings.tsx");
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  // The split is derived from the two spellings the payload actually uses --
+  // gate.py's `_label()` and the census's own name -- and NOTHING else.
+  pin.match(
+    lib,
+    /export function describeGenesisSubject\(subject: string\): GenesisSubjectLabel \{/,
+    "expected one exported helper owning the road-name/id split",
+  );
+  pin.match(
+    lib,
+    /if \(!name\) return \{ lead: raw, trailing: "", id \};/,
+    "expected a subject with no name at all to lead with its bare id -- exactly what the old id-first rendering showed, never a substituted name",
+  );
+  pin.match(
+    lib,
+    /if \(bracket <= 0\) return \{ lead: name, trailing: "", id \};/,
+    "expected a name with no direction token to stay whole rather than be cut at a guess",
+  );
+
+  // ONE renderer for it, used on every surface a subject appears on, so the
+  // same element cannot read two ways on one screen.
+  pin.match(findings, /export function SubjectLabel\(/, "expected ONE shared subject renderer");
+  // AND IT ACTUALLY LEADS WITH THE NAME (refuter, 2026-08-18). Everything above
+  // pins the SPLIT; nothing pinned the RENDER, so the whole unit's claim could
+  // be reverted inside this one span and stay green -- proved by mutation
+  // (`{parts.lead}` -> `{parts.id ?? parts.lead}` restored id-first rendering
+  // on every surface at once and failed no test). The name is the bold lead;
+  // the machine identity is the muted tail behind it, never the other way up.
+  pin.match(
+    findings,
+    /<span className="font-semibold text-slate-900">\{parts\.lead\}<\/span>/,
+    "expected the shared renderer to LEAD with the road name in bold -- the split is useless if the id is printed first anyway",
+  );
+  pin.match(
+    findings,
+    /const tail = \[parts\.trailing, shownId === null \? "" : `#\$\{shownId\}`\]/,
+    "expected the direction token and the id to be the TAIL behind the name, and an absent id to add nothing rather than print a coerced blank",
+  );
+  const pageUses = (page.match(/<SubjectLabel/g) ?? []).length;
+  pin.match(
+    `count=${pageUses}`,
+    /^count=([3-9]|\d{2,})$/,
+    "expected the detail page to print subjects through the shared renderer on the fix card, the finding rows and the candidate rows",
+  );
+  pin.doesNotMatch(
+    page,
+    /\{`\$\{candidate\.link_id\} · \$\{candidate\.name\}/,
+    "expected the id-first candidate string to be gone -- the road name leads now",
+  );
+});
+
+contractTest("unit #41: two findings sharing one (code, subject) are two rows, not one", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  // FOUND ON THE LIVE SCREEN (job f57cf27e33f5, 2026-08-17): V3 raises
+  // `v3_silent_departure_point / 대덕대로 [FWD] w52496957s1` TWICE -- once for
+  // link 427 and once for link 429 -- which is exactly the duplicate shape
+  // unit #30's own doctrine documents. `(code, subject)` is the finding's
+  // identity for APPLYING a fix; it is not a unique LIST key, and using it as
+  // one made React treat the two cards as one component. The row's list key
+  // and its radio-group name both take the row's index as well.
+  //
+  // AND THAT INDEX IS THE PAYLOAD'S, NOT THE SCREEN'S (refuter, 2026-08-18).
+  // `orderedFixes` is a DISPLAY partition and a live check re-gates this job in
+  // place (the fixes fetch is keyed on `gate.checked_at`, so the payload is
+  // replaced with no navigation). Keyed by display position, a row crossing the
+  // partition makes React PRESERVE a key whose finding changed: simulated on
+  // the real duplicate pair, `<code>::<subject>::2` was link 429's card and
+  // became link 427's, carrying 429's typed attestation basis, its picked
+  // destination and its ticked map-confirmation onto a different link. An
+  // attestation is a recorded human claim about ONE object. The payload index
+  // is invariant under every reorder, so a preserved key is the same finding.
+  pin.match(
+    page,
+    /const rowKey = `\$\{finding\.code\}::\$\{finding\.subject\}::\$\{checkFixes\.indexOf\(finding\)\}`;/,
+    "expected a fix row's identity to be (code, subject, PAYLOAD index) -- gate.py can emit the same (code, subject) twice, and a display-order index lets a reorder carry one finding's attestation state onto the other",
+  );
+  pin.match(
+    page,
+    /key=\{rowKey\}\s*\n\s*instanceKey=\{rowKey\}/,
+    "expected the React key and the row's instanceKey to be the SAME payload-stable identity -- two spellings is how they drift apart",
+  );
+  pin.doesNotMatch(
+    page,
+    /orderedFixes\.map\(\((?:finding|entry), index\)/,
+    "expected the fix rows never to take their identity from their position in the DISPLAY partition",
+  );
+  pin.match(
+    page,
+    /name=\{`attest-\$\{instanceKey\}`\}/,
+    "expected the candidate radio group to be named per ROW, not per (code, subject) -- two duplicate cards sharing one group name merge into one picker",
+  );
+  // The APPLY payload still addresses the finding by (code, subject) -- the
+  // row key is a rendering concern and must not leak into the request.
+  pin.match(
+    page,
+    /finding_code: finding\.code,/,
+    "expected the apply body to keep addressing the finding by its own code",
+  );
+  pin.match(
+    page,
+    /subject: finding\.subject,/,
+    "expected the apply body to keep addressing the finding by its own subject -- never by a row index",
+  );
+  pin.doesNotMatch(
+    sliceBetween(page, "const job = await applyGenesisFix(jobId, {", "});"),
+    /instanceKey/,
+    "expected the row's rendering identity never to reach the apply request",
+  );
 });

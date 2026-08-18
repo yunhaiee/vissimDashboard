@@ -430,6 +430,55 @@ export function resolveFindingHighlight(
 }
 
 // ---------------------------------------------------------------------------
+// Unit #41 -- READ A SUBJECT ROAD-NAME FIRST (user, live pass 2026-08-17)
+// ---------------------------------------------------------------------------
+//
+// A gate subject arrives in one of two spellings, both of which lead with a
+// machine number a consultant cannot place on a map:
+//   * `gate.py`'s `_label()`  -> `"374 (계룡로 [FWD] w41014447s4)"`
+//   * the draft's own name    -> `"둔산로 [FWD] w43011584s2"`
+// and the census name itself is `"<road or highway class> [DIR] w<way>s<seq>"`.
+// The reader recognises 계룡로; nothing recognises 374.
+//
+// This splits the subject into the part a person reads (`lead`) and the part
+// that identifies it to the machine (`trailing` + `id`), so the UI can print
+// the road first and the numbers small behind it. It INVENTS NOTHING: when the
+// subject carries no name at all, `lead` is the bare id and `trailing` is
+// empty, which is exactly what the old id-first rendering showed. When the
+// generator had no OSM name it wrote the highway class (`primary_link`,
+// `service`) into that slot -- that is still what the data calls the road, and
+// substituting anything nicer would be a name this client made up.
+export interface GenesisSubjectLabel {
+  /** The road name (or, with no name in the data, the bare id). Never empty
+   * for a non-empty subject. */
+  lead: string;
+  /** Everything after the road name -- `"[FWD] w43011584s2"` -- or "" when the
+   * subject carried nothing but an id. */
+  trailing: string;
+  /** The link/connector id when the subject carried one, else null. */
+  id: number | null;
+}
+
+const LABELED_SUBJECT_FULL_RE = /^(\d+)\s*\((.+)\)$/;
+
+export function describeGenesisSubject(subject: string): GenesisSubjectLabel {
+  const raw = (subject ?? "").trim();
+  if (!raw) return { lead: "", trailing: "", id: null };
+  const labeled = raw.match(LABELED_SUBJECT_FULL_RE);
+  const bare = BARE_ID_RE.test(raw);
+  const id = labeled ? Number(labeled[1]) : bare ? Number(raw) : null;
+  const name = labeled ? labeled[2].trim() : bare ? "" : raw;
+  if (!name) return { lead: raw, trailing: "", id };
+  // The census writes the direction token in square brackets right after the
+  // road name; anything before that first `" ["` is the name. A name with no
+  // bracket at all (nothing in this generator writes one, but a future one
+  // might) stays whole rather than being cut at a guess.
+  const bracket = name.indexOf(" [");
+  if (bracket <= 0) return { lead: name, trailing: "", id };
+  return { lead: name.slice(0, bracket), trailing: name.slice(bracket + 1), id };
+}
+
+// ---------------------------------------------------------------------------
 // Prior-generation comparison -- gate results + summary stats ONLY.
 // ---------------------------------------------------------------------------
 //

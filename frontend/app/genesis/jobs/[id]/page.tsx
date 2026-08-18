@@ -49,7 +49,13 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useLanguage } from "@/components/LanguageProvider";
 import GenesisComparisonPanel from "@/components/genesis/GenesisComparisonPanel";
-import GenesisTileMap from "@/components/genesis/GenesisTileMap";
+import GenesisTileMap, { type GenesisMapSelectionRequest } from "@/components/genesis/GenesisTileMap";
+import {
+  SubjectLabel,
+  findingKeyOf,
+  type FindingRef,
+  type SelectedItem,
+} from "@/components/genesis/findings";
 import { InfoTip, refusalHeadline } from "@/components/genesis/ui";
 import {
   GenesisError,
@@ -67,6 +73,7 @@ import {
   type GenesisFixDisposition,
   type GenesisFixFinding,
   type GenesisGateCheck,
+  type GenesisGateFinding,
   type GenesisGateReport,
   type GenesisJob,
   type GenesisJobFixes,
@@ -146,6 +153,79 @@ function verdictLabel(verdict: GenesisGateReport["verdict"], t: Translate): stri
     default:
       return verdict;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Unit #41 -- the five things the user hit using this screen for real
+// (live pass 2026-08-17, job 2712071437d0: 1831 links, refused)
+// ---------------------------------------------------------------------------
+//
+// 1. A FINDING WAS NOT CLICKABLE. The map has had click-to-select since U-19,
+//    but only in ONE direction: map feature -> detail. Nothing in the verdict
+//    rail was a control at all -- `CollapsibleMessages` printed `<li>{message}`
+//    and the fix cards printed a mono code -- so "소견을 눌러 지도에서 본다"
+//    was never wired, in either the gate-finding list or the fix list. It is
+//    now, through `GenesisTileMap`'s selection REQUEST, and ONLY for findings
+//    the census could actually place (`highlights.placeable`, published up out
+//    of the map): a row that cannot highlight anything is not offered as one
+//    that can, and an unplaceable finding keeps its named-list treatment.
+// 2. THE ONE REAL PROPOSAL WAS NINTH. V3 raised ten findings; exactly one of
+//    them (둔산로 w43011584s2, the source-testified connector) carried an
+//    applicable proposal, and it sat below a six-item fold. Rows carrying a
+//    proposal now sort FIRST and wear a sky 제안 badge, and the fold can never
+//    close over one -- see `visibleCount` in `CollapsibleMessages`. Display
+//    order only: nothing about the payload or the stored gate moves.
+// 3/4. THE DOCTRINE WALL AND THE TRIPLE CARD. Every card repeated the full
+//    rationale paragraph, a raw `CONNECTIVITY_IS_NOT_INVENTED`, and two
+//    standing explanations, inside a card inside a card inside a card. NOTHING
+//    IS DELETED -- the completeness of a refusal is this product's whole claim.
+//    The long text and every machine identifier moved behind `<CardDetails>`
+//    (a native <details>, so the refusal branch still contains no <button>),
+//    and the nested boxes became rules: a top rule between fix rows, a left
+//    rule on a treatment block.
+// 6/7. NAMES BEFORE NUMBERS, SENTENCES SHORTER. `SubjectLabel` prints the
+//    road first and the ids small behind it, everywhere a subject appears.
+
+/** The sky badge on a finding that carries an applicable proposal -- sky is
+ * this app's selection/suggestion accent (three-colour rule), and it is the
+ * ONLY new colour this unit adds. A named helper rather than inline classes so
+ * `GateCheckGrid`'s own markup keeps carrying no tint of its own, exactly as
+ * the 2026-08-13 rule requires of the cells. */
+function fixProposalBadgeClasses(): string {
+  return "border-sky-300 bg-sky-50 text-slate-900";
+}
+
+/** Does this finding have a proposal a reader could actually approve? The same
+ * `fixDispositionIsActionable` test the card itself gates its button on -- so a
+ * badge can never promise a button that is not there. */
+function fixFindingIsProposal(finding: GenesisFixFinding): boolean {
+  return fixDispositionIsActionable(finding.disposition);
+}
+
+/**
+ * THE DISCLOSURE THAT MOVED THE DOCTRINE WITHOUT DELETING IT.
+ *
+ * A native `<details>`, deliberately, for two reasons. It needs no state and
+ * survives a re-render with its open/closed answer intact; and it is not a
+ * `<button>`, which matters here more than it looks -- a refusal on this page
+ * may carry no button at all (a refusal is information, not a disabled
+ * control), and a disclosure that spelled itself as one would make the refusal
+ * branch read as an actionable thing.
+ */
+function CardDetails({ summary, children }: { summary: string; children: React.ReactNode }) {
+  return (
+    <details className="mt-1.5 text-[14px] leading-relaxed text-slate-600">
+      <summary className="cursor-pointer list-none text-[14px] text-slate-500 underline decoration-dotted underline-offset-4">
+        {summary}
+      </summary>
+      <div className="mt-1.5 flex flex-col gap-1.5 border-l border-slate-300 pl-3">{children}</div>
+    </details>
+  );
+}
+
+/** The one summary label every 자세히 toggle on this page wears. */
+function moreLabel(t: Translate): string {
+  return t("자세히 (근거·가정·코드)", "More (evidence, assumptions, codes)", "詳細（根拠・仮定・コード）");
 }
 
 /** THE CONSOLE STAT -- a small muted label above a large bold value. */
@@ -299,15 +379,35 @@ function genesisRefusalText(
 function FixFindingRow({
   jobId,
   finding,
+  instanceKey,
   t,
   lang,
   onApplied,
+  onFocusElement,
+  onFocusPoint,
 }: {
   jobId: string;
   finding: GenesisFixFinding;
+  /** Unit #41 -- this ROW's own identity, distinct from the FINDING's.
+   * `(code, subject)` is the finding's identity for applying a fix (unit #30)
+   * but it is NOT unique in a list: gate.py legitimately emits the same pair
+   * twice (V3 raised `v3_silent_departure_point / 대덕대로 [FWD] w52496957s1`
+   * for links 427 AND 429 on the live job). Two rows sharing a React key made
+   * React treat them as one component -- and this unit's radio group, named
+   * off the same pair, merged the two cards' candidate lists so picking a
+   * target in one cleared the other. Both are keyed off this instead. */
+  instanceKey: string;
   t: Translate;
   lang: string;
   onApplied: (job: GenesisJob) => void;
+  /** Unit #41 -- show a link on the map beside this card. Used by the candidate
+   * list (hover or pick a link end and see WHERE it is) and by the derived
+   * to-link's own confirmation, which asks the reader to check the map and
+   * until now gave them no way to get there. */
+  onFocusElement: (kind: "link" | "connector", id: number) => void;
+  /** Unit #41 -- ring a MEASURED coordinate on the map. Only the source's own
+   * testimony carries one; nothing else calls this. */
+  onFocusPoint: (point: { lat: number; lon: number; label: string }) => void;
 }) {
   const disposition = finding.disposition;
   const actionable = fixDispositionIsActionable(disposition);
@@ -447,12 +547,29 @@ function FixFindingRow({
       )
     : null;
 
+  // Unit #41 -- the id the fix payload itself carries for this finding
+  // (`context.link_id`, written by gate.py beside every V3/V7 subject). Read
+  // defensively: `context` is `Record<string, unknown>`, and a code that
+  // carries no link id must print none rather than a coerced NaN.
+  const contextLinkId =
+    typeof finding.context?.link_id === "number" ? (finding.context.link_id as number) : null;
+
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-[15px] text-slate-800">
-      <div className="flex flex-wrap items-baseline gap-2">
+    <div className="px-0.5 py-3 text-[15px] text-slate-800">
+      {/* Unit #41 -- WHAT IT IS, first and in words. The finding code used to
+        * lead this line; it is a machine identifier a bug report needs and a
+        * consultant cannot read, so it moved into the 자세히 block below and
+        * the road took its place. */}
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        {fixFindingIsProposal(finding) && (
+          <span
+            className={`rounded-full border px-1.5 py-0.5 text-[14px] font-bold ${fixProposalBadgeClasses()}`}
+          >
+            {t("제안", "Proposal", "提案")}
+          </span>
+        )}
         {finding.origin === "warning" && <span className="text-[14px] text-slate-500">warn /</span>}
-        <span className="font-mono text-[14px] font-semibold text-slate-700">{finding.code}</span>
-        <span className="font-mono text-[14px] text-slate-500">{finding.subject}</span>
+        <SubjectLabel subject={finding.subject} id={contextLinkId} className="text-[15px]" />
       </div>
 
       {/* Unit #36's measurement, quoted rather than paraphrased -- the job's
@@ -460,26 +577,83 @@ function FixFindingRow({
         * above the branch because BOTH answers can carry it: a testified
         * finding whose target link the model never emitted is still a
         * refusal, and the testimony is exactly what makes that refusal
-        * legible. */}
+        * legible.
+        *
+        * Unit #41 gave it the map context it always lacked: the testimony
+        * carries the shared node's own WGS84 coordinate, so the sentence that
+        * names the node can now put the reader on it. Key-absent coordinates
+        * render the sentence and no control -- never a guessed pin. */}
       {disposition.source_testimony && (
-        <p className="mt-2 font-mono text-[14px] leading-relaxed text-slate-600">
-          {t(
-            `소스가 증언합니다 — way ${disposition.source_testimony.connected_way_ids.join(", ")}가 node ${disposition.source_testimony.node_id}를 공유`,
-            `The source testifies — way(s) ${disposition.source_testimony.connected_way_ids.join(", ")} share node ${disposition.source_testimony.node_id}`,
-            `ソースが証言します — way ${disposition.source_testimony.connected_way_ids.join(", ")} がノード ${disposition.source_testimony.node_id} を共有`,
+        <div className="mt-2">
+          <p className="font-mono text-[14px] leading-relaxed text-slate-600">
+            {t(
+              `소스가 증언합니다 — way ${disposition.source_testimony.connected_way_ids.join(", ")}가 node ${disposition.source_testimony.node_id}를 공유`,
+              `The source testifies — way(s) ${disposition.source_testimony.connected_way_ids.join(", ")} share node ${disposition.source_testimony.node_id}`,
+              `ソースが証言します — way ${disposition.source_testimony.connected_way_ids.join(", ")} がノード ${disposition.source_testimony.node_id} を共有`,
+            )}
+          </p>
+          {disposition.source_testimony.coordinates && (
+            <button
+              type="button"
+              onClick={() =>
+                onFocusPoint({
+                  lat: disposition.source_testimony!.coordinates!.lat,
+                  lon: disposition.source_testimony!.coordinates!.lon,
+                  label: t("출발 지점", "Departure point", "出発地点"),
+                })
+              }
+              className="ui-button-ghost mt-1.5 rounded-full px-2.5 py-0.5 text-[14px] font-medium"
+            >
+              {t("지도에서 이 지점 보기", "Show this point on the map", "地図でこの地点を見る")}
+            </button>
           )}
-        </p>
+        </div>
       )}
 
       {!actionable ? (
         <div className="mt-2">
           {/* NOT_AUTOMATABLE (or a structural refusal wearing an AUTOMATABLE
             * status -- see fixDispositionIsActionable) -- ONE mono line, the
-            * rationale verbatim, and NEVER a button. */}
-          <p className="font-mono text-[15px] leading-relaxed text-slate-700">{rationale}</p>
-          {disposition.reason_code && (
-            <p className="mt-1 font-mono text-[14px] text-slate-500">{disposition.reason_code}</p>
-          )}
+            * rationale verbatim, and NEVER a button.
+            *
+            * Unit #41: the rationale is still here VERBATIM and still first --
+            * it just reads inside a disclosure now, because nine copies of a
+            * five-sentence paragraph is a wall a reader scrolls past rather
+            * than a reason they read. The one-line answer above it is this
+            * UI's own summary of a state it already computes, never a
+            * re-wording of the backend's claim. */}
+          <p className="text-[15px] leading-relaxed text-slate-700">
+            {attestation && attestation.candidates.length > 0
+              ? t(
+                  "자동 수정 없음 — 현장을 아는 사람이 확인하면 적용할 수 있습니다.",
+                  "No automated fix — someone who knows the site can attest, and then it applies.",
+                  "自動修正なし — 現場をご存じの方が確認すれば適用できます。",
+                )
+              : disposition.regenerate
+                ? t(
+                    "자동 수정 없음 — 재생성으로 치료합니다.",
+                    "No automated fix — this one is treated by regenerating.",
+                    "自動修正なし — 再生成で治療します。",
+                  )
+                : disposition.boundary_extension
+                  ? t(
+                      "자동 수정 없음 — 경계를 넓혀 다시 생성해야 합니다.",
+                      "No automated fix — the boundary must be widened and generated again.",
+                      "自動修正なし — 境界を広げて再生成する必要があります。",
+                    )
+                  : t(
+                      "자동 수정 없음 — 사람이 판단해야 합니다.",
+                      "No automated fix — this needs a person's judgement.",
+                      "自動修正なし — 人の判断が必要です。",
+                    )}
+          </p>
+          <CardDetails summary={moreLabel(t)}>
+            <p className="font-mono leading-relaxed text-slate-700">{rationale}</p>
+            <p className="font-mono text-[14px] text-slate-500">
+              {finding.code}
+              {disposition.reason_code ? ` · ${disposition.reason_code}` : ""}
+            </p>
+          </CardDetails>
 
           {/* Unit #38 -- the THIRD disposition, in the same card vocabulary:
             * the refusal above stays verbatim (the census really cannot
@@ -488,7 +662,7 @@ function FixFindingRow({
             * the corrected converter. Not a fix button: nothing about this
             * artifact is edited, and the new job faces the gate on its own. */}
           {disposition.regenerate && (
-            <div className="mt-3 flex flex-col gap-2 rounded-md border border-slate-300 bg-white/[0.06] px-3 py-2.5">
+            <div className="mt-3 flex flex-col gap-2 border-l-2 border-slate-300 pl-3">
               <p className="text-[15px] font-semibold text-slate-800">
                 {t(
                   "이 결함은 편집이 아니라 재생성으로 치료합니다",
@@ -549,7 +723,7 @@ function FixFindingRow({
             * the basemap, every vertex is editable, and THAT page's extract
             * button is the ask-first gate. */}
           {disposition.boundary_extension && (
-            <div className="mt-3 flex flex-col gap-2 rounded-md border border-slate-300 bg-white/[0.06] px-3 py-2.5">
+            <div className="mt-3 flex flex-col gap-2 border-l-2 border-slate-300 pl-3">
               <p className="text-[15px] font-semibold text-slate-800">
                 {t(
                   "이 부족은 편집이 아니라 경계를 넓혀 다시 생성해야 합니다",
@@ -603,32 +777,63 @@ function FixFindingRow({
             * disabled button, and it appears only when the backend measured
             * link ends a connector could actually reach. */}
           {attestation && attestation.candidates.length > 0 && (
-            <div className="mt-3 flex flex-col gap-2 rounded-md border border-slate-300 bg-white/[0.06] px-3 py-2.5">
+            <div className="mt-3 flex flex-col gap-2 border-l-2 border-slate-300 pl-3">
               <p className="text-[15px] font-semibold text-slate-800">
                 {t("실제 도로가 이어집니까?", "Does the real road continue here?", "実際の道路はここで続いていますか？")}
               </p>
-              <p className="text-[14px] leading-relaxed text-slate-600">
-                {t(
-                  "원본 데이터는 이 지점에서 이어지는 도로를 선언하지 않습니다. 현장을 아시는 분만 답할 수 있는 질문이며, 확인하시면 확인자와 시각이 이 수정과 함께 기록됩니다.",
-                  "The source data declares no continuation here. Only someone who knows the site can answer, and an attestation is recorded with who made it and when.",
-                  "元データはこの地点での継続を宣言していません。現場をご存じの方だけが答えられる問いであり、確認された場合は確認者と時刻がこの修正とともに記録されます。",
-                )}
-              </p>
-              <label className="flex flex-col gap-1 text-[14px] text-slate-700">
-                <span>{t("이어지는 링크", "The link it continues to", "続く先のリンク")}</span>
-                <select
-                  value={attestTarget}
-                  onChange={(event) => setAttestTarget(event.target.value)}
-                  className="rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[15px] text-slate-900"
-                >
-                  <option value="">{t("선택하십시오", "Choose one", "選択してください")}</option>
-                  {attestation.candidates.map((candidate) => (
-                    <option key={candidate.link_id} value={candidate.link_id}>
-                      {`${candidate.link_id} · ${candidate.name} · ${candidate.distance_m} m · ${candidate.turn}`}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {/* Unit #41 -- THE CANDIDATE LIST BECAME A MAP CONTROL. It was a
+                * <select> of `"<id> · <name> · <m> · <turn>"` strings, which is
+                * two failures at once: a native option cannot answer a pointer,
+                * so "이 후보가 어디인가" had no answer at all, and it led with
+                * the id a consultant cannot place. Each candidate is now a row
+                * that lights its own link on the map on hover, on focus and on
+                * pick, and reads 도로명 first with the measured metres and the
+                * turn behind it. Nothing about WHAT is offered changed: the
+                * list, its order and its measured numbers are the backend's,
+                * and the submitted payload is still the candidate's own
+                * server-derived `params`. */}
+              <fieldset className="flex flex-col gap-1">
+                <legend className="text-[14px] text-slate-700">
+                  {t("이어지는 링크", "The link it continues to", "続く先のリンク")}
+                </legend>
+                {attestation.candidates.map((candidate) => {
+                  const numericId = Number(candidate.link_id);
+                  const focus = () => {
+                    if (Number.isFinite(numericId)) onFocusElement("link", numericId);
+                  };
+                  return (
+                    <label
+                      key={candidate.link_id}
+                      onMouseEnter={focus}
+                      className={`flex cursor-pointer items-baseline gap-2 rounded-md px-2 py-1 text-[14px] ${
+                        attestTarget === candidate.link_id ? "bg-slate-100" : ""
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name={`attest-${instanceKey}`}
+                        value={candidate.link_id}
+                        checked={attestTarget === candidate.link_id}
+                        onFocus={focus}
+                        onChange={(event) => {
+                          setAttestTarget(event.target.value);
+                          focus();
+                        }}
+                      />
+                      <span className="min-w-0">
+                        <SubjectLabel
+                          subject={candidate.name}
+                          id={Number.isFinite(numericId) ? numericId : null}
+                          className="text-[14px]"
+                        />
+                        <span className="ml-1.5 font-mono text-[14px] text-slate-500">
+                          · {candidate.distance_m} m · {candidate.turn}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </fieldset>
               <label className="flex flex-col gap-1 text-[14px] text-slate-700">
                 <span>{t("근거 (필수)", "Basis (required)", "根拠（必須）")}</span>
                 <input
@@ -644,13 +849,34 @@ function FixFindingRow({
                   className="rounded-md border border-slate-300 bg-white/[0.06] px-2 py-1 text-[15px] text-slate-900"
                 />
               </label>
+              {/* Unit #41 -- the consent line a reader must meet BEFORE the
+                * button stays visible and got shorter; the two standing
+                * explanations it used to run on into (what the system
+                * constructs, and why only a person can answer) moved intact
+                * into the disclosure under it. Moved, never dropped. */}
               <p className="text-[14px] leading-relaxed text-slate-500">
                 {t(
-                  "연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다 — 확인하시는 것은 도로가 이어진다는 사실뿐입니다. 승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다.",
-                  "The connector's shape and lane mapping are constructed by the system from the two existing link ends — what you attest is only that the road continues. Approving runs a real Vissim edit and re-gates the network.",
-                  "コネクタの形状と車線対応は既存の2つのリンク端からシステムが構成します — 確認いただくのは道路が続くという事実のみです。承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します。",
+                  "승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다.",
+                  "Approving runs a real Vissim edit and re-gates the network.",
+                  "承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します。",
                 )}
               </p>
+              <CardDetails summary={moreLabel(t)}>
+                <p className="leading-relaxed">
+                  {t(
+                    "원본 데이터는 이 지점에서 이어지는 도로를 선언하지 않습니다. 현장을 아시는 분만 답할 수 있는 질문이며, 확인하시면 확인자와 시각이 이 수정과 함께 기록됩니다.",
+                    "The source data declares no continuation here. Only someone who knows the site can answer, and an attestation is recorded with who made it and when.",
+                    "元データはこの地点での継続を宣言していません。現場をご存じの方だけが答えられる問いであり、確認された場合は確認者と時刻がこの修正とともに記録されます。",
+                  )}
+                </p>
+                <p className="leading-relaxed">
+                  {t(
+                    "연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다 — 확인하시는 것은 도로가 이어진다는 사실뿐입니다.",
+                    "The connector's shape and lane mapping are constructed by the system from the two existing link ends — what you attest is only that the road continues.",
+                    "コネクタの形状と車線対応は既存の2つのリンク端からシステムが構成します — 確認いただくのは道路が続くという事実のみです。",
+                  )}
+                </p>
+              </CardDetails>
               <div>
                 <button
                   type="button"
@@ -689,10 +915,18 @@ function FixFindingRow({
         </div>
       ) : (
         <div className="mt-2 flex flex-col gap-2">
-          <p className="font-mono text-[14px] text-slate-600">
-            {t("동사", "Verb", "動詞")}: {disposition.verb}
+          {/* Unit #41 -- one line a reader can act on, then the machine detail
+            * behind a toggle. The verb string, the assumption tokens and the
+            * backend's full rationale paragraph are all still here, verbatim
+            * and complete, inside the 자세히 block below; what leads the card
+            * now is the sentence that says whether this can be approved. */}
+          <p className="leading-relaxed text-slate-800">
+            {t(
+              "승인하면 이 수정을 자동으로 적용할 수 있습니다.",
+              "This fix can be applied automatically once approved.",
+              "承認すればこの修正を自動的に適用できます。",
+            )}
           </p>
-          <p className="leading-relaxed text-slate-700">{rationale}</p>
 
           <span
             className={`w-fit rounded-full border px-1.5 py-0.5 text-[14px] font-semibold ${
@@ -714,13 +948,20 @@ function FixFindingRow({
             </p>
           )}
 
-          {disposition.assumptions.length > 0 && (
-            <ul className="list-disc space-y-0.5 pl-4 text-[14px] leading-relaxed text-slate-600">
-              {disposition.assumptions.map((token) => (
-                <li key={token}>{fixAssumptionLabel(token, t)}</li>
-              ))}
-            </ul>
-          )}
+          <CardDetails summary={moreLabel(t)}>
+            <p className="font-mono leading-relaxed text-slate-700">{rationale}</p>
+            {disposition.assumptions.length > 0 && (
+              <ul className="list-disc space-y-0.5 pl-4 leading-relaxed">
+                {disposition.assumptions.map((token) => (
+                  <li key={token}>{fixAssumptionLabel(token, t)}</li>
+                ))}
+              </ul>
+            )}
+            <p className="font-mono text-[14px] text-slate-500">
+              {finding.code} · {t("동사", "Verb", "動詞")}: {disposition.verb}
+              {disposition.reason_code ? ` · ${disposition.reason_code}` : ""}
+            </p>
+          </CardDetails>
 
           {/* The inherited-auto-publish disclosure -- one sentence, not a
             * modal, on every approval card regardless of confidence. */}
@@ -758,21 +999,37 @@ function FixFindingRow({
             * check that no derivation can is whether it is the road they mean.
             * Unticked, there is no approve button to press. */}
           {needsTargetConfirmation && (
-            <label className="flex items-start gap-2 text-[14px] leading-relaxed text-slate-700">
-              <input
-                type="checkbox"
-                checked={targetConfirmed}
-                onChange={(event) => setTargetConfirmed(event.target.checked)}
-                className="mt-0.5"
-              />
-              <span>
-                {t(
-                  `링크 ${String(disposition.params?.to_link ?? "")}로 이어지는 것이 맞는지 지도에서 확인했습니다`,
-                  `I checked on the map that it continues to link ${String(disposition.params?.to_link ?? "")}`,
-                  `リンク ${String(disposition.params?.to_link ?? "")} へ続くことを地図で確認しました`,
+            <div className="flex flex-col gap-1">
+              {/* Unit #41 -- the tick asks the reader to check the map, and
+                * until now the screen gave them no way to get there. The
+                * control under it shows the DERIVED to-link itself, on the map
+                * beside this card. */}
+              {disposition.params?.to_link !== undefined &&
+                Number.isFinite(Number(disposition.params?.to_link)) && (
+                  <button
+                    type="button"
+                    onClick={() => onFocusElement("link", Number(disposition.params?.to_link))}
+                    className="ui-button-ghost w-fit rounded-full px-2.5 py-0.5 text-[14px] font-medium"
+                  >
+                    {t("지도에서 대상 링크 보기", "Show the target link on the map", "地図で対象リンクを見る")}
+                  </button>
                 )}
-              </span>
-            </label>
+              <label className="flex items-start gap-2 text-[14px] leading-relaxed text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={targetConfirmed}
+                  onChange={(event) => setTargetConfirmed(event.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  {t(
+                    `링크 ${String(disposition.params?.to_link ?? "")}로 이어지는 것이 맞는지 지도에서 확인했습니다`,
+                    `I checked on the map that it continues to link ${String(disposition.params?.to_link ?? "")}`,
+                    `リンク ${String(disposition.params?.to_link ?? "")} へ続くことを地図で確認しました`,
+                  )}
+                </span>
+              </label>
+            </div>
           )}
 
           <label className="flex flex-col gap-1 text-[14px] text-slate-600">
@@ -1046,6 +1303,9 @@ function GateCheckGrid({
   fixes,
   fixesError,
   onFixApplied,
+  placeable,
+  onFocusFinding,
+  onFocusElement,
 }: {
   checks: GenesisGateCheck[];
   t: Translate;
@@ -1056,11 +1316,59 @@ function GateCheckGrid({
   fixes: GenesisJobFixes | null;
   fixesError: GenesisError | Error | null;
   onFixApplied: (job: GenesisJob) => void;
+  /** Unit #41 -- `findingKeyOf` for every finding the map can actually place.
+   * A row outside this set stays a plain line: it has no location to show, and
+   * a control that looks like it does is worse than none. */
+  placeable: ReadonlySet<string>;
+  onFocusFinding: (ref: FindingRef | null, point?: { lat: number; lon: number; label: string }) => void;
+  onFocusElement: (kind: "link" | "connector", id: number) => void;
 }) {
   // NO initial selection, by the user's explicit instruction. `null` is the
   // mount state and stays until a click.
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = selectedId ? checks.find((check) => check.id === selectedId) ?? null : null;
+
+  // Unit #41 -- which of THIS check's findings carry an applicable proposal.
+  // Keyed by (code, subject), the same identity the backend addresses a
+  // finding by, so the gate report's rows and the fix catalogue's rows line up
+  // without either side matching on message text.
+  const proposalKeys = new Set(
+    (fixes?.findings ?? [])
+      .filter((entry) => selected && entry.check_id === selected.id && fixFindingIsProposal(entry))
+      .map((entry) => findingKeyOf(entry)),
+  );
+  const checkFixes = (fixes?.findings ?? []).filter(
+    (entry) => selected && entry.check_id === selected.id,
+  );
+  // DISPLAY ORDER ONLY -- a stable partition, proposals first. `fixes.findings`
+  // itself is untouched, and so is the stored gate: what changed is which of
+  // ten rows a reader meets before the fold, not what the payload says.
+  const orderedFixes = [
+    ...checkFixes.filter((entry) => fixFindingIsProposal(entry)),
+    ...checkFixes.filter((entry) => !fixFindingIsProposal(entry)),
+  ];
+  // The gate report's own row for a fix-catalogue entry, so a card that puts
+  // the reader on the map also opens the finding's own detail there rather
+  // than a bare ring with nothing beside it. Matched on (code, subject) --
+  // never on message text, which is rendered per language.
+  const gateRowByKey = new Map<string, { finding: GenesisGateFinding; via: "finding" | "warning" }>();
+  for (const entry of selected?.findings ?? []) {
+    gateRowByKey.set(findingKeyOf(entry), { finding: entry, via: "finding" });
+  }
+  for (const entry of selected?.warnings ?? []) {
+    gateRowByKey.set(findingKeyOf(entry), { finding: entry, via: "warning" });
+  }
+  const refForFix = (entry: GenesisFixFinding): FindingRef | null => {
+    const row = selected ? gateRowByKey.get(findingKeyOf(entry)) : undefined;
+    if (!selected || !row) return null;
+    return {
+      checkId: selected.id,
+      checkTitle: selected.title,
+      tier: selected.tier,
+      finding: row.finding,
+      via: row.via,
+    };
+  };
 
   return (
     <div>
@@ -1132,7 +1440,12 @@ function GateCheckGrid({
               {selected.findings.length > 0 && (
                 <CollapsibleMessages
                   key={`f-${selected.id}`}
-                  items={selected.findings.map((finding) => finding.message)}
+                  check={selected}
+                  findings={selected.findings}
+                  via="finding"
+                  proposalKeys={proposalKeys}
+                  placeable={placeable}
+                  onFocusFinding={onFocusFinding}
                   t={t}
                 />
               )}
@@ -1149,7 +1462,12 @@ function GateCheckGrid({
               {selected.warnings.length > 0 && (
                 <CollapsibleMessages
                   key={`w-${selected.id}`}
-                  items={selected.warnings.map((warning) => `warn / ${warning.message}`)}
+                  check={selected}
+                  findings={selected.warnings}
+                  via="warning"
+                  proposalKeys={proposalKeys}
+                  placeable={placeable}
+                  onFocusFinding={onFocusFinding}
                   t={t}
                 />
               )}
@@ -1213,21 +1531,52 @@ function GateCheckGrid({
                     </p>
                   )}
 
+                  {/* Unit #41 -- PROPOSALS FIRST, and one flat list. The rows
+                    * used to be nine bordered cards nested inside this
+                    * bordered card, in payload order, which is how the single
+                    * applicable proposal of ten ended up ninth and unread.
+                    * They are rules now, not boxes, and the ordering is
+                    * `orderedFixes`'s. */}
                   {fixes && (
-                    <div className="mt-2 flex flex-col gap-3">
-                      {fixes.findings
-                        .filter((finding) => finding.check_id === selected.id)
-                        .map((finding) => (
+                    <div className="mt-2 flex flex-col divide-y divide-slate-200">
+                      {orderedFixes.map((finding) => {
+                        // A ROW'S IDENTITY IS ITS PLACE IN THE PAYLOAD, NEVER
+                        // ITS PLACE ON SCREEN. `orderedFixes` is a DISPLAY
+                        // partition, and a live check re-gates this job in
+                        // place -- the fixes fetch is keyed on
+                        // `gate.checked_at`, so the payload is replaced with
+                        // no navigation and a row can cross the partition
+                        // while the reader is mid-card. Indexed by display
+                        // position, that reorder makes React preserve a key
+                        // whose finding CHANGED: with gate.py's real duplicate
+                        // pair (`v3_silent_departure_point / 대덕대로 [FWD]
+                        // w52496957s1`, raised for link 427 AND 429), key
+                        // `<code>::<subject>::2` was 429's card and becomes
+                        // 427's -- carrying 429's typed attestation basis, its
+                        // picked destination and its ticked map-confirmation
+                        // onto a different link's finding. An attestation is a
+                        // recorded human claim about ONE object; it may never
+                        // slide onto another. The payload index is stable
+                        // across every reorder, so a preserved key is always
+                        // the same finding. Reference-identity `indexOf`: each
+                        // parsed finding is its own object, so duplicates get
+                        // distinct indices.
+                        const rowKey = `${finding.code}::${finding.subject}::${checkFixes.indexOf(finding)}`;
+                        return (
                           <FixFindingRow
-                            key={`${finding.code}::${finding.subject}`}
+                            key={rowKey}
+                            instanceKey={rowKey}
                             jobId={jobId}
                             finding={finding}
                             t={t}
                             lang={lang}
                             onApplied={onFixApplied}
+                            onFocusElement={onFocusElement}
+                            onFocusPoint={(point) => onFocusFinding(refForFix(finding), point)}
                           />
-                        ))}
-                      {fixes.findings.filter((finding) => finding.check_id === selected.id).length === 0 && (
+                        );
+                      })}
+                      {orderedFixes.length === 0 && (
                         <p className="text-[15px] text-slate-500">
                           {t(
                             "이 검사에는 개별 수정 제안이 없습니다.",
@@ -1304,18 +1653,95 @@ function downloadFailureText(caught: unknown, t: Translate): string {
  * fold resets when the reader moves to another check. */
 const FINDINGS_COLLAPSED_COUNT = 6;
 
-function CollapsibleMessages({ items, t }: { items: string[]; t: Translate }) {
+/**
+ * THE FINDING LIST -- unit #41 turned it from printed text into the screen's
+ * primary index of the verdict. Three things changed, all of them the user's
+ * own findings from the 2026-08-17 live pass:
+ *
+ *   * A ROW IS A CONTROL when the census could place its subject. This is the
+ *     "소견을 눌러도 지도가 반응하지 않는다" bug: nothing here was ever a
+ *     button, in either direction, so no click could reach the map. A row
+ *     OUTSIDE `placeable` stays a plain `<li>` -- the gate carries no location
+ *     reference for it, and the panel's own "지도에 표시하지 못한 발견" list is
+ *     where it is named. No invented coordinates, then or now.
+ *   * A ROW CARRYING A PROPOSAL SORTS FIRST and wears the sky badge.
+ *   * AND THE FOLD CAN NEVER CLOSE OVER ONE. `visibleCount` is the greater of
+ *     the standing cut and the number of proposals, so the case that opened
+ *     this unit (one applicable proposal, ninth of ten, under a six-item fold)
+ *     cannot recur even if a check ever raises more proposals than the cut.
+ *
+ * The fold itself is unchanged and still PRESENTATION ONLY: the server-side
+ * cap's own named-omission line ("표시되지 않은 N건 — gate.json") is evidence
+ * and renders separately, untouched. Callers key this by the selected check's
+ * id so the fold resets when the reader moves to another check.
+ */
+function CollapsibleMessages({
+  check,
+  findings,
+  via,
+  proposalKeys,
+  placeable,
+  onFocusFinding,
+  t,
+}: {
+  check: GenesisGateCheck;
+  findings: GenesisGateFinding[];
+  via: "finding" | "warning";
+  proposalKeys: ReadonlySet<string>;
+  placeable: ReadonlySet<string>;
+  onFocusFinding: (ref: FindingRef) => void;
+  t: Translate;
+}) {
   const [expanded, setExpanded] = useState(false);
-  const overflow = items.length - FINDINGS_COLLAPSED_COUNT;
-  const visible = expanded || overflow <= 0 ? items : items.slice(0, FINDINGS_COLLAPSED_COUNT);
+
+  const rows = findings.map((finding) => ({
+    finding,
+    key: findingKeyOf(finding),
+    ref: { checkId: check.id, checkTitle: check.title, tier: check.tier, finding, via } as FindingRef,
+  }));
+  const withProposal = rows.filter((row) => proposalKeys.has(row.key));
+  const ordered = [...withProposal, ...rows.filter((row) => !proposalKeys.has(row.key))];
+  const visibleCount = Math.max(FINDINGS_COLLAPSED_COUNT, withProposal.length);
+  const overflow = ordered.length - visibleCount;
+  const visible = expanded || overflow <= 0 ? ordered : ordered.slice(0, visibleCount);
+
   return (
     <>
       <ul className="mt-2 space-y-1">
-        {visible.map((message, index) => (
-          <li key={index} className="text-[15px] leading-relaxed">
-            {message}
-          </li>
-        ))}
+        {visible.map((row, index) => {
+          const isProposal = proposalKeys.has(row.key);
+          const badge = isProposal ? (
+            <span
+              className={`mr-1.5 rounded-full border px-1.5 py-0.5 text-[14px] font-bold ${fixProposalBadgeClasses()}`}
+            >
+              {t("제안", "Proposal", "提案")}
+            </span>
+          ) : null;
+          const body = (
+            <>
+              {badge}
+              {via === "warning" && <span className="mr-1 text-slate-500">warn /</span>}
+              <SubjectLabel subject={row.finding.subject} className="text-[15px]" />
+              <span className="mt-0.5 block leading-relaxed">{row.finding.message}</span>
+            </>
+          );
+          return (
+            <li key={`${row.key}-${index}`} className="text-[15px] leading-relaxed">
+              {placeable.has(row.key) ? (
+                <button
+                  type="button"
+                  onClick={() => onFocusFinding(row.ref)}
+                  title={t("지도에서 보기", "Show on the map", "地図で見る")}
+                  className="w-full rounded-md border border-transparent px-1.5 py-1 text-left hover:border-slate-300 hover:bg-slate-100"
+                >
+                  {body}
+                </button>
+              ) : (
+                <span className="block px-1.5 py-1">{body}</span>
+              )}
+            </li>
+          );
+        })}
       </ul>
       {overflow > 0 && (
         <button
@@ -1572,6 +1998,39 @@ export default function GenesisJobDetailPage() {
       .catch(() => {
         /* the poll above owns error reporting; a missed refresh is retried there */
       });
+  }, [jobId]);
+
+  // Unit #41 -- THE MISSING WIRE. The map has owned a selection since U-19,
+  // but only its own clicks could set it; the verdict rail beside it had no
+  // way in, which is why clicking a finding did nothing at all. These three
+  // handlers are that way in. Each bumps a sequence number rather than
+  // replacing a controlled value, because the map still owns the state (see
+  // `GenesisMapSelectionRequest`) and because clicking the SAME row twice must
+  // re-centre rather than no-op.
+  const [mapRequest, setMapRequest] = useState<GenesisMapSelectionRequest | null>(null);
+  const [placeable, setPlaceable] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const requestSelection = useCallback((item: SelectedItem) => {
+    setMapRequest((current) => ({ seq: (current?.seq ?? 0) + 1, item }));
+  }, []);
+  const focusFinding = useCallback(
+    (ref: FindingRef | null, point?: { lat: number; lon: number; label: string }) =>
+      requestSelection({ kind: "finding", refs: ref ? [ref] : [], point }),
+    [requestSelection],
+  );
+  // An element asked for by id only -- the map re-resolves its name and its
+  // findings from the census it already holds (see its own request effect), so
+  // the blanks here are filled there rather than guessed at.
+  const focusElement = useCallback(
+    (kind: "link" | "connector", id: number) =>
+      requestSelection({ kind: "element", elementKind: kind, id, name: "", refs: [] }),
+    [requestSelection],
+  );
+  // A different job is a different network: a request minted against the old
+  // one must not survive into it (the map clears its own selection on the same
+  // signal, see its reset effect).
+  useEffect(() => {
+    setMapRequest(null);
+    setPlaceable(new Set<string>());
   }, [jobId]);
 
   // On a 202 from POST .../fixes/apply: the sibling job now HAS its own URL,
@@ -1864,7 +2323,7 @@ export default function GenesisJobDetailPage() {
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[65fr_35fr] xl:items-start mb-8">
         <div className="min-w-0">
           {report ? (
-            <GenesisTileMap jobId={selected.id} report={report} hasArtifact={Boolean(selected.artifact)} />
+            <GenesisTileMap jobId={selected.id} report={report} hasArtifact={Boolean(selected.artifact)} selectionRequest={mapRequest} onPlaceableChange={setPlaceable} />
           ) : (
             <div className="rounded-xl border border-slate-200 bg-white/[0.03] px-6 py-10 text-center">
               <p className="text-[15px] text-slate-500">
@@ -1891,6 +2350,9 @@ export default function GenesisJobDetailPage() {
               fixes={fixes}
               fixesError={fixesError}
               onFixApplied={handleFixApplied}
+              placeable={placeable}
+              onFocusFinding={focusFinding}
+              onFocusElement={focusElement}
             />
           ) : (
             <p className="text-[15px] text-slate-500">

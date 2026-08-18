@@ -93,10 +93,21 @@ function metersPerPixel(latDeg: number, zoom: number): number {
  * basemap is a strip. Kept above that floor with room to spare. */
 const MAP_HEIGHT = 420;
 
+/** Unit #41 -- a selection asked for from OUTSIDE the map (a finding row
+ * clicked in the verdict rail beside it, or a candidate link picked inside an
+ * attestation card). Carried as a numbered REQUEST rather than as a controlled
+ * value on purpose: the map still OWNS its selection state -- every click on
+ * the basemap writes it directly, with no round trip through a parent -- and a
+ * request only ever pushes into it. The `seq` is what makes clicking the SAME
+ * row twice re-focus instead of no-op. */
+export type GenesisMapSelectionRequest = { seq: number; item: SelectedItem };
+
 export default function GenesisTileMap({
   jobId,
   report,
   hasArtifact,
+  selectionRequest = null,
+  onPlaceableChange,
 }: {
   jobId: string;
   report: GenesisGateReport | null;
@@ -104,6 +115,13 @@ export default function GenesisTileMap({
    * errored before a network was ever drafted has nothing to fetch, and the
    * panel must SAY that rather than attempt a fetch that can only 404. */
   hasArtifact: boolean;
+  selectionRequest?: GenesisMapSelectionRequest | null;
+  /** The set of `findingKeyOf` values whose subject actually resolved to
+   * geometry, published upward so the verdict rail can offer a map jump ONLY
+   * on rows that have somewhere to jump to. The census this is derived from is
+   * fetched here and nowhere else, which is why it travels out rather than the
+   * rail deriving its own answer. */
+  onPlaceableChange?: (placeable: ReadonlySet<string>) => void;
 }) {
   const { t } = useLanguage();
 
@@ -197,6 +215,14 @@ export default function GenesisTileMap({
     [selected, network],
   );
 
+  // Unit #41 -- publish "which findings can be placed" the moment the census
+  // that answers it is in. Before this the rail had no way to know, so it
+  // offered no map jump at all and a reader who clicked a finding got nothing
+  // -- the bug this unit was opened for.
+  useEffect(() => {
+    onPlaceableChange?.(highlights.placeable);
+  }, [highlights, onPlaceableChange]);
+
   const excludedZones = network?.metadata.connectivity?.excluded_zones ?? [];
 
   // U-19: clicking a link/connector selects THAT ELEMENT, whether or not it
@@ -228,6 +254,44 @@ export default function GenesisTileMap({
   // renderers' "clicked empty map" handler -- not three copies of
   // `setSelected(null)` that could drift.
   const handleClearSelection = useCallback(() => setSelected(null), []);
+
+  // Unit #41 -- an outside request pushes into THIS component's own state.
+  // Keyed on the request's `seq` alone: re-running on the item's identity
+  // would re-fire on every parent render and stamp over a click the reader
+  // just made on the map itself.
+  //
+  // An ELEMENT request is re-resolved through the map's OWN handlers rather
+  // than taken at face value: the caller (a fix card's "지도에서 대상 링크
+  // 보기") knows an id and nothing else, and the name and the finding list a
+  // click on that same link would show live in the census, which is fetched
+  // here. Routing it through the same handler is what stops an externally
+  // selected link from rendering as a nameless element with no findings.
+  const requestSeq = selectionRequest?.seq ?? 0;
+  // Both the pending request AND the two resolvers are read through refs, so
+  // the effect's ONLY dependency is the sequence number: with the handlers in
+  // the dependency array, the census arriving (which rebuilds them) would
+  // re-apply the last request and stamp over whatever the reader had clicked
+  // since.
+  const pendingRef = useRef<{ item: SelectedItem; selectLink: (id: number) => void; selectConnector: (id: number) => void }>({
+    item: null,
+    selectLink: handleSelectLink,
+    selectConnector: handleSelectConnector,
+  });
+  pendingRef.current = {
+    item: selectionRequest?.item ?? null,
+    selectLink: handleSelectLink,
+    selectConnector: handleSelectConnector,
+  };
+  useEffect(() => {
+    if (requestSeq <= 0) return;
+    const { item, selectLink, selectConnector } = pendingRef.current;
+    if (item?.kind === "element") {
+      if (item.elementKind === "link") selectLink(item.id);
+      else selectConnector(item.id);
+      return;
+    }
+    setSelected(item);
+  }, [requestSeq]);
 
   const header = (
     <div className="flex items-center justify-between gap-3">
@@ -328,6 +392,7 @@ export default function GenesisTileMap({
                   connectorsById={connectorsById}
                   highlights={highlights}
                   selectedHighlight={selectedHighlight}
+                  selectedPoint={selected?.kind === "finding" ? selected.point ?? null : null}
                   showNormal={showNormal}
                   showRefuse={showRefuse}
                   showWarn={showWarn}
@@ -407,6 +472,7 @@ function FindingsTileLayer({
   connectorsById,
   highlights,
   selectedHighlight,
+  selectedPoint,
   showNormal,
   showRefuse,
   showWarn,
@@ -424,6 +490,12 @@ function FindingsTileLayer({
   connectorsById: Map<number, GenesisDraftConnector>;
   highlights: ReturnType<typeof buildHighlights>;
   selectedHighlight: { linkIds: number[]; connectorIds: number[] } | null;
+  /** Unit #41 -- ONE measured point to ring and centre on (a V3 testimony's own
+   * `source_testimony.coordinates`). Null for every finding whose payload
+   * carried no coordinate: no marker at all is the honest answer, and a pin
+   * dropped at a link end this file guessed would be a location the product
+   * invented. */
+  selectedPoint: { lat: number; lon: number; label: string } | null;
   showNormal: boolean;
   showRefuse: boolean;
   showWarn: boolean;
@@ -699,6 +771,31 @@ function FindingsTileLayer({
         }
       }
 
+      // Unit #41 -- THE DEPARTURE POINT, drawn last so it sits over its own
+      // road. Two rings rather than a leaflet default marker: the default icon
+      // is a PNG this app does not ship, and a circle in the selection hue is
+      // the same vocabulary the selected polyline already speaks. Drawn ONLY
+      // from a coordinate the payload measured (see the prop's own comment) --
+      // there is no fallback pin.
+      if (selectedPoint) {
+        L.circleMarker([selectedPoint.lat, selectedPoint.lon], {
+          radius: 11,
+          color: SELECTED_COLOR,
+          weight: 2,
+          fill: false,
+          opacity: 0.9,
+          interactive: false,
+        }).addTo(layer);
+        L.circleMarker([selectedPoint.lat, selectedPoint.lon], {
+          radius: 3.5,
+          color: SELECTED_COLOR,
+          fillColor: SELECTED_COLOR,
+          fillOpacity: 1,
+          weight: 0,
+          interactive: false,
+        }).addTo(layer);
+      }
+
       if (cancelled || mapRef.current !== map) {
         layer.remove();
         return;
@@ -710,7 +807,51 @@ function FindingsTileLayer({
     return () => {
       cancelled = true;
     };
-  }, [ready, geo, linksById, connectorsById, highlights, selectedHighlight, showNormal, showRefuse, showWarn, zoomTick]);
+  }, [ready, geo, linksById, connectorsById, highlights, selectedHighlight, selectedPoint, showNormal, showRefuse, showWarn, zoomTick]);
+
+  // Unit #41 -- BRING THE SELECTION INTO VIEW. A finding clicked in the rail
+  // is useless if its road is off screen at the current pan, and this is the
+  // half of "클릭 → 지도 하이라이트" a colour change alone cannot deliver.
+  // Only ever a `setView`/`fitBounds` on a NEW selection -- never on a redraw,
+  // so the reader's own panning survives a zoom or a legend toggle.
+  const focusKey = selectedPoint
+    ? `p:${selectedPoint.lat},${selectedPoint.lon}`
+    : `l:${(selectedHighlight?.linkIds ?? []).join(",")}|c:${(selectedHighlight?.connectorIds ?? []).join(",")}`;
+  useEffect(() => {
+    if (!ready) return;
+    const map = mapRef.current;
+    if (!map) return;
+    let cancelled = false;
+    (async () => {
+      const L = (await import("leaflet")).default;
+      if (cancelled || mapRef.current !== map) return;
+      if (selectedPoint) {
+        map.setView([selectedPoint.lat, selectedPoint.lon], Math.max(map.getZoom(), 17));
+        return;
+      }
+      const linkIds = new Set(selectedHighlight?.linkIds ?? []);
+      const connectorIds = new Set(selectedHighlight?.connectorIds ?? []);
+      if (linkIds.size === 0 && connectorIds.size === 0) return;
+      const points: [number, number][] = [];
+      for (const feature of geo.features) {
+        const chosen =
+          feature.properties.kind === "connector"
+            ? connectorIds.has(feature.properties.id)
+            : linkIds.has(feature.properties.id);
+        if (!chosen) continue;
+        for (const [lon, lat] of feature.geometry.coordinates) points.push([lat, lon]);
+      }
+      if (points.length === 0) return;
+      map.fitBounds(L.latLngBounds(points), { padding: [60, 60], maxZoom: 18 });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `focusKey` is the whole dependency on purpose: it changes exactly when
+    // the SELECTED geometry does, and re-running on `selectedHighlight`'s
+    // object identity would re-centre the map on every parent render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, focusKey]);
 
   const fit = useCallback(async () => {
     const map = mapRef.current;
