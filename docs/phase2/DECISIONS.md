@@ -6542,3 +6542,34 @@ Korean demo marker cannot pass `_NAME_RE` (ASCII-only) — the same seam
 `routers.genesis._render_fix_disposition` (the literal function the fixes route calls)
 rather than re-deriving ask-first logic. Both are named in the script docstring; the
 refuter confirmed the prose claims nothing stronger than the code.
+
+
+---
+
+## 2026-08-18 — #44: the shared-behaviour guardrail's premise collides with MRWA §5.2.5.1's intent
+
+**Context:** unit #44 (`backend/services/agent/saturation_flow.py`) builds Table 5-6
+car-following proposals whose MRWA-intended scope is NETWORK-WIDE (§5.2.5.1 calibrates urban
+driving behaviour from one key-intersection measurement). Verified reality: the existing
+guardrail `driving_behavior_shared_object_edit` (constraints.py) refuses in-place edits of any
+driving behaviour with reference_count > 0 — its premise is that a shared-object edit is an
+accidental blast radius, i.e. it assumes the *local* intent. Every W74 behaviour in the real
+consultant model has reference_count >= 1, so the guardrail will refuse the very edit the
+guideline prescribes.
+
+**Decision:** #44 does not resolve the collision in code. The proposal carries an honest
+`preflight_forecast` keyed on reference_count (the refuter proved scope cannot change the
+engine's verdict, so the forecast no longer pretends it can), and the refusal happens at the
+constraint engine exactly as before. Whether to (a) relax the guardrail for
+CAR_FOLLOWING_LEVEL proposals, (b) auto-duplicate-and-retarget (changes what the number
+represents — a modelling decision), or (c) keep refusing and require a human duplicate first,
+is a human product call, not an agent's.
+
+**Consequence:** until that call is made, live application of a Table 5-6 set on the real
+model stops at `driving_behavior_shared_object_edit` — visible in the forecast before anyone
+clicks. Two adjacent honesty rulings from the same unit, recorded so they are not re-litigated:
+the 800–2200 pcu plausibility screen is OUR drafted candidate (extract Warn-tier), not a Main
+Roads figure, and is now attributed as such in all three languages; partial approval of an
+ax/bx_add/bx_mult set is detected and named by `verify_applied_row` (detection chosen over
+structural locking, which would have meant editing gates.py/routers shared with every unit) —
+the same check also names the real model's unsourced 'flyt updated' hand-tunings.
