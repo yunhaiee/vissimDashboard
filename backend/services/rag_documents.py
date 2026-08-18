@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from config import REPO_ROOT
+from services.rag_pdf import PDF_SECTION, load_pdf_corpus, pdf_corpus_status
 from services.rag_vector_store import get_vector_status, search_vector_index
 
 DOC_CONTEXT_LIMIT = 5
@@ -83,23 +84,39 @@ def search_keyword_rag(query: str, limit: int = DOC_CONTEXT_LIMIT) -> list[dict[
 
 
 def get_rag_status() -> dict[str, Any]:
-    docs = list_markdown_documents()
+    docs = list_corpus_documents()
     by_kind: dict[str, int] = {}
     for doc in docs:
         by_kind[doc.kind] = by_kind.get(doc.kind, 0) + 1
     vector = get_vector_status()
     backend = vector.get("backend") if vector.get("ready") else "markdown"
+    pdf = pdf_corpus_status()
     return {
         "documents": len(docs),
         "chunks": len(load_rag_chunks()),
         "sections": by_kind,
         "root": str(REPO_ROOT / "docs"),
+        # RAG_SECTIONS has always named five section directories, and for as long
+        # as this checkout has existed none of them were on disk -- so every
+        # markdown file landed in the catch-all "doc" kind and the section-aware
+        # ranking never fired. Reporting the gap is the difference between a
+        # corpus that is small and a corpus that is silently mis-shaped.
+        "expected_sections": sorted(RAG_SECTIONS),
+        "missing_sections": sorted(section for section in RAG_SECTIONS if not by_kind.get(section)),
+        "pdf": pdf,
         "mode": backend,
         "vector": vector,
     }
 
 
 def load_rag_chunks() -> list[dict[str, Any]]:
+    chunks = load_markdown_chunks()
+    pdf_chunks, _ = load_pdf_corpus()
+    chunks.extend(pdf_chunks)
+    return chunks
+
+
+def load_markdown_chunks() -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
     for doc in list_markdown_documents():
         try:
@@ -120,11 +137,37 @@ def load_rag_chunks() -> list[dict[str, Any]]:
     return chunks
 
 
+def list_corpus_documents() -> list[RagDocument]:
+    """Every source in the corpus: markdown under docs/ plus the ingested PDFs."""
+    return [*list_markdown_documents(), *list_pdf_documents()]
+
+
 def list_markdown_documents() -> list[RagDocument]:
     docs_dir = REPO_ROOT / "docs"
     if not docs_dir.exists():
         return []
     return [document_for_path(path) for path in sorted(docs_dir.rglob("*.md"))]
+
+
+def list_pdf_documents() -> list[RagDocument]:
+    """One RagDocument per PDF that actually produced chunks.
+
+    A PDF that yielded nothing (no pypdf, unreadable file, image-only scan) is
+    deliberately not counted as a corpus document -- it is reported under
+    ``get_rag_status()["pdf"]["warnings"]`` instead, so the document count never
+    claims coverage the retriever cannot deliver.
+    """
+    _, reports = load_pdf_corpus()
+    return [
+        RagDocument(
+            path=Path(report.path),
+            title=report.title,
+            kind=PDF_SECTION,
+            section=PDF_SECTION,
+        )
+        for report in reports
+        if report.chunks
+    ]
 
 
 def document_for_path(path: Path) -> RagDocument:

@@ -1,8 +1,96 @@
 [
   {
+    "id": "mrwa_section5_extract",
+    "query": "MRWA Vissim guidelines section 5 driving behaviour verbatim extract",
+    "top_k": 5,
+    "requires": [
+      "reference/mrwa-section5-extract.md"
+    ],
+    "must_match_any": [
+      "mrwa-section5-extract.md"
+    ]
+  },
+  {
+    "id": "mrwa_linsig_tables",
+    "query": "LinSig saturation flow tables MRWA appendix lane capacity",
+    "top_k": 5,
+    "requires": [
+      "reference/mrwa-linsig-tables-extract.md"
+    ],
+    "must_match_any": [
+      "mrwa-linsig-tables-extract.md",
+      "operational-modelling-v2.pdf"
+    ],
+    "note": "The LinSig saturation-flow tables now have two carriers: the retyped extract, and the guidelines PDF section 3.3.10 (doc p.66-71) that the extract was typed from. Once the vector index is built over the PDF, the source outranks the retyped copy and fills the whole top-5 - measured 2026-08-18, the extract fell out of the top 15. Either carrier answers the query; naming only the copy made this case pass or fail on whether tools/build_rag_index.py had been run."
+  },
+  {
+    "id": "adapter_contract",
+    "query": "format neutral adapter contract provenance data intake schema",
+    "top_k": 5,
+    "requires": [
+      "product/adapter-contract.md"
+    ],
+    "must_match_any": [
+      "adapter-contract.md",
+      "data-intake-inventory"
+    ]
+  },
+  {
+    "id": "com_execution_guide",
+    "query": "Vissim COM landmines execution guide attach_to_running RunContinuous",
+    "top_k": 5,
+    "requires": [
+      "phase2/00-execution-guide.md"
+    ],
+    "must_match_any": [
+      "00-execution-guide.md",
+      "01-architecture.md"
+    ]
+  },
+  {
+    "id": "operational_modelling_demand",
+    "query": "operational modelling traffic demand vehicle inputs growth factor model calibration",
+    "top_k": 5,
+    "requires": [
+      "operational-modelling-v2.pdf",
+      "operational_modelling",
+      "vehicle_inputs_demand"
+    ],
+    "must_match_any": [
+      "operational-modelling-v2.pdf",
+      "operational_modelling",
+      "vehicle_inputs_demand"
+    ]
+  },
+  {
+    "id": "mrwa_car_following_parameters",
+    "query": "recommended car following model parameters additive part of safety distance average saturation flow",
+    "top_k": 5,
+    "requires": [
+      "operational-modelling-v2.pdf"
+    ],
+    "must_match_any": [
+      "operational-modelling-v2.pdf"
+    ]
+  },
+  {
+    "id": "mrwa_saturation_flow_calibration",
+    "query": "saturation flow calibration measured discharge headway signalised intersection",
+    "top_k": 5,
+    "requires": [
+      "operational-modelling-v2.pdf"
+    ],
+    "must_match_any": [
+      "operational-modelling-v2.pdf"
+    ]
+  },
+  {
     "id": "signal_program_number_error",
     "query": "Signal Controller Program number has neither a signal program nor daily signal program list",
     "top_k": 5,
+    "requires": [
+      "error_cases/signal_controller_program_number_error.md"
+    ],
     "must_match_any": [
       "error_cases/signal_controller_program_number_error.md"
     ]
@@ -11,6 +99,9 @@
     "id": "pedestrian_no_path_error",
     "query": "Vissim pedestrian route no path Static Pedestrian Routing Decision Route location",
     "top_k": 5,
+    "requires": [
+      "error_cases/pedestrian_no_path_error.md"
+    ],
     "must_match_any": [
       "error_cases/pedestrian_no_path_error.md"
     ]
@@ -19,6 +110,10 @@
     "id": "connector_route_error",
     "query": "Vissim connector route error vehicle route connector path cannot be found",
     "top_k": 5,
+    "requires": [
+      "error_cases/connector_route_error.md",
+      "vissim_manual/links_connectors.md"
+    ],
     "must_match_any": [
       "error_cases/connector_route_error.md",
       "vissim_manual/links_connectors.md"
@@ -28,6 +123,10 @@
     "id": "simulation_run_error",
     "query": "Vissim simulation run error COM RunContinuous simulation failed",
     "top_k": 5,
+    "requires": [
+      "error_cases/simulation_run_error.md",
+      "com_examples/run_simulation.md"
+    ],
     "must_match_any": [
       "error_cases/simulation_run_error.md",
       "com_examples/run_simulation.md"
@@ -37,6 +136,10 @@
     "id": "vehicle_input_setting",
     "query": "How to set Vissim vehicle input volume using COM AttValue",
     "top_k": 5,
+    "requires": [
+      "com_examples/set_vehicle_input.md",
+      "vissim_manual/vehicle_input.md"
+    ],
     "must_match_any": [
       "com_examples/set_vehicle_input.md",
       "vissim_manual/vehicle_input.md"
@@ -46,6 +149,10 @@
     "id": "read_signal_controller_com",
     "query": "Read Signal Controller Program number Signal Groups Signal Programs with Vissim COM",
     "top_k": 5,
+    "requires": [
+      "com_examples/read_signal_controller.md",
+      "vissim_manual/signal_controller.md"
+    ],
     "must_match_any": [
       "com_examples/read_signal_controller.md",
       "vissim_manual/signal_controller.md"
@@ -55,6 +162,9 @@
     "id": "links_connectors_routes",
     "query": "Vissim links connectors routes vehicle path lane connection",
     "top_k": 5,
+    "requires": [
+      "vissim_manual/links_connectors.md"
+    ],
     "must_match_any": [
       "vissim_manual/links_connectors.md",
       "links_connectors_routes"
@@ -64,6 +174,9 @@
     "id": "evaluation_results_delay_queue",
     "query": "Vissim evaluation results delay queue travel time network performance",
     "top_k": 5,
+    "requires": [
+      "vissim_manual/evaluation_results.md"
+    ],
     "must_match_any": [
       "vissim_manual/evaluation_results.md",
       "evaluation_results"
@@ -73,6 +186,10 @@
     "id": "mesoscopic_hybrid_modelling",
     "query": "mesoscopic hybrid modelling guidelines corridor calibration assignment assessment",
     "top_k": 5,
+    "requires": [
+      "mesoscopic_and_hybrid_modelling_guidelines",
+      "mesoscopic-and-hybrid"
+    ],
     "must_match_any": [
       "mesoscopic_and_hybrid_modelling_guidelines",
       "mesoscopic_hybrid"
@@ -82,24 +199,23 @@
     "id": "scatsim_signal_control",
     "query": "SCATSIM guide signal control detector controller simulation",
     "top_k": 5,
+    "requires": [
+      "scatsim_guide_draft_tk",
+      "scatsim"
+    ],
     "must_match_any": [
       "scatsim_guide_draft_tk",
       "signal_control"
     ]
   },
   {
-    "id": "operational_modelling_demand",
-    "query": "operational modelling traffic demand vehicle inputs growth factor model calibration",
-    "top_k": 5,
-    "must_match_any": [
-      "operational_modelling",
-      "vehicle_inputs_demand"
-    ]
-  },
-  {
     "id": "first_steps_vissim",
     "query": "Vissim - First Steps",
     "top_k": 5,
+    "requires": [
+      "vissim_first_steps",
+      "vissim-first-steps"
+    ],
     "must_match_any": [
       "vissim_first_steps",
       "Vissim - First Steps"

@@ -26,6 +26,7 @@ from services.network_selection import (
     resolve_selected_links,
 )
 from services.rag_documents import get_rag_status, search_rag
+from services.rag_pdf import load_pdf_corpus
 from services.validation import geh as compute_geh, geh_grade, load_real_counts
 from services.results_reader import get_compare_summary, get_selected_node_details, list_scenarios
 from services.simulation_runs import list_job_records
@@ -716,6 +717,14 @@ class VissimAssistantRouter:
         warmup = getattr(self.provider, "warmup", None)
         if callable(warmup):
             warmup()
+        # And the PDF half of the RAG corpus. Extracting a 289-page guideline
+        # costs ~7s of pypdf; after that it is served from the on-disk chunk
+        # cache. Doing it here (already a background thread) keeps that cost off
+        # whichever user asks the first question after a cold start.
+        try:
+            load_pdf_corpus()
+        except Exception:  # noqa: BLE001 - a warmup failure must never break startup
+            logger.exception("Assistant warmup: RAG PDF corpus preload failed")
 
     def status(self) -> dict[str, Any]:
         return {
@@ -2794,12 +2803,19 @@ def answer_format_prompt(intent: str, response_language: str | None = "ko") -> s
 def source_from_rag_item(item: dict[str, Any]) -> dict[str, Any]:
     path_text = str(item.get("path") or "")
     path = Path(path_text)
-    page_range = page_range_for_path(path)
+    # A chunk ingested from a PDF carries the page it came from, read off the
+    # page's own printed footer (services/rag_pdf.py). Prefer that over the
+    # filename convention, which only ever worked for the pre-converted
+    # `pdf_knowledge/<doc>/<topic>/pages_N_M.md` layout.
+    page_range = str(item.get("page_range") or "") or page_range_for_path(path)
     topic = topic_for_path(path, str(item.get("title") or ""))
     source_file = source_file_for_path(path, str(item.get("title") or ""))
     retrieval = str(item.get("retrieval") or "keyword")
     score = item.get("score")
     text = str(item.get("text") or "")
+    label = str(item.get("citation") or "") or citation_label(
+        source_file, topic, page_range, str(item.get("title") or path.stem)
+    )
 
     source: dict[str, Any] = {
         "kind": item.get("kind", "doc"),
@@ -2810,9 +2826,9 @@ def source_from_rag_item(item: dict[str, Any]) -> dict[str, Any]:
         "retrieval": retrieval,
         "source_file": source_file,
         "topic": topic,
-        "page_range": page_range,
+        "page_range": page_range or None,
         "snippet": compact_snippet(text),
-        "citation_label": citation_label(source_file, topic, page_range, str(item.get("title") or path.stem)),
+        "citation_label": label,
     }
     if item.get("vector_backend"):
         source["vector_backend"] = item["vector_backend"]

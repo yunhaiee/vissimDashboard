@@ -27,6 +27,14 @@ data/
 # client's data, not ours, and the repo is only private, not secret.
 client-data/
 *.zip
+# The second PDF root services/rag_pdf.py scans. Whatever is dropped there gets
+# indexed into the RAG corpus, and in practice that means a client guideline or
+# manual — the same data client-data/ exists to keep out of the repo. The
+# manifest that names titles/page offsets is text we DO want tracked.
+# (the contents, not the directory itself -- git cannot re-include a file that
+# sits inside an excluded directory, and the manifest has to stay tracked)
+docs/pdf_knowledge/*
+!docs/pdf_knowledge/rag-manifest.json
 
 # AI-tool session caches
 .omc/

@@ -42,8 +42,10 @@ MRWA guideline mapping (client authority numbers): `docs/meeting-brief-tk-mrwa.m
   test instead of aborting at the first: plain `assert` let one stale base-model layout pin
   hide 2 broken + 53 healthy pins from the source import until 2026-08-05. Keep tests
   single-concern and keep layout/style pins in their own test. Suite is fully green — a
-  failure here is real. (`test_rag_retrieval_quality` on the backend is still known-failing
-  and environmental: it needs the full RAG corpus we don't have. Don't "fix" it in passing.)
+  failure here is real. (`test_rag_retrieval_quality` is honest since #46 (2026-08-18): it
+  passes or skips-with-reason by corpus presence — client PDFs are gitignored, so PDF cases
+  skip on fresh checkouts. 0 failed either way; a failure here is real too. Don't weaken its
+  measured floors in passing.)
 - Verify before claiming done: backend `pytest` (from `backend/`, use the venv), frontend
   `npm run typecheck` + `npm run test:dashboard-contract`, plus the milestone's named
   acceptance check. Non-COM code must work against synthetic demo data

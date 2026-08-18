@@ -79,20 +79,23 @@ def search_vector_index(query: str, limit: int) -> list[dict[str, Any]]:
     hits: list[dict[str, Any]] = []
     for text, metadata, distance in zip(documents, metadatas, distances):
         metadata = metadata or {}
-        hits.append(
-            {
-                "kind": metadata.get("kind", "doc"),
-                "section": metadata.get("section", ""),
-                "title": metadata.get("title", ""),
-                "path": metadata.get("path", ""),
-                "chunk_id": metadata.get("chunk_id", ""),
-                "text": text,
-                "score": float(distance),
-                "retrieval": "vector",
-                "vector_backend": "chroma",
-            }
-        )
+        hit = {
+            "kind": metadata.get("kind", "doc"),
+            "section": metadata.get("section", ""),
+            "title": metadata.get("title", ""),
+            "path": metadata.get("path", ""),
+            "chunk_id": metadata.get("chunk_id", ""),
+            "text": text,
+            "score": float(distance),
+            "retrieval": "vector",
+            "vector_backend": "chroma",
+        }
+        hits.append({**hit, **_citation_fields(metadata)})
     return hits
+
+
+def _citation_fields(item: dict[str, Any]) -> dict[str, Any]:
+    return {name: item[name] for name in CITATION_FIELDS if item.get(name) not in (None, "")}
 
 
 def build_vector_index(chunks: list[dict[str, Any]], reset: bool = True) -> dict[str, Any]:
@@ -177,14 +180,27 @@ def _build_sklearn_index(chunks: list[dict[str, Any]], reset: bool = True) -> di
     }
 
 
+# Citation fields a PDF chunk carries. They have to survive the round trip
+# through the index or a vector hit loses its page number and degrades to "some
+# page of the MRWA guidelines" -- which is the state this whole ingest path
+# exists to end. Every value is stringified because Chroma metadata accepts
+# scalars only.
+CITATION_FIELDS = ("source_kind", "page_range", "citation", "doc_page", "pdf_page")
+
+
 def metadata_for_chunk(chunk: dict[str, Any]) -> dict[str, str]:
-    return {
+    metadata = {
         "kind": str(chunk.get("kind") or "doc"),
         "section": str(chunk.get("section") or ""),
         "title": str(chunk.get("title") or ""),
         "path": str(chunk.get("path") or ""),
         "chunk_id": str(chunk.get("chunk_id") or ""),
     }
+    for name in CITATION_FIELDS:
+        value = chunk.get(name)
+        if value not in (None, ""):
+            metadata[name] = str(value)
+    return metadata
 
 
 def stable_id(chunk: dict[str, Any]) -> str:
@@ -293,19 +309,18 @@ def _search_sklearn_index(query: str, limit: int) -> list[dict[str, Any]]:
         if score <= 0:
             continue
         item = chunks[int(index)]
-        hits.append(
-            {
-                "kind": item.get("kind", "doc"),
-                "section": item.get("section", ""),
-                "title": item.get("title", ""),
-                "path": item.get("path", ""),
-                "chunk_id": item.get("chunk_id", ""),
-                "text": item.get("text", ""),
-                "score": score,
-                "retrieval": "vector",
-                "vector_backend": "sklearn_tfidf",
-            }
-        )
+        hit = {
+            "kind": item.get("kind", "doc"),
+            "section": item.get("section", ""),
+            "title": item.get("title", ""),
+            "path": item.get("path", ""),
+            "chunk_id": item.get("chunk_id", ""),
+            "text": item.get("text", ""),
+            "score": score,
+            "retrieval": "vector",
+            "vector_backend": "sklearn_tfidf",
+        }
+        hits.append({**hit, **_citation_fields(item)})
     return hits
 
 

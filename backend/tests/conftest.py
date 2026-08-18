@@ -123,6 +123,37 @@ def _isolate_ambient_machine_state(tmp_path_factory: pytest.TempPathFactory):
         mp.undo()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_rag_pdf_cache(tmp_path_factory: pytest.TempPathFactory):
+    """Keep the PDF ingest cache out of the developer's real ``runtime/``.
+
+    ``services/rag_pdf.py`` extracts each source PDF once and caches the chunks
+    under ``runtime/rag_pdf_cache/`` so retrieval does not pay seconds of pypdf
+    per request. Under test that default would write into the same real
+    ``runtime/`` the fixture above exists to protect — and on the dev box the
+    PDF root is ``client-data/``, so a suite run would quietly drop a few MB of
+    derived client data into the developer's working tree.
+
+    The PDF ROOTS are deliberately NOT redirected. Whether the client PDFs are
+    on this machine is exactly the condition the retrieval tests are written to
+    branch on: with them present the citation cases run for real, without them
+    those cases skip with a stated reason. Forcing an empty root here would make
+    the suite pass identically on both, which is the failure mode this unit was
+    created to end.
+    """
+    from services import rag_pdf
+
+    cache_dir = tmp_path_factory.mktemp("rag-pdf-cache")
+    mp = pytest.MonkeyPatch()
+    mp.setenv("RAG_PDF_CACHE_DIR", str(cache_dir))
+    rag_pdf.reset_pdf_corpus_cache()
+    try:
+        yield
+    finally:
+        mp.undo()
+        rag_pdf.reset_pdf_corpus_cache()
+
+
 # ---------------------------------------------------------------------------
 # Unit U8: authenticating as a role, for the ONE endpoint that now requires it
 # ---------------------------------------------------------------------------
