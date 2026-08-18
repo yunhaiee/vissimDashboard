@@ -31,11 +31,18 @@ string. Where a number reached this module without an exact page attached to
 it, the citation says literally "page cite pending" rather than a guessed
 page — the never-invent rule applies to this module's own authority claims
 first. Concretely:
-  - Table 5-9 (gap acceptance) and Table 5-10 (conflict-area gap) and
-    Table 5-6 (safety-distance/saturation-flow) are all §5 tables; this
-    module's local materials place §5 at pp.197-239 but do not carry the
-    individual table's own page within that range, so all three cite
+  - Table 5-9 (gap acceptance) and Table 5-10 (conflict-area gap) are §5
+    tables; this module's local materials place §5 at pp.197-239 but do not
+    carry either table's own page within that range, so both cite
     "op §5, Table 5-N, page cite pending".
+  - Table 5-6 (safety-distance/saturation-flow) is the ONE §5 table that DOES
+    carry a real page, and it is cited with one: unit #44 (2026-08-18) found
+    the full six-row table transcribed in this checkout's own
+    docs/product/reference/mrwa-section5-extract.md under the caption
+    "Table 5-6: Recommended car following model parameters (p.187)". That is
+    the same class of independent traceability that lets
+    CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION say "p.187-188" instead of
+    pending, so Table 5-6 cites "op §5.2.5.1, Table 5-6, p.187".
   - The roundabout critical-gap minimums DO carry a page
     (docs/meeting-brief-tk-mrwa.md §2 proposal ①: "회전교차로 임계 gap 최소
     2.1s/1.5s(op p.53)") — cited as "op p.53" accordingly, not pending.
@@ -59,12 +66,15 @@ first. Concretely:
     EMPTY, ``complete=False`` table — a documented gap, not a silent one.
     See its own docstring and docs/phase2/DECISIONS.md's drafted entry for
     this unit.
-  - Table 5-9/5-10/5-6 are each PARTIAL too: only the specific rows this
-    unit's task brief itself transcribed are encoded (two movement types
-    for 5-9, front/rear/merge for 5-10, two saturation-flow points for
-    5-6). Each table's ``complete`` flag is ``False`` and its
-    ``coverage_note`` says so — never padded with invented intermediate
-    rows.
+  - Table 5-9 and 5-10 are PARTIAL: only the specific rows the originating
+    unit's task brief itself transcribed are encoded (two movement types for
+    5-9, front/rear/merge for 5-10). Each carries ``complete=False`` and a
+    ``coverage_note`` that says so — never padded with invented intermediate
+    rows. Table 5-6 was partial for the same reason and is now COMPLETE, for
+    the opposite reason: the §5 extract turned out to carry all six of its
+    published rows, so the four missing ones were transcribed rather than
+    left as a gap. The rule did not change — only the material available to
+    obey it did.
 
 This module is intentionally stdlib-only (dataclasses + typing), like
 constraints.py itself — pure data, no side effects, no dependency on
@@ -302,40 +312,133 @@ ROUNDABOUT_CRITICAL_GAP_MINIMUM = ReferenceTable(
 )
 
 
+#: op §5.2.5.1 — "default driving behaviours should generally be adopted, with
+#: the exception of car following model parameters"; the additive/multiplicative
+#: safety-distance parts "should be determined based on measured straight
+#: movement saturation flow at key intersection(s)" (→ Table 5-6, encoded
+#: below as :data:`TABLE_5_6_SAFETY_DISTANCE_VS_SATURATION_FLOW`).
+#:
+#: Defined HERE, above its first use, rather than beside the §2.12.1 calibration
+#: steps further down: unit #44 made Table 5-6 (section 5) a real consumer of
+#: this citation, and a module-level name must exist before the statement that
+#: reads it. Its page IS independently traceable in this checkout — see the
+#: module docstring and docs/product/reference/mrwa-section5-extract.md's own
+#: "5.2.5.1 General (p.187-189)" heading.
+CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION = "op §5.2.5.1, p.187-188"
+
+
 # =============================================================================
-# 5. Safety-distance <-> saturation-flow mapping — op §5 Table 5-6. PARTIAL
-#    (two SF points only). The two-figure pairing's exact meaning (e.g.
-#    which is "front" vs "rear", or min vs max) was not specified by any
-#    source available to this module -- recorded honestly as an unlabelled
-#    (low, high) pair rather than asserted.
+# 5. Safety-distance <-> saturation-flow mapping — op §5 Table 5-6.
+#
+# COMPLETED and CORRECTED in unit #44 (2026-08-18). The prior encoding carried
+# only two saturation-flow points and recorded that "the two-figure pairing's
+# exact meaning (front/rear vs min/max) was not specified by any source
+# available to this module". That is no longer true: this checkout's own §5
+# transcription (docs/product/reference/mrwa-section5-extract.md, the block
+# headed "Table 5-6: Recommended car following model parameters (p.187)")
+# carries ALL SIX rows WITH their column headers —
+#   "Average saturation flow (pcu)" | "Additive part of safety distance"
+#   | "Multiplic. part of safety distance"
+# — so the pair is (additive, multiplicative), in that order, and it is not a
+# (low, high) range at all. The old ``kind="RANGE"`` encoding was therefore
+# semantically wrong for a generic reader: 2.75 and 3.75 are two DIFFERENT
+# parameters, not the ends of one band. Each row is now two DEFAULT entries.
+#
+# Two further honesty notes that the source itself forces:
+#   - UNIT: the source prints none, and none is invented here. Vissim's own
+#     Wiedemann-74 ``bx_add``/``bx_mult`` are dimensionless coefficients in
+#     bx = (bx_add + bx_mult * NRND) * sqrt(v); the METRES come out of that
+#     expression, not off this table. ``unit`` is deliberately "" with the
+#     reason on each entry, rather than a plausible-looking "m" or "s".
+#   - PAGE: "p.187" here is a REAL page, on the same footing as
+#     :data:`CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION`'s p.187-188 — the
+#     local §5 extract prints it in the table's own caption, so it is
+#     independently re-checkable in this checkout and does not fall back to
+#     PAGE_CITE_PENDING like the §5 tables (5-8/5-9/5-10) that carry no page.
+#
+# The consumer is ``services.agent.saturation_flow`` (unit #44), which turns a
+# MEASURED straight-movement saturation flow into a ``set_driving_behavior_
+# parameter`` proposal for ax / bx_add / bx_mult. Note what did NOT change: the
+# W99 ``CC0``-``CC9`` family stays institutionally excluded from every write
+# verb here (agency_restricted_parameter_write, constraints.py). MRWA agrees —
+# §5.2.5.1's remedy is the Wiedemann-74 urban set, which is exactly the
+# whitelisted family, so wiring this table required no loosening of that ban.
 # =============================================================================
 
-TABLE_5_6_SAFETY_DISTANCE_VS_SATURATION_FLOW = ReferenceTable(
-    name="op §5 Table 5-6 — safety distance vs saturation flow",
-    source="op §5, Table 5-6",
-    entries=(
-        ReferenceValue(
-            "RANGE", (2.75, 3.75), "s", "op §5, Table 5-6, " + PAGE_CITE_PENDING,
-            context="saturation flow 1630 PCU/h",
-            note="pairing's exact semantics (front/rear vs min/max) not specified in available material",
-        ),
-        ReferenceValue(
-            "RANGE", (1.50, 2.50), "s", "op §5, Table 5-6, " + PAGE_CITE_PENDING,
-            context="saturation flow 2200 PCU/h",
-            note="pairing's exact semantics (front/rear vs min/max) not specified in available material",
-        ),
-    ),
-    complete=False,
-    coverage_note=(
-        "Only the two saturation-flow points (1630, 2200 PCU/h) this unit's task brief "
-        "named are encoded; the real table likely has intermediate rows not reproduced here. "
-        "No consumer wires this table today (see module docstring) — Vissim's own W99 "
-        "car-following parameters (which a 'safety distance' figure might otherwise map to) "
-        "are institutionally excluded from every write verb in this codebase "
-        "(agency_restricted_parameter_write, constraints.py), so no attempt is made here to "
-        "assert which Vissim field, if any, this table is meant to bound."
+#: The table's own six rows as ``(average_saturation_flow_pcu, additive,
+#: multiplicative)``, ascending by saturation flow — the single source of
+#: truth. :data:`TABLE_5_6_SAFETY_DISTANCE_VS_SATURATION_FLOW`'s entries are
+#: BUILT from this tuple below rather than re-typed beside it, so the
+#: structured form a consumer looks values up in and the self-citing form the
+#: integrity test iterates over cannot drift apart.
+TABLE_5_6_ROWS: tuple[tuple[float, float, float], ...] = (
+    (1630.0, 2.75, 3.75),
+    (1780.0, 2.50, 3.50),
+    (1950.0, 2.25, 3.25),
+    (2050.0, 2.00, 3.00),
+    (2100.0, 1.75, 2.75),
+    (2200.0, 1.50, 2.50),
+)
+
+#: op §5.2.5.1's OTHER car-following number, stated as a flat value rather than
+#: a Table 5-6 row because it does not vary with saturation flow: "Average
+#: standstill distance (2.5 m)". Vissim field: Wiedemann-74 ``ax``.
+TABLE_5_6_CITATION = "op §5.2.5.1, Table 5-6, p.187"
+STANDSTILL_DISTANCE_M = ReferenceValue(
+    "DEFAULT", 2.5, "m", CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION,
+    context="average standstill distance (Wiedemann 74 'ax')",
+    note=(
+        "Not a Table 5-6 row — §5.2.5.1's body states it as a single value that does NOT vary "
+        "with the measured saturation flow, unlike the additive/multiplicative parts."
     ),
 )
+
+_TABLE_5_6_UNIT_NOTE = (
+    "the source prints no unit for this column; Vissim's bx_add/bx_mult are dimensionless "
+    "coefficients (bx = (bx_add + bx_mult*NRND)*sqrt(v)), so no unit is invented here"
+)
+
+TABLE_5_6_SAFETY_DISTANCE_VS_SATURATION_FLOW = ReferenceTable(
+    name="op §5 Table 5-6 — car-following safety distance vs measured saturation flow",
+    source=TABLE_5_6_CITATION,
+    entries=tuple(
+        value
+        for saturation_flow, additive, multiplicative in TABLE_5_6_ROWS
+        for value in (
+            ReferenceValue(
+                "DEFAULT", additive, "", TABLE_5_6_CITATION,
+                context=f"saturation flow {saturation_flow:g} pcu — additive part of safety distance",
+                note=_TABLE_5_6_UNIT_NOTE,
+            ),
+            ReferenceValue(
+                "DEFAULT", multiplicative, "", TABLE_5_6_CITATION,
+                context=f"saturation flow {saturation_flow:g} pcu — multiplic. part of safety distance",
+                note=_TABLE_5_6_UNIT_NOTE,
+            ),
+        )
+    ),
+    complete=True,
+    coverage_note=(
+        "All six rows the source table prints are encoded, with the source's own column order "
+        "(additive, then multiplicative). The table is a LOOKUP, not a formula: the guideline "
+        "publishes six discrete saturation-flow points and states no rule for a measurement "
+        "that falls between two of them, so any between-rows behaviour is the CONSUMER's "
+        "named policy, never this module's — see services.agent.saturation_flow's "
+        "BETWEEN_ROWS_POLICY, which rounds DOWN to a published row and reports both "
+        "neighbours so the choice stays auditable."
+    ),
+)
+
+
+def table_5_6_saturation_flow_range() -> tuple[float, float]:
+    """(lowest, highest) published saturation flow in :data:`TABLE_5_6_ROWS`.
+
+    Computed from the data so a consumer's range check and this table can
+    never disagree — the same discipline as
+    :func:`table_5_9_critical_gap_envelope`.
+    """
+    flows = [row[0] for row in TABLE_5_6_ROWS]
+    return (min(flows), max(flows))
 
 
 # =============================================================================
@@ -476,12 +579,9 @@ WARMUP_FORMULA = {
 
 CALIBRATION_STEPS_CITATION = "op §2.12.1, p.34-42"
 
-#: op §5.2.5.1 — "default driving behaviours should generally be adopted, with
-#: the exception of car following model parameters"; the additive/multiplicative
-#: safety-distance parts "should be determined based on measured straight
-#: movement saturation flow at key intersection(s)" (→ Table 5-6, encoded above
-#: as :data:`TABLE_5_6_SAFETY_DISTANCE_VS_SATURATION_FLOW`).
-CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION = "op §5.2.5.1, p.187-188"
+#: (:data:`CAR_FOLLOWING_FROM_SATURATION_FLOW_CITATION`, the §5.2.5.1 pointer
+#: this ladder needs, is defined above section 5 — it is Table 5-6's own
+#: citation and must exist before that table is built.)
 
 #: ``(step number, English label, citation)`` for op §2.12.1's calibration
 #: sequence, in the guideline's own order. Steps 1-9 are the CAPACITY side and
@@ -570,6 +670,7 @@ ALL_TABLES: tuple[ReferenceTable, ...] = (
 ALL_STANDALONE_VALUES: tuple[ReferenceValue, ...] = (
     DETECTOR_SETBACK_M,
     DETECTOR_LENGTH_M,
+    STANDSTILL_DISTANCE_M,
 )
 
 

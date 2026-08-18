@@ -163,10 +163,20 @@ DEMAND_LEVEL = "DEMAND_LEVEL"
 #: The demand is right and its DISTRIBUTION between turns is wrong: a static
 #: routing decision's relative flows.
 ROUTING_SPLIT_LEVEL = "ROUTING_SPLIT_LEVEL"
+#: Neither the demand nor its distribution is wrong: the network cannot PASS a
+#: correctly-specified demand, and the car-following parameters that set the
+#: discharge headway are the lever. Added by unit #44; the proposals live in
+#: ``services.agent.saturation_flow``, which builds them from a MEASURED
+#: saturation flow via MRWA Table 5-6 rather than from anything computed here.
+#: Registered in this module because ``SCOPES`` is the one canonical list every
+#: consumer validates against (``_register``'s own scope check; the coverage
+#: test's ``outcome.scope in fixes.SCOPES``) — a sibling module that invented
+#: its own scope string would silently fail that check.
+CAR_FOLLOWING_LEVEL = "CAR_FOLLOWING_LEVEL"
 #: No edit scope at all (a refusal, or an entry with no automated fix).
 NOT_APPLICABLE = "NOT_APPLICABLE"
 
-SCOPES = (DEMAND_LEVEL, ROUTING_SPLIT_LEVEL, NOT_APPLICABLE)
+SCOPES = (DEMAND_LEVEL, ROUTING_SPLIT_LEVEL, CAR_FOLLOWING_LEVEL, NOT_APPLICABLE)
 
 
 # ---------------------------------------------------------------------------
@@ -2919,6 +2929,7 @@ __all__ = [
     "ASSUME_INTERVAL_MATCHES_COUNT_PERIOD",
     "ASSUME_SIBLING_ROUTES_UNCHANGED",
     "AUTOMATABLE",
+    "CAR_FOLLOWING_LEVEL",
     "CONFIDENCE_ARITHMETIC",
     "CONFIDENCE_CONSTRAINT_CEILING",
     "CONFIDENCE_DEMAND_ESTIMATE",

@@ -51,6 +51,15 @@ _ALLOWED_EXACT_PAGE_CITATIONS = {
     # and places Table 5-6 at p.187. Hence a real page here where the sibling
     # §5 tables above still say PAGE_CITE_PENDING.
     "op §5.2.5.1, p.187-188",
+    # Table 5-6 itself, added by unit #44. Same evidence class as the line
+    # above and re-checkable the same way: docs/product/reference/
+    # mrwa-section5-extract.md prints the table under its own caption
+    # "**Table 5-6: Recommended car following model parameters** (p.187)",
+    # immediately below the "5.2.5.1 General (p.187-189)" heading. The page is
+    # read off the extract's caption, not inferred from the section range --
+    # which is why this is an exact page and Tables 5-8/5-9/5-10 (which the
+    # extract carries no caption page for) still say PAGE_CITE_PENDING.
+    "op §5.2.5.1, Table 5-6, p.187",
 }
 
 # Citations that mention a page-ISH token (e.g. "Table B-3") but are section

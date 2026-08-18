@@ -1338,6 +1338,9 @@ def stage_3_reality_check(expect: str = "refusal") -> None:
     if expect == "estimate":
         _stage_3_expect_estimate(entry, demand_node, proposal, started)
         return
+    if expect == "car-following":
+        _stage_3_expect_car_following(entry, report, started)
+        return
 
     d4 = _d4_refusal(proposal)
     entry["d4_refusal"] = d4
@@ -1375,6 +1378,192 @@ def stage_3_reality_check(expect: str = "refusal") -> None:
         f"unit D4: node {DEMAND_NODE}'s entrance is measured, so the demand edit is refused and "
         "stages 4-6 have nothing to apply on it. This is the designed outcome, not a failure."
     )
+
+
+def _stage_3_expect_car_following(
+    entry: dict[str, Any], report: dict[str, Any], started: float
+) -> None:
+    """``--expect car-following``: unit #44's half, verified OFFLINE.
+
+    This leg starts exactly where ``--expect refusal`` stops. The demand
+    entrance IS measured, D4 refuses the demand edit, and unit #43's ladder
+    puts the node on ``CAPACITY_LIMIT`` pointing at MRWA §2.12.1 step ⑦. What
+    it adds is the treatment: feed the measured saturation flow this run was
+    invoked with into ``saturation_flow.propose_car_following_parameters`` and
+    check that the three Table 5-6 writes come out, cited, and survive the real
+    preflight engine.
+
+    Deliberately stops BEFORE applying anything. The COM apply/re-run/GEH-delta
+    legs are the user's lane; what this leg proves is that by the time those
+    run, the proposal is already schema-valid, guardrail-checked and
+    fully attributed. It prints the exact next commands rather than doing them.
+
+    The ask-first half is verified too, and first: with no measurement supplied
+    the builder must refuse BY NAME. A probe that only exercised the happy path
+    would not notice the day this module started guessing a row.
+    """
+    from services.agent import fixes, geh_ladder, saturation_flow
+
+    _banner("[STAGE 3+] UNIT #44 -- measured saturation flow -> MRWA Table 5-6 -> car following")
+
+    # -- the rung this treatment answers, read from the report, not re-derived
+    capacity_nodes = [
+        node
+        for node in report.get("nodes") or []
+        if (node.get("diagnosis") or {}).get("rung") == geh_ladder.CAPACITY_LIMIT
+    ]
+    entry["capacity_limit_node_ids"] = [str(n["node_id"]) for n in capacity_nodes]
+    _log(f"[3+.1] nodes on the CAPACITY_LIMIT rung: {entry['capacity_limit_node_ids'] or 'none'}")
+    if not capacity_nodes:
+        entry["ok"] = False
+        _save_state()
+        raise SystemExit(
+            "--expect car-following, but no node reached geh_ladder.CAPACITY_LIMIT in this run. "
+            "Unit #44's treatment answers exactly that rung, so there is nothing to propose. "
+            "Check that the entrance graded as MEASURED and that node evaluation was armed "
+            "(the rung needs per-movement delay)."
+        )
+
+    node = capacity_nodes[0]
+    rung = node["diagnosis"]
+    node_id = str(node["node_id"])
+    _log(f"       using node {node_id}; next action = "
+         f"{(rung.get('next_action') or {}).get('code')} "
+         f"(MRWA step {(rung.get('next_action') or {}).get('mrwa_step')})")
+
+    # -- the ask-first half: no measurement, no proposal ---------------------
+    without = saturation_flow.propose_car_following_parameters(
+        rung=rung, measurement=None, behavior={"no": str(_state.get("behavior_no") or "1")}
+    )
+    entry["refusal_without_measurement"] = [action.to_dict() for action in without]
+    if len(without) != 1 or without[0].reason_code != saturation_flow.NO_SATURATION_FLOW_MEASUREMENT:
+        entry["ok"] = False
+        _save_state()
+        raise SystemExit(
+            "--expect car-following: with NO saturation-flow measurement the builder must refuse "
+            f"by name ({saturation_flow.NO_SATURATION_FLOW_MEASUREMENT}); it returned "
+            f"{[(a.outcome, a.reason_code) for a in without]!r} instead. The ask-first doctrine "
+            "regressed -- stopping."
+        )
+    _log(f"[3+.2] with no measurement: {without[0].outcome} / {without[0].reason_code} -- correct "
+         "(the table is not entered on a guess)")
+
+    # -- the measured half ---------------------------------------------------
+    measurement = saturation_flow.observed_measurement(
+        saturation_flow_pcu=_state.get("saturation_flow_pcu"),
+        method=_state.get("saturation_flow_method"),
+        attribution=_state.get("saturation_flow_attribution"),
+        measured_at=_state.get("saturation_flow_measured_at"),
+        samples=_state.get("saturation_flow_samples"),
+        vehicles_per_sample=_state.get("saturation_flow_vehicles_per_sample"),
+        intersection=node.get("node_name") or node_id,
+    )
+    entry["measurement"] = measurement
+    _log(f"[3+.3] measurement: {measurement.get('saturation_flow_pcu')} pcu, ok={measurement['ok']}"
+         f"{'' if measurement['ok'] else ' (' + str(measurement.get('reason_code')) + ')'}")
+    if not measurement["ok"]:
+        entry["ok"] = False
+        _save_state()
+        raise SystemExit(
+            f"--expect car-following: the supplied measurement was rejected "
+            f"({measurement.get('reason_code')}: {measurement.get('why')}). Supply "
+            "--saturation-flow with --sf-method and --sf-attribution."
+        )
+
+    lookup = saturation_flow.lookup_table_5_6(measurement["saturation_flow_pcu"])
+    entry["lookup"] = lookup
+    _log(f"[3+.4] Table 5-6 lookup: status={lookup['status']} policy={lookup['policy']}")
+    _log(f"       applied row = {lookup['row']}")
+    if lookup["status"] == saturation_flow.BRACKETED:
+        _log(f"       between {lookup['bracket_lower']['saturation_flow_pcu']} and "
+             f"{lookup['bracket_upper']['saturation_flow_pcu']} pcu -- rounded DOWN by named "
+             "policy (a lower row carries a larger safety distance, so capacity is never "
+             "overstated); both rows are on the proposal's evidence.")
+
+    behavior = _shadow_driving_behavior(Path(_state["demo_inpx"]))
+    entry["target_behavior"] = behavior
+    _log(f"[3+.5] target driving behaviour: {behavior}")
+
+    actions = saturation_flow.propose_car_following_parameters(
+        rung=rung, measurement=measurement, behavior=behavior
+    )
+    entry["proposals"] = [action.to_dict() for action in actions]
+    if len(actions) != 3 or any(action.outcome != fixes.PROPOSAL for action in actions):
+        entry["ok"] = False
+        _save_state()
+        raise SystemExit(
+            "--expect car-following: expected three PROPOSALs (ax, bx_add, bx_mult); got "
+            f"{[(a.outcome, a.reason_code) for a in actions]!r}."
+        )
+
+    _banner("[STAGE 3+] THE THREE CAR-FOLLOWING PROPOSALS (verbatim)")
+    shadow = _shadow_model_for_preflight(Path(_state["demo_inpx"]))
+    for action in actions:
+        findings = fixes.preflight_findings(action, shadow_model=shadow)
+        _log(f"  {action.params['parameter']:8s} = {action.params['value']} "
+             f"(behavior {action.params['behavior_no']}) scope={action.scope} "
+             f"confidence={action.confidence}")
+        _log(f"    preflight   : {[(f.constraint_id, f.tier) for f in findings] or 'clean'}")
+        for lang in ("ko", "en", "ja"):
+            _log(f"    rationale[{lang}]: {action.rationale()[lang]}")
+        _log("")
+
+    forecast = actions[0].evidence.get("preflight_forecast") or {}
+    entry["preflight_forecast"] = forecast
+    _log(f"[3+.6] shared-object forecast: expected_to_refuse={forecast.get('expected_to_refuse')} "
+         f"(reference_count={forecast.get('reference_count')})")
+    if forecast.get("expected_to_refuse"):
+        _log("       NOTE: constraints.driving_behavior_shared_object_edit will refuse an "
+             "in-place edit of this behaviour. MRWA §5.2.5.1's intent here is network-wide, "
+             "which is what that guardrail's local-intent premise collides with. Resolving it "
+             "is a human decision -- see the unit report.")
+
+    entry["elapsed_s"] = round(time.monotonic() - started, 2)
+    entry["ok"] = True
+    _save_state()
+    _banner("[STAGE 3+] OFFLINE HALF COMPLETE -- the COM legs are the user's lane")
+    _log("  The proposals above are schema-valid and preflight-checked. Applying them, "
+         "re-running and measuring the GEH delta needs a live Vissim session, which this "
+         "probe does not open. Nothing was applied.")
+    raise RefusedByDesign(
+        f"unit #44: node {node_id} is on CAPACITY_LIMIT and the three Table 5-6 car-following "
+        "proposals were built, cited and preflight-checked offline. Applying them is the COM "
+        "lane. This is the designed stopping point, not a failure."
+    )
+
+
+def _shadow_driving_behavior(inpx: Path) -> dict[str, Any]:
+    """The urban (Wiedemann 74) driving behaviour, read from the shadow model.
+
+    Picks the lowest-numbered W74 behaviour, which is Vissim's own default
+    urban set, and carries its real ``reference_count`` so the shared-object
+    forecast is about the actual network rather than a placeholder. Returns an
+    empty-ish dict when the model has none, which the builder then refuses with
+    ``NO_DRIVING_BEHAVIOR_TARGET`` -- the honest outcome, not a fabricated
+    target.
+    """
+    from services.agent import tools_network
+
+    shadow = tools_network.build_shadow_model(inpx)
+    candidates = [
+        behavior
+        for behavior in (shadow.get("driving_behaviors") or [])
+        if behavior.get("car_following_model") == 74
+    ]
+    if not candidates:
+        return {}
+    behavior = min(candidates, key=lambda b: int(str(b.get("no") or "0") or 0))
+    return {
+        "no": str(behavior.get("no")),
+        "name": behavior.get("name"),
+        "reference_count": behavior.get("reference_count", 0),
+    }
+
+
+def _shadow_model_for_preflight(inpx: Path) -> dict[str, Any]:
+    from services.agent import tools_network
+
+    return tools_network.build_shadow_model(inpx)
 
 
 def _stage_3_expect_estimate(
@@ -2056,15 +2245,65 @@ def main() -> int:
     )
     parser.add_argument(
         "--expect",
-        choices=("refusal", "estimate"),
+        choices=("refusal", "estimate", "car-following"),
         default="refusal",
         help="stage 3's designed outcome. 'refusal' (default): the demand entrance is "
         "measured, unit D4 must refuse the edit, stages 4-6 do not run. 'estimate': "
         "the entrance is NOT measured (e.g. an injected workbook without a count row "
         "on the input link), the proposal must be the NAMED demand estimate, and the "
-        "apply/re-run legs proceed on it.",
+        "apply/re-run legs proceed on it. 'car-following' (unit #44): the entrance IS "
+        "measured and the node is on the CAPACITY_LIMIT rung, so the treatment is MRWA "
+        "Table 5-6 -- requires --saturation-flow, verifies the three car-following "
+        "proposals offline (schema + preflight + citations) and stops before any COM "
+        "apply.",
+    )
+    parser.add_argument(
+        "--saturation-flow",
+        type=float,
+        default=None,
+        metavar="PCU",
+        help="--expect car-following: the MEASURED stop-line straight-movement saturation "
+        "flow, in pcu/h of green. There is no default and none is inferred -- the whole "
+        "point of unit #44 is that this number is measured on site, not guessed "
+        "(MRWA §5.2.5.1, Table 5-6 p.187).",
+    )
+    parser.add_argument(
+        "--sf-method",
+        default=None,
+        help="--expect car-following: how the saturation flow was measured. Required: MRWA "
+        "Appendix B §B.3 grades saturation flow BY method, so an unattributed number "
+        "cannot be placed in that hierarchy.",
+    )
+    parser.add_argument(
+        "--sf-attribution",
+        default=None,
+        help="--expect car-following: who supplied the measurement. Required, same reason.",
+    )
+    parser.add_argument(
+        "--sf-measured-at",
+        default=None,
+        help="--expect car-following: when the measurement was taken (free text).",
+    )
+    parser.add_argument(
+        "--sf-samples",
+        type=float,
+        default=None,
+        help="--expect car-following: samples per lane. Checked against MRWA Appendix B §B.4 "
+        "Table B-3's refuse-tier minimum (6, ideally 10) when given.",
+    )
+    parser.add_argument(
+        "--sf-vehicles-per-sample",
+        type=float,
+        default=None,
+        help="--expect car-following: vehicles per sample. Checked against the same table's "
+        "minimum of 5 when given.",
     )
     args = parser.parse_args()
+    if args.expect == "car-following" and args.saturation_flow is None:
+        parser.error(
+            "--expect car-following requires --saturation-flow PCU (a measured value). "
+            "Unit #44 refuses to enter MRWA Table 5-6 without one, and so does this probe."
+        )
     inject_workbook = Path(args.workbook).resolve() if args.workbook else None
     if inject_workbook is not None and not inject_workbook.is_file():
         parser.error(f"--workbook does not exist: {inject_workbook}")
@@ -2096,6 +2335,15 @@ def main() -> int:
     _state["skip_numruns_prep"] = args.skip_numruns_prep
     _state["expect"] = args.expect
     _state["workbook_injected"] = str(inject_workbook) if inject_workbook else None
+    # Unit #44's measurement, carried on the state so it lands in the saved
+    # artifact alongside the proposals it produced -- a run whose numbers cannot
+    # be traced back to what was measured is not evidence of anything.
+    _state["saturation_flow_pcu"] = args.saturation_flow
+    _state["saturation_flow_method"] = args.sf_method
+    _state["saturation_flow_attribution"] = args.sf_attribution
+    _state["saturation_flow_measured_at"] = args.sf_measured_at
+    _state["saturation_flow_samples"] = args.sf_samples
+    _state["saturation_flow_vehicles_per_sample"] = args.sf_vehicles_per_sample
 
     pids_before = _vissim_pids()
     _state["vissim_pids_before_probe"] = sorted(pids_before)
