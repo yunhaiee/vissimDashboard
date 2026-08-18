@@ -899,10 +899,28 @@ ENTRANCE_ROW_HAS_NO_OBSERVED = "ROW_HAS_NO_OBSERVED"
 
 #: The ko/en/ja phrase each ``why`` contributes to a RATIONALE — deliberately
 #: terse. The full sentence, with the ids and the numbers, lives in the
-#: verdict's ``basis`` and travels in the evidence; a rationale that inlined it
-#: would push an already-long text further past the approval card's own
-#: ``reason`` cap (routers/assistant.MAX_APPROVAL_REASON_CHARS = 300) for the
-#: sake of a detail the evidence block already carries.
+#: verdict's ``basis`` and travels in the evidence.
+#:
+#: Measured 2026-08-18 (unit #45 — this note said the cap was 300, which it has
+#: not been since D4 raised it): the cap is
+#: ``routers/assistant.MAX_APPROVAL_REASON_CHARS`` = **600**, and the rationale
+#: this phrase rides in — the demand-ESTIMATE proposal below — runs 385 (ko) /
+#: 365 (ja) / 647 (en) chars, so en ALREADY overflows and is abridged by its
+#: caller. ``basis`` runs 86 (``ROW_HAS_NO_OBSERVED``) to 160
+#: (``ROW_ON_INPUT_LINK``) chars over the six ``why`` values on the demo
+#: fixture — it interpolates ids, so a longer network moves both ends up, and
+#: this note said "98-160" when the floor was 86. Inlining it would therefore
+#: push en further past a cap it is already past, and spend most of ko's and
+#: ja's remaining headroom, for a detail the evidence block carries verbatim.
+#:
+#: THOSE THREE NUMBERS ARE NOT RE-DERIVED HERE, and this note is the place that
+#: proves why they must not be: it first shipped them as 380/360/642 — off by
+#: five in every language, in a note whose own headline word is "Measured".
+#: They are the demo loop's, they are ASSERTED (against the live cap) at
+#: ``tests/test_calibration_loop_e2e.py``'s stage 4, its module docstring is
+#: where they are written down, and ``test_agent_fixes`` pins this comment to
+#: that docstring so a fourth copy cannot drift away from it again. Change
+#: them by re-running that measurement, never by hand.
 _ENTRANCE_WHY_PHRASES: dict[str, dict[str, str]] = {
     ENTRANCE_NO_LINK_ON_TARGET: {
         "ko": "이 입력의 링크가 주어지지 않음",
@@ -1390,6 +1408,50 @@ def _build_demand_proposal(
         rows_ko = "" if rows_here <= 1 else f"(이 링크 진입 실측 행 {rows_here}건 합계) "
         rows_en = "" if rows_here <= 1 else f"(summed over {rows_here} counted rows on that link) "
         rows_ja = "" if rows_here <= 1 else f"(このリンクからの実測行 {rows_here} 件の合計) "
+        # Unit #45. The tail of this refusal used to promise four levers —
+        # "turn distribution, driving behaviour and desired speeds, signal
+        # timing, and link geometry/lanes" — when exactly ONE of them had a
+        # proposal builder. Prose making a stronger claim than the code is a
+        # defect here, so the tail now separates FOUR states, measured against
+        # the builders and the registry on 2026-08-18:
+        #
+        # * PROPOSED automatically — the turn distribution, and only it
+        #   (``_build_routing_proposal`` → ``set_route_relative_flow``).
+        # * PROPOSED ONCE SOMETHING IS SUPPLIED, and the sentence says what:
+        #   ``saturation_flow.propose_car_following_parameters`` (unit #44)
+        #   emits its three-value Table 5-6 set only when the node's rung is
+        #   ``geh_ladder.CAPACITY_LIMIT`` AND a measured stop-line saturation
+        #   flow was handed in; short of the measurement it REQUESTS one
+        #   (``NO_SATURATION_FLOW_MEASUREMENT``) rather than proposing. Naming
+        #   the three parameters rather than "driving behaviour" is deliberate:
+        #   ax/bx_add/bx_mult are the whole of what is automatable, and W99's
+        #   CC0-CC9 remain policy-forbidden.
+        # * DIAGNOSED ONLY — signal timing. Unit #43's ladder reaches
+        #   ``SIGNAL_TIMING`` and cites step 6 when the caller states the node
+        #   is signalised, and there is no proposal builder behind it.
+        # * MANUAL — desired speeds and link geometry/lanes. The COM verbs
+        #   exist and are verified; nothing IN THIS LOOP proposes values for
+        #   them. "In this loop" is load-bearing, not hedging: ``genesis_fixes``
+        #   DOES emit ``set_link_lane_count`` (V4, widen a link to the lane
+        #   count its connector already maps) and ``set_link_geometry`` (V7,
+        #   reset a polyline to census-derived points). Those are the Genesis
+        #   BUILD gate repairing a network that contradicts itself before any
+        #   run exists — not a lever for closing a GEH gap, which is the only
+        #   thing this sentence is about. Unqualified, "nothing proposes values
+        #   for them" is simply false, and the sentence below says "in this
+        #   loop" for exactly that reason.
+        #
+        # WHY THIS STAYS GENERAL RATHER THAN NAMING THIS NODE'S RUNG (measured,
+        # #45): the rung cannot exist yet at this line. ``geh_ladder`` CONSUMES
+        # ``map_node_counts``'s outcome -- this object -- and two of its five
+        # rungs are defined by it, so the diagnosis is strictly downstream; it
+        # also needs the run's queue/delay rows, which this module is never
+        # handed (``map_node_counts`` takes ``node``/``targets``, no
+        # ``run_result``). Wiring it would mean inverting an import direction
+        # and widening a signature used at 30 call sites, which is a behaviour
+        # change to a structural refusal this unit may not touch. The reader
+        # loses nothing: ``reality_check`` puts the node's real rung in the
+        # SAME entry as this refusal, under ``diagnosis``.
         return _refuse(
             key=key,
             key_kind=kind,
@@ -1402,8 +1464,12 @@ def _build_demand_proposal(
             f"{rows_ko}{counted_here}대로 계측되었습니다. 실측된 진입 교통량은 "
             "보정의 '목표값'이지 조절 손잡이가 아닙니다 — 모델의 하류 수치를 맞추려고 실측값 자체를 "
             "고쳐 쓰면 보정의 방향이 뒤집히고, 이 실행을 채점하는 기준 자체가 사라집니다. 따라서 "
-            "이 편집은 거부합니다. 같은 불일치를 좁히기 위해 이 루프가 여전히 바꿀 수 있는 것: "
-            "회전 배분(경로 결정의 relFlow), 주행 행태·희망 속도, 신호 시간, 링크 기하·차로(용량). "
+            "이 편집은 거부합니다. 같은 불일치를 좁히기 위해 이 루프가 자동으로 제안하는 것은 "
+            "회전 배분(경로 결정의 relFlow) 하나입니다. 이 노드가 용량 한계로 진단되고 정지선 "
+            "포화교통류를 측정해 주면 차량추종 3개 값(MRWA Table 5-6)까지 제안할 수 있으며, 측정이 없으면 "
+            "제안 대신 측정을 요청합니다. 신호 시간은 신호 교차로라고 알려 주면 ⑥ 검토 지시까지이고, "
+            "제안은 만들지 않습니다. 희망 속도와 링크 기하·차로(용량)는 이 루프에 제안 빌더가 없어 "
+            "사람이 직접 편집합니다. "
             "그리고 모델에 차량이 부족한 이유가 다른 '실측되지 않은' 진입부라면, 수요 추정은 이 "
             "입력이 아니라 그쪽에서 이루어져야 합니다.",
             en=f"Node {node_id}'s total volume misses the observed count (GEH "
@@ -1414,9 +1480,14 @@ def _build_demand_proposal(
             "counted vehicles. An observed entrance volume is the calibration TARGET, not a knob: "
             "rewriting the measurement so the model's downstream numbers agree inverts the "
             "direction of calibration and destroys the very evidence this run is graded against. "
-            "Refused. What this loop CAN still change to close the same gap: the turn "
-            "distribution (a routing decision's relFlow), driving behaviour and desired speeds, "
-            "signal timing, and link geometry/lanes (capacity) — and where the model is short of "
+            "Refused. To close the same gap, this loop automatically proposes one thing: the turn "
+            "distribution (a routing decision's relFlow). "
+            "Given a CAPACITY diagnosis for this node and a measured "
+            "stop-line saturation flow it can also propose three car-following values (MRWA Table "
+            "5-6) — without that measurement it requests one instead of proposing. Signal timing "
+            "reaches a step-6 review once you say the node is signalised, and stops there. Desired "
+            "speeds and link geometry/lanes (capacity) have no proposal builder in this loop: "
+            "hand-edited. And where the model is short of "
             "vehicles because some OTHER, unmeasured entrance is too low, that entrance is where "
             "demand may be estimated, not this one.",
             ja=f"ノード {node_id} の総交通量が実測と乖離しています(GEH {_round(node_total_geh)} ≥ "
@@ -1427,8 +1498,12 @@ def _build_demand_proposal(
             "キャリブレーションの「目標値」であってつまみではありません — モデルの下流の数値を"
             "合わせるために実測値そのものを書き換えれば、キャリブレーションの向きが反転し、この実行"
             "を採点する基準自体が失われます。よってこの編集は拒否します。同じ乖離を縮めるためにこの"
-            "ループが依然として変更できるもの: 回転配分(経路決定のrelFlow)、走行挙動・希望速度、"
-            "信号時間、リンク幾何・車線数(容量)。そして車両が不足している原因が別の「実測されて"
+            "ループが自動提案するのは回転配分(経路決定のrelFlow)の一つだけです。このノードが容量"
+            "限界と診断され、停止線の飽和交通流を測定して渡せば追従モデルの3値(MRWA Table 5-6)まで"
+            "提案でき、測定がなければ提案ではなく測定を要求します。信号時間は信号交差点と指定すれば"
+            "⑥の確認指示までで、提案は作りません。希望速度とリンク幾何・車線数(容量)はこのループに"
+            "提案ビルダーがなく手動編集です。"
+            "そして車両が不足している原因が別の「実測されて"
             "いない」流入部であるなら、需要の推定はこのインプットではなくそちらで行うべきです。",
         )
 

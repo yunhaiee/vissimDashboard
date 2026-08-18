@@ -51,6 +51,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -58,8 +60,14 @@ import pytest
 import services.agent.anomalies as anomalies
 import services.agent.fixes as fixes
 import services.results_evidence as results_evidence
+from routers import assistant as assistant_endpoint
 from services import validation
 from services.agent import constraints, tools_edit  # noqa: F401 - registers the verbs
+# Unit #45: the D4 refusal's tail makes a claim about what #43 diagnoses and
+# what #44 proposes, so the test that pins it reads those modules rather than
+# restating them. ``genesis_fixes`` is read for the opposite reason: it is the
+# module that makes the tail's "in this loop" qualifier necessary.
+from services.agent import geh_ladder, genesis_fixes, saturation_flow
 from services.agent.toolkit import ToolRegistry, default_registry
 
 
@@ -1354,10 +1362,270 @@ def test_d4_regression_the_demo_intersections_measured_entrance_is_refused():
 
     # The rationale states the doctrine POSITIVELY and lists what remains, in
     # all three languages, naming the counted row it relied on.
+    #
+    # RETARGETED by unit #45 (2026-08-18): this loop used to be the only pin on
+    # the refusal's tail, and "relFlow" was commented "the knob that IS still
+    # ours" — singular, which was true of the CODE but not of the sentence
+    # beside it, which promised four levers. The tail's full capability claim
+    # now has a test of its own (below); what stays here is the part this test
+    # is about — the counted row, its number, and the fact that a knob IS still
+    # named. relFlow is still that knob, so the assertion itself is unchanged.
     for language, message in d4.rationale().items():
         assert "8-617-1229.801336-617-1286.072980" in message, language
         assert "649" in message, language
-        assert "relFlow" in message, language  # the knob that IS still ours
+        assert "relFlow" in message, language  # a knob that IS still ours
+
+
+def test_d4_the_refusal_tail_is_a_capability_claim_that_matches_the_builders():
+    """Unit #45. The tail of the D4 refusal tells the modeller what the loop
+    can still do, and in this repository prose that claims more than the code
+    is a defect.
+
+    Until 2026-08-18 the tail read "what this loop CAN still change: the turn
+    distribution, driving behaviour and desired speeds, signal timing, and link
+    geometry/lanes" — four levers, when exactly ONE of them had a proposal
+    builder. Units #43 (the diagnosis ladder) and #44 (measured saturation flow
+    → MRWA Table 5-6) then changed what is true, so the sentence now separates
+    three states, and each is pinned here AGAINST THE CODE THAT MAKES IT TRUE
+    rather than against itself:
+
+    (1) PROPOSED automatically — the turn distribution, and only it.
+    (2) PROPOSED ONCE SUPPLIED — the car-following set, gated on a
+        ``CAPACITY_LIMIT`` diagnosis AND a measured saturation flow. Short of
+        the measurement #44 REQUESTS one instead of proposing, which is exactly
+        what the sentence promises; both gates are exercised below, so the
+        promise cannot outlive them.
+    (3) HAND-EDITED — desired speeds and link geometry/lanes. Their write verbs
+        are registered and COM-verified; no proposal builder emits them, which
+        is asserted by reading the verbs the two builder modules can emit at
+        all.
+
+    Delete any one of the three from the sentence and this test dies. Add a
+    builder for a lever the sentence calls manual and it dies too.
+    """
+    outcome = fixes.map_node_counts(_DEMO_NODE_8, targets={"vehicle_input": _DEMO_INPUT_113})
+    d4 = outcome if outcome.reason_code == fixes.INPUT_VOLUME_IS_OBSERVED_DATA else outcome.also_refused
+    assert d4.reason_code == fixes.INPUT_VOLUME_IS_OBSERVED_DATA
+    text = d4.rationale()
+
+    # -- THE SENTENCES THAT MUST NOT COME BACK -------------------------------
+    # The exact over-promise, in the exact words it was written in. These are
+    # the strings this unit exists to remove.
+    #
+    # Checked against a WHITESPACE-COLLAPSED copy, because these are the only
+    # negative pins in the file and an exact-substring negative is evaded by
+    # any respacing — "What this loop CAN  still change", with the two spaces a
+    # re-wrapped source line produces, passed the first version of this test.
+    collapsed = {language: re.sub(r"\s+", " ", body) for language, body in text.items()}
+    assert "이 루프가 여전히 바꿀 수 있는 것" not in collapsed["ko"]
+    assert "What this loop CAN still change" not in collapsed["en"]
+    assert "依然として変更できるもの" not in collapsed["ja"]
+
+    # -- (1) automatic: the turn distribution, stated as the single one ------
+    # The COUNT and the SCOPE are pinned together, in all three languages,
+    # because the count is only true inside the scope. This loop's flagship
+    # automatic proposal is ``set_vehicle_input_volume`` — the demand estimate
+    # this very refusal points at another entrance in its closing sentence — so
+    # "proposes one thing" unqualified is false. It is "to close the same gap
+    # [at this refused input]" that makes relFlow the only one. ko and ja
+    # carried that clause from the start; en shipped without it.
+    assert "relFlow" in text["ko"] and "하나입니다" in text["ko"]
+    assert "같은 불일치를 좁히기 위해" in text["ko"]
+    assert "relFlow" in text["en"] and "proposes one thing" in text["en"]
+    assert "To close the same gap" in text["en"]
+    assert "relFlow" in text["ja"] and "一つだけ" in text["ja"]
+    assert "同じ乖離を縮めるために" in text["ja"]
+
+    # -- (2) conditional: name the supply, and say what happens without it ---
+    # The DIAGNOSIS half of the condition is pinned too. Without it a refuter
+    # could invert the sentence into "even when this node is NOT diagnosed as a
+    # capacity limit" and leave every other mark below standing.
+    for language, marks in {
+        "ko": ("포화교통류", "Table 5-6", "측정이 없으면 제안 대신 측정을 요청",
+               "이 노드가 용량 한계로 진단되고"),
+        "en": ("saturation flow", "Table 5-6", "requests one instead of proposing",
+               "Given a CAPACITY diagnosis for this node"),
+        # The ja condition mark carries its trailing "、" on purpose: without it
+        # the pin is a PREFIX of "…と診断されなくても、", so the negation the
+        # other two languages reject would have slipped through in Japanese.
+        "ja": ("飽和交通流", "Table 5-6", "測定がなければ提案ではなく測定を要求",
+               "このノードが容量限界と診断され、"),
+    }.items():
+        for mark in marks:
+            assert mark in text[language], (language, mark)
+
+    # ... and the MODAL is pinned, because the two conditions the sentence
+    # names are NECESSARY, not SUFFICIENT (see (2'') below). "It proposes"
+    # would be an over-promise of exactly the species this unit removes.
+    assert "제안할 수 있으며" in text["ko"]
+    assert "it can also propose" in text["en"]
+    assert "提案でき" in text["ja"]
+
+    # -- (2') and the gate the promise rests on, read from #44 itself --------
+    # No CAPACITY_LIMIT diagnosis → no proposal, by name.
+    without_rung = saturation_flow.propose_car_following_parameters(
+        rung={"rung": geh_ladder.ROUTING_SPLIT, "evidence": {"node_id": "8"}},
+        measurement=None,
+    )
+    assert len(without_rung) == 1
+    assert without_rung[0].outcome == fixes.REFUSAL
+    assert without_rung[0].reason_code == saturation_flow.RUNG_IS_NOT_CAPACITY_LIMIT
+
+    # The diagnosis but no measurement → the measurement is REQUESTED, which is
+    # the half of the sentence that would otherwise be an unkept promise.
+    without_measurement = saturation_flow.propose_car_following_parameters(
+        rung={"rung": geh_ladder.CAPACITY_LIMIT, "evidence": {"node_id": "8"}},
+        measurement=None,
+    )
+    assert len(without_measurement) == 1
+    assert without_measurement[0].outcome == fixes.REFUSAL
+    assert without_measurement[0].reason_code == saturation_flow.NO_SATURATION_FLOW_MEASUREMENT
+
+    # -- (2'') WHY THE SENTENCE SAYS "CAN" -----------------------------------
+    # The two conditions it names are necessary, not sufficient: #44 has two
+    # more hard stops behind them. Pinned so nobody "tightens" the sentence
+    # back into a promise the builder does not keep.
+    measured = saturation_flow.observed_measurement(
+        saturation_flow_pcu=1800.0,
+        method="on-site measurement",
+        attribution="unit #45 regression",
+        measured_at="2026-08-18",
+        samples=8,
+        vehicles_per_sample=6,
+    )
+    assert measured["ok"] is True, measured
+
+    named_nothing = saturation_flow.propose_car_following_parameters(
+        rung={"rung": geh_ladder.CAPACITY_LIMIT, "evidence": {"node_id": "8"}},
+        measurement=measured,
+    )
+    assert named_nothing[0].outcome == fixes.REFUSAL
+    assert named_nothing[0].reason_code == saturation_flow.NO_DRIVING_BEHAVIOR_TARGET
+
+    off_the_table = saturation_flow.propose_car_following_parameters(
+        rung={"rung": geh_ladder.CAPACITY_LIMIT, "evidence": {"node_id": "8"}},
+        measurement=saturation_flow.observed_measurement(
+            saturation_flow_pcu=2600.0,
+            method="on-site measurement",
+            attribution="unit #45 regression",
+            measured_at="2026-08-18",
+            samples=8,
+            vehicles_per_sample=6,
+        ),
+        behavior={"no": "3", "name": "Urban", "reference_count": 0},
+    )
+    assert off_the_table[0].outcome == fixes.REFUSAL
+    assert off_the_table[0].reason_code == saturation_flow.SATURATION_FLOW_IMPLAUSIBLE
+
+    # -- (3) diagnosis-only: signal timing stops at the review ---------------
+    assert "신호 시간" in text["ko"] and "제안은 만들지 않습니다" in text["ko"]
+    assert "Signal timing" in text["en"] and "stops there" in text["en"]
+    assert "信号時間" in text["ja"] and "提案は作りません" in text["ja"]
+
+    # -- (4) manual: desired speeds and link geometry/lanes ------------------
+    # "IN THIS LOOP" is pinned as hard as the rest of the sentence, because the
+    # unqualified claim is FALSE and shipped that way: genesis_fixes proposes
+    # two of these four verbs (see below). A refuter deleting the qualifier is
+    # re-introducing the exact over-promise this unit exists to remove.
+    assert "희망 속도와 링크 기하·차로" in text["ko"]
+    assert "이 루프에 제안 빌더가 없어" in text["ko"]
+    assert "Desired speeds and link geometry/lanes" in text["en"]
+    assert "no proposal builder in this loop" in text["en"]
+    assert "希望速度とリンク幾何・車線数" in text["ja"]
+    assert "このループに提案ビルダーがなく" in text["ja"]
+
+    # ... and that IS the state of the code: the verbs exist and are
+    # registered, and neither of THIS LOOP's proposal modules can emit one.
+    manual = {
+        "set_des_speed_decision",
+        "set_des_speed_distribution_points",
+        "set_link_lane_count",
+        "set_link_geometry",
+    }
+    for verb in manual:
+        assert default_registry.get(verb) is not None, f"{verb} is supposed to be a real verb"
+
+    def _emitted_verbs(module: Any) -> set[str]:
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        return set(re.findall(r'verb\s*=\s*"([a-z0-9_]+)"', source))
+
+    emitted: set[str] = set()
+    for module in (fixes, saturation_flow):
+        emitted |= _emitted_verbs(module)
+    assert emitted == {
+        "set_vehicle_input_volume",
+        "set_route_relative_flow",
+        "set_driving_behavior_parameter",
+    }, emitted
+    assert not (emitted & manual), "a manual lever grew a builder — the refusal must say so"
+
+    # THE QUALIFIER IS EARNED, MEASURED RATHER THAN ASSERTED. The scan above
+    # deliberately reads two modules; this reads the third, and it is the whole
+    # reason the sentence cannot be written unqualified. genesis_fixes DOES
+    # propose values for two of the four "manual" levers — the Genesis BUILD
+    # gate widening a link to the lane count its own connector maps (V4) and
+    # resetting a polyline to census points (V7). Neither is a lever for
+    # closing a GEH gap, which is what the refusal is about; both make
+    # "nothing proposes values for them" false as written.
+    #
+    # Bidirectional on purpose: if genesis_fixes ever stops emitting them, this
+    # dies and somebody must decide whether the qualifier is still earned,
+    # rather than leaving a hedge nobody can explain.
+    genesis_emitted = _emitted_verbs(genesis_fixes)
+    assert {"set_link_lane_count", "set_link_geometry"} <= genesis_emitted, genesis_emitted
+    assert not (genesis_emitted & {"set_des_speed_decision",
+                                   "set_des_speed_distribution_points"}), genesis_emitted
+
+
+def test_d4_the_600_char_note_carries_the_measurement_it_claims_to_carry():
+    """Unit #45's note at ``fixes.py``'s ``_ENTRANCE_WHY_PHRASES`` says the
+    demand-ESTIMATE rationale it rides in is 385/365/647 chars, and calls that
+    a MEASUREMENT.
+
+    It first shipped 380/360/642 — off by five in every language at once, which
+    no fixture difference can produce and which the word "Measured" promised
+    could not happen. The lengths are the demo loop's, they are asserted
+    against the live cap at ``test_calibration_loop_e2e.py``'s stage 4, and its
+    module docstring is where the numbers themselves are written down. There
+    were already three copies of this one measurement in the tree disagreeing
+    with each other; this pins the fourth to the recorded one so it cannot
+    quietly become a fifth.
+    """
+    note = Path(fixes.__file__).read_text(encoding="utf-8")
+    claimed = re.search(
+        r"runs (\d+) \(ko\) /\s*#:\s*(\d+) \(ja\) / (\d+) \(en\) chars", note
+    )
+    assert claimed, "the note stopped stating the three lengths — re-point this pin"
+
+    e2e = Path(fixes.__file__).parent.parent.parent / "tests" / "test_calibration_loop_e2e.py"
+    recorded = e2e.read_text(encoding="utf-8")
+    ko, ja, en = (int(g) for g in claimed.groups())
+    assert f"put ko at {ko} and ja at {ja}" in recorded, (ko, ja)
+    assert f"**en, at {en}, still overflows**" in recorded, en
+
+    # And the conclusion the note draws from them still follows: en is over the
+    # cap, ko and ja are under it with room, and basis is small enough that
+    # inlining it would push ko/ja most of the way to the cap.
+    cap = assistant_endpoint.MAX_APPROVAL_REASON_CHARS
+    assert en > cap >= max(ko, ja), (ko, ja, en, cap)
+
+    # The note's OTHER measured number, the ``basis`` range, is pinned at both
+    # ends on the demo fixture — it shipped as "98-160" when the floor is 86.
+    # These two ``why`` values are the extremes: the fullest basis (the row was
+    # found ON the input link) and the tersest (rows exist, none carries a
+    # count).
+    fullest = fixes.entrance_measurement(_DEMO_NODE_8, _DEMO_INPUT_113)
+    assert fullest["why"] == fixes.ENTRANCE_ROW_ON_INPUT_LINK
+    tersest = fixes.entrance_measurement(
+        {**_DEMO_NODE_8, "movements": [
+            dict(row, observed=None) if str(row["id"]).startswith("8-617-") else row
+            for row in _DEMO_NODE_8["movements"]
+        ]},
+        _DEMO_INPUT_113,
+    )
+    assert tersest["why"] == fixes.ENTRANCE_ROW_HAS_NO_OBSERVED
+    floor, ceiling = len(tersest["basis"]), len(fullest["basis"])
+    assert f"``basis`` runs {floor} (``ROW_HAS_NO_OBSERVED``) to {ceiling}" in note, (floor, ceiling)
 
 
 def test_d4_the_refusal_does_not_stop_the_grading_the_split_is_still_examined():
