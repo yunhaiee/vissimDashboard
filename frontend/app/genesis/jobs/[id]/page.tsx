@@ -79,6 +79,7 @@ import {
   type GenesisJob,
   type GenesisJobFixes,
 } from "@/lib/api";
+import { messageWithoutSubject } from "@/lib/findingMessage";
 import { stashRegionPrefill } from "@/lib/region-prefill";
 import {
   POLL_INTERVAL_MS,
@@ -387,6 +388,7 @@ function FixFindingRow({
   jobId,
   finding,
   instanceKey,
+  showSubject,
   t,
   lang,
   onApplied,
@@ -404,6 +406,13 @@ function FixFindingRow({
    * off the same pair, merged the two cards' candidate lists so picking a
    * target in one cleared the other. Both are keyed off this instead. */
   instanceKey: string;
+  /** Unit #41-b -- does this card have to NAME its own finding, or is it
+   * already sitting under the gate row that named it? The proposal is rendered
+   * inline under its own 소견 now (the user's live pass, 2026-08-18: "이름 반복
+   * … 이게 너무 자주돼"), so the merged case prints the subject exactly once,
+   * on the row above. `true` is the standing shape and is still used by the
+   * dispositions whose gate row the payload cap left out. */
+  showSubject: boolean;
   t: Translate;
   lang: string;
   onApplied: (job: GenesisJob) => void;
@@ -611,22 +620,28 @@ function FixFindingRow({
     typeof finding.context?.link_id === "number" ? (finding.context.link_id as number) : null;
 
   return (
-    <div className="px-0.5 py-3 text-[15px] text-slate-800">
+    <div className={showSubject ? "px-0.5 py-3 text-[15px] text-slate-800" : "px-1.5 pb-3 text-[15px] text-slate-800"}>
       {/* Unit #41 -- WHAT IT IS, first and in words. The finding code used to
         * lead this line; it is a machine identifier a bug report needs and a
         * consultant cannot read, so it moved into the 자세히 block below and
-        * the road took its place. */}
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        {fixFindingIsProposal(finding) && (
-          <span
-            className={`rounded-full border px-1.5 py-0.5 text-[14px] font-bold ${fixProposalBadgeClasses()}`}
-          >
-            {t("제안", "Proposal", "提案")}
-          </span>
-        )}
-        {finding.origin === "warning" && <span className="text-[14px] text-slate-500">warn /</span>}
-        <SubjectLabel subject={finding.subject} id={contextLinkId} className="text-[15px]" />
-      </div>
+        * the road took its place.
+        *
+        * Unit #41-b -- and it is printed ONCE PER CARD. Merged under its own
+        * gate row (the standing case now), the badge and the road are already
+        * on the line above, so this header would be the second copy of both. */}
+      {showSubject && (
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          {fixFindingIsProposal(finding) && (
+            <span
+              className={`rounded-full border px-1.5 py-0.5 text-[14px] font-bold ${fixProposalBadgeClasses()}`}
+            >
+              {t("제안", "Proposal", "提案")}
+            </span>
+          )}
+          {finding.origin === "warning" && <span className="text-[14px] text-slate-500">warn /</span>}
+          <SubjectLabel subject={finding.subject} id={contextLinkId} className="text-[15px]" />
+        </div>
+      )}
 
       {/* Unit #36's measurement, quoted rather than paraphrased -- the job's
         * own source .osm declaring the connection this network lost. It rides
@@ -703,8 +718,44 @@ function FixFindingRow({
                       "自動修正なし — 人の判断が必要です。",
                     )}
           </p>
+          {/* Unit #41-b -- ONE 자세히 PER CARD. The attestation block below used
+            * to open a SECOND disclosure with the same summary line, so a
+            * reader met "자세히 (근거·가정·코드)" twice in one card and had to
+            * open both to have read the card (user, live pass 2026-08-18: "the
+            * second 자세히는 없애"). The two standing attestation explanations
+            * and unit #42's own dead-end doctrine moved UP into this one,
+            * verbatim and still under exactly the conditions that used to
+            * render them -- MOVED, never dropped, which is the same rule the
+            * disclosure itself was created under. */}
           <CardDetails summary={moreLabel(t)}>
             <p className="font-mono leading-relaxed text-slate-700">{rationale}</p>
+            {worldGapAsked && (
+              <>
+                <p className="leading-relaxed">
+                  {t(
+                    "원본 데이터는 이 지점에서 이어지는 도로를 선언하지 않습니다. 현장을 아시는 분만 답할 수 있는 질문이며, 확인하시면 확인자와 시각이 이 수정과 함께 기록됩니다.",
+                    "The source data declares no continuation here. Only someone who knows the site can answer, and an attestation is recorded with who made it and when.",
+                    "元データはこの地点での継続を宣言していません。現場をご存じの方だけが答えられる問いであり、確認された場合は確認者と時刻がこの修正とともに記録されます。",
+                  )}
+                </p>
+                <p className="leading-relaxed">
+                  {t(
+                    "연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다 — 확인하시는 것은 도로가 이어진다는 사실뿐입니다.",
+                    "The connector's shape and lane mapping are constructed by the system from the two existing link ends — what you attest is only that the road continues.",
+                    "コネクタの形状と車線対応は既存の2つのリンク端からシステムが構成します — 確認いただくのは道路が続くという事実のみです。",
+                  )}
+                </p>
+              </>
+            )}
+            {deadEnd && (
+              <p className="leading-relaxed">
+                {t(
+                  "여기서 끝난다고 확인하셔도 원본 .osm은 편집되지 않습니다 — 원본은 증거이며, 제외는 새 작업에 전달되는 선언적 파라미터입니다. 판정기(gate)도 그대로입니다: 그 way가 네트워크에 없으므로 V3가 더 이상 발화하지 않을 뿐, 소견이 숨겨지는 것이 아닙니다.",
+                  "Confirming that it ends does NOT edit the source .osm — the source is evidence, and the exclusion is a declarative parameter carried into the new job. The judge is untouched too: V3 stops firing because the way is no longer in the network, never because a finding was suppressed.",
+                  "ここで終わると確認しても元の.osmは編集されません — 元データは証拠であり、除外は新しいジョブに渡される宣言的パラメータです。判定器（gate）もそのままです: そのwayがネットワークに存在しないためV3が発火しなくなるだけで、検出が隠されるわけではありません。",
+                )}
+              </p>
+            )}
             <p className="font-mono text-[14px] text-slate-500">
               {finding.code}
               {disposition.reason_code ? ` · ${disposition.reason_code}` : ""}
@@ -1036,51 +1087,33 @@ function FixFindingRow({
                 * button stays visible and got shorter; the two standing
                 * explanations it used to run on into (what the system
                 * constructs, and why only a person can answer) moved intact
-                * into the disclosure under it. Moved, never dropped.
+                * into the disclosure. Moved, never dropped.
                 *
                 * Unit #42 -- the two answers have DIFFERENT consequences, so
-                * they get different sentences. Attesting edits this artifact
+                * they got different sentences: attesting edits this artifact
                 * with a real Vissim turn; confirming a dead end never touches
                 * it and starts a new generation instead. One line for both
-                * would have been a lie about one of them. */}
-              <p className="text-[14px] leading-relaxed text-slate-500">
-                {deadEndChosen
-                  ? t(
-                      "확인하면 이 way를 명명 제외한 새 생성이 같은 원본으로 시작됩니다 — 이 산출물은 편집되지 않고, 확인자·시각·근거 원문이 새 작업의 원장에 남습니다.",
-                      "Confirming starts a NEW generation from the same source with this way excluded by name — this artifact is not edited, and who confirmed it, when, and their own words land in the new job's ledger.",
-                      "確認すると、このwayを名前付きで除外した新しい生成が同じ元データから開始されます — この成果物は編集されず、確認者・時刻・根拠の原文が新しいジョブの台帳に残ります。",
-                    )
-                  : t(
-                      "승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다.",
-                      "Approving runs a real Vissim edit and re-gates the network.",
-                      "承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します。",
-                    )}
-              </p>
-              <CardDetails summary={moreLabel(t)}>
-                <p className="leading-relaxed">
+                * would have been a lie about one of them.
+                *
+                * Unit #41-b -- and the ATTESTING half of that pair is DELETED
+                * on the product owner's own instruction (user, live pass
+                * 2026-08-18: "'승인하면 실제 Vissim 편집이 실행되고 네트워크가
+                * 다시 게이트를 거칩니다.' 이것도 없애도"). The contract pin that
+                * held it was removed with it, by the same authority. What made
+                * the dead-end sentence necessary is untouched: it names a
+                * consequence a reader cannot infer from the button (a NEW job
+                * from the same source, this artifact left alone), so it stays
+                * exactly as unit #42 wrote it -- now rendered only for the
+                * answer it is about. */}
+              {deadEndChosen && (
+                <p className="text-[14px] leading-relaxed text-slate-500">
                   {t(
-                    "원본 데이터는 이 지점에서 이어지는 도로를 선언하지 않습니다. 현장을 아시는 분만 답할 수 있는 질문이며, 확인하시면 확인자와 시각이 이 수정과 함께 기록됩니다.",
-                    "The source data declares no continuation here. Only someone who knows the site can answer, and an attestation is recorded with who made it and when.",
-                    "元データはこの地点での継続を宣言していません。現場をご存じの方だけが答えられる問いであり、確認された場合は確認者と時刻がこの修正とともに記録されます。",
+                    "확인하면 이 way를 명명 제외한 새 생성이 같은 원본으로 시작됩니다 — 이 산출물은 편집되지 않고, 확인자·시각·근거 원문이 새 작업의 원장에 남습니다.",
+                    "Confirming starts a NEW generation from the same source with this way excluded by name — this artifact is not edited, and who confirmed it, when, and their own words land in the new job's ledger.",
+                    "確認すると、このwayを名前付きで除外した新しい生成が同じ元データから開始されます — この成果物は編集されず、確認者・時刻・根拠の原文が新しいジョブの台帳に残ります。",
                   )}
                 </p>
-                <p className="leading-relaxed">
-                  {t(
-                    "연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다 — 확인하시는 것은 도로가 이어진다는 사실뿐입니다.",
-                    "The connector's shape and lane mapping are constructed by the system from the two existing link ends — what you attest is only that the road continues.",
-                    "コネクタの形状と車線対応は既存の2つのリンク端からシステムが構成します — 確認いただくのは道路が続くという事実のみです。",
-                  )}
-                </p>
-                {deadEnd && (
-                  <p className="leading-relaxed">
-                    {t(
-                      "여기서 끝난다고 확인하셔도 원본 .osm은 편집되지 않습니다 — 원본은 증거이며, 제외는 새 작업에 전달되는 선언적 파라미터입니다. 판정기(gate)도 그대로입니다: 그 way가 네트워크에 없으므로 V3가 더 이상 발화하지 않을 뿐, 소견이 숨겨지는 것이 아닙니다.",
-                      "Confirming that it ends does NOT edit the source .osm — the source is evidence, and the exclusion is a declarative parameter carried into the new job. The judge is untouched too: V3 stops firing because the way is no longer in the network, never because a finding was suppressed.",
-                      "ここで終わると確認しても元の.osmは編集されません — 元データは証拠であり、除外は新しいジョブに渡される宣言的パラメータです。判定器（gate）もそのままです: そのwayがネットワークに存在しないためV3が発火しなくなるだけで、検出が隠されるわけではありません。",
-                    )}
-                  </p>
-                )}
-              </CardDetails>
+              )}
               <div>
                 {deadEndChosen ? (
                   <button
@@ -1585,35 +1618,44 @@ function GateCheckGrid({
   const checkFixes = (fixes?.findings ?? []).filter(
     (entry) => selected && entry.check_id === selected.id,
   );
-  // DISPLAY ORDER ONLY -- a stable partition, proposals first. `fixes.findings`
-  // itself is untouched, and so is the stored gate: what changed is which of
-  // ten rows a reader meets before the fold, not what the payload says.
-  const orderedFixes = [
-    ...checkFixes.filter((entry) => fixFindingIsProposal(entry)),
-    ...checkFixes.filter((entry) => !fixFindingIsProposal(entry)),
-  ];
-  // The gate report's own row for a fix-catalogue entry, so a card that puts
-  // the reader on the map also opens the finding's own detail there rather
-  // than a bare ring with nothing beside it. Matched on (code, subject) --
-  // never on message text, which is rendered per language.
-  const gateRowByKey = new Map<string, { finding: GenesisGateFinding; via: "finding" | "warning" }>();
-  for (const entry of selected?.findings ?? []) {
-    gateRowByKey.set(findingKeyOf(entry), { finding: entry, via: "finding" });
-  }
-  for (const entry of selected?.warnings ?? []) {
-    gateRowByKey.set(findingKeyOf(entry), { finding: entry, via: "warning" });
-  }
-  const refForFix = (entry: GenesisFixFinding): FindingRef | null => {
-    const row = selected ? gateRowByKey.get(findingKeyOf(entry)) : undefined;
-    if (!selected || !row) return null;
-    return {
-      checkId: selected.id,
-      checkTitle: selected.title,
-      tier: selected.tier,
-      finding: row.finding,
-      via: row.via,
-    };
-  };
+  // Unit #41-b -- THE MERGE, AND WHY IT IS POSITIONAL.
+  //
+  // The 수정 제안 section is gone (user, live pass 2026-08-18: "수정 제안 칸
+  // 따로 만들지 말고 위에 걍 넣어 같이. 그럼 이름 반복될 필요도 없고"), so each
+  // disposition renders inside the 소견 that raised it and the subject is
+  // printed once per card instead of once per list.
+  //
+  // WHICH catalogue entry belongs to WHICH gate row is not a (code, subject)
+  // lookup, and deliberately so: gate.py legitimately emits the same pair twice
+  // (`v3_silent_departure_point / 대덕대로 [FWD] w52496957s1`, for links 427 AND
+  // 429), so that key cannot tell the two rows apart -- the very hole unit #41's
+  // refuter closed on the row identity. Both payloads are walks of the SAME
+  // stored gate.json: `gate_payload` renders `check.findings` then
+  // `check.warnings` in order, and the fixes route's
+  // `iter_stored_gate_findings` walks `("findings", "warnings")` in the same
+  // order. So the n-th gate row of an origin is the n-th catalogue entry of that
+  // origin, exactly, and the pairing needs no matching at all.
+  //
+  // A DISPLAY MERGE ONLY: `fixes.findings` is filtered into new arrays and never
+  // sorted or mutated, the apply target is still the finding's own
+  // (code, subject), and `rowKeyOf` below is still the PAYLOAD index.
+  const fixesFromOrigin = (via: "finding" | "warning"): GenesisFixFinding[] =>
+    checkFixes.filter((entry) => entry.origin === via);
+  // A ROW'S IDENTITY IS ITS PLACE IN THE PAYLOAD, NEVER ITS PLACE ON SCREEN --
+  // unit #41's refuter, unchanged by the merge and only moved out of the render
+  // body. `orderedFixes` was a DISPLAY partition and the proposal-first order
+  // now lives in `CollapsibleMessages`; the fixes fetch is keyed on
+  // `gate.checked_at`, so a live check replaces this payload with no navigation
+  // and a row can cross the partition while the reader is mid-card. Indexed by
+  // display position, that reorder makes React preserve a key whose finding
+  // CHANGED: `<code>::<subject>::2` was link 429's card and becomes 427's,
+  // carrying 429's typed attestation basis, its picked destination and its
+  // ticked map-confirmation onto a different link's finding. An attestation is a
+  // recorded human claim about ONE object; it may never slide onto another. The
+  // payload index is stable across every reorder. Reference-identity `indexOf`:
+  // each parsed finding is its own object, so duplicates get distinct indices.
+  const rowKeyOf = (entry: GenesisFixFinding): string =>
+    `${entry.code}::${entry.subject}::${checkFixes.indexOf(entry)}`;
 
   return (
     <div>
@@ -1669,9 +1711,59 @@ function GateCheckGrid({
                   : t("경고 등급", "warn tier", "警告ティア")}
               </span>
             </div>
-            <p className="mt-1.5 font-semibold">{selected.title}</p>
+            {/* Unit #41-b -- the 수정 제안 SECTION is gone, and its ⓘ is here.
+              * The sentence was never about a box: it says what the catalogue
+              * answers "이 검사가 낸 각 발견에 대해", which is exactly what this
+              * check's title names -- so it reads on the title, verbatim, while
+              * the dispositions it describes now render inside the 소견 rows
+              * below. Moved, never dropped. */}
+            <p className="mt-1.5 font-semibold">
+              {selected.title}
+              <InfoTip
+                text={t(
+                  "이 검사가 낸 각 발견에 대해, 등록된 수정 카탈로그가 자동으로 고칠 수 있는지와 그 근거를 답합니다. 자동 수정이 없다는 답은 정보이지 버튼이 아닙니다 — 거부는 진단, 에이전트는 치료.",
+                  "For each finding this check raised, the registered fix catalogue answers whether it can be automatically repaired and on what evidence. \"No automated fix\" is information, never a button — a refusal is a diagnosis, and the agent is the treatment.",
+                  "この検査が出した各発見について、登録済みの修正カタログが自動修正可能かとその根拠を答えます。「自動修正なし」は情報であり、ボタンではありません — 拒否は診断、エージェントは治療。",
+                )}
+              />
+            </p>
 
             <div className="mt-2">
+              {/* The catalogue's own three states, as LINES rather than a
+                * titled panel -- they are about the dispositions that render
+                * inside the rows below, so they are said before them and take
+                * no box of their own. Every sentence is the one the retired
+                * section carried, word for word. */}
+              {checkHasBody(selected) && !fixes && !fixesError && (
+                <p className="mb-1.5 text-[15px] text-slate-500">
+                  {t("수정 제안을 불러오는 중…", "Loading fix proposals…", "修正提案を読み込み中…")}
+                </p>
+              )}
+              {checkHasBody(selected) && fixesError && (
+                <p className="mb-1.5 text-[15px] leading-relaxed text-slate-600">
+                  {fixesError instanceof GenesisError && fixesError.status === 401
+                    ? t(
+                        "수정 제안을 보려면 로그인이 필요합니다 — 로그인 후 다시 시도하세요.",
+                        "Viewing fix proposals requires a signed-in user — sign in and try again.",
+                        "修正提案の閲覧にはログインが必要です — ログイン後に再試行してください。",
+                      )
+                    : t(
+                        "수정 제안을 불러오지 못했습니다.",
+                        "Could not load fix proposals.",
+                        "修正提案を読み込めませんでした。",
+                      )}
+                </p>
+              )}
+              {checkHasBody(selected) && fixes && checkFixes.length === 0 && (
+                <p className="mb-1.5 text-[15px] text-slate-500">
+                  {t(
+                    "이 검사에는 개별 수정 제안이 없습니다.",
+                    "No individual fix proposal for this check.",
+                    "この検査には個別の修正提案がありません。",
+                  )}
+                </p>
+              )}
+
               {selected.gaps.length > 0 && (
                 <ul className="space-y-1">
                   {selected.gaps.map((gap) => (
@@ -1691,6 +1783,12 @@ function GateCheckGrid({
                   proposalKeys={proposalKeys}
                   placeable={placeable}
                   onFocusFinding={onFocusFinding}
+                  checkFixes={fixesFromOrigin("finding")}
+                  rowKeyOf={rowKeyOf}
+                  jobId={jobId}
+                  lang={lang}
+                  onFixApplied={onFixApplied}
+                  onFocusElement={onFocusElement}
                   t={t}
                 />
               )}
@@ -1713,6 +1811,12 @@ function GateCheckGrid({
                   proposalKeys={proposalKeys}
                   placeable={placeable}
                   onFocusFinding={onFocusFinding}
+                  checkFixes={fixesFromOrigin("warning")}
+                  rowKeyOf={rowKeyOf}
+                  jobId={jobId}
+                  lang={lang}
+                  onFixApplied={onFixApplied}
+                  onFocusElement={onFocusElement}
                   t={t}
                 />
               )}
@@ -1741,99 +1845,6 @@ function GateCheckGrid({
                 />
               )}
 
-              {checkHasBody(selected) && (
-                <div className="mt-4 border-t border-slate-200 pt-3">
-                  <p className="text-[15px] font-semibold text-slate-800">
-                    {t("수정 제안", "Fix proposals", "修正提案")}
-                    <InfoTip
-                      text={t(
-                        "이 검사가 낸 각 발견에 대해, 등록된 수정 카탈로그가 자동으로 고칠 수 있는지와 그 근거를 답합니다. 자동 수정이 없다는 답은 정보이지 버튼이 아닙니다 — 거부는 진단, 에이전트는 치료.",
-                        "For each finding this check raised, the registered fix catalogue answers whether it can be automatically repaired and on what evidence. \"No automated fix\" is information, never a button — a refusal is a diagnosis, and the agent is the treatment.",
-                        "この検査が出した各発見について、登録済みの修正カタログが自動修正可能かとその根拠を答えます。「自動修正なし」は情報であり、ボタンではありません — 拒否は診断、エージェントは治療。",
-                      )}
-                    />
-                  </p>
-
-                  {!fixes && !fixesError && (
-                    <p className="mt-2 text-[15px] text-slate-500">
-                      {t("수정 제안을 불러오는 중…", "Loading fix proposals…", "修正提案を読み込み中…")}
-                    </p>
-                  )}
-
-                  {fixesError && (
-                    <p className="mt-2 text-[15px] leading-relaxed text-slate-600">
-                      {fixesError instanceof GenesisError && fixesError.status === 401
-                        ? t(
-                            "수정 제안을 보려면 로그인이 필요합니다 — 로그인 후 다시 시도하세요.",
-                            "Viewing fix proposals requires a signed-in user — sign in and try again.",
-                            "修正提案の閲覧にはログインが必要です — ログイン後に再試行してください。",
-                          )
-                        : t(
-                            "수정 제안을 불러오지 못했습니다.",
-                            "Could not load fix proposals.",
-                            "修正提案を読み込めませんでした。",
-                          )}
-                    </p>
-                  )}
-
-                  {/* Unit #41 -- PROPOSALS FIRST, and one flat list. The rows
-                    * used to be nine bordered cards nested inside this
-                    * bordered card, in payload order, which is how the single
-                    * applicable proposal of ten ended up ninth and unread.
-                    * They are rules now, not boxes, and the ordering is
-                    * `orderedFixes`'s. */}
-                  {fixes && (
-                    <div className="mt-2 flex flex-col divide-y divide-slate-200">
-                      {orderedFixes.map((finding) => {
-                        // A ROW'S IDENTITY IS ITS PLACE IN THE PAYLOAD, NEVER
-                        // ITS PLACE ON SCREEN. `orderedFixes` is a DISPLAY
-                        // partition, and a live check re-gates this job in
-                        // place -- the fixes fetch is keyed on
-                        // `gate.checked_at`, so the payload is replaced with
-                        // no navigation and a row can cross the partition
-                        // while the reader is mid-card. Indexed by display
-                        // position, that reorder makes React preserve a key
-                        // whose finding CHANGED: with gate.py's real duplicate
-                        // pair (`v3_silent_departure_point / 대덕대로 [FWD]
-                        // w52496957s1`, raised for link 427 AND 429), key
-                        // `<code>::<subject>::2` was 429's card and becomes
-                        // 427's -- carrying 429's typed attestation basis, its
-                        // picked destination and its ticked map-confirmation
-                        // onto a different link's finding. An attestation is a
-                        // recorded human claim about ONE object; it may never
-                        // slide onto another. The payload index is stable
-                        // across every reorder, so a preserved key is always
-                        // the same finding. Reference-identity `indexOf`: each
-                        // parsed finding is its own object, so duplicates get
-                        // distinct indices.
-                        const rowKey = `${finding.code}::${finding.subject}::${checkFixes.indexOf(finding)}`;
-                        return (
-                          <FixFindingRow
-                            key={rowKey}
-                            instanceKey={rowKey}
-                            jobId={jobId}
-                            finding={finding}
-                            t={t}
-                            lang={lang}
-                            onApplied={onFixApplied}
-                            onFocusElement={onFocusElement}
-                            onFocusPoint={(point) => onFocusFinding(refForFix(finding), point)}
-                          />
-                        );
-                      })}
-                      {orderedFixes.length === 0 && (
-                        <p className="text-[15px] text-slate-500">
-                          {t(
-                            "이 검사에는 개별 수정 제안이 없습니다.",
-                            "No individual fix proposal for this check.",
-                            "この検査には個別の修正提案がありません。",
-                          )}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           </div>
         )}
@@ -1919,6 +1930,23 @@ const FINDINGS_COLLAPSED_COUNT = 6;
  * cap's own named-omission line ("표시되지 않은 N건 — gate.json") is evidence
  * and renders separately, untouched. Callers key this by the selected check's
  * id so the fold resets when the reader moves to another check.
+ *
+ * UNIT #41-b MERGED THE PROPOSAL INTO THE ROW. The 수정 제안 section under this
+ * list re-printed every subject a second time to say what could be done about
+ * it ("이름 반복 service[FWD] w1294917882s0 이게 너무 자주돼" — user, live pass
+ * 2026-08-18), so the disposition now renders inside the row that raised it and
+ * the subject is printed once. Three things this does NOT change, each of them
+ * a claim some earlier unit had to buy:
+ *
+ *   * the fix payload is only READ here — the apply target is still the
+ *     finding's own (code, subject) and the catalogue array is never sorted;
+ *   * a row's identity is still its PAYLOAD index (`rowKeyOf`, and `<li>`'s own
+ *     key below), never its position in the proposal-first display order —
+ *     which now matters MORE than it did, because the stateful card lives
+ *     inside the reordered list rather than beside it;
+ *   * a card whose gate row the payload cap left out is still rendered, under
+ *     the fold, carrying its own subject: the cap omits a finding's WORDING,
+ *     and this list may not turn that into omitting its disposition too.
  */
 function CollapsibleMessages({
   check,
@@ -1927,6 +1955,12 @@ function CollapsibleMessages({
   proposalKeys,
   placeable,
   onFocusFinding,
+  checkFixes,
+  rowKeyOf,
+  jobId,
+  lang,
+  onFixApplied,
+  onFocusElement,
   t,
 }: {
   check: GenesisGateCheck;
@@ -1934,27 +1968,60 @@ function CollapsibleMessages({
   via: "finding" | "warning";
   proposalKeys: ReadonlySet<string>;
   placeable: ReadonlySet<string>;
-  onFocusFinding: (ref: FindingRef) => void;
+  onFocusFinding: (ref: FindingRef | null, point?: { lat: number; lon: number; label: string }) => void;
+  /** Unit #41-b -- THIS ORIGIN's fix-catalogue entries for this check, in the
+   * payload's own order. Paired to `findings` POSITIONALLY: both arrays are
+   * walks of the same stored gate.json in the same order, so the n-th entry
+   * here is the n-th row there — see `fixesFromOrigin`'s own comment for why a
+   * (code, subject) lookup could not do this job. */
+  checkFixes: GenesisFixFinding[];
+  rowKeyOf: (entry: GenesisFixFinding) => string;
+  jobId: string;
+  lang: string;
+  onFixApplied: (job: GenesisJob) => void;
+  onFocusElement: (kind: "link" | "connector", id: number) => void;
   t: Translate;
 }) {
   const [expanded, setExpanded] = useState(false);
 
-  const rows = findings.map((finding) => ({
+  const rows = findings.map((finding, payloadIndex) => ({
     finding,
+    payloadIndex,
     key: findingKeyOf(finding),
+    fix: checkFixes[payloadIndex] ?? null,
     ref: { checkId: check.id, checkTitle: check.title, tier: check.tier, finding, via } as FindingRef,
   }));
   const withProposal = rows.filter((row) => proposalKeys.has(row.key));
   const ordered = [...withProposal, ...rows.filter((row) => !proposalKeys.has(row.key))];
   const visibleCount = Math.max(FINDINGS_COLLAPSED_COUNT, withProposal.length);
+  // The catalogue answers for EVERY stored finding; the gate payload carries at
+  // most `MAX_FINDINGS_IN_PAYLOAD` of them. The tail has no row to sit under, so
+  // it keeps the standing card shape (subject and all) rather than disappearing.
+  const unpaired = checkFixes.slice(findings.length);
   const overflow = ordered.length - visibleCount;
   const visible = expanded || overflow <= 0 ? ordered : ordered.slice(0, visibleCount);
 
   return (
     <>
       <ul className="mt-2 space-y-1">
-        {visible.map((row, index) => {
-          const isProposal = proposalKeys.has(row.key);
+        {visible.map((row) => {
+          // THE BADGE READS THIS ROW'S OWN DISPOSITION -- the one rendered
+          // directly beneath it -- never the check-wide (code, subject) set.
+          // `proposalKeys` cannot tell gate.py's duplicate pair apart
+          // (`v3_silent_departure_point / 대덕대로 [FWD] w52496957s1`, raised for
+          // links 427 AND 429), so when one of the two is derivable and the
+          // other is not, BOTH rows used to wear 제안 -- and unit #41-b put the
+          // card inside the row, which turns that into a sky 제안 badge sitting
+          // one line above its own card's refusal. A badge may not promise a
+          // button that is not there, and now that the row knows which
+          // catalogue entry is its own, it can answer exactly. A row with no
+          // paired entry has no card to approve, so it claims nothing.
+          //
+          // The FOLD is still driven by `proposalKeys` (`withProposal` above),
+          // and safely: every genuine proposal's (code, subject) is in that
+          // set, so it stays a SUPERSET -- it can only reveal a row early,
+          // never hide one behind the fold.
+          const isProposal = Boolean(row.fix && fixFindingIsProposal(row.fix));
           const badge = isProposal ? (
             <span
               className={`mr-1.5 rounded-full border px-1.5 py-0.5 text-[14px] font-bold ${fixProposalBadgeClasses()}`}
@@ -1967,11 +2034,20 @@ function CollapsibleMessages({
               {badge}
               {via === "warning" && <span className="mr-1 text-slate-500">warn /</span>}
               <SubjectLabel subject={row.finding.subject} className="text-[15px]" />
-              <span className="mt-0.5 block leading-relaxed">{row.finding.message}</span>
+              {/* Unit #41-b -- the gate's own sentence, minus the subject the
+                * line above just printed. `messageWithoutSubject` trims ONLY an
+                * exact leading copy; every other message comes through
+                * verbatim, and nothing here authors a replacement. */}
+              <span className="mt-0.5 block leading-relaxed">
+                {messageWithoutSubject(row.finding.subject, row.finding.message)}
+              </span>
             </>
           );
           return (
-            <li key={`${row.key}-${index}`} className="text-[15px] leading-relaxed">
+            // KEYED ON THE PAYLOAD INDEX, not the display index: this row now
+            // carries a stateful fix card, and the proposal-first order above is
+            // a partition a live-check re-gate can move a row across.
+            <li key={`${row.key}::${row.payloadIndex}`} className="text-[15px] leading-relaxed">
               {placeable.has(row.key) ? (
                 <button
                   type="button"
@@ -1983,6 +2059,24 @@ function CollapsibleMessages({
                 </button>
               ) : (
                 <span className="block px-1.5 py-1">{body}</span>
+              )}
+              {/* THE MERGE ITSELF -- a SIBLING of the row's control, never
+                * inside it: the card carries buttons, radios and text inputs,
+                * and nesting those in the row's own <button> would be both
+                * invalid markup and a click the reader cannot aim. */}
+              {row.fix && (
+                <FixFindingRow
+                  key={rowKeyOf(row.fix)}
+                  instanceKey={rowKeyOf(row.fix)}
+                  showSubject={false}
+                  jobId={jobId}
+                  finding={row.fix}
+                  t={t}
+                  lang={lang}
+                  onApplied={onFixApplied}
+                  onFocusElement={onFocusElement}
+                  onFocusPoint={(point) => onFocusFinding(row.ref, point)}
+                />
               )}
             </li>
           );
@@ -1998,6 +2092,38 @@ function CollapsibleMessages({
             ? t("접기", "Collapse", "折りたたむ")
             : t(`나머지 ${overflow}건 펼치기`, `Show ${overflow} more`, `残り${overflow}件を表示`)}
         </button>
+      )}
+      {/* Unit #41-b -- the dispositions with no row of their own. The gate
+        * payload caps how many findings it CARRIES (backend
+        * `MAX_FINDINGS_IN_PAYLOAD`), while the fix catalogue answers for every
+        * stored one, so a check over the cap has catalogue entries whose
+        * wording is only in gate.json. They were rendered before this unit and
+        * they are rendered after it -- named as what they are, and carrying
+        * their own subject because there is no row above to carry it. */}
+      {unpaired.length > 0 && (
+        <div className="mt-2 flex flex-col divide-y divide-slate-200 border-t border-slate-200">
+          <p className="pt-2 text-[14px] leading-relaxed text-slate-600">
+            {t(
+              `위 목록에 실리지 않은 소견 ${unpaired.length}건의 처분입니다 — 문구는 gate.json 전체 내려받기에 있습니다.`,
+              `Dispositions for ${unpaired.length} finding(s) this list does not carry — their wording is in the gate.json download.`,
+              `上の一覧に載っていない検出 ${unpaired.length} 件の処分です — 文言は gate.json のダウンロードに含まれています。`,
+            )}
+          </p>
+          {unpaired.map((entry) => (
+            <FixFindingRow
+              key={rowKeyOf(entry)}
+              instanceKey={rowKeyOf(entry)}
+              showSubject
+              jobId={jobId}
+              finding={entry}
+              t={t}
+              lang={lang}
+              onApplied={onFixApplied}
+              onFocusElement={onFocusElement}
+              onFocusPoint={(point) => onFocusFinding(null, point)}
+            />
+          ))}
+        </div>
       )}
     </>
   );

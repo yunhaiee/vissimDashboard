@@ -478,6 +478,12 @@ export function describeGenesisSubject(subject: string): GenesisSubjectLabel {
   return { lead: name.slice(0, bracket), trailing: name.slice(bracket + 1), id };
 }
 
+/** `describeGenesisSubject`'s twin -- what a row must DROP from the gate's
+ * sentence so it does not print the subject this function just formatted twice
+ * -- is `messageWithoutSubject` in lib/findingMessage.ts. It lives in its own
+ * alias-free module so the contract suite can RUN its boundary rule rather than
+ * only regex-pin it; that file's header carries the reason in full. */
+
 // ---------------------------------------------------------------------------
 // Prior-generation comparison -- gate results + summary stats ONLY.
 // ---------------------------------------------------------------------------

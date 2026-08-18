@@ -5,6 +5,7 @@ import test from "node:test";
 
 import { DEFAULT_NEXT_PATH, loginHref, safeNextPath } from "../lib/authRedirect.ts";
 import { DEFAULT_LANE_M, dividerOffsetCoord, laneBoundaryOffsets, offsetPolyline } from "../lib/roadWidth.ts";
+import { messageWithoutSubject } from "../lib/findingMessage.ts";
 import {
   REGION_PREFILL_STORAGE_KEY,
   stashRegionPrefill,
@@ -2058,10 +2059,19 @@ contractTest("genesis view renders the gate's tri-state without collapsing it", 
     /findings=\{selected\.findings\}/,
     "expected the gate's own findings array to be handed to the list untouched -- no client-side filtering of what the gate said",
   );
+  // RE-AIMED, unit #41-b: the row prints the gate's own sentence MINUS the
+  // subject the same row already printed above it -- gate.py words many
+  // findings as "<subject>: <what is wrong>", and leading with `SubjectLabel`
+  // (unit #41) made those rows print the road twice
+  // ("service[FWD] w1294917882s0service [FWD] w1294917882s0: 모델 경계가…").
+  // What this pin has always guarded is unchanged: the sentence is the
+  // payload's, passed through a trim that can only remove an exact leading copy
+  // of the subject -- never a client-authored replacement, and never a
+  // rewording. The trim's own boundary rule is pinned separately below.
   pin.match(
     page,
-    /\{row\.finding\.message\}/,
-    "expected finding text to come from the gate payload verbatim -- the collapse fold (user 2026-08-14) and the unit #41 reorder pass messages through, they do not rewrite them",
+    /\{messageWithoutSubject\(row\.finding\.subject, row\.finding\.message\)\}/,
+    "expected finding text to still be the gate payload's own sentence -- the fold, the unit #41 reorder and the unit #41-b subject trim pass messages through, they do not rewrite them",
   );
   pin.match(page, /\{gap\.message\}/, "expected gap text to come from the gate payload");
 
@@ -6505,10 +6515,57 @@ contractTest("unit #41: a proposal sorts first, wears the sky badge, and the fol
 
   // DISPLAY ORDER ONLY -- a partition of the payload, never a mutation of it.
   // `.sort()` on the fetched array would reorder the cached payload itself.
+  //
+  // RE-AIMED, unit #41-b: `orderedFixes` was the separate 수정 제안 section's own
+  // partition, and that section is gone -- each disposition renders inside the
+  // 소견 that raised it, so the proposal-first ORDER is `CollapsibleMessages`'s
+  // (pinned below, unchanged) and there is one ordering rather than two. What
+  // this pin holds is the other half of the same claim, at its new address: the
+  // fetched catalogue is read through FILTERED COPIES, never reordered in place.
   pin.match(
     page,
-    /const orderedFixes = \[\s*\n\s*\.\.\.checkFixes\.filter\(\(entry\) => fixFindingIsProposal\(entry\)\),\s*\n\s*\.\.\.checkFixes\.filter\(\(entry\) => !fixFindingIsProposal\(entry\)\),\s*\n\s*\];/,
-    "expected the proposal-first order to be a stable partition into a NEW array, never an in-place sort of the fetched payload",
+    /const fixesFromOrigin = \(via: "finding" \| "warning"\): GenesisFixFinding\[\] =>\s*\n\s*checkFixes\.filter\(\(entry\) => entry\.origin === via\);/,
+    "expected the catalogue to be read through a filtered COPY per origin, never sorted or spliced in place",
+  );
+  // ...and the pairing is POSITIONAL, which is the property that makes the
+  // merge safe: (code, subject) cannot tell gate.py's real duplicate pair apart
+  // (`v3_silent_departure_point / 대덕대로 [FWD] w52496957s1`, links 427 AND
+  // 429), so matching on it would put one finding's disposition under the
+  // other's row. Both payloads walk the same stored gate.json in the same order.
+  pin.match(
+    page,
+    /fix: checkFixes\[payloadIndex\] \?\? null,/,
+    "expected a row's disposition to be paired by PAYLOAD POSITION -- a (code, subject) lookup cannot tell two same-keyed findings apart, and gate.py emits them",
+  );
+  // AND THE OTHER SIDE OF THAT SLICE IS RENDERED, NOT DROPPED (refuter,
+  // 2026-08-18). The gate payload caps a check at `MAX_FINDINGS_IN_PAYLOAD`
+  // (25) while the catalogue answers for every stored finding, so positional
+  // pairing leaves a TAIL: on the live job f57cf27e33f5 that is 41 of V7's 66
+  // dispositions. Only the tail's RENDERING was pinned, not its derivation --
+  // proved by mutation: `checkFixes.slice(findings.length)` narrowed to
+  // `.slice(findings.length, findings.length)` empties the tail and all 124
+  // tests stayed green, which is exactly the silent disappearance this unit
+  // says it prevents. Re-derived here from the same two lengths.
+  pin.match(
+    page,
+    /const unpaired = checkFixes\.slice\(findings\.length\);/,
+    "expected EVERY catalogue entry past the gate payload's cap to be kept as the unpaired tail -- a narrowed or emptied slice drops dispositions with no sign on screen",
+  );
+  pin.match(
+    page,
+    /\{unpaired\.length > 0 && \(/,
+    "expected the tail to render whenever it is non-empty",
+  );
+  // Sliced from the tail's own JSX to the end of the component -- NOT from the
+  // derivation, whose region stops at the first `</>` (the row body's fragment)
+  // and so never reached this markup at all: a `.slice(0, 5)` over the tail
+  // survived that spelling of the pin.
+  const tailBlock = sliceBetween(page, "{unpaired.length > 0 && (", "/** THE ARTIFACT ROW");
+  pin.match(tailBlock, /unpaired\.map\(/, "expected to find the tail's own render (markers moved? the doesNotMatch below would pass vacuously)");
+  pin.doesNotMatch(
+    tailBlock,
+    /unpaired\.slice\(|unpaired\.filter\(/,
+    "expected the tail to be rendered whole -- a second cap over the overflow list is the same silent drop one level down",
   );
   const gridBody = sliceBetween(page, "function GateCheckGrid(", "/** The five downloadable artifacts");
   pin.match(gridBody, /\S/, "expected to find the GateCheckGrid body (markers moved? the doesNotMatch below would pass vacuously)");
@@ -6527,6 +6584,25 @@ contractTest("unit #41: a proposal sorts first, wears the sky badge, and the fol
     page,
     /const ordered = \[\.\.\.withProposal, \.\.\.rows\.filter\(\(row\) => !proposalKeys\.has\(row\.key\)\)\];/,
     "expected the finding list to put proposal-bearing rows first, as a partition of the gate's own array",
+  );
+  // AND THE BADGE ANSWERS FOR ITS OWN ROW (refuter, 2026-08-18). Unit #41-b put
+  // the disposition card INSIDE the row that wears this badge, so the two are
+  // now one line apart and may not disagree. `proposalKeys` is keyed on
+  // (code, subject), which cannot tell gate.py's duplicate pair apart
+  // (`v3_silent_departure_point / 대덕대로 [FWD] w52496957s1`, links 427 AND
+  // 429): with one derivable and one not, BOTH rows wore 제안 while only one
+  // card carried an approve button -- simulated, 1 disagreement in 3 rows. The
+  // row's own paired entry answers exactly. `proposalKeys` still drives the
+  // FOLD, which is safe because it is a superset of the true proposals.
+  pin.match(
+    page,
+    /const isProposal = Boolean\(row\.fix && fixFindingIsProposal\(row\.fix\)\);/,
+    "expected the 제안 badge to be decided by the row's OWN paired disposition -- a (code, subject) set cannot tell a duplicate pair apart, and the card it would contradict is now one line below it",
+  );
+  pin.doesNotMatch(
+    sliceBetween(page, "<ul className=\"mt-2 space-y-1\">", "{overflow > 0 && ("),
+    /const isProposal = proposalKeys\.has\(row\.key\)/,
+    "expected the badge never to go back to the check-wide (code, subject) set while the card beside it is paired per row",
   );
   // The SERVER-side omission line is evidence and is untouched by any of this.
   pin.match(
@@ -6615,10 +6691,24 @@ contractTest("unit #41: the doctrine moved behind a disclosure, and nothing was 
     /<div className="rounded-lg border border-slate-200 bg-slate-50 px-3\.5 py-3 text-\[15px\] text-slate-800">/,
     "expected the fix row to stop being its own card inside the opened check's card",
   );
+  // RE-AIMED, unit #41-b: the flat rules-not-boxes list became a MERGE -- the
+  // disposition renders inside the <li> of the 소견 that raised it, so the rows
+  // are the finding list's own and the "card inside a card" this pin was
+  // written against is one level shallower still. The claim survives at its new
+  // address: a disposition is a sibling of its row's control (never nested
+  // inside that <button>, which would be invalid markup and an unaimable
+  // click), and it prints no subject of its own.
   pin.match(
     page,
-    /<div className="mt-2 flex flex-col divide-y divide-slate-200">/,
-    "expected the fix rows to be separated by rules rather than stacked as cards",
+    /\{row\.fix && \(\s*\n\s*<FixFindingRow\s*\n\s*key=\{rowKeyOf\(row\.fix\)\}\s*\n\s*instanceKey=\{rowKeyOf\(row\.fix\)\}\s*\n\s*showSubject=\{false\}/,
+    "expected a proposal to render inside its own finding's row, as a sibling of that row's control, printing no second subject",
+  );
+  // The tail the payload cap left without a row keeps the rules-not-boxes shape
+  // AND its own subject -- it has no row above it to carry one.
+  pin.match(
+    page,
+    /<div className="mt-2 flex flex-col divide-y divide-slate-200 border-t border-slate-200">/,
+    "expected the unpaired dispositions to stay separated by rules rather than stacked as cards",
   );
   const treatmentBoxes = (page.match(/mt-3 flex flex-col gap-2 border-l-2 border-slate-300 pl-3/g) ?? []).length;
   pin.match(
@@ -6752,20 +6842,40 @@ contractTest("unit #41: two findings sharing one (code, subject) are two rows, n
   // destination and its ticked map-confirmation onto a different link. An
   // attestation is a recorded human claim about ONE object. The payload index
   // is invariant under every reorder, so a preserved key is the same finding.
+  // RE-AIMED, unit #41-b, and the claim got STRONGER rather than weaker: the
+  // stateful card now lives INSIDE the proposal-first finding list rather than
+  // beside it, so the reordering array and the state-carrying component are the
+  // same list. The identity is unchanged -- (code, subject, PAYLOAD index) --
+  // and it moved out of the render body into one named helper so both the
+  // merged rows and the unpaired tail spell it exactly once.
   pin.match(
     page,
-    /const rowKey = `\$\{finding\.code\}::\$\{finding\.subject\}::\$\{checkFixes\.indexOf\(finding\)\}`;/,
+    /const rowKeyOf = \(entry: GenesisFixFinding\): string =>\s*\n\s*`\$\{entry\.code\}::\$\{entry\.subject\}::\$\{checkFixes\.indexOf\(entry\)\}`;/,
     "expected a fix row's identity to be (code, subject, PAYLOAD index) -- gate.py can emit the same (code, subject) twice, and a display-order index lets a reorder carry one finding's attestation state onto the other",
   );
   pin.match(
     page,
-    /key=\{rowKey\}\s*\n\s*instanceKey=\{rowKey\}/,
+    /key=\{rowKeyOf\(row\.fix\)\}\s*\n\s*instanceKey=\{rowKeyOf\(row\.fix\)\}/,
     "expected the React key and the row's instanceKey to be the SAME payload-stable identity -- two spellings is how they drift apart",
+  );
+  // AND THE <li> AROUND IT, which is new exposure this unit created: React
+  // identity runs from the nearest keyed ancestor, so a display-indexed <li>
+  // would carry the card's typed basis across a re-gate reorder even though the
+  // card's own key is payload-stable.
+  pin.match(
+    page,
+    /<li key=\{`\$\{row\.key\}::\$\{row\.payloadIndex\}`\}/,
+    "expected the merged finding row's own key to be payload-stable too -- the stateful card is inside it now, and a display-indexed <li> reintroduces exactly the state-slide unit #41's refuter closed",
+  );
+  pin.match(
+    page,
+    /const rows = findings\.map\(\(finding, payloadIndex\) => \(\{/,
+    "expected payloadIndex to be taken from the GATE PAYLOAD's own array, before the proposal-first partition reorders anything",
   );
   pin.doesNotMatch(
     page,
-    /orderedFixes\.map\(\((?:finding|entry), index\)/,
-    "expected the fix rows never to take their identity from their position in the DISPLAY partition",
+    /visible\.map\(\((?:row|entry|finding), index\)/,
+    "expected the merged rows never to take their identity from their position in the DISPLAY partition",
   );
   pin.match(
     page,
@@ -6888,17 +6998,53 @@ contractTest("unit #42: a confirmed dead end excludes ONE way, and the scope is 
     /deadEnd\.collateral\.length > 0 \?[\s\S]{0,400}?text-rose-700/,
     "expected a non-empty collateral list to render in the failure colour -- it is the one thing on this panel that can be a surprise",
   );
-  // The two answers have different consequences, so they get different consent
-  // sentences. One line for both would be a lie about one of them.
+  // The two answers have different consequences, so they got different consent
+  // sentences. One line for both would have been a lie about one of them.
+  //
+  // UNIT #41-b, BY THE PRODUCT OWNER'S OWN INSTRUCTION: the ATTESTING half of
+  // that pair is deleted, and the pin that held it ("expected the attestation
+  // consent line to keep saying that a real Vissim edit runs", which matched
+  // `: t(\n "승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를
+  // 거칩니다."`) is REMOVED with it -- user, live pass 2026-08-18: "'승인하면
+  // 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다.' 이것도
+  // 없애도". Recorded here rather than silently dropped, because a pin removed
+  // without a named authority is indistinguishable from a pin lost in a rebase.
+  //
+  // The dead-end sentence is UNTOUCHED and still pinned: it names a consequence
+  // the button cannot ("a NEW job from the same source; this artifact is left
+  // alone"), which is the thing that made it a separate sentence to begin with.
+  // It is now rendered under a guard rather than as a ternary arm, so the
+  // attesting answer carries no consent line at all.
   pin.match(
     page,
-    /deadEndChosen\s*\n?\s*\? t\(\s*\n?\s*"확인하면 이 way를 명명 제외한 새 생성이 같은 원본으로 시작됩니다/,
-    "expected the dead-end consent line to say a NEW generation starts and this artifact is not edited",
+    /\{deadEndChosen && \(\s*\n[\s\S]{0,200}?t\(\s*\n?\s*"확인하면 이 way를 명명 제외한 새 생성이 같은 원본으로 시작됩니다/,
+    "expected the dead-end consent line to say a NEW generation starts and this artifact is not edited, and to render only for the answer it is about",
   );
-  pin.match(
-    page,
-    /: t\(\s*\n?\s*"승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다\."/,
-    "expected the attestation consent line to keep saying that a real Vissim edit runs",
+  // The auto-publish disclosure on the APPROVAL card is a different sentence on
+  // a different card and was NOT part of that instruction -- pinned in its own
+  // test above, and pinned absent here so the deleted short form cannot creep
+  // back in beside it.
+  // Matched WITHOUT the surrounding quotes and against de-commented source
+  // (refuter, 2026-08-18): quoting the sentence made the pin blind to the same
+  // string re-added as a single-quoted or template-literal argument, and the
+  // page carries the sentence in a comment (the instruction that deleted it),
+  // which is why the quotes were there. The trailing period is what separates
+  // the deleted short form from the approval card's longer one -- that one
+  // reads "…거칩니다 — 통과하면…", so it cannot trip these.
+  pin.doesNotMatch(
+    withoutComments(page),
+    /승인하면 실제 Vissim 편집이 실행되고 네트워크가 다시 게이트를 거칩니다\./,
+    "expected the attestation card's short consent sentence to stay deleted (user instruction, 2026-08-18) -- the approval card's own auto-publish disclosure is a different, longer sentence",
+  );
+  pin.doesNotMatch(
+    withoutComments(page),
+    /Approving runs a real Vissim edit and re-gates the network\./,
+    "expected the deleted sentence to stay deleted in en as well as ko -- a three-language string comes back one language at a time",
+  );
+  pin.doesNotMatch(
+    withoutComments(page),
+    /承認すると実際のVissim編集が実行され、ネットワークは再度ゲートを通過します。/,
+    "expected the deleted sentence to stay deleted in ja as well as ko",
   );
 });
 
@@ -6938,4 +7084,206 @@ contractTest("unit #42: the dead-end refusal is a sentence, never a control", (p
     /dead_end_confirmation\?: GenesisFixDeadEndConfirmation;\s*\n\s*dead_end_refusal\?: GenesisFixDeadEndRefusal;/,
     "expected both dead-end keys to be optional on the disposition -- presence is the fact",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Unit #41-b -- the four things the user asked for after seeing #41 and #42 on
+// the real screen (live pass 2026-08-18, job 2712071437d0)
+// ---------------------------------------------------------------------------
+//
+//   1. "수정 제안 칸 따로 만들지 말고 위에 걍 넣어 같이. 그럼 이름 반복될 필요도
+//      없고 칸도 줄고 더 간략할 것 같애" -- the separate section is gone and each
+//      disposition renders inside the 소견 that raised it.
+//   2. "the second 자세히는 없애" -- one 자세히 per card, not two.
+//   3. "'승인하면 실제 Vissim 편집이…' 이것도 없애도" -- pinned in the unit #42
+//      test above, which is where the sentence used to be held.
+//   4. "이름 반복 service[FWD] w1294917882s0 이게 너무 자주돼" -- the subject was
+//      printed by SubjectLabel and then AGAIN by the gate sentence it leads.
+//
+// Every one of these is a DISPLAY change. The pins below are written to fail if
+// any of them ever becomes a data change: the API calls, the (code, subject)
+// apply address and the payload-index row identity are all pinned unchanged in
+// their own tests above, and nothing here relaxes them.
+
+contractTest("unit #41-b: the proposal renders inside its finding, and the separate 수정 제안 칸 is gone", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const gridBody = sliceBetween(page, "function GateCheckGrid(", "/** The five downloadable artifacts");
+  pin.match(gridBody, /\S/, "expected to find the GateCheckGrid body (markers moved? the doesNotMatch below would pass vacuously)");
+
+  // THE 칸 IS GONE -- heading and all. Pinned on the heading STRING rather than
+  // on a class, because a section that came back under a different border would
+  // be the same box the user asked to lose.
+  pin.doesNotMatch(
+    withoutComments(page),
+    /t\("수정 제안", "Fix proposals", "修正提案"\)/,
+    "expected the separate 수정 제안 section heading to be gone -- the dispositions read inside their own findings now",
+  );
+
+  // ...and its ⓘ MOVED rather than went with it. The sentence is doctrine
+  // ("자동 수정이 없다는 답은 정보이지 버튼이 아닙니다 — 거부는 진단, 에이전트는
+  // 치료"), so losing it with the box it hung on would be deleting a claim.
+  pin.match(
+    page,
+    /\{selected\.title\}\s*\n\s*<InfoTip/,
+    "expected the fix-catalogue disclosure to move onto the check's own title, which is exactly what it describes",
+  );
+  pin.match(
+    page,
+    /자동 수정이 없다는 답은 정보이지 버튼이 아닙니다 — 거부는 진단, 에이전트는 치료\./,
+    "expected the catalogue's doctrine sentence to survive the move, word for word",
+  );
+  // The three catalogue STATES survive too -- loading, refused, and a check with
+  // no individual proposal. A merge that silently dropped them would make a
+  // 401 look like "this check is clean".
+  for (const [sentence, why] of [
+    ["수정 제안을 불러오는 중…", "the loading state"],
+    ["수정 제안을 보려면 로그인이 필요합니다", "the signed-out refusal"],
+    ["수정 제안을 불러오지 못했습니다", "the generic fetch failure"],
+    ["이 검사에는 개별 수정 제안이 없습니다", "the no-proposal answer"],
+  ] as const) {
+    pin.match(
+      page,
+      new RegExp(sentence),
+      `expected ${why} to survive the merge -- it is the reader's only sign the catalogue did not answer`,
+    );
+  }
+
+  // THE SUBJECT IS PRINTED ONCE PER CARD. The merged card is told not to print
+  // one (its row already did); the unpaired tail, which has no row above it, is
+  // told to. Both halves pinned -- a version that printed none would lose the
+  // subject entirely for the capped tail.
+  pin.match(
+    page,
+    /\{showSubject && \(\s*\n\s*<div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">/,
+    "expected the fix card's own subject header to be conditional -- merged under its row, the row already named the finding",
+  );
+  pin.match(
+    page,
+    /showSubject\s*\n\s*jobId=\{jobId\}\s*\n\s*finding=\{entry\}/,
+    "expected the unpaired dispositions to keep printing their own subject -- there is no row above them to print it",
+  );
+
+  // NOTHING ABOUT THE PAYLOAD MOVED. The apply address is still the finding's
+  // own (code, subject) and the catalogue fetch is untouched -- re-asserted here
+  // because this unit is the one that could most plausibly have "simplified"
+  // them into the row's identity.
+  pin.match(page, /finding_code: finding\.code,/, "expected the apply body to keep addressing the finding by its own code");
+  pin.match(page, /subject: finding\.subject,/, "expected the apply body to keep addressing the finding by its own subject");
+  pin.doesNotMatch(gridBody, /\.sort\(/, "expected nothing in the grid to sort a fetched array in place");
+});
+
+contractTest("unit #41-b: one 자세히 per card, and the sentences the second one held moved into it", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+
+  // ONE PER CARD. Counted, not matched: the bug the user hit was TWO toggles
+  // with the SAME summary line in one card, which no single `match` can see.
+  // Two in the file = one on the refusal card, one on the approval card -- the
+  // two branches of `!actionable`, which a reader never meets together.
+  const disclosures = (page.match(/<CardDetails summary=\{moreLabel\(t\)\}>/g) ?? []).length;
+  pin.match(
+    `count=${disclosures}`,
+    /^count=2$/,
+    "expected exactly two 자세히 disclosures in the file -- one per card branch, never two in one card (user, live pass 2026-08-18: 'the second 자세히는 없애')",
+  );
+  // The attestation block is where the second one lived. It must now contain
+  // none at all -- sliced, so this cannot pass on the refusal card's copy.
+  const worldGap = sliceBetween(page, "{worldGapAsked && (", "{deadEndError && (");
+  pin.match(worldGap, /\S/, "expected to find the world-gap question block (markers moved?)");
+  pin.doesNotMatch(
+    worldGap,
+    /<CardDetails/,
+    "expected the attestation block's own disclosure to be gone -- its contents moved up into the card's single 자세히",
+  );
+
+  // MOVED, NOT DROPPED -- all three sentences, and each still under the exact
+  // condition that used to render it. The two attestation explanations are
+  // pinned verbatim by unit #41's own test above; what this pin adds is that
+  // they are inside the surviving disclosure and still conditional, and that
+  // unit #42's dead-end doctrine travelled with them.
+  const refusalDisclosure = sliceBetween(page, "<CardDetails summary={moreLabel(t)}>", "</CardDetails>");
+  pin.match(refusalDisclosure, /\S/, "expected to find the surviving disclosure (markers moved?)");
+  pin.match(
+    refusalDisclosure,
+    /\{worldGapAsked && \([\s\S]{0,1200}?원본 데이터는 이 지점에서 이어지는 도로를 선언하지 않습니다/,
+    "expected the 'the source declares no continuation' sentence to render only where it used to -- when the world gap is actually asked",
+  );
+  pin.match(
+    refusalDisclosure,
+    /연결로의 형상과 차로 대응은 기존 두 링크 끝에서 시스템이 구성합니다/,
+    "expected the 'the system constructs the connector' sentence to move with it",
+  );
+  pin.match(
+    refusalDisclosure,
+    /\{deadEnd && \([\s\S]{0,800}?여기서 끝난다고 확인하셔도 원본 \.osm은 편집되지 않습니다/,
+    "expected unit #42's dead-end doctrine to move into the same disclosure, still gated on the dead-end offer being present",
+  );
+  // The machine identity stays LAST inside it (unit #41's own order: what it is,
+  // what it says, then the identifiers a bug report needs).
+  pin.match(
+    refusalDisclosure,
+    /여기서 끝난다고 확인하셔도[\s\S]*?\{finding\.code\}/,
+    "expected the raw finding/reason codes to stay at the END of the disclosure, behind the prose that was moved in above them",
+  );
+  // AND IT IS STILL A NATIVE <details>: the refusal branch may carry no button,
+  // and a merged card that spelled its toggle as one would break that.
+  pin.doesNotMatch(
+    sliceBetween(page, "function CardDetails(", "/** The one summary label"),
+    /<button/,
+    "expected the disclosure toggle never to be spelled as a button",
+  );
+});
+
+test("unit #41-b: the subject trim removes a repeated subject and NOTHING else", () => {
+  // THE REPORTED RENDER. gate.py words this finding "<subject>: <what is
+  // wrong>", and the row prints the subject itself immediately above.
+  assert.equal(
+    messageWithoutSubject(
+      "service [FWD] w1294917882s0",
+      "service [FWD] w1294917882s0: 모델 경계가 아닌데 이어지는 도로가 없습니다",
+    ),
+    "모델 경계가 아닌데 이어지는 도로가 없습니다",
+  );
+  // A space boundary counts too, not only a colon.
+  assert.equal(messageWithoutSubject("링크 42", "링크 42 has no outgoing connector"), "has no outgoing connector");
+
+  // THE BOUNDARY RULE, which is the whole reason this is a helper and not an
+  // inline `.replace()`. A subject that is merely the HEAD of a longer token
+  // must not be trimmed -- doing so would silently renumber the object the
+  // sentence is about.
+  assert.equal(messageWithoutSubject("링크 4", "링크 42는 진입로가 없습니다"), "링크 42는 진입로가 없습니다");
+  assert.equal(messageWithoutSubject("V3", "V300 refused"), "V300 refused");
+
+  // NOT A PREFIX AT ALL -> byte for byte. The backend owns the sentence.
+  assert.equal(
+    messageWithoutSubject("대덕대로 [FWD] w52496957s1", "이 링크에서 출발하는 차량이 없습니다"),
+    "이 링크에서 출발하는 차량이 없습니다",
+  );
+  // Only the FIRST character onward counts -- a subject appearing mid-sentence
+  // is part of what the gate said and is never touched.
+  assert.equal(
+    messageWithoutSubject("링크 42", "커넥터가 링크 42로 이어지지 않습니다"),
+    "커넥터가 링크 42로 이어지지 않습니다",
+  );
+  // ...and the ANCHORING is what makes that true, not luck (refuter,
+  // 2026-08-18). The case above survives a `startsWith` -> `includes` weakening
+  // by coincidence: the slice happens to land mid-token, so the separator guard
+  // still refuses it. Proved by mutation -- that weakening kept all 124 tests
+  // green. Here the slice lands exactly on a separator, so ONLY the anchoring
+  // stops the head of the sentence being eaten: a trim that searched anywhere
+  // would answer "링크 42가 문제" and drop the clause naming which check spoke.
+  assert.equal(
+    messageWithoutSubject("링크 42", "V3 검사: 링크 42가 문제"),
+    "V3 검사: 링크 42가 문제",
+  );
+  assert.equal(messageWithoutSubject("AB", "X: AB continues"), "X: AB continues");
+
+  // A message that is ONLY its subject stays whole: an empty row says less than
+  // a repeated one.
+  assert.equal(messageWithoutSubject("링크 42", "링크 42"), "링크 42");
+  assert.equal(messageWithoutSubject("링크 42", "링크 42:"), "링크 42:");
+
+  // Degenerate inputs answer with the message rather than throwing -- this runs
+  // inside a render.
+  assert.equal(messageWithoutSubject("", "무언가 잘못되었습니다"), "무언가 잘못되었습니다");
+  assert.equal(messageWithoutSubject("링크 42", ""), "");
 });

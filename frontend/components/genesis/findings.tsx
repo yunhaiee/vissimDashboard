@@ -18,6 +18,7 @@
 // collects and groups what that function returns.
 
 import type { GenesisGateCheck, GenesisGateFinding, GenesisGateReport } from "@/lib/api";
+import { messageWithoutSubject } from "@/lib/findingMessage";
 import {
   describeGenesisSubject,
   resolveFindingHighlight,
@@ -272,7 +273,9 @@ function FindingRefLine({ entry, t }: { entry: FindingRef; t: Translate }) {
         {entry.checkId} · {entry.tier === "refuse" ? t("거부 등급", "refuse", "拒否") : t("경고 등급", "warn", "警告")}
       </span>
       <SubjectLabel subject={entry.finding.subject} className="mt-1 block text-[15px]" />
-      <p className="mt-1 leading-relaxed">{entry.finding.message}</p>
+      <p className="mt-1 leading-relaxed">
+        {messageWithoutSubject(entry.finding.subject, entry.finding.message)}
+      </p>
       <p className="mt-1 font-mono text-[14px] text-slate-500">
         {entry.checkTitle.split(" — ")[0]} · {entry.finding.code}
       </p>
