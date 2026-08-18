@@ -7262,6 +7262,56 @@ contractTest("unit #41-b: one 자세히 per card, and the sentences the second o
   );
 });
 
+contractTest("unit #41-d: the one-line answer names the treatment THIS card offers", (pin) => {
+  const page = read("app/genesis/jobs/[id]/page.tsx");
+  const summary = sliceBetween(page, '<p className="text-[15px] leading-relaxed text-slate-700">', "</p>");
+  pin.match(summary, /\S/, "expected to find the one-line answer (markers moved? the pins below would pass vacuously)");
+
+  // IT BRANCHES ON WHICH ANSWER IS ON OFFER, not on "either is". `worldGapAsked`
+  // is true for the dead-end offer alone, and the sentence it selected said the
+  // fix "적용" -- which is what attesting a CONNECTOR does (a real add_connector
+  // edit against this artifact). A dead-end-only card treats the finding the
+  // opposite way and has no such button.
+  pin.match(
+    summary,
+    /\{connectorOffered\s*\n\s*\? t\(\s*\n\s*"자동 수정 없음 — 현장을 아는 사람이 확인하면 적용할 수 있습니다\./,
+    "expected the 'and then it applies' answer to be gated on a connector actually being on offer -- that is the only answer that applies anything",
+  );
+  pin.doesNotMatch(
+    summary,
+    /\{worldGapAsked/,
+    "expected the one-line answer never to branch on 'either answer is on offer' -- the two answers have opposite treatments",
+  );
+
+  // THE DEAD-END-ONLY ANSWER, in all three languages. #42's mechanism: the
+  // confirmation POSTs and comes back a NEW job with that road excluded by
+  // name; nothing about this artifact is edited.
+  for (const [sentence, language] of [
+    ["자동 수정 없음 — 현장을 아는 사람이 확인하면 그 도로를 제외하고 다시 생성합니다\\.", "ko"],
+    ["No automated fix — someone who knows the site can confirm it ends, and then it is generated again with that road left out\\.", "en"],
+    ["自動修正なし — 現場をご存じの方が確認すれば、その道路を除いて再生成します。", "ja"],
+  ] as const) {
+    pin.match(
+      summary,
+      new RegExp(sentence),
+      `expected the dead-end-only card to say its treatment is a re-generation with that road left out, in ${language} -- it has no apply button to promise`,
+    );
+  }
+  pin.match(
+    summary,
+    /: deadEnd\s*\n\s*\? t\(\s*\n\s*"자동 수정 없음 — 현장을 아는 사람이 확인하면 그 도로를/,
+    "expected the re-generation answer to be the one selected when the dead end is the only offer",
+  );
+  // A MIXED card keeps "적용": `connectorOffered` is true there and is tested
+  // first, so both-answers-open reads as the connector's treatment -- pinned as
+  // ORDER, because swapping the two arms would silently change that card too.
+  pin.match(
+    summary,
+    /\{connectorOffered[\s\S]*?: deadEnd/,
+    "expected connectorOffered to be tested BEFORE deadEnd, so a card carrying both answers keeps the connector's wording",
+  );
+});
+
 test("unit #41-b: the subject trim removes a repeated subject and NOTHING else", () => {
   // THE REPORTED RENDER. gate.py words this finding "<subject>: <what is
   // wrong>", and the row prints the subject itself immediately above.

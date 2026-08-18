@@ -700,30 +700,53 @@ function FixFindingRow({
             * than a reason they read. The one-line answer above it is this
             * UI's own summary of a state it already computes, never a
             * re-wording of the backend's claim. */}
+          {/* Unit #41-d -- THE TREATMENT THIS CARD ACTUALLY OFFERS, not the one
+            * its neighbour offers. This line rode on `worldGapAsked`, which is
+            * true for EITHER answer, and said "적용할 수 있습니다" -- true only
+            * where a connector is on offer, because attesting one runs a real
+            * `add_connector` edit against this artifact. A card whose only
+            * answer is the dead end treats the finding the opposite way: the
+            * confirmation mints a SIBLING generation with that road excluded
+            * by name (`POST .../dead-end-confirmation` returns a new job) and
+            * this artifact is never edited. Telling that reader the fix "가
+            * 적용된다" describes a button they do not have.
+            *
+            * A MIXED card keeps "적용": both answers are open on it, and the
+            * one the reader is most likely to take -- the connector -- really
+            * does apply. The dead-end answer's own consequences are spelled by
+            * the consent line further down, which appears once that answer is
+            * actually picked; this line stays the card's opening summary and
+            * does not restate it. */}
           <p className="text-[15px] leading-relaxed text-slate-700">
-            {worldGapAsked
+            {connectorOffered
               ? t(
                   "자동 수정 없음 — 현장을 아는 사람이 확인하면 적용할 수 있습니다.",
                   "No automated fix — someone who knows the site can attest, and then it applies.",
                   "自動修正なし — 現場をご存じの方が確認すれば適用できます。",
                 )
-              : disposition.regenerate
+              : deadEnd
                 ? t(
-                    "자동 수정 없음 — 재생성으로 치료합니다.",
-                    "No automated fix — this one is treated by regenerating.",
-                    "自動修正なし — 再生成で治療します。",
+                    "자동 수정 없음 — 현장을 아는 사람이 확인하면 그 도로를 제외하고 다시 생성합니다.",
+                    "No automated fix — someone who knows the site can confirm it ends, and then it is generated again with that road left out.",
+                    "自動修正なし — 現場をご存じの方が確認すれば、その道路を除いて再生成します。",
                   )
-                : disposition.boundary_extension
+                : disposition.regenerate
                   ? t(
-                      "자동 수정 없음 — 경계를 넓혀 다시 생성해야 합니다.",
-                      "No automated fix — the boundary must be widened and generated again.",
-                      "自動修正なし — 境界を広げて再生成する必要があります。",
+                      "자동 수정 없음 — 재생성으로 치료합니다.",
+                      "No automated fix — this one is treated by regenerating.",
+                      "自動修正なし — 再生成で治療します。",
                     )
-                  : t(
-                      "자동 수정 없음 — 사람이 판단해야 합니다.",
-                      "No automated fix — this needs a person's judgement.",
-                      "自動修正なし — 人の判断が必要です。",
-                    )}
+                  : disposition.boundary_extension
+                    ? t(
+                        "자동 수정 없음 — 경계를 넓혀 다시 생성해야 합니다.",
+                        "No automated fix — the boundary must be widened and generated again.",
+                        "自動修正なし — 境界を広げて再生成する必要があります。",
+                      )
+                    : t(
+                        "자동 수정 없음 — 사람이 판단해야 합니다.",
+                        "No automated fix — this needs a person's judgement.",
+                        "自動修正なし — 人の判断が必要です。",
+                      )}
           </p>
           {/* Unit #41-b -- ONE 자세히 PER CARD. The attestation block below used
             * to open a SECOND disclosure with the same summary line, so a
